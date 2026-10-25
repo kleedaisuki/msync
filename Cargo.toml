@@ -1,0 +1,21 @@
+[package]
+name = "msync"
+version = "0.1.0"
+edition = "2024"
+description = "A compiled file synchronization DSL with an interactive shell"
+license = "GPL-3.0-only"
+
+[dependencies]
+regex = "1.12"
+url = "2.5"
+same-file = "1.0"
+unicode-width = "0.2"
+anstream = "1.0"
+
+[dev-dependencies]
+tempfile = "3.23"
+proptest = "1.9"
+
+[[bench]]
+name = "pipeline"
+harness = false

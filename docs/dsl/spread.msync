@@ -1,0 +1,28 @@
+remote => $wsl
+# token: remote => $ wsl
+
+remote::~/.codex/config.toml -> ~/.codex/config.toml
+# token: remote :: ~ / .codex / config.toml -> ~ / .codex / config.toml
+# 覆盖 config.toml，-> 左端为文件夹同样覆盖并递归拷贝
+
+$local::~/.codex/AGENTS.md -> ~/.codex/
+# token: $ loacal :: ~ / .codex / AGENTS.md -> ~ / .codex /
+# 在其下创建同名文件或文件夹（如果文件已经存在则报错，文件夹递归拷贝）
+
+server => ssh://moesegfault@127.0.0.1
+# token: server => ssh :// moesegfault @ 127.0.0.1
+
+public => https://www.moesegfault.dev
+# token: public => https :// www.moesegfault.dev
+
+public::~/v1/help.html -> ~/help.html
+# token: public :: ~ / v1 / help.html -> ~ / help.html
+
+$path::gcc.exe -> $env::LOCALAPPDATA/
+# token: $ path :: gcc.exe -> $ env :: LOCALAPPDATA /
+
+.codex := ~/.codex
+# token: .codex := ~ / .codex
+
+.codex/agents/<.+\.toml> -> $wsl::.codex/agents/
+# token: .codex / agents / < .+\.toml > -> $ wsl :: .codex / agents /
