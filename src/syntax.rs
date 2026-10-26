@@ -24,6 +24,56 @@ impl fmt::Display for Diagnostic {
 
 impl std::error::Error for Diagnostic {}
 
+/// Structured presentation data, separate from the stable basic diagnostic API.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Report {
+    pub diagnostic: Diagnostic,
+    pub labels: Vec<Label>,
+    pub help: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Label {
+    pub span: Span,
+    pub message: String,
+}
+
+impl Report {
+    pub fn new(message: impl Into<String>, span: Span) -> Self {
+        Self {
+            diagnostic: Diagnostic {
+                message: message.into(),
+                span,
+            },
+            labels: Vec::new(),
+            help: Vec::new(),
+        }
+    }
+
+    pub fn label(mut self, span: Span, message: impl Into<String>) -> Self {
+        self.labels.push(Label {
+            span,
+            message: message.into(),
+        });
+        self
+    }
+
+    pub fn help(mut self, help: impl Into<String>) -> Self {
+        self.help.push(help.into());
+        self
+    }
+}
+
+impl From<Diagnostic> for Report {
+    fn from(diagnostic: Diagnostic) -> Self {
+        Self {
+            diagnostic,
+            labels: Vec::new(),
+            help: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Script {
     pub statements: Vec<Statement>,
@@ -33,6 +83,45 @@ pub struct Script {
 pub struct Statement {
     pub kind: StatementKind,
     pub span: Span,
+    pub operands: Option<Operands>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Operands {
+    pub left: OperandSource,
+    pub operator: Span,
+    pub right: OperandSource,
+}
+
+/// Maps semantic operand byte intervals back to original source, including escapes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OperandSource {
+    pub span: Span,
+    pub content: Span,
+    decoded_offsets: Option<Vec<usize>>,
+}
+
+impl OperandSource {
+    pub fn unmapped(span: Span) -> Self {
+        Self {
+            span,
+            content: span,
+            decoded_offsets: None,
+        }
+    }
+
+    pub fn interval(&self, start: usize, end: usize) -> Span {
+        match &self.decoded_offsets {
+            Some(offsets) => Span {
+                start: offsets[start.min(offsets.len() - 1)],
+                end: offsets[end.min(offsets.len() - 1)],
+            },
+            None => Span {
+                start: (self.content.start + start).min(self.content.end),
+                end: (self.content.start + end).min(self.content.end),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +146,15 @@ struct LineScan {
 
 /// Parse all lines, collecting independent errors instead of stopping at the first.
 pub fn parse(source: &str) -> Result<Script, Vec<Diagnostic>> {
+    parse_rich(source).map_err(|reports| {
+        reports
+            .into_iter()
+            .map(|report| report.diagnostic)
+            .collect()
+    })
+}
+
+pub fn parse_rich(source: &str) -> Result<Script, Vec<Report>> {
     let mut trace = crate::telemetry::span("parse");
     let mut script = Script::default();
     let mut diagnostics = Vec::new();
@@ -77,7 +175,7 @@ pub fn parse(source: &str) -> Result<Script, Vec<Diagnostic>> {
     }
 }
 
-fn parse_line(line: &str, offset: usize, script: &mut Script, errors: &mut Vec<Diagnostic>) {
+fn parse_line(line: &str, offset: usize, script: &mut Script, errors: &mut Vec<Report>) {
     let scan = match scan_line(line, offset) {
         Ok(scan) => scan,
         Err(error) => {
@@ -100,11 +198,12 @@ fn parse_line(line: &str, offset: usize, script: &mut Script, errors: &mut Vec<D
                 start: offset + start,
                 end: offset + line.len(),
             },
+            operands: None,
         });
     }
 }
 
-fn scan_line(line: &str, offset: usize) -> Result<LineScan, Diagnostic> {
+fn scan_line(line: &str, offset: usize) -> Result<LineScan, Report> {
     let bytes = line.as_bytes();
     let mut scan = LineScan {
         operators: Vec::new(),
@@ -163,17 +262,42 @@ fn scan_line(line: &str, offset: usize) -> Result<LineScan, Diagnostic> {
         return Err(error(
             "unterminated quoted operand",
             offset + start,
-            offset + line.len(),
-        ));
+            offset + start + 1,
+        )
+        .label(
+            Span {
+                start: offset + line.len(),
+                end: offset + line.len(),
+            },
+            "insert closing quote here",
+        )
+        .help("Close the operand with a double quote; escape embedded quotes as \\\"."));
     }
     if let Some(start) = selector {
-        return Err(error(
-            "unterminated regex selector; expected '>'",
-            offset + start,
-            offset + line.len(),
-        ));
+        let end = recovery_operand_end(line, start);
+        let regex_start = (start + 1).min(end);
+        let regex_end = end
+            .saturating_sub(usize::from(line[..end].ends_with('>')))
+            .max(regex_start);
+        let message = if character_class {
+            "unterminated regex character class or selector"
+        } else {
+            "unterminated regex selector; expected '>'"
+        };
+        return Err(error(message, offset + regex_start, offset + regex_end)
+            .help("Close regex character classes with ']' and the selector with '>'; escape a literal greater-than sign as \\>."));
     }
     Ok(scan)
+}
+
+fn recovery_operand_end(line: &str, start: usize) -> usize {
+    let bytes = line.as_bytes();
+    for index in start + 1..bytes.len() {
+        if bytes[index - 1].is_ascii_whitespace() && operator_at(&bytes[index..]).is_some() {
+            return line[..index].trim_end().len();
+        }
+    }
+    line.trim_end().len()
 }
 
 fn operator_at(bytes: &[u8]) -> Option<Operator> {
@@ -196,17 +320,25 @@ fn parse_statement(
     code: &str,
     offset: usize,
     operators: &[(usize, Operator)],
-) -> Result<Statement, Diagnostic> {
+) -> Result<Statement, Report> {
     let [(position, operator)] = operators else {
         let message = if operators.is_empty() {
             "expected '=>', ':=' or '->'"
         } else {
             "expected one statement per line; quote operands containing operators"
         };
-        return Err(error(message, offset, offset + code.len()));
+        let span = if let Some((position, _)) = operators.get(1) {
+            Span {
+                start: offset + position,
+                end: offset + position + 2,
+            }
+        } else {
+            malformed_operator_span(code, offset)
+        };
+        return Err(Report::new(message, span).help("Use 'source -> destination' to copy, 'name => endpoint' to bind an endpoint, or 'name := path' to define a path alias."));
     };
-    let left = operand(&code[..*position], offset)?;
-    let right = operand(&code[position + 2..], offset + position + 2)?;
+    let (left, left_source) = operand(&code[..*position], offset)?;
+    let (right, right_source) = operand(&code[position + 2..], offset + position + 2)?;
     let kind = match operator {
         Operator::Endpoint => StatementKind::Endpoint {
             name: left,
@@ -228,15 +360,41 @@ fn parse_statement(
             start: offset + start,
             end: offset + code.trim_end().len(),
         },
+        operands: Some(Operands {
+            left: left_source,
+            operator: Span {
+                start: offset + position,
+                end: offset + position + 2,
+            },
+            right: right_source,
+        }),
     })
 }
 
-fn operand(raw: &str, offset: usize) -> Result<String, Diagnostic> {
+fn malformed_operator_span(code: &str, offset: usize) -> Span {
+    let mut cursor = 0;
+    for word in code.split_whitespace() {
+        let relative = code[cursor..].find(word).unwrap_or(0) + cursor;
+        if word.chars().all(|ch| "-:=<>".contains(ch)) {
+            return Span {
+                start: offset + relative,
+                end: offset + relative + word.len(),
+            };
+        }
+        cursor = relative + word.len();
+    }
+    Span {
+        start: offset + code.trim_end().len(),
+        end: offset + code.trim_end().len(),
+    }
+}
+
+fn operand(raw: &str, offset: usize) -> Result<(String, OperandSource), Report> {
     let value = raw.trim();
     let start = offset + raw.len() - raw.trim_start().len();
     let end = start + value.len();
     if value.is_empty() {
-        return Err(error("expected a non-empty operand", start, end));
+        return Err(error("expected a non-empty operand", start, end).help("Insert a path or binding name here; use '$pwd::relative/path' for a path in the current directory."));
     }
     if !value.starts_with('"') {
         if value.contains('"') {
@@ -246,9 +404,18 @@ fn operand(raw: &str, offset: usize) -> Result<String, Diagnostic> {
                 end,
             ));
         }
-        return Ok(value.to_owned());
+        let span = Span { start, end };
+        return Ok((
+            value.to_owned(),
+            OperandSource {
+                span,
+                content: span,
+                decoded_offsets: None,
+            },
+        ));
     }
     let mut decoded = String::with_capacity(value.len() - 2);
+    let mut decoded_offsets = Vec::with_capacity(value.len());
     let mut chars = value[1..].char_indices();
     while let Some((index, ch)) = chars.next() {
         if ch == '"' {
@@ -262,10 +429,23 @@ fn operand(raw: &str, offset: usize) -> Result<String, Diagnostic> {
             if decoded.is_empty() {
                 return Err(error("expected a non-empty operand", start, end));
             }
-            return Ok(decoded);
+            decoded_offsets.push(start + index + 1);
+            return Ok((
+                decoded,
+                OperandSource {
+                    span: Span { start, end },
+                    content: Span {
+                        start: start + 1,
+                        end: end - 1,
+                    },
+                    decoded_offsets: Some(decoded_offsets),
+                },
+            ));
         }
+        let before = decoded.len();
         if ch != '\\' {
             decoded.push(ch);
+            decoded_offsets.extend((0..ch.len_utf8()).map(|byte| start + index + 1 + byte));
             continue;
         }
         match chars.next().map(|(_, ch)| ch) {
@@ -280,21 +460,31 @@ fn operand(raw: &str, offset: usize) -> Result<String, Diagnostic> {
             }
             None => return Err(error("unterminated escape", start, end)),
         }
+        decoded_offsets.extend(std::iter::repeat_n(
+            start + index + 1,
+            decoded.len() - before,
+        ));
     }
     Err(error("unterminated quoted operand", start, end))
 }
 
-fn error(message: &str, start: usize, end: usize) -> Diagnostic {
-    Diagnostic {
-        message: message.to_owned(),
-        span: Span { start, end },
-    }
+fn error(message: &str, start: usize, end: usize) -> Report {
+    Report::new(message, Span { start, end })
 }
 
 /// Canonicalize spacing and quoting while retaining every comment and operand.
 pub fn format(source: &str) -> Result<String, Vec<Diagnostic>> {
+    format_rich(source).map_err(|reports| {
+        reports
+            .into_iter()
+            .map(|report| report.diagnostic)
+            .collect()
+    })
+}
+
+pub fn format_rich(source: &str) -> Result<String, Vec<Report>> {
     let mut trace = crate::telemetry::span("format");
-    let script = parse(source).inspect_err(|_| trace.error())?;
+    let script = parse_rich(source).inspect_err(|_| trace.error())?;
     let mut output = String::with_capacity(source.len());
     for statement in script.statements {
         match statement.kind {
@@ -353,6 +543,66 @@ fn write_operand(output: &mut String, value: &str) {
 
 /// Render a UTF-8-safe line/column diagnostic, including malformed external spans.
 pub fn render_diagnostic(source: &str, diagnostic: &Diagnostic) -> String {
+    render_primary(source, diagnostic, false)
+}
+
+/// Render structured labels and constructive help; callers own terminal policy.
+pub fn render_report(source: &str, report: &Report, color: bool) -> String {
+    let mut output = render_primary(source, &report.diagnostic, color);
+    for label in report
+        .labels
+        .iter()
+        .filter(|label| label.span == report.diagnostic.span)
+    {
+        output.push(' ');
+        output.push_str(&paint(&display_text(&label.message), "31", color));
+    }
+    for label in report
+        .labels
+        .iter()
+        .filter(|label| label.span != report.diagnostic.span)
+    {
+        let diagnostic = Diagnostic {
+            message: String::new(),
+            span: label.span,
+        };
+        let rendered = render_primary(source, &diagnostic, color);
+        output.push('\n');
+        if line_number_at(source, label.span.start)
+            == line_number_at(source, report.diagnostic.span.start)
+        {
+            output.push_str(rendered.lines().last().unwrap_or_default());
+        } else {
+            output.push_str(&rendered.lines().skip(1).collect::<Vec<_>>().join("\n"));
+        }
+        output.push(' ');
+        output.push_str(&display_text(&label.message));
+    }
+    for help in &report.help {
+        output.push_str("\n  = ");
+        output.push_str(&paint("help:", "1;36", color));
+        output.push(' ');
+        output.push_str(&display_text(help));
+    }
+    output
+}
+
+fn line_number_at(source: &str, position: usize) -> usize {
+    source.as_bytes()[..position.min(source.len())]
+        .iter()
+        .filter(|byte| **byte == b'\n')
+        .count()
+}
+
+fn paint(text: &str, style: &str, color: bool) -> String {
+    if color {
+        format!("\x1b[{style}m{text}\x1b[0m")
+    } else {
+        text.to_owned()
+    }
+}
+
+fn render_primary(source: &str, diagnostic: &Diagnostic, color: bool) -> String {
     let mut start = diagnostic.span.start.min(source.len());
     while !source.is_char_boundary(start) {
         start -= 1;
@@ -378,19 +628,34 @@ pub fn render_diagnostic(source: &str, diagnostic: &Diagnostic) -> String {
     let width = UnicodeWidthStr::width(highlighted.as_str())
         .saturating_sub(display_column)
         .max(1);
-    let line = display_text(line);
+    let mut line = display_text(line);
+    if color && end > start {
+        let before = prefix.len().min(line.len());
+        let after = highlighted.len().min(line.len());
+        line = format!(
+            "{}{}{}",
+            &line[..before],
+            paint(&line[before..after], "1;31", true),
+            &line[after..]
+        );
+    }
     let gutter = number.to_string().len();
     format!(
-        "error: {}\n --> {}:{}\n{:gutter$} |\n{} | {}\n{:gutter$} | {}{}",
+        "{} {}\n {} {}:{}\n{:gutter$} {}\n{} {} {}\n{:gutter$} {} {}{}",
+        paint("error:", "1;31", color),
         display_text(&diagnostic.message),
+        paint("-->", "1;34", color),
         number,
         column + 1,
         "",
+        paint("|", "1;34", color),
         number,
+        paint("|", "1;34", color),
         line,
         "",
+        paint("|", "1;34", color),
         " ".repeat(display_column),
-        "^".repeat(width)
+        paint(&"^".repeat(width), "1;31", color)
     )
 }
 

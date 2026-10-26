@@ -1,5 +1,6 @@
 //! Execution of compiled copy plans. Local trees are preflighted before mutation.
 use crate::compiler::{Backend, CopyOp, Location, Program};
+use crate::plan::FileClass;
 use crate::syntax::Span;
 use regex::Regex;
 use std::env;
@@ -37,55 +38,144 @@ impl std::error::Error for RuntimeError {}
 
 type Result<T> = std::result::Result<T, String>;
 
+pub(crate) fn execute_copy(op: &CopyOp) -> std::result::Result<ExecutionReport, RuntimeError> {
+    let mut trace = crate::telemetry::span("copy");
+    let mut report = ExecutionReport::default();
+    let result = execute_operation(op, &mut report).map_err(|message| RuntimeError {
+        message,
+        span: op.span,
+    });
+    trace.finish_result(&result);
+    trace.metric("files", report.copied_files as u64);
+    trace.metric("directories", report.created_directories as u64);
+    result.map(|()| report)
+}
+
+/// Classifies local metadata without opening a stream or contacting a remote endpoint.
+pub(crate) fn inspect_location(location: &Location, source: bool) -> Result<FileClass> {
+    if matches!(location.backend, Backend::Tcp { .. }) {
+        return Ok(FileClass::Stream);
+    }
+    if matches!(location.backend, Backend::Http { .. }) && source {
+        return Ok(FileClass::Regular);
+    }
+    let Some(path) = local_path(location, source)? else {
+        return Ok(FileClass::Unknown);
+    };
+    #[cfg(windows)]
+    if path
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase()
+        .starts_with(r"\\.\pipe\")
+    {
+        return Ok(FileClass::Stream);
+    }
+    check_ancestors(&path)?;
+    match metadata(&path)? {
+        None => Ok(FileClass::Missing),
+        Some(meta) if meta.is_file() => Ok(FileClass::Regular),
+        Some(meta) if meta.is_dir() => Ok(FileClass::Directory),
+        Some(meta) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::FileTypeExt;
+                if meta.file_type().is_fifo() || meta.file_type().is_socket() {
+                    return Ok(FileClass::Stream);
+                }
+            }
+            #[cfg(not(unix))]
+            let _ = meta;
+            Err(
+                "unsupported filesystem entry: expected a regular file, directory, pipe or socket"
+                    .into(),
+            )
+        }
+    }
+}
+
+/// Remote classification uses stat-like shell tests only; it never opens file data.
+pub(crate) fn inspect_location_live(location: &Location, source: bool) -> Result<FileClass> {
+    if !matches!(location.backend, Backend::Wsl | Backend::Ssh { .. }) {
+        return inspect_location(location, source);
+    }
+    let output = remote_command(&location.backend, REMOTE_INSPECT, &[&location.path])?;
+    match output.stdout.as_slice() {
+        b"missing\0" => Ok(FileClass::Missing),
+        b"regular\0" => Ok(FileClass::Regular),
+        b"directory\0" => Ok(FileClass::Directory),
+        b"stream\0" => Ok(FileClass::Stream),
+        _ => Err("remote metadata probe returned an invalid class".into()),
+    }
+}
+
+/// Synchronous compatibility entry point using the same typed plan and scheduler as the CLI.
+/// Async callers should use `scheduler::execute_plan_async` instead of nesting runtimes.
 pub fn execute(
     program: &Program,
     options: &ExecutionOptions,
 ) -> std::result::Result<ExecutionReport, RuntimeError> {
     let mut trace = crate::telemetry::span("execute");
-    let mut report = ExecutionReport::default();
     trace.metric("operations", program.operations.len() as u64);
-    for operation in &program.operations {
-        let mut copy_trace = crate::telemetry::span("copy");
-        let result =
-            execute_operation(operation, options, &mut report).map_err(|message| RuntimeError {
-                message,
-                span: operation.span,
+    let result = (|| {
+        if let Some(op) = program
+            .operations
+            .iter()
+            .find(|op| matches!(op.destination.backend, Backend::Http { .. } | Backend::Path))
+        {
+            return Err(RuntimeError {
+                message: "HTTP and PATH endpoints are read-only".into(),
+                span: op.span,
             });
-        copy_trace.finish_result(&result);
-        if let Err(error) = result {
-            trace.error();
-            trace.metric("files", report.copied_files as u64);
-            trace.metric("directories", report.created_directories as u64);
-            return Err(error);
         }
+        if !options.dry_run && tokio::runtime::Handle::try_current().is_ok() {
+            return Err(RuntimeError {
+                message: "synchronous execute cannot nest inside Tokio; use scheduler::execute_plan_async".into(),
+                span: program.operations.first().map(|op| op.span).unwrap_or(Span { start: 0, end: 0 }),
+            });
+        }
+        let plan = crate::scheduler::prepare(program, !options.dry_run)?;
+        trace.metric("planned_operations", plan.nodes.len() as u64);
+        if options.dry_run {
+            return Ok(ExecutionReport {
+                actions: plan
+                    .nodes
+                    .iter()
+                    .map(|node| describe_operation(&node.operation))
+                    .collect(),
+                ..ExecutionReport::default()
+            });
+        }
+        crate::scheduler::execute_plan(&plan, &crate::scheduler::ResourceLimits::default())
+            .map(|summary| summary.report)
+    })();
+    trace.finish_result(&result);
+    if let Ok(report) = &result {
+        trace.metric("files", report.copied_files as u64);
+        trace.metric("directories", report.created_directories as u64);
     }
-    trace.metric("files", report.copied_files as u64);
-    trace.metric("directories", report.created_directories as u64);
-    Ok(report)
+    result
 }
 
-fn execute_operation(
-    op: &CopyOp,
-    options: &ExecutionOptions,
-    report: &mut ExecutionReport,
-) -> Result<()> {
-    if matches!(op.destination.backend, Backend::Http { .. } | Backend::Path) {
-        return Err("HTTP and PATH endpoints are read-only".into());
-    }
+fn describe_operation(op: &CopyOp) -> String {
     let selection = op
         .pattern
         .as_ref()
         .map(|pattern| format!(" match {pattern:?}"))
         .unwrap_or_default();
-    report
-        .actions
-        .push(format!("{}{selection} -> {}", op.source, op.destination));
-    // Dry-run is deliberately offline: no network request or remote process is started.
-    if options.dry_run {
-        return Ok(());
+    format!("{}{selection} -> {}", op.source, op.destination)
+}
+
+fn execute_operation(op: &CopyOp, report: &mut ExecutionReport) -> Result<()> {
+    if matches!(op.destination.backend, Backend::Http { .. } | Backend::Path) {
+        return Err("HTTP and PATH endpoints are read-only".into());
     }
-    let source = local_location(&op.source, true)?;
-    let destination = local_location(&op.destination, false)?;
+    report.actions.push(describe_operation(op));
+    let source = local_path(&op.source, true)?;
+    let destination = local_path(&op.destination, false)?;
+    if let Some(destination) = &destination {
+        validate_destination(destination, op.destination.path.ends_with('/'))?;
+    }
     match (source, destination) {
         (Some(source), Some(destination)) => copy_selected(
             &source,
@@ -100,7 +190,7 @@ fn execute_operation(
     }
 }
 
-fn local_location(location: &Location, source: bool) -> Result<Option<PathBuf>> {
+pub(crate) fn local_path(location: &Location, source: bool) -> Result<Option<PathBuf>> {
     match &location.backend {
         Backend::Local => Ok(Some(expand_home(&location.path)?)),
         Backend::Env => {
@@ -156,6 +246,7 @@ fn copy_selected(
     pattern: Option<&str>,
     report: &mut ExecutionReport,
 ) -> Result<()> {
+    validate_destination(destination, container)?;
     check_ancestors(source)?;
     check_ancestors(destination)?;
     metadata(source)?.ok_or_else(|| format!("source does not exist: {}", source.display()))?;
@@ -193,6 +284,15 @@ fn copy_selected(
     }
     for (source, target) in plans {
         copy_tree(&source, &target, container, report)?;
+    }
+    Ok(())
+}
+
+fn validate_destination(destination: &Path, container: bool) -> Result<()> {
+    if !container && metadata(destination)?.is_some_and(|meta| meta.is_dir()) {
+        return Err(
+            "destination is an existing directory; append / to use it as a container".into(),
+        );
     }
     Ok(())
 }
@@ -242,7 +342,7 @@ fn absolute(path: &Path) -> Result<PathBuf> {
     Ok(normalized)
 }
 
-fn check_ancestors(path: &Path) -> Result<()> {
+pub(crate) fn check_ancestors(path: &Path) -> Result<()> {
     let raw = if path.is_absolute() {
         path.to_owned()
     } else {
@@ -353,9 +453,22 @@ fn ensure_directory(path: &Path, report: &mut ExecutionReport) -> Result<()> {
             if let Some(parent) = path.parent() {
                 ensure_directory(parent, report)?;
             }
-            fs::create_dir(path).map_err(|error| at(path, error))?;
-            report.created_directories += 1;
-            Ok(())
+            match fs::create_dir(path) {
+                Ok(()) => {
+                    report.created_directories += 1;
+                    Ok(())
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                    match metadata(path)? {
+                        Some(meta) if meta.is_dir() => Ok(()),
+                        _ => Err(format!(
+                            "directory creation raced with a non-directory: {}",
+                            path.display()
+                        )),
+                    }
+                }
+                Err(error) => Err(at(path, error)),
+            }
         }
     }
 }
@@ -456,7 +569,15 @@ fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-fn remote_command(backend: &Backend, script: &str, args: &[&str]) -> Result<Output> {
+pub(crate) fn remote_command(backend: &Backend, script: &str, args: &[&str]) -> Result<Output> {
+    run(&mut remote_command_builder(backend, script, args)?)
+}
+
+pub(crate) fn remote_command_builder(
+    backend: &Backend,
+    script: &str,
+    args: &[&str],
+) -> Result<Command> {
     let invocation = format!(
         "sh -c {} sh {}",
         quote(script),
@@ -466,7 +587,11 @@ fn remote_command(backend: &Backend, script: &str, args: &[&str]) -> Result<Outp
             .join(" ")
     );
     match backend {
-        Backend::Wsl => run(Command::new("wsl").args(["--exec", "sh", "-c", &invocation])),
+        Backend::Wsl => {
+            let mut command = Command::new("wsl");
+            command.args(["--exec", "sh", "-c", &invocation]);
+            Ok(command)
+        }
         Backend::Ssh { host, user, port } => {
             let mut command = ssh_client("ssh");
             if let Some(port) = port {
@@ -476,7 +601,7 @@ fn remote_command(backend: &Backend, script: &str, args: &[&str]) -> Result<Outp
                 .arg("--")
                 .arg(ssh_host(host, user.as_deref()))
                 .arg(invocation);
-            run(&mut command)
+            Ok(command)
         }
         _ => Err("not a remote filesystem endpoint".into()),
     }
@@ -583,53 +708,40 @@ fn wsl_path(local: Option<&Path>, remote: &str) -> Result<String> {
 }
 
 fn receive(location: &Location, scratch: &Scratch, pattern: Option<&str>) -> Result<PathBuf> {
-    let name = location
+    let listing = if matches!(location.backend, Backend::Ssh { .. }) {
+        let output = remote_command(&location.backend, REMOTE_VALIDATE, &[&location.path])?;
+        validate_remote_names(&output.stdout)?;
+        Some(output.stdout)
+    } else {
+        None
+    };
+    let fallback_name = location
         .path
         .trim_end_matches('/')
         .rsplit('/')
         .next()
         .filter(|name| !name.is_empty() && *name != "." && *name != "..")
         .unwrap_or("download");
+    let name = match &listing {
+        Some(listing) => std::str::from_utf8(
+            listing
+                .split(|byte| *byte == 0)
+                .nth(1)
+                .ok_or("remote root basename is missing")?,
+        )
+        .map_err(|_| "remote root basename is not UTF-8")?,
+        None => fallback_name,
+    };
     validate_staging_basename(name)?;
     let target = scratch.0.join(name);
     match &location.backend {
-        Backend::Http { base } => {
+        Backend::Http { .. } => {
             if pattern.is_some() {
                 return Err("HTTP sources cannot enumerate a regex selection".into());
             }
-            let base = url::Url::parse(base).map_err(|error| error.to_string())?;
-            let path = location
-                .path
-                .strip_prefix("~/")
-                .unwrap_or(&location.path)
-                .trim_start_matches('/');
-            let address = base.join(path).map_err(|error| error.to_string())?;
-            if !matches!(address.scheme(), "http" | "https") {
-                return Err("HTTP endpoint resolved to a non-HTTP URL".into());
-            }
-            if address.origin() != base.origin() {
-                return Err("HTTP source path cannot change its endpoint origin".into());
-            }
-            run(Command::new("curl")
-                .args([
-                    "--fail",
-                    "--globoff",
-                    "--location",
-                    "--silent",
-                    "--show-error",
-                    "--proto",
-                    "=http,https",
-                    "--proto-redir",
-                    "=http,https",
-                    "--output",
-                ])
-                .arg(&target)
-                .arg("--")
-                .arg(address.as_str()))?;
+            run(http_command_builder(location)?.arg("--output").arg(&target))?;
         }
         Backend::Ssh { .. } => {
-            let listing = remote_command(&location.backend, REMOTE_VALIDATE, &[&location.path])?;
-            validate_remote_names(&listing.stdout)?;
             scp(location, &target, false)?;
         }
         Backend::Wsl => {
@@ -647,6 +759,41 @@ fn receive(location: &Location, scratch: &Scratch, pattern: Option<&str>) -> Res
         _ => return Err("unsupported source endpoint".into()),
     }
     Ok(target)
+}
+
+pub(crate) fn http_command_builder(location: &Location) -> Result<Command> {
+    let Backend::Http { base } = &location.backend else {
+        return Err("HTTP command requires an HTTP endpoint".into());
+    };
+    let base = url::Url::parse(base).map_err(|error| error.to_string())?;
+    let path = location
+        .path
+        .strip_prefix("~/")
+        .unwrap_or(&location.path)
+        .trim_start_matches('/');
+    let address = base.join(path).map_err(|error| error.to_string())?;
+    if !matches!(address.scheme(), "http" | "https") {
+        return Err("HTTP endpoint resolved to a non-HTTP URL".into());
+    }
+    if address.origin() != base.origin() {
+        return Err("HTTP source path cannot change its endpoint origin".into());
+    }
+    let mut command = Command::new("curl");
+    command
+        .args([
+            "--fail",
+            "--globoff",
+            "--no-buffer",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--proto",
+            "=http,https",
+            "--proto-redir",
+            "=http,https",
+        ])
+        .arg(address.as_str());
+    Ok(command)
 }
 
 fn validate_staging_basename(name: &str) -> Result<()> {
@@ -874,6 +1021,24 @@ fn remote_copy(
     Ok(())
 }
 
+const REMOTE_INSPECT: &str = r#"
+set -eu
+p=$1
+case $p in '~') p=$HOME;; '~/'*) p=$HOME/${p#\~/};; esac
+case $p in /*) ;; *) p=$PWD/$p;; esac
+a=$p
+while [ "$a" != / ]; do
+    [ ! -L "$a" ] || { echo 'refusing symbolic link in metadata probe' >&2; exit 1; }
+    a=$(dirname -- "$a")
+done
+if [ -f "$p" ]; then printf 'regular\0'
+elif [ -d "$p" ]; then printf 'directory\0'
+elif [ -p "$p" ] || [ -S "$p" ]; then printf 'stream\0'
+elif [ ! -e "$p" ]; then printf 'missing\0'
+else echo 'unsupported remote filesystem entry' >&2; exit 1
+fi
+"#;
+
 const REMOTE_LIST: &str = r#"
 set -eu
 s=$1
@@ -918,6 +1083,7 @@ check_parents() {
 }
 check_parents "$s"; check_parents "$d"
 s=$(realpath -m -- "$s"); d=$(realpath -m -- "$d")
+[ "$mode" != 0 ] || [ ! -d "$d" ] || fail 'destination is an existing directory; append / to use it as a container'
 [ "$mode" = 0 ] || d=$d/$(basename -- "$s")
 check_parents "$d"
 [ "$s" != "$d" ] || fail 'source and destination are identical'
@@ -1044,5 +1210,123 @@ mod transport_tests {
             fs::read_to_string(source.join("identity.txt")).unwrap(),
             "unchanged"
         );
+    }
+
+    #[test]
+    fn metadata_classification_never_needs_file_data() {
+        use super::{FileClass, inspect_location};
+        use crate::compiler::{Backend, Location};
+        use std::{fs, path::Path};
+        let temporary = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&temporary).unwrap();
+        let directory = tempfile::tempdir_in(temporary).unwrap();
+        let file = directory.path().join("bytes");
+        fs::write(&file, "bytes").unwrap();
+        let local = |path: &Path| Location {
+            backend: Backend::Local,
+            path: path.to_str().unwrap().into(),
+        };
+        assert!(matches!(
+            inspect_location(&local(&file), true).unwrap(),
+            FileClass::Regular
+        ));
+        assert!(matches!(
+            inspect_location(&local(directory.path()), false).unwrap(),
+            FileClass::Directory
+        ));
+        assert!(matches!(
+            inspect_location(&local(&directory.path().join("missing")), true).unwrap(),
+            FileClass::Missing
+        ));
+        let tcp = Location {
+            backend: Backend::Tcp {
+                host: "127.0.0.1".into(),
+                port: 9,
+            },
+            path: String::new(),
+        };
+        assert!(matches!(
+            inspect_location(&tcp, true).unwrap(),
+            FileClass::Stream
+        ));
+        #[cfg(windows)]
+        for path in [r"\\.\pipe\not-listening", "//./pipe/not-listening"] {
+            let pipe = Location {
+                backend: Backend::Local,
+                path: path.into(),
+            };
+            assert!(matches!(
+                inspect_location(&pipe, true).unwrap(),
+                FileClass::Stream
+            ));
+        }
+    }
+
+    #[test]
+    fn independent_copies_can_race_to_create_a_shared_parent() {
+        use super::{ExecutionReport, ensure_directory};
+        use std::{
+            fs,
+            path::Path,
+            sync::{Arc, Barrier},
+            thread,
+        };
+        let temporary = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&temporary).unwrap();
+        let directory = tempfile::tempdir_in(temporary).unwrap();
+        let target = directory.path().join("shared/parent");
+        let barrier = Arc::new(Barrier::new(8));
+        let tasks: Vec<_> = (0..8)
+            .map(|_| {
+                let target = target.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    let mut report = ExecutionReport::default();
+                    ensure_directory(&target, &mut report).unwrap();
+                    report.created_directories
+                })
+            })
+            .collect();
+        assert_eq!(
+            tasks
+                .into_iter()
+                .map(|task| task.join().unwrap())
+                .sum::<usize>(),
+            2
+        );
+        assert!(target.is_dir());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "requires an installed WSL distribution; run explicitly with --ignored"]
+    fn live_remote_metadata_probe_never_changes_regular_resources() {
+        use super::{FileClass, inspect_location_live, wsl_path};
+        use crate::compiler::{Backend, Location};
+        use std::{fs, path::Path};
+        let temporary = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&temporary).unwrap();
+        let directory = tempfile::tempdir_in(temporary).unwrap();
+        let source = directory.path().join("source.bin");
+        fs::write(&source, "unchanged").unwrap();
+        let remote = |path: &Path| Location {
+            backend: Backend::Wsl,
+            path: wsl_path(Some(path), "").unwrap(),
+        };
+        assert!(matches!(
+            inspect_location_live(&remote(&source), true).unwrap(),
+            FileClass::Regular
+        ));
+        assert!(matches!(
+            inspect_location_live(&remote(directory.path()), false).unwrap(),
+            FileClass::Directory
+        ));
+        assert!(matches!(
+            inspect_location_live(&remote(&directory.path().join("missing")), true).unwrap(),
+            FileClass::Missing
+        ));
+        assert_eq!(fs::read_to_string(source).unwrap(), "unchanged");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 }

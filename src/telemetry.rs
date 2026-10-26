@@ -1,8 +1,9 @@
 //! Opt-in, local-only JSONL spans shared by the entire language pipeline.
 //!
 //! Span names and metric names should be fixed vocabulary, never user paths or
-//! source text. A guard belongs to the thread on which it was created. Existing
-//! guards retain their original sink if the process reconfigures tracing.
+//! source text. Thread-scoped guards cannot cross task boundaries; use explicit
+//! contexts and linked spans for asynchronous or concurrent work. All guards and
+//! context snapshots retain their sink if the process reconfigures tracing.
 
 use std::cell::RefCell;
 use std::collections::hash_map::RandomState;
@@ -11,21 +12,85 @@ use std::hash::BuildHasher;
 use std::io::{self, BufWriter, Write};
 use std::marker::PhantomData;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static SESSION: OnceLock<RwLock<Option<Arc<Session>>>> = OnceLock::new();
+static ACTIVE_CONTEXTS: AtomicUsize = AtomicUsize::new(0);
+static NEXT_ATTACHMENT: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
-    static STACK: RefCell<Vec<Context>> = const { RefCell::new(Vec::new()) };
+    static STACK: RefCell<Vec<Attachment>> = const { RefCell::new(Vec::new()) };
 }
 
-#[derive(Clone, Copy)]
-struct Context {
-    trace_id: u128,
+/// An owned execution-context snapshot safe to move between threads and tasks.
+/// It identifies a parent span and preserves its original telemetry session.
+#[derive(Clone)]
+pub struct TraceContext {
+    session: Arc<Session>,
     span_id: u64,
+}
+
+impl TraceContext {
+    /// Flushes this context's sink, even after global tracing is reconfigured.
+    pub fn flush(&self) -> Result<(), String> {
+        self.session.flush()
+    }
+}
+
+struct Attachment {
+    context: TraceContext,
+    token: u64,
+}
+
+struct AttachmentGuard {
+    token: u64,
+    thread_bound: PhantomData<Rc<()>>,
+}
+
+impl Drop for AttachmentGuard {
+    fn drop(&mut self) {
+        detach(self.token);
+    }
+}
+
+fn attach(context: TraceContext) -> u64 {
+    let token = NEXT_ATTACHMENT.fetch_add(1, Ordering::Relaxed);
+    STACK.with(|stack| stack.borrow_mut().push(Attachment { context, token }));
+    ACTIVE_CONTEXTS.fetch_add(1, Ordering::Relaxed);
+    token
+}
+
+fn detach(token: u64) {
+    STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        if let Some(index) = stack.iter().rposition(|entry| entry.token == token) {
+            stack.remove(index);
+            ACTIVE_CONTEXTS.fetch_sub(1, Ordering::Relaxed);
+        }
+    });
+}
+
+/// Captures the current synchronous scope's parent context without creating a span.
+/// A thread without an attached span returns `None`, not an unrelated global root.
+pub fn context() -> Option<TraceContext> {
+    if ACTIVE_CONTEXTS.load(Ordering::Relaxed) == 0 {
+        return None;
+    }
+    STACK.with(|stack| stack.borrow().last().map(|entry| entry.context.clone()))
+}
+
+/// Runs synchronous work under an explicitly supplied parent, restoring the
+/// previous thread context even if `f` unwinds. `None` leaves the context unchanged.
+/// Do not return a future from `f` and expect the attachment to cover its polling.
+pub fn with_context<T>(parent: Option<&TraceContext>, f: impl FnOnce() -> T) -> T {
+    let _attachment = parent.map(|parent| AttachmentGuard {
+        token: attach(parent.clone()),
+        thread_bound: PhantomData,
+    });
+    f()
 }
 
 struct Sink {
@@ -124,7 +189,8 @@ pub fn take_error() -> Option<String> {
     sink.failure.clone()
 }
 
-/// Flushes and disables future spans. Already-active guards remain valid.
+/// Flushes and disables unparented future spans. Retained contexts and their
+/// child spans remain valid, so already-running work keeps its original trace.
 pub fn disable() -> Result<(), String> {
     let Some(slot) = SESSION.get() else {
         return Ok(());
@@ -148,11 +214,60 @@ fn current_session() -> Option<Arc<Session>> {
 }
 
 /// Starts a child of the current thread's active span, when tracing is enabled.
-/// Disabled spans do not allocate or access a mutex/thread-local stack.
+/// Disabled spans do not allocate; without active contexts they avoid mutexes
+/// and the thread-local stack as well.
 pub fn span(name: &'static str) -> SpanGuard {
+    let session = context()
+        .map(|parent| parent.session)
+        .or_else(current_session);
     SpanGuard {
-        active: current_session().map(|session| ActiveSpan::new(session, name)),
+        active: session.map(|session| ActiveSpan::new(session, name)),
         thread_bound: PhantomData,
+    }
+}
+
+/// Starts an explicit child span without attaching it to thread-local state.
+///
+/// The guard is `Send + Sync` and can live across `.await`, move between tasks,
+/// or pass to a blocking worker. `None` disables this span even if a global
+/// session is enabled; callers must capture and pass their intended context.
+pub fn linked_span(name: &'static str, parent: Option<&TraceContext>) -> LinkedSpan {
+    LinkedSpan {
+        active: parent
+            .map(|parent| ActiveSpan::detached(parent.session.clone(), name, Some(parent.span_id))),
+    }
+}
+
+#[must_use = "the guard must remain alive for the duration of the operation"]
+pub struct LinkedSpan {
+    active: Option<ActiveSpan>,
+}
+
+impl LinkedSpan {
+    /// Captures this span as the explicit parent of its child work.
+    pub fn context(&self) -> Option<TraceContext> {
+        self.active.as_ref().map(|active| TraceContext {
+            session: active.session.clone(),
+            span_id: active.span_id,
+        })
+    }
+
+    pub fn error(&mut self) {
+        if let Some(active) = &mut self.active {
+            active.failed = true;
+        }
+    }
+
+    pub fn finish_result<T, E>(&mut self, result: &Result<T, E>) {
+        if result.is_err() {
+            self.error();
+        }
+    }
+
+    pub fn metric(&mut self, name: &'static str, value: u64) {
+        if let Some(active) = &mut self.active {
+            active.metric(name, value);
+        }
     }
 }
 
@@ -180,10 +295,7 @@ impl SpanGuard {
     /// Adds a numeric measurement such as operations, bytes, or file counts.
     pub fn metric(&mut self, name: &'static str, value: u64) {
         if let Some(active) = &mut self.active {
-            match active.metrics.iter_mut().find(|(key, _)| *key == name) {
-                Some((_, previous)) => *previous = value,
-                None => active.metrics.push((name, value)),
-            }
+            active.metric(name, value);
         }
     }
 }
@@ -197,24 +309,29 @@ struct ActiveSpan {
     start_unix_ns: u128,
     failed: bool,
     metrics: Vec<(&'static str, u64)>,
+    attachment: Option<u64>,
 }
 
 impl ActiveSpan {
     fn new(session: Arc<Session>, name: &'static str) -> Self {
-        let span_id = session.next_span.fetch_add(1, Ordering::Relaxed);
         let parent_span_id = STACK.with(|stack| {
-            let mut stack = stack.borrow_mut();
-            let parent = stack
+            stack
+                .borrow()
                 .iter()
                 .rev()
-                .find(|context| context.trace_id == session.trace_id)
-                .map(|context| context.span_id);
-            stack.push(Context {
-                trace_id: session.trace_id,
-                span_id,
-            });
-            parent
+                .find(|entry| entry.context.session.trace_id == session.trace_id)
+                .map(|entry| entry.context.span_id)
         });
+        let mut active = Self::detached(session, name, parent_span_id);
+        active.attachment = Some(attach(TraceContext {
+            session: active.session.clone(),
+            span_id: active.span_id,
+        }));
+        active
+    }
+
+    fn detached(session: Arc<Session>, name: &'static str, parent_span_id: Option<u64>) -> Self {
+        let span_id = session.next_span.fetch_add(1, Ordering::Relaxed);
         Self {
             session,
             span_id,
@@ -224,6 +341,14 @@ impl ActiveSpan {
             start_unix_ns: unix_ns(),
             failed: false,
             metrics: Vec::new(),
+            attachment: None,
+        }
+    }
+
+    fn metric(&mut self, name: &'static str, value: u64) {
+        match self.metrics.iter_mut().find(|(key, _)| *key == name) {
+            Some((_, previous)) => *previous = value,
+            None => self.metrics.push((name, value)),
         }
     }
 
@@ -268,14 +393,9 @@ impl ActiveSpan {
 
 impl Drop for ActiveSpan {
     fn drop(&mut self) {
-        STACK.with(|stack| {
-            let mut stack = stack.borrow_mut();
-            if let Some(index) = stack.iter().rposition(|context| {
-                context.trace_id == self.session.trace_id && context.span_id == self.span_id
-            }) {
-                stack.remove(index);
-            }
-        });
+        if let Some(token) = self.attachment {
+            detach(token);
+        }
         self.session.write(&self.record());
     }
 }
@@ -455,5 +575,85 @@ mod tests {
         assert!(memory.output().contains("\"status\":\"panic\""));
         let next = ActiveSpan::new(session, "next");
         assert!(next.parent_span_id.is_none());
+    }
+
+    #[test]
+    fn linked_spans_and_context_are_send_sync_and_leave_tls_untouched() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<TraceContext>();
+        assert_send_sync::<LinkedSpan>();
+
+        let memory = MemoryWriter::default();
+        let session = Arc::new(Session::new(Box::new(memory.clone())));
+        let root = ActiveSpan::new(session, "run");
+        let parent = context().unwrap();
+        let linked = linked_span("task", Some(&parent));
+        assert_eq!(context().unwrap().span_id, root.span_id);
+        let child = linked.context().unwrap();
+        std::thread::spawn(move || {
+            assert!(context().is_none());
+            with_context(Some(&child), || {
+                let copy = span("copy");
+                assert_eq!(
+                    copy.active.as_ref().unwrap().parent_span_id,
+                    Some(child.span_id)
+                );
+            });
+            assert!(context().is_none());
+            drop(linked);
+        })
+        .join()
+        .unwrap();
+        assert_eq!(context().unwrap().span_id, root.span_id);
+        drop(root);
+        assert!(context().is_none());
+        assert_eq!(memory.output().lines().count(), 3);
+    }
+
+    #[test]
+    fn context_attachment_restores_outer_scope_after_panic() {
+        let memory = MemoryWriter::default();
+        let session = Arc::new(Session::new(Box::new(memory)));
+        let root = ActiveSpan::new(session, "run");
+        let root_context = context().unwrap();
+        let linked = linked_span("task", Some(&root_context));
+        let task_context = linked.context().unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_context(Some(&task_context), || {
+                assert_eq!(context().unwrap().span_id, task_context.span_id);
+                let _copy = span("copy");
+                panic!("attachment must unwind");
+            });
+        }));
+        assert!(result.is_err());
+        assert_eq!(context().unwrap().span_id, root.span_id);
+        drop(linked);
+        drop(root);
+        assert!(context().is_none());
+    }
+
+    #[test]
+    fn repeated_attachment_of_same_context_is_removed_by_scope_not_span_id() {
+        let memory = MemoryWriter::default();
+        let session = Arc::new(Session::new(Box::new(memory)));
+        let root = ActiveSpan::new(session, "run");
+        let root_context = context().unwrap();
+        with_context(Some(&root_context), || {
+            // Dropping the original scope must not remove the explicit attachment.
+            drop(root);
+            assert_eq!(context().unwrap().span_id, root_context.span_id);
+        });
+        assert!(context().is_none());
+    }
+
+    #[test]
+    fn explicit_missing_parent_does_not_make_an_unrelated_root() {
+        let memory = MemoryWriter::default();
+        let session = Arc::new(Session::new(Box::new(memory.clone())));
+        let _root = ActiveSpan::new(session, "run");
+        let disabled = linked_span("task", None);
+        assert!(disabled.context().is_none());
+        drop(disabled);
+        assert!(memory.output().is_empty());
     }
 }

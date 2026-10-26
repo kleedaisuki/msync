@@ -2,18 +2,18 @@
 
 ## Local execution
 
-A compiled operation resolves local, `$env` and `$path` endpoints into native paths, enumerates terminal regex selectors (anchored full basename match), and preflights every selected tree before creating anything. A trailing slash on the destination means append the source basename and refuse existing destination files, including files nested inside a merging directory. Without the slash, files overwrite and directories merge at the specified path. No implicit directory-name insertion is performed in overwrite mode.
+A compiled operation resolves local, `$env` and `$path` endpoints into native paths, enumerates terminal regex selectors (anchored full basename match), and preflights every selected tree before creating anything. A trailing slash on the destination means append the source basename and refuse existing destination files, including files nested inside a merging directory. Without the slash, an existing regular file may be overwritten and a new tree may be created at a missing target, but an existing directory is an error: append `/` to explicitly select container semantics. No implicit directory-name insertion is performed in overwrite mode.
 
-The runtime rejects source/destination symbolic links, Windows reparse points, unsupported special files, same-file copies (including hard links), and recursive copies into the source tree. Parent components are inspected too. `same-file` provides portable file identity; comparing path strings alone is insufficient. For no-clobber creation, `OpenOptions::create_new` enforces exclusivity atomically. Preflight prevents predictable conflicts from causing partial tree mutation. Operational failures such as disk-full can still leave partially copied trees; execution is sequential, not a filesystem transaction. Hostile concurrent mutation of parent directories is outside this version's safety boundary: path-based portable Rust APIs cannot close all TOCTOU races.
+The regular-copy executor rejects source/destination symbolic links, Windows reparse points, non-regular data entries routed to that executor, same-file copies (including hard links), and recursive copies into the source tree. Parent components are inspected too. `same-file` provides portable file identity; comparing path strings alone is insufficient. For no-clobber creation, `OpenOptions::create_new` enforces exclusivity atomically. Preflight prevents predictable conflicts from causing partial tree mutation. Operational failures such as disk-full can still leave partially copied trees; a single copy is not a filesystem transaction. The planner/scheduler owns whole-script validation, resource dependencies, and concurrent execution. Hostile concurrent mutation of parent directories is outside this version's safety boundary: path-based portable Rust APIs cannot close all TOCTOU races.
 
 Overwrite copies use `std::fs::copy`, allowing native platform acceleration and permission copying. No-clobber copies use explicitly opened handles and `io::copy`, preserving the atomic create contract. There is no custom chunked-copy buffer or speculative thread pool.
 
 ## Transports
 
 - HTTP(S) sources use the installed `curl` client (`--fail`, restricted protocols and redirects), download into project-local `.temp`, then pass through normal local copy checks. HTTP cannot enumerate selectors or be a destination. Leading `~/` is a logical endpoint-root prefix for HTTP, not a remote home directory.
-- WSL uses `wsl -- sh` and `wslpath` to map local paths. Remote filesystem operations run a guarded POSIX shell copy helper.
+- WSL uses `wsl --exec sh` and `wslpath` to map local paths. Remote filesystem operations run a guarded POSIX shell copy helper.
 - SSH uses the installed `ssh` and `scp` clients and the user's established authentication/configuration. Arguments sent through a remote shell are single-quoted and embedded quotes escaped. SCP assumes modern OpenSSH's default SFTP transport; no legacy `scp -O` shell mode. Different endpoints stage through local `.temp`; uploads stage remotely through `mktemp -d` and clean the staging directory afterward. Authentication prompts are owned by the clients.
-- Remote hosts require POSIX `sh` and GNU-compatible `find`, `realpath`, `cp`, `chmod`, `mktemp`. Remote symlinks and special files are rejected. SSH transfers do not promise preservation of every filesystem metadata attribute, ACL or alternate stream.
+- Remote hosts require POSIX `sh` and GNU-compatible `find`, `realpath`, `cp`, `chmod`, `mktemp`. Remote symlinks are rejected; FIFO/socket metadata is classified as a byte stream for dispatch to the separate stream executor rather than sent through recursive SCP. SSH transfers do not promise preservation of every filesystem metadata attribute, ACL or alternate stream.
 - Dry-run is fully offline and performs no writes, network requests, or remote process launches. It describes compiled operations, not the existence/content of remote resources.
 
 Local scratch directories are generated with exclusive directory creation and cleaned with RAII. They stay under the current project's `.temp`; remote staging necessarily lives on the target host. Secrets, paths and source text are not emitted in telemetry; execute and copy spans report structural status/duration only.
@@ -150,3 +150,51 @@ SSH configuration. Primary references:
 [namespace lifecycle and mount propagation](https://man7.org/linux/man-pages/man1/unshare.1.html).
 As with the original path-based runtime, hostile concurrent changes to remote
 source trees between preflight and transfer are not a transactional guarantee.
+
+
+## Plan-to-execution integration (2026-10-26)
+
+The shared `crate::plan::FileClass` owns `Missing`, `Regular`, `Directory`, `Stream` and `Unknown`. Runtime hooks are intentionally small:
+
+- `inspect_location(location, source)` reads only local metadata and resolves native PATH/ENV/home policy; remote filesystems remain `Unknown` offline. HTTP sources classify as regular download resources; TCP addresses classify as streams. Windows named-pipe namespaces are recognized before metadata access.
+- `inspect_location_live` additionally contacts WSL/SSH with a fixed NUL-terminated metadata response. Shell `test` operations classify regular files, directories, FIFO/socket streams and missing entries without opening any stream. Missing sources are returned as `Missing`, not immediately rejected: a prior operation may produce them.
+- `local_path` is the shared native-path policy used by snapshot planning and the byte-stream executor; `remote_command_builder` exposes the shared correctly quoted SSH/WSL command construction without forcing buffered output collection.
+- `execute_copy` performs exactly one regular-file/tree operation and returns its counters/actions with a copy telemetry span. Stream dispatch and async lifetime/cancellation belong to the stream executor, not recursive copy.
+
+The explicit destination rule is enforced in both native and remote helpers: a non-container destination that already exists as a directory is rejected regardless of source type. A terminal slash appends the source basename, recursively merges directories, and still fails on occupied regular-file leaves. Tests now assert rejection of both regular-file and directory sources targeting an existing unsuffixed directory, and successful trailing-slash merging. The authenticated isolated SSH journey has been updated accordingly instead of preserving the superseded in-place directory-merge behavior.
+
+Concurrent disjoint copies may create the same missing parent. `ensure_directory` handles `AlreadyExists` by re-reading metadata and accepting only a genuine non-symlink directory; creation counters increment only for successful creators. An eight-thread property-style race test asserts all writers succeed and the aggregate count equals the actual two new directories.
+
+### Integration verification after the destination-rule redesign
+
+2026-10-26:
+
+- `cargo test --test runtime --test review -- --test-threads=1`: runtime 11 passed / 1 explicit WSL ignored, independent review 2 passed.
+- `cargo test --lib runtime::transport_tests -- --test-threads=1`: 6 passed / 1 explicit WSL metadata probe ignored. Coverage includes native file/missing/directory/TCP classification and nonexistent Windows named pipes (both slash spellings) without opening streams, safe namespace-alias overlap, literal staging/SFTP paths, remote recursive-name validation and eight-thread shared-parent creation.
+- `cargo test --lib live_remote_metadata_probe -- --ignored --test-threads=1`: passed against installed WSL. Regular/Directory/Missing classifications leave source contents and fixture entry count unchanged.
+- `cargo test --test ssh -- --ignored --test-threads=1`: all four authenticated, isolated OpenSSH/WSL journeys passed in 56 seconds, including the new unsuffixed-existing-directory rejection and successful explicit container merge. These fixtures also verify no lingering staging directories/listeners and byte-identical existing SSH configuration snapshots. This supersedes the earlier historical note that live SSH had not yet been verified.
+
+
+### Public compatibility execution uses the unified pipeline
+
+The existing `runtime::execute(program, options)` signature now delegates to `scheduler::prepare` and `scheduler::execute_plan` with default resource limits, rather than retaining an alternate sequential semantics. Dry-run preparation is offline and returns actions from the retained optimized nodes without running them. Manually constructed programs still reject read-only HTTP/PATH destinations before planning. Ordinary copy hooks remain independent, so the scheduler calls `execute_copy` without recursing into compatibility execution.
+
+The synchronous entry point explicitly rejects invocation inside an active Tokio runtime with a diagnostic recommending `scheduler::execute_plan_async`; it does not panic by trying to nest a runtime. Async embedders should prepare the plan outside latency-sensitive tasks (live remote metadata inspection is synchronous), then await the async execution API with explicit resource limits and cancellation.
+
+Metadata classification is deliberately limited to the requested resource families: regular files, directories, FIFO/named pipes and sockets. Native block/character devices and other special entries are not silently treated as byte streams. The remote metadata helper follows the same rule.
+
+Three actual-user-path regressions cover the compatibility wrapper: a later invalid directory target prevents an earlier file write, a regular binary file reaches a real TCP listener byte-for-byte through the scheduler, and calling the synchronous API in Tokio produces an actionable error rather than a panic. The runtime integration suite now passes 14 tests with one explicit WSL journey ignored by default; independent review remains 2/2 and library Clippy is warning-free.
+
+The unified compatibility wrapper was also revalidated against the real WSL round trip (13 seconds) and all four authenticated isolated SSH journeys (52 seconds). The low-level copy executor no longer contains its former dry-run branch: dry-run is exclusively a plan-preparation/rendering operation, eliminating a second execution-policy path.
+
+### Authenticated remote byte streams and shared HTTP transport
+
+The optional Python SSH fixture extends the existing private mount/PID namespace rather than changing any distribution account, installed package or SSH configuration. Only its stream test copies the installed Python interpreter, standard library and linked libraries into a 256MiB project-local tmpfs chroot; the four ordinary SSH tests retain the smaller non-Python fixture. `mkfifo` and private `/proc` enable actual FIFO endpoints and post-cancellation process auditing. All authored Python fixture functions carry complete type annotations; copied third-party stdlib is unchanged.
+
+`ssh_fifo_socket_and_cancellation_use_real_remote_helpers` passes real Windows OpenSSH to isolated WSL SSH server journeys for 256KiB of nontrivial binary data in both directions through FIFOs and Unix sockets. Socket readiness checks use metadata (`test -S`), not probe connections that would consume the only accepted stream. Each transfer closes at EOF and is compared byte-for-byte. A child test process receives its SSH config only through its own environment, cancels an idle FIFO with the public async scheduler token, and the namespace's `/proc` audit confirms no Python relay survives. Fixture shutdown retains the existing listener, staging and original-configuration fingerprint checks. The test passed in 22 seconds before the full SSH suite rerun.
+
+Remote directory downloads now derive their staging basename from the validated root metadata listing, not raw spellings such as `~/` or `.`. The same fixture verifies both spellings copy the jail's small `/root` tree into a local container named `root` before any special entries are created.
+
+HTTP download and HTTP-to-stream paths share `http_command_builder`: URL resolution, same-origin validation, HTTP(S)-only initial/redirect protocols, literal curl glob handling and no-buffer output are one policy. Its default stdout is suitable for bounded async forwarding, while ordinary downloads append `--output` using the same builder. No `--` delimiter traps later options; the validated URL always starts with HTTP(S), not an option prefix.
+
+Final verification: all five authenticated SSH tests passed together in 82 seconds. The cancellation regression was then strengthened to observe an actually running remote Python FIFO relay through private `/proc` before triggering cancellation (rather than relying on a fixed delay); it passed again in 20 seconds and still verifies zero surviving helpers afterward. `cargo clippy --all-targets -- -D warnings` is clean after integration.

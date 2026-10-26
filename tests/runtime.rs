@@ -138,7 +138,7 @@ fn dry_run_is_offline_and_has_no_side_effects() {
 }
 
 #[test]
-fn directory_to_non_slash_target_merges_in_place() {
+fn existing_directory_requires_container_syntax_and_merges_by_source_name() {
     let dir = temporary_directory();
     let source = dir.path().join("in");
     let target = dir.path().join("out");
@@ -146,14 +146,23 @@ fn directory_to_non_slash_target_merges_in_place() {
     fs::create_dir(&target).unwrap();
     fs::write(source.join("new"), "new").unwrap();
     fs::write(target.join("old"), "old").unwrap();
-    execute(
+    let result = execute(
         &program(&source, &target, false, None),
+        &ExecutionOptions::default(),
+    );
+    assert!(result.unwrap_err().message.contains("append"));
+    assert!(!target.join("new").exists());
+    assert!(target.join("old").exists());
+    assert!(!target.join("in").exists());
+    fs::create_dir(target.join("in")).unwrap();
+    fs::write(target.join("in/kept"), "kept").unwrap();
+    execute(
+        &program(&source, &target, true, None),
         &ExecutionOptions::default(),
     )
     .unwrap();
-    assert!(target.join("new").exists());
-    assert!(target.join("old").exists());
-    assert!(!target.join("in").exists());
+    assert_eq!(fs::read_to_string(target.join("in/new")).unwrap(), "new");
+    assert_eq!(fs::read_to_string(target.join("in/kept")).unwrap(), "kept");
 }
 
 #[cfg(unix)]
@@ -329,4 +338,67 @@ fn http_paths_with_glob_characters_are_one_literal_download() {
     server.join().unwrap();
     assert_eq!(report.copied_files, 1);
     assert_eq!(fs::read_to_string(target).unwrap(), "literal");
+}
+
+#[test]
+fn existing_directory_rejects_regular_source_without_trailing_slash() {
+    let dir = temporary_directory();
+    let source = dir.path().join("source");
+    let target = dir.path().join("target");
+    fs::write(&source, "bytes").unwrap();
+    fs::create_dir(&target).unwrap();
+    let result = execute(
+        &program(&source, &target, false, None),
+        &ExecutionOptions::default(),
+    );
+    assert!(result.unwrap_err().message.contains("append"));
+    assert_eq!(fs::read_dir(target).unwrap().count(), 0);
+}
+
+#[test]
+fn compatibility_execute_validates_the_entire_plan_before_writes() {
+    let dir = temporary_directory();
+    let source = dir.path().join("source");
+    let first_target = dir.path().join("first-target");
+    let invalid_target = dir.path().join("existing-directory");
+    fs::write(&source, "bytes").unwrap();
+    fs::create_dir(&invalid_target).unwrap();
+    let mut plan = program(&source, &first_target, false, None);
+    plan.operations
+        .extend(program(&source, &invalid_target, false, None).operations);
+    assert!(execute(&plan, &ExecutionOptions::default()).is_err());
+    assert!(!first_target.exists());
+}
+
+#[test]
+fn compatibility_execute_dispatches_a_file_to_a_real_tcp_socket() {
+    use std::{io::Read, net::TcpListener, thread};
+    let dir = temporary_directory();
+    let source = dir.path().join("source.bin");
+    fs::write(&source, b"stream\0bytes").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let mut plan = program(&source, &dir.path().join("unused"), false, None);
+    plan.operations[0].destination = Location {
+        backend: Backend::Tcp {
+            host: "127.0.0.1".into(),
+            port: address.port(),
+        },
+        path: String::new(),
+    };
+    let report = execute(&plan, &ExecutionOptions::default()).unwrap();
+    assert_eq!(report.actions.len(), 1);
+    assert_eq!(server.join().unwrap(), b"stream\0bytes");
+}
+
+#[tokio::test]
+async fn synchronous_compatibility_execute_reports_nested_runtime_instead_of_panicking() {
+    let result = execute(&Program::default(), &ExecutionOptions::default());
+    assert!(result.unwrap_err().message.contains("execute_plan_async"));
 }

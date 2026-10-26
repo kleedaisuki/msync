@@ -1,6 +1,6 @@
 [package]
 name = "msync"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "A compiled file synchronization DSL with an interactive shell"
 license = "GPL-3.0-only"
@@ -11,6 +11,14 @@ url = "2.5"
 same-file = "1.0"
 unicode-width = "0.2"
 anstream = "1.0"
+tokio = { version = "1.54", features = ["fs", "io-util", "net", "time", "sync", "rt-multi-thread", "macros", "signal", "process"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Wdk_Storage_FileSystem"] }
 
 [dev-dependencies]
 tempfile = "3.23"

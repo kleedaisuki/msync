@@ -96,9 +96,9 @@ fn malformed_lines_collect_diagnostics_with_original_offsets() {
     let source = "猫 -> dest\r\nmissing\nsource ->\n\"unterminated\n";
     let errors = parse(source).unwrap_err();
     assert_eq!(errors.len(), 3);
-    assert_eq!(errors[0].span.start, "猫 -> dest\r\n".len());
+    assert_eq!(errors[0].span.start, "猫 -> dest\r\nmissing".len());
     let message = render_diagnostic(source, &errors[0]);
-    assert!(message.contains(" --> 2:1"), "{message}");
+    assert!(message.contains(" --> 2:8"), "{message}");
     assert!(message.contains("missing"));
 }
 
@@ -164,6 +164,40 @@ fn diagnostics_escape_terminal_control_sequences() {
 fn empty_input_stays_empty() {
     assert!(parse("").unwrap().statements.is_empty());
     assert_eq!(format(" \n\r\n").unwrap(), "");
+}
+
+#[test]
+fn malformed_operators_and_missing_operands_have_exact_spans() {
+    let source = "source - > destination\n";
+    let report = &msync::syntax::parse_rich(source).unwrap_err()[0];
+    assert_eq!(
+        &source[report.diagnostic.span.start..report.diagnostic.span.end],
+        "-"
+    );
+    assert!(!report.help.is_empty());
+    let source = "source ->   \n";
+    let report = &msync::syntax::parse_rich(source).unwrap_err()[0];
+    assert_eq!(report.diagnostic.span.start, source.len() - 1);
+    assert_eq!(report.diagnostic.span.start, report.diagnostic.span.end);
+    let source = "files/<[> -> $pwd::out/\n";
+    let report = &msync::syntax::parse_rich(source).unwrap_err()[0];
+    assert_eq!(
+        &source[report.diagnostic.span.start..report.diagnostic.span.end],
+        "["
+    );
+}
+
+#[test]
+fn rich_renderer_has_labels_help_and_color_only_when_requested() {
+    let source = "\"open -> target";
+    let report = &msync::syntax::parse_rich(source).unwrap_err()[0];
+    let plain = msync::syntax::render_report(source, report, false);
+    assert!(plain.contains("insert closing quote here"));
+    assert!(plain.contains("help:"));
+    assert!(!plain.contains('\u{1b}'));
+    let colored = msync::syntax::render_report(source, report, true);
+    assert!(colored.contains("\u{1b}[1;31m"));
+    assert!(colored.contains("\u{1b}[1;34m"));
 }
 
 proptest! {

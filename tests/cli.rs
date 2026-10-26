@@ -68,16 +68,19 @@ fn assert_success(output: &Output) {
 }
 
 #[test]
-fn stdin_pipeline_checks_and_compiles_without_touching_files() {
+fn stdin_pipeline_checks_and_plans_without_copying_files() {
     let directory = workspace();
+    fs::create_dir(directory.path().join("configs")).unwrap();
+    fs::write(directory.path().join("configs/a.toml"), "configuration").unwrap();
     let script = "home := configs\nhome/a.toml -> output/a.toml\n";
     let checked = invoke(directory.path(), &["check", "-"], script);
     assert_success(&checked);
     assert_eq!(stdout(&checked), "ok\n");
     let compiled = invoke(directory.path(), &["compile", "-"], script);
     assert_success(&compiled);
-    assert!(stdout(&compiled).contains("configs/a.toml"));
-    assert!(stdout(&compiled).contains("output/a.toml"));
+    let plan = stdout(&compiled).replace("\\\\", "/");
+    assert!(plan.contains("configs/a.toml"), "{plan}");
+    assert!(plan.contains("output/a.toml"), "{plan}");
     assert!(!directory.path().join("output").exists());
 }
 
@@ -161,12 +164,12 @@ fn dry_run_is_offline_and_never_copies() {
 }
 
 #[test]
-fn formatter_print_check_and_write_are_idempotent_and_keep_comments() {
+fn formatter_defaults_to_in_place_and_stdout_check_remain_read_only() {
     let directory = workspace();
     let file = directory.path().join("sample.msync");
     let original = "# preserved\nsource->destination # inline\n";
     fs::write(&file, original).unwrap();
-    let printed = invoke(directory.path(), &["fmt", "sample.msync"], "");
+    let printed = invoke(directory.path(), &["fmt", "sample.msync", "--stdout"], "");
     assert_success(&printed);
     assert!(stdout(&printed).contains("source -> destination"));
     assert!(stdout(&printed).contains("# preserved"));
@@ -177,11 +180,12 @@ fn formatter_print_check_and_write_are_idempotent_and_keep_comments() {
             .status
             .success()
     );
-    assert_success(&invoke(
-        directory.path(),
-        &["fmt", "sample.msync", "--write"],
-        "",
-    ));
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        original,
+        "--check must never rewrite"
+    );
+    assert_success(&invoke(directory.path(), &["fmt", "sample.msync"], ""));
     let written = fs::read_to_string(&file).unwrap();
     assert_eq!(written, stdout(&printed));
     assert_success(&invoke(
@@ -212,7 +216,12 @@ fn repl_slash_commands_keep_bindings_recover_from_errors_and_load_files() {
         "transient => $wsl\nbase/source.txt -> checked.txt\n",
     )
     .unwrap();
-    let session = "/help\n/?\n/cd work\n/pwd\nbase := .\n/bindings\n/check check.msync\n/plan load.msync\n/fmt load.msync\nunknown::source -> ignored\n/load load.msync\n/dry-run on\nbase/source.txt -> preview.txt\n/dry-run\n/bindings\n/reset\n/bindings\n/quit\n";
+    fs::write(
+        directory.path().join("work/dirty.msync"),
+        "source.txt->formatted.txt\n",
+    )
+    .unwrap();
+    let session = "/help\n/?\n/cd work\n/pwd\nbase := .\n/bindings\n/check check.msync\n/plan load.msync\n/fmt dirty.msync\nunknown::source -> ignored\n/load load.msync\n/dry-run on\nbase/source.txt -> preview.txt\n/dry-run\n/bindings\n/reset\n/bindings\n/quit\n";
     let result = invoke(directory.path(), &["repl"], session);
     assert_success(&result);
     let out = stdout(&result);
@@ -232,6 +241,208 @@ fn repl_slash_commands_keep_bindings_recover_from_errors_and_load_files() {
     );
     assert!(!directory.path().join("work/checked.txt").exists());
     assert!(!directory.path().join("work/preview.txt").exists());
+    assert_eq!(
+        fs::read_to_string(directory.path().join("work/dirty.msync")).unwrap(),
+        "source.txt -> formatted.txt\n"
+    );
+    assert!(
+        !directory.path().join("work/formatted.txt").exists(),
+        "/fmt formats but does not execute"
+    );
+}
+
+#[test]
+fn help_and_repl_help_highlight_real_ansi_and_stay_plain_when_piped() {
+    let directory = workspace();
+    for (arguments, input) in [
+        (vec!["--help", "--color", "always"], ""),
+        (vec!["repl", "--color", "always"], "/help\n/?\n/quit\n"),
+    ] {
+        let colored = invoke(directory.path(), &arguments, input);
+        assert_success(&colored);
+        let output = stdout(&colored);
+        assert!(
+            output.contains("\u{1b}["),
+            "help needs actual ANSI highlights, not just colored errors: {output}"
+        );
+        assert!(
+            !output.contains("\\x1b["),
+            "ANSI escapes must not be printed literally"
+        );
+    }
+    let plain = invoke(directory.path(), &["--help"], "");
+    assert_success(&plain);
+    assert!(!stdout(&plain).contains('\u{1b}'));
+    for option in [
+        "--jobs",
+        "--max-streams",
+        "--buffer-size",
+        "--memory-limit",
+        "--stdout",
+    ] {
+        assert!(
+            stdout(&plain).contains(option),
+            "missing documented option {option}"
+        );
+    }
+    let no_color = invoke_command(
+        command(directory.path())
+            .args(["--help"])
+            .env("NO_COLOR", "1"),
+        "",
+    );
+    assert_success(&no_color);
+    assert!(!stdout(&no_color).contains('\u{1b}'));
+    let disabled = invoke(directory.path(), &["--help", "--color", "never"], "");
+    assert_success(&disabled);
+    assert!(!stdout(&disabled).contains('\u{1b}'));
+}
+
+#[test]
+fn pwd_endpoint_and_prefix_resolve_against_repl_current_directory() {
+    let directory = workspace();
+    fs::create_dir(directory.path().join("work")).unwrap();
+    fs::write(directory.path().join("work/source.txt"), "cwd-owned").unwrap();
+    let output = invoke(
+        directory.path(),
+        &["repl"],
+        "/cd work\n$pwd::source.txt -> $pwd/first.txt\n$pwd/source.txt -> $pwd::second.txt\n/quit\n",
+    );
+    assert_success(&output);
+    assert!(stderr(&output).is_empty(), "{}", stderr(&output));
+    for name in ["first.txt", "second.txt"] {
+        assert_eq!(
+            fs::read_to_string(directory.path().join("work").join(name)).unwrap(),
+            "cwd-owned"
+        );
+    }
+}
+
+#[test]
+fn directory_target_without_trailing_slash_is_rejected_without_mutation() {
+    let directory = workspace();
+    fs::create_dir(directory.path().join("source")).unwrap();
+    fs::create_dir(directory.path().join("destination")).unwrap();
+    fs::write(directory.path().join("source/new.txt"), "new").unwrap();
+    fs::write(directory.path().join("destination/existing.txt"), "old").unwrap();
+    let output = invoke(directory.path(), &["run", "-"], "source -> destination\n");
+    assert!(!output.status.success());
+    let diagnostic = stderr(&output);
+    assert!(diagnostic.contains("directory"));
+    assert!(
+        diagnostic.contains("1:11"),
+        "the destination type error belongs on its operand: {diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("append") && diagnostic.contains('/'),
+        "show the actionable container-mode fix: {diagnostic}"
+    );
+    assert!(!directory.path().join("destination/new.txt").exists());
+    assert_eq!(
+        fs::read_to_string(directory.path().join("destination/existing.txt")).unwrap(),
+        "old"
+    );
+}
+
+#[test]
+fn live_plan_eliminates_dead_file_write_before_bounded_execution() {
+    let directory = workspace();
+    fs::write(directory.path().join("first.txt"), "first source").unwrap();
+    fs::write(directory.path().join("last.txt"), "last source").unwrap();
+    fs::write(directory.path().join("target.txt"), "original target").unwrap();
+    let script = "first.txt -> target.txt\nlast.txt -> target.txt\n";
+    let planned = invoke(directory.path(), &["plan", "-"], script);
+    assert_success(&planned);
+    assert!(
+        stdout(&planned).contains("plan: 1 operation(s), 1 eliminated"),
+        "{}",
+        stdout(&planned)
+    );
+    assert!(stdout(&planned).contains("overwritten by #1"));
+    assert_eq!(
+        fs::read_to_string(directory.path().join("target.txt")).unwrap(),
+        "original target",
+        "planning may inspect metadata but must not copy"
+    );
+    let executed = invoke(
+        directory.path(),
+        &[
+            "run",
+            "-",
+            "--jobs",
+            "2",
+            "--max-streams",
+            "3",
+            "--buffer-size",
+            "1024",
+            "--memory-limit",
+            "2048",
+        ],
+        script,
+    );
+    assert_success(&executed);
+    assert_eq!(
+        fs::read_to_string(directory.path().join("target.txt")).unwrap(),
+        "last source"
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("first.txt")).unwrap(),
+        "first source"
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("last.txt")).unwrap(),
+        "last source"
+    );
+}
+
+#[test]
+fn cli_rejects_invalid_resource_limits_before_writing() {
+    let directory = workspace();
+    fs::write(directory.path().join("source.txt"), "new source").unwrap();
+    fs::write(directory.path().join("target.txt"), "preserved target").unwrap();
+    for flags in [
+        vec!["--jobs", "0"],
+        vec!["--max-streams", "0"],
+        vec!["--buffer-size", "0"],
+        vec!["--buffer-size", "1024", "--memory-limit", "1023"],
+    ] {
+        let mut args = vec!["run", "-"];
+        args.extend(flags);
+        let output = invoke(directory.path(), &args, "source.txt -> target.txt\n");
+        assert!(
+            !output.status.success(),
+            "invalid limits were accepted: {args:?}"
+        );
+        assert!(!stderr(&output).is_empty());
+        assert_eq!(
+            fs::read_to_string(directory.path().join("target.txt")).unwrap(),
+            "preserved target"
+        );
+    }
+}
+
+#[test]
+fn endpoint_typo_diagnostic_points_to_exact_token_and_suggests_binding() {
+    let directory = workspace();
+    let source = "remote => $local\nremtoe::input.txt -> output.txt\n";
+    let output = invoke(
+        directory.path(),
+        &["check", "-", "--color", "never"],
+        source,
+    );
+    assert!(!output.status.success());
+    let diagnostic = stderr(&output);
+    assert!(
+        diagnostic.contains("remote"),
+        "diagnostic should suggest the similarly named binding: {diagnostic}"
+    );
+    assert!(diagnostic.contains("2:1"), "{diagnostic}");
+    let underline = diagnostic.lines().find(|line| line.contains('^')).unwrap();
+    assert_eq!(
+        underline.chars().filter(|ch| *ch == '^').count(),
+        "remtoe".len(),
+        "underline the qualifier, not the whole statement: {diagnostic}"
+    );
 }
 
 #[test]
@@ -394,11 +605,14 @@ fn http_fetch_journey_uses_real_local_server_and_preserves_body() {
                         }
                         request.extend_from_slice(&buffer[..size]);
                     }
-                    assert!(
-                        String::from_utf8_lossy(&request).starts_with("GET /base/help.txt HTTP/")
-                    );
-                    connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\nhello via HTTP").unwrap();
-                    return;
+                    let request = String::from_utf8_lossy(&request);
+                    if request.starts_with("HEAD /base/help.txt HTTP/") {
+                        connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\n").unwrap();
+                    } else {
+                        assert!(request.starts_with("GET /base/help.txt HTTP/"), "{request}");
+                        connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\nhello via HTTP").unwrap();
+                        return;
+                    }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     assert!(Instant::now() < deadline, "HTTP client never connected");

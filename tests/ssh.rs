@@ -24,6 +24,14 @@ struct SshFixture {
 
 impl SshFixture {
     fn new() -> Self {
+        Self::with_mode(false)
+    }
+
+    fn with_python() -> Self {
+        Self::with_mode(true)
+    }
+
+    fn with_mode(python: bool) -> Self {
         let temporary = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
         fs::create_dir_all(&temporary).unwrap();
         let root = tempfile::Builder::new()
@@ -85,6 +93,7 @@ impl SshFixture {
             .arg(format!("{linux_root}/fixture.sh"))
             .arg(&linux_root)
             .arg(port.to_string())
+            .arg(if python { "1" } else { "0" })
             .stdin(Stdio::piped())
             .stdout(log.try_clone().unwrap())
             .stderr(log)
@@ -447,9 +456,17 @@ fn ssh_recursive_directories_merge_and_conflicts_preflight() {
     );
     success(&fixture.remote("printf unrelated > /root/exact/keep.txt"));
     fs::write(tree.join("nested/a.bin"), "changed nested bytes").unwrap();
-    success(&fixture.run("tree -> remote::~/exact\nremote::~/exact -> remote::~/server-copy\nremote::~/server-copy -> merged\n"));
+    let existing_directory = fixture.run("tree -> remote::~/exact\n");
+    assert!(!existing_directory.status.success());
+    assert!(String::from_utf8_lossy(&existing_directory.stderr).contains("directory"));
+    success(&fixture.run("tree -> remote::~/fresh\nremote::~/fresh -> remote::~/server-copy\nremote::~/server-copy -> merged\n"));
+    success(&fixture.remote("test \"$(cat /root/exact/keep.txt)\" = unrelated"));
+    success(&fixture.remote("mkdir -p /root/container-merge/tree; printf unrelated > /root/container-merge/tree/keep.txt"));
+    success(&fixture.run(
+        "tree -> remote::~/container-merge/\nremote::~/container-merge/tree -> container-merged\n",
+    ));
     assert_eq!(
-        fs::read_to_string(fixture.workspace().join("merged/keep.txt")).unwrap(),
+        fs::read_to_string(fixture.workspace().join("container-merged/keep.txt")).unwrap(),
         "unrelated"
     );
     assert_eq!(
@@ -624,5 +641,255 @@ fn ssh_conflicts_failures_and_telemetry_leave_no_staging() {
     assert!(!denied.status.success());
     assert!(String::from_utf8_lossy(&denied.stderr).contains("Permission denied"));
     success(&fixture.remote("test ! -e /root/unauthorized"));
+    fixture.finish();
+}
+
+const SOCKET_FIXTURE_PYTHON: &str = r#"
+from __future__ import annotations
+import os
+import socket
+import sys
+
+
+def serve(path: str, mode: str, datafile: str) -> None:
+    server: socket.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        server.bind(path)
+        server.listen(1)
+        connection, _ = server.accept()
+        with connection:
+            if mode == 'send':
+                with open(datafile, 'rb') as source:
+                    while data := source.read(8192):
+                        connection.sendall(data)
+            else:
+                with open(datafile, 'wb') as target:
+                    while data := connection.recv(8192):
+                        target.write(data)
+    finally:
+        server.close()
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def count_python_helpers() -> int:
+    count: int = 0
+    for name in os.listdir('/proc'):
+        if not name.isdigit() or int(name) == os.getpid():
+            continue
+        try:
+            executable: str = os.readlink('/proc/' + name + '/exe')
+        except OSError:
+            continue
+        if executable.rsplit('/', 1)[-1].startswith('python3'):
+            count += 1
+    return count
+
+
+def main() -> int:
+    if sys.argv[1] == 'count':
+        print(count_python_helpers())
+        return 0
+    serve(sys.argv[1], sys.argv[2], sys.argv[3])
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
+"#;
+
+fn wait_for_remote_socket(fixture: &SshFixture, path: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let result = fixture.remote(&format!("test -S '{path}'"));
+        if result.status.success() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "socket did not become ready: {}",
+            details(&result)
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn run_cancelled_remote_flow(source: &str) {
+    use msync::{
+        compiler::Compiler,
+        scheduler::{self, ResourceLimits},
+        syntax,
+    };
+    use tokio_util::sync::CancellationToken;
+    let script = syntax::parse(source).unwrap();
+    let program = Compiler::new().compile(&script).unwrap();
+    let plan = scheduler::prepare(&program, true).unwrap();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let cancel = CancellationToken::new();
+            let timer = tokio::spawn({
+                let cancel = cancel.clone();
+                let config = std::env::var_os("MSYNC_SSH_CONFIG").unwrap();
+                async move {
+                    let observed = tokio::time::timeout(Duration::from_secs(8), async {
+                        loop {
+                            let output = tokio::process::Command::new("ssh")
+                                .arg("-F")
+                                .arg(&config)
+                                .args([
+                                    "--",
+                                    "root@127.0.0.1",
+                                    "python3 /root/socket_fixture.py count",
+                                ])
+                                .output()
+                                .await
+                                .unwrap();
+                            if output.status.success()
+                                && String::from_utf8_lossy(&output.stdout)
+                                    .trim()
+                                    .parse::<usize>()
+                                    .is_ok_and(|count| count > 0)
+                            {
+                                return true;
+                            }
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                        }
+                    })
+                    .await
+                    .unwrap_or(false);
+                    cancel.cancel();
+                    observed
+                }
+            });
+            let result =
+                scheduler::execute_plan_async(&plan, &ResourceLimits::default(), cancel).await;
+            assert!(result.unwrap_err().message.contains("cancelled"));
+            assert!(
+                timer.await.unwrap(),
+                "remote FIFO relay was never observed before cancellation"
+            );
+        });
+}
+
+#[test]
+#[ignore = "requires Windows OpenSSH, WSL root, Python 3, sshd and mount/PID namespaces"]
+fn ssh_fifo_socket_and_cancellation_use_real_remote_helpers() {
+    if let Ok(source) = std::env::var("MSYNC_TEST_CANCELLED_REMOTE_FLOW") {
+        run_cancelled_remote_flow(&source);
+        return;
+    }
+    let fixture = SshFixture::with_python();
+    let payload: Vec<u8> = (0..256 * 1024).map(|value| (value % 251) as u8).collect();
+    fs::write(fixture.workspace().join("payload.bin"), &payload).unwrap();
+    fs::write(
+        fixture.workspace().join("socket_fixture.py"),
+        SOCKET_FIXTURE_PYTHON,
+    )
+    .unwrap();
+    success(&fixture.run(
+        "payload.bin -> remote::~/payload.bin\nsocket_fixture.py -> remote::~/socket_fixture.py\n",
+    ));
+    success(&fixture.run("remote::~/ -> home-snapshot/\nremote::. -> dot-snapshot/\n"));
+    assert_eq!(
+        fs::read(fixture.workspace().join("home-snapshot/root/payload.bin")).unwrap(),
+        payload
+    );
+    assert_eq!(
+        fs::read(fixture.workspace().join("dot-snapshot/root/payload.bin")).unwrap(),
+        payload
+    );
+    success(&fixture.remote("mkfifo /root/to-local /root/from-local /root/idle-fifo"));
+
+    thread::scope(|scope| {
+        let producer = scope.spawn(|| fixture.remote("cat /root/payload.bin > /root/to-local"));
+        success(&fixture.run("remote::~/to-local -> fifo-read.bin\n"));
+        success(&producer.join().unwrap());
+    });
+    assert_eq!(
+        fs::read(fixture.workspace().join("fifo-read.bin")).unwrap(),
+        payload
+    );
+    thread::scope(|scope| {
+        let consumer =
+            scope.spawn(|| fixture.remote("cat /root/from-local > /root/fifo-output.bin"));
+        success(&fixture.run("payload.bin -> remote::~/from-local\n"));
+        success(&consumer.join().unwrap());
+    });
+    success(&fixture.run("remote::~/fifo-output.bin -> fifo-write.bin\n"));
+    assert_eq!(
+        fs::read(fixture.workspace().join("fifo-write.bin")).unwrap(),
+        payload
+    );
+
+    thread::scope(|scope| {
+        let producer = scope.spawn(|| {
+            fixture.remote("python3 /root/socket_fixture.py /root/read.sock send /root/payload.bin")
+        });
+        wait_for_remote_socket(&fixture, "/root/read.sock");
+        success(&fixture.run("remote::~/read.sock -> socket-read.bin\n"));
+        success(&producer.join().unwrap());
+    });
+    assert_eq!(
+        fs::read(fixture.workspace().join("socket-read.bin")).unwrap(),
+        payload
+    );
+    thread::scope(|scope| {
+        let consumer = scope.spawn(|| {
+            fixture.remote(
+                "python3 /root/socket_fixture.py /root/write.sock receive /root/socket-output.bin",
+            )
+        });
+        wait_for_remote_socket(&fixture, "/root/write.sock");
+        success(&fixture.run("payload.bin -> remote::~/write.sock\n"));
+        success(&consumer.join().unwrap());
+    });
+    success(&fixture.run("remote::~/socket-output.bin -> socket-write.bin\n"));
+    assert_eq!(
+        fs::read(fixture.workspace().join("socket-write.bin")).unwrap(),
+        payload
+    );
+
+    let source = format!(
+        "remote => ssh://root@127.0.0.1:{}\nremote::~/idle-fifo -> {}\n",
+        fixture.port,
+        fixture
+            .workspace()
+            .join("cancelled-sink")
+            .display()
+            .to_string()
+            .replace('\\', "/")
+    );
+    success(
+        &fixture.command(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "ssh_fifo_socket_and_cancellation_use_real_remote_helpers",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("MSYNC_SSH_CONFIG", &fixture.config)
+                .env("MSYNC_TEST_CANCELLED_REMOTE_FLOW", source),
+            None,
+        ),
+    );
+    let count_helpers = "python3 /root/socket_fixture.py count";
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let result = fixture.remote(count_helpers);
+        success(&result);
+        if String::from_utf8_lossy(&result.stdout).trim() == "0" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "remote Python relay survived cancellation: {}",
+            details(&result)
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
     fixture.finish();
 }
