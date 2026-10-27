@@ -431,3 +431,19 @@ gates. Commit `3d9cf3b` gates the import; a focused WSL Linux library, binary an
 workspace Clippy check passed afterward. This is not recorded as a successful
 full Linux cloud run. No local Sandboxie installation, SSH configuration change
 or persistent namespace/mount policy change was made for these checks.
+
+The subsequent [run at `bf2a623`](https://github.com/kleedaisuki/msync/actions/runs/40533733086)
+passed all four actual Windows resource-view cases and all nine production
+program cases, including the formerly failing default-cwd scratch capture.
+The view/program test durations were 0.66/1.96 seconds, not performance
+benchmarks. The ordinary Windows full compatibility job also passed.
+
+The Linux full job passed lint and its unit targets, then stopped on a test-harness
+`BrokenPipe`: the invalid-argument CLI correctly exited before reading stdin,
+while the helper unconditionally unwrapped its write. The helper now accepts
+that one write error only when the actual child exit is unsuccessful; all other
+write failures and a successful premature exit still fail the test. A new
+large-stdin rejection case passed, followed by 25 repetitions of the original
+four-invalid-limit journey (100 child processes), using the exact test source
+and existing native WSL executable. No production behavior changed for this
+race correction. The remaining Linux matrix still needs a successful cloud run.

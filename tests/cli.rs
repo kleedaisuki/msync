@@ -32,13 +32,16 @@ fn invoke_command(command: &mut Command, input: &str) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
-    child.wait_with_output().unwrap()
+    let written = child.stdin.take().unwrap().write_all(input.as_bytes());
+    let output = child.wait_with_output().unwrap();
+    if let Err(cause) = written {
+        assert!(
+            cause.kind() == std::io::ErrorKind::BrokenPipe && !output.status.success(),
+            "stdin failed unexpectedly: {cause}; stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    output
 }
 
 fn stdout(output: &Output) -> String {
@@ -584,6 +587,24 @@ fn cli_rejects_invalid_resource_limits_before_writing() {
             "preserved target"
         );
     }
+}
+
+#[test]
+fn argument_rejection_does_not_require_consuming_a_large_stdin() {
+    let directory = workspace();
+    fs::write(directory.path().join("target.txt"), "untouched").unwrap();
+    let input = "source.txt -> target.txt\n".repeat(65_536);
+    let output = invoke(directory.path(), &["run", "-", "--jobs", "0"], &input);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("positive integer"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("target.txt")).unwrap(),
+        "untouched"
+    );
 }
 
 #[test]
