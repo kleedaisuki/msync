@@ -23,4 +23,8 @@ $runtime = Select-Changes @('src/runtime.rs')
 Assert $runtime.full 'Shared transport edits must retain broad safety coverage'
 $combined = Select-Changes @('tests/ux_031.rs', 'tests/ux_031.rs', 'tests/repl_jobs.rs')
 Assert ($combined.targets.Count -eq 2 -and -not $combined.full) 'Selections must be deduplicated'
-Write-Output 'CI selection: 7 discriminating cases passed'
+$selector = Select-Changes @('scripts/ci-select.ps1', 'scripts/test-ci-select.ps1')
+Assert (-not $selector.full -and -not $selector.rust) 'Selector edits are checked by this regression script, not an unrelated Rust suite'
+$transactions = Select-Changes @('src/transaction/filesystem.rs')
+Assert (-not $transactions.full -and $transactions.targets -contains 'transaction_filesystem_v4' -and $transactions.targets -contains 'transaction_store_v4') 'Filesystem changes must check the version store and real publisher'
+Write-Output 'CI selection: 9 discriminating cases passed'

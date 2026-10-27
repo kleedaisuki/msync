@@ -25,10 +25,14 @@ function Add-Targets([string[]] $Names) {
 
 foreach ($path in $Paths) {
     switch -Regex ($path.Replace('\', '/')) {
-        '^(Cargo\.(toml|lock)|build\.rs|\.github/|scripts/(ci-|test-ci-))' {
+        '^(Cargo\.(toml|lock)|build\.rs|\.github/)' {
             $full = $true
             $rust = $true
             $docs = $true
+            break
+        }
+        '^scripts/(ci-|test-ci-)' {
+            # The changes job always runs the selector's own regression cases.
             break
         }
         '^tests/support/pty' {
@@ -43,17 +47,17 @@ foreach ($path in $Paths) {
         }
         '^src/(language/|compiler/structured\.rs|hir[/.]|pipeline\.rs)' {
             $rust = $true
-            Add-Targets @('language_v4', 'lowering_v4', 'hir_plan_v4', 'pipeline_v4', 'execution_v4')
+            Add-Targets @('language_v4', 'lowering_v4', 'hir_plan_v4', 'pipeline_v4', 'review_foundation_v4', 'execution_v4')
             break
         }
         '^src/transaction/' {
             $rust = $true
-            Add-Targets @('transaction_store_v4', 'transaction_filesystem_v4', 'execution_v4')
+            Add-Targets @('transaction_store_v4', 'transaction_filesystem_v4', 'review_foundation_v4', 'execution_v4')
             break
         }
         '^src/process/' {
             $rust = $true
-            Add-Targets @('process_v4', 'execution_v4')
+            Add-Targets @('process_v4', 'review_foundation_v4', 'execution_v4')
             break
         }
         '^src/(main|editor|repl|presentation|shell|highlight|suggest)\.rs$' {
