@@ -44,21 +44,26 @@ impl Manager {
             self.store.clone(),
             self.domain.clone(),
             self.pending_roots.clone(),
+            self.namespaces.clone(),
         );
         let result = self.stage_view_delta_inner(id, path, before, after);
         if result.is_err() {
-            (self.store, self.domain, self.pending_roots) = saved;
+            (self.store, self.domain, self.pending_roots, self.namespaces) = saved;
         }
         result
     }
 
     pub fn stage_delta(&mut self, id: TransactionId, path: &Path, after: &Snapshot) -> Result<()> {
-        let saved = (self.store.clone(), self.domain.clone());
+        let saved = (
+            self.store.clone(),
+            self.domain.clone(),
+            self.namespaces.clone(),
+        );
         let result = self
             .read_snapshot(id, path)
             .and_then(|before| self.stage_view_delta(id, path, &before, after));
         if result.is_err() {
-            (self.store, self.domain) = saved;
+            (self.store, self.domain, self.namespaces) = saved;
         }
         result
     }

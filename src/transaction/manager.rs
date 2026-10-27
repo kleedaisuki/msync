@@ -30,8 +30,10 @@ type Result<T> = std::result::Result<T, ManagerError>;
 
 mod delta;
 mod enrollment;
+mod namespace;
 mod receipt;
 mod refresh;
+pub use namespace::{NamespaceMergePermit, NamespacePublicationOrder, NamespacePublicationReceipt};
 use receipt::{Batch, DirectoryReceipt};
 
 #[derive(Clone, Debug, Default)]
@@ -206,6 +208,7 @@ pub struct Manager {
     recovery: Vec<Batch>,
     cleanup: Vec<Batch>,
     active: BTreeSet<TransactionId>,
+    namespaces: namespace::Namespaces,
     lifecycle: Lifecycle,
 }
 
@@ -225,6 +228,7 @@ impl Manager {
             recovery: Vec::new(),
             cleanup: Vec::new(),
             active: BTreeSet::new(),
+            namespaces: namespace::Namespaces::default(),
             lifecycle: Lifecycle::Open,
         }
     }
@@ -254,7 +258,7 @@ impl Manager {
     }
 
     pub fn has_active_transactions(&self) -> bool {
-        !self.active.is_empty()
+        !self.active.is_empty() || self.namespaces.has_pending()
     }
 
     pub fn artifact_root(&self) -> &Path {
@@ -271,6 +275,9 @@ impl Manager {
             return Err(ManagerError::EnrollmentClosed);
         }
         let path = normalize(path)?;
+        let mut coverage = self.domain.clone();
+        let scope = coverage.physical_key(&path)?;
+        self.fence_namespace(&scope, true)?;
         if path.file_name().is_none() {
             return Err(invalid(
                 &path,
@@ -427,6 +434,7 @@ impl Manager {
         }
         let path = normalize(path)?;
         let snapshot = self.capture_host(&path)?;
+        self.namespace_import_allowed(&key, &snapshot)?;
         validate_snapshot_case_policy(&path, &snapshot)?;
         validate_names(snapshot.entries())?;
         let mut candidate = self.store.clone();
@@ -497,6 +505,7 @@ impl Manager {
         let (root, relative) = self.locate(path)?;
         let mut domain = self.domain.clone();
         let key = domain.key(root, &relative)?;
+        self.fence_namespace(&key, false)?;
         if !relative.as_os_str().is_empty() {
             self.require_coverage(root, &key, path)?;
         }
@@ -512,6 +521,7 @@ impl Manager {
                 None => {
                     self.domain = domain;
                     self.store = candidate;
+                    self.record_namespace_read(id, root, key, false)?;
                     return Ok(None);
                 }
                 Some(_) => {
@@ -525,6 +535,7 @@ impl Manager {
         let value = candidate.read(id, &key)?.map(|value| value.entry);
         self.domain = domain;
         self.store = candidate;
+        self.record_namespace_read(id, root, key, false)?;
         Ok(value)
     }
 
@@ -535,6 +546,7 @@ impl Manager {
         let (root, relative) = self.locate(path)?;
         let mut domain = self.domain.clone();
         let key = domain.key(root, &relative)?;
+        self.fence_namespace(&key, true)?;
         self.require_coverage(root, &key, path)?;
         let mut candidate = self.store.clone();
         let mut prefix = PathBuf::new();
@@ -566,6 +578,7 @@ impl Manager {
         let snapshot = self.assemble(values, key.components().len(), path)?;
         self.domain = domain;
         self.store = candidate;
+        self.record_namespace_read(id, root, key, true)?;
         Ok(snapshot)
     }
 
@@ -583,6 +596,14 @@ impl Manager {
         let (root, relative) = self.locate(path)?;
         let mut domain = self.domain.clone();
         let key = domain.key(root, &relative)?;
+        if !self
+            .namespaces
+            .current
+            .as_ref()
+            .is_some_and(|request| request.transaction == id)
+        {
+            self.fence_namespace(&key, true)?;
+        }
         self.require_coverage(root, &key, path)?;
         let mut candidate = self.store.clone();
         let mut writes = self.pending_roots.get(&id).cloned().unwrap_or_default();
@@ -660,6 +681,7 @@ impl Manager {
         let report = self.publish(id, candidate, &roots, observe)?;
         self.origin_roots.entry(id).or_default().extend(roots);
         self.pending_roots.remove(&id);
+        self.clear_namespace_reads(id);
         Ok(report)
     }
 
@@ -667,6 +689,7 @@ impl Manager {
         self.ready()?;
         self.store.rollback_pending(id)?;
         self.pending_roots.remove(&id);
+        self.clear_namespace_reads(id);
         Ok(())
     }
 
@@ -679,11 +702,20 @@ impl Manager {
         self.origin_roots.entry(id).or_default().extend(roots);
         self.pending_roots.remove(&id);
         self.active.remove(&id);
+        self.clear_namespace_reads(id);
         Ok(report)
     }
 
     pub fn rollback_origin(&mut self, id: TransactionId) -> Result<CommitReport> {
         self.ready()?;
+        if let Some(writes) = self.origin_roots.get(&id) {
+            for key in &writes.data {
+                self.fence_namespace(key, true)?;
+            }
+            for key in &writes.metadata {
+                self.fence_namespace(key, false)?;
+            }
+        }
         let mut candidate = self.store.clone();
         candidate.rollback_origin(id)?;
         let roots = self.origin_roots.get(&id).cloned().unwrap_or_default();
@@ -691,6 +723,7 @@ impl Manager {
         self.origin_roots.remove(&id);
         self.pending_roots.remove(&id);
         self.active.remove(&id);
+        self.clear_namespace_reads(id);
         Ok(report)
     }
 
@@ -704,6 +737,12 @@ impl Manager {
             Lifecycle::Closing { .. } => {}
             Lifecycle::Open => {
                 self.ready()?;
+                if self.namespaces.has_pending() {
+                    return Err(invalid(
+                        self.snapshots.root(),
+                        "cancel or finish native namespace reservations before shutdown",
+                    ));
+                }
                 if !self.active.is_empty() {
                     return Err(ManagerError::ActiveTransactions(
                         self.active.iter().copied().collect(),
@@ -721,6 +760,7 @@ impl Manager {
                 self.domain = Domain::default();
                 self.pending_roots.clear();
                 self.origin_roots.clear();
+                self.namespaces = namespace::Namespaces::default();
                 self.lifecycle = Lifecycle::Closing { epoch };
             }
         }
@@ -1055,7 +1095,7 @@ impl Manager {
     fn publish_inner(
         &mut self,
         transaction: TransactionId,
-        candidate: Store<ManagedEntry>,
+        mut candidate: Store<ManagedEntry>,
         writes: &WriteSet,
         mut observe: impl FnMut(&Path, PublishEvent) -> io::Result<()>,
     ) -> Result<CommitReport> {
@@ -1137,11 +1177,17 @@ impl Manager {
                 }
             }
         }
-        if let Err(cause) = batch.publish(&mut observe) {
+        let mut namespace_receipt = None;
+        if let Err(cause) = batch.publish(&mut observe, |metadata| {
+            namespace_receipt =
+                self.bind_namespace_metadata(&mut candidate, metadata, transaction)?;
+            Ok(())
+        }) {
             return Err(self.compensate(transaction, cause, batch));
         }
         let epoch = candidate.epoch();
         self.store = candidate;
+        self.commit_namespace_receipt(namespace_receipt);
         let published_roots = batch.data.len();
         batch.committed = true;
         self.cleanup.push(batch);

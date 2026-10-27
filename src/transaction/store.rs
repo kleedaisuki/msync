@@ -313,6 +313,33 @@ impl<V: Clone> Store<V> {
         Ok(epoch)
     }
 
+    /// Bind a native receipt into a private candidate's newly created head.
+    /// The published baseline and writer guard prevent rewriting any version
+    /// that existing readers could already have observed. Origins, revision,
+    /// author and older immutable versions are deliberately left unchanged.
+    pub(super) fn replace_unpublished_head(
+        &mut self,
+        key: &ResourceKey,
+        published: Epoch,
+        writer: TransactionId,
+        value: V,
+    ) -> Result<(), StoreError> {
+        let head = self
+            .versions
+            .get_mut(key)
+            .and_then(|versions| versions.last_mut())
+            .filter(|head| {
+                head.epoch > published && head.writer == Some(writer) && head.value.is_some()
+            })
+            .ok_or_else(|| StoreError::InvalidResource {
+                namespace: key.namespace().to_owned(),
+                path: key.to_string(),
+                reason: "receipt binding requires this writer's new unpublished non-missing head",
+            })?;
+        head.value = Some(value);
+        Ok(())
+    }
+
     pub fn begin(&mut self, id: TransactionId, isolation: Isolation) -> Result<(), StoreError> {
         if self.transactions.contains_key(&id) {
             return Err(StoreError::DuplicateTransaction(id));
@@ -713,5 +740,53 @@ impl<V: Clone> Store<V> {
             writer,
             value,
         });
+    }
+}
+
+#[cfg(test)]
+mod receipt_binding_tests {
+    use super::*;
+
+    #[test]
+    fn receipt_binding_changes_only_the_candidates_new_owned_head() {
+        let key = ResourceKey::new("disk", "/parent").unwrap();
+        let mut published = Store::<&str>::new();
+        published.seed(key.clone(), Some("original")).unwrap();
+        let baseline = published.epoch();
+        let pinned = TransactionId(1);
+        published.begin(pinned, Isolation::RepeatableRead).unwrap();
+        let mut candidate = published.clone();
+        let writer = TransactionId(2);
+        candidate.begin(writer, Isolation::ReadCommitted).unwrap();
+        candidate.write(writer, key.clone(), "provisional").unwrap();
+        candidate.finish(writer).unwrap();
+        candidate
+            .replace_unpublished_head(&key, baseline, writer, "native receipt")
+            .unwrap();
+        assert_eq!(published.committed(&key), Some("original"));
+        assert_eq!(candidate.read(pinned, &key).unwrap(), Some("original"));
+        assert_eq!(candidate.committed(&key), Some("native receipt"));
+        assert_eq!(
+            candidate.versions[&key].last().unwrap().writer,
+            Some(writer)
+        );
+        assert_eq!(candidate.transaction(writer).unwrap().origin_resources(), 1);
+        assert!(
+            published
+                .replace_unpublished_head(&key, baseline, writer, "illegal")
+                .is_err()
+        );
+        assert!(
+            candidate
+                .replace_unpublished_head(&key, candidate.epoch(), writer, "illegal")
+                .is_err()
+        );
+        assert!(
+            candidate
+                .replace_unpublished_head(&key, baseline, pinned, "illegal")
+                .is_err()
+        );
+        candidate.rollback_origin(writer).unwrap();
+        assert_eq!(candidate.committed(&key), Some("original"));
     }
 }

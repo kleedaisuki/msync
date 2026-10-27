@@ -23,6 +23,12 @@ impl Manager {
     /// never opens an unknown FIFO/socket or upgrades sparse coverage implicitly.
     pub fn refresh_host(&mut self) -> Result<Epoch> {
         self.ready()?;
+        if self.namespaces.has_pending() {
+            return Err(invalid(
+                self.snapshots.root(),
+                "finish or cancel live namespace publications before observing host directory state",
+            ));
+        }
         if !self.active.is_empty() {
             return Err(ManagerError::ActiveTransactions(
                 self.active.iter().copied().collect(),

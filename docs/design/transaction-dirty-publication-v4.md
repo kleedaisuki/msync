@@ -164,3 +164,68 @@ The native Unix FIFO regression also invokes refresh with the live FIFO present.
 Two independent real REPL journeys now pass: shell-modified sources are copied
 with their new bytes, and named undo refuses to erase a later authorized shell
 edit (`review_foundation_v4`, filtered `shell_edit`).
+
+## Certified disjoint child publication
+
+`certify_namespace_children` reserves actually missing direct-child native names
+under an enrolled ordinary directory with unchanged writable permissions. Its
+`NamespaceMergePermit` supplies the invocation provider, parent epoch, canonical
+parent key and NativeNameIndex-derived child keys to the graph certificate.
+Same-parent overlapping certificates share an epoch; case/native aliases and
+reused reservations are refused. Parent identity and permissions are checked at
+certification, before publication, and again before binding the native receipt.
+Capabilities require explicit per-child completion/cancellation: Drop does not
+silently publish, release a gate, or consume a successful mutation stamp. Closing
+the final reservation releases the retained parent identity handle.
+
+Only exact, implicit, ordinary-file insertions may use this capability. The
+runtime must route eligible finite/literal and physical-source new children
+through the same mechanism, not exempt physical streams from namespace effects.
+`read_committed_file` provides a reachable, immutable ordinary-file lease without
+observing a parent mtime or directory predicate. Disjoint ordinary-file
+`enroll_entry` imports remain possible while the namespace is live. Ordinary
+reads/tree replacements/metadata observers and origin rollback that intersect a
+live parent are fenced; unrelated normal transactions are not globally blocked.
+A strict transaction already observing that parent prevents certification.
+Directory/tree/permissions/new-parent operations are never namespace merges.
+
+Native IO can drain without an active Store transaction. At EOF,
+`publish_merged_file` uses the runtime's reserved owner ID to begin a fresh
+ReadCommitted publication, retaining ordinary Store conflict/undo policy. After
+the native child install and before metadata application/journal cleanup it
+observes the actual containing-directory modification time. For successful
+receipts in that live parent epoch, the directory metadata is:
+
+```text
+no successful receipt  -> baseline metadata
+otherwise              -> mutation_stamp(arg max successful logical_order)
+```
+
+The baseline never competes with a successful stamp. Neither maximum wall-clock
+time nor EOF arrival order selects metadata; future-dated baselines and
+backwards-moving receipt stamps are valid. A failed or cancelled receipt does
+not advance the selection or consume its logical ticket. The returned receipt
+carries both the observed mutation stamp and the selected logical order/stamp.
+
+The stamp is unavailable when the private candidate is initially built.
+`Store::replace_unpublished_head` therefore has a narrow parent-module-only
+contract: the candidate head must be newer than the last published baseline,
+non-missing and authored by this publication owner. It replaces only that new
+head payload, preserving author, revision, origin and every older version. The
+same stamp late-binds `DirectoryReceipt.after` and its journal before applying
+metadata. Only after all data/metadata installs succeed does Manager swap the
+candidate and advance the successful-receipt ledger. Compensation retains old
+metadata and does not select the failed stamp; failed compensation blocks
+further publication with the existing explicit recovery journals. Cleanup
+reapplies the selected directory stamp after sibling data journals are removed.
+General Store isolation levels and exact named-origin undo are unchanged.
+
+Focused Windows evidence includes 37 manager regressions, four independent
+metadata regressions, and one private Store receipt-binding test. New cases
+exercise out-of-order EOF/source tickets, a future baseline and decreasing native
+stamp injection through real directory metadata, cancellation after metadata
+installation, failed compensation/foreign identity recovery, native/case alias
+refusal, permission/identity revalidation, exact origin undo after lease closure,
+unchanged open/hardlinked siblings, scoped barriers, immutable file leases and
+disjoint sparse imports. These establish the Manager capability; graph/pump
+end-to-end integration is separately owned and is not inferred from these tests.

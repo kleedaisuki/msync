@@ -30,11 +30,13 @@ impl Batch {
     pub fn publish(
         &mut self,
         observe: &mut impl FnMut(&Path, PublishEvent) -> io::Result<()>,
+        resolve_metadata: impl FnOnce(&mut [DirectoryReceipt]) -> Result<(), FsError>,
     ) -> Result<(), FsError> {
         for receipt in &mut self.data {
             let target = receipt.target().to_owned();
             receipt.publish_with(|event| observe(&target, event))?;
         }
+        resolve_metadata(&mut self.metadata)?;
         for receipt in &mut self.metadata {
             receipt.apply(false)?;
             observe(&receipt.path, PublishEvent::AfterInstall).map_err(|cause| {
@@ -113,6 +115,58 @@ pub(super) struct DirectoryReceipt {
 }
 
 impl DirectoryReceipt {
+    pub(super) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(super) fn bind_modified(&mut self, modified: std::time::SystemTime) -> Result<(), FsError> {
+        let actual = Handle::from_path(&self.journal).map_err(|cause| {
+            failure(
+                "identify metadata receipt",
+                &self.path,
+                cause,
+                Some(&self.journal),
+            )
+        })?;
+        if actual != self.journal_identity {
+            return Err(failure(
+                "bind metadata receipt",
+                &self.path,
+                io::Error::other("metadata journal identity changed"),
+                Some(&self.journal),
+            ));
+        }
+        let mut after = self.after.clone();
+        after.modified = modified;
+        let mut record = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&self.journal)
+            .map_err(|cause| {
+                failure(
+                    "open metadata receipt",
+                    &self.path,
+                    cause,
+                    Some(&self.journal),
+                )
+            })?;
+        writeln!(
+            record,
+            "target={:?}\nbefore={:?}\nafter={after:?}",
+            self.path, self.before
+        )
+        .map_err(|cause| {
+            failure(
+                "bind metadata receipt",
+                &self.path,
+                cause,
+                Some(&self.journal),
+            )
+        })?;
+        self.after = after;
+        Ok(())
+    }
+
     pub fn prepare(path: &Path, after: NodeMetadata, store: &Path) -> Result<Self, FsError> {
         let metadata = fs::symlink_metadata(path)
             .map_err(|cause| failure("inspect directory metadata", path, cause, None))?;

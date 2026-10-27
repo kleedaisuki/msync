@@ -1511,3 +1511,376 @@ fn foreign_refresh_preserves_sparse_unknown_coverage() {
     ));
     manager.finish(id).unwrap();
 }
+
+#[test]
+fn namespace_receipts_select_logical_order_not_clock_or_future_baseline() {
+    use msync::transaction::filesystem::NodeMetadata;
+    use msync::transaction::manager::NamespacePublicationOrder as Order;
+    use std::time::{Duration, UNIX_EPOCH};
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("kept"), "untouched").unwrap();
+    let alias = workspace.path().join("alias");
+    fs::hard_link(root.join("kept"), &alias).unwrap();
+    let identity = same_file::Handle::from_path(&alias).unwrap();
+    let _held = fs::File::open(root.join("kept")).unwrap();
+    let future = UNIX_EPOCH + Duration::from_secs(3_786_825_600);
+    NodeMetadata::new(fs::metadata(&root).unwrap().permissions(), future)
+        .apply(&root)
+        .unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let content = payload(&manager, workspace.path(), "payload", "new");
+    let a = root.join("a");
+    let b = root.join("b");
+    let c = root.join("cancelled");
+    let permit = manager
+        .certify_namespace_children(&[a.clone(), b.clone(), c.clone()])
+        .unwrap();
+    let later = UNIX_EPOCH + Duration::from_secs(946_684_800);
+    let earlier = UNIX_EPOCH + Duration::from_secs(631_152_000);
+    let high = manager
+        .publish_merged_file_with(
+            TransactionId(201),
+            &permit,
+            &b,
+            &content,
+            Order(20),
+            |path, event| {
+                if event == PublishEvent::AfterInstall && same_native_path(path, &b)? {
+                    NodeMetadata::new(fs::metadata(&root)?.permissions(), later).apply(&root)?;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(high.mutation_modified, later);
+    let low = manager
+        .publish_merged_file_with(
+            TransactionId(202),
+            &permit,
+            &a,
+            &content,
+            Order(10),
+            |path, event| {
+                if event == PublishEvent::AfterInstall && same_native_path(path, &a)? {
+                    NodeMetadata::new(fs::metadata(&root)?.permissions(), earlier).apply(&root)?;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(low.mutation_modified, earlier);
+    assert_eq!(low.selected_order, Order(20));
+    assert_eq!(low.selected_modified, later);
+    assert_eq!(fs::metadata(&root).unwrap().modified().unwrap(), later);
+    manager.cancel_namespace_child(&permit, &c).unwrap();
+    let reader = TransactionId(203);
+    manager.begin(reader, Isolation::Serializable).unwrap();
+    let Some(Entry::Directory { metadata }) = manager.read_entry(reader, &root).unwrap() else {
+        panic!("directory metadata")
+    };
+    assert_eq!(metadata.modified, later);
+    manager.finish(reader).unwrap();
+    assert_eq!(
+        same_file::Handle::from_path(root.join("kept")).unwrap(),
+        identity
+    );
+    assert_eq!(fs::read_to_string(alias).unwrap(), "untouched");
+    assert!(!c.exists());
+}
+
+#[test]
+fn failed_namespace_receipts_do_not_advance_the_selected_stamp_or_order() {
+    use msync::transaction::filesystem::NodeMetadata;
+    use msync::transaction::manager::NamespacePublicationOrder as Order;
+    use std::time::{Duration, UNIX_EPOCH};
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let content = payload(&manager, workspace.path(), "payload", "new");
+    let a = root.join("a");
+    let b = root.join("b");
+    let permit = manager
+        .certify_namespace_children(&[a.clone(), b.clone()])
+        .unwrap();
+    let first = UNIX_EPOCH + Duration::from_secs(946_684_800);
+    let second = UNIX_EPOCH + Duration::from_secs(631_152_000);
+    manager
+        .publish_merged_file_with(
+            TransactionId(211),
+            &permit,
+            &a,
+            &content,
+            Order(1),
+            |path, event| {
+                if event == PublishEvent::AfterInstall && same_native_path(path, &a)? {
+                    NodeMetadata::new(fs::metadata(&root)?.permissions(), first).apply(&root)?;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+    let epoch = manager.epoch();
+    let failed = manager.publish_merged_file_with(
+        TransactionId(212),
+        &permit,
+        &b,
+        &content,
+        Order(999),
+        |path, event| {
+            if event == PublishEvent::AfterInstall && same_native_path(path, &b)? {
+                NodeMetadata::new(fs::metadata(&root)?.permissions(), second).apply(&root)?;
+            }
+            if event == PublishEvent::AfterInstall && same_native_path(path, &root)? {
+                return Err(io::Error::other("cancel after namespace metadata install"));
+            }
+            Ok(())
+        },
+    );
+    assert!(matches!(failed, Err(ManagerError::Publication { .. })));
+    assert_eq!(manager.epoch(), epoch);
+    assert!(!b.exists());
+    assert_eq!(fs::metadata(&root).unwrap().modified().unwrap(), first);
+    assert!(manager.retained_journals().is_empty());
+    assert!(
+        manager
+            .publish_merged_file(TransactionId(213), &permit, &b, &content, Order(1))
+            .is_err()
+    );
+    let success = manager
+        .publish_merged_file_with(
+            TransactionId(212),
+            &permit,
+            &b,
+            &content,
+            Order(2),
+            |path, event| {
+                if event == PublishEvent::AfterInstall && same_native_path(path, &b)? {
+                    NodeMetadata::new(fs::metadata(&root)?.permissions(), second).apply(&root)?;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(success.selected_order, Order(2));
+    assert_eq!(success.selected_modified, second);
+    assert_eq!(fs::metadata(&root).unwrap().modified().unwrap(), second);
+}
+
+#[test]
+fn namespace_capabilities_are_native_disjoint_and_do_not_waive_strict_undo() {
+    use msync::transaction::filesystem::NodeMetadata;
+    use msync::transaction::manager::NamespacePublicationOrder as Order;
+    use std::time::{Duration, UNIX_EPOCH};
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    let original = UNIX_EPOCH + Duration::from_secs(3_786_825_600);
+    NodeMetadata::new(fs::metadata(&root).unwrap().permissions(), original)
+        .apply(&root)
+        .unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let a = root.join("a");
+    #[cfg(windows)]
+    let alias = root.join("A");
+    #[cfg(not(windows))]
+    let alias = a.clone();
+    assert!(
+        manager
+            .certify_namespace_children(&[a.clone(), alias])
+            .is_err()
+    );
+    let content = payload(&manager, workspace.path(), "payload", "new");
+    let b = root.join("b");
+    let first = manager
+        .certify_namespace_children(std::slice::from_ref(&a))
+        .unwrap();
+    let second = manager
+        .certify_namespace_children(std::slice::from_ref(&b))
+        .unwrap();
+    assert_eq!(first.epoch_id(), second.epoch_id());
+    assert_ne!(first.child_key(&a), second.child_key(&b));
+    let id = TransactionId(221);
+    manager
+        .publish_merged_file(id, &first, &a, &content, Order(1))
+        .unwrap();
+    assert!(manager.rollback_origin(id).is_err());
+    manager.cancel_namespace_child(&second, &b).unwrap();
+    manager.rollback_origin(id).unwrap();
+    assert!(!a.exists());
+    assert_eq!(fs::metadata(&root).unwrap().modified().unwrap(), original);
+}
+
+#[test]
+fn namespace_fences_are_scoped_and_exact_file_leases_allow_disjoint_work() {
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("source"), "source").unwrap();
+    fs::write(root.join("late"), "late").unwrap();
+    let other = workspace.path().join("other");
+    fs::write(&other, "unrelated").unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll_namespace(&root).unwrap();
+    manager.enroll_entry(&root.join("source")).unwrap();
+    manager.enroll_entry(&root.join("out")).unwrap();
+    manager.enroll(&other).unwrap();
+    let observer = TransactionId(231);
+    manager.begin(observer, Isolation::Serializable).unwrap();
+    manager.read_entry(observer, &root).unwrap();
+    assert!(
+        manager
+            .certify_namespace_children(&[root.join("out")])
+            .is_err()
+    );
+    manager.finish(observer).unwrap();
+    let permit = manager
+        .certify_namespace_children(&[root.join("out")])
+        .unwrap();
+    assert_eq!(
+        text(&manager.read_committed_file(&root.join("source")).unwrap()).as_deref(),
+        Some("source")
+    );
+    manager.enroll_entry(&root.join("late")).unwrap();
+    assert_eq!(
+        text(&manager.read_committed_file(&root.join("late")).unwrap()).as_deref(),
+        Some("late")
+    );
+    let strict = TransactionId(232);
+    manager.begin(strict, Isolation::Serializable).unwrap();
+    assert!(manager.read_snapshot(strict, &root.join("source")).is_err());
+    assert!(manager.read_entry(strict, &root).is_err());
+    assert_eq!(
+        text(&manager.read_snapshot(strict, &other).unwrap()).as_deref(),
+        Some("unrelated")
+    );
+    manager.finish(strict).unwrap();
+    manager
+        .cancel_namespace_child(&permit, &root.join("out"))
+        .unwrap();
+}
+
+fn same_native_path(left: &Path, right: &Path) -> io::Result<bool> {
+    Ok(same_file::Handle::from_path(left)? == same_file::Handle::from_path(right)?)
+}
+
+#[test]
+fn namespace_parent_identity_and_permissions_are_revalidated_and_cancellation_is_owned() {
+    use msync::transaction::manager::NamespacePublicationOrder as Order;
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    let target = root.join("out");
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let content = payload(&manager, workspace.path(), "payload", "new");
+    let permit = manager
+        .certify_namespace_children(std::slice::from_ref(&target))
+        .unwrap();
+    let permissions = fs::metadata(&root).unwrap().permissions();
+    let mut changed = permissions.clone();
+    changed.set_readonly(true);
+    fs::set_permissions(&root, changed).unwrap();
+    let result =
+        manager.publish_merged_file(TransactionId(241), &permit, &target, &content, Order(1));
+    fs::set_permissions(&root, permissions).unwrap();
+    assert!(result.is_err());
+    assert!(!target.exists());
+    manager.cancel_namespace_child(&permit, &target).unwrap();
+    let replacement = manager
+        .certify_namespace_children(std::slice::from_ref(&target))
+        .unwrap();
+    assert_ne!(permit.epoch_id(), replacement.epoch_id());
+    fs::rename(&root, workspace.path().join("previous-root")).unwrap();
+    fs::create_dir(&root).unwrap();
+    assert!(
+        manager
+            .publish_merged_file(
+                TransactionId(242),
+                &replacement,
+                &target,
+                &content,
+                Order(2)
+            )
+            .is_err()
+    );
+    manager
+        .cancel_namespace_child(&replacement, &target)
+        .unwrap();
+    assert!(!target.exists());
+    assert!(!manager.has_active_transactions());
+}
+
+#[test]
+fn namespace_failed_compensation_retains_recovery_without_selecting_its_receipt() {
+    use msync::transaction::filesystem::NodeMetadata;
+    use msync::transaction::manager::NamespacePublicationOrder as Order;
+    use std::time::{Duration, UNIX_EPOCH};
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let content = payload(&manager, workspace.path(), "payload", "new");
+    let a = root.join("a");
+    let b = root.join("b");
+    let held = workspace.path().join("held");
+    let permit = manager
+        .certify_namespace_children(&[a.clone(), b.clone()])
+        .unwrap();
+    let first = UNIX_EPOCH + Duration::from_secs(946_684_800);
+    manager
+        .publish_merged_file_with(
+            TransactionId(251),
+            &permit,
+            &a,
+            &content,
+            Order(1),
+            |path, event| {
+                if event == PublishEvent::AfterInstall && same_native_path(path, &a)? {
+                    NodeMetadata::new(fs::metadata(&root)?.permissions(), first).apply(&root)?;
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+    let epoch = manager.epoch();
+    let failed = manager.publish_merged_file_with(
+        TransactionId(252),
+        &permit,
+        &b,
+        &content,
+        Order(999),
+        |path, event| {
+            if event == PublishEvent::AfterInstall && same_native_path(path, &root)? {
+                fs::rename(&b, &held)?;
+                fs::write(&b, "foreign owner")?;
+                return Err(io::Error::other("foreign identity blocks compensation"));
+            }
+            Ok(())
+        },
+    );
+    assert!(matches!(failed, Err(ManagerError::Publication { .. })));
+    assert_eq!(manager.epoch(), epoch);
+    assert!(!manager.recovery_journals().is_empty());
+    assert!(matches!(
+        manager.publish_merged_file(TransactionId(252), &permit, &b, &content, Order(2)),
+        Err(ManagerError::RecoveryRequired { .. })
+    ));
+    assert!(!manager.recover().is_empty());
+    assert_eq!(fs::read_to_string(&b).unwrap(), "foreign owner");
+    fs::remove_file(&b).unwrap();
+    fs::rename(&held, &b).unwrap();
+    assert!(manager.recover().is_empty());
+    assert!(!b.exists());
+    assert_eq!(fs::metadata(&root).unwrap().modified().unwrap(), first);
+    let receipt = manager
+        .publish_merged_file(TransactionId(252), &permit, &b, &content, Order(2))
+        .unwrap();
+    assert_eq!(receipt.selected_order, Order(2));
+}
