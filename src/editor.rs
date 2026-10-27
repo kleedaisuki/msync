@@ -287,7 +287,7 @@ fn completion_prefix(line: &str, pos: usize) -> Option<(usize, &str, &'static [&
     let start = before
         .char_indices()
         .rev()
-        .find(|(_, ch)| ch.is_whitespace())
+        .find(|(_, ch)| ch.is_whitespace() || matches!(ch, '(' | ')' | ','))
         .map_or(0, |(index, ch)| index + ch.len_utf8());
     let prefix = &before[start..];
     if prefix.starts_with('/') && before[..start].trim().is_empty() {
@@ -480,6 +480,28 @@ mod tests {
                 .1,
             "$fi"
         );
+    }
+
+    #[test]
+    fn namespace_completion_inside_calls_preserves_the_callee_and_prior_arguments() {
+        for (prior, expected) in [
+            ("copy(", "$fi"),
+            ("copy(source,", "$pw"),
+            ("copy(\"字节\", ", "$lo"),
+        ] {
+            let line = format!("{prior}{expected}");
+            let (start, prefix, candidates) = completion_prefix(&line, line.len()).unwrap();
+            assert_eq!(prefix, expected);
+            assert_eq!(&line[..start], prior);
+            assert!(
+                candidates
+                    .iter()
+                    .any(|candidate| candidate.starts_with(prefix))
+            );
+        }
+        for line in ["copy(\"$pw", "copy(dir/<$pw", "/bash echo copy($pw"] {
+            assert!(completion_prefix(line, line.len()).is_none(), "{line}");
+        }
     }
 
     #[test]
