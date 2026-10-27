@@ -135,7 +135,12 @@ pub(super) fn safe_path(path: &Path) -> io::Result<PathBuf> {
             "managed root must be absolute and cannot be a volume root",
         ));
     }
-    for ancestor in path.ancestors() {
+    // A slash or final dot can make the first metadata query follow a junction.
+    // Inspect the component-trimmed leaf too before any canonicalization.
+    for ancestor in path
+        .ancestors()
+        .chain(path.components().as_path().ancestors())
+    {
         match fs::symlink_metadata(ancestor) {
             Ok(metadata) if metadata.file_attributes() & 0x400 != 0 => {
                 return Err(wire::invalid("reparse points are not managed roots"));
@@ -148,11 +153,153 @@ pub(super) fn safe_path(path: &Path) -> io::Result<PathBuf> {
     fs::canonicalize(path)
 }
 
+/// Canonical spelling is not a containment proof by itself: compare directory
+/// identities along the candidate's ancestry after rejecting reparse traversal.
+pub(super) fn contains_directory(root: &Path, candidate: &Path) -> io::Result<bool> {
+    let root = safe_path(root)?;
+    let candidate = safe_path(candidate)?;
+    if !root.is_dir() || !candidate.is_dir() {
+        return Err(wire::invalid(
+            "program cwd and managed roots must be ordinary directories",
+        ));
+    }
+    let root = same_file::Handle::from_path(root)?;
+    for ancestor in candidate.ancestors() {
+        if same_file::Handle::from_path(ancestor)? == root {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::transaction::filesystem::SnapshotStore;
     use std::time::{Duration, UNIX_EPOCH};
+
+    fn fixture() -> tempfile::TempDir {
+        let project = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&project).unwrap();
+        tempfile::Builder::new()
+            .prefix("view-cwd-")
+            .tempdir_in(project)
+            .unwrap()
+    }
+
+    #[test]
+    fn cwd_containment_accepts_dos_verbatim_and_case_aliases_but_not_prefix_siblings() {
+        let fixture = fixture();
+        let root = fixture.path().join("managed");
+        let child = root.join("child");
+        let outside = fixture.path().join("managed-other");
+        fs::create_dir_all(&child).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(root.join("not-a-directory"), "data").unwrap();
+        let canonical = fs::canonicalize(&root).unwrap();
+        let ordinary = PathBuf::from(super::super::native::configuration_path(&canonical).unwrap());
+        assert_ne!(
+            canonical, ordinary,
+            "exercise the cloud's ordinary/verbatim mismatch"
+        );
+        assert!(contains_directory(&canonical, &ordinary).unwrap());
+        assert!(contains_directory(&ordinary, &canonical).unwrap());
+        assert!(contains_directory(&canonical, &ordinary.join("child")).unwrap());
+        assert!(contains_directory(&canonical, &ordinary.join("CHILD")).unwrap());
+        assert!(!contains_directory(&canonical, &outside).unwrap());
+        assert!(
+            !contains_directory(&canonical, &ordinary.join("..").join("managed-other")).unwrap()
+        );
+        assert!(contains_directory(&canonical, Path::new("managed")).is_err());
+        assert!(contains_directory(&canonical, &root.join("not-a-directory")).is_err());
+    }
+
+    #[test]
+    fn cwd_containment_rejects_junction_escapes_including_slash_and_dot_spellings() {
+        let fixture = fixture();
+        let root = fixture.path().join("managed");
+        let outside = fixture.path().join("outside");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(outside.join("child")).unwrap();
+        let junction = root.join("escape");
+        create_junction(&junction, &outside).unwrap();
+        for path in [
+            junction.clone(),
+            junction.join("child"),
+            junction.join(""),
+            junction.join("."),
+        ] {
+            assert!(
+                contains_directory(&root, &path).is_err(),
+                "{}",
+                path.display()
+            );
+        }
+        fs::remove_dir(&junction).unwrap();
+        assert!(outside.join("child").is_dir());
+    }
+
+    fn create_junction(link: &Path, target: &Path) -> io::Result<()> {
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Wdk::Storage::FileSystem::REPARSE_DATA_BUFFER;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+        use windows_sys::Win32::System::IO::DeviceIoControl;
+
+        // Ordinary NTFS junctions do not require symlink privilege or a helper
+        // shell. The SDK structure supplies the variable-sized mount-point ABI.
+        fs::create_dir(link)?;
+        let target = super::super::native::configuration_path(&fs::canonicalize(target)?)?;
+        let substitute = std::ffi::OsString::from(format!(r"\??\{}", target.to_string_lossy()));
+        let substitute = substitute.encode_wide().collect::<Vec<_>>();
+        let print = target.encode_wide().collect::<Vec<_>>();
+        let mut names = substitute.clone();
+        names.push(0);
+        names.extend_from_slice(&print);
+        names.push(0);
+        let bytes = std::mem::offset_of!(
+            REPARSE_DATA_BUFFER,
+            Anonymous.MountPointReparseBuffer.PathBuffer
+        ) + names.len() * 2;
+        let mut storage = vec![0usize; bytes.div_ceil(std::mem::size_of::<usize>())];
+        let data = storage.as_mut_ptr().cast::<REPARSE_DATA_BUFFER>();
+        let handle = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(link)?;
+        let mut returned = 0;
+        // SAFETY: Aligned SDK-typed storage contains the complete mount-point
+        // header and its two NUL-terminated UTF-16 path strings.
+        let result = unsafe {
+            (*data).ReparseTag = 0xa0000003; // IO_REPARSE_TAG_MOUNT_POINT
+            (*data).ReparseDataLength = (bytes - 8) as u16;
+            let mount = &raw mut (*data).Anonymous.MountPointReparseBuffer;
+            (*mount).SubstituteNameOffset = 0;
+            (*mount).SubstituteNameLength = (substitute.len() * 2) as u16;
+            (*mount).PrintNameOffset = ((substitute.len() + 1) * 2) as u16;
+            (*mount).PrintNameLength = (print.len() * 2) as u16;
+            names
+                .as_ptr()
+                .copy_to_nonoverlapping((&raw mut (*mount).PathBuffer).cast::<u16>(), names.len());
+            DeviceIoControl(
+                handle.as_raw_handle(),
+                0x900a4,
+                data.cast(),
+                bytes as u32,
+                std::ptr::null_mut(),
+                0,
+                &mut returned,
+                std::ptr::null_mut(),
+            ) // FSCTL_SET_REPARSE_POINT
+        };
+        if result == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn logical_tree_transport_preserves_file_root_and_empty_directory_times() {

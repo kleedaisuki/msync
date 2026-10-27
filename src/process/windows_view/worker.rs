@@ -253,7 +253,14 @@ async fn initialize(
         trees::receive_tree(source, &root).await?;
         roots.push(root);
     }
-    if !roots.iter().any(|root| cwd.starts_with(root)) {
+    let mut contained = false;
+    for root in &roots {
+        contained = trees::contains_directory(root, &cwd)?;
+        if contained {
+            break;
+        }
+    }
+    if !contained {
         return Err(wire::invalid(
             "program cwd is outside its managed namespace",
         ));

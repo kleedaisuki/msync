@@ -255,11 +255,16 @@ impl PreparedView {
                 wire::invalid("use absolute executable/cwd and a buffer no larger than one MiB"),
             ));
         }
-        if !self
-            .roots
-            .iter()
-            .any(|root| spec.cwd.starts_with(&root.logical))
-        {
+        let mut contained = false;
+        for root in &self.roots {
+            contained = trees::contains_directory(&root.logical, &spec.cwd).map_err(|cause| {
+                ViewError::new("validate program cwd identity", &spec.cwd, cause)
+            })?;
+            if contained {
+                break;
+            }
+        }
+        if !contained {
             return Err(ViewError::new(
                 "validate program cwd",
                 &spec.cwd,

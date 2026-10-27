@@ -52,6 +52,21 @@ NT-path identity and driver confinement checks remain mandatory. Native driver
 journeys still require the next explicit gate; local unit success is not a native
 isolation acceptance result.
 
+The `e19a9b1` native gate then passed the foreign-rule rejection journey and
+reached payload cwd validation in the remaining three. The fixture supplied an
+ordinary DOS cwd while enrollment retained a canonical verbatim root; lexical
+`starts_with` incorrectly rejected the same directory. The boxed worker repeated
+the same lexical check, so normalizing only the parent check would not solve the
+actual execution path.
+
+Both ends now use one directory-containment routine: inspect raw and trimmed
+ancestors for reparse points, canonicalize the paths, and compare directory
+identities along cwd ancestry. This accepts real DOS/verbatim/case aliases without
+loosening the boundary for prefix siblings, relative paths, regular files or
+junction escapes. Driver-free regressions exercise both valid representations and
+a real NTFS junction (including slash/dot spellings); another provisioned gate is
+still required to validate the next payload-launch phase.
+
 The deployment/source investigation and pinned installer are in
 [transactions-v4.md](transactions-v4.md). The new runtime implementation is
 `src/process/view_windows.rs` with the focused `windows_view/` native ABI, bounded
