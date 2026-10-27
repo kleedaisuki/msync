@@ -18,7 +18,7 @@ $service = Get-Service -Name SbieSvc
 $service.WaitForStatus([System.ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(30))
 $driver = Get-CimInstance Win32_SystemDriver -Filter "Name='SbieDrv'"
 if (-not $driver -or $driver.State -ne 'Running') { throw 'The signed Sandboxie driver is not running' }
-$home = Join-Path $env:ProgramFiles 'Sandboxie-Plus'
-if (-not (Test-Path -LiteralPath (Join-Path $home 'SbieDll.dll'))) { throw 'The installed backend DLL was not found' }
-if ($env:GITHUB_ENV) { "MSYNC_SANDBOXIE_HOME=$home" >> $env:GITHUB_ENV }
-Write-Output "Verified Sandboxie installation: $home"
+$backendHome = Join-Path $env:ProgramFiles 'Sandboxie-Plus'
+if (-not (Test-Path -LiteralPath (Join-Path $backendHome 'SbieDll.dll'))) { throw 'The installed backend DLL was not found' }
+if ($env:GITHUB_ENV) { "MSYNC_SANDBOXIE_HOME=$backendHome" >> $env:GITHUB_ENV }
+Write-Output "Verified Sandboxie installation: $backendHome"
