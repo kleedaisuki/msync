@@ -477,6 +477,21 @@ impl Publication {
         Ok(())
     }
 
+    /// Idempotently restore an unpublished or published before-image. A manager
+    /// retains this receipt after a failed compensation and retries this method
+    /// without guessing whether rollback failed before or after a rename.
+    pub fn restore_before_image(&mut self) -> Result<()> {
+        match self.phase {
+            Phase::Prepared => Ok(()),
+            Phase::Published => self.rollback(),
+            Phase::RecoveryRequired => self.recover(),
+            _ => Err(self.failure(
+                "restore publication before-image",
+                io::Error::other("publication is not recoverable after finalization starts"),
+            )),
+        }
+    }
+
     /// Irreversibly release the journal after publication or successful recovery.
     /// A cleanup error may be retried, but rollback is no longer available once
     /// finalization starts. A failed publication must be recovered first.
@@ -665,7 +680,77 @@ fn move_new(source: &Path, target: &Path) -> io::Result<()> {
             return moved;
         }
     }
-    crate::io::publish_file(source, target, true)
+    let result = crate::io::publish_file(source, target, true);
+    #[cfg(windows)]
+    if result.as_ref().is_err_and(|error| {
+        error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32)
+    }) {
+        return move_new_posix(source, target);
+    }
+    result
+}
+
+#[cfg(windows)]
+fn move_new_posix(source: &Path, target: &Path) -> io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Wdk::Storage::FileSystem::FILE_RENAME_POSIX_SEMANTICS;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_RENAME_INFO,
+        FILE_RENAME_INFO_0, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileRenameInfoEx,
+        SetFileInformationByHandle,
+    };
+
+    // Match std's ACCESS_DENIED fallback without its REPLACE_IF_EXISTS flag.
+    // Open shared-delete handles can outlive a name change; Win32 MoveFileEx
+    // may reject a valid transition that handle-based POSIX renaming permits.
+    // https://github.com/rust-lang/rust/issues/123985
+    let file = fs::OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(source)?;
+    let target = crate::io::windows::wide_path(target)?;
+    let name_bytes = (target.len() - 1)
+        .checked_mul(2)
+        .and_then(|bytes| u32::try_from(bytes).ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "rename target exceeds Windows length limits",
+            )
+        })?;
+    let bytes = std::mem::offset_of!(FILE_RENAME_INFO, FileName)
+        .checked_add(target.len() * 2)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "rename buffer size overflow"))?
+        .max(std::mem::size_of::<FILE_RENAME_INFO>());
+    let size = u32::try_from(bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "rename buffer exceeds Windows length limits",
+        )
+    })?;
+    // usize storage has the alignment of HANDLE/FILE_RENAME_INFO on each Windows
+    // target. The trailing UTF-16 field is variable-sized and includes its NUL.
+    let mut storage = vec![0usize; bytes.div_ceil(std::mem::size_of::<usize>())];
+    let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    // SAFETY: Aligned zeroed storage includes a complete header and target name;
+    // every pointer remains valid until the synchronous native call returns.
+    let renamed = unsafe {
+        (&raw mut (*info).Anonymous).write(FILE_RENAME_INFO_0 {
+            Flags: FILE_RENAME_POSIX_SEMANTICS,
+        });
+        (&raw mut (*info).RootDirectory).write(std::ptr::null_mut());
+        (&raw mut (*info).FileNameLength).write(name_bytes);
+        target
+            .as_ptr()
+            .copy_to_nonoverlapping((&raw mut (*info).FileName).cast::<u16>(), target.len());
+        SetFileInformationByHandle(file.as_raw_handle(), FileRenameInfoEx, info.cast(), size)
+    };
+    if renamed == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -939,4 +1024,85 @@ fn remove_readonly_link(path: &Path) -> Result<()> {
         return Err(failure(io::Error::last_os_error()));
     }
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn posix_no_replace_rename_preserves_root_handles_and_refuses_collisions() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&root).unwrap();
+        let fixture = tempfile::Builder::new()
+            .prefix("posix-rename-")
+            .tempdir_in(root)
+            .unwrap();
+        let source = fixture.path().join("source-目录");
+        let target = fixture.path().join("target-目录");
+        let collision = fixture.path().join("collision");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&collision).unwrap();
+        fs::write(source.join("held"), "live file handle").unwrap();
+        fs::write(collision.join("retained"), "collision target").unwrap();
+        let held = Handle::from_path(&source).unwrap();
+        let legacy = crate::io::publish_file(&source, &target, true);
+        if legacy.is_ok() {
+            move_new_posix(&target, &source).unwrap();
+        }
+        move_new_posix(&source, &target).unwrap();
+        assert_eq!(held, Handle::from_path(&target).unwrap());
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read_to_string(target.join("held")).unwrap(),
+            "live file handle"
+        );
+        let failure = move_new_posix(&target, &collision).unwrap_err();
+        assert!(
+            failure.raw_os_error().is_some(),
+            "preserve the native collision cause"
+        );
+        assert_eq!(
+            fs::read_to_string(collision.join("retained")).unwrap(),
+            "collision target"
+        );
+        assert_eq!(
+            fs::read_to_string(target.join("held")).unwrap(),
+            "live file handle"
+        );
+    }
+
+    #[test]
+    fn moving_a_tree_with_a_live_child_handle_reports_the_native_denial_without_data_loss() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&root).unwrap();
+        let fixture = tempfile::Builder::new()
+            .prefix("posix-rename-denied-")
+            .tempdir_in(root)
+            .unwrap();
+        let source = fixture.path().join("source");
+        let target = fixture.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("held"), "requires quiescence").unwrap();
+        let held = fs::File::open(source.join("held")).unwrap();
+        let legacy = crate::io::publish_file(&source, &target, true).unwrap_err();
+        assert_eq!(
+            legacy.raw_os_error(),
+            Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32)
+        );
+        let failure = move_new(&source, &target).unwrap_err();
+        assert_eq!(failure.raw_os_error(), legacy.raw_os_error());
+        assert!(!target.exists());
+        assert_eq!(
+            fs::read_to_string(source.join("held")).unwrap(),
+            "requires quiescence"
+        );
+        drop(held);
+        move_new(&source, &target).unwrap();
+        assert!(!source.exists());
+        assert_eq!(
+            fs::read_to_string(target.join("held")).unwrap(),
+            "requires quiescence"
+        );
+    }
 }
