@@ -208,6 +208,58 @@ prevent access outside the allowed view, but does not redirect paths or implemen
 MVCC. Probe ABI capabilities at runtime. A missing required write/truncate/rename
 restriction must not silently become an isolation downgrade.
 
+#### Implemented Linux view and payload identity boundary
+
+`process::view_linux` now materializes complete directory snapshots into private
+owned roots and binds them at their original absolute paths. The host tree is
+read-only; `/tmp`, `/run`, `/dev` and `/proc` are namespace-local. PATH and HOME
+are inherited; TMPDIR is explicitly `/tmp`. Export waits for the process tree
+and physical output drains, and cancelled views are discarded rather than
+exported as successful versions. Provider capability failures are not cached:
+repairing dependencies or user-namespace policy can be retried in the REPL.
+Successful probes retain the resolved provider executable.
+
+Do not interpret bubblewrap's JSON `child-pid` as the target PID. In the pinned
+[v0.9.0 implementation](https://github.com/containers/bubblewrap/blob/v0.9.0/bubblewrap.c),
+the outside monitor reports the namespace child before that child forks the
+PID-1 reaper and actual PID-2 program. The block-fd gate also precedes that fork;
+polling its children is racy for short-lived targets. Keeping the normal reaper
+avoids changing target signal/reaping semantics merely to make PID lookup easy.
+
+An explicitly configured msync worker runs in the payload position, sends a
+bounded readiness frame over an inherited private Unix stream, marks that
+descriptor CLOEXEC, and execs the target with unchanged argv/environment/stdio.
+The parent obtains its real host PID from kernel SCM_CREDENTIALS; SO_PEERCRED
+would instead identify the socketpair creator. See [Unix credentials](https://man7.org/linux/man-pages/man7/unix.7.html)
+and [PID-namespace translation](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html).
+EOF is the exec-success boundary; a failed exec transmits the native errno and
+bounded detail separately. `RunningView` and `SealedView` scalar methods expose
+payload PID and metadata, with namespace/supervisor IDs explicitly distinguished.
+The low-level `Process` still owns the native monitor. Bubblewrap's shell-style
+signal-to-exit-code normalization is named in metadata, not mislabeled as a raw
+signal status.
+
+The API requires all manager-enrolled resources visible to that process, not an
+argv-derived subset: an omitted managed path remains readable through the host
+tree, so its omission would not prove disjoint effects. Every supplied root is
+conservatively Read+Write. Existing nonoverlapping directory roots and disjoint
+scratch are the initial supported layout; dynamic enrollment/masked omitted
+roots remain manager integration work. Read-only mounting is not a general
+hostile-syscall or filesystem Unix-socket IPC security claim.
+
+Focused local evidence: WSL UID 1000, bubblewrap 0.9.0, fixtures on a private
+96 MiB native tmpfs mounted at project `.temp` in `unshare -Urnm`; source and
+build cache stayed outside that mount. Six actual view journeys passed,
+including `/proc/<payload-pid>/status` NSpid and cmdline checks against the
+credentialled PID, absolute/relative/grandchild writes, frozen reads after a
+host modification, host file/TCP denial, exec error versus nonzero exit, and
+cancel-without-export. The targeted capability-cache regression and strict
+library/binary/view-target Clippy passed. The same initial binary's directory
+publication failed with EPERM on DrvFs, so that result is recorded as a
+filesystem publication capability, not a namespace failure or a performance
+measurement. The tests remain explicit until the runner provisions bubblewrap
+and its namespace policy; skipped tests are not cross-platform completion.
+
 ### Native Windows path
 
 Windows has no portable unprivileged mount-namespace equivalent that can simply

@@ -260,6 +260,14 @@ fn add_positional(options: &mut Args, arg: String) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
+    #[cfg(target_os = "linux")]
+    if env::args_os().nth(1).as_deref()
+        == Some(std::ffi::OsStr::new(
+            msync::process::view_linux::WORKER_FLAG,
+        ))
+    {
+        return msync::process::view_linux::worker_entry(env::args_os().skip(2));
+    }
     let args: Vec<_> = env::args().skip(1).collect();
     let color = requested_color(&args);
     let result = arguments(args.into_iter())

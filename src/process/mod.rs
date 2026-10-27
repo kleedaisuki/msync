@@ -8,6 +8,9 @@
 
 mod tree;
 
+#[cfg(target_os = "linux")]
+pub mod view_linux;
+
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io;
