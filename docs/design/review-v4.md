@@ -42,6 +42,10 @@ it. The Unix mode-bit regression is retained for the remote Unix matrix; it has
 not been counted as a local Windows pass. Fixture data and disposable outputs
 remain under the project's `.temp`.
 
+Follow-up: the two independent Unix counterexamples and the Windows counterexample
+passed at `e7fd5bd` in the targeted two-platform
+[Actions run](https://github.com/kleedaisuki/msync/actions/runs/40481406869).
+
 ## Other assessed boundaries
 
 The version store validates an entire pending segment before modifying published

@@ -10,6 +10,11 @@ use crate::syntax::{Report, Span};
 
 const MAX_NESTING: usize = 128;
 
+pub(super) fn opens_block(line: &str) -> bool {
+    let code = line[..comment_start(line).unwrap_or(line.len())].trim_start();
+    code.starts_with("macro ") || code.starts_with("transaction ")
+}
+
 #[derive(Clone, Copy)]
 struct Line<'a> {
     code: &'a str,

@@ -415,6 +415,7 @@ not advanced prematurely.
 | Macro expansion | `compiler::structured::Session`; isolated frames, typed arguments, definition-time `global`, source/cwd split, session identities | 22 targeted cases |
 | Typed IR and proofs | `hir`, `hir::{effects, graph}`; transaction regions, process events, unknown-effect barriers and provider-bound refinement | 20 targeted cases; independent small-state model enumerates admitted schedules |
 | Atomic frontend submission | `pipeline::{compile, compile_with_context}`; parse, candidate expansion, effect obligations, then lexical-state commit; retain adapter proof premises | Four integration cases, including proof failure without leaked bindings or IDs and invalidated resource-view premises |
+| Compound input ownership | `language::SubmissionBuffer`; physical lines accumulate until blank line/EOF, cancellation discards the entire prefix | Five targeted cases; compiler sees no partial macro or transaction body; terminal-loop integration remains pending |
 | Version visibility | `transaction::Store<V>`; immutable references, four visibility policies, atomic logical checkpoints, retained origin | 17 cases including write skew, absence, directory phantoms and rollback properties |
 | Filesystem publication | `transaction::filesystem`; independent disk artifacts, tree manifests and retained compensating publication journals | Separate real-filesystem target; not an OS-wide atomicity or crash-recovery claim |
 | Process ownership | `process`; exact argv, concurrent bounded-memory output drains, replayable scalar ports, Job/group ownership | Separate actual-child target; not a transaction sandbox |
@@ -438,6 +439,14 @@ changing their inode-wide mode/attributes. See [review-v4.md](review-v4.md) for
 the counterexample and remaining recovery-intent hardening before full manager
 integration. These findings are why native cloud verification and independent
 filesystem journeys remain separate from pure model tests.
+
+The corrected foundation at `e7fd5bd` passed both Ubuntu and Windows in
+[Actions run 40481406869](https://github.com/kleedaisuki/msync/actions/runs/40481406869).
+The selector reported `full=false`; it ran the library checks and the seven
+affected feature/review targets, not another complete compatibility suite. This
+includes the native Unix read-only-directory publication and both independent
+hard-link permission regressions. It does not certify the later execution-manager
+or resource-view work, or the original full v0.4 objective.
 
 Remaining delivery obligations are the filesystem-backed execution manager,
 verified Linux/Windows program-resource views, runtime coordination of overlapping

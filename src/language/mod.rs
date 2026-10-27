@@ -4,11 +4,13 @@
 //! This frontend retains literal/path distinctions and nested control regions.
 
 mod parser;
+mod submission;
 mod writer;
 
 use crate::syntax::Span;
 
 pub use parser::parse;
+pub use submission::{Submission, SubmissionBuffer};
 pub use writer::format;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
