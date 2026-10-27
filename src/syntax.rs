@@ -102,6 +102,13 @@ pub struct OperandSource {
 }
 
 impl OperandSource {
+    pub(crate) fn mapped(span: Span, content: Span, decoded_offsets: Vec<usize>) -> Self {
+        Self {
+            span,
+            content,
+            decoded_offsets: Some(decoded_offsets),
+        }
+    }
     pub fn unmapped(span: Span) -> Self {
         Self {
             span,
@@ -556,6 +563,20 @@ pub fn render_report_named(source: &str, report: &Report, name: &str, color: boo
     render_rich(source, report, Some(name), color)
 }
 
+pub(crate) fn render_related_named(
+    source: &str,
+    labels: &[Label],
+    name: &str,
+    color: bool,
+) -> String {
+    let Some(first) = labels.first() else {
+        return String::new();
+    };
+    let mut report = Report::new("", first.span);
+    report.labels = labels.to_vec();
+    render_rich_inner(source, &report, Some(name), color, false)
+}
+
 struct SourceLine<'a> {
     start: usize,
     text: &'a str,
@@ -568,8 +589,23 @@ struct Annotation<'a> {
 }
 
 fn render_rich(source: &str, report: &Report, name: Option<&str>, color: bool) -> String {
+    render_rich_inner(source, report, name, color, true)
+}
+
+fn render_rich_inner(
+    source: &str,
+    report: &Report,
+    name: Option<&str>,
+    color: bool,
+    primary_report: bool,
+) -> String {
     let lines = source_lines(source);
-    let annotations = report_annotations(source, report);
+    let mut annotations = report_annotations(source, report);
+    if !primary_report {
+        for annotation in &mut annotations {
+            annotation.primary = false;
+        }
+    }
     let primary = annotations[0].span;
     let first = line_number_at(source, primary.start);
     let visible_start = primary
@@ -580,13 +616,20 @@ fn render_rich(source: &str, report: &Report, name: Option<&str>, color: bool) -
         Some(name) => format!("{}:{}:{column}", display_metadata(name), first + 1),
         None => format!("{}:{column}", first + 1),
     };
-    let mut output = format!(
-        "{} {}\n {} {}",
-        paint("error:", "1;31", color),
-        display_metadata(&report.diagnostic.message),
+    let mut output = if primary_report {
+        format!(
+            "{} {}\n",
+            paint("error:", "1;31", color),
+            display_metadata(&report.diagnostic.message)
+        )
+    } else {
+        String::new()
+    };
+    output.push_str(&format!(
+        " {} {}",
         paint("-->", "1;34", color),
-        paint(&location, "1;34", color),
-    );
+        paint(&location, "1;34", color)
+    ));
     let selected = report_lines(source, &annotations, lines.len());
     let gutter = (selected.last().copied().unwrap_or(0) + 1)
         .to_string()

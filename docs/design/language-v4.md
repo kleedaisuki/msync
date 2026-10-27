@@ -1,7 +1,7 @@
 # v0.4 language frontend: typed blocks, calls and lexical expansion
 
-Status: implementation proposal, not a claim that the features below already
-execute. The user-supplied v0.4 example is the semantic target. This note owns
+Status: frontend implementation and runtime integration contract, not a claim
+that all runtime paths below already execute. The user-supplied v0.4 example is the semantic target. This note owns
 frontend rules; transaction enforcement and effect scheduling belong in the
 companion architecture and transaction notes.
 
@@ -11,11 +11,13 @@ companion architecture and transaction notes.
    `StatementKind`, `Compiler::compile*`, `Program.operations` and the legacy
    parser/formatter entrypoints available with their existing contracts. A new
    frontend must not squeeze structured control into fake copy operations.
-2. In the v0.4 language, a bare double-quoted copy source is UTF-8 literal content.
-   A quoted destination remains a path. An explicit qualifier, for example
+2. In the v0.4 language, every bare double-quoted expression is UTF-8 literal content,
+   including value bindings and destinations. Literal destinations are read-only.
+   An explicit path join (`./"file name"`) or qualifier, for example
    `$local::"folder name/input.txt"`, makes a quoted source a path. Legacy syntax
-   APIs still treat a whole quoted operand as a path. The CLI migration must be
-   explicit and tested; never choose content versus path by checking existence.
+   APIs still treat a whole quoted operand as a path. The user authorized the
+   default-v0.4 breaking update; legacy mode is explicit. Never choose content
+   versus path by checking existence.
 3. In v0.4, `$pwd::des/agents/.` resolves the first item structurally, then anchors
    the resulting relative value under the invocation cwd. A macro formal `des`
    is therefore usable there. `$pwd::pwd` and `$pwd::pwd/child` retain their existing
@@ -111,7 +113,11 @@ enum ExprKind {
 `Reference` intentionally does not decide whether `p::stdout` is an endpoint item,
 program port, imported program or formal parameter. The compiler resolves the
 qualifier to a typed space. Path suffixes must be segmented before formal lookup;
-replacing a whole first component is valid, replacing arbitrary substrings is not.
+resolving typed operands is valid, replacing arbitrary substrings is not. The
+implemented `ExprKind::Join` retains the operator span, base, optional suffix,
+and destination intent. Compact and spaced joins use the same AST: a bound bare
+operand resolves lexically; quote a fixed component (`src / "agents"`) instead
+of capturing a binding named `agents`.
 For example formal `des` affects `$pwd::des/out`, not `destination` or
 `folder/des/out`.
 
@@ -165,14 +171,16 @@ but duplicated state machines that disagree on comments/quotes are not.
 | Context | Bare token | Double-quoted token | Qualified quoted item |
 | --- | --- | --- | --- |
 | Copy source | Path/item/port reference | Read-only UTF-8 literal | Path/item reference |
-| Copy destination | Writable path/port reference | Quoted path | Path/item reference |
-| `:=` RHS | Typed path/item reference | Quoted path, preserving legacy declarations | Path/item reference |
+| Copy destination | Writable path/port reference | Read-only literal; rejected as a sink | Path/item reference |
+| `:=` RHS | Typed path/item reference | UTF-8 literal data | Path/item reference |
 | Call argument | Resolved binding if present, otherwise item value | UTF-8 string argument | Typed path/item reference |
-| `=>` RHS | Namespace reference | Legacy quoted namespace/URL value if supported by adapter | Namespace/item reference |
+| `=>` RHS | Namespace reference or program call | Literal is not a namespace | Namespace/item reference |
 
-The context rule preserves existing practical quoted destinations and aliases
-while making the requested literal form exact. All new source-path examples
-should use an explicit qualifier when quoting is necessary. The formatter must
+`text := "file name"` therefore binds data, while `path := ./"file name"` binds
+a relative endpoint-polymorphic path. `/` and `::` provide explicit path context;
+they may contextualize string items without interpreting them as source text.
+Path-component boundary whitespace is rejected, while interior spaces are valid.
+Literal data whitespace is never trimmed. The formatter must
 never simplify `$local::"a"` into `"a"`, because that changes a path into content.
 
 Reuse the existing escape decoder and original-byte map. Empty literal `""` is
@@ -359,3 +367,49 @@ milliseconds at small real script sizes; do not claim a faster parser from one
 full-process startup sample. Reuse persistent environment snapshots, intern only
 when repeated identifiers measurably dominate, and avoid quadratic concatenation
 of expanded source because no expanded source string is required.
+
+## Owned sources and implemented diagnostics
+
+`source::{Source, SourceId, SourceMap, SourceSpan, LocatedReport}` own original
+UTF-8 text and display identity. `pipeline::compile_named` accepts source text,
+display name, compile context and planning premises. Macro definitions capture
+their source Arc together with their lexical environment; a later file/REPL call
+does not reopen the defining file or reinterpret definition offsets in the caller.
+Distinct sources with the same basename retain distinct identities.
+
+`Expr::source` is an `OperandSource` mapping decoded bytes back to original
+tokens, including qualified quoted suffixes. Selector diagnostics and contextual
+namespace member errors use that map; program-member errors label the member
+token. A `Compilation` carries an origin map keyed by instruction ID, preserving
+the call site, expanded definition and actual source/destination argument sites
+without changing the HIR instruction layout. `instruction_report` lets a runtime
+retain typed OS diagnostics and select the meaningful original operand.
+
+`LocatedReport::render` emits one error heading and groups secondary labels by
+their own owned sources, using the existing Unicode/control-safe renderer.
+The basic `Report` API remains unchanged. Compatibility flattening moves a foreign
+primary to its outer call context and names the definition in help instead of
+placing foreign offsets inside a caller snippet.
+
+`Session::{try_from_legacy, try_merge_legacy}` import typed compiler maps rather
+than parse `/bindings` display strings. The fallible bridge rejects a legacy name
+that simultaneously denotes a namespace and item, before changing any state.
+Structured binding display renders data as literal data and paths through explicit
+join/namespace operations; it never turns a relative polymorphic path into a
+`$local`-pinned value merely to quote spaces. Container/replacement intent is part
+of the internal path value, not guessed from characters inside a quoted fragment.
+
+Focused evidence lives in `source_v4`, `join_v4`, `language_v4`, `lowering_v4` and
+`pipeline_v4`: cross-submission macro diagnostics, escaped UTF-8 byte maps, arity
+and prior-port ownership labels, typed binding replay, uniform literal aliases,
+compact/spaced joins, namespace roots, interior spaces and delimiter protection.
+
+Preparation uses `Diagnostic` with an optional instruction ID and a typed
+`Operand` (`Operation`, `Source`, `Destination`). Inspection retains that site
+through local resolution and remote metadata batches; type validation chooses the
+failing operand directly. `prepare_with_context_detailed` exposes those sites,
+and `Compilation::preparation_report` resolves them against owned macro and caller
+sources. The original `Vec<Report>` preparation APIs remain compatibility wrappers.
+This boundary must not recover operand roles by matching diagnostic wording.
+Directory-mode failures identify the destination token and suggest explicit `/`
+container or `/.` replacement intent before any mutation.

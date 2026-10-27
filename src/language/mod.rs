@@ -5,13 +5,21 @@
 
 mod parser;
 mod submission;
+mod version;
 mod writer;
 
-use crate::syntax::Span;
+use crate::syntax::{OperandSource, Span};
 
 pub use parser::parse;
 pub use submission::{Submission, SubmissionBuffer};
+pub use version::{Version, select_version};
 pub use writer::format;
+pub(crate) use writer::quoted as write_literal;
+
+pub(crate) fn path_boundary_whitespace(path: &str) -> bool {
+    path.split(['/', '\\'])
+        .any(|component| component.trim() != component)
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Document {
@@ -90,6 +98,8 @@ impl Isolation {
 pub struct Expr {
     pub kind: ExprKind,
     pub span: Span,
+    /// Decoded path/literal bytes map to the original suffix token, not its qualifier.
+    pub source: OperandSource,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,6 +109,12 @@ pub enum ExprKind {
     Call {
         callee: Box<Expr>,
         arguments: Vec<Expr>,
+    },
+    Join {
+        base: Box<Expr>,
+        suffix: Option<Box<Expr>>,
+        operator: Span,
+        mode: DestinationMode,
     },
 }
 

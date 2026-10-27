@@ -25,15 +25,15 @@ fn block(output: &mut String, statements: &Block, depth: usize) {
                     BindingOp::Space => " => ",
                     BindingOp::Value => " := ",
                 });
-                expression(output, value, false);
+                expression(output, value);
             }
             StatementKind::Transfer {
                 source,
                 destination,
             } => {
-                expression(output, source, true);
+                expression(output, source);
                 output.push_str(" -> ");
-                expression(output, destination, false);
+                expression(output, destination);
             }
             StatementKind::Macro {
                 name,
@@ -53,7 +53,7 @@ fn block(output: &mut String, statements: &Block, depth: usize) {
                 block(output, body, depth + 1);
                 continue;
             }
-            StatementKind::Call(call) => expression(output, call, true),
+            StatementKind::Call(call) => expression(output, call),
             StatementKind::Global(names) => {
                 output.push_str("global ");
                 for (index, name) in names.iter().enumerate() {
@@ -96,7 +96,7 @@ fn block(output: &mut String, statements: &Block, depth: usize) {
     }
 }
 
-fn expression(output: &mut String, value: &Expr, literal_position: bool) {
+fn expression(output: &mut String, value: &Expr) {
     match &value.kind {
         ExprKind::Path(path) => {
             if let Some(qualifier) = &path.qualifier {
@@ -106,21 +106,28 @@ fn expression(output: &mut String, value: &Expr, literal_position: bool) {
             // An unqualified source/argument was necessarily parsed as a bare
             // path. Keep it bare: inventing `$local` could pin an endpoint-
             // polymorphic macro parameter to the wrong transport.
-            if needs_quote(&path.path) && (path.qualifier.is_some() || !literal_position) {
+            if needs_quote(&path.path) && path.qualifier.is_some() {
                 quoted(output, &path.path);
             } else {
                 output.push_str(&path.path);
             }
         }
         ExprKind::Literal(text) => quoted(output, text),
+        ExprKind::Join { base, suffix, .. } => {
+            expression(output, base);
+            output.push('/');
+            if let Some(suffix) = suffix {
+                expression(output, suffix);
+            }
+        }
         ExprKind::Call { callee, arguments } => {
-            expression(output, callee, false);
+            expression(output, callee);
             output.push('(');
             for (index, argument) in arguments.iter().enumerate() {
                 if index != 0 {
                     output.push_str(", ");
                 }
-                expression(output, argument, true);
+                expression(output, argument);
             }
             output.push(')');
         }
@@ -137,7 +144,7 @@ fn needs_quote(path: &str) -> bool {
         || path.contains(":=")
 }
 
-fn quoted(output: &mut String, text: &str) {
+pub(crate) fn quoted(output: &mut String, text: &str) {
     output.push('"');
     for ch in text.chars() {
         match ch {

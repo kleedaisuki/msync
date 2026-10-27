@@ -82,6 +82,24 @@ impl FileResource {
             .unwrap_or_else(|| self.path.parts == other.path.parts)
     }
 
+    fn definitely_same_path(&self, other: &Self) -> bool {
+        self.location == other.location
+            || (self.location.backend == other.location.backend
+                && self.path.root == other.path.root
+                && !self.path.uncertain
+                && !other.path.uncertain
+                && self.path.parts == other.path.parts)
+    }
+
+    /// A negative overlap guess cannot establish a preparation premise.
+    pub fn is_definite_ancestor_of(&self, other: &Self) -> bool {
+        self.location.backend == other.location.backend
+            && self.path.root == other.path.root
+            && !self.path.uncertain
+            && !other.path.uncertain
+            && other.path.parts.starts_with(&self.path.parts)
+    }
+
     fn contains_path(&self, other: &Self) -> bool {
         self.comparable(other)
             .unwrap_or_else(|| other.path.parts.starts_with(&self.path.parts))
@@ -105,6 +123,63 @@ impl FileResource {
             root => format!("{root}/{tail}"),
         };
         Some(parent)
+    }
+}
+
+/// A retained, immutable regular-file version selected at this instruction's
+/// logical read epoch. The reader adapter must serve these captured bytes and
+/// retain their lease until the flow closes, not reopen the mutable path.
+///
+/// Construction validates shape only. It cannot prove OS capture, source-order
+/// visibility, or lifetime. A file type, cwd, pathname or HEAD response alone is
+/// not evidence. Raw HTTP/TCP inputs must first be captured/lowered to a local
+/// artifact; this token does not erase their request/consumption events.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VersionReadProof {
+    source: FileResource,
+    provider: String,
+    version_id: String,
+}
+
+impl VersionReadProof {
+    pub fn pinned_file(
+        location: Location,
+        provider: impl Into<String>,
+        version_id: impl Into<String>,
+    ) -> Result<Self, String> {
+        let provider = provider.into();
+        let version_id = version_id.into();
+        if provider.is_empty()
+            || version_id.is_empty()
+            || location.path.is_empty()
+            || location.path.contains('\0')
+            || !matches!(
+                location.backend,
+                Backend::Local | Backend::Wsl | Backend::Ssh { .. }
+            )
+        {
+            return Err("a pinned-file premise needs a retained immutable filesystem version, its source location, and nonempty provider/version identities".into());
+        }
+        Ok(Self {
+            source: FileResource::new(location, Scope::Exact),
+            provider,
+            version_id,
+        })
+    }
+
+    pub fn location(&self) -> &Location {
+        &self.source.location
+    }
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+    pub fn version_id(&self) -> &str {
+        &self.version_id
+    }
+
+    pub fn covers(&self, location: &Location) -> bool {
+        self.source
+            .definitely_same_path(&FileResource::new(location.clone(), Scope::Exact))
     }
 }
 
@@ -210,6 +285,9 @@ impl From<ReadPort> for Port {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resource {
     File(FileResource),
+    /// Bytes already selected by a retained immutable-version reader. Private
+    /// writes to the original pathname do not mutate this captured object.
+    SnapshotFile(VersionReadProof),
     /// Directory entries and directory metadata, not sibling regular-file data.
     DirectoryMetadata(FileResource),
     /// Finite responses are not immutable versions. Requests at one origin
@@ -225,6 +303,11 @@ impl Resource {
     pub fn may_overlap(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::File(left), Self::File(right)) => left.may_overlap(right),
+            (Self::SnapshotFile(left), Self::SnapshotFile(right)) => {
+                left.provider == right.provider
+                    && left.version_id == right.version_id
+                    && left.source.definitely_same_path(&right.source)
+            }
             (Self::HttpRequests(left), Self::HttpRequests(right)) => {
                 left.is_none() || right.is_none() || left == right
             }
@@ -325,11 +408,20 @@ pub fn summarize(instruction: &Instruction) -> Effects {
 }
 
 pub fn summarize_with_facts(instruction: &Instruction, facts: OperationFacts) -> Effects {
+    summarize_prepared(instruction, facts, None, None)
+}
+
+pub fn summarize_prepared(
+    instruction: &Instruction,
+    facts: OperationFacts,
+    existing_parent: Option<&Location>,
+    pinned_input: Option<&VersionReadProof>,
+) -> Effects {
     match &instruction.kind {
         InstructionKind::Transfer {
             source,
             destination,
-        } => transfer(source, destination, facts),
+        } => transfer(source, destination, facts, existing_parent, pinned_input),
         InstructionKind::Spawn { .. } => Effects {
             unknown_external: true,
             ..Effects::default()
@@ -354,10 +446,27 @@ pub fn file_class(location: &Location, observed: FileClass) -> FileClass {
     }
 }
 
-fn transfer(source: &Input, destination: &Output, facts: OperationFacts) -> Effects {
+fn transfer(
+    source: &Input,
+    destination: &Output,
+    facts: OperationFacts,
+    existing_parent: Option<&Location>,
+    pinned_input: Option<&VersionReadProof>,
+) -> Effects {
     let mut effects = Effects::default();
-    match source {
-        Input::File { location, pattern } => {
+    let pinned = match source {
+        Input::File {
+            location,
+            pattern: None,
+        } => pinned_input.filter(|proof| proof.covers(location)),
+        _ => None,
+    };
+    match (source, pinned) {
+        (Input::File { .. }, Some(proof)) => effects.accesses.push(Access {
+            resource: Resource::SnapshotFile(proof.clone()),
+            kind: AccessKind::Read,
+        }),
+        (Input::File { location, pattern }, None) => {
             let class = file_class(location, facts.source);
             let http = matches!(location.backend, Backend::Http { .. });
             let scope = if class == FileClass::Regular && pattern.is_none() {
@@ -395,8 +504,8 @@ fn transfer(source: &Input, destination: &Output, facts: OperationFacts) -> Effe
                 });
             }
         }
-        Input::Literal(_) => {}
-        Input::Port { process, port } => effects.accesses.push(Access {
+        (Input::Literal(_), _) => {}
+        (Input::Port { process, port }, _) => effects.accesses.push(Access {
             resource: Resource::Port {
                 process: *process,
                 port: (*port).into(),
@@ -411,13 +520,17 @@ fn transfer(source: &Input, destination: &Output, facts: OperationFacts) -> Effe
     match destination {
         Output::File { location, mode } => {
             let destination_class = file_class(location, facts.destination);
-            let source_class = match source {
-                Input::File {
-                    location,
-                    pattern: None,
-                } => file_class(location, facts.source),
-                Input::File { .. } => FileClass::Unknown,
-                Input::Literal(_) | Input::Port { .. } => FileClass::Regular,
+            let source_class = if pinned.is_some() {
+                FileClass::Regular
+            } else {
+                match source {
+                    Input::File {
+                        location,
+                        pattern: None,
+                    } => file_class(location, facts.source),
+                    Input::File { .. } => FileClass::Unknown,
+                    Input::Literal(_) | Input::Port { .. } => FileClass::Regular,
+                }
             };
             let scope = if *mode == DestinationMode::Exact
                 && matches!(source_class, FileClass::Regular | FileClass::Stream)
@@ -438,6 +551,7 @@ fn transfer(source: &Input, destination: &Output, facts: OperationFacts) -> Effe
                 *mode,
                 source_class,
                 destination_class,
+                existing_parent,
             );
         }
         Output::Stdin(process) => effects.accesses.push(Access {
@@ -457,6 +571,7 @@ fn add_namespace_writes(
     mode: DestinationMode,
     source: FileClass,
     destination: FileClass,
+    existing_parent: Option<&Location>,
 ) {
     if destination == FileClass::Stream
         || (destination == FileClass::Regular && mode == DestinationMode::Exact)
@@ -480,7 +595,10 @@ fn add_namespace_writes(
     }
     let mut parent = resource.parent();
     while let Some(directory) = parent {
-        parent = if matches!(destination, FileClass::Missing | FileClass::Unknown) {
+        let at_frontier = existing_parent.is_some_and(|frontier| {
+            directory.definitely_same_path(&FileResource::new(frontier.clone(), Scope::Exact))
+        });
+        parent = if !at_frontier && matches!(destination, FileClass::Missing | FileClass::Unknown) {
             directory.parent()
         } else {
             None

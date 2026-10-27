@@ -23,6 +23,7 @@ pub const COMMANDS: &[&str] = &[
     "/plan",
     "/fmt",
     "/limits",
+    "/syntax",
     "/jobs",
     "/wait",
     "/stop",

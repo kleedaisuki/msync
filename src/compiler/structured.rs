@@ -14,11 +14,12 @@ use crate::hir::{
 };
 use crate::hir::{Region, RollbackScope, TransactionId, TransactionInfo};
 use crate::language::{self, BindingOp, DestinationMode, Document, Expr, ExprKind, Name, PathExpr};
+use crate::source::{InstructionOrigin, LocatedReport, Origins, Source, SourceSpan};
 use crate::syntax::{OperandSource, Report, Span};
 
 #[derive(Clone, Debug)]
 enum Value {
-    Path(Alias),
+    Path(PathValue),
     Literal(Arc<str>),
     Space(Space),
     Process(ProcessId),
@@ -32,13 +33,46 @@ enum Port {
 }
 
 #[derive(Clone, Debug)]
+struct PathValue {
+    backend: Option<Backend>,
+    path: String,
+    is_file: bool,
+    mode: DestinationMode,
+}
+
+impl From<Alias> for PathValue {
+    fn from(value: Alias) -> Self {
+        Self {
+            backend: value.backend,
+            path: value.path,
+            is_file: value.is_file,
+            mode: DestinationMode::Exact,
+        }
+    }
+}
+
+impl PathValue {
+    fn legacy(&self) -> Alias {
+        Alias {
+            backend: self.backend.clone(),
+            path: self.path.clone(),
+            is_file: self.is_file,
+        }
+    }
+}
+
+type TransferValues = (Input, Output, Vec<((ProcessId, Port), Span)>);
+
+#[derive(Clone, Debug)]
 struct Macro {
     name: Name,
     parameters: Vec<Name>,
     body: language::Block,
     globals: Arc<BTreeMap<String, Value>>,
+    global_sites: Arc<BTreeMap<String, SourceSpan>>,
     macros: Arc<BTreeMap<String, Arc<Macro>>>,
     source_file: Option<PathBuf>,
+    source: Arc<Source>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -47,6 +81,8 @@ struct Scope {
     macros: Arc<BTreeMap<String, Arc<Macro>>>,
     globals: Option<Arc<BTreeMap<String, Value>>>,
     imported: HashSet<String>,
+    sites: Arc<BTreeMap<String, SourceSpan>>,
+    global_sites: Option<Arc<BTreeMap<String, SourceSpan>>>,
 }
 
 /// Persistent structured compiler environment, independent of executor state.
@@ -57,12 +93,62 @@ pub struct Session {
     next_process: usize,
     next_transaction: usize,
     transactions: BTreeMap<String, TransactionId>,
-    consumed: HashMap<(ProcessId, Port), Span>,
+    consumed: HashMap<(ProcessId, Port), SourceSpan>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Lowered {
+    pub program: hir::Program,
+    pub origins: Origins,
 }
 
 impl Session {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn from_legacy(compiler: Compiler) -> Self {
+        let mut session = Self::new();
+        session.merge_legacy(&compiler);
+        session
+    }
+
+    pub fn try_from_legacy(compiler: &Compiler) -> Result<Self, Report> {
+        let mut session = Self::new();
+        session.try_merge_legacy(compiler)?;
+        Ok(session)
+    }
+
+    /// The legacy grammar has separate namespace and item name tables. A mode
+    /// switch must diagnose a dual declaration instead of silently discarding it.
+    pub fn try_merge_legacy(&mut self, compiler: &Compiler) -> Result<(), Report> {
+        if let Some(name) = compiler
+            .spaces
+            .keys()
+            .find(|name| compiler.aliases.contains_key(*name))
+        {
+            return Err(Report::new(format!("legacy binding '{name}' names both a namespace and a path item"), Span::default())
+                .help("Rename one of the two legacy declarations before switching syntax; the structured lexical environment gives each name one value."));
+        }
+        self.merge_legacy(compiler);
+        Ok(())
+    }
+
+    /// Import physical/path bindings without discarding structured-only values.
+    /// Bindings explicitly present in the legacy environment win that name.
+    pub fn merge_legacy(&mut self, compiler: &Compiler) {
+        let values = Arc::make_mut(&mut self.scope.values);
+        for (name, space) in compiler.spaces.iter() {
+            values.insert(name.clone(), Value::Space(space.clone()));
+            Arc::make_mut(&mut self.scope.sites).remove(name);
+        }
+        for (name, path) in compiler.aliases.iter() {
+            let mut path: PathValue = path.clone().into();
+            path.mode = legacy_path_mode(&path.path);
+            values.insert(name.clone(), Value::Path(path));
+            Arc::make_mut(&mut self.scope.sites).remove(name);
+        }
+        self.refresh_legacy();
     }
 
     /// Legacy path/space bindings for embedders migrating from the flat API.
@@ -84,15 +170,16 @@ impl Session {
     }
 
     pub fn bindings(&self) -> Vec<String> {
-        let mut bindings = self.legacy.bindings();
+        let mut bindings = Vec::new();
         for (name, value) in self.scope.values.iter() {
             match value {
-                Value::Literal(text) => bindings.push(format!("{name} := {text:?}")),
+                Value::Literal(text) => bindings.push(format!("{name} := {}", literal_text(text))),
                 Value::Process(id) => bindings.push(format!("{name} => <program {}>", id.0)),
                 Value::Port(id, port) => {
                     bindings.push(format!("{name} := <program {} {port:?}>", id.0))
                 }
-                Value::Path(_) | Value::Space(_) => {}
+                Value::Path(path) => bindings.push(format!("{name} := {}", path_text(path))),
+                Value::Space(space) => bindings.push(format!("{name} => {space}")),
             }
         }
         bindings.extend(self.scope.macros.values().map(|definition| {
@@ -112,7 +199,25 @@ impl Session {
         document: &Document,
         context: &CompileContext,
     ) -> Result<hir::Program, Vec<Report>> {
-        context.validate().map_err(|report| vec![report])?;
+        self.compile_named(document, context, Source::new("<ast>", ""))
+            .map(|lowered| lowered.program)
+            .map_err(|reports| {
+                reports
+                    .into_iter()
+                    .map(LocatedReport::into_report)
+                    .collect()
+            })
+    }
+
+    pub fn compile_named(
+        &mut self,
+        document: &Document,
+        context: &CompileContext,
+        source: Arc<Source>,
+    ) -> Result<Lowered, Vec<LocatedReport>> {
+        context
+            .validate()
+            .map_err(|report| vec![LocatedReport::new(source.clone(), report)])?;
         let mut candidate = self.clone();
         let mut scope = candidate.scope.clone();
         let mut lower = Lower {
@@ -122,6 +227,8 @@ impl Session {
             selectors: HashSet::new(),
             expansion: Vec::new(),
             calls: Vec::new(),
+            source,
+            origins: Origins::default(),
         };
         let mut body = Region::default();
         let errors = lower.block(&document.statements, &mut scope, context, None, &mut body);
@@ -129,11 +236,14 @@ impl Session {
             return Err(errors);
         }
         lower.program.body = body;
-        let program = lower.program;
+        let result = Lowered {
+            program: lower.program,
+            origins: lower.origins,
+        };
         candidate.scope = scope;
         candidate.refresh_legacy();
         *self = candidate;
-        Ok(program)
+        Ok(result)
     }
 
     fn refresh_legacy(&mut self) {
@@ -141,7 +251,7 @@ impl Session {
         for (name, value) in self.scope.values.iter() {
             match value {
                 Value::Path(path) => {
-                    Arc::make_mut(&mut legacy.aliases).insert(name.clone(), path.clone());
+                    Arc::make_mut(&mut legacy.aliases).insert(name.clone(), path.legacy());
                 }
                 Value::Space(space) => {
                     Arc::make_mut(&mut legacy.spaces).insert(name.clone(), space.clone());
@@ -159,7 +269,9 @@ struct Lower<'a> {
     next_instruction: usize,
     selectors: HashSet<String>,
     expansion: Vec<Span>,
-    calls: Vec<(Arc<Macro>, Span)>,
+    calls: Vec<(Arc<Macro>, SourceSpan)>,
+    source: Arc<Source>,
+    origins: Origins,
 }
 
 impl Lower<'_> {
@@ -170,7 +282,7 @@ impl Lower<'_> {
         context: &CompileContext,
         transaction: Option<TransactionId>,
         region: &mut Region,
-    ) -> Vec<Report> {
+    ) -> Vec<LocatedReport> {
         let mut errors = Vec::new();
         for statement in statements {
             if let Err(report) = self.statement(statement, scope, context, transaction, region) {
@@ -187,6 +299,35 @@ impl Lower<'_> {
         context: &CompileContext,
         transaction: Option<TransactionId>,
         region: &mut Region,
+    ) -> Result<(), LocatedReport> {
+        match &statement.kind {
+            language::StatementKind::Call(call) => {
+                self.expand_macro(call, scope, context, transaction, region)
+            }
+            language::StatementKind::Transfer {
+                source,
+                destination,
+            } => self.transfer(source, destination, scope, context, statement.span, region),
+            language::StatementKind::Transaction { .. } => {
+                self.transaction(statement, scope, context, transaction, region)
+            }
+            _ => self
+                .simple_statement(statement, scope, context, transaction, region)
+                .map_err(|report| self.located(report)),
+        }
+    }
+
+    fn located(&self, report: Report) -> LocatedReport {
+        LocatedReport::new(self.source.clone(), report)
+    }
+
+    fn simple_statement(
+        &mut self,
+        statement: &language::Statement,
+        scope: &mut Scope,
+        context: &CompileContext,
+        transaction: Option<TransactionId>,
+        region: &mut Region,
     ) -> Result<(), Report> {
         use language::StatementKind;
         match &statement.kind {
@@ -194,57 +335,17 @@ impl Lower<'_> {
             StatementKind::Binding { name, op, value } => {
                 self.bind(name, *op, value, scope, context, region)
             }
-            StatementKind::Transfer {
-                source,
-                destination,
-            } => self.transfer(source, destination, scope, context, statement.span, region),
+            StatementKind::Transfer { .. }
+            | StatementKind::Call(_)
+            | StatementKind::Transaction { .. } => {
+                unreachable!("structured dispatch precedes simple statements")
+            }
             StatementKind::Macro {
                 name,
                 parameters,
                 body,
             } => self.define_macro(name, parameters, body, scope, context),
-            StatementKind::Call(call) => {
-                self.expand_macro(call, scope, context, transaction, region)
-            }
             StatementKind::Global(names) => import_globals(names, scope),
-            StatementKind::Transaction {
-                name,
-                isolation,
-                body,
-            } => {
-                if transaction.is_some() {
-                    return Err(Report::new("nested transactions need an explicit transaction boundary", statement.span)
-                        .help("Keep named transactions at the top level; use commit and rollback as checkpoints within one transaction."));
-                }
-                check_name(name)?;
-                if self.session.transactions.contains_key(&name.text) {
-                    return Err(Report::new(format!("transaction '{}' is already defined", name.text), name.span)
-                        .help("Use a unique transaction name so named rollback has one unambiguous origin."));
-                }
-                let id = TransactionId(self.session.next_transaction);
-                self.session.next_transaction += 1;
-                self.session.transactions.insert(name.text.clone(), id);
-                self.program.transactions.push(TransactionInfo {
-                    id,
-                    name: name.text.clone(),
-                    isolation: *isolation,
-                    span: statement.span,
-                });
-                let mut child = Region::default();
-                let errors = self.block(body, scope, context, Some(id), &mut child);
-                if let Some(error) = errors.into_iter().next() {
-                    return Err(error);
-                }
-                self.emit(
-                    region,
-                    statement.span,
-                    InstructionKind::Transaction {
-                        transaction: id,
-                        body: child,
-                    },
-                );
-                Ok(())
-            }
             StatementKind::Commit => {
                 let transaction = require_transaction(transaction, statement.span, "commit")?;
                 self.emit(
@@ -283,6 +384,66 @@ impl Lower<'_> {
                 Ok(())
             }
         }
+    }
+
+    fn transaction(
+        &mut self,
+        statement: &language::Statement,
+        scope: &mut Scope,
+        context: &CompileContext,
+        current: Option<TransactionId>,
+        region: &mut Region,
+    ) -> Result<(), LocatedReport> {
+        let language::StatementKind::Transaction {
+            name,
+            isolation,
+            body,
+        } = &statement.kind
+        else {
+            unreachable!()
+        };
+        if current.is_some() {
+            return Err(self.located(Report::new("nested transactions need an explicit transaction boundary", statement.span)
+                .help("Keep named transactions at the top level; use commit and rollback as checkpoints within one transaction.")));
+        }
+        check_name(name).map_err(|report| self.located(report))?;
+        if self.session.transactions.contains_key(&name.text) {
+            return Err(self.located(
+                Report::new(
+                    format!("transaction '{}' is already defined", name.text),
+                    name.span,
+                )
+                .help(
+                    "Use a unique transaction name so named rollback has one unambiguous origin.",
+                ),
+            ));
+        }
+        let id = TransactionId(self.session.next_transaction);
+        self.session.next_transaction += 1;
+        self.session.transactions.insert(name.text.clone(), id);
+        self.program.transactions.push(TransactionInfo {
+            id,
+            name: name.text.clone(),
+            isolation: *isolation,
+            span: statement.span,
+        });
+        let mut child = Region::default();
+        if let Some(error) = self
+            .block(body, scope, context, Some(id), &mut child)
+            .into_iter()
+            .next()
+        {
+            return Err(error);
+        }
+        self.emit(
+            region,
+            statement.span,
+            InstructionKind::Transaction {
+                transaction: id,
+                body: child,
+            },
+        );
+        Ok(())
     }
 
     fn bind(
@@ -334,6 +495,8 @@ impl Lower<'_> {
             },
             (_, BindingOp::Value) => resolve(expression, scope, context)?,
         };
+        let site = self.expression_site(expression, scope);
+        Arc::make_mut(&mut scope.sites).insert(name.text.clone(), site);
         Arc::make_mut(&mut scope.values).insert(name.text.clone(), value);
         Ok(())
     }
@@ -346,7 +509,45 @@ impl Lower<'_> {
         context: &CompileContext,
         span: Span,
         region: &mut Region,
-    ) -> Result<(), Report> {
+    ) -> Result<(), LocatedReport> {
+        let operands = (
+            self.expression_site(source, scope),
+            self.expression_site(destination, scope),
+        );
+        let (source, destination, owned) = self
+            .transfer_values(source, destination, scope, context)
+            .map_err(|report| self.located(report))?;
+        for (key, site) in &owned {
+            if let Some(previous) = self.session.consumed.get(key) {
+                return Err(self.located(Report::new("a live program stream may have only one owner", *site)
+                    .help("Write the stream to a file once, then read that replayable file from multiple consumers."))
+                    .label(previous.clone(), "this stream was already connected here"));
+            }
+        }
+        self.session.consumed.extend(
+            owned
+                .into_iter()
+                .map(|(key, span)| (key, self.source.at(span))),
+        );
+        let id = self.emit(
+            region,
+            span,
+            InstructionKind::Transfer {
+                source,
+                destination,
+            },
+        );
+        self.origins.get_mut(&id).expect("emitted origin").operands = Some(operands);
+        Ok(())
+    }
+
+    fn transfer_values(
+        &mut self,
+        source: &Expr,
+        destination: &Expr,
+        scope: &Scope,
+        context: &CompileContext,
+    ) -> Result<TransferValues, Report> {
         let source_value = resolve(source, scope, context)?;
         let destination_value = resolve(destination, scope, context)?;
         let mut owned = Vec::new();
@@ -354,7 +555,7 @@ impl Lower<'_> {
             Value::Literal(text) => Input::Literal(text),
             Value::Path(mut path) => {
                 let pattern = super::take_selector(&mut path.path, &mut self.selectors).map_err(|message| {
-                    Report::new(message, source.span).help("Use one final '/<regex>' component; selectors match complete entry names.")
+                    Report::new(message, selector_site(source)).help("Use one final '/<regex>' component; selectors match complete entry names.")
                 })?;
                 if pattern.is_some()
                     && matches!(path.backend, Some(Backend::Http { .. } | Backend::Path))
@@ -389,17 +590,19 @@ impl Lower<'_> {
         let mode = expression_mode(destination);
         let destination = match destination_value {
             Value::Path(mut path) => {
-                let mode = path_mode(&path.path, mode);
+                let mode = if mode == DestinationMode::Exact { path.mode } else { mode };
                 if matches!(path.backend, Some(Backend::Http { .. } | Backend::Path)) {
-                    return Err(Report::new("HTTP(S) and PATH endpoints are read-only", destination.span));
+                    return Err(Report::new("HTTP(S) and PATH endpoints are read-only", qualifier_site(destination)));
                 }
                 if path.path.contains(['<', '>']) {
-                    return Err(Report::new("selectors are only allowed in the source", destination.span));
+                    return Err(Report::new("selectors are only allowed in the source", selector_site(destination)));
                 }
                 if mode == DestinationMode::ReplaceTree {
                     if path.path.ends_with("/.") || path.path.ends_with("\\.") {
                         path.path.pop();
                     }
+                    reject_root_replacement(&path, destination.span)?;
+                } else if mode == DestinationMode::Exact && !matches!(path.backend, Some(Backend::Tcp { .. })) {
                     reject_root_replacement(&path, destination.span)?;
                 }
                 if matches!(&source, Input::File { pattern: Some(_), .. }) && mode != DestinationMode::Container {
@@ -413,25 +616,9 @@ impl Lower<'_> {
                 Output::Stdin(process)
             }
             _ => return Err(Report::new("this value is not a writable destination", destination.span)
-                .help("Use a writable file path or program::stdin; literal and output streams are read-only.")),
+                .help("Use a writable path such as './\"output name\"' or '$pwd / \"output name\"', or program::stdin. Bare quoted expressions and output streams are read-only.")),
         };
-        for (key, site) in &owned {
-            if let Some(previous) = self.session.consumed.get(key) {
-                return Err(Report::new("a live program stream may have only one owner", *site)
-                    .label(*previous, "this stream was already connected here")
-                    .help("Write the stream to a file once, then read that replayable file from multiple consumers."));
-            }
-        }
-        self.session.consumed.extend(owned);
-        self.emit(
-            region,
-            span,
-            InstructionKind::Transfer {
-                source,
-                destination,
-            },
-        );
-        Ok(())
+        Ok((source, destination, owned))
     }
 
     fn define_macro(
@@ -466,8 +653,10 @@ impl Lower<'_> {
             parameters: parameters.to_vec(),
             body: body.to_vec(),
             globals: scope.values.clone(),
+            global_sites: scope.sites.clone(),
             macros: scope.macros.clone(),
             source_file: context.source_file.clone(),
+            source: self.source.clone(),
         };
         Arc::make_mut(&mut scope.macros).insert(name.text.clone(), Arc::new(definition));
         Ok(())
@@ -480,22 +669,24 @@ impl Lower<'_> {
         context: &CompileContext,
         transaction: Option<TransactionId>,
         region: &mut Region,
-    ) -> Result<(), Report> {
+    ) -> Result<(), LocatedReport> {
         let ExprKind::Call { callee, arguments } = &call.kind else {
-            return Err(Report::new("expected a macro call", call.span));
+            return Err(self.located(Report::new("expected a macro call", call.span)));
         };
         let ExprKind::Path(path) = &callee.kind else {
-            return Err(Report::new(
+            return Err(self.located(Report::new(
                 "a macro call needs an unqualified macro name",
                 callee.span,
-            ));
+            )));
         };
         if path.qualifier.is_some() || path.path.contains(['/', '\\']) {
-            return Err(Report::new(
-                "only declared macros can be called as statements",
-                callee.span,
-            )
-            .help("Bind an external program with 'program => executable(arguments)' instead."));
+            return Err(self.located(
+                Report::new(
+                    "only declared macros can be called as statements",
+                    callee.span,
+                )
+                .help("Bind an external program with 'program => executable(arguments)' instead."),
+            ));
         }
         let definition = match caller.macros.get(&path.path).cloned() {
             Some(definition) => definition,
@@ -505,10 +696,10 @@ impl Lower<'_> {
                     .iter()
                     .find(|(definition, _)| definition.name.text == path.path)
                 {
-                    return Err(recursion_report(callee.span, *previous));
+                    return Err(self.recursion(callee.span, previous.clone()));
                 }
-                return Err(Report::new(format!("unknown macro '{}'", path.path), callee.span)
-                    .help("Declare the macro before calling it. A macro body can call only macros declared before its definition."));
+                return Err(self.located(Report::new(format!("unknown macro '{}'", path.path), callee.span)
+                    .help("Declare the macro before calling it. A macro body can call only macros declared before its definition.")));
             }
         };
         if let Some((_, previous)) = self
@@ -516,23 +707,27 @@ impl Lower<'_> {
             .iter()
             .find(|(active, _)| Arc::ptr_eq(active, &definition))
         {
-            return Err(recursion_report(callee.span, *previous));
+            return Err(self.recursion(callee.span, previous.clone()));
         }
         if arguments.len() != definition.parameters.len() {
-            return Err(Report::new(
-                format!(
-                    "macro '{}' expects {} argument(s), got {}",
-                    path.path,
-                    definition.parameters.len(),
-                    arguments.len()
-                ),
-                call.span,
-            )
-            .label(definition.name.span, "macro declared here"));
+            return Err(self
+                .located(Report::new(
+                    format!(
+                        "macro '{}' expects {} argument(s), got {}",
+                        path.path,
+                        definition.parameters.len(),
+                        arguments.len()
+                    ),
+                    call.span,
+                ))
+                .label(
+                    definition.source.at(definition.name.span),
+                    "macro declared here",
+                ));
         }
         if self.calls.len() >= 128 {
-            return Err(Report::new("macro expansion nesting limit exceeded", call.span)
-                .help("Reduce the nesting of macro calls; at most 128 active expansions are supported."));
+            return Err(self.located(Report::new("macro expansion nesting limit exceeded", call.span)
+                .help("Reduce the nesting of macro calls; at most 128 active expansions are supported.")));
         }
         let values = definition
             .parameters
@@ -541,36 +736,104 @@ impl Lower<'_> {
             .map(|(parameter, argument)| {
                 Ok((parameter.text.clone(), resolve(argument, caller, context)?))
             })
-            .collect::<Result<BTreeMap<_, _>, Report>>()?;
+            .collect::<Result<BTreeMap<_, _>, Report>>()
+            .map_err(|report| self.located(report))?;
+        let sites = definition
+            .parameters
+            .iter()
+            .zip(arguments)
+            .map(|(parameter, argument)| {
+                (
+                    parameter.text.clone(),
+                    self.expression_site(argument, caller),
+                )
+            })
+            .collect();
         let mut scope = Scope {
             values: Arc::new(values),
             macros: definition.macros.clone(),
             globals: Some(definition.globals.clone()),
             imported: HashSet::new(),
+            sites: Arc::new(sites),
+            global_sites: Some(definition.global_sites.clone()),
         };
         let context = CompileContext {
             pwd: context.pwd.clone(),
             source_file: definition.source_file.clone(),
         };
-        self.calls.push((definition.clone(), call.span));
+        let call_site = self.source.at(call.span);
+        self.calls.push((definition.clone(), call_site.clone()));
         self.expansion.push(definition.name.span);
+        let caller_source = std::mem::replace(&mut self.source, definition.source.clone());
         let errors = self.block(&definition.body, &mut scope, &context, transaction, region);
+        self.source = caller_source;
         self.expansion.pop();
         self.calls.pop();
         errors.into_iter().next().map_or(Ok(()), |report| {
-            Err(report.label(call.span, format!("while expanding macro '{}'", path.path)))
+            Err(report
+                .in_context(call_site.clone())
+                .label(call_site, format!("while expanding macro '{}'", path.path)))
         })
     }
 
-    fn emit(&mut self, region: &mut Region, span: Span, kind: InstructionKind) {
+    fn recursion(&self, span: Span, previous: SourceSpan) -> LocatedReport {
+        self.located(Report::new("recursive macro expansion is not allowed", span)
+            .help("Use a finite sequence of macro calls; macros are compiler-time inlining, not runtime recursion."))
+            .label(previous, "this expansion is already active")
+    }
+
+    fn expression_site(&self, expression: &Expr, scope: &Scope) -> SourceSpan {
+        if let ExprKind::Join { base, suffix, .. } = &expression.kind {
+            let site = self.expression_site(base, scope);
+            if site.source.id != self.source.id || site.span != base.span {
+                return site;
+            }
+            if let Some(suffix) = suffix {
+                return self.expression_site(suffix, scope);
+            }
+        }
+        if let ExprKind::Path(path) = &expression.kind {
+            let name = path.path.split(['/', '\\']).next().unwrap_or(&path.path);
+            if let Some(site) = scope.sites.get(name) {
+                return site.clone();
+            }
+        }
+        self.source.at(expression.span)
+    }
+
+    fn emit(
+        &mut self,
+        region: &mut Region,
+        span: Span,
+        kind: InstructionKind,
+    ) -> hir::InstructionId {
         let id = hir::InstructionId(self.next_instruction);
         self.next_instruction += 1;
+        let definition = self.source.at(span);
+        let site = self
+            .calls
+            .first()
+            .map_or_else(|| definition.clone(), |(_, site)| site.clone());
+        self.origins.insert(
+            id,
+            InstructionOrigin {
+                site: site.clone(),
+                definition,
+                expansion: self
+                    .calls
+                    .iter()
+                    .map(|(definition, _)| definition.source.at(definition.name.span))
+                    .collect(),
+                operands: None,
+            },
+        );
         region.instructions.push(Instruction {
             id,
             kind,
-            span: self.calls.first().map_or(span, |(_, site)| *site),
+            span: site.span,
             expansion: self.expansion.clone(),
         });
+        id
     }
 }
 
@@ -596,6 +859,13 @@ fn import_globals(names: &[Name], scope: &mut Scope) -> Result<(), Report> {
             .help("Declare the binding before the macro definition, or pass it as a parameter.")
         })?;
         Arc::make_mut(&mut scope.values).insert(name.text.clone(), value);
+        if let Some(site) = scope
+            .global_sites
+            .as_ref()
+            .and_then(|sites| sites.get(&name.text))
+        {
+            Arc::make_mut(&mut scope.sites).insert(name.text.clone(), site.clone());
+        }
         scope.imported.insert(name.text.clone());
     }
     Ok(())
@@ -604,7 +874,22 @@ fn import_globals(names: &[Name], scope: &mut Scope) -> Result<(), Report> {
 fn resolve(expression: &Expr, scope: &Scope, context: &CompileContext) -> Result<Value, Report> {
     match &expression.kind {
         ExprKind::Literal(text) => Ok(Value::Literal(Arc::from(text.as_str()))),
-        ExprKind::Path(path) => resolve_path(path, expression.span, scope, context),
+        ExprKind::Path(path) => {
+            let mut value =
+                resolve_path(path, expression.span, &expression.source, scope, context)?;
+            if path.mode != DestinationMode::Exact
+                && let Value::Path(value) = &mut value
+            {
+                value.mode = path.mode;
+            }
+            Ok(value)
+        }
+        ExprKind::Join {
+            base,
+            suffix,
+            operator,
+            mode,
+        } => resolve_join(base, suffix.as_deref(), *operator, *mode, scope, context),
         ExprKind::Call { .. } => Err(Report::new(
             "a call is not a path or stream value",
             expression.span,
@@ -615,9 +900,125 @@ fn resolve(expression: &Expr, scope: &Scope, context: &CompileContext) -> Result
     }
 }
 
+fn resolve_join(
+    base: &Expr,
+    suffix: Option<&Expr>,
+    operator: Span,
+    mode: DestinationMode,
+    scope: &Scope,
+    context: &CompileContext,
+) -> Result<Value, Report> {
+    let base_value = resolve(base, scope, context)?;
+    let suffix_value = suffix
+        .map(|expression| resolve(expression, scope, context))
+        .transpose()?;
+    let suffix_site = suffix.map_or(operator, |expression| expression.source.content);
+    if let Value::Space(Space::Endpoint(backend)) = base_value {
+        let mut path = path_fragment(
+            suffix_value.ok_or_else(|| {
+                Report::new("a physical namespace needs a path after '/'", operator)
+            })?,
+            suffix_site,
+        )?;
+        if mode != DestinationMode::Exact {
+            path.mode = mode;
+        }
+        return qualify(Value::Path(path), backend, operator);
+    }
+    let mut base_path = match base_value {
+        Value::Space(Space::Pwd) => PathValue {
+            backend: Some(Backend::Local),
+            path: context.pwd.to_string_lossy().into_owned(),
+            is_file: false,
+            mode: DestinationMode::Exact,
+        },
+        value => path_fragment(value, base.source.content)?,
+    };
+    if base_path.is_file {
+        return Err(Report::new(
+            "a known file value cannot have child path components",
+            operator,
+        )
+        .help("Join with its containing directory, not a known file value."));
+    }
+    let Some(suffix_value) = suffix_value else {
+        if !base_path.path.ends_with(['/', '\\']) {
+            base_path.path.push('/');
+        }
+        base_path.mode = DestinationMode::Container;
+        return Ok(Value::Path(base_path));
+    };
+    let suffix_path = path_fragment(suffix_value, suffix_site)?;
+    if rooted_fragment(&suffix_path.path) {
+        return Err(Report::new("a rooted right operand cannot replace a path-join base", operator)
+            .label(suffix_site, "this operand is rooted")
+            .help("Use the rooted path directly, or qualify it with a physical namespace such as '$local / \"/absolute/path\"'."));
+    }
+    if let (Some(left), Some(right)) = (&base_path.backend, &suffix_path.backend)
+        && left != right
+    {
+        return Err(Report::new(
+            "joined path operands have conflicting endpoints",
+            operator,
+        ));
+    }
+    if base_path.backend.is_none() {
+        base_path.backend = suffix_path.backend;
+    }
+    if !base_path.path.ends_with(['/', '\\']) {
+        base_path.path.push('/');
+    }
+    base_path.path.push_str(&suffix_path.path);
+    base_path.is_file = suffix_path.is_file;
+    base_path.mode = if mode == DestinationMode::Exact {
+        suffix_path.mode
+    } else {
+        mode
+    };
+    Ok(Value::Path(base_path))
+}
+
+fn path_fragment(value: Value, span: Span) -> Result<PathValue, Report> {
+    let path = match value {
+        Value::Path(path) => path,
+        Value::Literal(text) => PathValue {
+            backend: None,
+            path: text.to_string(),
+            is_file: false,
+            mode: DestinationMode::Exact,
+        },
+        _ => {
+            return Err(Report::new(
+                "'/' joins path values or string fragments, not programs or streams",
+                span,
+            ));
+        }
+    };
+    if path.path.is_empty()
+        || language::path_boundary_whitespace(&path.path)
+        || path.path.contains('\0')
+    {
+        return Err(Report::new("path components must be nonempty, NUL-free and have no boundary whitespace", span)
+            .help("Internal spaces are valid. Use a bare quoted source for literal bytes; use '/' explicitly for paths."));
+    }
+    Ok(path)
+}
+
+fn rooted_fragment(path: &str) -> bool {
+    path.starts_with(['/', '\\'])
+        || path == "~"
+        || path.starts_with("~/")
+        || (path.as_bytes().get(1) == Some(&b':')
+            && path
+                .as_bytes()
+                .get(2)
+                .is_some_and(|byte| matches!(*byte, b'/' | b'\\')))
+}
+
 fn resolve_path(
     path: &PathExpr,
     span: Span,
+    site: &OperandSource,
     scope: &Scope,
     context: &CompileContext,
 ) -> Result<Value, Report> {
@@ -627,14 +1028,18 @@ fn resolve_path(
             span,
         ));
     }
+    let quoted = site.content.start > site.span.start;
     if path.qualifier.is_none()
+        && !quoted
         && let Some(value) = scope.values.get(&path.path)
     {
         return Ok(value.clone());
     }
     let qualifier = match &path.qualifier {
         Some(name) => match scope.values.get(&name.text) {
-            Some(Value::Process(process)) => return process_port(*process, &path.path, span),
+            Some(Value::Process(process)) => {
+                return process_port(*process, &path.path, site.content);
+            }
             Some(Value::Space(space)) => Some(space.clone()),
             Some(_) => return Err(Report::new(
                 format!("'{}' is a value, not a namespace or program", name.text),
@@ -648,19 +1053,40 @@ fn resolve_path(
         None => None,
     };
     match qualifier {
-        Some(Space::Pwd) => resolve_pwd(path, span, scope, context),
+        Some(Space::Pwd) => resolve_pwd(path, span, site, scope, context),
         Some(Space::File) => {
-            let text = format!("$file::{}", path.path);
-            Compiler::new()
-                .expand(&text, &OperandSource::unmapped(span), context)
-                .map(Value::Path)
+            let name = path.qualifier.as_ref().expect("qualified file namespace");
+            let text = format!("{}::{}", name.text, path.path);
+            Compiler::namespace_item(
+                Space::File,
+                &path.path,
+                &text,
+                &qualified_source(name, &path.path, site, span),
+                context,
+            )
+            .map(|path| Value::Path(path.into()))
         }
         Some(Space::Endpoint(backend)) => qualify(
-            resolve_component(&path.path, span, scope, context)?,
+            if quoted {
+                Value::Path(PathValue {
+                    backend: None,
+                    path: path.path.clone(),
+                    is_file: false,
+                    mode: DestinationMode::Exact,
+                })
+            } else {
+                resolve_component(&path.path, site.content, scope, context)?
+            },
             backend,
             span,
         ),
-        None => resolve_component(&path.path, span, scope, context),
+        None if quoted => Ok(Value::Path(PathValue {
+            backend: None,
+            path: path.path.clone(),
+            is_file: false,
+            mode: DestinationMode::Exact,
+        })),
+        None => resolve_component(&path.path, site.content, scope, context),
     }
 }
 
@@ -685,6 +1111,7 @@ fn resolve_component(
                 let mut base = base.clone();
                 if !suffix.is_empty() {
                     base.path = format!("{}{suffix}", base.path.trim_end_matches(['/', '\\']));
+                    base.mode = DestinationMode::Exact;
                 }
                 Ok(Value::Path(base))
             }
@@ -698,29 +1125,41 @@ fn resolve_component(
     }
     Compiler::new()
         .expand(path, &OperandSource::unmapped(span), context)
-        .map(Value::Path)
+        .map(|path| Value::Path(path.into()))
 }
 
 fn resolve_pwd(
     path: &PathExpr,
     span: Span,
+    site: &OperandSource,
     scope: &Scope,
     context: &CompileContext,
 ) -> Result<Value, Report> {
     let component = path.path.split(['/', '\\']).next().unwrap_or(&path.path);
-    if component == "pwd" {
-        let text = format!("$pwd::{}", path.path);
-        return Compiler::new()
-            .expand(&text, &OperandSource::unmapped(span), context)
-            .map(Value::Path);
+    let quoted = site.content.start > site.span.start;
+    if component == "pwd" && !quoted {
+        let name = path.qualifier.as_ref().expect("qualified pwd namespace");
+        let text = format!("{}::{}", name.text, path.path);
+        return Compiler::namespace_item(
+            Space::Pwd,
+            &path.path,
+            &text,
+            &qualified_source(name, &path.path, site, span),
+            context,
+        )
+        .map(|path| Value::Path(path.into()));
     }
-    let value = resolve_component(&path.path, span, scope, context)?;
-    let Value::Path(mut value) = value else {
-        return Err(Report::new(
-            "$pwd requires a path or path-valued parameter",
-            span,
-        ));
+    let value = if quoted {
+        Value::Path(PathValue {
+            backend: None,
+            path: path.path.clone(),
+            is_file: false,
+            mode: DestinationMode::Exact,
+        })
+    } else {
+        resolve_component(&path.path, site.content, scope, context)?
     };
+    let mut value = path_fragment(value, site.content)?;
     if value
         .backend
         .as_ref()
@@ -740,13 +1179,19 @@ fn resolve_pwd(
     Ok(Value::Path(value))
 }
 
+fn qualified_source(
+    name: &Name,
+    decoded: &str,
+    suffix: &OperandSource,
+    span: Span,
+) -> OperandSource {
+    let mut offsets = (name.span.start..name.span.end + 2).collect::<Vec<_>>();
+    offsets.extend((0..=decoded.len()).map(|index| suffix.interval(index, index).start));
+    OperandSource::mapped(span, span, offsets)
+}
+
 fn qualify(value: Value, backend: Backend, span: Span) -> Result<Value, Report> {
-    let Value::Path(mut path) = value else {
-        return Err(Report::new(
-            "an endpoint qualifier requires a path value",
-            span,
-        ));
-    };
+    let mut path = path_fragment(value, span)?;
     if path.backend.as_ref().is_some_and(|other| other != &backend) {
         return Err(Report::new("path value has a conflicting endpoint", span)
             .help("Remove the explicit qualifier to retain the value's original endpoint, or pass an unqualified path item."));
@@ -772,7 +1217,7 @@ fn process_port(process: ProcessId, path: &str, span: Span) -> Result<Value, Rep
     Ok(Value::Port(process, port))
 }
 
-fn location(path: Alias, context: &CompileContext, span: Span) -> Result<Location, Report> {
+fn location(path: PathValue, context: &CompileContext, span: Span) -> Result<Location, Report> {
     let backend = path.backend.unwrap_or(Backend::Local);
     let mut path = path.path;
     if backend == Backend::Local
@@ -800,24 +1245,78 @@ fn file_value(value: Value, span: Span, context: &CompileContext) -> Result<Loca
     }
 }
 
-fn path_mode(path: &str, fallback: DestinationMode) -> DestinationMode {
-    if path.ends_with("/.") || path.ends_with("\\.") {
-        DestinationMode::ReplaceTree
-    } else if path.ends_with(['/', '\\']) {
+fn literal_text(text: &str) -> String {
+    let mut output = String::new();
+    language::write_literal(&mut output, text);
+    output
+}
+
+fn path_text(path: &PathValue) -> String {
+    let mut raw = path.path.as_str();
+    match path.mode {
+        DestinationMode::Container if !raw.chars().all(|ch| matches!(ch, '/' | '\\')) => {
+            raw = raw.trim_end_matches(['/', '\\'])
+        }
+        DestinationMode::Container => {}
+        DestinationMode::ReplaceTree => {
+            raw = raw
+                .strip_suffix("/.")
+                .or_else(|| raw.strip_suffix("\\."))
+                .unwrap_or(raw);
+        }
+        DestinationMode::Exact => {}
+    }
+    let mut output = if let Some(backend) = &path.backend {
+        format!(
+            "{backend} / {}",
+            literal_text(if raw.is_empty() { "/" } else { raw })
+        )
+    } else if raw.starts_with("//") || raw.starts_with('\\') {
+        format!("{}/\".\"", literal_text(raw))
+    } else if raw.starts_with('/') {
+        let tail = raw.trim_start_matches('/');
+        if tail.is_empty() {
+            "\"/\"/\".\"".to_owned()
+        } else {
+            format!("\"/\"/{}", literal_text(tail))
+        }
+    } else if raw == "~" {
+        "\"~\"/\".\"".to_owned()
+    } else if let Some(tail) = raw.strip_prefix("~/") {
+        format!("\"~\"/{}", literal_text(tail))
+    } else if raw.as_bytes().get(1) == Some(&b':') && raw.as_bytes().get(2) == Some(&b'/') {
+        format!("{}/{}", literal_text(&raw[..2]), literal_text(&raw[3..]))
+    } else {
+        format!("\".\"/{}", literal_text(raw))
+    };
+    match path.mode {
+        DestinationMode::Container => output.push('/'),
+        DestinationMode::ReplaceTree => output.push_str("/."),
+        DestinationMode::Exact => {}
+    }
+    output
+}
+
+fn legacy_path_mode(path: &str) -> DestinationMode {
+    if path.ends_with(['/', '\\']) {
         DestinationMode::Container
     } else {
-        fallback
+        DestinationMode::Exact
     }
 }
 
-fn reject_root_replacement(path: &Alias, span: Span) -> Result<(), Report> {
+fn reject_root_replacement(path: &PathValue, span: Span) -> Result<(), Report> {
     let value = Path::new(&path.path);
     let native_root = matches!(path.backend, None | Some(Backend::Local))
         && value.has_root()
         && !value
             .components()
             .any(|component| matches!(component, Component::Normal(_) | Component::ParentDir));
-    let endpoint_root = path.path.chars().all(|ch| ch == '/' || ch == '\\');
+    let endpoint_root = path.path.starts_with(['/', '\\'])
+        && path
+            .path
+            .split(['/', '\\'])
+            .all(|component| component.is_empty() || component == ".");
     if native_root || endpoint_root {
         return Err(Report::new("a filesystem root cannot be replaced", span)
             .help("Choose an explicit non-root directory before '/.'; root replacement is never redirected to the working directory."));
@@ -825,10 +1324,32 @@ fn reject_root_replacement(path: &Alias, span: Span) -> Result<(), Report> {
     Ok(())
 }
 
-fn recursion_report(span: Span, previous: Span) -> Report {
-    Report::new("recursive macro expansion is not allowed", span)
-        .label(previous, "this expansion is already active")
-        .help("Use a finite sequence of macro calls; macros are compiler-time inlining, not runtime recursion.")
+fn qualifier_site(expression: &Expr) -> Span {
+    match &expression.kind {
+        ExprKind::Path(path) => path
+            .qualifier
+            .as_ref()
+            .map_or(expression.source.content, |name| name.span),
+        _ => expression.span,
+    }
+}
+
+fn selector_site(expression: &Expr) -> Span {
+    if let ExprKind::Join {
+        suffix: Some(suffix),
+        ..
+    } = &expression.kind
+    {
+        return selector_site(suffix);
+    }
+    if let ExprKind::Path(path) = &expression.kind
+        && let Some(start) = path.path.rfind('<')
+    {
+        return expression
+            .source
+            .interval(start + 1, path.path.len().saturating_sub(1));
+    }
+    expression.source.content
 }
 
 fn reject_nested_macro(body: &[language::Statement]) -> Result<(), Report> {
@@ -848,6 +1369,7 @@ fn reject_nested_macro(body: &[language::Statement]) -> Result<(), Report> {
 fn expression_mode(expression: &Expr) -> DestinationMode {
     match &expression.kind {
         ExprKind::Path(path) => path.mode,
+        ExprKind::Join { mode, .. } => *mode,
         _ => DestinationMode::Exact,
     }
 }

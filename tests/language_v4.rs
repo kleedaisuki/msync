@@ -49,8 +49,16 @@ fn parses_the_requested_program_without_losing_types() {
     let StatementKind::Transfer { destination, .. } = &body[2].kind else {
         panic!()
     };
-    assert!(
-        matches!(&destination.kind, ExprKind::Path(path) if path.mode == DestinationMode::ReplaceTree && path.path == "des/agents/.")
+    assert!(matches!(
+        &destination.kind,
+        ExprKind::Join {
+            mode: DestinationMode::ReplaceTree,
+            ..
+        }
+    ));
+    assert_eq!(
+        &EXAMPLE[destination.span.start..destination.span.end],
+        "$pwd::des/agents/."
     );
     let transaction = document
         .statements
@@ -126,6 +134,7 @@ fn shape(source: &str) -> String {
     }
     fn strip_expr(expr: &mut msync::language::Expr) {
         expr.span = Default::default();
+        expr.source = msync::syntax::OperandSource::unmapped(Default::default());
         match &mut expr.kind {
             ExprKind::Path(path) => {
                 if let Some(name) = &mut path.qualifier {
@@ -138,6 +147,18 @@ fn shape(source: &str) -> String {
                     strip_expr(argument);
                 }
             }
+            ExprKind::Join {
+                base,
+                suffix,
+                operator,
+                ..
+            } => {
+                strip_expr(base);
+                if let Some(suffix) = suffix {
+                    strip_expr(suffix);
+                }
+                *operator = Default::default();
+            }
             _ => {}
         }
     }
@@ -147,7 +168,7 @@ fn shape(source: &str) -> String {
 }
 
 #[test]
-fn quotes_have_contextual_types_and_unknown_escapes_are_preserved() {
+fn quotes_are_literal_unless_namespace_qualification_supplies_path_context() {
     let document = language::parse(
         r#""a\q" -> "destination with spaces"
 alias := "source path"
@@ -157,10 +178,10 @@ run($wsl::"source path", "text\n流")
     )
     .unwrap();
     assert!(
-        matches!(&document.statements[0].kind, StatementKind::Transfer { source, destination } if matches!(&source.kind, ExprKind::Literal(text) if text == "a\\q") && matches!(&destination.kind, ExprKind::Path(path) if path.path == "destination with spaces"))
+        matches!(&document.statements[0].kind, StatementKind::Transfer { source, destination } if matches!(&source.kind, ExprKind::Literal(text) if text == "a\\q") && matches!(&destination.kind, ExprKind::Literal(text) if text == "destination with spaces"))
     );
     assert!(
-        matches!(&document.statements[1].kind, StatementKind::Binding { value, .. } if matches!(&value.kind, ExprKind::Path(path) if path.qualifier.is_none() && path.path == "source path"))
+        matches!(&document.statements[1].kind, StatementKind::Binding { value, .. } if matches!(&value.kind, ExprKind::Literal(text) if text == "source path"))
     );
     assert!(
         matches!(&document.statements[2].kind, StatementKind::Transfer { source, .. } if matches!(&source.kind, ExprKind::Path(path) if path.qualifier.as_ref().unwrap().text == "$local"))

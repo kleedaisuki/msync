@@ -1,5 +1,87 @@
 # Effect-aware planning and bounded execution
 
+## Structured v0.4 preparation
+
+`preparation::prepare` resolves native paths and observes file kinds without
+capturing payloads or opening a stream connection. Its `live=false` form never
+launches SSH/WSL metadata helpers. A live remote inspection batches stat-like
+queries by endpoint; it does not download source data or launch the user's
+program. Environment and PATH values are captured as physical local locations.
+
+`prepare_with_context` additionally accepts version-store-owned, epoch-specific
+`PlanningContext` premises. Supplied type facts override the live host's absence
+when a source exists in the transaction's unpublished view. They are a trust
+boundary, not facts inferred from a filename. Opaque program launch invalidates
+unproved subsequent filesystem kind assumptions; missing host output is then
+unknown rather than an automatic source-not-found diagnostic.
+
+The ordered type interpreter keeps origin and latest-checkpoint states separate.
+Bare rollback discards pending type writes; only successful checkpoints and block
+completion contribute to named undo. Origin restoration affects the named
+transaction's committed write footprint, not unrelated later resources. Successful
+assignments establish directory kinds for required parents, while unknown copied
+directory descendants retain explicit refinement obligations.
+
+The first existing local parent is captured as an epoch-qualified metadata
+frontier. Namespace writes include that directory but not its unchanged
+ancestors, so creating files in separate existing directories does not become a
+spurious write to the global root. Runtime-provided parent frontiers take priority
+over host observations and are retained in the replay certificate.
+
+Regular assignments are optimized to a fixed point inside observation-free
+epochs. Explicit commit/rollback, process operations, physical streams, selectors,
+containers and directory replacement bound those epochs. The mature copy planner
+supplies file-only candidates; typed replay uses the same captured resource keys,
+hardlink hints and conservative Windows/WSL overlap relation. Alias hints may
+block a rule but never become positive path equality.
+
+The v0.4 metadata model requires two guards beyond byte-only dead-store rules:
+
+- An initial missing-destination creator is retained, because it writes parent
+  namespace metadata. A later identical regular-file copy may instead disappear
+  when its source version and metadata are stable and no intervening operation
+  observes or changes the source/destination. Existing-destination dead writes
+  and stable regular-file forwarding remain available.
+- A literal-backed file is not interchangeable with its literal byte stream.
+  A subsequent file copy inherits the producer's mtime; recreating the bytes as
+  a fresh literal would lose that correlation. Literal-to-file version propagation
+  therefore retains the producer until the IR can represent its metadata origin.
+  No synthetic file backend is used to hide this distinction.
+
+`PreparedProgram` retains the resolved original, optimized program, epoch type
+facts, rewrite provenance and graph premises. `verify()` replays using captured
+resource comparisons only: deleting a source after preparation does not make the
+certificate renderer read data or re-probe the filesystem. Execution must still
+validate current resource/version ownership; a certificate is not a TOCTOU or
+hostile-filesystem security guarantee. The ordinary-file rules assume quiescent
+external resources, as does the existing planner contract below.
+
+A valid conservative graph need not be a complete physical I/O plan.
+`is_execution_ready()` remains false for unknown physical types, selector entry
+expansion and physical stream ownership/co-start obligations. Process-view version
+premises must distinguish an immutable manager input from a private program write
+epoch; ordinary location equality alone must not turn a program's own stdin into
+an exit prerequisite.
+
+An explicitly pinned input also bounds pathname-based rewrites. A retained older
+file version may intentionally differ from the latest reaching write at that
+pathname. Preparation preserves that version selection instead of forwarding by
+name, while the execution adapter retains the actual reader and its lifetime.
+
+Targeted coverage is `tests/preparation_v4.rs`: metadata-only/no-launch checks,
+overwrite and redundant-write rules, fixed-point forwarding, version/rollback
+boundaries, independent file-value models, actual reference/optimized mtime
+correlations, finite HTTP non-observation, and a Unix FIFO non-opening case.
+
+This structured pass is the correctness baseline for the later integration
+profile, not a v3 scaling claim: epoch type-event queries and literal-aware
+certificate replay currently scan their histories. Preparation deduplicates
+resolved endpoints, but its resource adapter does not yet share the legacy
+planner's prefix cache across all structured locations. Measure those costs on
+the shared-source/many-destination workload after full execution integration,
+then reuse the indexed frontier/cache machinery rather than introduce a second
+unverified optimization path.
+
 The new language pipeline separates **frontend compilation**, **planning**, and
 **execution**. `Compiler` still resolves declarations into `Program`; `plan.rs`
 turns inspected operations into an optimized dependency graph. The scheduler

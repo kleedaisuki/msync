@@ -77,7 +77,7 @@ impl Resource {
         left.starts_with(right) || right.starts_with(left)
     }
 
-    fn same_path(&self, other: &Self) -> bool {
+    pub(crate) fn same_path(&self, other: &Self) -> bool {
         self.key == other.key
     }
 
@@ -97,6 +97,12 @@ impl Resource {
             (None, Some(_)) => false,
         }
     }
+}
+
+/// Capture the existing planner's metadata/alias proof once for another IR.
+/// Comparing the returned resources does not inspect the filesystem again.
+pub(crate) fn snapshot_resource(location: &Location, scope: AccessScope) -> Resource {
+    ResourceCache::default().get(location, scope)
 }
 
 #[derive(Clone, Debug, Default)]

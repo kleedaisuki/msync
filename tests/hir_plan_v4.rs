@@ -587,7 +587,7 @@ fn child_effect_barrier_waits_for_exit_not_just_launch() {
             .iter()
             .any(|edge| edge.before == InstructionId(1)
                 && edge.after == InstructionId(2)
-                && edge.wait == Wait::ProcessExited(ProcessId(7)))
+                && edge.wait == Wait::ProcessSealed(ProcessId(7)))
     );
     assert!(graph.nodes[1].effects.unknown_external);
 }
@@ -730,7 +730,7 @@ fn a_view_certificate_does_not_erase_overlapping_process_effects() {
             .iter()
             .any(|edge| edge.before == InstructionId(0)
                 && edge.after == InstructionId(1)
-                && edge.wait == Wait::ProcessExited(ProcessId(0)))
+                && edge.wait == Wait::ProcessSealed(ProcessId(0)))
     );
     assert!(!graph.issues.is_empty());
     assert!(
@@ -763,13 +763,526 @@ fn pipe_filesystem_hazard_is_not_erased_to_make_a_cohort_schedulable() {
         ),
     ]);
     let graph = graph::build(&ir);
+    assert!(graph.issues.is_empty());
     assert!(
         graph
-            .issues
+            .refinements
             .iter()
-            .any(|issue| issue.message.contains("stage/version"))
+            .any(|refinement| refinement.instruction == InstructionId(2)
+                && refinement.kind == graph::RefinementKind::InputVersion)
     );
-    assert!(graph.verify(&ir).is_err());
+    assert!(graph.dependencies.iter().any(|edge| {
+        edge.before == InstructionId(1)
+            && edge.after == InstructionId(2)
+            && edge
+                .reasons
+                .iter()
+                .any(|reason| matches!(reason, Reason::Hazard(_)))
+    }));
+    assert!(!graph.is_execution_ready());
+    assert!(graph.verify(&ir).is_ok());
+}
+
+#[test]
+fn existing_parent_frontiers_bound_namespace_writes_without_dropping_the_parent() {
+    let ir = program(vec![literal(0, "/left/a"), literal(1, "/right/b")]);
+    let mut context = finite_context(&ir);
+    for facts in context.operation_facts.values_mut() {
+        facts.destination = FileClass::Missing;
+    }
+    let unrefined = graph::build_with_context(&ir, &context);
+    assert_eq!(
+        permitted_orders(&unrefined),
+        vec![vec![0, 1]],
+        "without parent metadata, either parent may itself need creation under '/'"
+    );
+    context
+        .existing_parent_frontiers
+        .insert(InstructionId(0), location("/left"));
+    context
+        .existing_parent_frontiers
+        .insert(InstructionId(1), location("/right"));
+    let prepared = graph::build_with_context(&ir, &context);
+    assert_eq!(permitted_orders(&prepared).len(), 2);
+    assert_eq!(
+        prepared.existing_parent_frontiers,
+        context.existing_parent_frontiers
+    );
+    for (node, expected) in prepared.nodes.iter().zip(["/left", "/right"]) {
+        let changed: Vec<_> = node
+            .effects
+            .accesses
+            .iter()
+            .filter_map(|access| match &access.resource {
+                Resource::DirectoryMetadata(directory) if access.kind == AccessKind::Write => {
+                    Some(directory.location.path.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(changed, vec![expected]);
+    }
+    let same_parent = program(vec![literal(0, "/left/a"), literal(1, "/left/b")]);
+    context
+        .existing_parent_frontiers
+        .insert(InstructionId(1), location("/left"));
+    let prepared = graph::build_with_context(&same_parent, &context);
+    assert_eq!(
+        permitted_orders(&prepared),
+        vec![vec![0, 1]],
+        "the proved existing directory's observable metadata is still written"
+    );
+}
+
+#[test]
+fn an_unrelated_parent_frontier_does_not_trim_real_namespace_ancestors() {
+    let ir = program(vec![literal(0, "/real/new"), literal(1, "/other/new")]);
+    let mut context = finite_context(&ir);
+    for facts in context.operation_facts.values_mut() {
+        facts.destination = FileClass::Missing;
+    }
+    context
+        .existing_parent_frontiers
+        .insert(InstructionId(0), location("/unrelated"));
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(graph.nodes[0].effects.accesses.iter().any(|access| matches!(&access.resource, Resource::DirectoryMetadata(parent) if parent.location.path == "/")));
+    assert_eq!(permitted_orders(&graph), vec![vec![0, 1]]);
+}
+
+fn stdin_file_program(path: &str) -> Program {
+    program(vec![
+        spawn(0, 0),
+        node(
+            1,
+            InstructionKind::Transfer {
+                source: Input::File {
+                    location: location(path),
+                    pattern: None,
+                },
+                destination: Output::Stdin(ProcessId(0)),
+            },
+        ),
+    ])
+}
+
+#[test]
+fn own_file_input_cycles_are_pending_version_obligations_not_frontend_rejections() {
+    let ir = stdin_file_program("/managed/prompt");
+    let mut context = finite_context(&ir);
+    context
+        .process_effects
+        .insert(ProcessId(0), mediated_effects("/managed"));
+    let pending = graph::build_with_context(&ir, &context);
+    assert!(pending.issues.is_empty());
+    assert!(
+        pending
+            .refinements
+            .iter()
+            .any(|refinement| refinement.kind == graph::RefinementKind::InputVersion)
+    );
+    assert!(
+        pending
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(0)
+                && edge.after == InstructionId(1)
+                && edge.wait == Wait::ProcessSealed(ProcessId(0)))
+    );
+    assert!(!pending.is_execution_ready());
+    assert!(pending.verify_with_context(&ir, &context).is_ok());
+
+    context.pinned_inputs.insert(
+        InstructionId(1),
+        graph::VersionReadProof::pinned_file(location("/different"), "reader", "wrong-location")
+            .unwrap(),
+    );
+    let wrong = graph::build_with_context(&ir, &context);
+    assert!(
+        wrong
+            .refinements
+            .iter()
+            .any(|refinement| refinement.kind == graph::RefinementKind::InputVersion)
+    );
+    assert!(
+        wrong
+            .dependencies
+            .iter()
+            .any(|edge| edge.wait == Wait::ProcessSealed(ProcessId(0)))
+    );
+    assert!(!wrong.is_execution_ready());
+    assert!(
+        !wrong.nodes[1]
+            .effects
+            .accesses
+            .iter()
+            .any(|access| matches!(access.resource, Resource::SnapshotFile(_)))
+    );
+}
+
+#[test]
+fn an_actual_retained_manager_version_allows_stdin_to_co_start_with_private_writes() {
+    use msync::language::Isolation;
+    use msync::transaction::filesystem::Entry;
+    use msync::transaction::manager::Manager;
+    let temporary = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+    std::fs::create_dir_all(&temporary).unwrap();
+    let workspace = tempfile::Builder::new()
+        .prefix("hir-version-proof-")
+        .tempdir_in(&temporary)
+        .unwrap();
+    let root = workspace.path().join("managed");
+    std::fs::create_dir(&root).unwrap();
+    let prompt = root.join("prompt");
+    std::fs::write(&prompt, "committed").unwrap();
+    let payload = workspace.path().join("payload");
+    std::fs::write(&payload, "pending version").unwrap();
+    let mut manager = Manager::new(&workspace.path().join("snapshots")).unwrap();
+    manager.enroll(&root).unwrap();
+    let transaction = TransactionId(9);
+    manager.begin(transaction, Isolation::Serializable).unwrap();
+    let pending = manager.capture(&payload).unwrap();
+    manager
+        .replace_snapshot(transaction, &prompt, &pending)
+        .unwrap();
+    let lease = manager.read_snapshot(transaction, &prompt).unwrap();
+    let Some(Entry::File { artifact, .. }) = lease.entries().get(std::path::Path::new("")) else {
+        panic!("expected a captured regular-file input")
+    };
+    assert_eq!(
+        std::fs::read_to_string(artifact.path()).unwrap(),
+        "pending version"
+    );
+    assert_eq!(std::fs::read_to_string(&prompt).unwrap(), "committed");
+
+    let logical = prompt.to_str().unwrap();
+    let ir = stdin_file_program(logical);
+    let mut context = finite_context(&ir);
+    context
+        .process_effects
+        .insert(ProcessId(0), mediated_effects(root.to_str().unwrap()));
+    context.pinned_inputs.insert(
+        InstructionId(1),
+        graph::VersionReadProof::pinned_file(
+            location(logical),
+            "manager-immutable-snapshot",
+            format!("{}:transaction-9:read-1", workspace.path().display()),
+        )
+        .unwrap(),
+    );
+    let prepared = graph::build_with_context(&ir, &context);
+    assert!(prepared.issues.is_empty(), "{:?}", prepared.issues);
+    assert!(prepared.is_execution_ready(), "{:?}", prepared.refinements);
+    assert!(
+        prepared
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(0)
+                && edge.after == InstructionId(1)
+                && edge.wait == Wait::ProcessStarted(ProcessId(0)))
+    );
+    assert!(
+        !prepared
+            .dependencies
+            .iter()
+            .any(|edge| edge.wait == Wait::ProcessSealed(ProcessId(0)))
+    );
+    assert!(
+        prepared.nodes[1]
+            .effects
+            .accesses
+            .iter()
+            .any(|access| access.kind == AccessKind::Read
+                && matches!(access.resource, Resource::SnapshotFile(_)))
+    );
+    assert!(prepared.verify_with_context(&ir, &context).is_ok());
+    assert_eq!(prepared.pinned_inputs, context.pinned_inputs);
+
+    std::fs::write(&payload, "later private version").unwrap();
+    let later = manager.capture(&payload).unwrap();
+    manager
+        .replace_snapshot(transaction, &prompt, &later)
+        .unwrap();
+    manager.finish(transaction).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&prompt).unwrap(),
+        "later private version"
+    );
+    assert_eq!(
+        std::fs::read_to_string(artifact.path()).unwrap(),
+        "pending version",
+        "the actual immutable lease, not a regular-file type, justifies independence"
+    );
+    assert!(lease.entries().contains_key(std::path::Path::new("")));
+}
+
+#[test]
+fn a_pin_is_not_inferred_for_ordinary_file_reads_or_raw_network_sources() {
+    let ir = program(vec![literal(0, "/same"), copy(1, "/same", "/output")]);
+    let context = finite_context(&ir);
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(
+        graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(0)
+                && edge.after == InstructionId(1)
+                && edge.wait == Wait::Completion)
+    );
+    assert!(
+        !graph.nodes[1]
+            .effects
+            .accesses
+            .iter()
+            .any(|access| matches!(access.resource, Resource::SnapshotFile(_)))
+    );
+    let http = Location {
+        backend: Backend::Http {
+            base: "https://example.invalid".into(),
+        },
+        path: "/data".into(),
+    };
+    assert!(graph::VersionReadProof::pinned_file(http, "HEAD", "regular").is_err());
+    let tcp = Location {
+        backend: Backend::Tcp {
+            host: "127.0.0.1".into(),
+            port: 9000,
+        },
+        path: "/".into(),
+    };
+    assert!(graph::VersionReadProof::pinned_file(tcp, "socket-type", "regular").is_err());
+}
+
+#[test]
+fn program_output_drain_and_its_logical_file_publication_are_distinct_phases() {
+    let mut ir = stdin_file_program("/managed/prompt");
+    ir.body
+        .instructions
+        .push(port(2, 0, ReadPort::Stdout, "/managed/output"));
+    ir.body
+        .instructions
+        .push(copy(3, "/managed/output", "/else/result"));
+    let mut context = finite_context(&ir);
+    context
+        .process_effects
+        .insert(ProcessId(0), mediated_effects("/managed"));
+    context.pinned_inputs.insert(
+        InstructionId(1),
+        graph::VersionReadProof::pinned_file(
+            location("/managed/prompt"),
+            "manager-reader",
+            "retained-version-1",
+        )
+        .unwrap(),
+    );
+    let prepared = graph::build_with_context(&ir, &context);
+    assert!(prepared.issues.is_empty(), "{:?}", prepared.issues);
+    assert!(prepared.is_execution_ready(), "{:?}", prepared.refinements);
+    assert!(
+        prepared
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(0)
+                && edge.after == InstructionId(2)
+                && edge.wait == Wait::ProcessStarted(ProcessId(0)))
+    );
+    assert!(!prepared.dependencies.iter().any(
+        |edge| edge.after == InstructionId(2) && edge.wait == Wait::ProcessSealed(ProcessId(0))
+    ));
+    assert!(prepared.publication_dependencies.iter().any(|edge| {
+        edge.before == InstructionId(0)
+            && edge.after == InstructionId(2)
+            && edge.wait == Wait::ProcessSealed(ProcessId(0))
+            && edge
+                .reasons
+                .contains(&Reason::OutputPublication(ProcessId(0)))
+    }));
+    assert!(prepared.publication_dependencies.iter().any(|edge| edge.after == InstructionId(2) && edge.reasons.iter().any(|reason| matches!(reason, Reason::Hazard(conflict) if conflict.after.kind == AccessKind::Write))));
+    assert!(
+        prepared
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(2)
+                && edge.after == InstructionId(3)
+                && edge.wait == Wait::Completion),
+        "later file readers need the logical published assignment, not just a drained stage"
+    );
+    assert!(
+        prepared
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(0)
+                && edge.after == InstructionId(3)
+                && edge.wait == Wait::ProcessSealed(ProcessId(0)))
+    );
+    assert!(prepared.verify_with_context(&ir, &context).is_ok());
+
+    fn final_target(order: &[&str]) -> &'static str {
+        let mut target = "old contents";
+        for event in order {
+            target = match *event {
+                "seal private delta" => "child wrote this path",
+                "publish stdout assignment" => "stdout bytes",
+                _ => target,
+            };
+        }
+        target
+    }
+    assert_ne!(
+        final_target(&["publish stdout assignment", "seal private delta"]),
+        "stdout bytes"
+    );
+    assert_eq!(
+        final_target(&[
+            "drain private spool",
+            "seal private delta",
+            "publish stdout assignment"
+        ]),
+        "stdout bytes"
+    );
+    let mut tampered = prepared.clone();
+    tampered.publication_dependencies.clear();
+    assert!(
+        tampered.verify_with_context(&ir, &context).is_err(),
+        "co-start safety does not justify discarding publication order"
+    );
+}
+
+#[test]
+fn unknown_output_type_keeps_an_explicit_staging_obligation_until_prepared() {
+    let ir = program(vec![
+        spawn(0, 0),
+        port(1, 0, ReadPort::Stdout, "/managed/output"),
+    ]);
+    let mut context = finite_context(&ir);
+    context
+        .process_effects
+        .insert(ProcessId(0), mediated_effects("/managed"));
+    context
+        .operation_facts
+        .get_mut(&InstructionId(1))
+        .unwrap()
+        .destination = FileClass::Unknown;
+    let pending = graph::build_with_context(&ir, &context);
+    assert!(pending.issues.is_empty());
+    assert!(
+        pending
+            .refinements
+            .iter()
+            .any(|refinement| refinement.kind == graph::RefinementKind::OutputPublication)
+    );
+    assert!(!pending.is_execution_ready());
+    assert!(
+        pending.publication_dependencies.is_empty(),
+        "unknown file/socket destinations are not silently assumed to be private stages"
+    );
+    assert!(pending.dependencies.iter().any(
+        |edge| edge.after == InstructionId(1) && edge.wait == Wait::ProcessSealed(ProcessId(0))
+    ));
+    context
+        .operation_facts
+        .get_mut(&InstructionId(1))
+        .unwrap()
+        .destination = FileClass::Missing;
+    context
+        .existing_parent_frontiers
+        .insert(InstructionId(1), location("/managed"));
+    let prepared = graph::build_with_context(&ir, &context);
+    assert!(prepared.is_execution_ready());
+    assert!(prepared.publication_dependencies.iter().any(
+        |edge| edge.after == InstructionId(1) && edge.wait == Wait::ProcessSealed(ProcessId(0))
+    ));
+}
+
+#[test]
+fn mutable_file_sources_do_not_get_the_program_output_publication_exception() {
+    let ir = program(vec![
+        spawn(0, 0),
+        copy(1, "/managed/input", "/managed/output"),
+    ]);
+    let mut context = finite_context(&ir);
+    context
+        .process_effects
+        .insert(ProcessId(0), mediated_effects("/managed"));
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(graph.publication_dependencies.is_empty());
+    assert!(graph.dependencies.iter().any(|edge| edge.before == InstructionId(0) && edge.after == InstructionId(1) && edge.wait == Wait::ProcessSealed(ProcessId(0)) && edge.reasons.iter().any(|reason| matches!(reason, Reason::Hazard(conflict) if conflict.after.kind == AccessKind::Read))));
+}
+
+#[test]
+fn retained_process_ports_keep_resource_hazards_and_separate_output_publication() {
+    let mut ir = program(vec![
+        port(0, 88, ReadPort::Stdout, "/managed/output"),
+        port(1, 88, ReadPort::Pid, "/managed/pid"),
+    ]);
+    let mut context = finite_context(&ir);
+    context
+        .process_effects
+        .insert(ProcessId(88), mediated_effects("/managed"));
+    let prepared = graph::build_with_context(&ir, &context);
+    assert!(
+        prepared
+            .external_processes
+            .iter()
+            .any(|requirement| requirement.instruction == InstructionId(0)
+                && requirement.wait == Wait::ProcessStarted(ProcessId(88)))
+    );
+    assert!(
+        !prepared
+            .external_processes
+            .iter()
+            .any(|requirement| requirement.instruction == InstructionId(0)
+                && requirement.wait == Wait::ProcessSealed(ProcessId(88)))
+    );
+    assert!(
+        prepared
+            .external_publications
+            .iter()
+            .any(|requirement| requirement.instruction == InstructionId(0)
+                && requirement.wait == Wait::ProcessSealed(ProcessId(88)))
+    );
+    assert!(
+        prepared
+            .external_processes
+            .iter()
+            .any(|requirement| requirement.instruction == InstructionId(1)
+                && requirement.wait == Wait::ProcessSealed(ProcessId(88))),
+        "pid availability does not erase the live process's managed-file write hazard"
+    );
+    ir.body.instructions[0] = node(
+        0,
+        InstructionKind::Transfer {
+            source: Input::File {
+                location: location("/managed/prompt"),
+                pattern: None,
+            },
+            destination: Output::Stdin(ProcessId(88)),
+        },
+    );
+    let pending = graph::build_with_context(&ir, &context);
+    assert!(
+        pending
+            .external_processes
+            .iter()
+            .any(|requirement| requirement.instruction == InstructionId(0)
+                && requirement.wait == Wait::ProcessSealed(ProcessId(88)))
+    );
+    context.pinned_inputs.insert(
+        InstructionId(0),
+        graph::VersionReadProof::pinned_file(
+            location("/managed/prompt"),
+            "retained-reader",
+            "lease-1",
+        )
+        .unwrap(),
+    );
+    let prepared = graph::build_with_context(&ir, &context);
+    assert!(
+        !prepared
+            .external_processes
+            .iter()
+            .any(|requirement| requirement.instruction == InstructionId(0)
+                && requirement.wait == Wait::ProcessSealed(ProcessId(88)))
+    );
 }
 
 #[test]
@@ -791,7 +1304,7 @@ fn checkpoint_quiesces_children_and_prevents_cross_epoch_motion() {
             .iter()
             .any(|edge| edge.before == InstructionId(0)
                 && edge.after == InstructionId(1)
-                && edge.wait == Wait::ProcessExited(ProcessId(0))
+                && edge.wait == Wait::ProcessSealed(ProcessId(0))
                 && edge.reasons.contains(&Reason::CheckpointBoundary))
     );
     assert!(
@@ -841,7 +1354,7 @@ fn retained_processes_constrain_the_next_submission_even_without_port_mentions()
         graph
             .external_processes
             .iter()
-            .all(|requirement| requirement.wait == Wait::ProcessExited(ProcessId(88)))
+            .all(|requirement| requirement.wait == Wait::ProcessSealed(ProcessId(88)))
     );
     assert!(
         graph
@@ -871,7 +1384,7 @@ fn imported_ports_can_be_serviced_while_unrelated_work_awaits_their_process() {
             .external_processes
             .iter()
             .any(|requirement| requirement.instruction == InstructionId(1)
-                && requirement.wait == Wait::ProcessExited(ProcessId(88)))
+                && requirement.wait == Wait::ProcessSealed(ProcessId(88)))
     );
     assert!(
         graph

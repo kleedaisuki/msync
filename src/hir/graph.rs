@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+pub use super::effects::VersionReadProof;
 use super::effects::{self, Conflict, Effects, OperationFacts, Port, Resource};
 use crate::compiler::Location;
 use crate::hir::{
@@ -20,6 +21,8 @@ pub enum Wait {
     Completion,
     ProcessStarted(ProcessId),
     ProcessExited(ProcessId),
+    /// Process exited and its private filesystem delta has been imported.
+    ProcessSealed(ProcessId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,6 +32,7 @@ pub enum Reason {
     CheckpointBoundary,
     PortAvailability,
     RetainedTransactionOrigin(TransactionId),
+    OutputPublication(ProcessId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -116,6 +120,12 @@ pub struct PlanningContext {
     pub process_effects: BTreeMap<ProcessId, ProcessEffects>,
     /// Type observations/version-store premises at this instruction's epoch.
     pub operation_facts: BTreeMap<InstructionId, OperationFacts>,
+    /// Metadata-only premise: first existing directory above this destination.
+    /// Namespace writes include that directory, but not its unchanged ancestors.
+    pub existing_parent_frontiers: BTreeMap<InstructionId, Location>,
+    /// Actual retained readers selected at this instruction's logical epoch;
+    /// regular-file type facts alone cannot establish this premise.
+    pub pinned_inputs: BTreeMap<InstructionId, VersionReadProof>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +147,8 @@ pub enum RefinementKind {
     DestinationType,
     PhysicalStreamScheduling,
     SelectorExpansion,
+    InputVersion,
+    OutputPublication,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,11 +163,18 @@ pub struct Refinement {
 pub struct PlanGraph {
     pub nodes: Vec<Node>,
     pub dependencies: Vec<Dependency>,
+    /// Gates final managed-file publication, not the private pipe-drain service.
+    /// The executor imports a producer's sealed delta before assigning its
+    /// subsequent stdout/stderr file result into the managed version store.
+    pub publication_dependencies: Vec<Dependency>,
     pub co_start: Vec<CoStart>,
     pub commutations: Vec<CommutationProof>,
     pub external_processes: Vec<ExternalProcessRequirement>,
+    pub external_publications: Vec<ExternalProcessRequirement>,
     pub process_proofs: BTreeMap<ProcessId, ProcessEffects>,
     pub operation_facts: BTreeMap<InstructionId, OperationFacts>,
+    pub existing_parent_frontiers: BTreeMap<InstructionId, Location>,
+    pub pinned_inputs: BTreeMap<InstructionId, VersionReadProof>,
     /// Physical streams require identity/co-start preparation. A valid pure
     /// scheduling certificate alone does not make this an executable I/O plan.
     pub refinements: Vec<Refinement>,
@@ -322,6 +341,8 @@ fn build_region(
     let mut graph = PlanGraph {
         process_proofs: context.process_effects.clone(),
         operation_facts: context.operation_facts.clone(),
+        existing_parent_frontiers: context.existing_parent_frontiers.clone(),
+        pinned_inputs: context.pinned_inputs.clone(),
         ..PlanGraph::default()
     };
     for instruction in &region.instructions {
@@ -351,16 +372,47 @@ fn build_region(
             {
                 continue;
             }
-            let wait = if used && !waits_for_exit(&effects, *process) {
-                Wait::ProcessStarted(*process)
-            } else {
+            let wait = if !used {
+                Wait::ProcessSealed(*process)
+            } else if waits_for_exit(&effects, *process) {
                 Wait::ProcessExited(*process)
+            } else {
+                Wait::ProcessStarted(*process)
             };
             graph.external_processes.push(ExternalProcessRequirement {
                 instruction: instruction.id,
                 process: *process,
                 wait,
             });
+            if used && let Some(proof) = context.process_effects.get(process) {
+                let conflicts = proof.footprint.conflicts(&effects);
+                if !conflicts.is_empty() {
+                    let requirement = ExternalProcessRequirement {
+                        instruction: instruction.id,
+                        process: *process,
+                        wait: Wait::ProcessSealed(*process),
+                    };
+                    if staged_output(instruction, context).is_some()
+                        && conflicts.iter().all(publication_conflict)
+                    {
+                        if !graph.external_publications.contains(&requirement) {
+                            graph.external_publications.push(requirement);
+                        }
+                    } else if !graph.external_processes.contains(&requirement) {
+                        graph.external_processes.push(requirement);
+                    }
+                }
+            }
+            if staged_output(instruction, context) == Some(*process) {
+                let requirement = ExternalProcessRequirement {
+                    instruction: instruction.id,
+                    process: *process,
+                    wait: Wait::ProcessSealed(*process),
+                };
+                if !graph.external_publications.contains(&requirement) {
+                    graph.external_publications.push(requirement);
+                }
+            }
         }
         graph.nodes.push(Node {
             instruction: instruction.id,
@@ -369,15 +421,18 @@ fn build_region(
         });
     }
     let mut dependencies = BTreeMap::new();
+    let mut publications = BTreeMap::new();
     for (right, after) in region.instructions.iter().enumerate() {
         for (left, before) in region.instructions[..right].iter().enumerate() {
-            let reasons = ordering(
+            let mut reasons = ordering(
                 before,
                 after,
                 &graph.nodes[left].effects,
                 &graph.nodes[right].effects,
             );
-            if reasons.is_empty() {
+            let staged = staged_output(after, context);
+            let producer = staged.filter(|process| spawn(before) == Some(*process));
+            if reasons.is_empty() && producer.is_none() {
                 graph.commutations.push(CommutationProof {
                     left: before.id,
                     right: after.id,
@@ -385,8 +440,19 @@ fn build_region(
                     right_effects: graph.nodes[right].effects.clone(),
                 });
             }
-            for (wait, reason) in reasons {
-                dependencies
+            if let Some(process) = producer {
+                publications
+                    .entry((before.id, after.id, Wait::ProcessSealed(process)))
+                    .or_insert_with(Vec::new)
+                    .push(Reason::OutputPublication(process));
+            }
+            for (wait, reason) in reasons.drain(..) {
+                let edges = if staged.is_some() && publication_write(&reason) {
+                    &mut publications
+                } else {
+                    &mut dependencies
+                };
+                edges
                     .entry((before.id, after.id, wait))
                     .or_insert_with(Vec::new)
                     .push(reason);
@@ -394,6 +460,15 @@ fn build_region(
         }
     }
     graph.dependencies = dependencies
+        .into_iter()
+        .map(|((before, after, wait), reasons)| Dependency {
+            before,
+            after,
+            wait,
+            reasons,
+        })
+        .collect();
+    graph.publication_dependencies = publications
         .into_iter()
         .map(|((before, after, wait), reasons)| Dependency {
             before,
@@ -440,13 +515,15 @@ fn summarize(instruction: &Instruction, context: &PlanningContext) -> Effects {
             }
             summary
         }
-        _ => effects::summarize_with_facts(
+        _ => effects::summarize_prepared(
             instruction,
             context
                 .operation_facts
                 .get(&instruction.id)
                 .copied()
                 .unwrap_or_default(),
+            context.existing_parent_frontiers.get(&instruction.id),
+            context.pinned_inputs.get(&instruction.id),
         ),
     }
 }
@@ -465,10 +542,24 @@ fn refine(instruction: &Instruction, context: &PlanningContext, refinements: &mu
         .copied()
         .unwrap_or_default();
     if let crate::hir::Input::File { location, pattern } = source {
-        match effects::file_class(location, facts.source) {
+        let pinned = pattern.is_none()
+            && context
+                .pinned_inputs
+                .get(&instruction.id)
+                .is_some_and(|proof| proof.covers(location));
+        if !pinned {
+            match effects::file_class(location, facts.source) {
             FileClass::Unknown | FileClass::Missing => refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::SourceType, message: "source is not proved replayable; inspect its epoch-specific type before choosing finite-file or physical-stream scheduling".into() }),
             FileClass::Stream => refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::PhysicalStreamScheduling, message: "physical stream requires identity-aware co-start/ownership preparation; this HIR graph is not its executable stream plan".into() }),
             _ => {}
+        }
+        }
+        let needs_version = !pinned
+            && (context.pinned_inputs.contains_key(&instruction.id)
+                || (matches!(destination, crate::hir::Output::Stdin(_))
+                    && effects::file_class(location, facts.source) != FileClass::Stream));
+        if needs_version {
+            refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::InputVersion, message: "select and retain this input's immutable regular-file version at its logical read epoch before co-start; file type/path alone does not prove a pinned reader".into() });
         }
         if pattern.is_some() {
             refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::SelectorExpansion, message: "selector entries require type/identity preparation before their physical transfers can be scheduled".into() });
@@ -479,6 +570,17 @@ fn refine(instruction: &Instruction, context: &PlanningContext, refinements: &mu
             FileClass::Unknown => refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::DestinationType, message: "destination may be a file, directory or physical stream; inspect its epoch-specific type before execution".into() }),
             FileClass::Stream => refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::PhysicalStreamScheduling, message: "physical stream destination requires identity-aware co-start preparation, not an ordinary completion-only graph".into() }),
             _ => {}
+        }
+        if matches!(
+            source,
+            crate::hir::Input::Port {
+                port: crate::hir::ReadPort::Stdout | crate::hir::ReadPort::Stderr,
+                ..
+            }
+        ) && effects::file_class(location, facts.destination) != FileClass::Stream
+            && staged_output(instruction, context).is_none()
+        {
+            refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::OutputPublication, message: "prove this program output is drained to a private regular-file stage before scheduling publication after the producer's sealed resource delta".into() });
         }
     }
 }
@@ -512,7 +614,46 @@ fn waits_for_exit(effects: &Effects, process: ProcessId) -> bool {
 }
 
 fn completion(before: &Instruction) -> Wait {
-    spawn(before).map_or(Wait::Completion, Wait::ProcessExited)
+    spawn(before).map_or(Wait::Completion, Wait::ProcessSealed)
+}
+
+fn staged_output(instruction: &Instruction, context: &PlanningContext) -> Option<ProcessId> {
+    let InstructionKind::Transfer {
+        source:
+            crate::hir::Input::Port {
+                process,
+                port: crate::hir::ReadPort::Stdout | crate::hir::ReadPort::Stderr,
+            },
+        destination:
+            crate::hir::Output::File {
+                location,
+                mode: crate::language::DestinationMode::Exact,
+            },
+    } = &instruction.kind
+    else {
+        return None;
+    };
+    let destination = context
+        .operation_facts
+        .get(&instruction.id)
+        .map_or(FileClass::Unknown, |facts| facts.destination);
+    matches!(
+        effects::file_class(location, destination),
+        FileClass::Regular | FileClass::Missing
+    )
+    .then_some(*process)
+}
+
+fn publication_write(reason: &Reason) -> bool {
+    matches!(reason, Reason::Hazard(conflict) if publication_conflict(conflict))
+}
+
+fn publication_conflict(conflict: &Conflict) -> bool {
+    conflict.after.kind == effects::AccessKind::Write
+        && matches!(
+            conflict.after.resource,
+            Resource::File(_) | Resource::DirectoryMetadata(_)
+        )
 }
 
 fn ordering(
@@ -654,19 +795,40 @@ fn reject_internal_waits(graph: &mut PlanGraph) {
                     .iter()
                     .any(|member| reaches(graph, edge.after, *member))
                 && edge.wait == Wait::Completion
+                && !has_pending_service_refinement(graph, cohort, edge.after)
             {
                 graph.issues.push(Issue { instructions: vec![edge.before, edge.after], message: format!("process {} pipe services have a completion hazard; stage/version the conflicting resource before co-start", cohort.process.0) });
             }
-            if edge.wait == Wait::ProcessExited(cohort.process)
+            if matches!(edge.wait, Wait::ProcessExited(process) | Wait::ProcessSealed(process) if process == cohort.process)
                 && cohort
                     .members
                     .iter()
                     .any(|member| reaches(graph, edge.after, *member))
+                && !has_pending_service_refinement(graph, cohort, edge.after)
             {
                 graph.issues.push(Issue { instructions: vec![edge.before, edge.after], message: format!("process {} pipe service depends on that process exiting; provide a mediated disjoint-effect proof or stage the dependency before co-start", cohort.process.0) });
             }
         }
     }
+}
+
+fn has_pending_service_refinement(
+    graph: &PlanGraph,
+    cohort: &CoStart,
+    start: InstructionId,
+) -> bool {
+    cohort.members.iter().any(|member| {
+        reaches(graph, start, *member)
+            && graph.refinements.iter().any(|refinement| {
+                refinement.instruction == *member
+                    && matches!(
+                        refinement.kind,
+                        RefinementKind::InputVersion
+                            | RefinementKind::PhysicalStreamScheduling
+                            | RefinementKind::OutputPublication
+                    )
+            })
+    })
 }
 
 fn reaches(graph: &PlanGraph, start: InstructionId, target: InstructionId) -> bool {

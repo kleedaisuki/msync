@@ -489,7 +489,7 @@ fn manually_constructed_nested_macro_ast_is_rejected_even_if_not_called() {
 fn qualified_quoted_source_remains_a_path_not_a_literal() {
     let program = compile(
         &mut Session::new(),
-        "$local::\"folder name/file.txt\" -> \"destination name.txt\"\n\"folder name/file.txt\" -> literal.txt\n",
+        "$local::\"folder name/file.txt\" -> ./\"destination name.txt\"\n\"folder name/file.txt\" -> literal.txt\n",
     );
     let (source, destination) = transfer(&program.body.instructions[0]);
     assert!(input_path(source).path.ends_with("/folder name/file.txt"));
@@ -523,6 +523,7 @@ fn nul_text_cannot_be_passed_as_native_argv() {
     let span = msync::syntax::Span { start: 0, end: 1 };
     let callee = language::Expr {
         span,
+        source: msync::syntax::OperandSource::unmapped(span),
         kind: language::ExprKind::Path(language::PathExpr {
             qualifier: Some(language::Name {
                 text: "$path".to_owned(),
@@ -535,6 +536,7 @@ fn nul_text_cannot_be_passed_as_native_argv() {
     let argument = language::Expr {
         kind: language::ExprKind::Literal("a\0b".to_owned()),
         span,
+        source: msync::syntax::OperandSource::unmapped(span),
     };
     let document = language::Document {
         statements: vec![language::Statement {
@@ -547,6 +549,7 @@ fn nul_text_cannot_be_passed_as_native_argv() {
                 op: language::BindingOp::Space,
                 value: language::Expr {
                     span,
+                    source: msync::syntax::OperandSource::unmapped(span),
                     kind: language::ExprKind::Call {
                         callee: Box::new(callee),
                         arguments: vec![argument],

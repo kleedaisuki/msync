@@ -1,12 +1,12 @@
 //! Physical lines retain byte spans; only significant code changes block depth.
-//! String decoding is contextual: source/argument quotes are literal streams,
-//! while destination/alias quotes and qualified suffixes remain paths.
+//! Quoted expressions stay literal data; namespace qualification and slash
+//! composition provide explicit path context without filesystem guessing.
 
 use super::{
     BindingOp, Block, DestinationMode, Document, Expr, ExprKind, Isolation, Name, PathExpr,
     Statement, StatementKind,
 };
-use crate::syntax::{Report, Span};
+use crate::syntax::{OperandSource, Report, Span};
 
 const MAX_NESTING: usize = 128;
 
@@ -248,19 +248,19 @@ fn ordinary_statement(code: &str, offset: usize) -> Result<StatementKind, Report
             let right_offset = offset + index + 2;
             match *operator {
                 "->" => Ok(StatementKind::Transfer {
-                    source: expression(left, offset, QuoteRole::Literal)?,
-                    destination: expression(right, right_offset, QuoteRole::Path)?,
+                    source: expression(left, offset)?,
+                    destination: expression(right, right_offset)?,
                 }),
                 ":=" | "=>" => Ok(StatementKind::Binding {
                     name: name(left, offset)?,
                     op: if *operator == ":=" { BindingOp::Value } else { BindingOp::Space },
-                    value: expression(right, right_offset, QuoteRole::Path)?,
+                    value: expression(right, right_offset)?,
                 }),
                 _ => unreachable!(),
             }
         }
         [] => {
-            let value = expression(code, offset, QuoteRole::Literal)?;
+            let value = expression(code, offset)?;
             if matches!(value.kind, ExprKind::Call { .. }) {
                 Ok(StatementKind::Call(value))
             } else {
@@ -359,13 +359,7 @@ fn name(raw: &str, offset: usize) -> Result<Name, Report> {
     })
 }
 
-#[derive(Clone, Copy)]
-enum QuoteRole {
-    Literal,
-    Path,
-}
-
-fn expression(raw: &str, offset: usize, role: QuoteRole) -> Result<Expr, Report> {
+fn expression(raw: &str, offset: usize) -> Result<Expr, Report> {
     let (text, offset) = trimmed(raw, offset);
     let range = span(offset, offset + text.len());
     if text.is_empty() {
@@ -380,13 +374,14 @@ fn expression(raw: &str, offset: usize, role: QuoteRole) -> Result<Expr, Report>
         )
         .help("Place each binding or transfer on its own line."));
     }
+    let mut provenance = OperandSource::unmapped(range);
     let kind = if let Some(open) = scan.first_call {
         if !text.ends_with(')') || scan.call_close != Some(text.len() - 1) {
             return Err(Report::new("unexpected text after call", span(offset + scan.call_close.unwrap_or(open) + 1, offset + text.len()))
                 .help("A call must end with its closing ')'; quote parentheses that belong to a filename."));
         }
-        let callee = expression(&text[..open], offset, QuoteRole::Path)?;
-        if !matches!(callee.kind, ExprKind::Path(_)) {
+        let callee = expression(&text[..open], offset)?;
+        if !matches!(callee.kind, ExprKind::Path(_) | ExprKind::Join { .. }) {
             return Err(Report::new(
                 "a call requires a macro name or executable path",
                 callee.span,
@@ -394,28 +389,58 @@ fn expression(raw: &str, offset: usize, role: QuoteRole) -> Result<Expr, Report>
         }
         let arguments = split_arguments(&text[open + 1..text.len() - 1], offset + open + 1)?
             .into_iter()
-            .map(|(text, at)| expression(text, at, QuoteRole::Literal))
+            .map(|(text, at)| expression(text, at))
             .collect::<Result<Vec<_>, _>>()?;
         ExprKind::Call {
             callee: Box::new(callee),
             arguments,
         }
-    } else if text.starts_with('"') {
-        let value = quoted(text, offset)?;
-        match role {
-            QuoteRole::Literal => ExprKind::Literal(value),
-            QuoteRole::Path => path(None, value),
+    } else if let Some(operator) = join_operator(text, &scan) {
+        if scan.joins.len() > MAX_NESTING {
+            return Err(Report::new(
+                "path expression nesting is too deep",
+                span(offset + operator, offset + operator + 1),
+            )
+            .help(
+                "Bind an intermediate path; one expression supports at most 128 slash operators.",
+            ));
         }
+        let base = expression(&text[..operator], offset)?;
+        let suffix = &text[operator + 1..];
+        let mode = if suffix.trim().is_empty() {
+            DestinationMode::Container
+        } else if suffix.trim() == "." {
+            DestinationMode::ReplaceTree
+        } else {
+            DestinationMode::Exact
+        };
+        let suffix = if suffix.trim().is_empty() {
+            None
+        } else {
+            Some(Box::new(expression(suffix, offset + operator + 1)?))
+        };
+        ExprKind::Join {
+            base: Box::new(base),
+            suffix,
+            operator: span(offset + operator, offset + operator + 1),
+            mode,
+        }
+    } else if text.starts_with('"') {
+        let (value, source) = quoted(text, offset)?;
+        provenance = source;
+        ExprKind::Literal(value)
     } else {
         let (qualifier, suffix, suffix_offset) =
-            if let Some((qualifier, suffix)) = text.split_once("::") {
+            if let Some((qualifier, suffix)) = text.split_once("::").filter(|_| !url_atom(text)) {
                 let qualifier_name = qualifier_name(qualifier, offset)?;
                 (Some(qualifier_name), suffix, offset + qualifier.len() + 2)
             } else {
                 (None, text, offset)
             };
         let value = if suffix.starts_with('"') {
-            quoted(suffix, suffix_offset)?
+            let (value, source) = quoted(suffix, suffix_offset)?;
+            provenance = source;
+            value
         } else {
             if let Some(index) = suffix.find('"') {
                 return Err(Report::new("quote the complete path or namespace suffix", span(suffix_offset + index, suffix_offset + index + 1))
@@ -427,25 +452,61 @@ fn expression(raw: &str, offset: usize, role: QuoteRole) -> Result<Expr, Report>
                     span(suffix_offset, suffix_offset),
                 ));
             }
+            provenance = OperandSource::unmapped(span(suffix_offset, suffix_offset + suffix.len()));
             suffix.to_owned()
         };
         path(qualifier, value)
     };
-    Ok(Expr { kind, span: range })
+    if let ExprKind::Path(path) = &kind
+        && super::path_boundary_whitespace(&path.path)
+    {
+        return Err(Report::new("path components cannot begin or end with whitespace", provenance.content)
+            .help("Keep internal spaces inside a component; boundary whitespace is ignored only outside quotes. Bare quoted sources remain literal data."));
+    }
+    Ok(Expr {
+        kind,
+        span: range,
+        source: provenance,
+    })
+}
+
+fn join_operator(text: &str, scan: &Scan) -> Option<usize> {
+    // Schemes and UNC roots are atomic endpoint/path identities. Slash tokens
+    // within quotes, selectors and call argument lists never enter this list.
+    let url = url_atom(text);
+    if text.starts_with("//")
+        || text
+            .split_once("::")
+            .is_some_and(|(_, suffix)| suffix.starts_with("//"))
+    {
+        return None;
+    }
+    let url_end = if url {
+        text.find(char::is_whitespace).unwrap_or(text.len())
+    } else {
+        0
+    };
+    scan.joins
+        .iter()
+        .rev()
+        .copied()
+        .find(|index| *index != 0 && *index >= url_end && !text[..*index].ends_with("::"))
+}
+
+fn url_atom(text: &str) -> bool {
+    text.split_once("://").is_some_and(|(scheme, _)| {
+        !scheme.is_empty()
+            && scheme
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.'))
+    })
 }
 
 fn path(qualifier: Option<Name>, path: String) -> ExprKind {
-    let mode = if path.ends_with("/.") {
-        DestinationMode::ReplaceTree
-    } else if path.ends_with('/') {
-        DestinationMode::Container
-    } else {
-        DestinationMode::Exact
-    };
     ExprKind::Path(PathExpr {
         qualifier,
         path,
-        mode,
+        mode: DestinationMode::Exact,
     })
 }
 
@@ -471,8 +532,9 @@ fn trimmed(raw: &str, offset: usize) -> (&str, usize) {
     (raw.trim(), offset + raw.len() - raw.trim_start().len())
 }
 
-fn quoted(text: &str, offset: usize) -> Result<String, Report> {
+fn quoted(text: &str, offset: usize) -> Result<(String, OperandSource), Report> {
     let mut value = String::new();
+    let mut offsets = Vec::new();
     let mut chars = text.char_indices();
     chars.next();
     while let Some((index, ch)) = chars.next() {
@@ -481,12 +543,22 @@ fn quoted(text: &str, offset: usize) -> Result<String, Report> {
                 return Err(Report::new("unexpected text after quoted expression", span(offset + index + 1, offset + text.len()))
                     .help("Keep the complete path inside its quotes; use a namespace prefix outside them."));
             }
-            return Ok(value);
+            offsets.push(offset + index);
+            return Ok((
+                value,
+                OperandSource::mapped(
+                    span(offset, offset + text.len()),
+                    span(offset + 1, offset + index),
+                    offsets,
+                ),
+            ));
         }
         if ch != '\\' {
             value.push(ch);
+            offsets.extend((0..ch.len_utf8()).map(|byte| offset + index + byte));
             continue;
         }
+        let before = value.len();
         match chars.next() {
             Some((_, 'n')) => value.push('\n'),
             Some((_, 'r')) => value.push('\r'),
@@ -498,6 +570,7 @@ fn quoted(text: &str, offset: usize) -> Result<String, Report> {
             }
             None => break,
         }
+        offsets.extend(std::iter::repeat_n(offset + index, value.len() - before));
     }
     Err(
         Report::new("unterminated quoted expression", span(offset, offset + 1))
@@ -516,6 +589,7 @@ struct Scan {
     commas: Vec<usize>,
     first_call: Option<usize>,
     call_close: Option<usize>,
+    joins: Vec<usize>,
 }
 
 fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
@@ -524,6 +598,7 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
         commas: Vec::new(),
         first_call: None,
         call_close: None,
+        joins: Vec::new(),
     };
     let bytes = text.as_bytes();
     let mut quote = None;
@@ -561,6 +636,7 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
             continue;
         }
         match byte {
+            b'/' if parentheses.is_empty() => result.joins.push(index),
             b'"' => quote = Some(index),
             b'<' => selector = Some(index),
             b'(' => {
