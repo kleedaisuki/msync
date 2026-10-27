@@ -65,7 +65,8 @@ struct PinnedInput {
 }
 
 /// One lexical runtime counterpart. Finished named origins survive submissions;
-/// callers must explicitly shut down after the compiler/session is retired.
+/// `shutdown` joins, rolls back and cleans private resources. Dropping only
+/// requests cancellation; unconfirmed private journals are deliberately retained.
 pub struct RuntimeSession {
     origins: crate::source::Origins,
     pending_origins: crate::source::Origins,
@@ -87,6 +88,14 @@ pub struct RuntimeSession {
     next_instruction: usize,
     implicit: BTreeSet<TransactionId>,
     cancel: CancellationToken,
+}
+
+impl Drop for RuntimeSession {
+    fn drop(&mut self) {
+        // Keep owning tasks alive long enough to close endpoint-specific peers.
+        // Aborting their JoinHandles would bypass that asynchronous cleanup.
+        self.cancel.cancel();
+    }
 }
 
 impl RuntimeSession {

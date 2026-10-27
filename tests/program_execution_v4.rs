@@ -95,16 +95,60 @@ fn has_marker(root: &Path, marker: &[u8]) -> bool {
         if path.is_dir() && has_marker(&path, marker) {
             return true;
         }
-        if path
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().starts_with("program-output-"))
-            && fs::read(&path)
-                .is_ok_and(|bytes| bytes.windows(marker.len()).any(|part| part == marker))
+        if path.file_name().is_some_and(|name| {
+            let name = name.to_string_lossy();
+            name.starts_with("program-output-")
+                || name.starts_with("physical-output-")
+                || (name.starts_with(".msync-") && name.ends_with(".part"))
+        }) && fs::read(&path)
+            .is_ok_and(|bytes| bytes.windows(marker.len()).any(|part| part == marker))
         {
             return true;
         }
     }
     false
+}
+
+#[tokio::test]
+async fn dropping_a_live_session_closes_its_peer_without_publishing_pending_bytes() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    fs::write(work.join("target"), "origin").unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut compiler = Session::new();
+    let mut runtime = runtime(root.path());
+    let script = format!(
+        "wire => tcp://{}\nwire::/ -> target\n",
+        listener.local_addr().unwrap()
+    );
+    runtime
+        .submit(&compile(&mut compiler, &work, &script))
+        .await
+        .unwrap();
+    let (mut peer, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    peer.write_all(b"UNCOMMITTED_DROP_PREFIX").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !has_marker(root.path(), b"UNCOMMITTED_DROP_PREFIX") {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(runtime);
+    let mut byte = [0u8; 1];
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), peer.read(&mut byte))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    assert_eq!(fs::read_to_string(work.join("target")).unwrap(), "origin");
 }
 
 #[tokio::test]
