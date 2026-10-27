@@ -35,7 +35,7 @@ supplies file-only candidates; typed replay uses the same captured resource keys
 hardlink hints and conservative Windows/WSL overlap relation. Alias hints may
 block a rule but never become positive path equality.
 
-The v0.4 metadata model requires two guards beyond byte-only dead-store rules:
+The v0.4 metadata model requires guards beyond byte-only dead-store rules:
 
 - An initial missing-destination creator is retained, because it writes parent
   namespace metadata. A later identical regular-file copy may instead disappear
@@ -47,6 +47,11 @@ The v0.4 metadata model requires two guards beyond byte-only dead-store rules:
   a fresh literal would lose that correlation. Literal-to-file version propagation
   therefore retains the producer until the IR can represent its metadata origin.
   No synthetic file backend is used to hide this distinction.
+- A literal overwrite retains destination permissions, even though its bytes and
+  mtime are new. It is a metadata consumer, not a complete file-version overwrite:
+  dead-write elimination cannot use it to erase an earlier permission-producing
+  assignment. Only a later file-valued write supplies the complete replacement
+  metadata required by this rule.
 
 `PreparedProgram` retains the resolved original, optimized program, epoch type
 facts, rewrite provenance and graph premises. `verify()` replays using captured
@@ -350,3 +355,66 @@ Mokhov, Mitchell, and Peyton Jones,
 keeping effect analysis and elimination in `Plan`, rather than hiding them inside
 worker-launch code. The scheduler can evolve its resource limits without changing
 the meaning or provenance of the optimized graph.
+
+## v0.4 shared mutable view epochs
+
+The structured HIR graph in `hir::graph` distinguishes a native process from the
+resource epoch that contains it. Two opaque children sharing files cannot be
+declared independent merely because they have different argv or independently
+captured roots. A pipeline such as `p::stdout -> q::stdin` needs its consumers
+admitted before producer completion; serializing every full-root effect until
+each child exits would deadlock that pipeline.
+
+`CohortViewProof::shared(owner, epoch, members)` is the trusted adapter boundary.
+Each member supplies its complete `ProcessEffects` certificate, with the same
+actual provider and ViewId. The runtime retains one mutable native backing/box,
+forks leases from it, joins every member and descendant, and imports the shared
+delta exactly once. A member may be certified before launch only if its actual
+native fork lease already exists, remains retained, and is bound to that
+ProcessId's eventual launch. Desired grouping and matching directory contents
+are not proofs. The pure constructor validates certificate shape, not the OS.
+
+The graph checks complete/matching membership and keeps transaction, commit,
+rollback and ordinary external-filesystem epochs separate. Within a certified
+epoch, member launches retain source-order `ProcessStarted` prerequisites.
+Their read/write effects do not disappear: `SharedCohort.effects` retains their
+aggregate footprint, while foreign managed reads/writes wait for the complete
+epoch at the boundary. This is region effect summarization, not a purity or
+disjointness assertion; the organization follows the region/effect distinction
+described in [the architecture references](architecture-v4.md).
+
+| Event/premise | Meaning |
+| --- | --- |
+| `ProcessStarted(p)` | The member's launch is acknowledged; its ports can be serviced |
+| `ProcessExited(p)` | Member status is available, not permission to export a shared live view |
+| `CohortSealed(CohortId(i))` | Every member joined and the view at `graph.cohort_views[i]` was exported/imported once |
+| `VersionReadProof` | A retained immutable regular-file reader selected at this instruction's logical epoch |
+| Publication dependency | A gate on the managed assignment, not on private pipe draining |
+
+Pinned stdin reads use `Resource::SnapshotFile`; private writes to the original
+path cannot mutate their retained bytes. Ordinary unpinned file reads still
+wait for the relevant sealed delta. File type, metadata inspection and argv
+alone never invent a pin. Program output, including an immediately captured PID,
+can be staged while peers launch; its managed-file assignment waits for the
+whole shared export. File/namespace WAW and WAR obligations remain recorded on
+that publication phase. This also handles an output declaration between member
+launches without making a future peer wait for the publication that itself
+requires that peer to finish.
+
+A stream-connected group with unknown/overlapping effects but no actual shared
+view evidence is a typed `SharedMutableView` refinement: `check`/planning can
+return a valid conservative certificate, but `is_execution_ready()` remains
+false. Already-proved disjoint effects can still admit separate private views.
+Cross-checkpoint live-pipe use and inconsistent provider membership remain hard
+issues. Full origin rollback restores only reversible managed file/namespace
+writes; it does not reacquire consuming stdin/stdout ports or repeat HTTP GETs.
+
+The focused graph tests cover full-root pipelines without false disjointness,
+foreign RAW/WAW boundaries, prior-submission members, actual retained pending
+snapshots, output publication order, epoch separation, certificate tampering,
+and rollback combined with a shared cohort and a pin. Independent assignment
+models still compare every admitted small finite schedule, including reads and
+directory metadata. These are graph/proof tests, not substitutes for the actual
+Linux/Windows shared-view journeys. Runtime event admission and publication
+must consume these phases; graph construction alone does not establish complete
+scheduler integration or completion of v0.4.

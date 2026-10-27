@@ -675,11 +675,13 @@ fn mediated_effects(path: &str) -> graph::ProcessEffects {
 #[test]
 fn an_unrefined_program_pipeline_is_not_hidden_as_a_safe_acyclic_schedule() {
     let graph = graph::build(&pipeline());
-    assert!(graph.issues.iter().any(|issue| {
-        issue
-            .message
-            .contains("pipe service depends on that process exiting")
-    }));
+    assert!(graph.issues.is_empty());
+    assert_eq!(graph.cohort_refinements.len(), 1);
+    assert_eq!(
+        graph.cohort_refinements[0].kind,
+        graph::CohortRefinementKind::SharedMutableView
+    );
+    assert!(!graph.is_execution_ready());
 }
 
 #[test]
@@ -732,7 +734,9 @@ fn a_view_certificate_does_not_erase_overlapping_process_effects() {
                 && edge.after == InstructionId(1)
                 && edge.wait == Wait::ProcessSealed(ProcessId(0)))
     );
-    assert!(!graph.issues.is_empty());
+    assert!(graph.issues.is_empty());
+    assert!(!graph.cohort_refinements.is_empty());
+    assert!(!graph.is_execution_ready());
     assert!(
         graph::ProcessEffects::mediated(
             Effects {
@@ -743,6 +747,491 @@ fn a_view_certificate_does_not_erase_overlapping_process_effects() {
             "view"
         )
         .is_err()
+    );
+}
+
+fn shared_view(context: &mut graph::PlanningContext, processes: &[usize], view: &str, epoch: &str) {
+    let resource = Resource::File(FileResource::new(location("/managed"), Scope::Tree));
+    for process in processes {
+        context.process_effects.insert(
+            ProcessId(*process),
+            graph::ProcessEffects::mediated(
+                Effects {
+                    accesses: vec![
+                        Access {
+                            resource: resource.clone(),
+                            kind: AccessKind::Read,
+                        },
+                        Access {
+                            resource: resource.clone(),
+                            kind: AccessKind::Write,
+                        },
+                    ],
+                    unknown_external: false,
+                },
+                "verified-native-view",
+                view,
+            )
+            .unwrap(),
+        );
+    }
+    context.cohort_views.push(
+        graph::CohortViewProof::shared(
+            "runtime-owner",
+            epoch,
+            processes.iter().map(|process| {
+                (
+                    ProcessId(*process),
+                    context.process_effects[&ProcessId(*process)].clone(),
+                )
+            }),
+        )
+        .unwrap(),
+    );
+}
+
+fn connect(id: usize, source: usize, destination: usize) -> Instruction {
+    node(
+        id,
+        InstructionKind::Transfer {
+            source: Input::Port {
+                process: ProcessId(source),
+                port: ReadPort::Stdout,
+            },
+            destination: Output::Stdin(ProcessId(destination)),
+        },
+    )
+}
+
+#[test]
+fn an_actual_shared_epoch_admits_connected_children_without_claiming_disjoint_effects() {
+    let ir = program(vec![
+        literal(0, "/managed/before"),
+        spawn(1, 10),
+        spawn(2, 11),
+        connect(3, 10, 11),
+        port(4, 11, ReadPort::Stdout, "/managed/output"),
+        copy(5, "/managed/output", "/managed/after"),
+    ]);
+    let mut context = finite_context(&ir);
+    shared_view(
+        &mut context,
+        &[10, 11],
+        "retained-native-backing-A",
+        "view-epoch-A",
+    );
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(graph.issues.is_empty(), "{:?}", graph.issues);
+    assert!(graph.is_execution_ready(), "{:?}", graph.cohort_refinements);
+    assert_eq!(graph.shared_cohorts.len(), 1);
+    assert_eq!(
+        graph.shared_cohorts[0].launches,
+        vec![
+            (ProcessId(10), InstructionId(1)),
+            (ProcessId(11), InstructionId(2))
+        ]
+    );
+    assert!(
+        graph.shared_cohorts[0]
+            .effects
+            .accesses
+            .iter()
+            .any(|access| access.kind == AccessKind::Read)
+    );
+    assert!(
+        graph.shared_cohorts[0]
+            .effects
+            .accesses
+            .iter()
+            .any(|access| access.kind == AccessKind::Write)
+    );
+    assert!(graph.dependencies.iter().any(|edge| {
+        edge.before == InstructionId(1)
+            && edge.after == InstructionId(2)
+            && edge.wait == Wait::ProcessStarted(ProcessId(10))
+            && edge
+                .reasons
+                .contains(&Reason::SharedViewEpoch(graph::CohortId(0)))
+    }));
+    assert!(
+        !graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.after == InstructionId(2)
+                && matches!(edge.wait, Wait::ProcessSealed(_) | Wait::CohortSealed(_)))
+    );
+    assert!(
+        graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(0)
+                && edge.after == InstructionId(1)
+                && edge.wait == Wait::Completion)
+    );
+    assert!(
+        graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.after == InstructionId(5)
+                && edge.wait == Wait::CohortSealed(graph::CohortId(0))),
+        "foreign RAW/WAW conflicts await the complete shared export, not one member's early exit"
+    );
+    assert!(
+        graph
+            .publication_dependencies
+            .iter()
+            .any(|edge| edge.after == InstructionId(4)
+                && edge.wait == Wait::CohortSealed(graph::CohortId(0)))
+    );
+    assert!(graph.verify_with_context(&ir, &context).is_ok());
+}
+
+#[test]
+fn shared_view_certificates_reject_separate_views_and_mismatched_runtime_membership() {
+    let first = mediated_effects("/first");
+    let second = mediated_effects("/second");
+    assert!(
+        graph::CohortViewProof::shared(
+            "owner",
+            "epoch",
+            [(ProcessId(0), first), (ProcessId(1), second)]
+        )
+        .is_err()
+    );
+    let ir = pipeline();
+    let mut context = finite_context(&ir);
+    shared_view(&mut context, &[0, 1], "native-backing", "epoch");
+    let effects = context.process_effects[&ProcessId(0)].clone();
+    assert!(
+        graph::CohortViewProof::shared(
+            "",
+            "epoch",
+            [
+                (ProcessId(0), effects.clone()),
+                (ProcessId(1), effects.clone())
+            ]
+        )
+        .is_err()
+    );
+    assert!(
+        graph::CohortViewProof::shared(
+            "owner",
+            "",
+            [
+                (ProcessId(0), effects.clone()),
+                (ProcessId(1), effects.clone())
+            ]
+        )
+        .is_err()
+    );
+    assert!(
+        graph::CohortViewProof::shared(
+            "owner",
+            "epoch",
+            [(ProcessId(0), effects.clone()), (ProcessId(0), effects)]
+        )
+        .is_err()
+    );
+    context
+        .process_effects
+        .insert(ProcessId(1), mediated_effects("/unrelated-certificate"));
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(!graph.issues.is_empty());
+    assert!(graph.shared_cohorts.is_empty());
+    assert!(!graph.is_execution_ready());
+}
+
+#[test]
+fn checkpoint_epochs_create_separate_groups_and_cannot_reuse_one_live_view_proof() {
+    let ir = program(vec![
+        spawn(0, 0),
+        spawn(1, 1),
+        connect(2, 0, 1),
+        node(
+            3,
+            InstructionKind::Commit {
+                transaction: TransactionId(7),
+            },
+        ),
+        spawn(4, 2),
+        spawn(5, 3),
+        connect(6, 2, 3),
+    ]);
+    let mut context = finite_context(&ir);
+    shared_view(
+        &mut context,
+        &[0, 1],
+        "native-view-before-commit",
+        "epoch-0",
+    );
+    shared_view(&mut context, &[2, 3], "native-view-after-commit", "epoch-1");
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(graph.issues.is_empty(), "{:?}", graph.issues);
+    assert!(graph.is_execution_ready());
+    assert_eq!(graph.shared_cohorts.len(), 2);
+    assert!(
+        graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.after == InstructionId(3)
+                && edge.wait == Wait::CohortSealed(graph::CohortId(0)))
+    );
+    assert!(
+        graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(3)
+                && edge.after == InstructionId(4)
+                && edge.wait == Wait::Completion)
+    );
+    let broken = program(vec![
+        spawn(0, 0),
+        node(
+            1,
+            InstructionKind::Commit {
+                transaction: TransactionId(7),
+            },
+        ),
+        spawn(2, 1),
+        connect(3, 0, 1),
+    ]);
+    let mut context = finite_context(&broken);
+    shared_view(
+        &mut context,
+        &[0, 1],
+        "incorrectly-reused-view",
+        "same-epoch",
+    );
+    let graph = graph::build_with_context(&broken, &context);
+    assert!(
+        !graph.issues.is_empty(),
+        "a native identity does not authorize crossing a checkpoint"
+    );
+    assert!(graph.shared_cohorts.is_empty());
+    assert!(!graph.is_execution_ready());
+}
+
+#[test]
+fn a_retained_peer_and_a_real_prepared_fork_admit_a_cross_submission_connection() {
+    let ir = program(vec![
+        spawn(0, 1),
+        connect(1, 0, 1),
+        copy(2, "/managed/file", "/after"),
+    ]);
+    let mut context = finite_context(&ir);
+    context.live_processes.push(ProcessId(0));
+    shared_view(
+        &mut context,
+        &[0, 1],
+        "actual-retained-fork-lease",
+        "still-open-epoch",
+    );
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(graph.issues.is_empty(), "{:?}", graph.issues);
+    assert!(graph.is_execution_ready());
+    assert!(
+        graph
+            .external_processes
+            .iter()
+            .any(|requirement| requirement.instruction == InstructionId(0)
+                && requirement.process == ProcessId(0)
+                && requirement.wait == Wait::ProcessStarted(ProcessId(0)))
+    );
+    assert!(
+        !graph
+            .external_processes
+            .iter()
+            .any(|requirement| requirement.instruction == InstructionId(0)
+                && matches!(
+                    requirement.wait,
+                    Wait::ProcessSealed(_) | Wait::CohortSealed(_)
+                ))
+    );
+    assert!(
+        graph
+            .external_processes
+            .iter()
+            .any(|requirement| requirement.instruction == InstructionId(2)
+                && requirement.wait == Wait::CohortSealed(graph::CohortId(0)))
+    );
+    context.cohort_views.clear();
+    let pending = graph::build_with_context(&ir, &context);
+    assert!(!pending.cohort_refinements.is_empty());
+    assert!(!pending.is_execution_ready());
+}
+
+#[test]
+fn cohort_outputs_are_published_after_the_whole_view_even_between_member_launches() {
+    let ir = program(vec![
+        spawn(0, 0),
+        port(1, 0, ReadPort::Pid, "/managed/pid"),
+        spawn(2, 1),
+        connect(3, 0, 1),
+    ]);
+    let mut context = finite_context(&ir);
+    shared_view(&mut context, &[0, 1], "one-native-mutable-view", "epoch");
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(graph.issues.is_empty());
+    assert!(graph.is_execution_ready(), "{:?}", graph.cohort_refinements);
+    assert!(
+        !graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(1) && edge.after == InstructionId(2)),
+        "a deferred output's publication cannot block launching the peer needed to seal that view"
+    );
+    assert!(graph.publication_dependencies.iter().any(|edge| {
+        edge.before == InstructionId(2)
+            && edge.after == InstructionId(1)
+            && edge.wait == Wait::CohortSealed(graph::CohortId(0))
+            && edge
+                .reasons
+                .iter()
+                .any(|reason| matches!(reason, Reason::SharedViewPublication { .. }))
+    }));
+    assert!(graph.verify_with_context(&ir, &context).is_ok());
+}
+
+#[test]
+fn shared_view_pins_and_full_origin_rollback_keep_distinct_proof_boundaries() {
+    let body = Region {
+        instructions: vec![
+            spawn(0, 0),
+            spawn(1, 1),
+            node(
+                2,
+                InstructionKind::Transfer {
+                    source: Input::File {
+                        location: location("/managed/prompt"),
+                        pattern: None,
+                    },
+                    destination: Output::Stdin(ProcessId(0)),
+                },
+            ),
+            connect(3, 0, 1),
+            port(4, 1, ReadPort::Stdout, "/managed/output"),
+        ],
+    };
+    let ir = program(vec![
+        node(
+            10,
+            InstructionKind::Transaction {
+                transaction: TransactionId(7),
+                body,
+            },
+        ),
+        node(
+            11,
+            InstructionKind::Rollback {
+                transaction: TransactionId(7),
+                scope: RollbackScope::Begin,
+            },
+        ),
+        copy(12, "/managed/output", "/restored"),
+    ]);
+    let mut context = finite_context(&ir);
+    shared_view(
+        &mut context,
+        &[0, 1],
+        "transaction-native-view",
+        "transaction-epoch",
+    );
+    let pending = graph::build_with_context(&ir, &context);
+    assert!(pending.issues.is_empty(), "{:?}", pending.issues);
+    assert!(
+        pending
+            .refinements
+            .iter()
+            .any(|refinement| refinement.kind == graph::RefinementKind::InputVersion)
+    );
+    context.pinned_inputs.insert(
+        InstructionId(2),
+        graph::VersionReadProof::pinned_file(
+            location("/managed/prompt"),
+            "manager-retained-reader",
+            "selected-pending-version",
+        )
+        .unwrap(),
+    );
+    let prepared = graph::build_with_context(&ir, &context);
+    assert!(prepared.is_execution_ready(), "{:?}", prepared.issues);
+    let child = prepared.nodes[0].children.as_ref().unwrap();
+    assert_eq!(child.shared_cohorts.len(), 1);
+    assert!(
+        child
+            .publication_dependencies
+            .iter()
+            .any(|edge| edge.after == InstructionId(4)
+                && edge.wait == Wait::CohortSealed(graph::CohortId(0)))
+    );
+    assert!(prepared.dependencies.iter().any(|edge| {
+        edge.before == InstructionId(10)
+            && edge.after == InstructionId(11)
+            && edge
+                .reasons
+                .contains(&Reason::RetainedTransactionOrigin(TransactionId(7)))
+    }));
+    assert!(
+        prepared
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(11) && edge.after == InstructionId(12))
+    );
+    assert!(prepared.verify_with_context(&ir, &context).is_ok());
+}
+
+#[test]
+fn compiler_fed_a1_b2_rollback_does_not_reacquire_the_transaction_streams() {
+    let source = r#"transaction A1(read uncommitted):
+    p => $path::python3("worker.py")
+    "hello" -> p::stdin
+    p::stdout -> output.txt
+    p::stderr -> errors.txt
+    commit
+    p::exit_code -> status.txt
+    commit
+    p::exit_code -> discarded.txt
+    rollback
+rollback A1
+transaction B2(serializable):
+    verifier => $path::python3("verify.py")
+    verifier::pid -> pid.txt
+"#;
+    let document = msync::language::parse(source).unwrap();
+    let context = msync::compiler::CompileContext::capture(None).unwrap();
+    let mut compiler = msync::compiler::structured::Session::new();
+    let program = compiler.compile(&document, &context).unwrap();
+    let graph = graph::build(&program);
+    assert!(graph.issues.is_empty(), "{:?}", graph.issues);
+    assert!(graph.verify(&program).is_ok());
+    let rollback = graph
+        .nodes
+        .iter()
+        .find(|node| {
+            matches!(
+                program
+                    .body
+                    .instructions
+                    .iter()
+                    .find(|instruction| instruction.id == node.instruction)
+                    .map(|instruction| &instruction.kind),
+                Some(InstructionKind::Rollback {
+                    scope: RollbackScope::Begin,
+                    ..
+                })
+            )
+        })
+        .unwrap();
+    assert!(
+        rollback
+            .effects
+            .accesses
+            .iter()
+            .all(|access| access.kind == AccessKind::Write
+                && matches!(
+                    access.resource,
+                    Resource::File(_) | Resource::DirectoryMetadata(_)
+                ))
     );
 }
 
@@ -873,7 +1362,7 @@ fn own_file_input_cycles_are_pending_version_obligations_not_frontend_rejections
         .process_effects
         .insert(ProcessId(0), mediated_effects("/managed"));
     let pending = graph::build_with_context(&ir, &context);
-    assert!(pending.issues.is_empty());
+    assert!(pending.issues.is_empty(), "{:?}", pending.issues);
     assert!(
         pending
             .refinements
@@ -1163,7 +1652,7 @@ fn unknown_output_type_keeps_an_explicit_staging_obligation_until_prepared() {
         .unwrap()
         .destination = FileClass::Unknown;
     let pending = graph::build_with_context(&ir, &context);
-    assert!(pending.issues.is_empty());
+    assert!(pending.issues.is_empty(), "{:?}", pending.issues);
     assert!(
         pending
             .refinements
@@ -1242,11 +1731,11 @@ fn retained_process_ports_keep_resource_hazards_and_separate_output_publication(
     );
     assert!(
         prepared
-            .external_processes
+            .external_publications
             .iter()
             .any(|requirement| requirement.instruction == InstructionId(1)
                 && requirement.wait == Wait::ProcessSealed(ProcessId(88))),
-        "pid availability does not erase the live process's managed-file write hazard"
+        "capturing an immediate pid does not erase the sealed-view publication hazard"
     );
     ir.body.instructions[0] = node(
         0,

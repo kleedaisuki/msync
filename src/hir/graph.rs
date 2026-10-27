@@ -23,7 +23,12 @@ pub enum Wait {
     ProcessExited(ProcessId),
     /// Process exited and its private filesystem delta has been imported.
     ProcessSealed(ProcessId),
+    /// Every member joined and this shared mutable epoch was exported once.
+    CohortSealed(CohortId),
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CohortId(pub usize);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
@@ -33,6 +38,11 @@ pub enum Reason {
     PortAvailability,
     RetainedTransactionOrigin(TransactionId),
     OutputPublication(ProcessId),
+    SharedViewEpoch(CohortId),
+    SharedViewPublication {
+        cohort: CohortId,
+        conflict: Box<Conflict>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -114,6 +124,76 @@ impl ProcessEffects {
     }
 }
 
+/// Evidence for one actual shared mutable native view, not independent snapshots
+/// that happen to have overlapping roots. The provider/runtime owns the epoch,
+/// joins all member descendants before export, and imports that delta once.
+///
+/// Like ProcessEffects, construction checks the certificate shape, not the OS.
+/// The owner and epoch must name the real runtime view lease. A prepared member
+/// may be certified before launch only while its actual native fork lease is
+/// retained and that ProcessId's launch is bound to it. Desired grouping, argv,
+/// equal final changes, and separate snapshots are not evidence of sharing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CohortViewProof {
+    owner: String,
+    epoch: String,
+    provider: String,
+    view_id: String,
+    members: BTreeMap<ProcessId, ProcessEffects>,
+}
+
+impl CohortViewProof {
+    pub fn shared(
+        owner: impl Into<String>,
+        epoch: impl Into<String>,
+        members: impl IntoIterator<Item = (ProcessId, ProcessEffects)>,
+    ) -> Result<Self, String> {
+        let owner = owner.into();
+        let epoch = epoch.into();
+        let mut checked = BTreeMap::new();
+        for (process, effects) in members {
+            if checked.insert(process, effects).is_some() {
+                return Err("a shared view member occurs more than once".into());
+            }
+        }
+        let Some(first) = checked.values().next() else {
+            return Err("a shared view needs at least two process members".into());
+        };
+        if owner.is_empty()
+            || epoch.is_empty()
+            || checked.len() < 2
+            || checked.values().any(|effects| {
+                effects.provider != first.provider || effects.view_id != first.view_id
+            })
+        {
+            return Err("a shared view needs one nonempty owner/epoch and at least two complete member certificates for the same actual provider/ViewId".into());
+        }
+        Ok(Self {
+            owner,
+            epoch,
+            provider: first.provider.clone(),
+            view_id: first.view_id.clone(),
+            members: checked,
+        })
+    }
+
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+    pub fn epoch(&self) -> &str {
+        &self.epoch
+    }
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+    pub fn view_id(&self) -> &str {
+        &self.view_id
+    }
+    pub fn members(&self) -> &BTreeMap<ProcessId, ProcessEffects> {
+        &self.members
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlanningContext {
     pub live_processes: Vec<ProcessId>,
@@ -126,6 +206,7 @@ pub struct PlanningContext {
     /// Actual retained readers selected at this instruction's logical epoch;
     /// regular-file type facts alone cannot establish this premise.
     pub pinned_inputs: BTreeMap<InstructionId, VersionReadProof>,
+    pub cohort_views: Vec<CohortViewProof>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -159,6 +240,28 @@ pub struct Refinement {
     pub message: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CohortRefinementKind {
+    SharedMutableView,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CohortRefinement {
+    pub processes: Vec<ProcessId>,
+    pub instructions: Vec<InstructionId>,
+    pub kind: CohortRefinementKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SharedCohort {
+    pub id: CohortId,
+    pub proof: CohortViewProof,
+    pub launches: Vec<(ProcessId, InstructionId)>,
+    pub services: Vec<InstructionId>,
+    /// Kept on the outside boundary; membership never proves purity/disjointness.
+    pub effects: Effects,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlanGraph {
     pub nodes: Vec<Node>,
@@ -175,6 +278,9 @@ pub struct PlanGraph {
     pub operation_facts: BTreeMap<InstructionId, OperationFacts>,
     pub existing_parent_frontiers: BTreeMap<InstructionId, Location>,
     pub pinned_inputs: BTreeMap<InstructionId, VersionReadProof>,
+    pub cohort_views: Vec<CohortViewProof>,
+    pub shared_cohorts: Vec<SharedCohort>,
+    pub cohort_refinements: Vec<CohortRefinement>,
     /// Physical streams require identity/co-start preparation. A valid pure
     /// scheduling certificate alone does not make this an executable I/O plan.
     pub refinements: Vec<Refinement>,
@@ -187,6 +293,7 @@ impl PlanGraph {
     pub fn is_execution_ready(&self) -> bool {
         self.issues.is_empty()
             && self.refinements.is_empty()
+            && self.cohort_refinements.is_empty()
             && self.nodes.iter().all(|node| {
                 node.children
                     .as_ref()
@@ -271,10 +378,213 @@ pub fn build_with_context(program: &Program, context: &PlanningContext) -> PlanG
         .copied()
         .collect::<BTreeSet<_>>();
     collect_processes(&program.body, &mut launched, &mut used, &mut issues);
+    collect_port_owners(&program.body, &mut BTreeMap::new(), &mut issues);
     let external = used.difference(&launched).copied().collect();
-    let mut graph = build_region(&program.body, &transactions, &external, context);
+    let cohorts = validate_cohorts(program, context, &mut issues);
+    let mut graph = build_region(&program.body, &transactions, &external, context, &cohorts);
     graph.issues.extend(issues);
     graph
+}
+
+fn collect_port_owners(
+    region: &Region,
+    owners: &mut BTreeMap<(ProcessId, u8), InstructionId>,
+    issues: &mut Vec<Issue>,
+) {
+    for instruction in &region.instructions {
+        if let InstructionKind::Transaction { body, .. } = &instruction.kind {
+            collect_port_owners(body, owners, issues);
+        }
+        if !matches!(instruction.kind, InstructionKind::Transfer { .. }) {
+            continue;
+        }
+        for access in effects::summarize(instruction).accesses {
+            let Resource::Port { process, port } = access.resource else {
+                continue;
+            };
+            let port_id = match port {
+                Port::Stdin => 0,
+                Port::Stdout => 1,
+                Port::Stderr => 2,
+                _ => continue,
+            };
+            if let Some(owner) = owners.insert((process, port_id), instruction.id)
+                && owner != instruction.id
+            {
+                issues.push(Issue {
+                    instructions: vec![owner, instruction.id],
+                    message: format!(
+                        "process {} {port:?} is a consuming stream and requires one owner",
+                        process.0
+                    ),
+                });
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct CohortIndex {
+    proofs: BTreeMap<CohortId, CohortViewProof>,
+    membership: BTreeMap<ProcessId, CohortId>,
+}
+
+impl CohortIndex {
+    fn same(&self, left: ProcessId, right: ProcessId) -> Option<CohortId> {
+        self.membership
+            .get(&left)
+            .copied()
+            .filter(|cohort| self.membership.get(&right) == Some(cohort))
+    }
+
+    fn gate(&self, wait: Wait) -> Wait {
+        match wait {
+            Wait::ProcessSealed(process) => self
+                .membership
+                .get(&process)
+                .copied()
+                .map_or(wait, Wait::CohortSealed),
+            _ => wait,
+        }
+    }
+}
+
+type EpochSlot = (Vec<InstructionId>, usize);
+
+fn validate_cohorts(
+    program: &Program,
+    context: &PlanningContext,
+    issues: &mut Vec<Issue>,
+) -> CohortIndex {
+    let mut slots = BTreeMap::new();
+    let mut service_slots = Vec::new();
+    collect_epoch_slots(&program.body, &[], context, &mut slots, &mut service_slots);
+    let mut index = CohortIndex::default();
+    for (number, proof) in context.cohort_views.iter().enumerate() {
+        let mut expected_slot = None;
+        let mut valid = true;
+        for (process, effects) in &proof.members {
+            let slot = slots.get(process).cloned().unwrap_or_default();
+            valid &= expected_slot
+                .as_ref()
+                .is_none_or(|expected| expected == &slot);
+            expected_slot = Some(slot);
+            valid &= context.process_effects.get(process) == Some(effects);
+            valid &= !index.membership.contains_key(process);
+        }
+        valid &= service_slots.iter().all(|(processes, slot)| {
+            !processes
+                .iter()
+                .any(|process| proof.members.contains_key(process))
+                || expected_slot.as_ref() == Some(slot)
+        });
+        valid &= context.process_effects.iter().all(|(process, effects)| {
+            effects.provider != proof.provider
+                || effects.view_id != proof.view_id
+                || proof.members.contains_key(process)
+        });
+        if !valid {
+            issues.push(Issue { instructions: proof.members.keys().filter_map(|process| find_launch(&program.body, *process)).collect(), message: "shared-view certificate has incomplete/mismatched membership or crosses a transaction, checkpoint, rollback or external-file epoch boundary".into() });
+            continue;
+        }
+        let id = CohortId(number);
+        for process in proof.members.keys() {
+            index.membership.insert(*process, id);
+        }
+        index.proofs.insert(id, proof.clone());
+    }
+    index
+}
+
+fn find_launch(region: &Region, process: ProcessId) -> Option<InstructionId> {
+    region.instructions.iter().find_map(|instruction| {
+        if spawn(instruction) == Some(process) {
+            return Some(instruction.id);
+        }
+        match &instruction.kind {
+            InstructionKind::Transaction { body, .. } => find_launch(body, process),
+            _ => None,
+        }
+    })
+}
+
+fn collect_epoch_slots(
+    region: &Region,
+    path: &[InstructionId],
+    context: &PlanningContext,
+    slots: &mut BTreeMap<ProcessId, EpochSlot>,
+    service_slots: &mut Vec<(Vec<ProcessId>, EpochSlot)>,
+) {
+    let mut epoch = 0;
+    for instruction in &region.instructions {
+        if let Some(process) = spawn(instruction) {
+            slots.insert(process, (path.to_vec(), epoch));
+        }
+        let processes = live_ports(instruction);
+        if !processes.is_empty() {
+            service_slots.push((processes, (path.to_vec(), epoch)));
+        }
+        if let InstructionKind::Transaction { body, .. } = &instruction.kind {
+            let mut child = path.to_vec();
+            child.push(instruction.id);
+            collect_epoch_slots(body, &child, context, slots, service_slots);
+        }
+        if epoch_boundary(instruction, context) {
+            epoch += 1;
+        }
+    }
+}
+
+fn live_ports(instruction: &Instruction) -> Vec<ProcessId> {
+    let InstructionKind::Transfer {
+        source,
+        destination,
+    } = &instruction.kind
+    else {
+        return Vec::new();
+    };
+    let mut processes = Vec::new();
+    if let crate::hir::Input::Port {
+        process,
+        port: crate::hir::ReadPort::Stdout | crate::hir::ReadPort::Stderr,
+    } = source
+    {
+        processes.push(*process);
+    }
+    if let crate::hir::Output::Stdin(process) = destination {
+        processes.push(*process);
+    }
+    processes
+}
+
+fn epoch_boundary(instruction: &Instruction, context: &PlanningContext) -> bool {
+    match &instruction.kind {
+        InstructionKind::Commit { .. }
+        | InstructionKind::Rollback { .. }
+        | InstructionKind::Transaction { .. } => true,
+        InstructionKind::Transfer {
+            source:
+                crate::hir::Input::Port {
+                    port: crate::hir::ReadPort::ExitCode | crate::hir::ReadPort::Meta,
+                    ..
+                },
+            ..
+        } => true,
+        InstructionKind::Transfer {
+            source,
+            destination: crate::hir::Output::File { location, .. },
+        } if !matches!(source, crate::hir::Input::Port { .. }) => {
+            let facts = context
+                .operation_facts
+                .get(&instruction.id)
+                .copied()
+                .unwrap_or_default();
+            let physical_source = matches!(source, crate::hir::Input::File { location, .. } if effects::file_class(location, facts.source) == FileClass::Stream);
+            !physical_source
+                && effects::file_class(location, facts.destination) != FileClass::Stream
+        }
+        _ => false,
+    }
 }
 
 fn collect_processes(
@@ -337,12 +647,14 @@ fn build_region(
     transactions: &BTreeMap<TransactionId, Effects>,
     external: &BTreeSet<ProcessId>,
     context: &PlanningContext,
+    cohorts: &CohortIndex,
 ) -> PlanGraph {
     let mut graph = PlanGraph {
         process_proofs: context.process_effects.clone(),
         operation_facts: context.operation_facts.clone(),
         existing_parent_frontiers: context.existing_parent_frontiers.clone(),
         pinned_inputs: context.pinned_inputs.clone(),
+        cohort_views: context.cohort_views.clone(),
         ..PlanGraph::default()
     };
     for instruction in &region.instructions {
@@ -352,6 +664,7 @@ fn build_region(
                 transactions,
                 external,
                 context,
+                cohorts,
             ))),
             _ => None,
         };
@@ -360,11 +673,29 @@ fn build_region(
             graph
                 .refinements
                 .extend(children.refinements.iter().cloned());
+            graph
+                .cohort_refinements
+                .extend(children.cohort_refinements.iter().cloned());
         }
         refine(instruction, context, &mut graph.refinements);
         let effects = footprint(instruction, transactions, context);
         for process in external {
+            if spawn(instruction)
+                .and_then(|launched| cohorts.same(*process, launched))
+                .is_some()
+            {
+                graph.external_processes.push(ExternalProcessRequirement {
+                    instruction: instruction.id,
+                    process: *process,
+                    wait: Wait::ProcessStarted(*process),
+                });
+                continue;
+            }
             let used = uses_process(&effects, *process);
+            let conflicts = context
+                .process_effects
+                .get(process)
+                .map(|proof| proof.footprint.conflicts(&effects));
             if !used
                 && context.process_effects.get(process).is_some_and(|proof| {
                     !effects.unknown_external && proof.footprint.conflicts(&effects).is_empty()
@@ -372,8 +703,24 @@ fn build_region(
             {
                 continue;
             }
+            if !used
+                && staged_output(instruction, context).is_some()
+                && conflicts.as_ref().is_some_and(|conflicts| {
+                    !conflicts.is_empty() && conflicts.iter().all(publication_conflict)
+                })
+            {
+                let requirement = ExternalProcessRequirement {
+                    instruction: instruction.id,
+                    process: *process,
+                    wait: cohorts.gate(Wait::ProcessSealed(*process)),
+                };
+                if !graph.external_publications.contains(&requirement) {
+                    graph.external_publications.push(requirement);
+                }
+                continue;
+            }
             let wait = if !used {
-                Wait::ProcessSealed(*process)
+                cohorts.gate(Wait::ProcessSealed(*process))
             } else if waits_for_exit(&effects, *process) {
                 Wait::ProcessExited(*process)
             } else {
@@ -390,7 +737,7 @@ fn build_region(
                     let requirement = ExternalProcessRequirement {
                         instruction: instruction.id,
                         process: *process,
-                        wait: Wait::ProcessSealed(*process),
+                        wait: cohorts.gate(Wait::ProcessSealed(*process)),
                     };
                     if staged_output(instruction, context).is_some()
                         && conflicts.iter().all(publication_conflict)
@@ -407,7 +754,7 @@ fn build_region(
                 let requirement = ExternalProcessRequirement {
                     instruction: instruction.id,
                     process: *process,
-                    wait: Wait::ProcessSealed(*process),
+                    wait: cohorts.gate(Wait::ProcessSealed(*process)),
                 };
                 if !graph.external_publications.contains(&requirement) {
                     graph.external_publications.push(requirement);
@@ -420,6 +767,48 @@ fn build_region(
             children,
         });
     }
+    graph.shared_cohorts = cohorts
+        .proofs
+        .iter()
+        .map(|(id, proof)| {
+            let mut aggregate = Effects::default();
+            for effects in proof.members.values() {
+                aggregate.append(effects.footprint.clone());
+            }
+            let launches = region
+                .instructions
+                .iter()
+                .filter_map(|instruction| {
+                    spawn(instruction)
+                        .filter(|process| proof.members.contains_key(process))
+                        .map(|process| (process, instruction.id))
+                })
+                .collect();
+            let services = graph
+                .nodes
+                .iter()
+                .filter(|node| {
+                    proof
+                        .members
+                        .keys()
+                        .any(|process| uses_process(&node.effects, *process))
+                })
+                .map(|node| node.instruction)
+                .collect();
+            SharedCohort {
+                id: *id,
+                proof: proof.clone(),
+                launches,
+                services,
+                effects: aggregate,
+            }
+        })
+        .collect();
+    graph.cohort_refinements.extend(
+        stream_components(region, context)
+            .into_iter()
+            .filter(|component| needs_shared_view(component, context, cohorts)),
+    );
     let mut dependencies = BTreeMap::new();
     let mut publications = BTreeMap::new();
     for (right, after) in region.instructions.iter().enumerate() {
@@ -430,6 +819,11 @@ fn build_region(
                 &graph.nodes[left].effects,
                 &graph.nodes[right].effects,
             );
+            if let (Some(left), Some(right)) = (spawn(before), spawn(after))
+                && let Some(cohort) = cohorts.same(left, right)
+            {
+                reasons = vec![(Wait::ProcessStarted(left), Reason::SharedViewEpoch(cohort))];
+            }
             let staged = staged_output(after, context);
             let producer = staged.filter(|process| spawn(before) == Some(*process));
             if reasons.is_empty() && producer.is_none() {
@@ -442,18 +836,41 @@ fn build_region(
             }
             if let Some(process) = producer {
                 publications
-                    .entry((before.id, after.id, Wait::ProcessSealed(process)))
+                    .entry((
+                        before.id,
+                        after.id,
+                        cohorts.gate(Wait::ProcessSealed(process)),
+                    ))
                     .or_insert_with(Vec::new)
                     .push(Reason::OutputPublication(process));
             }
             for (wait, reason) in reasons.drain(..) {
+                if let (Some(producer), Some(launched)) =
+                    (staged_output(before, context), spawn(after))
+                    && let Some(cohort) = cohorts.same(producer, launched)
+                    && let Reason::Hazard(conflict) = &reason
+                    && conflict.before.kind == effects::AccessKind::Write
+                    && matches!(
+                        conflict.before.resource,
+                        Resource::File(_) | Resource::DirectoryMetadata(_)
+                    )
+                {
+                    publications
+                        .entry((after.id, before.id, Wait::CohortSealed(cohort)))
+                        .or_insert_with(Vec::new)
+                        .push(Reason::SharedViewPublication {
+                            cohort,
+                            conflict: conflict.clone(),
+                        });
+                    continue;
+                }
                 let edges = if staged.is_some() && publication_write(&reason) {
                     &mut publications
                 } else {
                     &mut dependencies
                 };
                 edges
-                    .entry((before.id, after.id, wait))
+                    .entry((before.id, after.id, cohorts.gate(wait)))
                     .or_insert_with(Vec::new)
                     .push(reason);
             }
@@ -477,8 +894,40 @@ fn build_region(
             reasons,
         })
         .collect();
-    connect_ports(region, &mut graph);
+    connect_ports(region, context, &mut graph);
     graph
+}
+
+fn needs_shared_view(
+    component: &CohortRefinement,
+    context: &PlanningContext,
+    cohorts: &CohortIndex,
+) -> bool {
+    let first = component.processes[0];
+    if component
+        .processes
+        .iter()
+        .all(|process| cohorts.same(first, *process).is_some())
+    {
+        return false;
+    }
+    for (index, left) in component.processes.iter().enumerate() {
+        for right in &component.processes[index + 1..] {
+            let (Some(left), Some(right)) = (
+                context.process_effects.get(left),
+                context.process_effects.get(right),
+            ) else {
+                return true;
+            };
+            if left.footprint.unknown_external
+                || right.footprint.unknown_external
+                || !left.footprint.conflicts(&right.footprint).is_empty()
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn footprint(
@@ -493,10 +942,29 @@ fn footprint(
     {
         // An origin from a previous REPL submission is owned by the runtime;
         // absence here means unknown effects, not an empty write set.
-        return transactions.get(&transaction).cloned().unwrap_or(Effects {
-            unknown_external: true,
-            ..Effects::default()
-        });
+        return transactions
+            .get(&transaction)
+            .map(|origin| Effects {
+                // Origin undo restores managed versions; it does not consume a
+                // process port or issue an observable HTTP request a second time.
+                accesses: origin
+                    .accesses
+                    .iter()
+                    .filter(|access| {
+                        access.kind == effects::AccessKind::Write
+                            && matches!(
+                                access.resource,
+                                Resource::File(_) | Resource::DirectoryMetadata(_)
+                            )
+                    })
+                    .cloned()
+                    .collect(),
+                unknown_external: origin.unknown_external,
+            })
+            .unwrap_or(Effects {
+                unknown_external: true,
+                ..Effects::default()
+            });
     }
     summarize(instruction, context)
 }
@@ -571,13 +1039,8 @@ fn refine(instruction: &Instruction, context: &PlanningContext, refinements: &mu
             FileClass::Stream => refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::PhysicalStreamScheduling, message: "physical stream destination requires identity-aware co-start preparation, not an ordinary completion-only graph".into() }),
             _ => {}
         }
-        if matches!(
-            source,
-            crate::hir::Input::Port {
-                port: crate::hir::ReadPort::Stdout | crate::hir::ReadPort::Stderr,
-                ..
-            }
-        ) && effects::file_class(location, facts.destination) != FileClass::Stream
+        if matches!(source, crate::hir::Input::Port { .. })
+            && effects::file_class(location, facts.destination) != FileClass::Stream
             && staged_output(instruction, context).is_none()
         {
             refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::OutputPublication, message: "prove this program output is drained to a private regular-file stage before scheduling publication after the producer's sealed resource delta".into() });
@@ -619,11 +1082,7 @@ fn completion(before: &Instruction) -> Wait {
 
 fn staged_output(instruction: &Instruction, context: &PlanningContext) -> Option<ProcessId> {
     let InstructionKind::Transfer {
-        source:
-            crate::hir::Input::Port {
-                process,
-                port: crate::hir::ReadPort::Stdout | crate::hir::ReadPort::Stderr,
-            },
+        source: crate::hir::Input::Port { process, .. },
         destination:
             crate::hir::Output::File {
                 location,
@@ -709,9 +1168,8 @@ fn ordering(
     reasons
 }
 
-fn connect_ports(region: &Region, graph: &mut PlanGraph) {
+fn connect_ports(region: &Region, context: &PlanningContext, graph: &mut PlanGraph) {
     let mut launches = BTreeMap::new();
-    let mut owners = BTreeMap::<(ProcessId, u8), InstructionId>::new();
     let mut members = BTreeMap::<ProcessId, BTreeSet<InstructionId>>::new();
     for (instruction, node) in region.instructions.iter().zip(&graph.nodes) {
         if let Some(process) = spawn(instruction)
@@ -722,28 +1180,19 @@ fn connect_ports(region: &Region, graph: &mut PlanGraph) {
                 message: "a process ID has more than one launch".into(),
             });
         }
+        // A transaction summary describes effects, not another live consumer.
+        if !matches!(instruction.kind, InstructionKind::Transfer { .. }) {
+            continue;
+        }
         for access in &node.effects.accesses {
             let Resource::Port { process, port } = access.resource else {
                 continue;
             };
-            let port_id = match port {
-                Port::Stdin => 0,
-                Port::Stdout => 1,
-                Port::Stderr => 2,
+            match port {
+                Port::Stdin | Port::Stdout | Port::Stderr => {}
                 _ => continue,
-            };
-            members.entry(process).or_default().insert(instruction.id);
-            if let Some(owner) = owners.insert((process, port_id), instruction.id)
-                && owner != instruction.id
-            {
-                graph.issues.push(Issue {
-                    instructions: vec![owner, instruction.id],
-                    message: format!(
-                        "process {} {port:?} is a consuming stream and requires one owner",
-                        process.0
-                    ),
-                });
             }
+            members.entry(process).or_default().insert(instruction.id);
         }
     }
     for (process, members) in members {
@@ -755,11 +1204,15 @@ fn connect_ports(region: &Region, graph: &mut PlanGraph) {
             });
         }
     }
-    reject_cross_checkpoint_services(region, graph);
-    reject_internal_waits(graph);
+    reject_cross_checkpoint_services(region, context, graph);
+    reject_internal_waits(region, context, graph);
 }
 
-fn reject_cross_checkpoint_services(region: &Region, graph: &mut PlanGraph) {
+fn reject_cross_checkpoint_services(
+    region: &Region,
+    context: &PlanningContext,
+    graph: &mut PlanGraph,
+) {
     let positions: BTreeMap<_, _> = region
         .instructions
         .iter()
@@ -777,14 +1230,19 @@ fn reject_cross_checkpoint_services(region: &Region, graph: &mut PlanGraph) {
                 });
                 continue;
             }
-            if region.instructions[launch..position].iter().any(cut) {
+            if region.instructions[launch..position]
+                .iter()
+                .any(|instruction| epoch_boundary(instruction, context))
+            {
                 graph.issues.push(Issue { instructions: vec![cohort.launch, *member], message: "a live process pipe crosses a checkpoint; drain/stage it before the checkpoint or launch a new process afterward".into() });
             }
         }
     }
 }
 
-fn reject_internal_waits(graph: &mut PlanGraph) {
+fn reject_internal_waits(region: &Region, context: &PlanningContext, graph: &mut PlanGraph) {
+    let components = stream_components(region, context);
+    let mut deferred = Vec::new();
     for cohort in &graph.co_start {
         // File hazards between pipe services are real; they cannot be erased
         // just to launch a pipe cohort. Report a staging obligation explicitly.
@@ -799,17 +1257,103 @@ fn reject_internal_waits(graph: &mut PlanGraph) {
             {
                 graph.issues.push(Issue { instructions: vec![edge.before, edge.after], message: format!("process {} pipe services have a completion hazard; stage/version the conflicting resource before co-start", cohort.process.0) });
             }
-            if matches!(edge.wait, Wait::ProcessExited(process) | Wait::ProcessSealed(process) if process == cohort.process)
+            if seals_process(graph, edge.wait, cohort.process)
                 && cohort
                     .members
                     .iter()
                     .any(|member| reaches(graph, edge.after, *member))
                 && !has_pending_service_refinement(graph, cohort, edge.after)
             {
-                graph.issues.push(Issue { instructions: vec![edge.before, edge.after], message: format!("process {} pipe service depends on that process exiting; provide a mediated disjoint-effect proof or stage the dependency before co-start", cohort.process.0) });
+                if let Some(component) = components
+                    .iter()
+                    .find(|component| component.processes.contains(&cohort.process))
+                {
+                    if !deferred.contains(component) {
+                        deferred.push(component.clone());
+                    }
+                } else {
+                    graph.issues.push(Issue { instructions: vec![edge.before, edge.after], message: format!("process {} pipe service depends on that process exiting; provide a mediated disjoint-effect proof or stage the dependency before co-start", cohort.process.0) });
+                }
             }
         }
     }
+    for component in deferred {
+        if !graph.cohort_refinements.contains(&component) {
+            graph.cohort_refinements.push(component);
+        }
+    }
+}
+
+fn seals_process(graph: &PlanGraph, wait: Wait, process: ProcessId) -> bool {
+    match wait {
+        Wait::ProcessExited(member) | Wait::ProcessSealed(member) => member == process,
+        Wait::CohortSealed(id) => graph
+            .cohort_views
+            .get(id.0)
+            .is_some_and(|proof| proof.members.contains_key(&process)),
+        _ => false,
+    }
+}
+
+fn stream_components(region: &Region, context: &PlanningContext) -> Vec<CohortRefinement> {
+    let mut adjacent = BTreeMap::<ProcessId, BTreeSet<ProcessId>>::new();
+    for instruction in &region.instructions {
+        let InstructionKind::Transfer {
+            source:
+                crate::hir::Input::Port {
+                    process: source,
+                    port: crate::hir::ReadPort::Stdout | crate::hir::ReadPort::Stderr,
+                },
+            destination: crate::hir::Output::Stdin(destination),
+        } = &instruction.kind
+        else {
+            continue;
+        };
+        if source == destination {
+            continue;
+        }
+        adjacent.entry(*source).or_default().insert(*destination);
+        adjacent.entry(*destination).or_default().insert(*source);
+    }
+    let mut visited = BTreeSet::new();
+    let mut result = Vec::new();
+    for seed in adjacent.keys() {
+        if visited.contains(seed) {
+            continue;
+        }
+        let mut pending = vec![*seed];
+        let mut processes = BTreeSet::new();
+        while let Some(process) = pending.pop() {
+            if visited.insert(process) {
+                processes.insert(process);
+                pending.extend(adjacent[&process].iter().copied());
+            }
+        }
+        let mut slots = BTreeSet::new();
+        let mut epoch = 0;
+        let mut instructions = Vec::new();
+        for instruction in &region.instructions {
+            if spawn(instruction).is_some_and(|process| processes.contains(&process))
+                || live_ports(instruction)
+                    .iter()
+                    .any(|process| processes.contains(process))
+            {
+                slots.insert(epoch);
+                instructions.push(instruction.id);
+            }
+            if epoch_boundary(instruction, context) {
+                epoch += 1;
+            }
+        }
+        if slots.len() == 1 {
+            result.push(CohortRefinement {
+                processes: processes.into_iter().collect(),
+                instructions,
+                kind: CohortRefinementKind::SharedMutableView,
+            });
+        }
+    }
+    result
 }
 
 fn has_pending_service_refinement(
