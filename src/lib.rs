@@ -14,3 +14,4 @@ pub mod streams;
 pub mod suggest;
 pub mod syntax;
 pub mod telemetry;
+pub mod transaction;
