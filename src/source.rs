@@ -181,3 +181,46 @@ pub struct InstructionOrigin {
 }
 
 pub type Origins = BTreeMap<InstructionId, InstructionOrigin>;
+
+impl InstructionOrigin {
+    /// Select a semantic operand while retaining the expansion's definition site.
+    pub fn for_operand(&self, destination: bool) -> Self {
+        let mut origin = self.clone();
+        if let Some((source, target)) = &self.operands {
+            origin.site = if destination {
+                target.clone()
+            } else {
+                source.clone()
+            };
+        }
+        origin
+    }
+
+    /// Render an owned operation or operand site after its submission has retired.
+    pub fn report(&self, mut report: Report, destination: Option<bool>) -> LocatedReport {
+        let site = destination
+            .and_then(|destination| {
+                self.operands.as_ref().map(|operands| {
+                    if destination {
+                        &operands.1
+                    } else {
+                        &operands.0
+                    }
+                })
+            })
+            .unwrap_or(&self.site);
+        report.diagnostic.span = site.span;
+        let labels = std::mem::take(&mut report.labels);
+        let mut located = LocatedReport::new(site.source.clone(), report);
+        for label in labels {
+            located = located.label(self.definition.source.at(label.span), label.message);
+        }
+        if self.definition != *site {
+            located = located.label(
+                self.definition.clone(),
+                "expanded operation is defined here",
+            );
+        }
+        located
+    }
+}

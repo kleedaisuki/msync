@@ -16,10 +16,16 @@
 //! ordinal-insensitive domain policy and rejects case-sensitive NTFS ancestors.
 
 mod domain;
+mod endpoint;
 mod error;
+pub mod live;
 mod native;
+mod physical;
+mod program;
+mod scheduler;
 mod transfer;
 
+pub use live::RuntimeSession;
 
 use std::collections::BTreeMap;
 use std::fs;

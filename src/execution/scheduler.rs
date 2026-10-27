@@ -1,0 +1,201 @@
+//! Admission for co-started program pipes. A pipe must never wait behind itself.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::future::{Future, poll_fn};
+use std::sync::Arc;
+
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio_util::sync::CancellationToken;
+
+use crate::scheduler::ResourceLimits;
+use crate::syntax::Span;
+
+use super::error::{ExecutionError, Result};
+
+pub(super) struct Admission {
+    programs: Arc<Semaphore>,
+    streams: Arc<Semaphore>,
+    buffers: Arc<Semaphore>,
+    buffer_bytes: usize,
+}
+
+pub(super) struct Lease {
+    _slot: OwnedSemaphorePermit,
+    _memory: OwnedSemaphorePermit,
+    context: Option<crate::telemetry::TraceContext>,
+}
+
+pub(super) fn admit_spawn(
+    graph: &crate::hir::graph::PlanGraph,
+    instruction: crate::hir::InstructionId,
+    events: &BTreeMap<crate::hir::ProcessId, (bool, bool)>,
+    completed: &BTreeSet<crate::hir::InstructionId>,
+    span: Span,
+) -> Result<()> {
+    use crate::hir::graph::Wait;
+    if let Some(issue) = graph.issues.first() {
+        return Err(ExecutionError::new(
+            format!("program admission failed: {}", issue.message),
+            span,
+        ));
+    }
+    let graph = region_graph(graph, instruction).ok_or_else(|| {
+        ExecutionError::new("admission node is absent from the prepared graph", span)
+    })?;
+    if let Some(issue) = graph.issues.first() {
+        return Err(ExecutionError::new(
+            format!("program admission failed: {}", issue.message),
+            span,
+        ));
+    }
+    let ready = |wait: Wait, before: Option<crate::hir::InstructionId>| match wait {
+        Wait::Completion => before.is_some_and(|id| completed.contains(&id)),
+        Wait::ProcessStarted(process) => events.contains_key(&process),
+        Wait::ProcessExited(process) => events.get(&process).is_some_and(|(exited, _)| *exited),
+        Wait::ProcessSealed(process) => events.get(&process).is_some_and(|(_, sealed)| *sealed),
+        Wait::CohortSealed(cohort) => graph.cohort_views[cohort.0]
+            .members()
+            .keys()
+            .all(|process| events.get(process).is_some_and(|(_, sealed)| *sealed)),
+    };
+    let blocked = graph
+        .dependencies
+        .iter()
+        .filter(|edge| edge.after == instruction)
+        .any(|edge| !ready(edge.wait, Some(edge.before)))
+        || graph
+            .external_processes
+            .iter()
+            .filter(|edge| edge.instruction == instruction)
+            .any(|edge| !ready(edge.wait, None));
+    if blocked {
+        return Err(ExecutionError::new("program admission is waiting on an unsealed resource epoch; no candidate payload started", span)
+            .help("Finish the preceding resource cohort before this launch, or connect co-started programs through one verified shared view."));
+    }
+    Ok(())
+}
+
+fn region_graph(
+    graph: &crate::hir::graph::PlanGraph,
+    instruction: crate::hir::InstructionId,
+) -> Option<&crate::hir::graph::PlanGraph> {
+    if graph
+        .nodes
+        .iter()
+        .any(|node| node.instruction == instruction)
+    {
+        return Some(graph);
+    }
+    graph
+        .nodes
+        .iter()
+        .filter_map(|node| node.children.as_ref())
+        .find_map(|child| region_graph(child, instruction))
+}
+
+impl Lease {
+    pub fn task(&self, role: &'static str, cancel: CancellationToken) -> TaskTrace {
+        let mut span = crate::telemetry::linked_span("task", self.context.as_ref());
+        span.expect_completion();
+        span.attribute("operation", role);
+        TaskTrace { span, cancel }
+    }
+}
+
+pub(super) struct TaskTrace {
+    span: crate::telemetry::LinkedSpan,
+    cancel: CancellationToken,
+}
+
+impl TaskTrace {
+    pub async fn run<T>(mut self, future: impl Future<Output = Result<T>>) -> Result<T> {
+        let context = self.span.context();
+        let mut future = std::pin::pin!(future);
+        // TLS attachments belong to one poll, never to the suspended task or
+        // the worker thread which may poll a different task immediately after.
+        let result = poll_fn(|cx| {
+            crate::telemetry::with_context(context.as_ref(), || future.as_mut().poll(cx))
+        })
+        .await;
+        if let Err(cause) = &result
+            && let Some(context) = &context
+        {
+            context.record_error("execution.task", cause);
+        }
+        if self.cancel.is_cancelled()
+            && result
+                .as_ref()
+                .err()
+                .is_none_or(|error| error.cause.is_none())
+        {
+            self.span.cancelled();
+        }
+        self.span.finish_result(&result);
+        result
+    }
+}
+
+impl Admission {
+    pub fn new(limits: &ResourceLimits) -> Result<Self> {
+        let units = limits.memory_bytes / limits.buffer_bytes;
+        if [limits.jobs, limits.max_streams, units]
+            .into_iter()
+            .any(|value| value > Semaphore::MAX_PERMITS)
+        {
+            return Err(ExecutionError::new("configured concurrency exceeds the platform admission range", Span::default())
+                .help("Use bounded jobs/streams and payload capacity instead of the maximum integer value."));
+        }
+        Ok(Self {
+            programs: Arc::new(Semaphore::new(limits.jobs)),
+            streams: Arc::new(Semaphore::new(limits.max_streams)),
+            buffers: Arc::new(Semaphore::new(units)),
+            buffer_bytes: limits.buffer_bytes,
+        })
+    }
+
+    pub fn program(&self, span: Span) -> Result<Lease> {
+        self.acquire(&self.programs, 6, span, "program")
+    }
+
+    pub fn flow(&self, span: Span) -> Result<Lease> {
+        self.acquire(&self.streams, 2, span, "program stream")
+    }
+
+    fn acquire(&self, slots: &Arc<Semaphore>, units: u32, span: Span, role: &str) -> Result<Lease> {
+        let parent = crate::telemetry::context();
+        let mut trace = crate::telemetry::linked_span("schedule", parent.as_ref());
+        trace.expect_completion();
+        trace.attribute("resource", role);
+        trace.metric("available_slots", slots.available_permits() as u64);
+        trace.metric(
+            "available_buffer_bytes",
+            self.buffers
+                .available_permits()
+                .saturating_mul(self.buffer_bytes) as u64,
+        );
+        let result = (|| {
+            let slot = slots.clone().try_acquire_owned().map_err(|_| {
+            ExecutionError::new(format!("the ready {role} cohort exceeds its concurrent resource limit"), span)
+                .help("Increase --jobs/--max-streams for this co-start cohort, or split it at a completed program boundary; serially waiting on a connected pipe would deadlock.")
+        })?;
+            let memory = self.buffers.clone().try_acquire_many_owned(units).map_err(|_| {
+            ExecutionError::new(format!("the ready {role} cohort exceeds the payload-buffer budget"), span)
+                .help("Increase --memory-limit, reduce --buffer-size, or run fewer independent program spaces together.")
+        })?;
+            Ok(Lease {
+                _slot: slot,
+                _memory: memory,
+                context: trace.context(),
+            })
+        })();
+        if result.is_ok() {
+            trace.metric("granted_slots", 1);
+            trace.metric(
+                "reserved_buffer_bytes",
+                (units as usize).saturating_mul(self.buffer_bytes) as u64,
+            );
+        }
+        trace.finish_result(&result);
+        result
+    }
+}

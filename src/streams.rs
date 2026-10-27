@@ -31,6 +31,7 @@ struct Opened<T> {
 
 enum CloseWatch {
     Reader(Reader),
+    Consumer(CancellationToken),
     #[cfg(windows)]
     NamedPipe(std::os::windows::io::OwnedHandle),
     #[cfg(target_os = "linux")]
@@ -99,6 +100,94 @@ pub async fn transfer_with_context(
         message,
         span: operation.span,
     })
+}
+
+/// Connect an already-owned source to a physical endpoint without replacing its
+/// close watcher or remote commit protocol with a generic `copy` loop.
+pub(crate) async fn transfer_from_reader<R>(
+    source: R,
+    destination: &Location,
+    buffer_bytes: usize,
+    cancel: CancellationToken,
+    span: crate::syntax::Span,
+) -> Result<StreamReport, RuntimeError>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let child = cancel.child_token();
+    let _scope = FlowScope(child.clone());
+    let result = async {
+        if buffer_bytes == 0 {
+            return Err("stream buffer size must be greater than zero".into());
+        }
+        let destination = endpoint(destination, false)?;
+        let destination = tokio::select! {
+            biased;
+            () = child.cancelled() => return Ok(report(0, StreamEnd::Cancelled)),
+            opened = open_writer(destination, false, buffer_bytes, crate::telemetry::context()) =>
+                opened.map_err(|cause| format!("cannot open stream destination: {cause}"))?,
+        };
+        run_opened(
+            Opened::native(Box::new(source) as Reader),
+            destination,
+            buffer_bytes,
+            &child,
+            crate::telemetry::context(),
+        )
+        .await
+    }
+    .await;
+    result.map_err(|message| RuntimeError { message, span })
+}
+
+/// Retain the source endpoint/remote-process lifetime while writing into an
+/// already-owned destination such as a program's stdin or a private file stage.
+pub(crate) async fn transfer_to_writer<W>(
+    source: &Location,
+    destination: W,
+    buffer_bytes: usize,
+    cancel: CancellationToken,
+    span: crate::syntax::Span,
+    consumer_closed: CancellationToken,
+) -> Result<StreamReport, RuntimeError>
+where
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    let child = cancel.child_token();
+    let _scope = FlowScope(child.clone());
+    let result = async {
+        if buffer_bytes == 0 {
+            return Err("stream buffer size must be greater than zero".into());
+        }
+        let source = endpoint(source, true)?;
+        let source = tokio::select! {
+            biased;
+            () = child.cancelled() => return Ok(report(0, StreamEnd::Cancelled)),
+            () = consumer_closed.cancelled() => return Ok(report(0, StreamEnd::DestinationClosed)),
+            opened = open_reader(source, buffer_bytes, crate::telemetry::context()) =>
+                opened.map_err(|cause| format!("cannot open stream source: {cause}"))?,
+        };
+        let mut destination = Opened::native(Box::new(destination) as Writer);
+        destination.close = Some(CloseWatch::Consumer(consumer_closed));
+        run_opened(
+            source,
+            destination,
+            buffer_bytes,
+            &child,
+            crate::telemetry::context(),
+        )
+        .await
+    }
+    .await;
+    result.map_err(|message| RuntimeError { message, span })
+}
+
+struct FlowScope(CancellationToken);
+
+impl Drop for FlowScope {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
 }
 
 async fn transfer_inner(
@@ -858,6 +947,10 @@ async fn destination_exit(
     match process {
         Some(process) => process.wait().await,
         None => match watcher {
+            Some(CloseWatch::Consumer(closed)) => {
+                closed.cancelled().await;
+                Ok(())
+            }
             Some(CloseWatch::Reader(reader)) => {
                 let mut byte = [0_u8; 1];
                 loop {

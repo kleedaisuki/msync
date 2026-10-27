@@ -9,6 +9,10 @@ use crate::transaction::manager::ManagerError;
 /// A source-site failure with the native cause and any unsuccessful undo work.
 #[derive(Debug)]
 pub struct ExecutionError {
+    /// Runtime publication cohort responsible for an asynchronous failure.
+    pub transaction: Option<crate::hir::TransactionId>,
+    /// Owned operation or operand source, retained independently of cohort identity.
+    pub origin: Option<Box<crate::source::InstructionOrigin>>,
     pub report: Box<Report>,
     pub cause: Option<Box<dyn Error + Send + Sync>>,
     pub recovery: Vec<ManagerError>,
@@ -19,6 +23,8 @@ pub struct ExecutionError {
 impl ExecutionError {
     pub(super) fn new(message: impl Into<String>, span: Span) -> Self {
         Self {
+            transaction: None,
+            origin: None,
             report: Box::new(Report::new(message, span)),
             cause: None,
             recovery: Vec::new(),
@@ -35,6 +41,24 @@ impl ExecutionError {
         let mut failure = Self::new(message, span);
         failure.cause = Some(Box::new(cause));
         failure
+    }
+
+    pub(super) fn with_origin(mut self, origin: Option<&crate::source::InstructionOrigin>) -> Self {
+        if self.origin.is_none() {
+            self.origin = origin.cloned().map(Box::new);
+        }
+        self
+    }
+
+    pub(super) fn with_operand(
+        mut self,
+        origin: Option<&crate::source::InstructionOrigin>,
+        destination: bool,
+    ) -> Self {
+        if self.origin.is_none() {
+            self.origin = origin.map(|origin| Box::new(origin.for_operand(destination)));
+        }
+        self
     }
 
     pub(super) fn help(mut self, text: impl Into<String>) -> Self {
