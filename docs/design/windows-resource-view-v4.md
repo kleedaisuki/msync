@@ -5,6 +5,34 @@ signed-driver journeys have **not** been run on the development host; no driver,
 service or Sandboxie configuration was installed or changed there. The ephemeral
 Windows Actions gate must prove native support before release acceptance.
 
+## First provisioned-driver result and path-policy correction
+
+[Actions run 40498380133](https://github.com/kleedaisuki/msync/actions/runs/40498380133)
+successfully installed and loaded the pinned signed driver/service and passed its
+ABI probe. All four native journeys then stopped before launching a worker at the
+`FileRootPath` effective-setting check. This is an adapter verification defect,
+not a failed driver installation or evidence that isolated payload IO passed.
+
+The pinned
+[`Conf_Api_Query`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/drv/conf.c)
+expands values unless `CONF_GET_NO_EXPAND` is present. Its
+[`Conf_Expand_Helper`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/drv/conf_expand.c)
+calls `File_TranslateDosToNt` for DOS paths before expanding variables. Comparing
+an expected DOS/verbatim string with the expanded NT device string is therefore
+incorrect even when the setting is exactly right. `WriteFilePath` required the
+same correction as `FileRootPath`.
+
+Directory-valued policies now resolve the driver-expanded NT path through the
+appropriate Win32 `GLOBALROOT` or DOS namespace and compare open filesystem
+identities. The independent `QueryBoxPath` confinement check is retained; raw
+readback alone is not accepted as proof of the effective policy. Scalar settings
+remain literal comparisons. Mismatches report expected, expanded and raw values
+with query flags; native query failures include section, key, index, flags and
+NTSTATUS. A driver-free Windows regression obtains a real NT device path using
+`GetFinalPathNameByHandleW(VOLUME_NAME_NT)`, proves it is textually different but
+physically identical, and rejects a different directory. The targeted native
+driver journeys still require rerunning after this correction.
+
 The deployment/source investigation and pinned installer are in
 [transactions-v4.md](transactions-v4.md). The new runtime implementation is
 `src/process/view_windows.rs` with the focused `windows_view/` native ABI, bounded

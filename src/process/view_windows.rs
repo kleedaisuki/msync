@@ -768,11 +768,7 @@ impl OwnedBox {
         for (key, value) in settings {
             owned.set(key, Path::new(value).as_os_str(), false)?;
         }
-        owned.set(
-            "FileRootPath",
-            owned.path.join("sandbox").as_os_str(),
-            false,
-        )?;
+        owned.set_directory("FileRootPath", &owned.path.join("sandbox"), false)?;
         owned.set(
             "OpenPipePath",
             OsString::from(format!(r"\Device\NamedPipe\msync_{}", owned.nonce)).as_os_str(),
@@ -784,7 +780,7 @@ impl OwnedBox {
             true,
         )?;
         for root in roots {
-            owned.set("WriteFilePath", root.logical.as_os_str(), true)?;
+            owned.set_directory("WriteFilePath", &root.logical, true)?;
         }
         owned.verify(roots)?;
         Ok(owned)
@@ -805,10 +801,10 @@ impl OwnedBox {
             })?;
         }
         for root in roots {
-            self.require("WriteFilePath", root.logical.as_os_str())?;
+            self.require_directory("WriteFilePath", &root.logical)?;
         }
         self.require("Enabled", std::ffi::OsStr::new("y"))?;
-        self.require("FileRootPath", self.path.join("sandbox").as_os_str())?;
+        self.require_directory("FileRootPath", &self.path.join("sandbox"))?;
         let expected = Handle::from_path(self.path.join("sandbox"))
             .map_err(|cause| ViewError::new("identify private file root", &self.path, cause))?;
         let actual = self
@@ -846,23 +842,43 @@ impl OwnedBox {
         self.require(key, value)
     }
 
-    fn require(&self, key: &str, value: &std::ffi::OsStr) -> Result<(), ViewError> {
-        let actual = self
+    fn set_directory(&self, key: &str, value: &Path, append: bool) -> Result<(), ViewError> {
+        self.api
+            .configure(&self.name, key, Some(value.as_os_str()), append)
+            .map_err(|cause| ViewError::new("configure owned path", &self.path, cause))?;
+        self.require_directory(key, value)
+    }
+
+    fn require_directory(&self, key: &str, expected: &Path) -> Result<(), ViewError> {
+        let readback = self.readback(key)?;
+        if directory_matches(expected, &readback.effective)
+            .map_err(|cause| ViewError::new("verify effective path identity", expected, cause))?
+        {
+            return Ok(());
+        }
+        Err(readback.mismatch(key, expected.as_os_str(), &self.path))
+    }
+
+    fn readback(&self, key: &str) -> Result<PolicyReadback, ViewError> {
+        let effective = self
             .api
             .values(&self.name, key)
             .map_err(|cause| ViewError::new("read effective policy", &self.path, cause))?;
-        if !actual
+        let raw = self
+            .api
+            .values_flags(&self.name, key, 0x2000_0000)
+            .map_err(|cause| ViewError::new("read unexpanded policy", &self.path, cause))?;
+        Ok(PolicyReadback { raw, effective })
+    }
+
+    fn require(&self, key: &str, value: &std::ffi::OsStr) -> Result<(), ViewError> {
+        let readback = self.readback(key)?;
+        if !readback
+            .effective
             .iter()
             .any(|actual| actual.eq_ignore_ascii_case(&value.to_string_lossy()))
         {
-            return Err(ViewError::new(
-                "verify effective policy",
-                &self.path,
-                io::Error::other(format!(
-                    "Sandboxie did not apply {key}={}",
-                    value.to_string_lossy()
-                )),
-            ));
+            return Err(readback.mismatch(key, value, &self.path));
         }
         Ok(())
     }
@@ -914,6 +930,37 @@ impl OwnedBox {
         self.cleaned.store(true, Ordering::Release);
         Ok(())
     }
+}
+
+struct PolicyReadback {
+    raw: Vec<String>,
+    effective: Vec<String>,
+}
+
+impl PolicyReadback {
+    fn mismatch(&self, key: &str, expected: &std::ffi::OsStr, owner: &Path) -> ViewError {
+        ViewError::new(
+            "verify effective policy",
+            owner,
+            io::Error::other(format!(
+                "Sandboxie setting {key} mismatch: expected={expected:?}; effective(flags=0x00000000)={:?}; raw(flags=CONF_GET_NO_EXPAND/0x20000000)={:?}",
+                self.effective, self.raw
+            )),
+        )
+    }
+}
+
+fn directory_matches(expected: &Path, effective: &[String]) -> io::Result<bool> {
+    let expected = Handle::from_path(expected)?;
+    for value in effective {
+        let Ok(path) = native::path_from_native(value) else {
+            continue;
+        };
+        if Handle::from_path(path).is_ok_and(|actual| actual == expected) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 impl Drop for OwnedBox {
@@ -1022,6 +1069,73 @@ mod tests {
                 assert_eq!(failure.kind(), io::ErrorKind::PermissionDenied);
                 assert!(failure.to_string().contains(rule));
             }
+        }
+    }
+
+    #[test]
+    fn expanded_nt_paths_are_verified_by_identity_not_dos_text() {
+        use std::os::windows::ffi::OsStringExt;
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, GetFinalPathNameByHandleW, VOLUME_NAME_NT,
+        };
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&root).unwrap();
+        let fixture = tempfile::Builder::new()
+            .prefix("config-identity-")
+            .tempdir_in(root)
+            .unwrap();
+        let expected = fixture.path().join("配置-🌟");
+        let other = fixture.path().join("other");
+        fs::create_dir(&expected).unwrap();
+        fs::create_dir(&other).unwrap();
+        let handle = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&expected)
+            .unwrap();
+        let mut native = vec![0u16; 32768];
+        // This is the same NT device spelling returned by driver Conf_Expand.
+        let count = unsafe {
+            GetFinalPathNameByHandleW(
+                handle.as_raw_handle(),
+                native.as_mut_ptr(),
+                native.len() as u32,
+                VOLUME_NAME_NT,
+            )
+        } as usize;
+        assert!(count > 0 && count < native.len());
+        let nt = OsString::from_wide(&native[..count]).into_string().unwrap();
+        assert!(nt.starts_with(r"\Device\"));
+        assert_ne!(nt, expected.to_string_lossy());
+        assert!(directory_matches(&expected, std::slice::from_ref(&nt)).unwrap());
+        assert!(!directory_matches(&other, &[nt]).unwrap());
+        assert!(!directory_matches(&expected, &["relative-or-malformed".into()]).unwrap());
+    }
+
+    #[test]
+    fn policy_mismatch_reports_expected_raw_expanded_values_and_query_flags() {
+        let readback = PolicyReadback {
+            raw: vec![r"D:\configured".into()],
+            effective: vec![r"\Device\HarddiskVolume9\configured".into()],
+        };
+        let error = readback.mismatch(
+            "FileRootPath",
+            std::ffi::OsStr::new(r"D:\expected"),
+            Path::new(r"D:\owner"),
+        );
+        let message = error.to_string();
+        for expected in [
+            "FileRootPath",
+            "expected",
+            "configured",
+            "HarddiskVolume9",
+            "0x00000000",
+            "CONF_GET_NO_EXPAND",
+            "0x20000000",
+        ] {
+            assert!(message.contains(expected), "{message}");
         }
     }
 }

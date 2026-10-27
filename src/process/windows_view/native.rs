@@ -186,15 +186,15 @@ impl Api {
     }
 
     pub fn values_flags(&self, name: &str, key: &str, flags: u32) -> io::Result<Vec<String>> {
-        let name = wide(OsStr::new(name))?;
-        let key = wide(OsStr::new(key))?;
+        let name_utf16 = wide(OsStr::new(name))?;
+        let key_utf16 = wide(OsStr::new(key))?;
         let mut result = Vec::new();
         for index in 0..4096 {
             let mut buffer = vec![0u16; 32767];
             let code = unsafe {
                 (self.query)(
-                    name.as_ptr(),
-                    key.as_ptr(),
+                    name_utf16.as_ptr(),
+                    key_utf16.as_ptr(),
                     index | flags,
                     buffer.as_mut_ptr(),
                     (buffer.len() * 2) as u32,
@@ -203,7 +203,19 @@ impl Api {
             if matches!(code as u32, 0x8000_001A | 0xC000_0034 | 0xC000_008B) {
                 return Ok(result);
             }
-            status(code)?;
+            status(code).map_err(|cause| {
+                io::Error::new(
+                    cause.kind(),
+                    QueryFailure {
+                        section: name.to_owned(),
+                        setting: key.to_owned(),
+                        index,
+                        flags,
+                        status: code,
+                        cause,
+                    },
+                )
+            })?;
             let end = buffer
                 .iter()
                 .position(|unit| *unit == 0)
@@ -267,19 +279,7 @@ impl Api {
         let text = native
             .to_str()
             .ok_or_else(|| io::Error::other("Sandboxie box root is not a UTF-8 path"))?;
-        let path = if let Some(tail) = text.strip_prefix(r"\??\") {
-            PathBuf::from(format!(r"\\?\{tail}"))
-        } else if text.starts_with(r"\Device\") {
-            PathBuf::from(format!(r"\\?\GLOBALROOT{text}"))
-        } else {
-            PathBuf::from(native)
-        };
-        if !path.is_absolute() {
-            return Err(io::Error::other(
-                "Sandboxie returned a nonabsolute box root",
-            ));
-        }
-        Ok(path)
+        path_from_native(text)
     }
 
     pub fn launch(
@@ -412,6 +412,50 @@ impl Api {
         Err(io::Error::other(
             "owned box did not become quiescent; retain its files and configuration",
         ))
+    }
+}
+
+/// Driver-expanded settings use NT device paths, not the caller's DOS spelling.
+pub(super) fn path_from_native(text: &str) -> io::Result<PathBuf> {
+    let path = if let Some(tail) = text.strip_prefix(r"\??\") {
+        PathBuf::from(format!(r"\\?\{tail}"))
+    } else if text.starts_with(r"\Device\") {
+        PathBuf::from(format!(r"\\?\GLOBALROOT{text}"))
+    } else {
+        PathBuf::from(text)
+    };
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Sandboxie returned a nonabsolute native path",
+        ));
+    }
+    Ok(path)
+}
+
+#[derive(Debug)]
+struct QueryFailure {
+    section: String,
+    setting: String,
+    index: u32,
+    flags: u32,
+    status: i32,
+    cause: io::Error,
+}
+
+impl std::fmt::Display for QueryFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "SbieApi_QueryConf [{}] {} index={} flags=0x{:08X}: NTSTATUS 0x{:08X}",
+            self.section, self.setting, self.index, self.flags, self.status as u32
+        )
+    }
+}
+
+impl std::error::Error for QueryFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
     }
 }
 
