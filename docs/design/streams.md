@@ -290,3 +290,13 @@ loopback via `ip link set lo up`. Thus FIFO fixtures did not run on DrvFs and no
 host SSH/network configuration changed. Reproduction helper is disposable
 `.temp/check-physical-native-v4.sh`; the authoritative tests remain in `tests/`.
 Strict `cargo clippy --lib --test physical_execution_v4 -- -D warnings` passed.
+
+The later Unix-domain socket coverage uses actual filesystem `UnixListener`
+endpoints, not TCP as a proxy for socket-file behavior. Four journeys verify
+same-directory socket-source EOF publication and later copying of the committed
+file, immutable-file/literal socket sinks with exact bytes and EOF, directory
+source rejection before connection, and independent socket closure followed by
+stopping an unfinished sibling flow without replacing its old target. Socket
+inodes remain present across publication and shutdown. On the same private WSL
+tmpfs setup, the expanded ordinary target passed 12 tests; the one actual-child
+native-view test remains explicitly ignored until its provisioned gate runs.
