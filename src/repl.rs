@@ -567,23 +567,22 @@ fn repl_command_inner(
                     |reports| diagnostics(argument, &source, &reports, options.color),
                 )? == Version::Structured =>
                 {
-                    let mut preview = structured::State::default();
-                    preview.compiler = state.structured.compiler.clone();
+                    let mut compiler = state.structured.compiler.clone();
                     if state.legacy_dirty {
-                        preview
-                            .compiler
+                        compiler
                             .try_merge_legacy(&state.compiler)
                             .map_err(|report| {
                                 diagnostics(argument, &source, &[report], options.color)
                             })?;
                     }
-                    preview.submit(
-                        SourceUnit::file(&source, argument)?,
-                        mode,
-                        state.dry_run,
-                        options,
-                        false,
-                    )
+                    let input = SourceUnit::file(&source, argument)?;
+                    let saved = std::mem::replace(&mut state.structured.compiler, compiler);
+                    let result =
+                        state
+                            .structured
+                            .submit(input, mode, state.dry_run, options, false);
+                    state.structured.compiler = saved;
+                    result
                 }
                 mode => submit(
                     SourceUnit::file(&source, argument)?,

@@ -570,3 +570,27 @@ fn a_later_input_failure_keeps_its_source_inside_an_existing_program_job() {
     );
     assert!(repl.output.contains("REPL commands"));
 }
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires an available native bubblewrap process-resource backend"]
+fn check_and_plan_borrow_live_program_context_without_consuming_its_ports() {
+    let directory = workspace();
+    fs::write(
+        directory.path().join("inspect.msync"),
+        "transient := \"preview only\"\nchild::stdout -> preview.txt\n",
+    )
+    .unwrap();
+    let mut repl = Repl::start(directory.path());
+    repl.send("child => $path::cat()\n/check inspect.msync\n/plan inspect.msync\n/bindings\n\"done\" -> child::stdin\nchild::stdout -> actual.txt\n/wait\n/quit\n");
+    let (status, errors) = repl.finish();
+    assert!(status.success(), "{errors}");
+    assert!(errors.is_empty(), "{errors}");
+    assert!(!repl.output.contains("transient :="), "{}", repl.output);
+    assert!(repl.output.contains("Metadata preview only"));
+    assert!(!directory.path().join("preview.txt").exists());
+    assert_eq!(
+        fs::read(directory.path().join("actual.txt")).unwrap(),
+        b"done"
+    );
+}

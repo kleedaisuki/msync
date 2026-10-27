@@ -92,8 +92,8 @@ jobs:
         name: Exercise actual Linux physical-stream consumer closure
         run: cargo test --locked --test physical_execution_v4 -- --ignored --nocapture
       - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'repl_jobs'))
-        name: Exercise owned REPL provenance across native program inputs
-        run: cargo test --locked --test repl_jobs -- --ignored --exact a_later_input_failure_keeps_its_source_inside_an_existing_program_job --nocapture
+        name: Exercise owned REPL proofs and provenance across native inputs
+        run: cargo test --locked --test repl_jobs -- --ignored --nocapture
 
   windows-resource-view:
     needs: changes
