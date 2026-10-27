@@ -489,6 +489,7 @@ fn clear_keeps_an_open_job_and_shell_launches_are_blocked_until_the_job_is_stopp
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "requires an installed WSL distribution with Bash")]
 fn bash_one_shot_preserves_raw_quotes_operators_cwd_bindings_and_following_commands() {
     let directory = workspace();
     fs::write(directory.path().join("source.txt"), "payload").unwrap();

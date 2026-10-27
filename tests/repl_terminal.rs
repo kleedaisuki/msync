@@ -173,6 +173,7 @@ fn shell_command_ctrl_c_returns_to_a_live_repl_instead_of_killing_its_parent() {
 }
 
 #[test]
+#[cfg_attr(windows, ignore = "requires an installed WSL distribution with Bash")]
 fn interactive_bash_entry_returns_without_changing_parent_cwd_or_bindings() {
     let directory = workspace();
     fs::write(
@@ -248,8 +249,8 @@ fn interactive_pwsh_enters_and_exits_with_isolated_profile_history_and_parent_bi
 fn command_completion_changes_the_submitted_buffer_not_just_a_visible_hint() {
     let directory = workspace();
     let mut repl = terminal(directory.path(), "never");
-    repl.send("/ba\t printf 'COMPLETED_%s\\n' BASH\r");
-    repl.until_followed_by("COMPLETED_BASH", "msync>");
+    repl.send("/bi\t\r");
+    repl.until_followed_by("no user bindings", "msync>");
     repl.exit();
 }
 
