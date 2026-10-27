@@ -70,3 +70,41 @@ jobs:
           exit $LASTEXITCODE
       - if: needs.changes.outputs.docs == 'true' || needs.changes.outputs.full == 'true'
         run: cargo test --locked --doc
+      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_linux_v4'))
+        name: Provision the ephemeral Linux resource-view gate
+        shell: bash
+        run: |
+          if ! command -v bwrap >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y bubblewrap
+          fi
+          if test -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --version
+      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_linux_v4'))
+        name: Exercise actual Linux process-resource views
+        run: cargo test --locked --test process_view_linux_v4 -- --ignored --skip view_child_fixture --nocapture
+
+  windows-resource-view:
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_windows_v4')
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Provision the pinned signed backend on this ephemeral runner
+        shell: pwsh
+        run: ./scripts/ci-install-sandboxie.ps1
+      - name: Exercise actual native Windows program-resource views
+        shell: pwsh
+        run: |
+          cargo test --locked --test process_view_windows_v4 -- --ignored --skip boxed_child_fixture --nocapture 2>&1 | Tee-Object -FilePath .temp/sandboxie-ci/journeys.log
+          exit $LASTEXITCODE
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-resource-view-diagnostics
+          path: .temp/sandboxie-ci/
+          if-no-files-found: ignore

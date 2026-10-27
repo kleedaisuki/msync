@@ -29,4 +29,6 @@ $transactions = Select-Changes @('src/transaction/filesystem.rs')
 Assert (-not $transactions.full -and $transactions.targets -contains 'transaction_filesystem_v4' -and $transactions.targets -contains 'transaction_store_v4') 'Filesystem changes must check the version store and real publisher'
 $backend = Select-Changes @('.github/workflows/windows-backend.yml', 'scripts/ci-install-sandboxie.ps1')
 Assert (-not $backend.rust -and -not $backend.full) 'Dependency installation is proven independently without restarting unrelated Rust suites'
-Write-Output 'CI selection: 10 discriminating cases passed'
+$execution = Select-Changes @('src/execution/mod.rs')
+Assert (-not $execution.full -and $execution.targets -contains 'execution_v4' -and $execution.targets -contains 'review_metadata_v4') 'Reference execution changes must check actual state and metadata without unrelated transport sweeps'
+Write-Output 'CI selection: 11 discriminating cases passed'

@@ -56,7 +56,12 @@ foreach ($path in $Paths) {
         }
         '^src/transaction/' {
             $rust = $true
-            Add-Targets @('transaction_store_v4', 'transaction_filesystem_v4', 'transaction_manager_v4', 'process_view_linux_v4', 'review_foundation_v4', 'execution_v4')
+            Add-Targets @('transaction_store_v4', 'transaction_filesystem_v4', 'transaction_manager_v4', 'process_view_linux_v4', 'process_view_windows_v4', 'review_foundation_v4', 'review_metadata_v4', 'execution_v4')
+            break
+        }
+        '^src/execution/' {
+            $rust = $true
+            Add-Targets @('execution_v4', 'transaction_manager_v4', 'review_metadata_v4')
             break
         }
         '^src/process/' {
@@ -64,7 +69,12 @@ foreach ($path in $Paths) {
             Add-Targets @('process_v4', 'process_view_linux_v4', 'process_view_windows_v4', 'review_foundation_v4', 'execution_v4')
             break
         }
-        '^src/(main|editor|repl|presentation|shell|highlight|suggest)\.rs$' {
+        '^src/main\.rs$' {
+            $rust = $true
+            Add-Targets @('cli', 'ux_031', 'repl_jobs', 'repl_terminal', 'review_ui_031', 'execution_v4', 'process_view_linux_v4', 'process_view_windows_v4')
+            break
+        }
+        '^src/(editor|repl|presentation|shell|highlight|suggest)\.rs$' {
             $rust = $true
             Add-Targets @('cli', 'ux_031', 'repl_jobs', 'repl_terminal', 'review_ui_031', 'execution_v4')
             break
