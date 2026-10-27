@@ -813,28 +813,6 @@ fn worker_control(descriptor: i32) -> io::Result<UnixStream> {
     Ok(unsafe { UnixStream::from_raw_fd(descriptor) })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn failed_capability_probes_do_not_poison_a_repaired_repl_environment() {
-        let cache = OnceLock::new();
-        let failed = cached_probe(&cache, || {
-            Err(ViewError::invalid(
-                Path::new("bwrap"),
-                "temporarily unavailable",
-            ))
-        });
-        assert!(failed.is_err());
-        assert!(cache.get().is_none());
-        let repaired = cached_probe(&cache, || Ok(PathBuf::from("/usr/bin/bwrap"))).unwrap();
-        assert_eq!(repaired, Path::new("/usr/bin/bwrap"));
-        let reused = cached_probe(&cache, || panic!("successful probes must be cached")).unwrap();
-        assert_eq!(reused, repaired);
-    }
-}
-
 fn base_command(executable: &Path) -> Command {
     let mut command = Command::new(executable);
     command.args([
@@ -1132,4 +1110,26 @@ fn writable_directories(path: &Path) -> Result<(), ViewError> {
         writable_directories(&entry.path())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_capability_probes_do_not_poison_a_repaired_repl_environment() {
+        let cache = OnceLock::new();
+        let failed = cached_probe(&cache, || {
+            Err(ViewError::invalid(
+                Path::new("bwrap"),
+                "temporarily unavailable",
+            ))
+        });
+        assert!(failed.is_err());
+        assert!(cache.get().is_none());
+        let repaired = cached_probe(&cache, || Ok(PathBuf::from("/usr/bin/bwrap"))).unwrap();
+        assert_eq!(repaired, Path::new("/usr/bin/bwrap"));
+        let reused = cached_probe(&cache, || panic!("successful probes must be cached")).unwrap();
+        assert_eq!(reused, repaired);
+    }
 }

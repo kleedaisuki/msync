@@ -489,6 +489,19 @@ FDs remain usable after the invocation's backing pathname is hidden in the child
 This representation change remains to be implemented and checked before lifting
 the initial disjoint-root restriction.
 
+Read enrollment and physical publication must also be separate domains. The
+initial manager republishes an entire enrolled root after a subtree change. That
+is adequate for the current isolated finite fixtures, but cannot simply be used
+for a cwd root containing its own backing workspace: renaming that root moves
+the artifacts on which later statements depend, and rewrites untouched siblings.
+Track minimal dirty subtree replacements separately from directory-metadata-only
+writes, with compensating receipts for both under the same logical guard. A new
+file's containing namespace must be enrolled or journaled too if full origin undo
+is to restore that directory's mtime. Do not silently exclude all `.temp` data,
+move the backing workspace outside the project, or weaken before-state tests to
+work around this ownership issue. Program-view exports likewise need an explicit
+delta/publication scope rather than assuming a full read view must be swapped.
+
 Before switching the default CLI frontend, retain decoded operand provenance and
 owned source identities through cross-submission macro expansion, not only call
 site byte spans. Compound-buffer tests alone are not a native terminal integration
