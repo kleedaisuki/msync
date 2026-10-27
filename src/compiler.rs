@@ -4,6 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::suggest::distance as edit_distance;
 use regex::Regex;
 use url::Url;
 
@@ -171,14 +172,20 @@ impl Compiler {
     pub fn bindings(&self) -> Vec<String> {
         self.spaces
             .iter()
-            .map(|(name, backend)| format!("{name} => {backend}"))
+            .map(|(name, backend)| {
+                let mut text = format!("{name} => ");
+                crate::syntax::write_operand(&mut text, &backend.to_string());
+                text
+            })
             .chain(self.aliases.iter().map(|(name, alias)| {
                 let prefix = alias
                     .backend
                     .as_ref()
                     .map(|backend| format!("{backend}::"))
                     .unwrap_or_default();
-                format!("{name} := {prefix}{}", alias.path)
+                let mut text = format!("{name} := ");
+                crate::syntax::write_operand(&mut text, &format!("{prefix}{}", alias.path));
+                text
             }))
             .collect()
     }
@@ -599,23 +606,6 @@ fn regex_span(value: &str, site: &OperandSource) -> Span {
     })
 }
 
-fn edit_distance(left: &str, right: &str) -> usize {
-    let right = right.chars().collect::<Vec<_>>();
-    let mut row = (0..=right.len()).collect::<Vec<_>>();
-    for (index, left) in left.chars().enumerate() {
-        let mut diagonal = row[0];
-        row[0] = index + 1;
-        for (column, right) in right.iter().enumerate() {
-            let old = row[column + 1];
-            row[column + 1] = (row[column] + 1)
-                .min(old + 1)
-                .min(diagonal + usize::from(left != *right));
-            diagonal = old;
-        }
-    }
-    row[right.len()]
-}
-
 fn validate_name(name: &str) -> Result<(), String> {
     if name.is_empty()
         || name == "."
@@ -645,7 +635,7 @@ fn take_selector(
     let pattern = path[start + 1..path.len() - 1].to_string();
     if !validated_patterns.contains(&pattern) {
         Regex::new(&format!("\\A(?:{pattern})\\z"))
-            .map_err(|error| format!("invalid selector regex: {error}"))?;
+            .map_err(|error| selector_error(&pattern, error))?;
         validated_patterns.insert(pattern.clone());
     }
     path.truncate(start);
@@ -653,6 +643,17 @@ fn take_selector(
         path.push('.');
     }
     Ok(Some(pattern))
+}
+
+fn selector_error(pattern: &str, error: regex::Error) -> String {
+    // Recover structured syntax kinds only on failure, rather than parsing the
+    // regex crate's multiline human diagnostic or paying for a second valid parse.
+    let detail = match regex_syntax::Parser::new().parse(pattern) {
+        Err(regex_syntax::Error::Parse(error)) => error.kind().to_string(),
+        Err(regex_syntax::Error::Translate(error)) => error.kind().to_string(),
+        _ => error.to_string(),
+    };
+    format!("invalid selector regex: {detail}")
 }
 
 impl fmt::Display for Backend {

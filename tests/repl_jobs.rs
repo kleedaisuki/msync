@@ -359,7 +359,10 @@ fn background_errors_keep_owned_source_and_repl_recovers() {
     ));
     let (status, errors) = repl.finish();
     assert!(status.success(), "{errors}");
-    assert!(errors.contains("error in <repl>"), "{errors}");
+    assert!(
+        errors.contains("error:") && errors.contains("<repl>:"),
+        "{errors}"
+    );
     assert!(
         errors.contains("wire::/ -> $pwd::pwd/output.bin"),
         "{errors}"

@@ -1204,6 +1204,9 @@ pub(crate) fn remote_command_builder(
     match backend {
         Backend::Wsl => {
             let mut command = Command::new("wsl");
+            // WSL launcher diagnostics otherwise mix UTF-16 into our UTF-8 text.
+            // This is per child, never a change to the user's WSL configuration.
+            command.env("WSL_UTF8", "1");
             command.args(["--exec", "sh", "-c", &invocation]);
             Ok(command)
         }
@@ -1330,7 +1333,7 @@ fn wsl_path_cancellable(
     };
     let path = absolute(path)?;
     let output = run_cancellable(
-        Command::new("wsl").args([
+        Command::new("wsl").env("WSL_UTF8", "1").args([
             OsStr::new("--exec"),
             OsStr::new("wslpath"),
             OsStr::new("-a"),

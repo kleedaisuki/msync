@@ -177,3 +177,53 @@ retain that cost rather than trading semantics or hiding unfavorable cases.
 Raw final outputs are `.temp/perf-v3/startup-windows-final.txt` and
 `.temp/perf-v3/startup-native-linux-final.txt`. All measured processes exited
 successfully and each timed window excluded builds and other agents' workloads.
+
+## v0.3.1: keep the editor off the ordinary CLI startup path
+
+Adding the native editor initially increased Windows process completion by about
+2–3 ms across unrelated commands. The first 30-sample paired check measured
+`--version` 8.945 -> 11.555 ms and `check` 9.703 -> 12.310 ms against the preserved
+`ca66d66` image. This was a measured regression, not inferred from binary size.
+The PE import comparison identified a newly eager `USER32.dll` dependency from
+the editor's clipboard support; `advapi32.dll` was also new, but was not blamed
+without a discriminating experiment.
+
+A same-source eager-versus-delayed 30-sample experiment isolated USER32 loading:
+
+| Journey | Eager v0.3.1 p50 ms | Delayed v0.3.1 p50 ms |
+| --- | ---: | ---: |
+| `--version` | 12.095 | 9.688 |
+| `--help` | 11.784 | 9.945 |
+| `check`, one operation | 12.120 | 9.803 |
+| `plan`, one operation | 13.509 | 11.632 |
+| `plan`, 100 shared-source operations | 27.187 | 25.012 |
+| REPL help then exit, piped | 11.956 | 9.693 |
+
+`build.rs` therefore uses the platform linker's `/DELAYLOAD:USER32.dll` and
+`delayimp.lib` for the **msync binary on Windows/MSVC only**. The PE normal-import
+table confirms USER32 is no longer eager. It does not add a custom DLL loader,
+fork the editor, impose these flags on library users, or change Linux linking.
+The SDK-supported mechanism resolves imports on use; the native editor/clipboard
+path retains its ordinary functionality. See Microsoft's
+[delay-load contract](https://learn.microsoft.com/en-us/cpp/build/reference/delayload-delay-load-import).
+
+The final paired `ca66d66`/v0.3.1 control retained desktop noise rather than
+claiming every command became faster:
+
+| Journey | v0.3.0 p50 ms | v0.3.1 p50 ms | v0.3.0 p95 ms | v0.3.1 p95 ms |
+| --- | ---: | ---: | ---: | ---: |
+| `--version` | 10.363 | 10.215 | 24.942 | 27.220 |
+| `--help` | 10.816 | 11.333 | 24.512 | 25.672 |
+| `check`, one operation | 10.902 | 11.009 | 26.190 | 25.561 |
+| `plan`, one operation | 11.351 | 12.652 | 28.704 | 25.865 |
+| `plan`, 100 shared-source operations | 25.293 | 25.439 | 41.263 | 40.242 |
+| REPL help then exit, piped | 9.470 | 9.934 | 25.305 | 24.668 |
+
+The systematic eager-GUI initialization penalty is removed. Remaining small
+differences and unfavorable samples are retained; these 30 samples do not prove
+tail-latency bounds or universal parity. This release adds a real editor rather
+than removing it to meet a process timer. Raw output is
+`.temp/v031-startup-windows.txt`, `.temp/v031-delay-load-probe.txt` and
+`.temp/v031-startup-final.txt`; immutable control images are managed under
+`target/perf-baseline/`. The final source/loader configuration was exercised by
+the full normal suites and actual native terminal journeys after adoption.

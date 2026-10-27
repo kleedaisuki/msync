@@ -231,3 +231,155 @@ Final formatter safety also rejects both `fmt --dry-run` and `fmt -n` before
 reading/writing a script, with guidance to use `--check` or `--stdout`. The real
 CLI journey asserts the unformatted source stays byte-identical; a global
 preview flag is never silently ignored while modifying the script.
+
+## v0.3.1 independent UX and native-terminal acceptance
+
+The dedicated acceptance targets are:
+
+```sh
+cargo test --locked --test ux_031 --test repl_terminal -- --test-threads=1
+cargo clippy --locked --test ux_031 --test repl_terminal -- -D warnings
+```
+
+On 2026-10-27, Windows passed **15 CLI/REPL journeys and seven actual ConPTY
+journeys** (the terminal target additionally has one isolated launcher-fixture
+test). Actual WSL/Linux passed **15 CLI/REPL journeys and eight controlling-PTY
+journeys**. Linux fixtures used a private mount namespace with a native tmpfs at
+repository `.temp`, including the legal POSIX control-character filename probe;
+ordinary DrvFs cannot represent every such name. Windows PowerShell tests use the
+installed `pwsh`; Linux does not require installing PowerShell. Both targets use
+bounded subprocess lifetimes and project-local fixtures.
+
+`tests/ux_031.rs` exercises all named script commands (`check`, `plan`, `compile`,
+`run`, `fmt`) with missing files, and distinguishes directory input, invalid
+UTF-8 and read-only formatting. It requires an affected path, native cause where
+one exists, and separate actionable help. A nonadjacent alias declaration tests
+that an absent DSL source shows the original token **and its resolved endpoint**,
+not just a circular suggestion to rerun the equally failing plan command. REPL
+file/cwd failures recover into help; unknown commands and argument errors respect
+forced color. Pipeline formatting remains byte-exact canonical DSL even under
+`--color always`. Empty bindings, `/clear`, `NO_COLOR`, `TERM=dumb`, control-safe
+filenames/cwd, shell quoting/operators, missing shell, nonzero shell exit, and
+continued input after shell commands all have real subprocess coverage. An
+actually accepted live TCP flow survives `/clear` and prevents shell mutations
+until `/stop`.
+
+`tests/repl_terminal.rs` does not approximate an editor with piped stdin. Unix
+creates a new controlling session on `openpty`; Windows creates a ConPTY and
+launches the application with its pseudoconsole attribute. Cargo's redirected
+standard handles otherwise override the attached console, so the Windows host
+clears them only in an isolated one-test helper process, not the parallel test
+runner. Its kill-on-close job owns the application and descendants; output is
+drained while closing the pseudoconsole. Both adapters retain actual output
+bytes and foreground styles rather than counting a colored prompt as lexical
+highlighting.
+
+The physical terminal journeys establish:
+
+- Before Enter, `$pwd` and `:=` already have distinct non-default foreground
+  styles. Ctrl-C discards that declaration without committing a binding.
+- Left/backspace removes a complete wide Unicode character from an edited path;
+  the submitted alias then copies the expected real file, proving correct input
+  bytes rather than only a pretty redraw.
+- Arrow history survives `/clear`; the alias still works afterward. Windows
+  ConPTY may serialize viewport clearing as HOME plus line erasure over all 30
+  rows, rather than CSI `2J`. The test recognizes that real full-viewport update
+  and rejects CSI `3J` scrollback erasure.
+- `--color never` retains editing and Ctrl-C behavior. Tab completion changes
+  the submitted buffer, demonstrated by an actual completed shell command whose
+  output marker is not literally present in its input.
+- Interactive Bash enters and returns with parent cwd/bindings intact. Windows
+  also enters an actual no-argument PowerShell prompt and returns using `exit`.
+  Windows PSReadLine's default Windows keymap does not bind Ctrl-D to EOF; that
+  external behavior is not presented as an msync failure or silently remapped.
+- A running shell command emits a marker and is then interrupted with real
+  terminal Ctrl-C; msync remains usable. In a separate journey, Ctrl-C joins an
+  actually open background TCP flow only after its entire prefix is visible in
+  an opened unpublished stage. The peer observes physical EOF, the old target
+  remains unchanged, no stage survives, and the REPL still accepts `/?`.
+
+Shell test HOME, USERPROFILE, APPDATA, LOCALAPPDATA and HISTFILE are redirected
+per child to the owned fixture; WSLENV forwards the Linux HOME/history paths.
+A noninteractive local probe confirmed that both PowerShell `$PROFILE` and
+PSReadLine's HistorySavePath follow that redirection. Tests do not modify user
+profiles/history or the clipboard. Bash's first interactive command additionally
+sets HISTFILE to `/dev/null` before exit. The editor itself uses memory history.
+
+### Genuine Unix typeahead regression found and fixed
+
+Two complete physical statements queued in one PTY write lost the second
+statement with the initial minimal Rustyline configuration. This was a production
+input-loss regression, not solved merely by pacing the test at prompts. Local
+Rustyline 19 source established the mechanism: without `buffer-redux`, each
+`PosixRawReader` owns a fresh 1024-byte standard `BufReader`, and `unbuffer()`
+returns `None`; bytes read ahead past Enter are discarded. Raw-mode transitions
+use `TCSADRAIN`, not `TCSAFLUSH`.
+
+The public `buffer-redux` feature retains that unread buffer in the persistent
+Editor between readline calls. The exact real-PTY regression first failed against
+the preserved pre-feature binary (only `first.txt` was published), then passed
+against the feature-enabled application with both files byte-correct. The
+regression remains in the normal Unix terminal target. A separate actual
+bracketed multiline paste waits for explicit Enter, then preserves each physical
+submission, covering the application's distinct decoded-paste queue.
+
+Ordinary interactive tests also wait for a complete fresh empty prompt before
+sending the next statement; on Unix the synchronized redraw boundary is observed
+instead of mistaking an intermediate prompt prefix for readiness. Shell output
+markers and a returned prompt may share one OS read, so those conditions are
+matched in order without discarding an already received prompt. These harness
+corrections remain separate from the retained typeahead production regression.
+
+### Final v0.3.1 release audit
+
+The complete default-parallel Windows suite passed **253 tests**; the native
+WSL/Linux suite passed **249 tests**, including the independent deleted-cwd
+recovery case. Both passed strict all-target Clippy and release compilation;
+formatting checks passed. The final Windows/MSVC loader change was followed by
+another complete Windows run and actual native terminal acceptance. Linux was
+rebuilt and rerun after the build script was introduced; no MSVC flags apply there.
+
+The terminal target now additionally exercises the human plan and resource views:
+an actual terminal `/plan` separates `from`, `to`, types and prerequisites without
+creating the destination, while `/limits` explains KiB/MiB and the payload-versus-
+RSS distinction. This makes **eight real Windows ConPTY journeys plus its isolated
+host helper**, and **nine real Unix PTY journeys**, distinct from the 15 process-
+level UX cases on each platform. These are included in, not added to, the full
+normal-suite totals. Host-dependent/timing ignores are not counted as passed.
+
+All six isolated authenticated SSH journeys passed together again (83.84 seconds),
+as did live WSL metadata tests, WSL copy round-trip and a real WSL-to-native TCP
+flow. Existing SSH configuration remains unchanged. Native POSIX execute-mode and
+unwritable-target regressions passed separately as UID/GID 1000 with cleared
+capability bounding set. The endpoint-context/encoding edits do not bypass the
+existing execution/preflight checks or change file/stream semantics.
+
+The verified final release is installed at `D:\SystemScripts\msync.exe`, reports
+`msync 0.3.1` and is byte-identical to `target/release/msync.exe`. SHA-256:
+
+```text
+22CDB4A0CEAFCE1F12936E052E6A47725EFC72146F10C3D364D3B3912E331777
+```
+
+The same **15 UX + nine terminal-target tests** were then run against that installed
+release rather than Cargo's debug binary by setting the test-only
+`MSYNC_TEST_EXE=D:\SystemScripts\msync.exe`. All passed, including before-Enter
+syntax colors, native editing/history/clear, normal Bash/PowerShell return,
+child Ctrl-C, and open-flow cancellation with physical EOF/stage cleanup. Tests
+do not introduce a corresponding application environment override. The previous
+0.3.0 Windows/Linux images remain under `target/perf-baseline/msync-ca66d66*`.
+
+Requirement-to-evidence mapping:
+
+| Requirement | Concrete evidence |
+| --- | --- |
+| Readability across information surfaces | Product inventory, typed issue fields, selective help/status colors, terminal plan/limits views, visible empty states and unknown-name suggestions |
+| File-not-found and other repairs | All five CLI file commands; REPL file/cd recovery; distinct directory, permission/read-only and UTF-8 advice; an alias definition outside visible context still yields the expanded missing source endpoint |
+| Real lexical REPL highlighting | Actual distinct namespace/operator SGR before Enter; incomplete edits tolerated; typed/pasted bytes retain their semantics and terminal width |
+| Convenient `/clear` | Native viewport observation, no scrollback erase, bindings/history/job preservation, zero-escape unsupported fallback |
+| `/bash` and `/pwsh` | Real command and interactive journeys, raw quotes/operators, inherited terminal, explicit return, parent state retained, no stdin stealing and active-plan guard |
+| Recovery and compatibility | Ctrl-C/input EOF lifetimes, real deleted-cwd recovery, preserved Unix typeahead and multiline paste, unchanged plain markers/format/JSONL payloads |
+| v0.3.1 delivery | Manifest/lock version, both release builds, installed version/hash and the installed-release process/terminal suites |
+
+Reusable setup, interpretation and findings are in the repository. Disposable raw
+gate/installed logs use `.temp/v031-*`; removing them does not remove this record.

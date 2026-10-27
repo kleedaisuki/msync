@@ -165,3 +165,103 @@ One opt-in local JSONL telemetry session links parsing, compilation, preparation
 Use the [validation record](validation.md) for current executed suites and platform boundaries rather than copying changing test totals here. The retained tests include source/formatter properties, random graph final-state equivalence and fixed-point idempotence, real bounded scheduling/EOF/cancellation, local/HTTP/SSH transfers, Windows pipe/TCP behavior and telemetry parent graphs. Environment-dependent WSL/SSH or Unix tests must be run in their corresponding environment; another platform's result is not substituted as evidence.
 
 No deletion, reconciliation database, implicit shell evaluation, watch daemon, background service installation, or bidirectional protocol is introduced. The architecture retains the useful compiler separation described in the [Rust compiler overview](https://rustc-dev-guide.rust-lang.org/overview.html), while the [Unison specification](https://www.cis.upenn.edu/~bcpierce/papers/unisonspec.pdf) helps distinguish a filesystem-state contract from implementation details without claiming Unison-style reconciliation. WSL/SSH adapters used by asynchronous socket/IPC relays require Python 3 for the fully type-annotated, nonblocking remote helper. The specialized ordinary remote filesystem-copy path keeps its POSIX/GNU-helper requirements without a Python dependency; both implementations still satisfy the semantic byte-flow contract.
+
+## v0.3.1 interactive editor and shell ownership
+
+CLI presentation is separate from execution. `src/presentation.rs` owns typed
+human issues (action, affected path/cwd, native cause and repair), safe fields,
+terminal-only expanded plan/resource views and severity accents. Already-rendered
+source reports are explicitly distinct from plain messages, so diagnostics do not
+receive duplicate error headings. Piped `check` keeps its `ok` marker, plans keep
+the established library display, formatter stdout and JSONL stay exact payloads.
+The shared `src/suggest.rs` spelling distance serves compiler names, flags and
+REPL commands; it never silently rewrites input.
+
+The public Rustyline `buffer-redux` feature is required, not merely a speed
+option: it preserves unread Unix terminal bytes across successive readline calls.
+Without it, the minimal standard BufReader loses a second statement read ahead
+after Enter. The retained real-PTY before/after regression is separate from the
+physical-line queue used after decoded bracketed multiline paste.
+
+Missing-source preparation failures attach the already-resolved endpoint while
+retaining the precise original alias span. Native I/O failures retain structured
+`io::ErrorKind` context until presentation; directory inputs, missing files,
+invalid UTF-8 and permissions therefore receive different repair advice. Regex
+syntax kinds are queried only after validation fails, avoiding English-message
+parsing or a second parse on the successful path. Bindings reuse the canonical
+operand writer for readable quotes/escapes. Source-context capture errors remain
+inside the per-submission recovery boundary, including after a child removes cwd.
+
+WSL child commands explicitly request `WSL_UTF8=1`, so launcher diagnostics do not
+mix UTF-16 into UTF-8 Bash/transport output. This is per invocation, never a global
+environment or WSL configuration edit; the upstream
+[WSL diagnostic collector](https://github.com/microsoft/WSL/blob/master/diagnostics/collect-wsl-logs.ps1)
+uses the same encoding contract. A local process probe retained the real native
+Chinese warning correctly and observed no NUL bytes.
+
+`src/repl.rs` owns submissions, bindings and the active background plan separately
+from `src/editor.rs`, which owns the input device, editor and memory history.
+Rustyline 19 supplies native Windows/Unix editing, Unicode cursor movement,
+history and completion hooks. History is bounded to 1,000 in-memory entries;
+leading-space entries are excluded and no history file or home-directory
+discovery is enabled. Completion uses static command/namespace tables, with no
+filesystem or network request on a keypress. Accepted multiline paste is queued
+as physical input lines, preserving the existing one-line/submission contract;
+`/load` remains the explicit multiline declaration transaction.
+
+Enhanced editing requires both stdin and stdout to be terminals and a supported
+terminal mode. It is independent of color: `--color never` retains editing,
+history and Tab completion but disables completable ghost suffixes, whose plain
+text could otherwise be confused with already-entered input. Pipes bypass the
+editor and do not acquire prompts or cursor-control output. `TERM=dumb` uses
+basic input. Unsupported `/clear` is an explicit plain notice even when colors
+were forced. Native `/clear` changes only the visible screen, never compiler
+bindings or editor history; Windows erases the current visible window rather
+than Rustyline's whole console buffer, preserving scrollback.
+
+`src/highlight.rs` is a display-only scanner shared by editing and diagnostics.
+It retains complete, nonoverlapping UTF-8 spans even for incomplete edits, colors
+namespace qualifiers, operators, strings, selectors, comments and commands, and
+does not accept/reject or execute a program. Shell payloads remain neutral rather
+than pretending to be DSL syntax. An operator immediately after a slash-prefixed
+source still selects the DSL (`/help -> output`); later operators inside a shell
+command remain shell text (`/bash printf '%s' 'a -> b'`). Known no-argument REPL
+commands reject unexpected text before changing state.
+
+Diagnostic escaping and editor geometry are deliberately different boundaries.
+The shared highlighter makes raw terminal controls visible. The editor instead
+matches Rustyline's selected grapheme-width model when blanking invalid controls,
+then rejects them before execution with a noncompletable notice. Unix paste
+already strips ESC sequences upstream; quoted-control insertion keys are disabled
+with guidance to use the DSL's quoted escapes. Windows Ctrl-V filters unsupported
+controls before they reach Rustyline's buffer, whose position calculation assumes
+no embedded ANSI sequences. Normal Unicode paste is retained; CRLF is normalized
+to LF like the upstream Unix paste path. Raw Windows clipboard tabs are rejected
+instead of silently expanding or rewriting quoted filenames. These constraints
+avoid changing input width with multi-column diagnostic escape strings.
+
+`src/shell.rs` launches explicit `/bash` and `/pwsh` children. Windows Bash means
+WSL Bash; Unix Bash is native. No argument enters an interactive child and explains
+how to return with `exit`. One-shot arguments are passed as one `-c`/`-Command`
+argument, not reparsed as DSL or stripped of their quotes. Piped one-shot commands
+receive null stdin so they cannot consume the remaining REPL input. PowerShell
+one-shot commands use `-NoProfile -NonInteractive`; interactive entry preserves
+the user's normal profile. Child directory/environment changes do not mutate
+the parent REPL's cwd or bindings. External shell entry is blocked while a plan
+is active, preserving the scheduler's single-session mutation boundary.
+
+Terminal interrupts are scoped to the child wait. On Unix, the waiting parent
+temporarily ignores SIGINT, the child restores SIGINT's default disposition
+before exec, and the exact parent disposition is restored afterward. On Windows,
+a temporary parent console callback handles Ctrl-C/Break without setting the
+inheritable ignore-Ctrl-C attribute. Children retain normal interruption, and the
+parent REPL remains usable even when no Tokio signal handler had previously been
+initialized. Shell launch/status failures carry structured program/cause/help
+fields rather than embedding a second preformatted error message in a string.
+
+Relevant primary contracts are the [Rustyline highlighter interface](https://docs.rs/rustyline/latest/rustyline/highlight/trait.Highlighter.html),
+its native terminal implementation (19.0.0), [POSIX signal inheritance](https://man7.org/linux/man-pages/man7/signal.7.html),
+and [Windows console control handlers](https://learn.microsoft.com/en-us/windows/console/setconsolectrlhandler).
+The real terminal journeys use Windows ConPTY and Linux controlling pseudoterminals
+in `tests/ux_031.rs`, observing colored tokens before Enter, actual edited output,
+history, clear-state preservation and return from interrupted child shells.

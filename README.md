@@ -206,6 +206,9 @@ msync> /quit
 | Command | Action |
 | --- | --- |
 | `/help`, `/?` | Highlighted command help |
+| `/clear` | Clear the terminal viewport; keep bindings, in-memory history and jobs |
+| `/bash [COMMAND]` | Enter Bash, or run one raw shell command and return; Windows uses WSL Bash |
+| `/pwsh [COMMAND]` | Enter PowerShell 7, or run one raw PowerShell command and return |
 | `/pwd`, `/cd PATH` | Inspect/change the working directory |
 | `/bindings`, `/reset` | Inspect/clear user bindings |
 | `/dry-run [on\|off]` | Inspect/change offline preview mode |
@@ -218,16 +221,46 @@ msync> /quit
 
 Each input line is a submission; `/load` prepares a multiline script as one declaration transaction. Bindings commit only after preparation succeeds; execution failure cannot roll completed writes back. A streaming plan runs in the background, so `/help`, `/jobs` and other read-only commands remain responsive. One active plan per session preserves a single global resource budget and prevents undeclared cross-submission races: new copy plans, `/cd` and `/fmt` require `/wait` or `/stop` first. Pure declarations can still update future binding snapshots. `/quit` and interactive EOF cancel and join the active plan; piped input EOF waits for its remaining flows. Completed errors retain their original source for rich diagnostics. Piped REPL input suppresses prompts, and colon aliases remain accepted. No unmanaged daemon is created.
 
+In a supported interactive terminal, v0.3.1 uses a native line editor: namespaces,
+operators, strings, selectors and comments are highlighted **while typing**, even
+before a statement is complete. Tab completes command names and built-in namespace
+items; Up/Down recall this session's history. Ctrl-C discards an unfinished edit
+and stops an active plan without exiting; Ctrl-D exits safely. History stays in
+memory, never an automatic plaintext history file. Leading-space inputs are not
+added to history. `--color never` disables colors, not editing, history or Tab.
+Unsupported/dumb terminals use plain basic input instead of pretending to support
+cursor editing. Piped input retains its line-oriented automation behavior.
+
+`/clear` is not `/reset`: it does not erase bindings, history, jobs or scrollback.
+If viewport clearing is unavailable, it explains that without printing terminal
+escape commands into a pipe. Shell entry without a command requires a terminal;
+one-shot commands work with piped REPL input and cannot consume subsequent DSL
+lines. The command tail is passed unchanged to Bash `-c` or PowerShell `-Command`,
+not parsed as DSL. For example, `/bash printf '%s' 'a -> b'` is a shell command.
+Child `cd`/environment changes do not alter msync's cwd or DSL bindings. A shell
+can still modify real files, so `/bash` and `/pwsh`, like `/cd` and `/fmt`, require
+`/wait` or `/stop` while a plan is active. Interactive children retain their normal
+profiles/history; PowerShell one-shot commands use `-NoProfile -NonInteractive`.
+
 ## Diagnostics and telemetry
 
 Diagnostics retain operand/operator spans and decoded-to-original byte mappings, so an escaped quoted regex or unknown endpoint highlights the actual source token rather than a whole line. Structured reports include primary spans, secondary labels and constructive help, including likely endpoint spellings and explicit slash/path repairs. Tabs, CJK widths and combining characters align safely; terminal control characters are escaped. Help, REPL help, diagnostics, prompts and status use actual ANSI styling on supported terminals, with Windows console adaptation through `anstream`. Auto mode respects pipes, `TERM=dumb` and `NO_COLOR`; explicit `--color always` or `--color never` wins.
+
+Missing scripts and filesystem failures separate the attempted action, affected
+path, relative-path cwd, original OS cause and a useful repair. Data-source errors
+also show the expanded endpoint, not only its alias token. Rich source diagnostics
+use one error heading, a named file/line location and grouped source rows with
+distinct primary/secondary markers. Interactive plans separate `from`, `to`,
+endpoint types and dependencies; piped plans keep their established plain format.
+Formatting `--stdout` and telemetry JSONL remain exact payloads, not decorated UI.
+See [the v0.3.1 interaction design](docs/design/cli-ux-v0.3.1.md).
 
 ```sh
 msync run script.msync --trace .temp/run.jsonl
 msync check script.msync --trace -
 ```
 
-Create the trace parent directory first. Telemetry is **off by default, local-only, and never uploaded**. One session trace connects parsing, compilation, preparation, optimization, scheduling and copy/stream tasks. Explicit async context propagation preserves parents across Tokio tasks and blocking workers without holding thread-local guards across `.await`. Records contain IDs, durations, structural outcomes and numeric metrics, not source, paths, environment values or error bodies. Versioned JSONL is not an OTLP wire exporter; export failures are visible and spans flush before CLI exit. See [the telemetry contract](docs/design/telemetry.md).
+Create the trace parent directory first. Telemetry is **off by default, local-only, and never uploaded**. One session trace connects parsing, compilation, preparation, optimization, scheduling and copy/stream tasks. Explicit async context propagation preserves parents across Tokio tasks and blocking workers without holding thread-local guards across `.await`. Records retain useful paths, backend/phase choices, typed causes, IDs, durations and progress; they do not automatically capture file payloads or unrelated environment/credential snapshots. Versioned JSONL is not an OTLP wire exporter; export failures are visible and spans flush before CLI exit. See [the telemetry contract](docs/design/telemetry.md).
 
 ## Safety, platforms and library use
 

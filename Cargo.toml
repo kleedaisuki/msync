@@ -1,16 +1,18 @@
 [package]
 name = "msync"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 description = "A compiled file synchronization DSL with an interactive shell"
 license = "GPL-3.0-only"
 
 [dependencies]
 regex = "1.12"
+regex-syntax = "0.8"
 url = "2.5"
 same-file = "1.0"
 unicode-width = "0.2"
 anstream = "1.0"
+rustyline = { version = "19", default-features = false, features = ["custom-bindings", "buffer-redux"] }
 tokio = { version = "1.54", features = ["fs", "io-util", "net", "time", "sync", "rt-multi-thread", "macros", "signal", "process"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 
@@ -18,7 +20,8 @@ tokio-util = { version = "0.7", features = ["rt"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Wdk_Storage_FileSystem", "Win32_Networking_WinSock", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_Security"] }
+clipboard-win = "5.4"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Win32_System_Console", "Wdk_Storage_FileSystem", "Win32_Networking_WinSock", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_Security"] }
 socket2 = "0.6"
 
 [dev-dependencies]

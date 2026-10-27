@@ -1,6 +1,11 @@
+mod editor;
+mod presentation;
+mod repl;
+mod shell;
+
 use std::env;
 use std::fs;
-use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 use std::thread::{self, JoinHandle};
@@ -9,6 +14,7 @@ use msync::compiler::{CompileContext, Compiler};
 use msync::plan::{FileClass, Plan};
 use msync::scheduler::{self, ResourceLimits};
 use msync::syntax::{self, Report, Script, StatementKind};
+use presentation::{CliError, CliResult, IoAction, Issue};
 use tokio_util::sync::CancellationToken;
 
 const HELP: &str = "msync — a compiled file synchronization DSL
@@ -34,6 +40,12 @@ OPTIONS
   -h, --help          Show this help
   -V, --version       Show version
 
+EXAMPLES
+  msync check sync.msync          Check syntax and bindings before copying
+  msync plan sync.msync           Inspect paths, types and optimized dependencies
+  msync run sync.msync --dry-run  Preview without transfers or remote probes
+  msync fmt sync.msync --check    Check script formatting without rewriting
+
 REPL: /help or /? for commands. No arguments starts the REPL.
 Paths containing whitespace or '#' may be double quoted.
 Use $pwd::pwd/file for working-directory paths; $file::this and $file::parent identify the source script.
@@ -42,7 +54,10 @@ Pipes and sockets end independently; Ctrl-C cancels active streams.
 
 const REPL_HELP: &str = "REPL commands
   /help, /?                Show this help
-  /quit, /exit              Exit (or Ctrl-D / Ctrl-Z + Enter)
+  /quit, /exit              Exit (or Ctrl-D in the interactive editor)
+  /clear                   Clear the viewport; keep bindings, history and jobs
+  /bash [COMMAND]          Open Bash, or run a command and return
+  /pwsh [COMMAND]          Open PowerShell, or run a command and return
   /pwd                     Show working directory
   /cd PATH                 Change working directory
   /bindings                Show current endpoint and path bindings
@@ -58,6 +73,9 @@ const REPL_HELP: &str = "REPL commands
   /stop                    Cancel and join the active plan
 Enter DSL statements directly; bindings persist across submissions.
 Stream plans run in the background; /wait or /stop before another copy plan.
+In supported terminals, Tab completes commands/namespaces and Up/Down browse history.
+Ctrl-C clears the edit and stops an active plan; Ctrl-D exits safely.
+Shells share the current directory, not parent bindings or later directory changes.
 ";
 
 #[derive(Clone, Copy, Default)]
@@ -76,7 +94,7 @@ impl Color {
             Self::Auto => {
                 io::stderr().is_terminal()
                     && env::var_os("NO_COLOR").is_none()
-                    && env::var("TERM").as_deref() != Ok("dumb")
+                    && !editor::basic_terminal()
             }
         }
     }
@@ -88,10 +106,29 @@ impl Color {
             Self::Auto => {
                 io::stdout().is_terminal()
                     && env::var_os("NO_COLOR").is_none()
-                    && env::var("TERM").as_deref() != Ok("dumb")
+                    && !editor::basic_terminal()
             }
         }
     }
+}
+
+fn requested_color(args: &[String]) -> Color {
+    let mut color = Color::Auto;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            break;
+        }
+        if arg != "--color" {
+            continue;
+        }
+        color = match args.next().map(String::as_str) {
+            Some("always") => Color::Always,
+            Some("never") => Color::Never,
+            _ => Color::Auto,
+        };
+    }
+    color
 }
 
 #[derive(Default)]
@@ -107,9 +144,8 @@ struct Args {
     limits: ResourceLimits,
 }
 
-fn arguments() -> Result<Args, String> {
+fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut options = Args::default();
-    let mut args = env::args().skip(1);
     let mut positional = false;
     while let Some(arg) = args.next() {
         if positional {
@@ -161,7 +197,28 @@ fn arguments() -> Result<Args, String> {
                 options.trace = Some(args.next().ok_or("--trace requires a filename or '-'")?);
             }
             value if value.starts_with('-') && value != "-" => {
-                return Err(format!("unknown option '{value}'; try --help"));
+                let suggestion = msync::suggest::closest(
+                    value,
+                    [
+                        "--help",
+                        "--version",
+                        "--dry-run",
+                        "--jobs",
+                        "--max-streams",
+                        "--buffer-size",
+                        "--memory-limit",
+                        "--check",
+                        "--stdout",
+                        "--write",
+                        "--color",
+                        "--trace",
+                    ],
+                )
+                .map_or_else(
+                    || "try --help".to_owned(),
+                    |name| format!("did you mean '{name}'?"),
+                );
+                return Err(format!("unknown option '{value}'; {suggestion}"));
             }
             _ => add_positional(&mut options, arg)?,
         }
@@ -203,21 +260,30 @@ fn add_positional(options: &mut Args, arg: String) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    let result = arguments().and_then(run);
+    let args: Vec<_> = env::args().skip(1).collect();
+    let color = requested_color(&args);
+    let result = arguments(args.into_iter())
+        .map_err(CliError::argument)
+        .and_then(run);
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             if !message.is_empty() {
-                print_error(&message);
+                print_error(&message, color);
             }
             ExitCode::FAILURE
         }
     }
 }
 
-fn run(options: Args) -> Result<(), String> {
+fn run(options: Args) -> CliResult {
     if let Some(path) = &options.trace {
-        msync::telemetry::init(path)?;
+        msync::telemetry::init(path).map_err(|cause| {
+            Issue::new("cannot initialize telemetry")
+            .field("path", path)
+            .field("cause", cause)
+            .help("Choose a writable trace file or use --trace - to write JSONL to standard error.")
+        })?;
     }
     let mut trace = msync::telemetry::span("session");
     let result = dispatch(&options);
@@ -225,58 +291,112 @@ fn run(options: Args) -> Result<(), String> {
         trace.error();
     }
     drop(trace);
-    let flushed = msync::telemetry::flush();
+    let flushed = msync::telemetry::flush().map_err(|cause| CliError::from(Issue::new("cannot finish telemetry export")
+        .field("path", options.trace.as_deref().unwrap_or("active trace sink"))
+        .field("cause", cause)
+        .help("Check the trace destination and available disk space; completed file transfers are not rolled back.")));
     match (result, flushed) {
-        (Err(error), Err(export_error)) => Err(format!("{error}\nwarning: {export_error}")),
+        (Err(error), Err(export_error)) => Err(CliError::Presented(format!(
+            "{}\n\n{}",
+            error.render(options.color),
+            export_error.render(options.color)
+        ))),
         (Err(error), _) => Err(error),
         (Ok(()), outcome) => outcome,
     }
 }
 
-fn dispatch(options: &Args) -> Result<(), String> {
+fn dispatch(options: &Args) -> CliResult {
     match options.command.as_str() {
         "help" => print_help(HELP, options.color),
         "version" => print_text(concat!("msync ", env!("CARGO_PKG_VERSION"), "\n")),
-        "repl" if options.file.is_none() => repl(options),
+        "repl" if options.file.is_none() => repl::run(options),
         "repl" => Err("repl does not take a file; use /load inside the REPL".into()),
         _ => run_file(options),
     }
 }
 
-fn print_text(text: &str) -> Result<(), String> {
+fn print_text(text: &str) -> CliResult {
     anstream::AutoStream::new(io::stdout().lock(), anstream::ColorChoice::Always)
         .write_all(text.as_bytes())
-        .map_err(|error| error.to_string())
+        .map_err(|error| format!("cannot write output: {error}").into())
 }
 
-fn print_error(message: &str) {
+fn print_error(message: &CliError, color: Color) {
     let _ = writeln!(
         anstream::AutoStream::new(io::stderr().lock(), anstream::ColorChoice::Always),
-        "{message}"
+        "{}",
+        message.render(color)
     );
 }
 
-fn print_help(help: &str, color: Color) -> Result<(), String> {
+fn print_help(help: &str, color: Color) -> CliResult {
     if !color.stdout() {
         return print_text(help);
     }
     let mut output = String::with_capacity(help.len() + 256);
-    for line in help.lines() {
-        if line.starts_with("  ") {
+    for (index, line) in help.lines().enumerate() {
+        if index == 0 {
+            output.push_str(&presentation::paint(line, "1", true));
+            output.push('\n');
+        } else if line.starts_with("  ") {
             let content = line.trim_start();
             let end = content.find("  ").unwrap_or(content.len());
             output.push_str(&format!(
                 "  \x1b[1;36m{}\x1b[0m{}\n",
-                &content[..end],
-                &content[end..]
+                presentation::escape(&content[..end]),
+                presentation::escape(&content[end..])
             ));
+        } else if !line.is_empty() && line.chars().all(|c| c.is_uppercase() || c.is_whitespace()) {
+            output.push_str(&format!("\x1b[1m{line}\x1b[0m\n"));
         } else if !line.is_empty() {
-            output.push_str(&format!("\x1b[1;33m{line}\x1b[0m\n"));
+            output.push_str(&msync::highlight::highlight(
+                &presentation::escape(line),
+                true,
+            ));
+            output.push('\n');
         } else {
             output.push('\n');
         }
     }
     print_text(&output)
+}
+
+fn print_status(text: &str, color: Color) -> CliResult {
+    print_text(&format!(
+        "{}\n",
+        presentation::human(text.trim_end(), color.stdout())
+    ))
+}
+
+fn print_plan(plan: &Plan, color: Color) -> CliResult {
+    if io::stdout().is_terminal() {
+        return print_text(&presentation::plan(plan, color.stdout()));
+    }
+    if !color.stdout() {
+        return print_text(&plan.to_string());
+    }
+    for line in plan.to_string().lines() {
+        print_text(&msync::highlight::highlight(
+            &presentation::escape(line),
+            true,
+        ))?;
+        print_text("\n")?;
+    }
+    Ok(())
+}
+
+fn print_limits(limits: &ResourceLimits, color: Color) -> CliResult {
+    if io::stdout().is_terminal() {
+        return print_text(&presentation::limits(limits, color.stdout()));
+    }
+    print_status(
+        &format!(
+            "limits: jobs={}, max-streams={}, buffer-size={} bytes, memory-limit={} bytes",
+            limits.jobs, limits.max_streams, limits.buffer_bytes, limits.memory_bytes
+        ),
+        color,
+    )
 }
 
 fn positive(value: &str) -> Result<usize, String> {
@@ -308,7 +428,7 @@ fn byte_size(value: &str) -> Result<usize, String> {
         .ok_or_else(|| "byte budget is too large".into())
 }
 
-fn read_source(file: &str) -> Result<String, String> {
+fn read_source(file: &str) -> CliResult<String> {
     let mut trace = msync::telemetry::span("read");
     let result = read_source_inner(file);
     trace.finish_result(&result);
@@ -318,14 +438,15 @@ fn read_source(file: &str) -> Result<String, String> {
     result
 }
 
-fn read_source_inner(file: &str) -> Result<String, String> {
+fn read_source_inner(file: &str) -> CliResult<String> {
     if file != "-" {
-        return fs::read_to_string(file).map_err(|error| format!("{file}: {error}"));
+        return fs::read_to_string(file)
+            .map_err(|error| CliError::io(IoAction::ReadScript, Some(Path::new(file)), error));
     }
     let mut source = String::new();
     io::stdin()
         .read_to_string(&mut source)
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| CliError::io(IoAction::ReadInput, None, error))?;
     Ok(source)
 }
 
@@ -354,18 +475,18 @@ impl<'a> SourceUnit<'a> {
             trace.attribute_lazy("source.file", || file.to_string_lossy().into_owned());
         }
     }
-    fn file(text: &'a str, name: &'a str) -> Result<Self, String> {
+    fn file(text: &'a str, name: &'a str) -> CliResult<Self> {
         let file = (name != "-").then(|| Path::new(name));
         Self::new(text, name, file)
     }
 
-    fn repl(text: &'a str) -> Result<Self, String> {
+    fn repl(text: &'a str) -> CliResult<Self> {
         Self::new(text, "<repl>", None)
     }
 
-    fn new(text: &'a str, name: &'a str, file: Option<&Path>) -> Result<Self, String> {
+    fn new(text: &'a str, name: &'a str, file: Option<&Path>) -> CliResult<Self> {
         let context = CompileContext::capture(file)
-            .map_err(|error| format!("cannot capture source context: {error}"))?;
+            .map_err(|error| CliError::io(IoAction::WorkingDirectory, None, error))?;
         Ok(Self {
             text,
             name,
@@ -374,7 +495,7 @@ impl<'a> SourceUnit<'a> {
     }
 }
 
-fn run_file(options: &Args) -> Result<(), String> {
+fn run_file(options: &Args) -> CliResult {
     let file = options
         .file
         .as_deref()
@@ -396,23 +517,23 @@ fn run_file(options: &Args) -> Result<(), String> {
     )
 }
 
-fn format_file(file: &str, source: &str, options: &Args) -> Result<(), String> {
+fn format_file(file: &str, source: &str, options: &Args) -> CliResult {
     let mut trace = msync::telemetry::span("format_file");
     let result = format_file_inner(file, source, options);
     trace.finish_result(&result);
     result
 }
 
-fn format_file_inner(file: &str, source: &str, options: &Args) -> Result<(), String> {
+fn format_file_inner(file: &str, source: &str, options: &Args) -> CliResult {
     let formatted = syntax::format_rich(source)
         .map_err(|errors| diagnostics(file, source, &errors, options.color))?;
     if options.check_format {
         return if formatted == source {
             Ok(())
         } else {
-            Err(format!(
-                "{file}: formatting differs; run 'msync fmt {file}' to update the script"
-            ))
+            Err(Issue::new("formatting differs")
+                .field("path", file)
+                .help(format!("Run msync fmt {file:?} to update this script, or use --stdout to inspect the formatted text.")).into())
         };
     }
     if options.stdout {
@@ -424,17 +545,24 @@ fn format_file_inner(file: &str, source: &str, options: &Args) -> Result<(), Str
     write_formatted(file, &formatted)
 }
 
-fn write_formatted(file: &str, formatted: &str) -> Result<(), String> {
+fn write_formatted(file: &str, formatted: &str) -> CliResult {
     if file == "-" {
         return Err("fmt --write requires a file, not stdin".into());
     }
     let path = Path::new(file);
-    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| CliError::io(IoAction::WriteScript, Some(path), error))?;
     if metadata.file_type().is_symlink() {
-        return Err("fmt --write refuses symlinks; name the actual file".into());
+        return Err(Issue::new("fmt --write refuses symlinks")
+            .field("path", file)
+            .help("Name the actual script file, or use --stdout for a read-only preview.")
+            .into());
     }
     if metadata.permissions().readonly() {
-        return Err(format!("{file}: refusing to format a read-only file"));
+        return Err(Issue::new("refusing to format a read-only file")
+            .field("path", file)
+            .help("Use fmt FILE --stdout to preview, or make a writable copy of this script.")
+            .into());
     }
     let temporary = path.with_file_name(format!(
         ".{}.{}.fmt.tmp",
@@ -445,7 +573,19 @@ fn write_formatted(file: &str, formatted: &str) -> Result<(), String> {
         .write(true)
         .create_new(true)
         .open(&temporary)
-        .map_err(|error| format!("{file}: cannot create formatting temporary: {error}"))?;
+        .map_err(|error| {
+            let hint = match error.kind() {
+                io::ErrorKind::AlreadyExists => "The existing stage is never overwritten. Inspect it before retrying; it may contain recoverable data.",
+                io::ErrorKind::PermissionDenied => "Check write permissions on the script directory, or use --stdout for a read-only preview.",
+                io::ErrorKind::StorageFull => "Free space on this volume before formatting, or use --stdout for a read-only preview.",
+                _ => "Check that the script directory is writable, or use --stdout for a read-only preview.",
+            };
+            Issue::new("cannot create formatting stage")
+            .field("path", file)
+            .field("stage", temporary.to_string_lossy())
+            .field("cause", error.to_string())
+            .help(hint)
+        })?;
     let result = (|| -> io::Result<()> {
         output.write_all(formatted.as_bytes())?;
         output.sync_all()?;
@@ -456,7 +596,7 @@ fn write_formatted(file: &str, formatted: &str) -> Result<(), String> {
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
-    result.map_err(|error| format!("{file}: {error}"))
+    result.map_err(|error| CliError::io(IoAction::WriteScript, Some(path), error))
 }
 
 fn submit(
@@ -466,7 +606,7 @@ fn submit(
     dry_run: bool,
     color: Color,
     limits: &ResourceLimits,
-) -> Result<(), String> {
+) -> CliResult {
     let mut trace = msync::telemetry::span("submission");
     input.annotate(&mut trace);
     let SourceUnit {
@@ -483,20 +623,35 @@ fn submit(
             .map_err(|errors| diagnostics(file, source, &errors, color))?;
         if command == "check" {
             *compiler = candidate;
-            return print_text("ok\n");
+            if !io::stdout().is_terminal() {
+                return print_text(&format!(
+                    "{}\n",
+                    presentation::paint("ok", "1;32", color.stdout())
+                ));
+            }
+            return print_status(
+                &format!(
+                    "ok: {} checked; no files written",
+                    presentation::escape(file)
+                ),
+                color,
+            );
         }
         let plan = prepare(&program, &script, !dry_run)
             .map_err(|error| diagnostics(file, source, &[runtime_report(&script, error)], color))?;
         *compiler = candidate;
         if matches!(command, "plan" | "compile") {
-            return print_text(&plan.to_string());
+            return print_plan(&plan, color);
         }
         if dry_run {
-            print_text(&plan.to_string())?;
-            return print_text(&format!(
-                "preview: {} operation(s); no files written\n",
-                plan.nodes.len()
-            ));
+            print_plan(&plan, color)?;
+            return print_status(
+                &format!(
+                    "preview: {} operation(s); no files written\n",
+                    plan.nodes.len()
+                ),
+                color,
+            );
         }
         let mut execution = msync::telemetry::span("execute");
         let result = scheduler::execute_plan(&plan, limits);
@@ -539,10 +694,14 @@ fn print_summary(
     removed: usize,
     show: bool,
     color: Color,
-) -> Result<(), String> {
+) -> CliResult {
     let report = summary.report;
     for action in report.actions {
-        print_text(&format!("{action}\n"))?;
+        print_text(&msync::highlight::highlight(
+            &presentation::escape(&action),
+            color.stdout(),
+        ))?;
+        print_text("\n")?;
     }
     if !show {
         return Ok(());
@@ -556,30 +715,34 @@ fn print_summary(
         report.transferred_bytes
     );
     print_text(&if color.stdout() {
-        format!("\x1b[32m{status}\x1b[0m")
+        format!(
+            "\x1b[1;32mdone:\x1b[0m{}",
+            status.strip_prefix("done:").unwrap_or(&status)
+        )
     } else {
         status
     })
 }
 
-fn diagnostics(file: &str, source: &str, errors: &[Report], color: Color) -> String {
-    let name = file.escape_debug();
-    errors
-        .iter()
-        .map(|error| {
-            let rendered = syntax::render_report(source, error, color.stderr());
-            if color.stderr() {
-                format!("\x1b[1;31merror\x1b[0m in \x1b[1;34m{name}\x1b[0m\n{rendered}")
-            } else {
-                format!("error in {name}\n{rendered}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+fn diagnostics(file: &str, source: &str, errors: &[Report], color: Color) -> CliError {
+    CliError::Presented(
+        errors
+            .iter()
+            .map(|error| syntax::render_report_named(source, error, file, color.stderr()))
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    )
 }
 
 fn runtime_report(script: &Script, error: msync::runtime::RuntimeError) -> Report {
-    let mut report = Report::new(error.message, error.span);
+    let (title, detail) = error
+        .message
+        .split_once('\n')
+        .unwrap_or((&error.message, ""));
+    let mut report = Report::new(title, error.span);
+    if !detail.is_empty() {
+        report = report.help(format!("Runtime details:\n{detail}"));
+    }
     if let Some(statement) = script.statements.iter().find(|statement| {
         statement.span.start <= error.span.start && statement.span.end >= error.span.end
     }) && let Some(operands) = &statement.operands
@@ -591,344 +754,8 @@ fn runtime_report(script: &Script, error: msync::runtime::RuntimeError) -> Repor
             .label(operands.right.content, "destination of this transfer");
     }
     report.help(
-        "Use msync plan FILE to inspect the resolved endpoints and dependencies before retrying.",
+        "Inspect the marked source and destination. Use msync plan FILE for types/dependencies, or --trace FILE for operation details before retrying.",
     )
-}
-
-struct ActiveJob {
-    id: u64,
-    handle: Option<JoinHandle<Result<scheduler::ExecutionSummary, Report>>>,
-    cancel: CancellationToken,
-    source: String,
-    file: String,
-    removed: usize,
-}
-
-impl ActiveJob {
-    fn finished(&self) -> bool {
-        self.handle.as_ref().is_none_or(JoinHandle::is_finished)
-    }
-
-    fn join(mut self, stop: bool, color: Color) -> Result<(), String> {
-        if stop {
-            self.cancel.cancel();
-        }
-        let result = self
-            .handle
-            .take()
-            .ok_or("background job was already joined")?
-            .join()
-            .map_err(|_| {
-                "background worker panicked; its resources have been joined".to_string()
-            })?;
-        if stop {
-            return print_text(&format!("job {}: stopped\n", self.id));
-        }
-        let summary =
-            result.map_err(|report| diagnostics(&self.file, &self.source, &[report], color))?;
-        print_text(&format!("job {}: completed\n", self.id))?;
-        print_summary(summary, self.removed, true, color)
-    }
-}
-
-impl Drop for ActiveJob {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-struct ReplState {
-    compiler: Compiler,
-    dry_run: bool,
-    active: Option<ActiveJob>,
-    next_job: u64,
-}
-
-impl ReplState {
-    fn join(&mut self, stop: bool, color: Color) -> Result<(), String> {
-        match self.active.take() {
-            Some(job) => job.join(stop, color),
-            None => print_text("no active jobs\n"),
-        }
-    }
-
-    fn reap(&mut self, color: Color) {
-        if self.active.as_ref().is_some_and(ActiveJob::finished)
-            && let Err(message) = self.join(false, color)
-        {
-            print_error(&message);
-        }
-    }
-}
-
-fn repl_submit(input: SourceUnit<'_>, state: &mut ReplState, options: &Args) -> Result<(), String> {
-    let mut trace = msync::telemetry::span("submission");
-    input.annotate(&mut trace);
-    let result = repl_submit_inner(input, state, options);
-    trace.finish_result(&result);
-    result
-}
-
-fn repl_submit_inner(
-    input: SourceUnit<'_>,
-    state: &mut ReplState,
-    options: &Args,
-) -> Result<(), String> {
-    let SourceUnit {
-        text: source,
-        name: file,
-        context,
-    } = input;
-    let script = syntax::parse_rich(source)
-        .map_err(|errors| diagnostics(file, source, &errors, options.color))?;
-    let copies = script
-        .statements
-        .iter()
-        .any(|statement| matches!(statement.kind, StatementKind::Copy { .. }));
-    if copies && state.active.is_some() {
-        return Err(
-            "a background plan is active; use /wait or /stop before submitting another copy plan"
-                .into(),
-        );
-    }
-    let mut candidate = state.compiler.clone();
-    let program = candidate
-        .compile_rich_with_context(&script, &context)
-        .map_err(|errors| diagnostics(file, source, &errors, options.color))?;
-    let plan = prepare(&program, &script, !state.dry_run).map_err(|error| {
-        diagnostics(
-            file,
-            source,
-            &[runtime_report(&script, error)],
-            options.color,
-        )
-    })?;
-    if !copies {
-        state.compiler = candidate;
-        return Ok(());
-    }
-    if state.dry_run {
-        print_text(&plan.to_string())?;
-        if copies {
-            print_text(&format!(
-                "preview: {} operation(s); no files written\n",
-                plan.nodes.len()
-            ))?;
-        }
-        state.compiler = candidate;
-        return Ok(());
-    }
-    let streaming = plan.nodes.iter().any(|node| {
-        node.kinds.source == FileClass::Stream || node.kinds.destination == FileClass::Stream
-    });
-    if !streaming {
-        let mut execution = msync::telemetry::span("execute");
-        let result = scheduler::execute_plan(&plan, &options.limits);
-        execution.finish_result(&result);
-        state.compiler = candidate;
-        return print_summary(
-            result.map_err(|error| {
-                diagnostics(
-                    file,
-                    source,
-                    &[runtime_report(&script, error)],
-                    options.color,
-                )
-            })?,
-            plan.removed.len(),
-            copies,
-            options.color,
-        );
-    }
-    let cancel = CancellationToken::new();
-    let worker_cancel = cancel.clone();
-    let limits = options.limits.clone();
-    let parent = msync::telemetry::context();
-    let removed = plan.removed.len();
-    let handle = thread::Builder::new()
-        .name("msync-repl-plan".into())
-        .spawn(move || {
-            let mut execution = msync::telemetry::linked_span("execute", parent.as_ref());
-            let context = execution.context();
-            let result = msync::telemetry::with_context(context.as_ref(), || {
-                scheduler::execute_plan_cancellable(&plan, &limits, worker_cancel)
-            });
-            execution.finish_result(&result);
-            result.map_err(|error| runtime_report(&script, error))
-        })
-        .map_err(|error| format!("cannot start background plan: {error}"))?;
-    let id = state.next_job;
-    state.next_job += 1;
-    state.active = Some(ActiveJob {
-        id,
-        handle: Some(handle),
-        cancel,
-        source: source.to_owned(),
-        file: file.to_owned(),
-        removed,
-    });
-    state.compiler = candidate;
-    print_text(&format!(
-        "job {id}: running in background; use /jobs, /wait or /stop\n"
-    ))
-}
-
-fn repl(options: &Args) -> Result<(), String> {
-    let mut trace = msync::telemetry::span("repl");
-    let result = repl_inner(options);
-    trace.finish_result(&result);
-    result
-}
-
-fn repl_inner(options: &Args) -> Result<(), String> {
-    let interactive = io::stdin().is_terminal();
-    if interactive {
-        print_text("msync — /help for commands; /quit to exit\n")?;
-    }
-    let mut state = ReplState {
-        compiler: Compiler::new(),
-        dry_run: options.dry_run,
-        active: None,
-        next_job: 1,
-    };
-    let stdin = io::stdin();
-    let mut reader = stdin.lock();
-    let mut line = String::new();
-    loop {
-        state.reap(options.color);
-        if interactive {
-            print_text(if options.color.stdout() {
-                "\x1b[1;36mmsync> \x1b[0m"
-            } else {
-                "msync> "
-            })?;
-            io::stdout().flush().map_err(|error| error.to_string())?;
-        }
-        line.clear();
-        if reader
-            .read_line(&mut line)
-            .map_err(|error| error.to_string())?
-            == 0
-        {
-            if state.active.is_some() {
-                return state.join(interactive, options.color);
-            }
-            return Ok(());
-        }
-        state.reap(options.color);
-        let input = line.trim();
-        if input.is_empty() {
-            continue;
-        }
-        if matches!(input, "/quit" | "/exit" | ":quit" | ":q") {
-            if state.active.is_some() {
-                return state.join(true, options.color);
-            }
-            return Ok(());
-        }
-        let result = if is_repl_command(input) {
-            repl_command(input, &mut state, options)
-        } else {
-            repl_submit(SourceUnit::repl(&line)?, &mut state, options)
-        };
-        if let Err(message) = result {
-            print_error(&message);
-        }
-    }
-}
-
-fn is_repl_command(input: &str) -> bool {
-    // Absolute POSIX paths remain valid DSL operands.
-    (input.starts_with('/') || input.starts_with(':'))
-        && !input.contains("->")
-        && !input.contains("=>")
-        && !input.contains(":=")
-}
-
-fn repl_command(input: &str, state: &mut ReplState, options: &Args) -> Result<(), String> {
-    let mut trace = msync::telemetry::span("repl_command");
-    let result = repl_command_inner(input, state, options);
-    trace.finish_result(&result);
-    result
-}
-
-fn repl_command_inner(input: &str, state: &mut ReplState, options: &Args) -> Result<(), String> {
-    let (command, argument) = input.split_once(char::is_whitespace).unwrap_or((input, ""));
-    let argument = argument.trim().trim_matches('"');
-    let name = command.trim_start_matches(['/', ':']);
-    if state.active.is_some() && matches!(name, "cd" | "fmt") {
-        return Err(format!(
-            "{command} changes shared working-directory or filesystem state; use /wait or /stop before this command"
-        ));
-    }
-    match name {
-        "jobs" => match &state.active {
-            Some(job) => print_text(&format!("job {}: running\n", job.id)),
-            None => print_text("no active jobs\n"),
-        },
-        "wait" => state.join(false, options.color),
-        "stop" => state.join(true, options.color),
-        "help" | "?" => print_help(REPL_HELP, options.color),
-        "limits" => print_text(&format!(
-            "jobs={}, max-streams={}, buffer-size={} bytes, memory-limit={} bytes\n",
-            options.limits.jobs,
-            options.limits.max_streams,
-            options.limits.buffer_bytes,
-            options.limits.memory_bytes
-        )),
-        "bindings" => print_text(&format!("{}\n", state.compiler.bindings().join("\n"))),
-        "reset" => {
-            state.compiler = Compiler::new();
-            print_text("bindings cleared\n")
-        }
-        "pwd" => print_text(&format!(
-            "{}\n",
-            env::current_dir()
-                .map_err(|error| error.to_string())?
-                .display()
-        )),
-        "cd" => {
-            if argument.is_empty() {
-                return Err("usage: /cd PATH".into());
-            }
-            env::set_current_dir(argument).map_err(|error| format!("{argument}: {error}"))
-        }
-        "dry-run" => {
-            match argument {
-                "on" => state.dry_run = true,
-                "off" => state.dry_run = false,
-                "" => {}
-                _ => return Err("usage: /dry-run [on|off]".into()),
-            }
-            print_text(if state.dry_run {
-                "dry-run: on\n"
-            } else {
-                "dry-run: off\n"
-            })
-        }
-        "load" | "check" | "plan" | "fmt" => {
-            if argument.is_empty() || argument == "-" {
-                return Err(format!("usage: {command} FILE (not stdin)"));
-            }
-            let source = read_source(argument)?;
-            match command.trim_start_matches(['/', ':']) {
-                "fmt" => format_file(argument, &source, options),
-                "load" => repl_submit(SourceUnit::file(&source, argument)?, state, options),
-                mode => submit(
-                    SourceUnit::file(&source, argument)?,
-                    &mut state.compiler.clone(),
-                    if mode == "plan" { "compile" } else { "check" },
-                    state.dry_run,
-                    options.color,
-                    &options.limits,
-                ),
-            }
-        }
-        _ => Err(format!("unknown REPL command '{command}'; try /help")),
-    }
 }
 
 #[cfg(test)]

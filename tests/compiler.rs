@@ -10,6 +10,30 @@ fn compile(source: &str) -> msync::compiler::Program {
 }
 
 #[test]
+fn displayed_bindings_quote_values_for_readable_reusable_declarations() {
+    let source =
+        "root := \"folder name/#tag\\nchild\"\npublic => https://example.com/path%20name/\n";
+    let mut compiler = Compiler::new();
+    compiler.compile(&syntax::parse(source).unwrap()).unwrap();
+    let displayed = compiler.bindings().join("\n");
+    assert!(displayed.contains("\\n"));
+    let mut reloaded = Compiler::new();
+    reloaded
+        .compile(&syntax::parse(&displayed).unwrap())
+        .unwrap();
+    assert_eq!(compiler.bindings(), reloaded.bindings());
+}
+
+#[test]
+fn invalid_selector_explanations_are_compact_without_losing_the_typed_cause() {
+    let errors = Compiler::new()
+        .compile_rich(&syntax::parse("dir/<(> -> output/\n").unwrap())
+        .unwrap_err();
+    assert!(errors[0].diagnostic.message.contains("unclosed group"));
+    assert!(!errors[0].diagnostic.message.contains('\n'));
+}
+
+#[test]
 fn seed_is_a_compilable_specification() {
     let program = compile(include_str!("../docs/dsl/spread.msync"));
     assert_eq!(program.operations.len(), 5);

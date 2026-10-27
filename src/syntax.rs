@@ -518,7 +518,7 @@ fn write_statement(output: &mut String, left: &str, operator: &str, right: &str)
     output.push('\n');
 }
 
-fn write_operand(output: &mut String, value: &str) {
+pub(crate) fn write_operand(output: &mut String, value: &str) {
     let needs_quotes = value
         .chars()
         .any(|ch| ch.is_whitespace() || matches!(ch, '"' | '#'))
@@ -548,43 +548,236 @@ pub fn render_diagnostic(source: &str, diagnostic: &Diagnostic) -> String {
 
 /// Render structured labels and constructive help; callers own terminal policy.
 pub fn render_report(source: &str, report: &Report, color: bool) -> String {
-    let mut output = render_primary(source, &report.diagnostic, color);
-    for label in report
-        .labels
-        .iter()
-        .filter(|label| label.span == report.diagnostic.span)
-    {
-        output.push(' ');
-        output.push_str(&paint(&display_text(&label.message), "31", color));
-    }
-    for label in report
-        .labels
-        .iter()
-        .filter(|label| label.span != report.diagnostic.span)
-    {
-        let diagnostic = Diagnostic {
-            message: String::new(),
-            span: label.span,
-        };
-        let rendered = render_primary(source, &diagnostic, color);
-        output.push('\n');
-        if line_number_at(source, label.span.start)
-            == line_number_at(source, report.diagnostic.span.start)
-        {
-            output.push_str(rendered.lines().last().unwrap_or_default());
-        } else {
-            output.push_str(&rendered.lines().skip(1).collect::<Vec<_>>().join("\n"));
+    render_rich(source, report, None, color)
+}
+
+/// Render a report with one named location, without a second outer error banner.
+pub fn render_report_named(source: &str, report: &Report, name: &str, color: bool) -> String {
+    render_rich(source, report, Some(name), color)
+}
+
+struct SourceLine<'a> {
+    start: usize,
+    text: &'a str,
+}
+
+struct Annotation<'a> {
+    span: Span,
+    messages: Vec<&'a str>,
+    primary: bool,
+}
+
+fn render_rich(source: &str, report: &Report, name: Option<&str>, color: bool) -> String {
+    let lines = source_lines(source);
+    let annotations = report_annotations(source, report);
+    let primary = annotations[0].span;
+    let first = line_number_at(source, primary.start);
+    let visible_start = primary
+        .start
+        .min(lines[first].start + lines[first].text.len());
+    let column = source[lines[first].start..visible_start].chars().count() + 1;
+    let location = match name {
+        Some(name) => format!("{}:{}:{column}", display_metadata(name), first + 1),
+        None => format!("{}:{column}", first + 1),
+    };
+    let mut output = format!(
+        "{} {}\n {} {}",
+        paint("error:", "1;31", color),
+        display_metadata(&report.diagnostic.message),
+        paint("-->", "1;34", color),
+        paint(&location, "1;34", color),
+    );
+    let selected = report_lines(source, &annotations, lines.len());
+    let gutter = (selected.last().copied().unwrap_or(0) + 1)
+        .to_string()
+        .len();
+    output.push_str(&format!("\n{:gutter$} {}", "", paint("|", "1;34", color)));
+    let mut previous = None;
+    for index in selected {
+        if previous.is_some_and(|last| index > last + 1) {
+            output.push_str(&format!("\n{:gutter$} {}", "", paint("...", "2;34", color)));
         }
-        output.push(' ');
-        output.push_str(&display_text(&label.message));
+        render_source_line(
+            &mut output,
+            source,
+            &lines[index],
+            index,
+            gutter,
+            &annotations,
+            color,
+        );
+        previous = Some(index);
     }
     for help in &report.help {
-        output.push_str("\n  = ");
-        output.push_str(&paint("help:", "1;36", color));
-        output.push(' ');
-        output.push_str(&display_text(help));
+        render_help(&mut output, help, gutter, color);
     }
     output
+}
+
+fn render_help(output: &mut String, help: &str, gutter: usize, color: bool) {
+    let mut lines = help.split_inclusive('\n');
+    let first = without_line_ending(lines.next().unwrap_or_default());
+    output.push_str(&format!(
+        "\n{:gutter$} = {} {}",
+        "",
+        paint("help:", "1;36", color),
+        display_metadata(first),
+    ));
+    for line in lines {
+        output.push_str(&format!(
+            "\n{}{}",
+            " ".repeat(gutter + 9),
+            display_metadata(without_line_ending(line)),
+        ));
+    }
+}
+
+fn source_lines(source: &str) -> Vec<SourceLine<'_>> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for piece in source.split_inclusive('\n') {
+        let text = without_line_ending(piece);
+        lines.push(SourceLine { start, text });
+        start += piece.len();
+    }
+    if lines.is_empty() || source.ends_with('\n') {
+        lines.push(SourceLine { start, text: "" });
+    }
+    lines
+}
+
+fn without_line_ending(piece: &str) -> &str {
+    match piece.strip_suffix('\n') {
+        Some(line) => line.strip_suffix('\r').unwrap_or(line),
+        None => piece,
+    }
+}
+
+fn report_annotations<'a>(source: &str, report: &'a Report) -> Vec<Annotation<'a>> {
+    let mut annotations = vec![Annotation {
+        span: normalized_span(source, report.diagnostic.span),
+        messages: report
+            .labels
+            .iter()
+            .filter(|label| label.span == report.diagnostic.span)
+            .map(|label| label.message.as_str())
+            .collect(),
+        primary: true,
+    }];
+    annotations.extend(
+        report
+            .labels
+            .iter()
+            .filter(|label| label.span != report.diagnostic.span)
+            .map(|label| Annotation {
+                span: normalized_span(source, label.span),
+                messages: vec![label.message.as_str()],
+                primary: false,
+            }),
+    );
+    annotations
+}
+
+fn normalized_span(source: &str, span: Span) -> Span {
+    let mut start = span.start.min(source.len());
+    while !source.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = span.end.min(source.len()).max(start);
+    while !source.is_char_boundary(end) {
+        end -= 1;
+    }
+    Span { start, end }
+}
+
+fn annotation_lines(source: &str, span: Span) -> (usize, usize) {
+    let last = if span.end > span.start {
+        span.end - 1
+    } else {
+        span.start
+    };
+    (
+        line_number_at(source, span.start),
+        line_number_at(source, last),
+    )
+}
+
+fn report_lines(
+    source: &str,
+    annotations: &[Annotation<'_>],
+    count: usize,
+) -> std::collections::BTreeSet<usize> {
+    let mut selected = std::collections::BTreeSet::new();
+    for annotation in annotations {
+        let (first, last) = annotation_lines(source, annotation.span);
+        selected.extend(first.saturating_sub(1)..=(first + 1).min(count - 1));
+        selected.extend(last.saturating_sub(1)..=(last + 1).min(count - 1));
+        if last - first <= 3 {
+            selected.extend(first..=last);
+        }
+    }
+    selected
+}
+
+fn render_source_line(
+    output: &mut String,
+    source: &str,
+    line: &SourceLine<'_>,
+    index: usize,
+    gutter: usize,
+    annotations: &[Annotation<'_>],
+    color: bool,
+) {
+    let displayed = display_text(line.text);
+    let code = crate::highlight::highlight(&displayed, color);
+    output.push_str(&format!(
+        "\n{:gutter$} {} {code}",
+        index + 1,
+        paint("|", "1;34", color)
+    ));
+    for annotation in annotations {
+        let (first, last) = annotation_lines(source, annotation.span);
+        if !(first..=last).contains(&index) {
+            continue;
+        }
+        let start = annotation
+            .span
+            .start
+            .saturating_sub(line.start)
+            .min(line.text.len());
+        let end = annotation
+            .span
+            .end
+            .saturating_sub(line.start)
+            .min(line.text.len())
+            .max(start);
+        let column = UnicodeWidthStr::width(display_text(&line.text[..start]).as_str());
+        let right = UnicodeWidthStr::width(display_text(&line.text[..end]).as_str());
+        let (marker, style) = if annotation.primary {
+            ('^', "1;31")
+        } else {
+            ('-', "1;36")
+        };
+        let mark = marker
+            .to_string()
+            .repeat(right.saturating_sub(column).max(1));
+        output.push_str(&format!(
+            "\n{:gutter$} {} {}{}",
+            "",
+            paint("|", "1;34", color),
+            " ".repeat(column),
+            paint(&mark, style, color)
+        ));
+        if index == last && !annotation.messages.is_empty() {
+            let message = annotation
+                .messages
+                .iter()
+                .map(|text| display_metadata(text))
+                .collect::<Vec<_>>()
+                .join("; ");
+            output.push_str(&format!(" {message}"));
+        }
+    }
 }
 
 fn line_number_at(source: &str, position: usize) -> usize {
@@ -603,10 +796,8 @@ fn paint(text: &str, style: &str, color: bool) -> String {
 }
 
 fn render_primary(source: &str, diagnostic: &Diagnostic, color: bool) -> String {
-    let mut start = diagnostic.span.start.min(source.len());
-    while !source.is_char_boundary(start) {
-        start -= 1;
-    }
+    let span = normalized_span(source, diagnostic.span);
+    let start = span.start;
     let line_start = source[..start].rfind('\n').map_or(0, |index| index + 1);
     let line_end = source[start..]
         .find('\n')
@@ -618,10 +809,7 @@ fn render_primary(source: &str, diagnostic: &Diagnostic, color: bool) -> String 
         .count()
         + 1;
     let column = source[line_start..start].chars().count();
-    let mut end = diagnostic.span.end.min(line_end).max(start);
-    while !source.is_char_boundary(end) {
-        end -= 1;
-    }
+    let end = span.end.min(line_end).max(start);
     let prefix = display_text(&source[line_start..start]);
     let highlighted = display_text(&source[line_start..end]);
     let display_column = UnicodeWidthStr::width(prefix.as_str());
@@ -665,7 +853,7 @@ fn display_text(text: &str) -> String {
         if ch == '\t' {
             let width = 4 - UnicodeWidthStr::width(output.as_str()) % 4;
             output.extend(std::iter::repeat_n(' ', width));
-        } else if ch.is_control() {
+        } else if ch.is_control() || bidi_control(ch) {
             let escaped = ch.escape_default().to_string();
             output.push_str(&escaped);
         } else {
@@ -673,4 +861,20 @@ fn display_text(text: &str) -> String {
         }
     }
     output
+}
+
+fn display_metadata(text: &str) -> String {
+    text.chars()
+        .map(|ch| {
+            if ch.is_control() || bidi_control(ch) {
+                ch.escape_default().to_string()
+            } else {
+                ch.to_string()
+            }
+        })
+        .collect()
+}
+
+fn bidi_control(ch: char) -> bool {
+    matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }

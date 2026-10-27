@@ -243,3 +243,68 @@ and all eight scheduler tests. One explicitly ignored WSL helper audit is not
 counted in those six; its separately executed protocol evidence appears above.
 The scheduler set includes actual deferred-child execution, finite-flow shared
 capacity and remote framing-capacity rejection before any connection.
+
+## v0.3.1 independent frontend and terminal review
+
+Scope: the new CLI presentation/error boundary, editable REPL, display-only lexer,
+shell shortcuts, named diagnostic rendering, and native PTY test ownership.
+The I/O engine and optimizer were not re-audited for this UI-focused release.
+The review follows the product contract in `cli-ux-v0.3.1.md`, particularly
+recoverable failures, exact input ownership, plain payloads and terminal handoff.
+
+### Resolved: keep context-capture failures inside the input loop
+
+The initial `repl_inner` DSL branch constructed `SourceUnit::repl(&line)?`
+outside the per-submission result. If the current directory disappeared, that
+question-mark operator returned from the entire REPL instead of printing the
+failure and allowing `/cd` recovery. The new explicit shell shortcut makes this
+a practical interaction: a child can remove an empty directory which remains
+the parent process's current directory.
+
+An actual Linux process in a private native tmpfs reproduced this sequence:
+
+```text
+keep := saved
+/bash rmdir -- "$PWD"
+next := value
+/cd ABSOLUTE_EXISTING_PARENT
+/bindings
+/quit
+```
+
+The application reported `cannot determine working directory` with native
+`ENOENT` and advice to use `/cd`, then exited with status 1 before processing
+that recovery command. The experiment used only an owned project `.temp`
+fixture and an ordinary noninteractive child; no profile/history or user file
+was changed. The disposable reproduction is `.temp/review-cwd-031.sh`.
+
+The correction is to compose context capture with submission as one recoverable
+result (`and_then` or an explicit match), preserving the existing environment
+when capture fails. The regression should assert the error is visible, `/cd`
+then succeeds, the earlier `keep` binding remains, the failed `next` declaration
+does not leak, and the session exits normally.
+
+The integrated source now uses `SourceUnit::repl(...).and_then(...)` inside the
+common per-input result. Independent regression
+`tests/review_ui_031.rs::a_deleted_working_directory_does_not_end_the_repl_or_lose_bindings`
+passed on actual WSL/Linux with native private tmpfs fixtures. The focused
+`cargo test --locked --test review_ui_031 -- --nocapture` process exited 0;
+the test observed the deleted original directory, visible cause/help, successful
+absolute `/cd` recovery, retained earlier binding, no failed-declaration leak and
+normal REPL exit. This verifies recovery rather than merely changing the advice.
+
+No additional substantive defect was found in the inspected editor/shell/display
+paths. In particular, the review checked raw shell-tail preservation, no-argument
+validation before mutations, original signal-disposition restoration, child-only
+Unix signal resetting, the non-inheritable Windows console callback, memory-only
+history, source-name/control escaping, UTF-8 span handling and test process/job
+ownership. Buffer-redux read-ahead retention and real before-Enter coloring are
+covered by the separate actual-terminal validation rather than inferred from a
+string-coloring unit test.
+
+The Windows signal reasoning was checked against Microsoft's
+[SetConsoleCtrlHandler contract](https://learn.microsoft.com/en-us/windows/console/setconsolectrlhandler):
+process-local callbacks do not set the inheritable ignore-Ctrl-C attribute.
+The checked-in editor notes also retain Rustyline's equal-display-width contract;
+diagnostic escape expansion must not be substituted into the editor's cursor
+geometry model.

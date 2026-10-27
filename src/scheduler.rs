@@ -134,7 +134,18 @@ fn prepare_inner(
                 failures.push((
                     index,
                     RuntimeError {
-                        message,
+                        message: {
+                            let location = if destination {
+                                &operation.destination
+                            } else {
+                                &operation.source
+                            };
+                            let role = if destination { "Destination" } else { "Source" };
+                            format!(
+                                "{message}\n{role} endpoint: {} {}",
+                                location.backend, location.path
+                            )
+                        },
                         span: if destination { pair.1 } else { pair.0 },
                     },
                 ));
@@ -165,7 +176,13 @@ fn prepare_inner(
                 })
             });
             if !produced {
-                return Err(error("source does not exist and no preceding plan operation produces it; correct the source path or create it before execution".into(), pair.0));
+                return Err(error(
+                    format!(
+                        "source does not exist and no preceding plan operation produces it\nResolved source: {} {}\nCorrect the source path or namespace binding, or create this source before execution.",
+                        node.operation.source.backend, node.operation.source.path
+                    ),
+                    pair.0,
+                ));
             }
         }
         validate_operation(&node.operation, node.kinds, pair)?;

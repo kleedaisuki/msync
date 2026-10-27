@@ -16,6 +16,46 @@ This follows the practical pattern in [rustfmt's contribution guide](https://git
 
 This design follows the [Rust compiler diagnostic guide](https://rustc-dev-guide.rust-lang.org/diagnostics.html): a standalone problem description, precise primary and secondary spans, and actionable suggestions. [Miette's diagnostic model](https://docs.rs/miette/latest/miette/) independently separates source labels from help text. The implementation uses this small model directly rather than introducing a rendering framework dependency for the current line-oriented language. Suggestions are advisory help rather than automatic edits: changing an endpoint or adding a destination slash can change copy semantics and requires the user's intent.
 
+### v0.3.1: source-oriented presentation
+
+`render_report_named(source, report, name, color)` adds a named location to the
+same rich renderer, avoiding an outer error banner followed by a second error
+heading. A report has one problem title, one primary `name:line:column` location,
+source-ordered snippets, primary and secondary annotations, and explicit help.
+`render_report` remains the unnamed entrypoint. The older `render_diagnostic`
+keeps its compact single-line layout for callers that rely on that basic API.
+`Diagnostic`, `Report`, source spans and the execution grammar are unchanged.
+
+Rich snippets include one surrounding source line on either side of an
+annotation. Labels on one line share the source row; primary carets are red and
+secondary dashes cyan, so context is not confused with the failing token. A
+large multiline external span shows its beginning/end windows with an explicit
+ellipsis rather than flooding the terminal. Multiline annotations retain their
+whole visible extent and attach their label at the end of the span.
+
+Source rows use the same tolerant lexical highlighter as live input. Coloring
+never changes displayed text: stripping its SGR sequences gives the exact plain
+report. Source tabs expand to four-column stops before measuring annotations;
+human locations count Unicode scalar values while carets use display width.
+Malformed external byte spans clamp to valid UTF-8 boundaries, and EOF insertion
+points remain visible even after a CRLF line ending. Gutter widths account for
+all selected line numbers, including transitions to two or more digits.
+
+Untrusted names, labels and problem titles escape terminal controls and bidi
+formatting controls without dropping useful Unicode or path content. Help may
+contain intentional multiline explanations, such as a regex parser detail:
+continuations stay indented under their help field and other terminal controls
+remain visible escapes. Paths and short cause information belong in the
+appropriate producer fields; the renderer does not classify errors by matching
+English prose.
+
+`tests/syntax.rs` exercises named/unnamed compatibility, grouped labels,
+multiline spans, bounded context, CRLF/EOF, wide characters, tabs, control/bidi
+escaping and arbitrary malformed external spans. A property compares colored
+reports with their plain equivalents after stripping SGR color codes. The
+formatter's source-preservation and idempotence properties remain independent
+of this display-only change.
+
 ## Contextual namespaces, physical endpoints and value aliases
 
 `=>` binds a space, while `:=` binds a path value. Private `Space` distinguishes contextual `Pwd`/`File` namespaces from physical `Endpoint(Backend)` transports. This prevents the old accidental equivalence between a namespace and a directory. Public `Backend`, `Location` and `CopyOp` remain physical execution contracts and have no contextual namespace variants.

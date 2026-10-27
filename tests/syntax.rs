@@ -200,7 +200,194 @@ fn rich_renderer_has_labels_help_and_color_only_when_requested() {
     assert!(colored.contains("\u{1b}[1;34m"));
 }
 
+fn without_color(text: &str) -> String {
+    regex::Regex::new(r"\x1b\[[0-9;]*m")
+        .unwrap()
+        .replace_all(text, "")
+        .into_owned()
+}
+
+#[test]
+fn named_reports_have_one_heading_one_location_and_shared_source_rows() {
+    use msync::syntax::{Report, render_report_named};
+    let source = "# surrounding context\ncat -> dest\nnext -> other\n";
+    let start = source.find("dest").unwrap();
+    let span = Span {
+        start,
+        end: start + 4,
+    };
+    let left = source.find("cat").unwrap();
+    let report = Report::new("cannot access destination", span)
+        .label(span, "choose an existing parent")
+        .label(
+            Span {
+                start: left,
+                end: left + 3,
+            },
+            "source of this transfer",
+        )
+        .help("Create the destination parent, then retry the plan.");
+    let plain = render_report_named(source, &report, "scripts/deploy.msync", false);
+    assert_eq!(plain.matches("error:").count(), 1, "{plain}");
+    assert!(plain.contains(" --> scripts/deploy.msync:2:8"), "{plain}");
+    assert_eq!(plain.matches("2 | cat -> dest").count(), 1, "{plain}");
+    assert!(plain.contains("1 | # surrounding context"), "{plain}");
+    assert!(plain.contains("3 | next -> other"), "{plain}");
+    assert!(plain.contains("^^^^ choose an existing parent"), "{plain}");
+    assert!(plain.contains("--- source of this transfer"), "{plain}");
+    assert!(
+        plain.contains("= help: Create the destination parent"),
+        "{plain}"
+    );
+    let colored = render_report_named(source, &report, "scripts/deploy.msync", true);
+    assert_eq!(without_color(&colored), plain);
+    assert!(colored.contains("\u{1b}[1;31m^^^^"));
+    assert!(colored.contains("\u{1b}[1;36m---"));
+}
+
+#[test]
+fn rich_reports_keep_unicode_tab_geometry_and_two_digit_gutters() {
+    use msync::syntax::{Report, render_report_named};
+    let mut source = "context\n".repeat(9);
+    source.push_str("\t猫bad\nfollowing\n");
+    let start = source.find("bad").unwrap();
+    let report = Report::new(
+        "bad token",
+        Span {
+            start,
+            end: start + 3,
+        },
+    );
+    let plain = render_report_named(&source, &report, "猫.msync", false);
+    assert!(plain.contains(" --> 猫.msync:10:3"), "{plain}");
+    assert!(plain.contains("10 |     猫bad"), "{plain}");
+    assert!(plain.contains("   |       ^^^"), "{plain}");
+    assert!(plain.contains("11 | following"), "{plain}");
+    assert_eq!(
+        without_color(&render_report_named(&source, &report, "猫.msync", true)),
+        plain
+    );
+}
+
+#[test]
+fn report_names_messages_and_labels_cannot_inject_terminal_controls_or_bidi() {
+    use msync::syntax::{Report, render_report_named};
+    let source = "a\u{202e} -> b";
+    let span = Span {
+        start: 1,
+        end: "a\u{202e}".len(),
+    };
+    let report = Report::new("bad\u{1b}[2J\u{202e}", span)
+        .label(span, "label\t\u{1b}[31m")
+        .help("try\nagain\u{2066}");
+    let plain = render_report_named(source, &report, "path\n\t\u{1b}[2J.msync", false);
+    assert!(!plain.contains('\u{1b}'));
+    assert!(!plain.contains('\u{202e}'));
+    assert!(!plain.contains('\u{2066}'));
+    assert!(plain.contains(r"path\n\t\u{1b}[2J.msync:1:2"), "{plain}");
+    assert!(plain.contains(r"label\t\u{1b}[31m"), "{plain}");
+    assert!(
+        plain.contains("= help: try\n          again\\u{2066}"),
+        "{plain}"
+    );
+    assert!(plain.contains("^^^^^^^^"), "{plain}");
+    let colored = render_report_named(source, &report, "path\n\t\u{1b}[2J.msync", true);
+    assert_eq!(without_color(&colored), plain);
+    assert!(!colored.contains("\u{1b}[2J"));
+}
+
+#[test]
+fn rich_reports_preserve_multiline_labels_and_bound_large_context_windows() {
+    use msync::syntax::{Report, render_report_named};
+    let source = "first\nsecond\nthird\nfourth\nlast\n";
+    let span = Span {
+        start: 0,
+        end: "first\nsecond".len(),
+    };
+    let report = Report::new("multiline context", span)
+        .label(span, "both source lines")
+        .label(
+            Span {
+                start: source.find("last").unwrap(),
+                end: source.len() - 1,
+            },
+            "related output",
+        );
+    let plain = render_report_named(source, &report, "flow.msync", false);
+    assert!(plain.contains("1 | first\n  | ^^^^^"), "{plain}");
+    assert!(
+        plain.contains("2 | second\n  | ^^^^^^ both source lines"),
+        "{plain}"
+    );
+    assert!(
+        plain.contains("5 | last\n  | ---- related output"),
+        "{plain}"
+    );
+    assert_eq!(plain.matches("error:").count(), 1);
+    let source = (0..1000)
+        .map(|index| format!("row-{index}\n"))
+        .collect::<String>();
+    let report = Report::new(
+        "large external span",
+        Span {
+            start: 0,
+            end: usize::MAX,
+        },
+    );
+    let compact = render_report_named(&source, &report, "large.msync", false);
+    assert!(compact.contains("..."), "{compact}");
+    assert!(compact.contains("row-0"));
+    assert!(compact.contains("row-999"));
+    assert!(!compact.contains("row-500"));
+    assert!(compact.lines().count() < 20, "{compact}");
+}
+
+#[test]
+fn rich_reports_show_crlf_and_eof_insertions_without_hidden_columns() {
+    use msync::syntax::{Report, render_report_named};
+    let source = "a ->\r\n";
+    let report = Report::new(
+        "missing operand",
+        Span {
+            start: source.len(),
+            end: source.len(),
+        },
+    );
+    let plain = render_report_named(source, &report, "empty.msync", false);
+    assert!(plain.contains(" --> empty.msync:2:1"), "{plain}");
+    assert!(plain.contains("1 | a ->"), "{plain}");
+    assert!(plain.ends_with("  | ^"), "{plain}");
+    assert!(!plain.contains("\\r"), "{plain}");
+    let report = Report::new(
+        "end of line",
+        Span {
+            start: source.len() - 1,
+            end: source.len() - 1,
+        },
+    );
+    let plain = render_report_named(source, &report, "empty.msync", false);
+    assert!(plain.contains(" --> empty.msync:1:5"), "{plain}");
+}
+
 proptest! {
+    #[test]
+    fn rich_external_spans_are_safe_and_color_preserves_display_text(
+        characters in proptest::collection::vec(any::<char>(), 0..100),
+        start in 0_usize..500,
+        end in 0_usize..500,
+        secondary in 0_usize..500,
+    ) {
+        use msync::syntax::{Report, render_report_named};
+        let source = characters.into_iter().collect::<String>();
+        let report = Report::new("generated diagnostic", Span { start, end })
+            .label(Span { start: secondary, end }, "related token")
+            .help("Check the highlighted source.");
+        let plain = render_report_named(&source, &report, "generated.msync", false);
+        let colored = render_report_named(&source, &report, "generated.msync", true);
+        prop_assert!(!plain.contains('\u{1b}'), "plain output contains ANSI");
+        prop_assert_eq!(without_color(&colored), plain);
+    }
+
     #[test]
     fn formatter_preserves_arbitrary_quoted_operands(left in ".{1,100}", right in ".{1,100}") {
         fn quoted(value: &str) -> String {
