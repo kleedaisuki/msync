@@ -2,6 +2,7 @@
 
 pub mod compiler;
 pub mod endpoint;
+pub mod execution;
 pub mod highlight;
 pub mod hir;
 pub mod io;
