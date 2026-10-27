@@ -219,3 +219,42 @@ stderr with nonzero exit replay; cancellation without host publication; and a
 foreign direct-access rule added only to the owned fixture section invalidating
 the view before launch. Missing capability must fail this explicit gate, not
 turn into a reported native pass.
+
+## Worker scratch is a disjoint logical namespace
+
+The worker must not derive its artifact/spool root from its launch CWD. An
+invocation may place the exclusive box backing inside a managed CWD's private
+`.temp` subtree. The parent has an authenticated invocation exclusion for that
+backing; the worker's ordinary `SnapshotStore::capture` deliberately does not.
+Putting its own artifact store there makes source/store overlap, not a reason
+to weaken capture or exclude user-owned `.temp` data.
+
+After authenticating the pipe and its exact box membership, receiving all
+managed roots, and rejecting effective direct/read-through access overrides,
+the worker creates one fresh logical child of the CWD's local drive root:
+`D:\msync-worker-<authenticated-launch-nonce>-<worker-pid>`. Whole-volume roots
+are not supported, and case/verbatim aliases and both overlap directions are
+rejected. Only the boxed worker creates this path; the parent never creates a
+host drive-root directory. Normal Sandboxie copy-on-write places its backing
+under the previously verified, exclusively owned FileRootPath in project
+`.temp`.
+
+Before using the directory for either spools or snapshots, the worker opens it
+and calls pinned [`SbieDll_GetHandlePath`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/dll/file.c).
+The BOOLEAN output must identify a boxed handle, and the API-reported actual
+copy path must be strictly below `SbieApi_QueryBoxPath` for that same owned box.
+The pinned function takes an 8192-byte output buffer and returns NTSTATUS;
+passing a non-null BOOLEAN output is essential to obtain CopyPath rather than
+TruePath. No physical drive/user/tombstone layout is guessed. A cleanup guard
+is constructed only after this proof and retains the original directory handle
+and its file identity. It outlives the native process and output forwarders;
+cleanup reauthenticates membership, the current boxed copy path, and equality
+with the held directory generation before recursive removal. A replaced or
+unverifiable path is retained with a diagnostic for authoritative parent box GC.
+
+Focused regressions cover ordinary/verbatim CWDs, enrolled-volume and
+case-alias overlap, relative/UNC/device namespace refusals, malformed identity,
+and forged unboxed/outside/equal-root/traversal copy proofs. The existing real
+`default_cwd_scratch_is_hidden_but_preexisting_user_scratch_survives` journey is
+the driver acceptance test: it must preserve the original user scratch sentinel
+without publishing the worker's private logical root.

@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::os::windows::io::AsRawHandle;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::process::{Command, ExitCode};
 use std::sync::Arc;
 
@@ -64,15 +64,19 @@ async fn run(args: &[OsString]) -> io::Result<()> {
         ));
     }
     let (mut source, mut sink) = tokio::io::split(client);
-    if let Err(failure) =
-        native::Api::detect().and_then(|api| api.belongs(std::process::id(), name))
-    {
-        send_failure(&mut sink, &failure).await?;
-        return Err(failure);
-    }
+    let api = match native::Api::detect().and_then(|api| {
+        api.belongs(std::process::id(), name)?;
+        Ok(api)
+    }) {
+        Ok(api) => api,
+        Err(failure) => {
+            send_failure(&mut sink, &failure).await?;
+            return Err(failure);
+        }
+    };
     wire::send(&mut sink, wire::HELLO, &wire::hello(nonce)).await?;
-    let initialized = initialize(&mut source).await;
-    let (spec, config, roots) = match initialized {
+    let initialized = initialize(&mut source, &api, name, nonce).await;
+    let (spec, config, roots, _scratch) = match initialized {
         Ok(initialized) => initialized,
         Err(failure) => {
             send_failure(&mut sink, &failure).await?;
@@ -183,7 +187,10 @@ async fn run(args: &[OsString]) -> io::Result<()> {
 
 async fn initialize(
     source: &mut (impl tokio::io::AsyncRead + Unpin),
-) -> io::Result<(ProgramSpec, ProcessConfig, Vec<PathBuf>)> {
+    api: &Arc<native::Api>,
+    name: &str,
+    nonce: &str,
+) -> io::Result<(ProgramSpec, ProcessConfig, Vec<PathBuf>, PrivateScratch)> {
     let (kind, bytes) = wire::receive(source).await?;
     if kind != wire::SPEC {
         return Err(wire::invalid("worker expected a program specification"));
@@ -204,10 +211,6 @@ async fn initialize(
     if buffer == 0 || buffer > 1024 * 1024 || !executable.is_absolute() || !cwd.is_absolute() {
         return Err(wire::invalid("invalid program paths or buffer limits"));
     }
-    let scratch = std::env::current_dir()?.join(format!("worker-scratch-{}", std::process::id()));
-    let mut config = ProcessConfig::new(scratch);
-    config.buffer_bytes = buffer as usize;
-    config.max_output_bytes = (quota != u64::MAX).then_some(quota);
     let mut roots: Vec<PathBuf> = Vec::new();
     loop {
         let (kind, bytes) = wire::receive(source).await?;
@@ -265,6 +268,10 @@ async fn initialize(
             "program cwd is outside its managed namespace",
         ));
     }
+    let scratch = PrivateScratch::create(api, name, nonce, &cwd, &roots)?;
+    let mut config = ProcessConfig::new(&scratch.path);
+    config.buffer_bytes = buffer as usize;
+    config.max_output_bytes = (quota != u64::MAX).then_some(quota);
     Ok((
         ProgramSpec {
             executable,
@@ -273,7 +280,124 @@ async fn initialize(
         },
         config,
         roots,
+        scratch,
     ))
+}
+
+/// A logical sibling of every enrolled directory, physically owned by the box.
+/// This avoids needing an exclusion token when capturing a managed CWD.
+struct PrivateScratch {
+    path: PathBuf,
+    identity: same_file::Handle,
+    api: Arc<native::Api>,
+    name: String,
+}
+
+impl PrivateScratch {
+    fn create(
+        api: &Arc<native::Api>,
+        name: &str,
+        nonce: &str,
+        cwd: &Path,
+        roots: &[PathBuf],
+    ) -> io::Result<Self> {
+        let path = scratch_path(cwd, roots, nonce, std::process::id())?;
+        api.belongs(std::process::id(), name)?;
+        for key in [
+            "OpenFilePath",
+            "OpenFilePathEx",
+            "NormalFilePath",
+            "ReadFilePath",
+        ] {
+            if !api.values(name, key)?.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("worker scratch refuses effective {key} overrides"),
+                ));
+            }
+        }
+        // A single create (not create_dir_all) cannot traverse an attacker-chosen
+        // intermediate directory. The authenticated box's verified effective
+        // no-bypass policy supplies copy-on-write; verify the actual handle
+        // before trusting the newly created directory for storage or cleanup.
+        fs::create_dir(&path)?;
+        let identity = api.require_boxed_directory(name, &path)?;
+        Ok(Self {
+            path,
+            identity,
+            api: api.clone(),
+            name: name.to_owned(),
+        })
+    }
+}
+
+impl Drop for PrivateScratch {
+    fn drop(&mut self) {
+        // Retain the original handle generation and reauthenticate the current
+        // path before recursive cleanup. A replacement is left to parent box GC.
+        match self.api.require_boxed_directory(&self.name, &self.path) {
+            Ok(current) if current == self.identity => {
+                if let Err(failure) = fs::remove_dir_all(&self.path) {
+                    eprintln!(
+                        "msync boxed scratch cleanup {}: {failure}",
+                        self.path.display()
+                    );
+                }
+            }
+            Ok(_) => eprintln!(
+                "msync boxed scratch cleanup refused replaced directory {}",
+                self.path.display()
+            ),
+            Err(failure) => eprintln!(
+                "msync boxed scratch cleanup verification {}: {failure}",
+                self.path.display()
+            ),
+        }
+    }
+}
+
+fn scratch_path(cwd: &Path, roots: &[PathBuf], nonce: &str, pid: u32) -> io::Result<PathBuf> {
+    if nonce.len() != 32 || !nonce.bytes().all(|byte| byte.is_ascii_hexdigit()) || pid == 0 {
+        return Err(wire::invalid("invalid private scratch identity"));
+    }
+    let mut components = cwd.components();
+    let drive = match components.next() {
+        Some(Component::Prefix(prefix)) => match prefix.kind() {
+            Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => drive,
+            _ => return Err(wire::invalid("worker scratch requires a local DOS volume")),
+        },
+        _ => return Err(wire::invalid("worker scratch requires an absolute CWD")),
+    };
+    if components.next() != Some(Component::RootDir) {
+        return Err(wire::invalid("worker scratch requires an absolute CWD"));
+    }
+    let path = PathBuf::from(format!(
+        "{}:\\msync-worker-{nonce}-{pid}",
+        char::from(drive)
+    ));
+    // The candidate has one component below the volume root. Reject an enrolled
+    // volume or its exact ancestor, including case/verbatim aliases.
+    for root in roots {
+        let normal = native::configuration_path(root)?;
+        let normal = normal.to_string_lossy();
+        let candidate = path.to_string_lossy();
+        let normal = normal.trim_end_matches('\\');
+        if candidate.eq_ignore_ascii_case(normal)
+            || candidate
+                .get(..normal.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(normal))
+                && candidate.as_bytes().get(normal.len()) == Some(&b'\\')
+            || normal
+                .get(..candidate.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(&candidate))
+                && normal.as_bytes().get(candidate.len()) == Some(&b'\\')
+        {
+            return Err(wire::invalid(
+                "worker scratch overlaps an enrolled resource root",
+            ));
+        }
+    }
+    Ok(path)
 }
 
 async fn forward(
@@ -403,6 +527,40 @@ fn error_kind(kind: io::ErrorKind) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scratch_is_a_disjoint_drive_child_not_a_managed_cwd_descendant() {
+        let nonce = "0123456789abcdef0123456789abcdef";
+        for cwd in [r"D:\project\work", r"\\?\D:\project\work"] {
+            let scratch = scratch_path(Path::new(cwd), &[PathBuf::from(cwd)], nonce, 42).unwrap();
+            assert_eq!(
+                scratch,
+                PathBuf::from(format!(r"D:\msync-worker-{nonce}-42"))
+            );
+            assert_eq!(scratch.parent(), Some(Path::new(r"D:\")));
+        }
+        for root in [
+            r"D:\".to_owned(),
+            format!(r"\\?\d:\MSYNC-WORKER-{nonce}-42"),
+            format!(r"D:\msync-worker-{nonce}-42\nested"),
+        ] {
+            assert!(
+                scratch_path(Path::new(r"D:\work"), &[PathBuf::from(root)], nonce, 42).is_err()
+            );
+        }
+        for cwd in [
+            r"D:relative",
+            r"relative",
+            r"\\server\share\work",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\work",
+        ] {
+            assert!(scratch_path(Path::new(cwd), &[], nonce, 42).is_err());
+        }
+        for nonce in ["", "../../escape", "z123456789abcdef0123456789abcdef"] {
+            assert!(scratch_path(Path::new(r"D:\work"), &[], nonce, 42).is_err());
+        }
+        assert!(scratch_path(Path::new(r"D:\work"), &[], nonce, 0).is_err());
+    }
 
     #[tokio::test]
     async fn remote_failures_retain_native_codes_and_domain_error_kinds() {

@@ -38,6 +38,7 @@ type Membership =
     unsafe extern "system" fn(*mut c_void, *mut u16, *mut u16, *mut u16, *mut u32) -> i32;
 type Enumerate = unsafe extern "system" fn(*const u16, u8, u32, *mut u32, *mut u32) -> i32;
 type Kill = unsafe extern "system" fn(u32, *const u16) -> u8;
+type HandlePath = unsafe extern "system" fn(*mut c_void, *mut u16, *mut u8) -> u32;
 type BoxPath = unsafe extern "system" fn(
     *const u16,
     *mut u16,
@@ -69,6 +70,7 @@ pub(super) struct Api {
     enumerate: Enumerate,
     kill: Kill,
     box_path: BoxPath,
+    handle_path: HandlePath,
 }
 
 // SAFETY: DLL reference is process-wide; the documented service/driver APIs are
@@ -153,6 +155,7 @@ impl Api {
                 enumerate: symbol(module, b"SbieApi_EnumProcessEx\0")?,
                 kill: symbol(module, b"SbieDll_KillAll\0")?,
                 box_path: symbol(module, b"SbieApi_QueryBoxPath\0")?,
+                handle_path: symbol(module, b"SbieDll_GetHandlePath\0")?,
             })
         })();
         if result.is_err() {
@@ -289,6 +292,46 @@ impl Api {
         path_from_native(text)
     }
 
+    /// Inspect the actual open handle, not the DLL's virtualized DOS spelling.
+    pub fn require_boxed_directory(
+        &self,
+        name: &str,
+        path: &Path,
+    ) -> io::Result<same_file::Handle> {
+        use std::os::windows::ffi::OsStringExt;
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS;
+
+        self.belongs(std::process::id(), name)?;
+        let directory = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)?;
+        // Pinned sbiedll.h requires SBIE_DLL_HANDLE_PATH_BUFFER_BYTES (8192).
+        let mut output = vec![0u16; 4096];
+        let mut boxed = 0;
+        status(unsafe {
+            (self.handle_path)(directory.as_raw_handle(), output.as_mut_ptr(), &mut boxed) as i32
+        })?;
+        let end = output
+            .iter()
+            .position(|unit| *unit == 0)
+            .ok_or_else(|| io::Error::other("Sandboxie returned an unterminated handle path"))?;
+        let actual = std::ffi::OsString::from_wide(&output[..end]);
+        let actual = actual
+            .to_str()
+            .ok_or_else(|| io::Error::other("Sandboxie handle path is not UTF-8"))?;
+        let actual = path_from_native(actual)?;
+        let root = self.box_path(name)?;
+        require_private_copy(boxed, &actual, &root).map_err(|cause| {
+            io::Error::new(
+                cause.kind(),
+                format!("worker scratch {} in box {name}: {cause}", path.display()),
+            )
+        })?;
+        same_file::Handle::from_file(directory)
+    }
+
     pub fn launch(
         &self,
         name: &str,
@@ -389,6 +432,26 @@ impl Api {
         let operations = NativeQuiescence { api: self, name };
         quiesce_with(&operations, name, keep)
     }
+}
+
+fn require_private_copy(boxed: u8, actual: &Path, root: &Path) -> io::Result<()> {
+    if boxed != 1
+        || !actual.starts_with(root)
+        || actual == root
+        || actual
+            .components()
+            .any(|part| matches!(part, Component::ParentDir))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "unverified private copy: boxed={boxed}, actual={}, box_root={}",
+                actual.display(),
+                root.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 trait Quiescence {
@@ -838,6 +901,27 @@ impl NativeProcess {
 
 #[cfg(test)]
 mod quiescence_tests {
+    #[test]
+    fn scratch_copy_proof_rejects_unboxed_foreign_and_traversal_paths() {
+        use super::require_private_copy;
+        use std::path::Path;
+        let root = Path::new(r"\\?\GLOBALROOT\Device\HarddiskVolume1\owned");
+        let copy = root.join(r"drive\D\msync-worker-123");
+        assert!(require_private_copy(1, &copy, root).is_ok());
+        assert!(require_private_copy(0, &copy, root).is_err());
+        assert!(require_private_copy(2, &copy, root).is_err());
+        assert!(require_private_copy(1, root, root).is_err());
+        assert!(require_private_copy(1, &root.join(r"..\escape"), root).is_err());
+        assert!(
+            require_private_copy(
+                1,
+                Path::new(r"\\?\GLOBALROOT\Device\HarddiskVolume1\owned-foreign\copy"),
+                root
+            )
+            .is_err()
+        );
+    }
+
     use super::*;
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
