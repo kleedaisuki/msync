@@ -413,22 +413,24 @@ not advanced prematurely.
 | Physical endpoints | `endpoint.rs`; old `compiler::{Backend, Location}` paths re-export unchanged types | Existing compiler target: 25 passed |
 | Structured syntax/format | `language::{Document, Expr, parse, format}`; indentation, contextual string/path types and explicit destination modes | 12 targeted cases, including 64 generated UTF-8 literal round trips |
 | Macro expansion | `compiler::structured::Session`; isolated frames, typed arguments, definition-time `global`, source/cwd split, session identities | 22 targeted cases |
-| Typed IR and proofs | `hir`, `hir::{effects, graph}`; transaction regions, process events, type facts, directory metadata, consuming HTTP/unknown reads and provider-bound refinement | 31 targeted cases; independent models check bytes, reads, parent metadata and request ordering |
+| Typed IR and proofs | `hir`, `hir::{effects, graph}`; transaction regions, process events, shared-view epochs, type facts, directory metadata and provider-bound refinement | 47 targeted cases; independent models check bytes, reads, parent metadata, publication phases and request ordering |
 | Atomic frontend submission | `pipeline::{compile, compile_with_context}`; parse, candidate expansion, effect obligations, then lexical-state commit; retain adapter proof premises | Four integration cases, including proof failure without leaked bindings or IDs and invalidated resource-view premises |
-| Compound input ownership | `language::SubmissionBuffer`; physical lines accumulate until blank line/EOF, cancellation discards the entire prefix | Five targeted cases; compiler sees no partial macro or transaction body; terminal-loop integration remains pending |
+| Compound input ownership | `language::SubmissionBuffer`; physical lines accumulate until blank line/EOF, cancellation discards the entire prefix | Five buffer cases plus actual default-frontend macro/transaction REPL journeys; compiler sees no partial body |
 | Version visibility | `transaction::Store<V>`; immutable references, four visibility policies, atomic logical checkpoints, retained origin | 17 cases including write skew, absence, directory phantoms and rollback properties |
 | Filesystem publication | `transaction::filesystem`; independent disk artifacts, tree manifests and retained compensating publication journals | Separate real-filesystem target; not an OS-wide atomicity or crash-recovery claim |
-| Filesystem transaction manager | `transaction::manager`; atomic logical swap after multi-root physical publication, compensating recovery receipts, portable metadata, native case policy, named origin and explicit retryable shutdown | 15 Windows real-filesystem cases; independent metadata controls and cloud Unix acceptance are separate |
+| Filesystem transaction manager | `transaction::manager`; minimal dirty publication, compensating receipts, stable expanding coverage, foreign-head observation and retained origins | 31 Windows real-filesystem cases; independent metadata controls and cloud Unix acceptance are separate |
 | File/literal reference execution | `execution::execute`; expanded macros, selectors/containers/replacement, implicit atomic statements, checkpoints and named rollback | 19 Windows journeys, generated file-state model and one actual WSL-to-native directory replacement; sequential oracle, not the production async scheduler |
 | Process ownership | `process`; exact argv, concurrent bounded-memory output drains, replayable scalar ports, Job/group ownership | Separate actual-child target; not a transaction sandbox |
 | Native Linux resource views | `process::view_linux`; frozen original-path mounts, private temporary/network namespaces, credentialled exec worker, no unmediated fallback | Six real WSL native-tmpfs journeys plus capability-cache regression; explicit cloud namespace gate |
 | Native Windows resource views | `process::view_windows` and `windows_view/`; owned Sandboxie box, driver policy readback, authenticated bounded tree/stdio bridge, payload identity and metadata | Local protocol/absence controls; signed driver installation + ABI proven in cloud; actual boxed IO gate still required |
+| Production stateful runtime | `execution::RuntimeSession`; real shared program cohorts, physical/finite endpoint adapters, prepared launch admission and owned async diagnostics | Nine actual Linux program journeys, real physical/WSL endpoint gates and Windows file controls; all-phase event scheduling remains open |
+| Default CLI/REPL | Structured v0.4 by default, explicit legacy mode, in-place formatter, live job identities and ready-publication pump | 22 existing CLI cases, six structured cases, 12 job cases, 14 Windows UX cases and seven real ConPTY journeys; native cross-input source gate is separate |
 
 Local integration runs are restricted to affected targets plus formatting and
 strict library/changed-target Clippy. The CI selector in `scripts/ci-select.ps1`
 maps component edits to meaningful test targets and keeps broad compatibility
 coverage for shared transport, dependency, or workflow changes. Design-only edits
-do not start Cargo jobs. Eleven selector checks distinguish these cases, including
+do not start Cargo jobs. Fourteen selector checks distinguish these cases, including
 selector-only edits which run the selector regression rather than unrelated Rust
 suites. Review counterexamples are selected with the components they cover.
 
@@ -479,33 +481,52 @@ must not silently rebuild the manager and lose a prior submission's undo record.
 Shell-driven external edits also need an explicit refresh/conflict boundary so
 a named rollback cannot overwrite a foreign newer filesystem head unnoticed.
 
-An invocation's internal stores/imports/views should share one owned workspace.
-A directory source that contains that workspace needs an identity-checked
-internal exclusion, not exclusion of every user `.temp` entry and not recursive
-capture of its own output. This also enables ordinary cwd-root process views:
+An invocation's internal stores/imports/views now share an `InvocationRoot`, an
+exclusively created, identity-checked directory. `SnapshotStore::new_in` retains
+that backing lifetime; cleanup refuses live stores/snapshots/views and is explicit
+and retryable. `capture_in` omits only the current invocation's directory identity,
+not every `.temp` entry: pre-existing user scratch data remains in the source.
+`from_entries_in` retains the exclusion proof and rejects private entries even
+through ordinary/verbatim or case aliases. Fresh scratch ancestor directories
+with no logical children are not invented as source data; configured physical
+scratch directories remain available to existing callers after cleanup.
+
+The reference executor enrolls the existing destination namespace when creating
+new children. Its invocation constructor normalizes its own scratch-creation
+mtime touch in the logical snapshot, and cleanup preserves subsequent logical
+parent timestamps. Focused `execution_workspace_v4` journeys exercise actual cwd
+copy with default internal scratch, user `.temp` sentinel preservation, containing
+namespace origin undo and refusal to delete a foreign replacement. The Windows
+workspace target has eight passing cases, separate from the ordinary reference
+executor's nineteen cases; native Unix cloud validation remains separate.
+
+This ownership representation also enables ordinary cwd-root process views:
 the private source mount can be a descendant of the logical root because the
 bind resolves its source before overmounting that root. Inherited control/status
 FDs remain usable after the invocation's backing pathname is hidden in the child.
-This representation change remains to be implemented and checked before lifting
-the initial disjoint-root restriction.
+Native providers must retain the snapshot's `invocation_for_path` token while a
+prepared/running view uses backing data before lifting their initial disjoint-root
+restriction; a lexical prefix alone is not that ownership proof.
 
-Read enrollment and physical publication must also be separate domains. The
-initial manager republishes an entire enrolled root after a subtree change. That
-is adequate for the current isolated finite fixtures, but cannot simply be used
+Read enrollment and physical publication are separate domains. The original
+prototype republished an entire enrolled root after a subtree change. That
+was adequate for isolated finite fixtures, but cannot simply be used
 for a cwd root containing its own backing workspace: renaming that root moves
 the artifacts on which later statements depend, and rewrites untouched siblings.
-Track minimal dirty subtree replacements separately from directory-metadata-only
-writes, with compensating receipts for both under the same logical guard. A new
+The manager now tracks minimal dirty subtree replacements separately from
+directory-metadata-only writes, with compensating receipts for both under the same
+logical guard. A new
 file's containing namespace must be enrolled or journaled too if full origin undo
 is to restore that directory's mtime. Do not silently exclude all `.temp` data,
 move the backing workspace outside the project, or weaken before-state tests to
 work around this ownership issue. Program-view exports likewise need an explicit
 delta/publication scope rather than assuming a full read view must be swapped.
 
-Before switching the default CLI frontend, retain decoded operand provenance and
-owned source identities through cross-submission macro expansion, not only call
-site byte spans. Compound-buffer tests alone are not a native terminal integration
-gate. The public `ProcessEffects` premise also remains the trusted view provider's
+The default CLI frontend now retains decoded operand provenance and owned source
+identities through cross-submission macro expansion, not only call site byte
+spans. Compound-buffer tests alone are not a native terminal integration gate;
+the default frontend also passes real ConPTY and native WSL cross-input journeys.
+The public `ProcessEffects` premise remains the trusted view provider's
 obligation; different argv strings or successful samples cannot establish purity.
 
 Per-instruction `OperationFacts` are equally explicit premises. Unknown filesystem
@@ -515,3 +536,83 @@ creation/type changes include namespace-metadata writes. A graph may be a valid
 conservative scheduling certificate while `is_execution_ready()` is false: type
 inspection, selector expansion and the physical stream scheduler are separate
 preparation obligations, not facts invented by pure syntax compilation.
+
+### Stateful live execution checkpoint
+
+`execution::live::RuntimeSession` now owns the file engine, transaction origins,
+native program views, unique ports and pending asynchronous flows across source
+submissions. `execute` joins a complete document, while `submit` preserves an
+unconnected program/its stdin for later REPL inputs; `wait`, `cancel_active` and
+`shutdown` provide explicit lifetime boundaries. `execute_prepared` and
+`submit_prepared` replay the preparation certificate before using its rewritten
+HIR. Runtime construction is lazy and an empty submission creates no scratch.
+
+Every native program's stdin/stdout/stderr handles are extracted before waits.
+Input and output flows run as separately admitted tasks; two concurrent drains
+inside the native process layer prevent unconsumed stderr from blocking stdout
+or an exit-code observation. Admission reserves the process layer's six buffers
+and two additional buffers per connected flow, with separate process/stream slots.
+An over-budget co-start cohort fails rather than waiting behind its own pipe.
+Only actual native providers launch programs; there is no unisolated fallback.
+
+At a checkpoint the session closes untaken stdin, joins all IO and native process
+trees, seals private filesystem views, and applies their deltas against the exact
+initial snapshots. It then stages stdout/stderr/scalar file assignments in source
+order before publishing. Output file staging is deferred until after the program
+delta so a full-root export cannot erase its own declared output assignment.
+Nonzero process status remains replayable UTF-8 data. Cancellation uses native
+`seal_cancellable` ownership APIs, not dropping a consuming seal future; cancellation
+therefore joins/discards the real view before origin restoration or cleanup.
+
+Focused actual Linux evidence: nine compiler-to-runtime journeys passed on WSL
+UID 1000 with project `.temp` privately mounted native tmpfs (128 MiB). These cover
+the requested A1/B2-like checkpoints, local/named rollback and PID files; UTF-8/NUL
+stdin with 768 KiB stderr before stdout; program ports connected across separate
+submissions; cancellation after an observed private output prefix; and default
+cwd-backed `.temp` retaining pre-existing user scratch but removing the owned
+invocation after shutdown. Test runtime was 0.76 seconds, not a production latency
+benchmark. The extended set also exercises declared stdout overriding the same
+filename written directly by its child, a two-child 512 KiB pipeline whose
+consumer reads the producer's private file followed by named origin rollback,
+connecting that pipeline across separate REPL submissions, and rejecting a
+candidate at pre-payload admission without cancelling its existing peer. Strict
+library/binary/live-target Clippy passed. Windows protocol and
+file-only controls do not stand in for an actual signed-driver live-engine run.
+
+Opaque programs launched within the same owner/epoch now share the actual native
+managed filesystem: Linux namespace mounts bind the same backing tree; Windows
+workers join the same exclusive box without reseeding it. Payload identities,
+ports and output quotas remain independent. Every cohort payload joins before
+the first export; subsequent children release their worker without exporting
+the tree again. The epoch rejects launches after export, and its final owner
+performs private cleanup. Only one baseline-to-final delta is imported. Ordinary
+concurrent file races inside this shared epoch have native OS semantics; shared
+storage is not a claim that their writes commute. Changed-file disjointness alone
+still does not prove independent reads.
+
+Implicit completion selects ready cohorts rather than awaiting transaction IDs
+in sequence, so a held external socket does not suppress a later EOF publication.
+Independent finite statements can run while external streams remain open; a
+statement touching an active managed path fails before effects with an explicit
+wait/stop action. Physical EOF establishes a new read-committed publication
+statement so unrelated namespace updates do not create stale sibling conflicts.
+At quiescent submission boundaries the existing manager refreshes foreign host
+bytes/metadata as foreign versions, preserving named origins and preventing a
+later named rollback from overwriting an external edit.
+
+The planner must qualify private-view writes versus pinned immutable
+stdin sources by version. Applying a whole-root physical RAW dependency to a
+program's own immutable stdin snapshot would incorrectly gate its producer behind
+process exit. Shared-cohort graph contraction and production admission must use
+actual view identities and owner/epoch proofs, not infer shared storage from
+argv or a future port connection. These are unified scheduler obligations, not
+a reason to waive certificate checks or call the full v0.4 goal complete.
+
+Shared-view contraction and actual pre-payload Spawn admission are implemented.
+All-phase scheduling is not yet complete: finite assignments still use
+conservative source order and actual resource-conflict guards. The next
+submission-owned event ledger must gate flows, finite work and publication as
+well, without confusing reused source instruction IDs, private delta import or
+owner commit. See the focused next-integration section in `planning.md`.
+Performance acceptance has not started; correctness counts above are not latency
+benchmarks.

@@ -383,3 +383,30 @@ Requirement-to-evidence mapping:
 
 Reusable setup, interpretation and findings are in the repository. Disposable raw
 gate/installed logs use `.temp/v031-*`; removing them does not remove this record.
+
+## Default structured frontend: Windows UI compatibility acceptance
+
+The default v0.4 frontend was exercised without a syntax override or executable
+redirect using the existing `ux_031`, `review_ui_031`, and `repl_terminal` targets
+in one bounded Cargo invocation (`--locked --jobs 2 --no-fail-fast`,
+`CARGO_INCREMENTAL=0`, test threads 1). The Windows result was **14 UX tests and
+seven actual ConPTY journeys passed**, plus the isolated ConPTY host helper.
+The two WSL Bash journeys were explicitly ignored by their existing platform
+requirements; the Unix-only removed-working-directory target contained zero
+Windows cases. These counts are component acceptance, not a complete v0.4 gate.
+
+Observed journeys include distinct lexical colors before Enter, wide Unicode
+editing, in-memory history, viewport-only clear with retained bindings, normal
+isolated PowerShell entry/return, child and active-transfer Ctrl-C, physical
+source-peer EOF, unpublished capture cleanup, plain/color diagnostics, missing
+script recovery, expanded missing alias endpoints, exact formatter stdout,
+read-only refusal, and shell stdin ownership. Strict Clippy passed for these
+three test targets with warnings denied.
+
+One test expectation was adapted to the intentional transaction architecture:
+a successful v0.4 transfer leaves the shared `.temp` scratch parent, rather than
+only the three original fixture/output entries. The terminal test now checks
+all four exact entry names and additionally requires the scratch parent to be
+empty after process exit. It still rejects any persisted editor history/cache
+or retained private invocation, rather than merely permitting an extra file.
+No production changes were made for this acceptance pass.

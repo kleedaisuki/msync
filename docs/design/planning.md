@@ -418,3 +418,87 @@ directory metadata. These are graph/proof tests, not substitutes for the actual
 Linux/Windows shared-view journeys. Runtime event admission and publication
 must consume these phases; graph construction alone does not establish complete
 scheduler integration or completion of v0.4.
+
+### Next integration: submission-owned event binding
+
+Status: implementation proposal, not a claim that the current runtime consumes
+every node gate. The native shared-view/prelaunch gate is the current baseline.
+
+Keep immutable plans alive with their work rather than consulting a mutable
+"latest graph" when an older REPL flow completes. Allocate a monotonic
+`SubmissionId` before admitting a source submission and retain an
+`Arc<SubmissionPlan>` in every flow, staged assignment and pending region action.
+The plan owns prepared HIR, source identities, graph premises and event bindings.
+
+```text
+NodeKey          = (SubmissionId, HIR InstructionId)
+PublicationOrder = separate source-order ticket, never an HIR node identity
+CohortKey        = (provider, actual ViewId, runtime owner, native epoch)
+Gate             = (target NodeKey, Start | Publish | RegionCommit, prerequisites)
+```
+
+An invocation/session namespace contains those IDs; process IDs remain the
+session's globally owned `ProcessId`, because ports outlive source submissions.
+Bind `CohortSealed(CohortId(i))` through that plan's retained certificate into a
+`CohortKey`. Never use `i` as a cross-submission/global event identity. Likewise,
+split the current runtime's fresh publication-order counter from HIR identity;
+numeric coincidence is not a mapping. Preserve explicit region/source order
+when assigning publication tickets, rather than relying on HIR IDs being sorted.
+
+| Persistent event | Completion condition |
+| --- | --- |
+| Node service ready | Private IO/stage work is available; this is not logical completion |
+| Node logical complete | Its assignment is visible in the correct owner's version view |
+| Process started/exited | Actual native acknowledgement/status for that session-owned process |
+| Cohort imported | All members joined and the one private delta entered the owner's pending view |
+| Owner committed | The epoch is visible to dependent foreign owners under the isolation contract |
+
+The last two events must not be collapsed. Same-owner stdout publication needs
+the imported epoch, then writes its assignment into the pending view; it cannot
+wait for the commit that itself requires that assignment. A foreign ordinary
+file read must not see "sealed" as permission to read an older committed head.
+For a first correct scheduler, conservatively finish the preceding implicit
+owner before admitting such a foreign start. Explicit transaction child nodes
+can complete in their pending owner view; the transaction wrapper completes
+only at its actual commit. Manager visibility policy, including read-uncommitted,
+remains authoritative rather than being guessed from an event name.
+
+One scheduler owns the ledger and manager mutation. Native/flow tasks send typed
+terminal events through a bounded channel; notifications are wakeups, not the
+truth of completion. Store success/failure persistently so late subscribers and
+dependent cancellation cannot lose an event. Do not build completion from bare
+`Notify` counts: Tokio documents its single-permit and registration behavior in
+[the Notify contract](https://docs.rs/tokio/latest/tokio/sync/struct.Notify.html).
+
+Admission/pumping contract:
+
+1. Bind and validate all start, publication and region-commit gates before
+   effects. Apply them to finite transfers and connected flows, not just spawns.
+   Acquire a pinned input at the correct logical version, after its prior
+   producers; opening an arbitrary old snapshot is not refinement.
+2. Admit the ready frontier within copy/process/stream/buffer limits. Reserve a
+   required co-start cohort together; do not wait with half its budget held.
+3. Pump other ready work while a gate is blocked. Private drain EOF can enable
+   sealing, but cannot mark an output node complete before its publication gate.
+   Export/import the cohort once, publish ready assignments in source order,
+   and emit owner-visible/committed events at their distinct boundaries.
+4. If ready work is exhausted, await actual registered task/native events or
+   cancellation. A missing future producer is not a live task. In the REPL,
+   reject a new submission before its effects when progress requires future
+   human input on an owned stdin; identify the process/resource and offer an
+   input connection, `/wait` or `/stop`, rather than hanging the command loop.
+5. On failure, terminally fail dependent gates, join/cancel owned work and retain
+   the structured cause/source chain. Drop does not silently fulfil a gate.
+
+Retain a submission until no flow, deferred publication or dependent gate owns
+it. Retain process scalar receipts separately for later REPL reads. This uses
+explicit work ownership/progress rather than timers; the relevant dataflow
+precedent is [Naiad's progress-coordination model](https://www.microsoft.com/en-us/research/wp-content/uploads/2013/11/naiad_sosp2013.pdf),
+without importing its general timestamp machinery into this structured DSL.
+
+Discriminating follow-up gates: two inputs reusing HIR node zero while the first
+still runs; delayed stdout publication versus an unrelated ready transfer;
+same-owner read-your-writes before commit versus a foreign committed read;
+late completion subscription/cancellation; and a REPL operation blocked by an
+unconnected stdin that returns advice without starting any new effects. Actual
+native cohort tests remain required; a spawn-only gate does not close this work.

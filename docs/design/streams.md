@@ -249,3 +249,44 @@ tmpfs. See `runtime.md` and `tests/ssh.rs` for that reproducible environment.
 These tests establish actual platform behavior for the implementation host, not
 a promise of hostile concurrent path mutation safety or every network protocol's
 duplex semantics. Those are distinct contracts rather than hidden special cases.
+
+### Default v4 physical flow integration
+
+`RuntimeSession` routes physical pipe/socket endpoints through the mature stream
+engine rather than recording them as immutable files. Endpoint preparation is
+metadata-only. Local source files are read from pinned Manager artifacts, with
+the artifact path retained for native file-to-TCP acceleration. Generic program
+port adapters retain endpoint close watchers and the remote COMMITTED fence.
+
+An external stream targeting a managed file writes an invocation-owned capture.
+Only successful EOF makes that capture eligible for Manager staging and atomic
+publication; cancellation drops the physical descriptors and preserves the old
+target. Each independent flow owns its cancellation child and admission lease.
+The destination statement observes committed state at EOF (ReadCommitted plus a
+fresh statement), so two long-lived independent streams targeting sibling names
+do not conflict merely because their connections started in the same epoch.
+Named transactions reject external stream effects before any instruction runs,
+because a native pipe/socket cannot participate in prepare/commit/abort.
+
+`tests/physical_execution_v4.rs` covers real TCP EOF publication, subsequent
+same-session reads, immutable outgoing file data, literal outgoing data,
+cancellation, independent peer closure, and a Unix FIFO co-start chain. Physical
+output directories containing live children use explicit sparse namespace and
+target-entry enrollment. The FIFO is never captured or silently omitted from a
+purported complete snapshot. Whole sparse-directory reads remain unsupported;
+ordinary target entries and subsequent same-session copies remain usable.
+Program consumers expose actual payload-exit notification as a destination close
+watcher, ending an idle physical input normally without global cancellation.
+
+Verification (2026-10-27): native Windows `physical_execution_v4` passed six
+TCP journeys; unchanged legacy `streams` passed eleven tests (one explicit WSL
+integration test not selected). Linux `physical_execution_v4` passed all nine
+journeys, including real FIFO co-start, successful same-directory FIFO/file
+publication and subsequent copy, and actual child exit with an idle TCP source.
+The Linux binary was built with the existing `target/wsl-performance` cache, then
+run under `unshare -Urnm` with a private 128 MiB tmpfs mounted on project `.temp`;
+`stat -f` reported `tmpfs`. The private network namespace enables only its own
+loopback via `ip link set lo up`. Thus FIFO fixtures did not run on DrvFs and no
+host SSH/network configuration changed. Reproduction helper is disposable
+`.temp/check-physical-native-v4.sh`; the authoritative tests remain in `tests/`.
+Strict `cargo clippy --lib --test physical_execution_v4 -- -D warnings` passed.
