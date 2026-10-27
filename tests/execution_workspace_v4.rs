@@ -1,5 +1,7 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
 
 use msync::compiler::CompileContext;
