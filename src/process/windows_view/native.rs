@@ -6,7 +6,7 @@ use std::io;
 use std::mem;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
 
@@ -375,11 +375,15 @@ impl Api {
     }
 
     pub fn quiesce_except(&self, name: &str, keep: Option<u32>) -> io::Result<()> {
+        self.quiesce_except_many(name, &keep.into_iter().collect::<Vec<_>>())
+    }
+
+    pub fn quiesce_except_many(&self, name: &str, keep: &[u32]) -> io::Result<()> {
         for _ in 0..32 {
             let pids = self
                 .pids(name)?
                 .into_iter()
-                .filter(|pid| Some(*pid) != keep)
+                .filter(|pid| !keep.contains(pid))
                 .collect::<Vec<_>>();
             if pids.is_empty() {
                 return Ok(());
@@ -431,6 +435,87 @@ pub(super) fn path_from_native(text: &str) -> io::Result<PathBuf> {
         ));
     }
     Ok(path)
+}
+
+/// Sandboxie's DOS-to-NT configuration parser treats `\\?\` as UNC, not as
+/// Win32 verbatim syntax. Serialize supported canonical filesystem prefixes in
+/// that parser's own namespace; actual effective paths are still checked by ID.
+pub(super) fn configuration_path(path: &Path) -> io::Result<std::ffi::OsString> {
+    use std::os::windows::ffi::OsStringExt;
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| matches!(part, Component::CurDir | Component::ParentDir))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Sandboxie directory policies require canonical absolute paths",
+        ));
+    }
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "Sandboxie directory policies require DOS drive or UNC prefixes",
+        ));
+    };
+    let verbatim = matches!(
+        prefix.kind(),
+        Prefix::VerbatimDisk(_) | Prefix::VerbatimUNC(_, _)
+    );
+    if verbatim
+        && path
+            .as_os_str()
+            .encode_wide()
+            .any(|unit| unit == b'/' as u16)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a verbatim path containing forward slashes is not a canonical directory policy",
+        ));
+    }
+    if verbatim
+        && path.components().any(|part| {
+            matches!(part, Component::Normal(name)
+        if name.encode_wide().last().is_some_and(|unit| matches!(unit, 0x20 | 0x2e)))
+        })
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a verbatim directory ending in a space or dot cannot be represented by Sandboxie's DOS configuration parser",
+        ));
+    }
+    let mut encoded = match prefix.kind() {
+        Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => vec![letter as u16, b':' as u16],
+        Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+            let mut result = vec![b'\\' as u16; 2];
+            result.extend(server.encode_wide());
+            result.push(b'\\' as u16);
+            result.extend(share.encode_wide());
+            result
+        }
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "Sandboxie directory policies do not support this device or verbatim namespace",
+            ));
+        }
+    };
+    let whole = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    let prefix_length = prefix.as_os_str().encode_wide().count();
+    encoded.extend(whole[prefix_length..].iter().map(|unit| {
+        if *unit == b'/' as u16 {
+            b'\\' as u16
+        } else {
+            *unit
+        }
+    }));
+    if encoded.contains(&0) || encoded.len() > 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Sandboxie expanded configuration paths must fit its 1024-character limit and cannot contain NUL",
+        ));
+    }
+    Ok(std::ffi::OsString::from_wide(&encoded))
 }
 
 #[derive(Debug)]

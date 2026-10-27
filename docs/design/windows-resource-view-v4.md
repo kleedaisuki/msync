@@ -33,6 +33,25 @@ NTSTATUS. A driver-free Windows regression obtains a real NT device path using
 physically identical, and rejects a different directory. The targeted native
 driver journeys still require rerunning after this correction.
 
+The next provisioned run,
+[40500527495](https://github.com/kleedaisuki/msync/actions/runs/40500527495),
+made a separate configuration-serialization issue observable: an input
+`\\?\D:\...` was stored unchanged but expanded to `\Device\Mup\?\D:\...`.
+Sandboxie's DOS configuration parser treated the Win32 verbatim prefix as a UNC
+server name. The physical-identity check correctly refused this invalid mapping;
+it must never be made valid by stripping characters from the expanded result.
+
+Directory settings now have a dedicated input serializer: canonical verbatim
+drive paths become ordinary DOS drive paths, and verbatim UNC paths become
+ordinary UNC paths before they reach `SbieDll_UpdateConf`. Unsupported device or
+volume prefixes and verbatim components whose trailing-dot/space semantics would
+change are refused. Runtime paths, argv and expected ownership identities retain
+their original canonical representation. Unit regressions cover supported prefix
+forms and ensure malformed MUP translations remain distinct, while the existing
+NT-path identity and driver confinement checks remain mandatory. Native driver
+journeys still require the next explicit gate; local unit success is not a native
+isolation acceptance result.
+
 The deployment/source investigation and pinned installer are in
 [transactions-v4.md](transactions-v4.md). The new runtime implementation is
 `src/process/view_windows.rs` with the focused `windows_view/` native ABI, bounded

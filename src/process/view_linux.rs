@@ -16,6 +16,7 @@
 //! and sealed exit metadata name the actual payload. Exit codes retain
 //! bubblewrap's shell-style signal normalization, not a fabricated raw signal.
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -26,9 +27,9 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
-use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use same_file::Handle;
 use tokio::io::AsyncReadExt;
@@ -39,7 +40,7 @@ use crate::endpoint::{Backend, Location};
 use crate::hir::ReadPort;
 use crate::hir::effects::{Access, AccessKind, Effects, FileResource, Resource, Scope};
 use crate::hir::graph::ProcessEffects;
-use crate::transaction::filesystem::{FsError, Snapshot, SnapshotStore};
+use crate::transaction::filesystem::{FsError, InvocationRoot, Snapshot, SnapshotStore};
 
 static CAPABILITY: OnceLock<PathBuf> = OnceLock::new();
 static NEXT_VIEW: AtomicU64 = AtomicU64::new(0);
@@ -176,7 +177,15 @@ impl Provider {
             ));
         }
         validate_roots(scratch, &roots)?;
-        let workspace = Workspace::create(scratch)?;
+        let invocation = roots
+            .iter()
+            .map(|root| root.snapshot.invocation_for_path(scratch))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|failure| ViewError::filesystem("verify private backing", failure))?
+            .into_iter()
+            .flatten()
+            .next();
+        let workspace = Workspace::create(scratch, invocation)?;
         let mut mounts = Vec::with_capacity(roots.len());
         for (index, root) in roots.into_iter().enumerate() {
             let private = workspace.path.join(format!("root-{index}"));
@@ -197,28 +206,49 @@ impl Provider {
         let effects = resource_effects(&mounts, &workspace.path)?;
         Ok(PreparedView {
             provider: self.clone(),
-            workspace,
+            workspace: Arc::new(workspace),
             mounts,
             effects,
+            cohort: Arc::new(Mutex::new(Cohort::default())),
         })
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Mount {
     logical: PathBuf,
     private: PathBuf,
 }
 
 /// Only private file data exists at this stage; no child has been launched.
+#[derive(Clone)]
 pub struct PreparedView {
     provider: Provider,
-    workspace: Workspace,
+    workspace: Arc<Workspace>,
     mounts: Vec<Mount>,
     effects: ProcessEffects,
+    cohort: Arc<Mutex<Cohort>>,
+}
+
+#[derive(Default)]
+struct Cohort {
+    pending: BTreeSet<u32>,
+    exported: bool,
 }
 
 impl PreparedView {
+    /// Join all cohort payloads before exporting any fork of this shared view.
+    pub fn fork_shared(&self) -> Self {
+        self.clone()
+    }
+
+    fn cleanup(self) -> Result<(), ViewError> {
+        match Arc::try_unwrap(self.workspace) {
+            Ok(workspace) => workspace.cleanup(),
+            Err(_) => Ok(()),
+        }
+    }
+
     pub fn effects(&self) -> &ProcessEffects {
         &self.effects
     }
@@ -281,6 +311,13 @@ impl PreparedView {
         spec: &ProgramSpec,
         config: ProcessConfig,
     ) -> Result<RunningView, ViewError> {
+        let mut cohort = self.cohort.lock().unwrap();
+        if cohort.exported {
+            return Err(ViewError::invalid(
+                &self.workspace.path,
+                "a sealed shared epoch cannot launch another payload",
+            ));
+        }
         tokio::runtime::Handle::try_current().map_err(|cause| {
             ViewError::new(
                 "configure worker control",
@@ -294,7 +331,10 @@ impl PreparedView {
                 "process spools must be outside the resource view being sealed",
             ));
         }
-        let status = self.workspace.path.join("status.jsonl");
+        let status = self.workspace.path.join(format!(
+            "status-{}.jsonl",
+            NEXT_VIEW.fetch_add(1, Ordering::Relaxed)
+        ));
         let status_file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -321,6 +361,8 @@ impl PreparedView {
         let command = self.command(spec, status_file, worker)?;
         let process = Process::spawn_prepared(command, config)
             .map_err(|cause| ViewError::new("launch", &spec.executable, io::Error::other(cause)))?;
+        cohort.pending.insert(process.pid());
+        drop(cohort);
         Ok(RunningView {
             prepared: self,
             process,
@@ -334,7 +376,7 @@ impl PreparedView {
     /// Prepared views have no live child; cleanup remains explicit so
     /// native permission errors cannot silently erase recovery evidence.
     pub fn discard(self) -> Result<(), ViewError> {
-        self.workspace.cleanup()
+        self.cleanup()
     }
 }
 
@@ -356,6 +398,43 @@ struct ProgramIdentity {
 }
 
 impl RunningView {
+    pub fn fork_shared(&self) -> PreparedView {
+        self.prepared.fork_shared()
+    }
+
+    /// A shared backing tree is exportable only after every payload is joined.
+    pub async fn join(&mut self) -> Result<(), ViewError> {
+        self.process.wait().await.map_err(|cause| {
+            ViewError::new(
+                "join shared payload",
+                &self.executable,
+                io::Error::other(cause),
+            )
+        })?;
+        self.prepared
+            .cohort
+            .lock()
+            .unwrap()
+            .pending
+            .remove(&self.process.pid());
+        Ok(())
+    }
+    /// A child-owned close notification, not a request to cancel its siblings.
+    pub fn exit_signal(&self) -> tokio_util::sync::CancellationToken {
+        let mut receiver = self.process.finished.clone();
+        let signal = tokio_util::sync::CancellationToken::new();
+        let completed = signal.clone();
+        tokio::spawn(async move {
+            while receiver.borrow().is_none() {
+                if receiver.changed().await.is_err() {
+                    break;
+                }
+            }
+            completed.cancel();
+        });
+        signal
+    }
+
     /// Low-level wrapper ownership API. `Process::pid` here identifies bubblewrap;
     /// use `program_pid` or `scalar` for DSL-visible program identities.
     pub fn process_mut(&mut self) -> &mut Process {
@@ -447,7 +526,13 @@ impl RunningView {
                 io::Error::other(cause),
             )
         })?;
-        self.prepared.workspace.cleanup()?;
+        self.prepared
+            .cohort
+            .lock()
+            .unwrap()
+            .pending
+            .remove(&self.process.pid());
+        self.prepared.cleanup()?;
         let identity = self.identity.ok_or_else(|| {
             ViewError::new(
                 "cancel before program acknowledgement",
@@ -462,6 +547,40 @@ impl RunningView {
         Ok(exit)
     }
 
+    /// Cancellation retains ownership until physical join and private discard;
+    /// callers must not drop a consuming seal future to simulate cancellation.
+    pub async fn seal_cancellable(
+        mut self,
+        store: &SnapshotStore,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<SealedView, ViewError> {
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                let path = self.executable.clone();
+                self.cancel().await?;
+                return Err(ViewError::new("seal cancelled view", &path,
+                    io::Error::new(io::ErrorKind::Interrupted, "cancelled program views are discarded")));
+            }
+            completed = self.process.wait() => {
+                completed.map_err(|cause| ViewError::new("join before seal", &self.executable, io::Error::other(cause)))?;
+            }
+        }
+        if cancel.is_cancelled() {
+            let path = self.executable.clone();
+            self.cancel().await?;
+            return Err(ViewError::new(
+                "seal cancelled view",
+                &path,
+                io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "cancelled program views are discarded",
+                ),
+            ));
+        }
+        self.seal(store).await
+    }
+
     /// Export happens only after the namespace leader, descendants, and physical
     /// output drains finish. A nonzero program exit is returned as program data.
     pub async fn seal(mut self, store: &SnapshotStore) -> Result<SealedView, ViewError> {
@@ -472,10 +591,27 @@ impl RunningView {
                 io::Error::other(cause),
             )
         })?;
+        let export = {
+            let mut cohort = self.prepared.cohort.lock().unwrap();
+            cohort.pending.remove(&self.process.pid());
+            if !cohort.pending.is_empty() {
+                return Err(ViewError::new(
+                    "seal shared view",
+                    &self.executable,
+                    io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "join every shared payload before exporting its epoch",
+                    ),
+                ));
+            }
+            let export = !cohort.exported;
+            cohort.exported = true;
+            export
+        };
         let status = fs::read_to_string(&self.status)
             .map_err(|cause| ViewError::new("read launch status", &self.status, cause))?;
         if exit.cancelled {
-            self.prepared.workspace.cleanup()?;
+            self.prepared.cleanup()?;
             return Err(ViewError::new(
                 "seal cancelled view",
                 &self.status,
@@ -509,6 +645,9 @@ impl RunningView {
         exit.pid = identity.host;
         let mut roots = Vec::with_capacity(self.prepared.mounts.len());
         for mount in &self.prepared.mounts {
+            if !export {
+                break;
+            }
             let snapshot = store
                 .capture(&mount.private)
                 .map_err(|failure| ViewError::filesystem("export managed root", failure))?;
@@ -517,8 +656,8 @@ impl RunningView {
                 snapshot,
             });
         }
-        let effects = self.prepared.effects;
-        self.prepared.workspace.cleanup()?;
+        let effects = self.prepared.effects.clone();
+        self.prepared.cleanup()?;
         Ok(SealedView {
             roots,
             exit,
@@ -906,10 +1045,17 @@ fn validate_roots(scratch: &Path, roots: &[ManagedRoot]) -> Result<(), ViewError
                 "managed roots must not cover namespace implementation mounts or the filesystem root",
             ));
         }
-        if aliases_overlap(scratch, &root.logical)? {
+        if aliases_overlap(scratch, &root.logical)?
+            && !root
+                .snapshot
+                .excludes_private_path(scratch)
+                .map_err(|failure| {
+                    ViewError::filesystem("verify private backing exclusion", failure)
+                })?
+        {
             return Err(ViewError::invalid(
                 &root.logical,
-                "scratch and managed roots must be disjoint",
+                "a managed root may contain scratch only when its immutable snapshot excludes that exact owned invocation",
             ));
         }
         for previous in &roots[..index] {
@@ -1046,10 +1192,11 @@ fn resource_effects(mounts: &[Mount], identity: &Path) -> Result<ProcessEffects,
 struct Workspace {
     path: PathBuf,
     identity: Handle,
+    _invocation: Option<InvocationRoot>,
 }
 
 impl Workspace {
-    fn create(scratch: &Path) -> Result<Self, ViewError> {
+    fn create(scratch: &Path, invocation: Option<InvocationRoot>) -> Result<Self, ViewError> {
         for _ in 0..128 {
             let path = scratch.join(format!(
                 "view-linux-{}-{}",
@@ -1062,7 +1209,11 @@ impl Workspace {
                         .map_err(|cause| ViewError::new("protect private view", &path, cause))?;
                     let identity = Handle::from_path(&path)
                         .map_err(|cause| ViewError::new("identify private view", &path, cause))?;
-                    return Ok(Self { path, identity });
+                    return Ok(Self {
+                        path,
+                        identity,
+                        _invocation: invocation,
+                    });
                 }
                 Err(cause) if cause.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(cause) => return Err(ViewError::new("create private view", &path, cause)),

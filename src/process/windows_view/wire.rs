@@ -26,10 +26,12 @@ pub(super) const EXPORT: u8 = 15;
 pub(super) const COMPLETE: u8 = 16;
 pub(super) const CANCEL: u8 = 17;
 pub(super) const FAILURE: u8 = 18;
+pub(super) const ROOT_REFERENCE: u8 = 19;
+pub(super) const RELEASE: u8 = 20;
 const MAX_FRAME: usize = 1024 * 1024;
 
 pub(super) fn hello(nonce: &str) -> Vec<u8> {
-    format!("msync-windows-view:2:{nonce}").into_bytes()
+    format!("msync-windows-view:3:{nonce}").into_bytes()
 }
 
 pub(super) async fn send(

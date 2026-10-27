@@ -14,14 +14,15 @@ mod wire;
 #[path = "windows_view/worker.rs"]
 mod worker;
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io;
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use same_file::Handle;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
@@ -35,7 +36,7 @@ use crate::endpoint::{Backend, Location};
 use crate::hir::ReadPort;
 use crate::hir::effects::{Access, AccessKind, Effects, FileResource, Resource, Scope};
 use crate::hir::graph::ProcessEffects;
-use crate::transaction::filesystem::{Snapshot, SnapshotStore};
+use crate::transaction::filesystem::{InvocationRoot, Snapshot, SnapshotStore};
 use wire::{Decode, Encode};
 
 pub const WORKER_FLAG: &str = "--internal-windows-view-worker";
@@ -145,7 +146,7 @@ impl Provider {
         let effects = effects(&roots, &owned.name)
             .map_err(|cause| ViewError::new("certify footprint", &scratch, cause))?;
         Ok(PreparedView {
-            owned,
+            owned: Arc::new(owned),
             worker,
             roots,
             effects,
@@ -154,14 +155,27 @@ impl Provider {
 }
 
 #[must_use = "launch this private view or explicitly discard it"]
+#[derive(Clone)]
 pub struct PreparedView {
-    owned: OwnedBox,
+    owned: Arc<OwnedBox>,
     worker: PathBuf,
     roots: Vec<ManagedRoot>,
     effects: ProcessEffects,
 }
 
 impl PreparedView {
+    /// Fork only within one epoch; every payload must join before any export.
+    pub fn fork_shared(&self) -> Self {
+        self.clone()
+    }
+
+    fn cleanup_shared(&self) -> Result<(), ViewError> {
+        if Arc::strong_count(&self.owned) == 1 {
+            self.owned.cleanup_ref()?;
+        }
+        Ok(())
+    }
+
     pub fn box_name(&self) -> &str {
         &self.owned.name
     }
@@ -178,7 +192,7 @@ impl PreparedView {
     }
 
     pub fn discard(self) -> Result<(), ViewError> {
-        self.owned.cleanup()
+        self.cleanup_shared()
     }
 
     pub async fn launch(
@@ -186,11 +200,34 @@ impl PreparedView {
         spec: &ProgramSpec,
         config: ProcessConfig,
     ) -> Result<RunningView, ViewError> {
+        let initialization = self.owned.initialization.lock().await;
+        if self.owned.exported.load(Ordering::Acquire) {
+            return Err(ViewError::new(
+                "launch shared epoch",
+                &self.owned.path,
+                wire::invalid("a sealed shared epoch cannot launch another payload"),
+            ));
+        }
         self.revalidate()?;
         let spool_root = trees::safe_path(&config.scratch_root)
             .map_err(|cause| ViewError::new("validate spool root", &config.scratch_root, cause))?;
+        let backing_is_owned = self
+            .owned
+            .invocation
+            .as_ref()
+            .map(|invocation| invocation.contains_private(&spool_root))
+            .transpose()
+            .map_err(|cause| {
+                ViewError::new(
+                    "verify spool ownership",
+                    &spool_root,
+                    io::Error::other(cause),
+                )
+            })?
+            .unwrap_or(false);
         if self.roots.iter().any(|root| {
-            spool_root.starts_with(&root.logical) || root.logical.starts_with(&spool_root)
+            (spool_root.starts_with(&root.logical) || root.logical.starts_with(&spool_root))
+                && !backing_is_owned
         }) || spool_root.starts_with(&self.owned.path)
         {
             return Err(ViewError::new(
@@ -229,7 +266,14 @@ impl PreparedView {
                 wire::invalid("program cwd must belong to the complete managed resource view"),
             ));
         }
-        let pipe = format!(r"\\.\pipe\msync_{}", self.owned.nonce);
+        let launch_nonce = native::nonce()
+            .map_err(|cause| ViewError::new("create launch nonce", &self.owned.path, cause))?;
+        let pipe = format!(r"\\.\pipe\msync_{launch_nonce}");
+        self.owned.set(
+            "OpenPipePath",
+            OsString::from(format!(r"\Device\NamedPipe\msync_{launch_nonce}")).as_os_str(),
+            true,
+        )?;
         let server = ServerOptions::new()
             .first_pipe_instance(true)
             .reject_remote_clients(true)
@@ -248,6 +292,7 @@ impl PreparedView {
             .api
             .launch(&self.owned.name, &self.worker, &args, &self.owned.path)
             .map_err(|cause| ViewError::new("launch boxed worker", &self.worker, cause))?;
+        self.owned.workers.lock().unwrap().insert(worker.pid);
         tokio::time::timeout(std::time::Duration::from_secs(30), server.connect())
             .await
             .map_err(|_| {
@@ -308,6 +353,15 @@ impl PreparedView {
             .await
             .map_err(|cause| ViewError::new("send program", &self.owned.path, cause))?;
         for root in &self.roots {
+            if self.owned.seeded.load(Ordering::Acquire) {
+                let mut body = Encode::default();
+                body.text(root.logical.as_os_str())
+                    .map_err(|cause| ViewError::new("encode shared root", &root.logical, cause))?;
+                wire::send(&mut sink, wire::ROOT_REFERENCE, &body.0)
+                    .await
+                    .map_err(|cause| ViewError::new("attach shared root", &root.logical, cause))?;
+                continue;
+            }
             trees::send_snapshot(
                 &mut sink,
                 &root.logical,
@@ -342,6 +396,8 @@ impl PreparedView {
                 wire::invalid("missing payload launch receipt"),
             ));
         }
+        self.owned.seeded.store(true, Ordering::Release);
+        drop(initialization);
         // The authenticated worker reports its native Child PID. Querying by PID
         // here would race a valid fast exit and could inspect a recycled PID.
         let workspace = Arc::new(Workspace::create(&config.scratch_root).map_err(|cause| {
@@ -375,7 +431,7 @@ impl PreparedView {
                 };
                 let Some((kind, bytes)) = next else { break };
                 if wire::send(&mut sink, kind, &bytes).await.is_err()
-                    || matches!(kind, wire::CANCEL | wire::EXPORT)
+                    || matches!(kind, wire::CANCEL | wire::EXPORT | wire::RELEASE)
                 {
                     break;
                 }
@@ -383,7 +439,7 @@ impl PreparedView {
         });
         let (exit_sender, exit) = watch::channel(None);
         let (done_sender, done) = watch::channel(None);
-        let export = self.owned.path.join("export");
+        let export = self.owned.path.join(format!("export-{launch_nonce}"));
         fs::create_dir(&export)
             .map_err(|cause| ViewError::new("create export root", &export, cause))?;
         let logical = self
@@ -425,6 +481,7 @@ impl PreparedView {
             cancel,
             exit,
             done,
+            released: false,
         })
     }
 }
@@ -440,9 +497,64 @@ pub struct RunningView {
     cancel: CancellationToken,
     exit: watch::Receiver<Option<Result<ExitInfo, ViewError>>>,
     done: watch::Receiver<Option<Result<Vec<PathBuf>, ViewError>>>,
+    released: bool,
 }
 
 impl RunningView {
+    pub fn fork_shared(&self) -> PreparedView {
+        self.prepared.fork_shared()
+    }
+
+    pub async fn join(&mut self) -> Result<(), ViewError> {
+        self.wait().await.map(|_| ())
+    }
+
+    fn quiesce_payloads(&self) -> Result<(), ViewError> {
+        let workers = self
+            .prepared
+            .owned
+            .workers
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        self.prepared
+            .owned
+            .api
+            .quiesce_except_many(&self.prepared.owned.name, &workers)
+            .map_err(|cause| {
+                ViewError::new("join shared box payloads", &self.prepared.owned.path, cause)
+            })
+    }
+
+    fn release(&mut self) -> Result<(), ViewError> {
+        self.prepared
+            .owned
+            .workers
+            .lock()
+            .unwrap()
+            .remove(&self.worker.pid);
+        self.prepared.cleanup_shared()?;
+        self.released = true;
+        Ok(())
+    }
+    /// Signal only this consumer's completion to its connected input flow.
+    pub fn exit_signal(&self) -> CancellationToken {
+        let mut receiver = self.exit.clone();
+        let signal = CancellationToken::new();
+        let completed = signal.clone();
+        tokio::spawn(async move {
+            while receiver.borrow().is_none() {
+                if receiver.changed().await.is_err() {
+                    break;
+                }
+            }
+            completed.cancel();
+        });
+        signal
+    }
+
     pub fn pid(&self) -> u32 {
         self.pid
     }
@@ -464,7 +576,14 @@ impl RunningView {
 
     pub async fn wait(&mut self) -> Result<ExitInfo, ViewError> {
         self.stdin.take();
-        receive_watch(&mut self.exit, &self.prepared.owned.path).await
+        let exit = receive_watch(&mut self.exit, &self.prepared.owned.path).await?;
+        self.prepared
+            .owned
+            .joined
+            .lock()
+            .unwrap()
+            .insert(self.worker.pid);
+        Ok(exit)
     }
 
     pub async fn scalar(&mut self, port: ReadPort) -> Result<Vec<u8>, ViewError> {
@@ -487,39 +606,67 @@ impl RunningView {
         self.cancel.cancel();
         // Break a full payload stdin pipe independently of control-channel
         // backpressure. The worker remains alive to drain and report native IO.
-        self.prepared
-            .owned
-            .api
-            .quiesce_except(&self.prepared.owned.name, Some(self.worker.pid))
-            .map_err(|cause| {
-                ViewError::new(
-                    "terminate cancelled payload",
-                    &self.prepared.owned.path,
-                    cause,
-                )
-            })?;
+        self.quiesce_payloads()?;
         let result = self.wait().await.map(|mut exit| {
             exit.cancelled = true;
             exit.success = false;
             exit
         });
-        self.prepared
-            .owned
-            .api
-            .quiesce_except(&self.prepared.owned.name, None)
-            .map_err(|cause| {
-                ViewError::new("join cancelled box", &self.prepared.owned.path, cause)
-            })?;
         self.worker
             .wait()
             .await
             .map_err(|cause| ViewError::new("join worker", &self.prepared.owned.path, cause))?;
-        self.prepared.owned.cleanup_ref()?;
+        self.release()?;
         result
+    }
+
+    /// Join/discard a cancelled view without dropping its owning seal future.
+    pub async fn seal_cancellable(
+        mut self,
+        store: &SnapshotStore,
+        cancel: &CancellationToken,
+    ) -> Result<SealedView, ViewError> {
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                let path = self.prepared.owned.path.clone();
+                self.cancel().await?;
+                return Err(ViewError::new("seal cancelled view", &path,
+                    io::Error::new(io::ErrorKind::Interrupted, "cancelled program views are discarded")));
+            }
+            completed = self.wait() => { completed?; }
+        }
+        if cancel.is_cancelled() {
+            let path = self.prepared.owned.path.clone();
+            self.cancel().await?;
+            return Err(ViewError::new(
+                "seal cancelled view",
+                &path,
+                io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "cancelled program views are discarded",
+                ),
+            ));
+        }
+        self.seal(store).await
     }
 
     pub async fn seal(mut self, store: &SnapshotStore) -> Result<SealedView, ViewError> {
         let exit = self.wait().await?;
+        let initialization = self.prepared.owned.initialization.lock().await;
+        let workers = self.prepared.owned.workers.lock().unwrap().clone();
+        if !workers.is_subset(&self.prepared.owned.joined.lock().unwrap()) {
+            return Err(ViewError::new(
+                "seal shared view",
+                &self.prepared.owned.path,
+                io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "join every shared payload before exporting its epoch",
+                ),
+            ));
+        }
+        let export = !self.prepared.owned.exported.swap(true, Ordering::AcqRel);
+        drop(initialization);
         if exit.cancelled {
             return Err(ViewError::new(
                 "seal cancelled view",
@@ -530,15 +677,12 @@ impl RunningView {
                 ),
             ));
         }
-        self.prepared
-            .owned
-            .api
-            .quiesce_except(&self.prepared.owned.name, Some(self.worker.pid))
-            .map_err(|cause| {
-                ViewError::new("quiesce before export", &self.prepared.owned.path, cause)
-            })?;
+        self.quiesce_payloads()?;
         self.commands
-            .send((wire::EXPORT, Vec::new()))
+            .send((
+                if export { wire::EXPORT } else { wire::RELEASE },
+                Vec::new(),
+            ))
             .await
             .map_err(|cause| {
                 ViewError::new(
@@ -552,11 +696,6 @@ impl RunningView {
             .wait()
             .await
             .map_err(|cause| ViewError::new("join worker", &self.prepared.owned.path, cause))?;
-        self.prepared
-            .owned
-            .api
-            .quiesce_except(&self.prepared.owned.name, None)
-            .map_err(|cause| ViewError::new("join box", &self.prepared.owned.path, cause))?;
         let mut roots = Vec::new();
         for (logical, physical) in self.prepared.roots.iter().zip(paths) {
             let snapshot = store.capture(&physical).map_err(|cause| {
@@ -567,7 +706,7 @@ impl RunningView {
                 snapshot,
             });
         }
-        self.prepared.owned.cleanup_ref()?;
+        self.release()?;
         Ok(SealedView {
             roots,
             exit,
@@ -581,7 +720,8 @@ impl RunningView {
 impl Drop for RunningView {
     fn drop(&mut self) {
         self.cancel.cancel();
-        if self.prepared.owned.section_owned.load(Ordering::Acquire)
+        if !self.released
+            && self.prepared.owned.section_owned.load(Ordering::Acquire)
             && !self.prepared.owned.cleaned.load(Ordering::Acquire)
         {
             let _ = self.prepared.owned.api.kill_all(&self.prepared.owned.name);
@@ -699,6 +839,9 @@ async fn read_worker(
                     }
                     return Ok(exported);
                 }
+                wire::RELEASE if bytes.is_empty() && exited == Some(false) && exported.is_empty() => {
+                    return Ok(exported);
+                }
                 wire::FAILURE => return Err(io::Error::other(remote_error(&bytes, path))),
                 _ => return Err(wire::invalid("unexpected worker output frame")),
             }
@@ -716,6 +859,12 @@ struct OwnedBox {
     identity: Handle,
     cleaned: AtomicBool,
     section_owned: AtomicBool,
+    invocation: Option<InvocationRoot>,
+    seeded: AtomicBool,
+    exported: AtomicBool,
+    initialization: tokio::sync::Mutex<()>,
+    workers: Mutex<BTreeSet<u32>>,
+    joined: Mutex<BTreeSet<u32>>,
 }
 
 impl OwnedBox {
@@ -731,6 +880,16 @@ impl OwnedBox {
         fs::create_dir(&path).map_err(|cause| ViewError::new("create owned box", &path, cause))?;
         let identity = Handle::from_path(&path)
             .map_err(|cause| ViewError::new("identify owned box", &path, cause))?;
+        let invocation = roots
+            .iter()
+            .map(|root| root.snapshot.invocation_for_path(scratch))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|cause| {
+                ViewError::new("verify private backing", scratch, io::Error::other(cause))
+            })?
+            .into_iter()
+            .flatten()
+            .next();
         let owned = Self {
             api,
             name,
@@ -739,6 +898,12 @@ impl OwnedBox {
             identity,
             cleaned: AtomicBool::new(false),
             section_owned: AtomicBool::new(false),
+            invocation,
+            seeded: AtomicBool::new(false),
+            exported: AtomicBool::new(false),
+            initialization: tokio::sync::Mutex::new(()),
+            workers: Mutex::new(BTreeSet::new()),
+            joined: Mutex::new(BTreeSet::new()),
         };
         fs::create_dir(owned.path.join("sandbox"))
             .map_err(|cause| ViewError::new("create owned file root", &owned.path, cause))?;
@@ -843,8 +1008,11 @@ impl OwnedBox {
     }
 
     fn set_directory(&self, key: &str, value: &Path, append: bool) -> Result<(), ViewError> {
+        let encoded = native::configuration_path(value).map_err(|cause| {
+            ViewError::new("serialize Sandboxie directory policy", value, cause)
+        })?;
         self.api
-            .configure(&self.name, key, Some(value.as_os_str()), append)
+            .configure(&self.name, key, Some(&encoded), append)
             .map_err(|cause| ViewError::new("configure owned path", &self.path, cause))?;
         self.require_directory(key, value)
     }
@@ -881,10 +1049,6 @@ impl OwnedBox {
             return Err(readback.mismatch(key, value, &self.path));
         }
         Ok(())
-    }
-
-    fn cleanup(self) -> Result<(), ViewError> {
-        self.cleanup_ref()
     }
 
     fn cleanup_ref(&self) -> Result<(), ViewError> {
@@ -997,8 +1161,11 @@ fn validate_roots(
                 "managed program roots must be existing directories with complete directory snapshots",
             ));
         }
-        if logical.starts_with(scratch)
-            || scratch.starts_with(&logical)
+        let private_backing = root
+            .snapshot
+            .excludes_private_path(scratch)
+            .map_err(io::Error::other)?;
+        if ((logical.starts_with(scratch) || scratch.starts_with(&logical)) && !private_backing)
             || worker.starts_with(&logical)
         {
             return Err(wire::invalid(
@@ -1137,5 +1304,45 @@ mod tests {
         ] {
             assert!(message.contains(expected), "{message}");
         }
+    }
+
+    #[test]
+    fn directory_configuration_uses_sandboxie_dos_syntax_not_win32_verbatim_syntax() {
+        for (input, expected) in [
+            (r"D:\project\目录", r"D:\project\目录"),
+            (r"D:/project/目录", r"D:\project\目录"),
+            (r"\\?\D:\project\目录", r"D:\project\目录"),
+            (r"\\server\share\project", r"\\server\share\project"),
+            (r"\\?\UNC\server\share\project", r"\\server\share\project"),
+        ] {
+            assert_eq!(
+                native::configuration_path(Path::new(input)).unwrap(),
+                std::ffi::OsStr::new(expected),
+                "{input}"
+            );
+        }
+        for input in [
+            r"D:relative",
+            r"relative",
+            r"\\.\pipe\control",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume3\project",
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\project",
+            r"\\?\D:\project\..\outside",
+            r"\\?\D:\project\trailing.\child",
+            r"\\?\D:\project\trailing \child",
+            r"\\?\D:\project/child",
+        ] {
+            assert!(
+                native::configuration_path(Path::new(input)).is_err(),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_mup_translation_is_never_reinterpreted_as_a_dos_alias() {
+        let actual = native::path_from_native(r"\Device\Mup\?\D:\project").unwrap();
+        assert_eq!(actual, Path::new(r"\\?\GLOBALROOT\Device\Mup\?\D:\project"));
+        assert_ne!(actual, Path::new(r"\\?\D:\project"));
     }
 }

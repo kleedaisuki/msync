@@ -126,7 +126,11 @@ async fn run(args: &[OsString]) -> io::Result<()> {
                     stdin.take();
                 }
                 Ok((wire::EXPORT, bytes)) if bytes.is_empty() => {
-                    let _ = control.send(());
+                    let _ = control.send(true);
+                    return;
+                }
+                Ok((wire::RELEASE, bytes)) if bytes.is_empty() => {
+                    let _ = control.send(false);
                     return;
                 }
                 Ok((wire::CANCEL, bytes)) if bytes.is_empty() => {
@@ -153,7 +157,9 @@ async fn run(args: &[OsString]) -> io::Result<()> {
             wire::send(&mut *sink.lock().await, wire::COMPLETE, &[]).await?;
             return Ok(());
         }
-        exported.await.map_err(io::Error::other)?;
+        if !exported.await.map_err(io::Error::other)? {
+            return wire::send(&mut *sink.lock().await, wire::RELEASE, &[]).await;
+        }
         let mut store = SnapshotStore::new(&config.scratch_root).map_err(io::Error::other)?;
         for root in roots {
             let snapshot = store.capture(&root).map_err(io::Error::other)?;
@@ -198,7 +204,7 @@ async fn initialize(
     if buffer == 0 || buffer > 1024 * 1024 || !executable.is_absolute() || !cwd.is_absolute() {
         return Err(wire::invalid("invalid program paths or buffer limits"));
     }
-    let scratch = std::env::current_dir()?.join("worker-scratch");
+    let scratch = std::env::current_dir()?.join(format!("worker-scratch-{}", std::process::id()));
     let mut config = ProcessConfig::new(scratch);
     config.buffer_bytes = buffer as usize;
     config.max_output_bytes = (quota != u64::MAX).then_some(quota);
@@ -208,7 +214,7 @@ async fn initialize(
         if kind == wire::SEEDED && bytes.is_empty() {
             break;
         }
-        if kind != wire::ROOT || roots.len() >= 4096 {
+        if !matches!(kind, wire::ROOT | wire::ROOT_REFERENCE) || roots.len() >= 4096 {
             return Err(wire::invalid("invalid or excessive managed roots"));
         }
         let mut body = Decode::new(&bytes);
@@ -221,6 +227,15 @@ async fn initialize(
                 .any(|old| root.starts_with(old) || old.starts_with(&root))
         {
             return Err(wire::invalid("managed roots must be absolute and disjoint"));
+        }
+        if kind == wire::ROOT_REFERENCE {
+            if !fs::symlink_metadata(&root)?.is_dir() {
+                return Err(wire::invalid(
+                    "shared managed root must be an existing directory",
+                ));
+            }
+            roots.push(root);
+            continue;
         }
         match fs::symlink_metadata(&root) {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
