@@ -70,7 +70,7 @@ jobs:
           exit $LASTEXITCODE
       - if: needs.changes.outputs.docs == 'true' || needs.changes.outputs.full == 'true'
         run: cargo test --locked --doc
-      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_linux_v4'))
+      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_linux_v4') || contains(fromJSON(needs.changes.outputs.targets), 'program_execution_v4') || contains(fromJSON(needs.changes.outputs.targets), 'physical_execution_v4') || contains(fromJSON(needs.changes.outputs.targets), 'repl_jobs'))
         name: Provision the ephemeral Linux resource-view gate
         shell: bash
         run: |
@@ -85,10 +85,19 @@ jobs:
       - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_linux_v4'))
         name: Exercise actual Linux process-resource views
         run: cargo test --locked --test process_view_linux_v4 -- --ignored --skip view_child_fixture --nocapture
+      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'program_execution_v4'))
+        name: Exercise actual Linux transactional program execution
+        run: cargo test --locked --test program_execution_v4 -- --ignored --skip program_child_fixture --nocapture
+      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'physical_execution_v4'))
+        name: Exercise actual Linux physical-stream consumer closure
+        run: cargo test --locked --test physical_execution_v4 -- --ignored --nocapture
+      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'repl_jobs'))
+        name: Exercise owned REPL provenance across native program inputs
+        run: cargo test --locked --test repl_jobs -- --ignored --exact a_later_input_failure_keeps_its_source_inside_an_existing_program_job --nocapture
 
   windows-resource-view:
     needs: changes
-    if: needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_windows_v4')
+    if: needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_windows_v4') || contains(fromJSON(needs.changes.outputs.targets), 'program_execution_v4')
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
@@ -101,6 +110,12 @@ jobs:
         shell: pwsh
         run: |
           cargo test --locked --test process_view_windows_v4 -- --ignored --skip boxed_child_fixture --nocapture 2>&1 | Tee-Object -FilePath .temp/sandboxie-ci/journeys.log
+          exit $LASTEXITCODE
+      - if: needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'program_execution_v4')
+        name: Exercise actual Windows transactional program execution
+        shell: pwsh
+        run: |
+          cargo test --locked --test program_execution_v4 -- --ignored --skip program_child_fixture --nocapture 2>&1 | Tee-Object -FilePath .temp/sandboxie-ci/execution.log
           exit $LASTEXITCODE
       - if: failure()
         uses: actions/upload-artifact@v4
