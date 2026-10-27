@@ -11,6 +11,9 @@ mod tree;
 #[cfg(target_os = "linux")]
 pub mod view_linux;
 
+#[cfg(windows)]
+pub mod view_windows;
+
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io;
