@@ -7,11 +7,13 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::effects::{self, Conflict, Effects, Port, Resource};
+use super::effects::{self, Conflict, Effects, OperationFacts, Port, Resource};
+use crate::compiler::Location;
 use crate::hir::{
     Instruction, InstructionId, InstructionKind, ProcessId, Program, Region, RollbackScope,
     TransactionId,
 };
+use crate::plan::FileClass;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Wait {
@@ -112,6 +114,8 @@ impl ProcessEffects {
 pub struct PlanningContext {
     pub live_processes: Vec<ProcessId>,
     pub process_effects: BTreeMap<ProcessId, ProcessEffects>,
+    /// Type observations/version-store premises at this instruction's epoch.
+    pub operation_facts: BTreeMap<InstructionId, OperationFacts>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -127,6 +131,22 @@ pub struct Issue {
     pub message: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefinementKind {
+    SourceType,
+    DestinationType,
+    PhysicalStreamScheduling,
+    SelectorExpansion,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Refinement {
+    pub instruction: InstructionId,
+    pub location: Location,
+    pub kind: RefinementKind,
+    pub message: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlanGraph {
     pub nodes: Vec<Node>,
@@ -135,10 +155,25 @@ pub struct PlanGraph {
     pub commutations: Vec<CommutationProof>,
     pub external_processes: Vec<ExternalProcessRequirement>,
     pub process_proofs: BTreeMap<ProcessId, ProcessEffects>,
+    pub operation_facts: BTreeMap<InstructionId, OperationFacts>,
+    /// Physical streams require identity/co-start preparation. A valid pure
+    /// scheduling certificate alone does not make this an executable I/O plan.
+    pub refinements: Vec<Refinement>,
     pub issues: Vec<Issue>,
 }
 
 impl PlanGraph {
+    /// Structural/type/physical-scheduling readiness only. The execution adapter
+    /// must still validate resource versions and any subprocess mediation.
+    pub fn is_execution_ready(&self) -> bool {
+        self.issues.is_empty()
+            && self.refinements.is_empty()
+            && self.nodes.iter().all(|node| {
+                node.children
+                    .as_ref()
+                    .is_none_or(|children| children.is_execution_ready())
+            })
+    }
     /// Replay the pure effect obligations against the original expanded IR.
     /// This is a checkable scheduling certificate, not a metadata/type proof for
     /// ordinary-file dead-store elimination.
@@ -286,6 +321,7 @@ fn build_region(
 ) -> PlanGraph {
     let mut graph = PlanGraph {
         process_proofs: context.process_effects.clone(),
+        operation_facts: context.operation_facts.clone(),
         ..PlanGraph::default()
     };
     for instruction in &region.instructions {
@@ -300,7 +336,11 @@ fn build_region(
         };
         if let Some(children) = &children {
             graph.issues.extend(children.issues.iter().cloned());
+            graph
+                .refinements
+                .extend(children.refinements.iter().cloned());
         }
+        refine(instruction, context, &mut graph.refinements);
         let effects = footprint(instruction, transactions, context);
         for process in external {
             let used = uses_process(&effects, *process);
@@ -400,7 +440,46 @@ fn summarize(instruction: &Instruction, context: &PlanningContext) -> Effects {
             }
             summary
         }
-        _ => effects::summarize(instruction),
+        _ => effects::summarize_with_facts(
+            instruction,
+            context
+                .operation_facts
+                .get(&instruction.id)
+                .copied()
+                .unwrap_or_default(),
+        ),
+    }
+}
+
+fn refine(instruction: &Instruction, context: &PlanningContext, refinements: &mut Vec<Refinement>) {
+    let InstructionKind::Transfer {
+        source,
+        destination,
+    } = &instruction.kind
+    else {
+        return;
+    };
+    let facts = context
+        .operation_facts
+        .get(&instruction.id)
+        .copied()
+        .unwrap_or_default();
+    if let crate::hir::Input::File { location, pattern } = source {
+        match effects::file_class(location, facts.source) {
+            FileClass::Unknown | FileClass::Missing => refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::SourceType, message: "source is not proved replayable; inspect its epoch-specific type before choosing finite-file or physical-stream scheduling".into() }),
+            FileClass::Stream => refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::PhysicalStreamScheduling, message: "physical stream requires identity-aware co-start/ownership preparation; this HIR graph is not its executable stream plan".into() }),
+            _ => {}
+        }
+        if pattern.is_some() {
+            refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::SelectorExpansion, message: "selector entries require type/identity preparation before their physical transfers can be scheduled".into() });
+        }
+    }
+    if let crate::hir::Output::File { location, .. } = destination {
+        match effects::file_class(location, facts.destination) {
+            FileClass::Unknown => refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::DestinationType, message: "destination may be a file, directory or physical stream; inspect its epoch-specific type before execution".into() }),
+            FileClass::Stream => refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::PhysicalStreamScheduling, message: "physical stream destination requires identity-aware co-start preparation, not an ordinary completion-only graph".into() }),
+            _ => {}
+        }
     }
 }
 

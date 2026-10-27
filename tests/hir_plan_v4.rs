@@ -1,13 +1,16 @@
 use std::sync::Arc;
 
 use msync::compiler::{Backend, Location};
-use msync::hir::effects::{Access, AccessKind, Effects, FileResource, Resource, Scope};
+use msync::hir::effects::{
+    Access, AccessKind, Effects, FileResource, OperationFacts, Resource, Scope,
+};
 use msync::hir::graph::{self, Reason, Wait};
 use msync::hir::{
     Argument, Input, Instruction, InstructionId, InstructionKind, Output, ProcessId, Program,
     ReadPort, Region, RollbackScope, TransactionId,
 };
 use msync::language::DestinationMode;
+use msync::plan::FileClass;
 use msync::syntax::Span;
 use proptest::prelude::*;
 
@@ -91,15 +94,407 @@ fn program(instructions: Vec<Instruction>) -> Program {
     }
 }
 
+fn finite_context(program: &Program) -> graph::PlanningContext {
+    fn observe(region: &Region, context: &mut graph::PlanningContext) {
+        for instruction in &region.instructions {
+            match &instruction.kind {
+                InstructionKind::Transfer { .. } => {
+                    context.operation_facts.insert(
+                        instruction.id,
+                        OperationFacts {
+                            source: FileClass::Regular,
+                            destination: FileClass::Regular,
+                        },
+                    );
+                }
+                InstructionKind::Transaction { body, .. } => observe(body, context),
+                _ => {}
+            }
+        }
+    }
+    let mut context = graph::PlanningContext::default();
+    observe(&program.body, &mut context);
+    context
+}
+
 #[test]
 fn literal_writes_have_no_read_effect_and_disjoint_paths_commute() {
     let ir = program(vec![literal(0, "/workspace/a"), literal(1, "/workspace/b")]);
-    let graph = graph::build(&ir);
+    let context = finite_context(&ir);
+    let graph = graph::build_with_context(&ir, &context);
     assert!(graph.dependencies.is_empty());
     assert_eq!(graph.commutations.len(), 1);
     assert_eq!(graph.nodes[0].effects.accesses.len(), 1);
     assert_eq!(graph.nodes[0].effects.accesses[0].kind, AccessKind::Write);
-    assert!(graph.verify(&ir).is_ok());
+    assert!(graph.verify_with_context(&ir, &context).is_ok());
+    assert!(graph.is_execution_ready());
+}
+
+fn permitted_orders(graph: &graph::PlanGraph) -> Vec<Vec<usize>> {
+    fn visit(graph: &graph::PlanGraph, order: &mut Vec<usize>, result: &mut Vec<Vec<usize>>) {
+        if order.len() == graph.nodes.len() {
+            result.push(order.clone());
+            return;
+        }
+        for id in 0..graph.nodes.len() {
+            if order.contains(&id)
+                || graph
+                    .dependencies
+                    .iter()
+                    .any(|edge| edge.after == InstructionId(id) && !order.contains(&edge.before.0))
+            {
+                continue;
+            }
+            order.push(id);
+            visit(graph, order, result);
+            order.pop();
+        }
+    }
+    assert!(
+        graph
+            .dependencies
+            .iter()
+            .all(|edge| edge.wait == Wait::Completion)
+    );
+    let mut result = Vec::new();
+    visit(graph, &mut Vec::new(), &mut result);
+    result
+}
+
+#[test]
+fn sibling_creations_order_observable_parent_metadata_not_just_distinct_file_bytes() {
+    let ir = program(vec![
+        literal(0, "/shared/new-a"),
+        literal(1, "/shared/new-b"),
+    ]);
+    let mut context = finite_context(&ir);
+    for facts in context.operation_facts.values_mut() {
+        facts.destination = FileClass::Missing;
+    }
+    let graph = graph::build_with_context(&ir, &context);
+    fn model(order: &[usize]) -> (Vec<(usize, &'static str)>, usize) {
+        let mut files = std::collections::BTreeMap::new();
+        let mut parent_modified_by = usize::MAX;
+        for id in order {
+            files.insert(*id, "new contents");
+            parent_modified_by = *id;
+        }
+        (files.into_iter().collect(), parent_modified_by)
+    }
+    assert_ne!(
+        model(&[0, 1]),
+        model(&[1, 0]),
+        "file values alone cannot reveal reversed parent mtime writes"
+    );
+    for order in permitted_orders(&graph) {
+        assert_eq!(model(&order), model(&[0, 1]));
+    }
+    assert!(graph.dependencies.iter().any(|edge| edge.reasons.iter().any(|reason| matches!(reason, Reason::Hazard(conflict) if matches!(conflict.before.resource, Resource::DirectoryMetadata(_)) && matches!(conflict.after.resource, Resource::DirectoryMetadata(_))))));
+    assert!(graph.is_execution_ready());
+}
+
+#[test]
+fn parent_metadata_write_does_not_alias_existing_sibling_file_bytes() {
+    let ir = program(vec![
+        literal(0, "/shared/new"),
+        copy(1, "/shared/existing", "/elsewhere/output"),
+    ]);
+    let mut context = finite_context(&ir);
+    context
+        .operation_facts
+        .get_mut(&InstructionId(0))
+        .unwrap()
+        .destination = FileClass::Missing;
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(graph.dependencies.is_empty());
+    assert_eq!(permitted_orders(&graph).len(), 2);
+    assert!(graph.is_execution_ready());
+}
+
+#[test]
+fn directory_tree_reads_observe_namespace_metadata_changes() {
+    let ir = program(vec![
+        literal(0, "/shared/new"),
+        copy(1, "/shared", "/tree-output"),
+    ]);
+    let mut context = finite_context(&ir);
+    context
+        .operation_facts
+        .get_mut(&InstructionId(0))
+        .unwrap()
+        .destination = FileClass::Missing;
+    context.operation_facts.insert(
+        InstructionId(1),
+        OperationFacts {
+            source: FileClass::Directory,
+            destination: FileClass::Missing,
+        },
+    );
+    let graph = graph::build_with_context(&ir, &context);
+    assert_eq!(permitted_orders(&graph), vec![vec![0, 1]]);
+    assert!(graph.dependencies.iter().any(|edge| edge.reasons.iter().any(|reason| matches!(reason, Reason::Hazard(conflict) if matches!(conflict.before.resource, Resource::DirectoryMetadata(_)) && conflict.after.kind == AccessKind::Read))));
+}
+
+#[test]
+fn unknown_repeated_source_reads_are_consuming_until_replayability_is_proved() {
+    let ir = program(vec![
+        copy(0, "/physical-source", "/first"),
+        copy(1, "/physical-source", "/second"),
+    ]);
+    let mut context = finite_context(&ir);
+    for facts in context.operation_facts.values_mut() {
+        facts.source = FileClass::Unknown;
+    }
+    let unrefined = graph::build_with_context(&ir, &context);
+    fn consuming_model(order: &[usize]) -> [Vec<u8>; 2] {
+        let mut unread = b"stream contents".to_vec();
+        let mut outputs = [Vec::new(), Vec::new()];
+        for id in order {
+            outputs[*id] = std::mem::take(&mut unread);
+        }
+        outputs
+    }
+    assert_ne!(consuming_model(&[0, 1]), consuming_model(&[1, 0]));
+    for order in permitted_orders(&unrefined) {
+        assert_eq!(consuming_model(&order), consuming_model(&[0, 1]));
+    }
+    assert!(!unrefined.is_execution_ready());
+    assert!(
+        unrefined.nodes[0]
+            .effects
+            .accesses
+            .iter()
+            .any(|access| access.kind == AccessKind::Consume)
+    );
+    let finite = graph::build_with_context(&ir, &finite_context(&ir));
+    assert_eq!(permitted_orders(&finite).len(), 2);
+    assert!(finite.is_execution_ready());
+    assert!(
+        unrefined
+            .verify_with_context(&ir, &finite_context(&ir))
+            .is_err()
+    );
+}
+
+#[test]
+fn physical_streams_require_the_physical_scheduler_even_with_type_facts() {
+    let mut instruction = copy(0, "/source", "/sink");
+    if let InstructionKind::Transfer {
+        source: Input::File { location, .. },
+        destination: Output::File { location: sink, .. },
+    } = &mut instruction.kind
+    {
+        location.backend = Backend::Tcp {
+            host: "127.0.0.1".into(),
+            port: 9000,
+        };
+        sink.backend = Backend::Tcp {
+            host: "127.0.0.1".into(),
+            port: 9001,
+        };
+    }
+    let ir = program(vec![instruction]);
+    let context = finite_context(&ir);
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(
+        graph.nodes[0]
+            .effects
+            .accesses
+            .iter()
+            .any(|access| access.kind == AccessKind::Consume)
+    );
+    assert!(
+        !graph.nodes[0]
+            .effects
+            .accesses
+            .iter()
+            .any(|access| matches!(access.resource, Resource::DirectoryMetadata(_)))
+    );
+    assert_eq!(
+        graph
+            .refinements
+            .iter()
+            .filter(
+                |requirement| requirement.kind == graph::RefinementKind::PhysicalStreamScheduling
+            )
+            .count(),
+        2
+    );
+    assert!(!graph.is_execution_ready());
+    assert!(
+        graph.verify_with_context(&ir, &context).is_ok(),
+        "a conservative certificate is not an executable physical-stream schedule"
+    );
+}
+
+#[test]
+fn type_premises_are_retained_and_unknown_destinations_are_not_execution_ready() {
+    let ir = program(vec![literal(0, "/unknown")]);
+    let unrefined = graph::build(&ir);
+    assert!(
+        unrefined
+            .refinements
+            .iter()
+            .any(|requirement| requirement.kind == graph::RefinementKind::DestinationType)
+    );
+    assert!(!unrefined.is_execution_ready());
+    let context = finite_context(&ir);
+    let finite = graph::build_with_context(&ir, &context);
+    assert_eq!(finite.operation_facts, context.operation_facts);
+    assert!(finite.is_execution_ready());
+    assert!(finite.verify(&ir).is_err());
+}
+
+#[test]
+fn container_insertions_update_the_container_metadata_and_kind_changes_update_its_parent() {
+    let mut container = literal(0, "/root/container");
+    if let InstructionKind::Transfer {
+        destination: Output::File { mode, .. },
+        ..
+    } = &mut container.kind
+    {
+        *mode = DestinationMode::Container;
+    }
+    let ir = program(vec![container]);
+    let mut context = finite_context(&ir);
+    context
+        .operation_facts
+        .get_mut(&InstructionId(0))
+        .unwrap()
+        .destination = FileClass::Directory;
+    let graph = graph::build_with_context(&ir, &context);
+    let writes: Vec<_> = graph.nodes[0]
+        .effects
+        .accesses
+        .iter()
+        .filter_map(|access| match &access.resource {
+            Resource::DirectoryMetadata(resource) if access.kind == AccessKind::Write => {
+                Some(resource.location.path.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(writes, vec!["/root/container"]);
+
+    let mut replacement = copy(0, "/source-tree", "/root/file-becomes-tree");
+    if let InstructionKind::Transfer {
+        destination: Output::File { mode, .. },
+        ..
+    } = &mut replacement.kind
+    {
+        *mode = DestinationMode::ReplaceTree;
+    }
+    let ir = program(vec![replacement]);
+    context.operation_facts.insert(
+        InstructionId(0),
+        OperationFacts {
+            source: FileClass::Directory,
+            destination: FileClass::Regular,
+        },
+    );
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(graph.nodes[0].effects.accesses.iter().any(|access| access.kind == AccessKind::Write && matches!(&access.resource, Resource::DirectoryMetadata(resource) if resource.location.path == "/root")));
+}
+
+#[test]
+fn selectors_retain_tree_predicates_and_explicit_entry_refinement() {
+    let mut selection = copy(0, "/source-tree", "/container");
+    if let InstructionKind::Transfer {
+        source: Input::File { pattern, .. },
+        destination: Output::File { mode, .. },
+    } = &mut selection.kind
+    {
+        *pattern = Some(".*".into());
+        *mode = DestinationMode::Container;
+    }
+    let ir = program(vec![selection]);
+    let mut context = finite_context(&ir);
+    context.operation_facts.insert(
+        InstructionId(0),
+        OperationFacts {
+            source: FileClass::Directory,
+            destination: FileClass::Directory,
+        },
+    );
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(graph.nodes[0].effects.accesses.iter().any(|access| access.kind == AccessKind::Read && matches!(&access.resource, Resource::File(resource) if resource.scope == Scope::Tree)));
+    assert!(
+        graph
+            .refinements
+            .iter()
+            .any(|requirement| requirement.kind == graph::RefinementKind::SelectorExpansion)
+    );
+    assert!(!graph.is_execution_ready());
+}
+
+#[test]
+fn finite_http_type_facts_do_not_claim_gets_are_replayable_file_reads() {
+    let mut instructions = vec![copy(0, "/counter", "/a"), copy(1, "/counter", "/b")];
+    for instruction in &mut instructions {
+        if let InstructionKind::Transfer {
+            source: Input::File { location, .. },
+            ..
+        } = &mut instruction.kind
+        {
+            location.backend = Backend::Http {
+                base: "https://example.invalid/api/".into(),
+            };
+        }
+    }
+    let ir = program(instructions);
+    let context = finite_context(&ir);
+    let graph = graph::build_with_context(&ir, &context);
+    assert_eq!(permitted_orders(&graph), vec![vec![0, 1]]);
+    assert!(
+        graph.nodes[0]
+            .effects
+            .accesses
+            .iter()
+            .any(|access| access.kind == AccessKind::Consume
+                && matches!(access.resource, Resource::HttpRequests(_)))
+    );
+    fn request_results(order: &[usize]) -> [usize; 2] {
+        let mut outputs = [0, 0];
+        for (counter, id) in order.iter().enumerate() {
+            outputs[*id] = counter;
+        }
+        outputs
+    }
+    assert_ne!(request_results(&[0, 1]), request_results(&[1, 0]));
+    for order in permitted_orders(&graph) {
+        assert_eq!(request_results(&order), request_results(&[0, 1]));
+    }
+}
+
+#[test]
+fn different_http_paths_at_one_origin_remain_observably_sequenced() {
+    let mut first = copy(0, "/increment", "/a");
+    let mut second = copy(1, "/read", "/b");
+    for (instruction, base) in [
+        (&mut first, "https://example.invalid/api/"),
+        (&mut second, "https://example.invalid/other/"),
+    ] {
+        if let InstructionKind::Transfer {
+            source: Input::File { location, .. },
+            ..
+        } = &mut instruction.kind
+        {
+            location.backend = Backend::Http { base: base.into() };
+        }
+    }
+    let ir = program(vec![first, second]);
+    let graph = graph::build_with_context(&ir, &finite_context(&ir));
+    assert_eq!(permitted_orders(&graph), vec![vec![0, 1]]);
+    let pinned = program(vec![
+        copy(0, "/immutable-artifact", "/a"),
+        copy(1, "/immutable-artifact", "/b"),
+    ]);
+    let graph = graph::build_with_context(&pinned, &finite_context(&pinned));
+    assert_eq!(
+        permitted_orders(&graph).len(),
+        2,
+        "the fetched local version, not a finite HTTP HEAD classification, supplies replayability"
+    );
 }
 
 #[test]
@@ -214,7 +609,8 @@ fn process_pipe_services_co_start_and_scalars_use_distinct_events() {
         port(5, 42, ReadPort::ExitCode, "/exit"),
         port(6, 42, ReadPort::ExitCode, "/exit-again"),
     ]);
-    let graph = graph::build(&ir);
+    let context = finite_context(&ir);
+    let graph = graph::build_with_context(&ir, &context);
     assert!(graph.issues.is_empty(), "{:?}", graph.issues);
     assert_eq!(graph.co_start.len(), 1);
     assert_eq!(
@@ -241,7 +637,7 @@ fn process_pipe_services_co_start_and_scalars_use_distinct_events() {
                     && edge.wait == Wait::ProcessExited(ProcessId(42)))
         );
     }
-    assert!(graph.verify(&ir).is_ok());
+    assert!(graph.verify_with_context(&ir, &context).is_ok());
 }
 
 fn pipeline() -> Program {
@@ -296,6 +692,7 @@ fn verified_disjoint_process_views_enable_pipeline_launch_without_argv_guessing(
             (ProcessId(1), mediated_effects("/q-private")),
         ]
         .into(),
+        ..graph::PlanningContext::default()
     };
     let graph = graph::build_with_context(&ir, &context);
     assert!(graph.issues.is_empty(), "{:?}", graph.issues);
@@ -324,6 +721,7 @@ fn a_view_certificate_does_not_erase_overlapping_process_effects() {
             (ProcessId(1), mediated_effects("/shared")),
         ]
         .into(),
+        ..graph::PlanningContext::default()
     };
     let graph = graph::build_with_context(&ir, &context);
     assert!(
@@ -538,7 +936,8 @@ fn named_rollback_retains_origin_and_conflicts_with_later_accesses() {
         copy(3, "/managed/x", "/result"),
         literal(4, "/unrelated"),
     ]);
-    let graph = graph::build(&ir);
+    let context = finite_context(&ir);
+    let graph = graph::build_with_context(&ir, &context);
     assert!(graph.dependencies.iter().any(|edge| {
         edge.before == InstructionId(0)
             && edge.after == InstructionId(2)
@@ -562,7 +961,7 @@ fn named_rollback_retains_origin_and_conflicts_with_later_accesses() {
         graph.nodes[0].children.as_ref().unwrap().nodes[0].instruction,
         InstructionId(1)
     );
-    assert!(graph.verify(&ir).is_ok());
+    assert!(graph.verify_with_context(&ir, &context).is_ok());
 }
 
 #[test]
@@ -636,19 +1035,48 @@ struct ModelOp {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ModelState {
-    files: [Vec<u8>; 3],
+    files: Vec<Option<Vec<u8>>>,
     reads: std::collections::BTreeMap<usize, Vec<u8>>,
+    parent_modified_by: Option<usize>,
 }
 
 fn evaluate(state: &mut ModelState, op: &ModelOp, id: usize) {
     let bytes = if op.literal {
         vec![op.value]
     } else {
-        let bytes = state.files[op.source].clone();
+        let bytes = state.files[op.source].as_ref().unwrap().clone();
         state.reads.insert(id, bytes.clone());
         bytes
     };
-    state.files[op.destination] = bytes;
+    if state.files[op.destination].is_none() {
+        state.parent_modified_by = Some(id);
+    }
+    state.files[op.destination] = Some(bytes);
+}
+
+fn model_instruction(id: usize, operation: &ModelOp) -> Instruction {
+    // Resource indices are the independent oracle; lexical aliases are inputs
+    // to the planner, not keys recovered from its own effect implementation.
+    let source = if id.is_multiple_of(2) {
+        format!("/r/./{}", operation.source)
+    } else {
+        format!("/r/unused/../{}", operation.source)
+    };
+    let destination = format!("/r/{}", operation.destination);
+    if operation.literal {
+        node(
+            id,
+            InstructionKind::Transfer {
+                source: Input::Literal(Arc::from(char::from(operation.value).to_string())),
+                destination: Output::File {
+                    location: location(&destination),
+                    mode: DestinationMode::Exact,
+                },
+            },
+        )
+    } else {
+        copy(id, &source, &destination)
+    }
 }
 
 fn all_orders_preserve(
@@ -696,30 +1124,44 @@ proptest! {
             destination: (source + offset) % 3,
             value,
         }).collect();
-        let instructions = operations.iter().enumerate().map(|(id, operation)| {
-            // The oracle uses resource indices, not the planner's path keys.
-            // Distinct lexical aliases intentionally identify the same model slot.
-            let source = if id % 2 == 0 {
-                format!("/r/./{}", operation.source)
-            } else {
-                format!("/r/unused/../{}", operation.source)
-            };
-            let destination = format!("/r/{}", operation.destination);
-            if operation.literal {
-                node(id, InstructionKind::Transfer {
-                    source: Input::Literal(Arc::from(char::from(operation.value).to_string())),
-                    destination: Output::File { location: location(&destination), mode: DestinationMode::Exact },
-                })
-            } else {
-                copy(id, &source, &destination)
-            }
-        }).collect();
-        let graph = graph::build(&program(instructions));
-        let initial = ModelState { files: [vec![0], vec![1], vec![2]], reads: Default::default() };
+        let instructions = operations.iter().enumerate().map(|(id, operation)| model_instruction(id, operation)).collect();
+        let ir = program(instructions);
+        let context = finite_context(&ir);
+        let graph = graph::build_with_context(&ir, &context);
+        prop_assert!(graph.is_execution_ready());
+        let initial = ModelState { files: vec![Some(vec![0]), Some(vec![1]), Some(vec![2])], reads: Default::default(), parent_modified_by: None };
         let mut expected = initial.clone();
         for (id, operation) in operations.iter().enumerate() {
             evaluate(&mut expected, operation, id);
         }
         prop_assert!(all_orders_preserve(&graph, &operations, &expected, &initial, 0), "an admitted schedule changed source-order file values or per-operation read observations: {operations:?}");
+    }
+
+    #[test]
+    fn mixed_creations_and_overwrites_preserve_bytes_reads_and_parent_metadata(
+        input in prop::collection::vec((any::<bool>(), 0usize..6, 3usize..6, 32u8..127), 1..7)
+    ) {
+        let initial = ModelState {
+            files: vec![Some(vec![0]), Some(vec![1]), Some(vec![2]), None, None, None],
+            reads: Default::default(),
+            parent_modified_by: None,
+        };
+        let mut expected = initial.clone();
+        let mut operations = Vec::new();
+        let mut context = graph::PlanningContext::default();
+        for (id, (literal, source, destination, value)) in input.into_iter().enumerate() {
+            let source = if source == destination || expected.files[source].is_none() { source % 3 } else { source };
+            let operation = ModelOp { literal, source, destination, value };
+            context.operation_facts.insert(InstructionId(id), OperationFacts {
+                source: FileClass::Regular,
+                destination: if expected.files[destination].is_some() { FileClass::Regular } else { FileClass::Missing },
+            });
+            evaluate(&mut expected, &operation, id);
+            operations.push(operation);
+        }
+        let ir = program(operations.iter().enumerate().map(|(id, operation)| model_instruction(id, operation)).collect());
+        let graph = graph::build_with_context(&ir, &context);
+        prop_assert!(graph.is_execution_ready());
+        prop_assert!(all_orders_preserve(&graph, &operations, &expected, &initial, 0), "an admitted schedule changed finite resource values, read results or parent-directory metadata: {operations:?}");
     }
 }

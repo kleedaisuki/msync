@@ -413,18 +413,22 @@ not advanced prematurely.
 | Physical endpoints | `endpoint.rs`; old `compiler::{Backend, Location}` paths re-export unchanged types | Existing compiler target: 25 passed |
 | Structured syntax/format | `language::{Document, Expr, parse, format}`; indentation, contextual string/path types and explicit destination modes | 12 targeted cases, including 64 generated UTF-8 literal round trips |
 | Macro expansion | `compiler::structured::Session`; isolated frames, typed arguments, definition-time `global`, source/cwd split, session identities | 22 targeted cases |
-| Typed IR and proofs | `hir`, `hir::{effects, graph}`; transaction regions, process events, unknown-effect barriers and provider-bound refinement | 20 targeted cases; independent small-state model enumerates admitted schedules |
+| Typed IR and proofs | `hir`, `hir::{effects, graph}`; transaction regions, process events, type facts, directory metadata, consuming HTTP/unknown reads and provider-bound refinement | 31 targeted cases; independent models check bytes, reads, parent metadata and request ordering |
 | Atomic frontend submission | `pipeline::{compile, compile_with_context}`; parse, candidate expansion, effect obligations, then lexical-state commit; retain adapter proof premises | Four integration cases, including proof failure without leaked bindings or IDs and invalidated resource-view premises |
 | Compound input ownership | `language::SubmissionBuffer`; physical lines accumulate until blank line/EOF, cancellation discards the entire prefix | Five targeted cases; compiler sees no partial macro or transaction body; terminal-loop integration remains pending |
 | Version visibility | `transaction::Store<V>`; immutable references, four visibility policies, atomic logical checkpoints, retained origin | 17 cases including write skew, absence, directory phantoms and rollback properties |
 | Filesystem publication | `transaction::filesystem`; independent disk artifacts, tree manifests and retained compensating publication journals | Separate real-filesystem target; not an OS-wide atomicity or crash-recovery claim |
+| Filesystem transaction manager | `transaction::manager`; atomic logical swap after multi-root physical publication, compensating recovery receipts, portable metadata, native case policy, named origin and explicit retryable shutdown | 15 Windows real-filesystem cases; independent metadata controls and cloud Unix acceptance are separate |
+| File/literal reference execution | `execution::execute`; expanded macros, selectors/containers/replacement, implicit atomic statements, checkpoints and named rollback | 19 Windows journeys, generated file-state model and one actual WSL-to-native directory replacement; sequential oracle, not the production async scheduler |
 | Process ownership | `process`; exact argv, concurrent bounded-memory output drains, replayable scalar ports, Job/group ownership | Separate actual-child target; not a transaction sandbox |
+| Native Linux resource views | `process::view_linux`; frozen original-path mounts, private temporary/network namespaces, credentialled exec worker, no unmediated fallback | Six real WSL native-tmpfs journeys plus capability-cache regression; explicit cloud namespace gate |
+| Native Windows resource views | `process::view_windows` and `windows_view/`; owned Sandboxie box, driver policy readback, authenticated bounded tree/stdio bridge, payload identity and metadata | Local protocol/absence controls; signed driver installation + ABI proven in cloud; actual boxed IO gate still required |
 
 Local integration runs are restricted to affected targets plus formatting and
 strict library/changed-target Clippy. The CI selector in `scripts/ci-select.ps1`
 maps component edits to meaningful test targets and keeps broad compatibility
 coverage for shared transport, dependency, or workflow changes. Design-only edits
-do not start Cargo jobs. Nine selector checks distinguish these cases, including
+do not start Cargo jobs. Eleven selector checks distinguish these cases, including
 selector-only edits which run the selector regression rather than unrelated Rust
 suites. Review counterexamples are selected with the components they cover.
 
@@ -448,10 +452,53 @@ includes the native Unix read-only-directory publication and both independent
 hard-link permission regressions. It does not certify the later execution-manager
 or resource-view work, or the original full v0.4 objective.
 
-Remaining delivery obligations are the filesystem-backed execution manager,
+The subsequent complete compatibility matrix at `385c104` also passed on both
+platforms ([run 40493994178](https://github.com/kleedaisuki/msync/actions/runs/40493994178)).
+It covers the first manager/native-rename milestone, not the later code above.
+Independent dependency provisioning at `e91efbf` verified the pinned installer
+hash/signature, running service/driver and native version `5.73.8`, ABI `356912`
+([run 40494475547](https://github.com/kleedaisuki/msync/actions/runs/40494475547)).
+It deliberately created no sandbox and did not certify program IO. A setup-only
+repair ran selector checks and skipped unrelated Rust tests rather than cancelling
+or repeating the already completed compatibility run.
+
+Remaining delivery obligations are the unified structured execution manager,
 verified Linux/Windows program-resource views, runtime coordination of overlapping
 program pipelines, CLI/REPL block accumulation and diagnostics, end-to-end
 transaction journeys, and then measured latency/concurrency optimization. A
 provider-name/view-ID effect certificate only records the compiler's premise;
 its constructor does not establish that an OS sandbox actually exists. See the
 concrete provisioning and mediation plan in [transactions-v4.md](transactions-v4.md).
+
+### Session integration obligations
+
+The manager now connects versions to real publication, but its enrolled domain
+still closes before the first transaction. A persistent REPL executor must add
+resources without invalidating active snapshots or retained named origins; it
+must not silently rebuild the manager and lose a prior submission's undo record.
+Shell-driven external edits also need an explicit refresh/conflict boundary so
+a named rollback cannot overwrite a foreign newer filesystem head unnoticed.
+
+An invocation's internal stores/imports/views should share one owned workspace.
+A directory source that contains that workspace needs an identity-checked
+internal exclusion, not exclusion of every user `.temp` entry and not recursive
+capture of its own output. This also enables ordinary cwd-root process views:
+the private source mount can be a descendant of the logical root because the
+bind resolves its source before overmounting that root. Inherited control/status
+FDs remain usable after the invocation's backing pathname is hidden in the child.
+This representation change remains to be implemented and checked before lifting
+the initial disjoint-root restriction.
+
+Before switching the default CLI frontend, retain decoded operand provenance and
+owned source identities through cross-submission macro expansion, not only call
+site byte spans. Compound-buffer tests alone are not a native terminal integration
+gate. The public `ProcessEffects` premise also remains the trusted view provider's
+obligation; different argv strings or successful samples cannot establish purity.
+
+Per-instruction `OperationFacts` are equally explicit premises. Unknown filesystem
+reads stay consuming until a replayable regular file or directory is established;
+HTTP remains observable even if metadata reports a finite regular body. Directory
+creation/type changes include namespace-metadata writes. A graph may be a valid
+conservative scheduling certificate while `is_execution_ready()` is false: type
+inspection, selector expansion and the physical stream scheduler are separate
+preparation obligations, not facts invented by pure syntax compilation.
