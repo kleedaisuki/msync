@@ -10,7 +10,10 @@ use std::path::{Component, Path, PathBuf, Prefix};
 use std::ptr::{null, null_mut};
 use std::sync::Arc;
 
-use windows_sys::Win32::Foundation::{CloseHandle, FreeLibrary, HMODULE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, FreeLibrary, HMODULE, WAIT_OBJECT_0,
+    WAIT_TIMEOUT,
+};
 use windows_sys::Win32::System::LibraryLoader::{
     GetModuleFileNameW, GetModuleHandleW, GetProcAddress, LOAD_LIBRARY_SEARCH_DEFAULT_DIRS,
     LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LoadLibraryExW,
@@ -246,9 +249,13 @@ impl Api {
             .iter()
             .position(|unit| *unit == 0)
             .unwrap_or(actual.len());
-        if String::from_utf16_lossy(&actual[..end]) != name {
-            return Err(io::Error::other(
-                "control peer is not a member of the owned Sandboxie box",
+        let actual = String::from_utf16_lossy(&actual[..end]);
+        if actual != name {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!(
+                    "Sandboxie membership mismatch for pid={pid}: expected box {name:?}, actual box {actual:?}"
+                ),
             ));
         }
         Ok(())
@@ -379,44 +386,216 @@ impl Api {
     }
 
     pub fn quiesce_except_many(&self, name: &str, keep: &[u32]) -> io::Result<()> {
-        for _ in 0..32 {
-            let pids = self
-                .pids(name)?
-                .into_iter()
-                .filter(|pid| !keep.contains(pid))
-                .collect::<Vec<_>>();
-            if pids.is_empty() {
-                return Ok(());
-            }
-            for pid in pids {
-                let raw = unsafe {
-                    OpenProcess(
-                        PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
-                        0,
-                        pid,
-                    )
-                };
-                if raw.is_null() {
-                    // Re-enumeration, not a stale PID, decides quiescence.
-                    continue;
-                }
-                let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
-                self.belongs(pid, name)?;
-                if unsafe { TerminateProcess(handle.as_raw_handle(), 1) } == 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if unsafe { WaitForSingleObject(handle.as_raw_handle(), 10000) } != WAIT_OBJECT_0 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "owned box process did not terminate",
-                    ));
-                }
+        let operations = NativeQuiescence { api: self, name };
+        quiesce_with(&operations, name, keep)
+    }
+}
+
+trait Quiescence {
+    type Handle;
+    fn open(&self, pid: u32) -> io::Result<Self::Handle>;
+    fn wait(&self, process: &Self::Handle, milliseconds: u32) -> io::Result<bool>;
+    fn member(&self, pid: u32) -> io::Result<()>;
+    fn terminate(&self, process: &Self::Handle) -> io::Result<()>;
+    fn pids(&self) -> io::Result<Vec<u32>>;
+    fn listed(&self, pid: u32) -> io::Result<bool> {
+        Ok(self.pids()?.contains(&pid))
+    }
+}
+
+struct NativeQuiescence<'a> {
+    api: &'a Api,
+    name: &'a str,
+}
+
+impl Quiescence for NativeQuiescence<'_> {
+    type Handle = OwnedHandle;
+
+    fn open(&self, pid: u32) -> io::Result<Self::Handle> {
+        let access = PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE;
+        let mut raw = unsafe { OpenProcess(access, 0, pid) };
+        if raw.is_null() {
+            let original = io::Error::last_os_error();
+            // A wait-only handle can prove an already-completed process without
+            // incorrectly turning a denied termination right into disappearance.
+            raw = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+            if raw.is_null() {
+                return Err(original);
             }
         }
-        Err(io::Error::other(
-            "owned box did not become quiescent; retain its files and configuration",
-        ))
+        // SAFETY: OpenProcess returned a fresh non-null process handle. Retaining
+        // it pins this process generation while membership and exit are checked.
+        Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
     }
+
+    fn wait(&self, process: &Self::Handle, milliseconds: u32) -> io::Result<bool> {
+        match unsafe { WaitForSingleObject(process.as_raw_handle(), milliseconds) } {
+            WAIT_OBJECT_0 => Ok(true),
+            WAIT_TIMEOUT => Ok(false),
+            _ => Err(io::Error::last_os_error()),
+        }
+    }
+
+    fn member(&self, pid: u32) -> io::Result<()> {
+        self.api.belongs(pid, self.name)
+    }
+
+    fn terminate(&self, process: &Self::Handle) -> io::Result<()> {
+        if unsafe { TerminateProcess(process.as_raw_handle(), 1) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    fn pids(&self) -> io::Result<Vec<u32>> {
+        self.api.pids(self.name)
+    }
+}
+
+fn quiesce_with(ops: &impl Quiescence, name: &str, keep: &[u32]) -> io::Result<()> {
+    let mut joined = std::collections::BTreeMap::new();
+    for _ in 0..32 {
+        let pids = ops
+            .pids()?
+            .into_iter()
+            .filter(|pid| !keep.contains(pid) && !joined.contains_key(pid))
+            .collect::<Vec<_>>();
+        if pids.is_empty() {
+            return Ok(());
+        }
+        for pid in pids {
+            if let Some(handle) = stop_enumerated(ops, name, pid)? {
+                // A retained process handle pins this exact generation. Driver
+                // records may lag completion; never cache an unpinned PID alone.
+                joined.insert(pid, handle);
+            }
+        }
+    }
+    Err(io::Error::other(
+        "owned box did not become quiescent; retain its files and configuration",
+    ))
+}
+
+fn stop_enumerated<Q: Quiescence>(ops: &Q, name: &str, pid: u32) -> io::Result<Option<Q::Handle>> {
+    let failure = |action, cause| quiescence_error(name, pid, action, cause);
+    let process = match ops.open(pid) {
+        Ok(process) => process,
+        Err(cause) => {
+            let absent = !ops
+                .listed(pid)
+                .map_err(|error| failure("re-enumerate after OpenProcess failure", error))?;
+            // ERROR_INVALID_PARAMETER is the OS lookup's no-process result.
+            // Access denied alone (even after a list change) proves no exit.
+            if absent && cause.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
+                return Ok(None);
+            }
+            return Err(failure(
+                "OpenProcess without a waitable process handle",
+                cause,
+            ));
+        }
+    };
+    if ops
+        .wait(&process, 0)
+        .map_err(|cause| failure("poll process before membership", cause))?
+    {
+        return Ok(Some(process));
+    }
+    if let Err(cause) = ops.member(pid) {
+        if ops
+            .wait(&process, 0)
+            .map_err(|error| failure("poll process after membership failure", error))?
+        {
+            return Ok(Some(process));
+        }
+        if is_invalid_cid(&cause)
+            && ops
+                .wait(&process, 10000)
+                .map_err(|error| failure("join process marked terminated by Sandboxie", error))?
+        {
+            return Ok(Some(process));
+        }
+        return Err(failure(
+            "SbieApi_QueryProcess on an unsignaled process",
+            cause,
+        ));
+    }
+    if let Err(cause) = ops.terminate(&process) {
+        // Windows documents ACCESS_DENIED for an exited or exiting process.
+        // The error is accepted only after this same owned handle signals.
+        // https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess
+        let timeout = if cause.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+            10000
+        } else {
+            0
+        };
+        if ops
+            .wait(&process, timeout)
+            .map_err(|error| failure("join after TerminateProcess failure", error))?
+        {
+            return Ok(Some(process));
+        }
+        return Err(failure(
+            "TerminateProcess denied while process remains unsignaled",
+            cause,
+        ));
+    }
+    if ops
+        .wait(&process, 10000)
+        .map_err(|cause| failure("join terminated process", cause))?
+    {
+        return Ok(Some(process));
+    }
+    Err(failure(
+        "WaitForSingleObject after termination",
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "owned process did not signal completion",
+        ),
+    ))
+}
+
+#[derive(Debug)]
+struct QuiescenceFailure {
+    name: String,
+    pid: u32,
+    action: &'static str,
+    cause: io::Error,
+}
+
+impl std::fmt::Display for QuiescenceFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "owned box {} pid={} {}: {}",
+            self.name, self.pid, self.action, self.cause
+        )
+    }
+}
+
+impl std::error::Error for QuiescenceFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+
+fn quiescence_error(name: &str, pid: u32, action: &'static str, cause: io::Error) -> io::Error {
+    io::Error::new(
+        cause.kind(),
+        QuiescenceFailure {
+            name: name.to_owned(),
+            pid,
+            action,
+            cause,
+        },
+    )
+}
+
+fn is_invalid_cid(cause: &io::Error) -> bool {
+    cause
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<NativeStatus>())
+        .is_some_and(|status| status.0 as u32 == 0xc000_000b)
 }
 
 /// Driver-expanded settings use NT device paths, not the caller's DOS spelling.
@@ -557,13 +736,21 @@ unsafe fn symbol<T: Copy>(module: HMODULE, name: &[u8]) -> io::Result<T> {
 
 fn status(code: i32) -> io::Result<()> {
     if code < 0 {
-        return Err(io::Error::other(format!(
-            "Sandboxie NTSTATUS 0x{:08X}",
-            code as u32
-        )));
+        return Err(io::Error::other(NativeStatus(code)));
     }
     Ok(())
 }
+
+#[derive(Debug)]
+struct NativeStatus(i32);
+
+impl std::fmt::Display for NativeStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Sandboxie NTSTATUS 0x{:08X}", self.0 as u32)
+    }
+}
+
+impl std::error::Error for NativeStatus {}
 
 pub(super) fn owned_name(name: &str) -> io::Result<()> {
     if !name.starts_with("msync_")
@@ -646,5 +833,229 @@ impl NativeProcess {
         })
         .await
         .map_err(io::Error::other)?
+    }
+}
+
+#[cfg(test)]
+mod quiescence_tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
+
+    enum Member {
+        Owned,
+        InvalidCid,
+        Foreign,
+    }
+
+    struct Fake {
+        open_error: Option<i32>,
+        polls: RefCell<VecDeque<bool>>,
+        member: Member,
+        terminate_error: Option<i32>,
+        listed: bool,
+        member_calls: Cell<usize>,
+        terminate_calls: Cell<usize>,
+        enumerations: Cell<usize>,
+    }
+
+    impl Fake {
+        fn new(polls: &[bool]) -> Self {
+            Self {
+                open_error: None,
+                polls: RefCell::new(polls.iter().copied().collect()),
+                member: Member::Owned,
+                terminate_error: None,
+                listed: true,
+                member_calls: Cell::new(0),
+                terminate_calls: Cell::new(0),
+                enumerations: Cell::new(0),
+            }
+        }
+    }
+
+    impl Quiescence for Fake {
+        type Handle = ();
+        fn open(&self, _: u32) -> io::Result<()> {
+            self.open_error
+                .map_or(Ok(()), |code| Err(io::Error::from_raw_os_error(code)))
+        }
+        fn wait(&self, _: &(), _: u32) -> io::Result<bool> {
+            Ok(self
+                .polls
+                .borrow_mut()
+                .pop_front()
+                .expect("unexpected extra lifecycle poll"))
+        }
+        fn member(&self, _: u32) -> io::Result<()> {
+            self.member_calls.set(self.member_calls.get() + 1);
+            match self.member {
+                Member::Owned => Ok(()),
+                Member::InvalidCid => status(0xc000_000bu32 as i32),
+                Member::Foreign => Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "PID belongs to a foreign box",
+                )),
+            }
+        }
+        fn terminate(&self, _: &()) -> io::Result<()> {
+            self.terminate_calls.set(self.terminate_calls.get() + 1);
+            self.terminate_error
+                .map_or(Ok(()), |code| Err(io::Error::from_raw_os_error(code)))
+        }
+        fn listed(&self, _: u32) -> io::Result<bool> {
+            Ok(self.listed)
+        }
+        fn pids(&self) -> io::Result<Vec<u32>> {
+            self.enumerations.set(self.enumerations.get() + 1);
+            Ok(if self.listed { vec![99] } else { Vec::new() })
+        }
+    }
+
+    #[test]
+    fn signaled_process_does_not_require_a_stale_membership_query() {
+        let fake = Fake::new(&[true]);
+        let joined = stop_enumerated(&fake, "msync_test", 99).unwrap();
+        assert!(joined.is_some());
+        assert_eq!(fake.member_calls.get(), 0);
+        assert_eq!(fake.terminate_calls.get(), 0);
+    }
+
+    #[test]
+    fn stale_driver_enumeration_cannot_busy_fail_a_pinned_joined_generation() {
+        let fake = Fake::new(&[true]);
+        quiesce_with(&fake, "msync_test", &[]).unwrap();
+        assert_eq!(fake.enumerations.get(), 2);
+        assert_eq!(fake.member_calls.get(), 0);
+        assert_eq!(fake.terminate_calls.get(), 0);
+        assert!(fake.polls.borrow().is_empty());
+    }
+
+    #[test]
+    fn invalid_cid_requires_a_signaled_owned_handle_not_just_a_driver_flag() {
+        for (signals, succeeds) in [(true, true), (false, false)] {
+            let mut fake = Fake::new(&[false, false, signals]);
+            fake.member = Member::InvalidCid;
+            let result = stop_enumerated(&fake, "msync_test", 99);
+            assert_eq!(result.is_ok(), succeeds);
+            assert_eq!(fake.terminate_calls.get(), 0);
+            if let Err(failure) = result {
+                assert!(failure.to_string().contains("pid=99"));
+                assert!(failure.to_string().contains("0xC000000B"));
+            }
+        }
+    }
+
+    #[test]
+    fn terminate_access_denied_is_accepted_only_after_physical_completion() {
+        for completed in [false, true] {
+            let mut fake = Fake::new(&[false, completed]);
+            fake.terminate_error = Some(ERROR_ACCESS_DENIED as i32);
+            let result = stop_enumerated(&fake, "msync_test", 99);
+            assert_eq!(result.is_ok(), completed);
+            assert_eq!(fake.terminate_calls.get(), 1);
+            if let Err(failure) = result {
+                assert_eq!(failure.kind(), io::ErrorKind::PermissionDenied);
+                let context = failure
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<QuiescenceFailure>()
+                    .unwrap();
+                assert_eq!(
+                    context.cause.raw_os_error(),
+                    Some(ERROR_ACCESS_DENIED as i32)
+                );
+                assert!(failure.to_string().contains("TerminateProcess"));
+            }
+        }
+    }
+
+    #[test]
+    fn a_foreign_reused_pid_is_never_terminated() {
+        let mut fake = Fake::new(&[false, false]);
+        fake.member = Member::Foreign;
+        let failure = stop_enumerated(&fake, "msync_test", 99).unwrap_err();
+        assert_eq!(failure.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fake.terminate_calls.get(), 0);
+    }
+
+    #[test]
+    fn unopenable_pid_requires_native_nonexistence_and_driver_absence() {
+        for (code, listed, succeeds) in [
+            (ERROR_INVALID_PARAMETER, false, true),
+            (ERROR_INVALID_PARAMETER, true, false),
+            (ERROR_ACCESS_DENIED, false, false),
+            (ERROR_ACCESS_DENIED, true, false),
+        ] {
+            let mut fake = Fake::new(&[]);
+            fake.open_error = Some(code as i32);
+            fake.listed = listed;
+            assert_eq!(stop_enumerated(&fake, "msync_test", 99).is_ok(), succeeds);
+            assert_eq!(fake.member_calls.get(), 0);
+            assert_eq!(fake.terminate_calls.get(), 0);
+        }
+    }
+
+    struct ExitDuringTerminate {
+        child: RefCell<Option<std::process::Child>>,
+    }
+
+    impl Quiescence for ExitDuringTerminate {
+        type Handle = RefCell<std::process::Child>;
+        fn open(&self, _: u32) -> io::Result<Self::Handle> {
+            Ok(RefCell::new(self.child.borrow_mut().take().unwrap()))
+        }
+        fn wait(&self, child: &Self::Handle, timeout: u32) -> io::Result<bool> {
+            match unsafe { WaitForSingleObject(child.borrow().as_raw_handle(), timeout) } {
+                WAIT_OBJECT_0 => Ok(true),
+                WAIT_TIMEOUT => Ok(false),
+                _ => Err(io::Error::last_os_error()),
+            }
+        }
+        fn member(&self, _: u32) -> io::Result<()> {
+            Ok(())
+        }
+        fn terminate(&self, child: &Self::Handle) -> io::Result<()> {
+            use std::io::Write;
+            let mut child = child.borrow_mut();
+            child.stdin.take().unwrap().write_all(b"completed\r\n")?;
+            assert!(child.wait()?.success());
+            assert_eq!(unsafe { TerminateProcess(child.as_raw_handle(), 1) }, 0);
+            let failure = io::Error::last_os_error();
+            assert_eq!(failure.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+            Err(failure)
+        }
+        fn listed(&self, _: u32) -> io::Result<bool> {
+            panic!("a held handle cannot require a PID-only proof")
+        }
+        fn pids(&self) -> io::Result<Vec<u32>> {
+            panic!("this fixture tests one owned generation")
+        }
+    }
+
+    #[test]
+    fn a_real_process_exit_between_validation_and_termination_joins_successfully() {
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        // The child waits on stdin until the controlled termination boundary.
+        // Only fixed trusted shell arguments are used, with no filesystem work.
+        let child = Command::new("cmd.exe")
+            .args(["/D", "/C", "set /p _msync_wait="])
+            .creation_flags(0x0800_0000)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let joined = stop_enumerated(
+            &ExitDuringTerminate {
+                child: RefCell::new(Some(child)),
+            },
+            "msync_test",
+            pid,
+        )
+        .unwrap();
+        assert!(joined.is_some());
     }
 }

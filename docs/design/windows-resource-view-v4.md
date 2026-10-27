@@ -67,6 +67,42 @@ junction escapes. Driver-free regressions exercise both valid representations an
 a real NTFS junction (including slash/dot spellings); another provisioned gate is
 still required to validate the next payload-launch phase.
 
+## Quiescence after successful native execution
+
+At `96ab6f0`,
+[Actions run 40520881614](https://github.com/kleedaisuki/msync/actions/runs/40520881614)
+passed all four native resource-view journeys and seven of nine production
+transactional-program journeys, including checkpoint/rollback and cross-REPL
+pipelines. Two later shared-box joins exposed lifecycle races: a listed process
+could exit before its membership query (`STATUS_INVALID_CID`), or before
+`TerminateProcess` (`ERROR_ACCESS_DENIED`). These results do not establish a
+fully accepted Windows integration yet.
+
+The pinned
+[`Process_Api_Query`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/drv/process_api.c)
+returns invalid CID when its record is missing **or marked terminated**. That
+status is not proof that physical IO has drained. Microsoft's
+[`TerminateProcess` contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess)
+also explicitly documents access denied for an already-terminated held handle.
+
+The join now checks the owned process handle before membership and after either
+race. It accepts completion only when that same handle signals; a still-live
+foreign process is never terminated, and an unresolved real permission failure
+retains its PID, box, operation and underlying native cause. An unopenable PID
+requires both an explicit native no-process result and authoritative driver
+absence; access denied alone is never treated as disappearance. Joined handles
+remain held across cohort rescans, pinning the exact completed generations so a
+stale driver record cannot cause a busy rescan failure or be confused with PID
+reuse. No sleep or blind retry was added.
+
+Seven focused regressions cover these transitions, persistent stale enumeration,
+and a real native process deliberately exiting between validation and attempted
+termination. While unrelated live-executor edits temporarily prevented the main
+library from compiling, the unchanged native source was included directly by a
+disposable `.temp` Rust test harness linked against the existing SDK/Tokio build
+artifacts: all seven cases and strict `clippy-driver` checks passed. This direct
+same-source check does not replace the next provisioned-driver integration gate.
+
 The deployment/source investigation and pinned installer are in
 [transactions-v4.md](transactions-v4.md). The new runtime implementation is
 `src/process/view_windows.rs` with the focused `windows_view/` native ABI, bounded

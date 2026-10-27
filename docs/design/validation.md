@@ -410,3 +410,24 @@ all four exact entry names and additionally requires the scratch parent to be
 empty after process exit. It still rejects any persisted editor history/cache
 or retained private invocation, rather than merely permitting an extra file.
 No production changes were made for this acceptance pass.
+
+## Structured integration cloud checkpoint at `96ab6f0`
+
+[Actions run 40520881614](https://github.com/kleedaisuki/msync/actions/runs/40520881614)
+ran the integrated default grammar and runtime, not a substituted legacy CLI.
+The ordinary Windows compatibility job passed strict all-target Clippy, tests
+and doctests. On a separate disposable Windows 2022 runner the signed backend
+installed successfully and all four actual resource-view journeys passed.
+The production program gate passed seven of nine actual journeys, including the
+requested checkpoints/rollback, shared two-child view, cross-input pipeline,
+large stderr/stdin and rejected-candidate ownership. Two sealing cases failed
+in `join shared box payloads` with native `STATUS_INVALID_CID` and Win32 access
+denied. These remain failures until the handle-identity race correction passes
+the real backend; successful protocol tests do not substitute for that result.
+
+The ordinary Linux job stopped at strict Clippy on a `PathBuf` import used only
+by the Windows workspace fixture. It did not execute the Linux test/native
+gates. Commit `3d9cf3b` gates the import; a focused WSL Linux library, binary and
+workspace Clippy check passed afterward. This is not recorded as a successful
+full Linux cloud run. No local Sandboxie installation, SSH configuration change
+or persistent namespace/mount policy change was made for these checks.
