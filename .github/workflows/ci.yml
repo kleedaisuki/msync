@@ -4,9 +4,37 @@ on:
   push:
   pull_request:
 
+concurrency:
+  group: rust-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.select.outputs.rust }}
+      full: ${{ steps.select.outputs.full }}
+      docs: ${{ steps.select.outputs.docs }}
+      targets: ${{ steps.select.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: select
+        shell: pwsh
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if (-not $env:BASE -or $env:BASE -match '^0+$') {
+            $env:BASE = git merge-base HEAD origin/main
+          }
+          ./scripts/test-ci-select.ps1
+          ./scripts/ci-select.ps1 -Base $env:BASE -GitHubOutput
   test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.docs == 'true'
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -15,7 +43,30 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked --all-targets
-      - run: cargo test --locked --doc
+      - if: needs.changes.outputs.rust == 'true'
+        run: cargo fmt --check
+      - if: needs.changes.outputs.rust == 'true'
+        shell: pwsh
+        env:
+          FULL: ${{ needs.changes.outputs.full }}
+          TARGETS: ${{ needs.changes.outputs.targets }}
+        run: |
+          if ($env:FULL -eq 'true') {
+            cargo clippy --locked --all-targets -- -D warnings
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo test --locked --all-targets
+            exit $LASTEXITCODE
+          }
+          $targets = @($env:TARGETS | ConvertFrom-Json)
+          $clippyArgs = @('clippy', '--locked', '--lib', '--bin', 'msync')
+          $testArgs = @('test', '--locked', '--lib')
+          foreach ($target in $targets) {
+            $clippyArgs += @('--test', $target)
+            $testArgs += @('--test', $target)
+          }
+          & cargo @clippyArgs -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & cargo @testArgs
+          exit $LASTEXITCODE
+      - if: needs.changes.outputs.docs == 'true' || needs.changes.outputs.full == 'true'
+        run: cargo test --locked --doc
