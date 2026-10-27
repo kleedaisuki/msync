@@ -6,7 +6,7 @@
 
 use crate::compiler::CompileContext;
 use crate::compiler::structured::Session;
-use crate::hir::graph::{self, PlanGraph};
+use crate::hir::graph::{self, PlanGraph, PlanningContext};
 use crate::hir::{self, Instruction, InstructionId, InstructionKind, ProcessId, Region};
 use crate::language::{self, Document};
 use crate::syntax::{Report, Span};
@@ -16,6 +16,14 @@ pub struct Compilation {
     pub document: Document,
     pub program: hir::Program,
     pub graph: PlanGraph,
+    pub planning: PlanningContext,
+}
+
+impl Compilation {
+    pub fn verify(&self) -> Result<(), Vec<graph::Issue>> {
+        self.graph
+            .verify_with_context(&self.program, &self.planning)
+    }
 }
 
 /// Compile one submission, committing lexical state only when every pass succeeds.
@@ -25,10 +33,29 @@ pub fn compile(
     context: &CompileContext,
     live_processes: &[ProcessId],
 ) -> Result<Compilation, Vec<Report>> {
+    compile_with_context(
+        session,
+        source,
+        context,
+        &PlanningContext {
+            live_processes: live_processes.to_vec(),
+            ..PlanningContext::default()
+        },
+    )
+}
+
+/// Supply premises established by an execution adapter's verified resource view.
+/// This function does not establish or discover sandbox capabilities itself.
+pub fn compile_with_context(
+    session: &mut Session,
+    source: &str,
+    context: &CompileContext,
+    planning: &PlanningContext,
+) -> Result<Compilation, Vec<Report>> {
     let document = language::parse(source)?;
     let mut candidate = session.clone();
     let program = candidate.compile(&document, context)?;
-    let graph = graph::build_with_live_processes(&program, live_processes.iter().copied());
+    let graph = graph::build_with_context(&program, planning);
     if !graph.issues.is_empty() {
         return Err(graph
             .issues
@@ -52,6 +79,7 @@ pub fn compile(
         document,
         program,
         graph,
+        planning: planning.clone(),
     })
 }
 

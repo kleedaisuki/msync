@@ -87,3 +87,35 @@ fn separate_submissions_retain_macro_environment_but_not_execution_effects() {
     };
     assert_eq!(PathBuf::from(&location.path), context().pwd.join("before"));
 }
+
+#[test]
+fn runtime_premises_are_retained_and_checked_in_the_frontend_certificate() {
+    use msync::hir::effects::Effects;
+    use msync::hir::graph::{PlanningContext, ProcessEffects};
+
+    let source = "first => $path::first()\nsecond => $path::second()\nfirst::stdout -> second::stdin\nsecond::stdout -> output\n";
+    let mut session = Session::new();
+    // This pure frontend test supplies a trusted-adapter premise; it neither
+    // launches these programs nor claims to have created an OS resource view.
+    let mut planning = PlanningContext::default();
+    for id in [ProcessId(0), ProcessId(1)] {
+        planning.process_effects.insert(
+            id,
+            ProcessEffects::mediated(
+                Effects::default(),
+                "test-provider",
+                format!("view-{}", id.0),
+            )
+            .unwrap(),
+        );
+    }
+    let mut compiled =
+        pipeline::compile_with_context(&mut session, source, &context(), &planning).unwrap();
+    compiled.verify().unwrap();
+    assert_eq!(compiled.planning, planning);
+    compiled.planning.process_effects.clear();
+    assert!(
+        compiled.verify().is_err(),
+        "a certificate must not survive removal of its resource-view premise"
+    );
+}

@@ -414,7 +414,7 @@ not advanced prematurely.
 | Structured syntax/format | `language::{Document, Expr, parse, format}`; indentation, contextual string/path types and explicit destination modes | 12 targeted cases, including 64 generated UTF-8 literal round trips |
 | Macro expansion | `compiler::structured::Session`; isolated frames, typed arguments, definition-time `global`, source/cwd split, session identities | 22 targeted cases |
 | Typed IR and proofs | `hir`, `hir::{effects, graph}`; transaction regions, process events, unknown-effect barriers and provider-bound refinement | 20 targeted cases; independent small-state model enumerates admitted schedules |
-| Atomic frontend submission | `pipeline::compile`; parse, candidate expansion, effect obligations, then lexical-state commit | Three integration cases, including proof failure without leaked bindings or IDs |
+| Atomic frontend submission | `pipeline::{compile, compile_with_context}`; parse, candidate expansion, effect obligations, then lexical-state commit; retain adapter proof premises | Four integration cases, including proof failure without leaked bindings or IDs and invalidated resource-view premises |
 | Version visibility | `transaction::Store<V>`; immutable references, four visibility policies, atomic logical checkpoints, retained origin | 17 cases including write skew, absence, directory phantoms and rollback properties |
 | Filesystem publication | `transaction::filesystem`; independent disk artifacts, tree manifests and retained compensating publication journals | Separate real-filesystem target; not an OS-wide atomicity or crash-recovery claim |
 | Process ownership | `process`; exact argv, concurrent bounded-memory output drains, replayable scalar ports, Job/group ownership | Separate actual-child target; not a transaction sandbox |
@@ -423,7 +423,21 @@ Local integration runs are restricted to affected targets plus formatting and
 strict library/changed-target Clippy. The CI selector in `scripts/ci-select.ps1`
 maps component edits to meaningful test targets and keeps broad compatibility
 coverage for shared transport, dependency, or workflow changes. Design-only edits
-do not start Cargo jobs. The seven selector checks distinguish these cases.
+do not start Cargo jobs. Nine selector checks distinguish these cases, including
+selector-only edits which run the selector regression rather than unrelated Rust
+suites. Review counterexamples are selected with the components they cover.
+
+The first Actions integration exposed an empty-relative-root joining bug: joining
+the empty manifest key appended a separator to an ordinary file stage. Linux and
+ordinary Windows paths rejected it; local verbatim Windows paths had hidden the
+problem. Root entries now retain the root path without joining an empty component.
+Linux also required explicit mode preservation when moving a read-only directory
+between parents. Independent review separately reproduced cleanup changing the
+permissions of an external hard-link alias; cleanup now unlinks files without
+changing their inode-wide mode/attributes. See [review-v4.md](review-v4.md) for
+the counterexample and remaining recovery-intent hardening before full manager
+integration. These findings are why native cloud verification and independent
+filesystem journeys remain separate from pure model tests.
 
 Remaining delivery obligations are the filesystem-backed execution manager,
 verified Linux/Windows program-resource views, runtime coordination of overlapping
