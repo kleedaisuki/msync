@@ -229,3 +229,53 @@ refusal, permission/identity revalidation, exact origin undo after lease closure
 unchanged open/hardlinked siblings, scoped barriers, immutable file leases and
 disjoint sparse imports. These establish the Manager capability; graph/pump
 end-to-end integration is separately owned and is not inferred from these tests.
+
+## Owned scaffold directories are namespace shells
+
+An invocation may create a configured scratch ancestor that physical capture
+correctly prunes while it contains only this invocation. That logical absence
+must not prevent the user from later assigning an ordinary child in the same
+container. `InvocationRoot::scaffold_directory` grants this narrowly by recorded
+created-directory identity, not by `.temp` spelling or a generic exclusion list.
+Pre-existing user directories do not receive the grant.
+
+The logical WriteSet and Store remain unchanged. At publication, a verified owned
+shell with logical `None <-> Directory` transitions expands into the union of its
+before/after direct logical user children, recursively applying the same identity
+proof to nested owned shells. Ordinary child subtrees retain normal whole-tree
+receipts. The physical shell and private invocation are never exchanged or
+deleted; replacing such a shell by an ordinary file is explicitly refused.
+Other enrolled roots still use whole explicit replacement, including the existing
+refusal to exchange an unsafe unproved ancestor of backing stores.
+
+Each expanded shell receives an ordinary directory metadata receipt. Its first
+successful entry into the overlay retains the pre-publication native metadata;
+logical absence restores that baseline, while a visible directory uses its exact
+candidate metadata. Child data receipts and shell/outer-directory metadata share
+the existing compensation guard, and new baselines become durable Manager state
+only with the successful Store swap. Failed publication restores both children
+and physical before-images without installing an overlay baseline. Normal data
+roots bypass before-manifest construction; only invocation ancestors need the
+identity-proof/decomposition path.
+
+Physical pruning remains unchanged. During host refresh, an already visible,
+identity-proved owned shell is retained as a logical directory even when empty;
+otherwise an explicitly published empty user directory would disappear merely
+because physical capture hides the invocation-only shell. A logically absent
+shell stays absent. The retained overlay, not its filename, supplies this fact.
+
+Direct Manager regressions cover checkpoint/origin undo, unchanged shell/backing
+identity, exact shell and enclosing-root timestamps, child-publication failure
+compensation, file-replacement refusal and explicit empty-directory survival
+across refresh. The workspace owner additionally verified the real reference
+and finite-session journeys for a fresh scratch target, source copying and named
+undo, plus pre-existing user sentinels and source pruning. Cross-submission copy
+uses an independent output parent so the test does not waive the existing strict
+named-origin conflict on a shared directory metadata version. Native process
+coverage remains an explicitly separate backend gate.
+
+Latest joined Windows scaffold gate: **40 manager tests, four metadata tests and
+11 workspace tests passed**, with the two native-backend/child-fixture cases
+explicitly ignored. Scoped Clippy reports no Manager/helper diagnostics; strict
+whole-library completion still depends on the independently evolving event/pump
+module's unused-code/lint work. Owned source/test rustfmt and diff checks pass.

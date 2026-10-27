@@ -1884,3 +1884,170 @@ fn namespace_failed_compensation_retains_recovery_without_selecting_its_receipt(
         .unwrap();
     assert_eq!(receipt.selected_order, Order(2));
 }
+
+#[test]
+fn owned_scaffold_publication_and_origin_undo_keep_backing_identity_and_exact_metadata() {
+    use msync::transaction::filesystem::{InvocationRoot, NodeMetadata};
+    use std::time::{Duration, UNIX_EPOCH};
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    let scratch = root.join("scratch-container");
+    let invocation = InvocationRoot::create(&scratch).unwrap();
+    let mut manager = Manager::new_in(&invocation.path().join("versions"), &invocation).unwrap();
+    manager.enroll(&root).unwrap();
+    let scaffold_identity = same_file::Handle::from_path(&scratch).unwrap();
+    let scaffold_before = fs::metadata(&scratch).unwrap().modified().unwrap();
+    let input = workspace.path().join("input");
+    fs::create_dir_all(input.join("nested")).unwrap();
+    fs::write(input.join("file"), "payload").unwrap();
+    fs::write(input.join("nested/child"), "nested").unwrap();
+    let desired = UNIX_EPOCH + Duration::from_secs(946_684_800);
+    NodeMetadata::new(fs::metadata(&input).unwrap().permissions(), desired)
+        .apply(&input)
+        .unwrap();
+    let snapshot = manager.capture(&input).unwrap();
+    let id = TransactionId(261);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    let initial = manager.read_snapshot(id, &root).unwrap();
+    assert!(
+        !initial
+            .entries()
+            .contains_key(Path::new("scratch-container"))
+    );
+    let initial_root_time = initial.entries()[Path::new("")].metadata().modified;
+    manager.replace_snapshot(id, &scratch, &snapshot).unwrap();
+    manager.checkpoint(id).unwrap();
+    manager.finish(id).unwrap();
+    invocation.verify().unwrap();
+    assert_eq!(
+        same_file::Handle::from_path(&scratch).unwrap(),
+        scaffold_identity
+    );
+    assert_eq!(
+        fs::read_to_string(scratch.join("nested/child")).unwrap(),
+        "nested"
+    );
+    assert_eq!(fs::metadata(&scratch).unwrap().modified().unwrap(), desired);
+    manager.rollback_origin(id).unwrap();
+    invocation.verify().unwrap();
+    assert_eq!(
+        same_file::Handle::from_path(&scratch).unwrap(),
+        scaffold_identity
+    );
+    assert!(!scratch.join("file").exists());
+    assert!(!scratch.join("nested").exists());
+    assert_eq!(
+        fs::metadata(&scratch).unwrap().modified().unwrap(),
+        scaffold_before
+    );
+    assert_eq!(
+        fs::metadata(&root).unwrap().modified().unwrap(),
+        initial_root_time
+    );
+    drop((initial, snapshot));
+    manager.shutdown().unwrap();
+    invocation.cleanup().unwrap();
+    assert!(scratch.is_dir());
+    assert_eq!(fs::read_dir(&scratch).unwrap().count(), 0);
+}
+
+#[test]
+fn owned_scaffold_failure_compensates_children_and_file_replacement_is_refused() {
+    use msync::transaction::filesystem::InvocationRoot;
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    let scratch = root.join("container");
+    let invocation = InvocationRoot::create(&scratch).unwrap();
+    let mut manager = Manager::new_in(&invocation.path().join("versions"), &invocation).unwrap();
+    manager.enroll(&root).unwrap();
+    let input = workspace.path().join("input");
+    fs::create_dir(&input).unwrap();
+    fs::write(input.join("a"), "a").unwrap();
+    fs::write(input.join("b"), "b").unwrap();
+    let snapshot = manager.capture(&input).unwrap();
+    let file = payload(&manager, workspace.path(), "file", "file");
+    let root_before = fs::metadata(&root).unwrap().modified().unwrap();
+    let scratch_before = fs::metadata(&scratch).unwrap().modified().unwrap();
+    let id = TransactionId(262);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    manager.replace_snapshot(id, &scratch, &snapshot).unwrap();
+    let failure = manager.checkpoint_with(id, |path, event| {
+        if event == PublishEvent::AfterInstall
+            && path.file_name() == Some(std::ffi::OsStr::new("a"))
+        {
+            return Err(io::Error::other("cancel first logical scaffold child"));
+        }
+        Ok(())
+    });
+    assert!(matches!(failure, Err(ManagerError::Publication { .. })));
+    invocation.verify().unwrap();
+    assert!(!scratch.join("a").exists());
+    assert!(!scratch.join("b").exists());
+    assert_eq!(
+        fs::metadata(&scratch).unwrap().modified().unwrap(),
+        scratch_before
+    );
+    assert_eq!(
+        fs::metadata(&root).unwrap().modified().unwrap(),
+        root_before
+    );
+    assert!(manager.retained_journals().is_empty());
+    manager.rollback_pending(id).unwrap();
+    manager.replace_snapshot(id, &scratch, &file).unwrap();
+    assert!(matches!(
+        manager.checkpoint(id),
+        Err(ManagerError::InvalidPath { .. })
+    ));
+    invocation.verify().unwrap();
+    manager.rollback_pending(id).unwrap();
+    manager.finish(id).unwrap();
+    drop((snapshot, file));
+    manager.shutdown().unwrap();
+    invocation.cleanup().unwrap();
+}
+
+#[test]
+fn an_explicit_empty_scaffold_directory_stays_visible_across_host_refresh() {
+    use msync::transaction::filesystem::InvocationRoot;
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    let scratch = root.join("container");
+    let invocation = InvocationRoot::create(&scratch).unwrap();
+    let mut manager = Manager::new_in(&invocation.path().join("versions"), &invocation).unwrap();
+    manager.enroll(&root).unwrap();
+    let input = workspace.path().join("empty-directory");
+    fs::create_dir(&input).unwrap();
+    let empty = manager.capture(&input).unwrap();
+    let id = TransactionId(263);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    manager.replace_snapshot(id, &scratch, &empty).unwrap();
+    manager.finish(id).unwrap();
+    let epoch = manager.epoch();
+    assert_eq!(manager.refresh_host().unwrap(), epoch);
+    let reader = TransactionId(264);
+    manager.begin(reader, Isolation::Serializable).unwrap();
+    assert!(
+        manager
+            .read_snapshot(reader, &scratch)
+            .unwrap()
+            .is_directory()
+    );
+    manager.finish(reader).unwrap();
+    manager.rollback_origin(id).unwrap();
+    manager.refresh_host().unwrap();
+    let reader = TransactionId(265);
+    manager.begin(reader, Isolation::Serializable).unwrap();
+    assert!(
+        manager
+            .read_snapshot(reader, &scratch)
+            .unwrap()
+            .is_missing()
+    );
+    manager.finish(reader).unwrap();
+    drop(empty);
+    manager.shutdown().unwrap();
+    invocation.cleanup().unwrap();
+}

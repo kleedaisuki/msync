@@ -97,6 +97,27 @@ impl InvocationRoot {
         self.contains(&absolute(path)?)
     }
 
+    /// Identify a directory created only to house this invocation. Its logical
+    /// absence does not authorize replacing the physical directory while the
+    /// invocation is live; publishers must apply user-child deltas instead.
+    pub fn scaffold_directory(&self, path: &Path) -> Result<Option<NodeMetadata>> {
+        self.verify()?;
+        let path = absolute(path)?;
+        if !self.owns_scaffold(&path)? {
+            return Ok(None);
+        }
+        let metadata = safe_metadata(&path)?.ok_or_else(|| {
+            invalid(
+                "inspect invocation scaffold",
+                &path,
+                "owned directory is missing",
+            )
+        })?;
+        let metadata = NodeMetadata::capture(&metadata)
+            .map_err(|cause| error("inspect invocation scaffold metadata", &path, cause))?;
+        Ok(Some(metadata))
+    }
+
     /// Remove only the owned invocation. Configured scratch directories remain
     /// available to callers; no pre-existing/user directory is removed.
     pub fn cleanup(&self) -> Result<()> {
@@ -175,7 +196,7 @@ impl InvocationRoot {
         Ok(None)
     }
 
-    pub(super) fn created_empty_parent(&self, source: &Path) -> Result<bool> {
+    pub(super) fn owns_scaffold(&self, source: &Path) -> Result<bool> {
         let Some(identity) = identity_at(source)? else {
             return Ok(false);
         };

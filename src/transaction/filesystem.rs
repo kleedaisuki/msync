@@ -450,7 +450,7 @@ impl SnapshotStore {
                 )?;
             }
             if let Some(invocation) = invocation
-                && invocation.created_empty_parent(source)?
+                && invocation.owns_scaffold(source)?
                 && !entries
                     .keys()
                     .any(|entry| entry != relative && entry.starts_with(relative))

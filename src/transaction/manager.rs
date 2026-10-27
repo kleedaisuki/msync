@@ -33,6 +33,7 @@ mod enrollment;
 mod namespace;
 mod receipt;
 mod refresh;
+mod scaffold;
 pub use namespace::{NamespaceMergePermit, NamespacePublicationOrder, NamespacePublicationReceipt};
 use receipt::{Batch, DirectoryReceipt};
 
@@ -209,6 +210,7 @@ pub struct Manager {
     cleanup: Vec<Batch>,
     active: BTreeSet<TransactionId>,
     namespaces: namespace::Namespaces,
+    scaffold_baselines: BTreeMap<ResourceKey, NodeMetadata>,
     lifecycle: Lifecycle,
 }
 
@@ -229,6 +231,7 @@ impl Manager {
             cleanup: Vec::new(),
             active: BTreeSet::new(),
             namespaces: namespace::Namespaces::default(),
+            scaffold_baselines: BTreeMap::new(),
             lifecycle: Lifecycle::Open,
         }
     }
@@ -761,6 +764,7 @@ impl Manager {
                 self.pending_roots.clear();
                 self.origin_roots.clear();
                 self.namespaces = namespace::Namespaces::default();
+                self.scaffold_baselines.clear();
                 self.lifecycle = Lifecycle::Closing { epoch };
             }
         }
@@ -1108,18 +1112,12 @@ impl Manager {
                 });
             }
         }
-        let roots = writes.minimal_data();
-        let views = roots
-            .iter()
-            .map(|key| {
-                Ok((
-                    self.key_path(&candidate, key)?,
-                    self.committed_snapshot(&candidate, key)?,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let layout = self.scaffold_publication(&candidate, writes)?;
+        let roots = layout.roots;
+        let views = layout.views;
         let mut batch = Batch::default();
         let mut metadata_keys = writes.metadata.clone();
+        metadata_keys.extend(layout.metadata.keys().cloned());
         for key in &roots {
             let parts = key.components();
             if !parts.is_empty() {
@@ -1138,11 +1136,19 @@ impl Manager {
             if roots.iter().any(|root| root.tree().contains(key)) {
                 continue;
             }
-            let Some(ManagedEntry {
-                entry: Entry::Directory { metadata },
-                ..
-            }) = candidate.committed(key)
-            else {
+            let metadata =
+                layout
+                    .metadata
+                    .get(key)
+                    .cloned()
+                    .or_else(|| match candidate.committed(key) {
+                        Some(ManagedEntry {
+                            entry: Entry::Directory { metadata },
+                            ..
+                        }) => Some(metadata),
+                        _ => None,
+                    });
+            let Some(metadata) = metadata else {
                 continue;
             };
             let path = self.key_path(&candidate, key)?;
@@ -1187,6 +1193,7 @@ impl Manager {
         }
         let epoch = candidate.epoch();
         self.store = candidate;
+        self.scaffold_baselines = layout.baselines;
         self.commit_namespace_receipt(namespace_receipt);
         let published_roots = batch.data.len();
         batch.committed = true;

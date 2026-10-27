@@ -77,6 +77,14 @@ impl Manager {
                     }),
                 );
             }
+            // Physical capture prunes invocation-only shells. A directory the
+            // user explicitly published there is nevertheless logically present.
+            // Only the retained identity-proved overlay can restore that fact.
+            for (key, value) in self.observed_scaffolds(scope)? {
+                if observed.get(&key).is_none_or(Option::is_none) {
+                    observed.insert(key, Some(value));
+                }
+            }
         }
         for root in &self.domain.roots {
             if scopes.iter().any(|scope| scope.tree().contains(&root.key)) {

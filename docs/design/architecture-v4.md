@@ -491,14 +491,29 @@ through ordinary/verbatim or case aliases. Fresh scratch ancestor directories
 with no logical children are not invented as source data; configured physical
 scratch directories remain available to existing callers after cleanup.
 
+Logical absence and physical ownership are distinct for newly created scratch
+ancestors. `InvocationRoot::scaffold_directory` proves their directory identities;
+it does not authorize publishing an entire ancestor over live backing stores.
+The manager decomposes those logical subtree changes into user-child publications
+and directory-metadata receipts, retaining the physical shell through both
+logical absence-to-directory publication and origin undo to absence. Existing
+user directories do not acquire this capability merely by being named `.temp`.
+File replacement of a live owned scaffold remains rejected.
+
 The reference executor enrolls the existing destination namespace when creating
 new children. Its invocation constructor normalizes its own scratch-creation
 mtime touch in the logical snapshot, and cleanup preserves subsequent logical
 parent timestamps. Focused `execution_workspace_v4` journeys exercise actual cwd
 copy with default internal scratch, user `.temp` sentinel preservation, containing
 namespace origin undo and refusal to delete a foreign replacement. The Windows
-workspace target has eight passing cases, separate from the ordinary reference
-executor's nineteen cases; native Unix cloud validation remains separate.
+workspace target has eleven passing Windows cases, including fresh default
+scratch as an ordinary user destination and later cross-submission copy/origin
+undo. A native child actually creating `.temp/user-file` has a separate explicitly
+ignored journey requiring a provisioned process-resource backend. Cross-submission
+copy uses a different parent namespace: changing the same parent from another
+origin must still cause the existing strict rollback conflict, not be waived by
+the scaffold capability. The ordinary reference executor's nineteen cases and
+native Unix validation remain separate.
 
 This ownership representation also enables ordinary cwd-root process views:
 the private source mount can be a descendant of the logical root because the

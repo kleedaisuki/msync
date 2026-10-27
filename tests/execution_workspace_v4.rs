@@ -6,7 +6,7 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use msync::compiler::CompileContext;
 use msync::compiler::structured::Session;
-use msync::execution::{self, Options};
+use msync::execution::{self, Options, RuntimeSession};
 use msync::pipeline;
 use msync::transaction::filesystem::{InvocationRoot, SnapshotStore};
 
@@ -53,6 +53,7 @@ fn capture_omits_only_the_current_owned_invocation_and_retains_user_temp_data() 
     set_modified(&scratch);
     let before = fs::metadata(&scratch).unwrap().modified().unwrap();
     let invocation = InvocationRoot::create(&scratch).unwrap();
+    assert!(invocation.scaffold_directory(&scratch).unwrap().is_none());
     let mut store = SnapshotStore::new_in(&invocation.path().join("assets"), &invocation).unwrap();
     assert!(
         store.capture(&source).is_err(),
@@ -122,6 +123,8 @@ fn fresh_internal_scratch_is_not_invented_as_logical_source_data() {
     let before = fs::metadata(&source).unwrap().modified().unwrap();
     let scratch = source.join(".temp");
     let invocation = InvocationRoot::create(&scratch).unwrap();
+    assert!(invocation.scaffold_directory(&scratch).unwrap().is_some());
+    assert!(invocation.scaffold_directory(&source).unwrap().is_none());
     let mut store = SnapshotStore::new_in(&invocation.path().join("assets"), &invocation).unwrap();
     let snapshot = store.capture_in(&source, &invocation).unwrap();
     assert!(!snapshot.entries().contains_key(Path::new(".temp")));
@@ -251,6 +254,165 @@ fn cleanup_preserves_committed_user_entries_and_namespace_time_in_configured_scr
     );
     assert!(fs::metadata(&scratch).unwrap().modified().unwrap() > before);
     assert_eq!(fs::read_dir(&scratch).unwrap().count(), 2);
+}
+
+#[test]
+fn fresh_configured_scratch_accepts_an_ordinary_user_target() {
+    let workspace = workspace();
+    let cwd = workspace.path().join("work");
+    fs::create_dir(&cwd).unwrap();
+    let report = run(&cwd, "\"committed\" -> $pwd::pwd/.temp/user-file\n");
+    assert!(report.cleanup.is_empty(), "{:?}", report.cleanup);
+    assert_eq!(fs::read(cwd.join(".temp/user-file")).unwrap(), b"committed");
+    assert_eq!(fs::read_dir(cwd.join(".temp")).unwrap().count(), 1);
+}
+
+#[test]
+fn fresh_scratch_user_namespace_can_be_copied_and_rolled_back() {
+    let workspace = workspace();
+    let cwd = workspace.path().join("work");
+    fs::create_dir(&cwd).unwrap();
+    set_modified(&cwd);
+    let before = fs::metadata(&cwd).unwrap().modified().unwrap();
+    let report = run(
+        &cwd,
+        "transaction A:\n    \"committed\" -> $pwd::pwd/.temp/user-file\n    commit\n    $pwd::pwd/.temp -> $pwd::pwd/copied/.\nrollback A\n",
+    );
+    assert!(report.cleanup.is_empty(), "{:?}", report.cleanup);
+    assert!(!cwd.join(".temp/user-file").exists());
+    assert!(!cwd.join("copied").exists());
+    assert_eq!(fs::read_dir(cwd.join(".temp")).unwrap().count(), 0);
+    assert_eq!(fs::metadata(&cwd).unwrap().modified().unwrap(), before);
+}
+
+#[tokio::test]
+async fn finite_runtime_accepts_fresh_scratch_user_entries_then_named_undo() {
+    for existing_scratch in [false, true] {
+        let workspace = workspace();
+        let cwd = workspace.path().join("work");
+        fs::create_dir(&cwd).unwrap();
+        if existing_scratch {
+            fs::create_dir(cwd.join(".temp")).unwrap();
+            fs::write(cwd.join(".temp/sentinel"), b"retain user data").unwrap();
+        }
+        let context = CompileContext {
+            pwd: cwd.clone(),
+            source_file: None,
+        };
+        let mut compiler = Session::new();
+        let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
+        for script in [
+            "transaction A:\n    \"committed\" -> $pwd::pwd/.temp/user-file\n",
+            "$pwd::pwd/.temp -> $pwd::pwd/../copied/.\n",
+            "rollback A\n",
+        ] {
+            let compilation = pipeline::compile(&mut compiler, script, &context, &[]).unwrap();
+            runtime.execute(&compilation.program).await.unwrap();
+            if script.starts_with("transaction") {
+                assert_eq!(fs::read(cwd.join(".temp/user-file")).unwrap(), b"committed");
+            }
+            if script.starts_with("$pwd") {
+                assert_eq!(
+                    fs::read(workspace.path().join("copied/user-file")).unwrap(),
+                    b"committed"
+                );
+                assert_eq!(
+                    fs::read_dir(workspace.path().join("copied"))
+                        .unwrap()
+                        .count(),
+                    if existing_scratch { 2 } else { 1 }
+                );
+            }
+        }
+        runtime.shutdown().await.unwrap();
+        assert!(!cwd.join(".temp/user-file").exists());
+        assert_eq!(
+            fs::read_dir(cwd.join(".temp")).unwrap().count(),
+            usize::from(existing_scratch)
+        );
+        assert_eq!(
+            fs::read(workspace.path().join("copied/user-file")).unwrap(),
+            b"committed"
+        );
+        if existing_scratch {
+            assert_eq!(
+                fs::read(cwd.join(".temp/sentinel")).unwrap(),
+                b"retain user data"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "native child fixture, launched only by the mediated process test"]
+fn scratch_namespace_child_fixture() {
+    fs::create_dir_all(".temp").unwrap();
+    fs::write(".temp/user-file", b"native child bytes").unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a provisioned native process-resource backend"]
+async fn native_program_creates_user_scratch_then_copy_and_origin_undo() {
+    for existing_scratch in [false, true] {
+        let workspace = workspace();
+        let cwd = workspace.path().join("work");
+        fs::create_dir(&cwd).unwrap();
+        if existing_scratch {
+            fs::create_dir(cwd.join(".temp")).unwrap();
+            fs::write(cwd.join(".temp/sentinel"), b"retain user data").unwrap();
+        }
+        let executable = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
+        let launch = format!(
+            "transaction A:\n    child => $local::\"{executable}\"(\"--exact\", \"scratch_namespace_child_fixture\", \"--ignored\", \"--nocapture\")\n"
+        );
+        let context = CompileContext {
+            pwd: cwd.clone(),
+            source_file: None,
+        };
+        let mut compiler = Session::new();
+        let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
+        runtime.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();
+        for script in [
+            launch.as_str(),
+            "$pwd::pwd/.temp -> $pwd::pwd/../copied/.\n",
+            "rollback A\n",
+        ] {
+            let compilation = pipeline::compile(&mut compiler, script, &context, &[]).unwrap();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                runtime.execute(&compilation.program),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        }
+        runtime.shutdown().await.unwrap();
+        assert!(!cwd.join(".temp/user-file").exists());
+        assert_eq!(
+            fs::read(workspace.path().join("copied/user-file")).unwrap(),
+            b"native child bytes"
+        );
+        assert_eq!(
+            fs::read_dir(cwd.join(".temp")).unwrap().count(),
+            usize::from(existing_scratch)
+        );
+        assert_eq!(
+            fs::read_dir(workspace.path().join("copied"))
+                .unwrap()
+                .count(),
+            if existing_scratch { 2 } else { 1 }
+        );
+        if existing_scratch {
+            assert_eq!(
+                fs::read(cwd.join(".temp/sentinel")).unwrap(),
+                b"retain user data"
+            );
+        }
+    }
 }
 
 #[cfg(windows)]
