@@ -18,6 +18,9 @@ use std::time::SystemTime;
 
 use same_file::Handle;
 
+mod invocation;
+pub use invocation::InvocationRoot;
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +92,7 @@ fn invalid(action: &'static str, path: &Path, message: &'static str) -> FsError 
 struct ArtifactRoot {
     path: PathBuf,
     identity: Handle,
+    invocation: Option<InvocationRoot>,
 }
 
 /// A copied ordinary file. Cloning retains ownership of its artifact directory.
@@ -179,6 +183,7 @@ impl Entry {
 pub struct Snapshot {
     owner: Arc<ArtifactRoot>,
     entries: BTreeMap<PathBuf, Entry>,
+    exclusions: Vec<InvocationRoot>,
 }
 
 impl Snapshot {
@@ -195,6 +200,31 @@ impl Snapshot {
             self.entries.get(Path::new("")),
             Some(Entry::Directory { .. })
         )
+    }
+
+    /// True only for the exact still-owned invocation omitted from this view.
+    pub fn excludes_invocation(&self, invocation: &InvocationRoot) -> Result<bool> {
+        invocation.verify()?;
+        Ok(self
+            .exclusions
+            .iter()
+            .any(|excluded| excluded.same(invocation)))
+    }
+
+    /// Verify a backing path belongs to the exact excluded owned invocation.
+    /// Missing children are checked through existing ancestors, not just text.
+    pub fn excludes_private_path(&self, path: &Path) -> Result<bool> {
+        Ok(self.invocation_for_path(path)?.is_some())
+    }
+
+    /// Retain the backing invocation while a prepared/running private view uses it.
+    pub fn invocation_for_path(&self, path: &Path) -> Result<Option<InvocationRoot>> {
+        for invocation in &self.exclusions {
+            if invocation.contains_private(path)? {
+                return Ok(Some(invocation.clone()));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -216,13 +246,33 @@ impl SnapshotStore {
         let identity = Handle::from_path(&path)
             .map_err(|cause| error("identify snapshot store", &path, cause))?;
         Ok(Self {
-            owner: Arc::new(ArtifactRoot { path, identity }),
+            owner: Arc::new(ArtifactRoot {
+                path,
+                identity,
+                invocation: None,
+            }),
             closed: false,
         })
     }
 
     pub fn root(&self) -> &Path {
         &self.owner.path
+    }
+
+    /// Register this store's lifetime with an exclusively owned invocation.
+    pub fn new_in(scratch: &Path, invocation: &InvocationRoot) -> Result<Self> {
+        if !invocation.contains_private(scratch)? {
+            return Err(invalid(
+                "create invocation store",
+                scratch,
+                "backing store must be inside the owned invocation",
+            ));
+        }
+        let mut store = Self::new(scratch)?;
+        Arc::get_mut(&mut store.owner)
+            .expect("new unshared store")
+            .invocation = Some(invocation.clone());
+        Ok(store)
     }
 
     pub fn capture(&self, source: &Path) -> Result<Snapshot> {
@@ -239,8 +289,54 @@ impl SnapshotStore {
         let mut snapshot = Snapshot {
             owner: self.owner.clone(),
             entries: BTreeMap::new(),
+            exclusions: Vec::new(),
         };
-        self.capture_entry(&source, Path::new(""), &mut snapshot.entries)?;
+        self.capture_entry(&source, Path::new(""), &mut snapshot.entries, None)?;
+        Ok(snapshot)
+    }
+
+    /// Capture a logical source while omitting only this exclusively owned
+    /// invocation. User `.temp` data and other runs remain ordinary entries.
+    pub fn capture_in(&self, source: &Path, invocation: &InvocationRoot) -> Result<Snapshot> {
+        self.ensure_open()?;
+        invocation.verify()?;
+        let source = absolute(source)?;
+        if invocation.contains(&source)? {
+            return Err(invalid(
+                "capture logical source",
+                &source,
+                "invocation-private data is not a logical source",
+            ));
+        }
+        if overlaps_store(&source, &self.owner)?
+            && (!invocation.contains_store(&self.owner)?
+                || !self
+                    .owner
+                    .invocation
+                    .as_ref()
+                    .is_some_and(|owner| owner.same(invocation)))
+        {
+            return Err(invalid(
+                "capture logical source",
+                &source,
+                "an overlapping artifact store is not owned by this invocation",
+            ));
+        }
+        let excluded = invocation.relative_to(&source)?.is_some();
+        let mut snapshot = Snapshot {
+            owner: self.owner.clone(),
+            entries: BTreeMap::new(),
+            exclusions: Vec::new(),
+        };
+        self.capture_entry(
+            &source,
+            Path::new(""),
+            &mut snapshot.entries,
+            Some(invocation),
+        )?;
+        if excluded {
+            snapshot.exclusions.push(invocation.clone());
+        }
         Ok(snapshot)
     }
 
@@ -292,7 +388,32 @@ impl SnapshotStore {
         Ok(Snapshot {
             owner: self.owner.clone(),
             entries,
+            exclusions: Vec::new(),
         })
+    }
+
+    /// Reassemble a versioned view while retaining its invocation exclusion.
+    pub fn from_entries_in(
+        &self,
+        entries: BTreeMap<PathBuf, Entry>,
+        logical_root: &Path,
+        invocation: &InvocationRoot,
+    ) -> Result<Snapshot> {
+        let mut snapshot = self.from_entries(entries)?;
+        let logical_root = absolute(logical_root)?;
+        if invocation.relative_to(&logical_root)?.is_some() {
+            for relative in snapshot.entries.keys() {
+                if invocation.contains_private(&entry_path(&logical_root, relative))? {
+                    return Err(invalid(
+                        "assemble logical source",
+                        relative,
+                        "logical view contains invocation-private data",
+                    ));
+                }
+            }
+            snapshot.exclusions.push(invocation.clone());
+        }
+        Ok(snapshot)
     }
 
     fn capture_entry(
@@ -300,13 +421,20 @@ impl SnapshotStore {
         source: &Path,
         relative: &Path,
         entries: &mut BTreeMap<PathBuf, Entry>,
+        invocation: Option<&InvocationRoot>,
     ) -> Result<()> {
         let Some(metadata) = safe_metadata(source)? else {
             return Ok(());
         };
-        let version_metadata = NodeMetadata::capture(&metadata)
+        let mut version_metadata = NodeMetadata::capture(&metadata)
             .map_err(|cause| error("capture modification time", source, cause))?;
         if metadata.is_dir() {
+            if let Some(invocation) = invocation {
+                if invocation.excludes(source)? {
+                    return Ok(());
+                }
+                invocation.logical_metadata(source, &mut version_metadata)?;
+            }
             entries.insert(
                 relative.to_owned(),
                 Entry::Directory {
@@ -314,7 +442,20 @@ impl SnapshotStore {
                 },
             );
             for child in children(source)? {
-                self.capture_entry(&child.path(), &relative.join(child.file_name()), entries)?;
+                self.capture_entry(
+                    &child.path(),
+                    &relative.join(child.file_name()),
+                    entries,
+                    invocation,
+                )?;
+            }
+            if let Some(invocation) = invocation
+                && invocation.created_empty_parent(source)?
+                && !entries
+                    .keys()
+                    .any(|entry| entry != relative && entry.starts_with(relative))
+            {
+                entries.remove(relative);
             }
             return Ok(());
         }
@@ -407,6 +548,9 @@ impl SnapshotStore {
             ));
         }
         remove_owned(&self.owner.path, &self.owner.identity)?;
+        Arc::get_mut(&mut self.owner)
+            .expect("cleanup requires an unshared store")
+            .invocation = None;
         self.closed = true;
         Ok(())
     }

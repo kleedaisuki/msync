@@ -31,6 +31,344 @@ fn payload(manager: &Manager, workspace: &Path, name: &str, bytes: &str) -> Snap
 }
 
 #[test]
+fn child_publication_preserves_read_root_and_unrelated_open_hardlinked_siblings() {
+    use same_file::Handle;
+    use std::io::Read;
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    let external = workspace.path().join("external");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("a"), "old a").unwrap();
+    fs::write(root.join("b"), "untouched b").unwrap();
+    fs::hard_link(root.join("b"), &external).unwrap();
+    let root_identity = Handle::from_path(&root).unwrap();
+    let b_identity = Handle::from_path(&external).unwrap();
+    let mut held = fs::File::open(root.join("b")).unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let new = payload(&manager, workspace.path(), "new-a", "new a");
+    let id = TransactionId(0);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    manager.replace_snapshot(id, &root.join("a"), &new).unwrap();
+    manager.finish(id).unwrap();
+    assert_eq!(Handle::from_path(&root).unwrap(), root_identity);
+    assert_eq!(Handle::from_path(root.join("b")).unwrap(), b_identity);
+    let mut content = String::new();
+    held.read_to_string(&mut content).unwrap();
+    assert_eq!(content, "untouched b");
+    manager.rollback_origin(id).unwrap();
+    assert_eq!(fs::read_to_string(root.join("a")).unwrap(), "old a");
+    assert_eq!(Handle::from_path(&root).unwrap(), root_identity);
+    assert_eq!(Handle::from_path(root.join("b")).unwrap(), b_identity);
+}
+
+#[test]
+fn child_creation_compensation_restores_parent_time_after_journal_cleanup() {
+    use msync::transaction::filesystem::NodeMetadata;
+    use std::time::{Duration, UNIX_EPOCH};
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    let permissions = fs::metadata(&root).unwrap().permissions();
+    NodeMetadata::new(permissions, UNIX_EPOCH + Duration::from_secs(978307200))
+        .apply(&root)
+        .unwrap();
+    let before = fs::metadata(&root).unwrap().modified().unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let new = payload(&manager, workspace.path(), "new", "new");
+    let id = TransactionId(0);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    manager
+        .replace_snapshot(id, &root.join("created"), &new)
+        .unwrap();
+    let failure = manager
+        .checkpoint_with(id, |_, event| {
+            if event == PublishEvent::AfterInstall {
+                return Err(io::Error::other("cancel after child install"));
+            }
+            Ok(())
+        })
+        .unwrap_err();
+    assert!(matches!(failure, ManagerError::Publication { .. }));
+    assert!(!root.join("created").exists());
+    assert_eq!(fs::metadata(&root).unwrap().modified().unwrap(), before);
+    assert!(manager.retained_journals().is_empty());
+    let expected = manager.read_snapshot(id, &root).unwrap().entries()[Path::new("")]
+        .metadata()
+        .modified;
+    manager.finish(id).unwrap();
+    assert_eq!(fs::metadata(&root).unwrap().modified().unwrap(), expected);
+}
+
+#[test]
+fn sealed_views_merge_disjoint_byte_changes_without_republishing_read_siblings() {
+    use msync::transaction::filesystem::SnapshotStore;
+    use same_file::Handle;
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("a"), "a0").unwrap();
+    fs::write(root.join("b"), "b0").unwrap();
+    fs::write(root.join("held"), "unchanged").unwrap();
+    let held = fs::File::open(root.join("held")).unwrap();
+    let held_identity = Handle::from_path(root.join("held")).unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let id = TransactionId(0);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    let before = manager.read_snapshot(id, &root).unwrap();
+    let mut assets = SnapshotStore::new(&workspace.path().join("assets")).unwrap();
+    let mut views = Vec::new();
+    for (index, (name, bytes)) in [("a", "a1"), ("b", "b1")].into_iter().enumerate() {
+        let path = workspace.path().join(format!("view-{index}"));
+        let mut publication = assets.prepare(&before, &path).unwrap();
+        publication.publish().unwrap();
+        publication.finalize().unwrap();
+        fs::write(path.join(name), bytes).unwrap();
+        // Identical size and timestamp are not evidence of identical bytes.
+        before.entries()[Path::new(name)]
+            .metadata()
+            .apply(&path.join(name))
+            .unwrap();
+        views.push(assets.capture(&path).unwrap());
+    }
+    manager
+        .stage_view_delta(id, &root, &before, &views[0])
+        .unwrap();
+    manager
+        .stage_view_delta(id, &root, &before, &views[1])
+        .unwrap();
+    manager.finish(id).unwrap();
+    assert_eq!(fs::read_to_string(root.join("a")).unwrap(), "a1");
+    assert_eq!(fs::read_to_string(root.join("b")).unwrap(), "b1");
+    assert_eq!(Handle::from_path(root.join("held")).unwrap(), held_identity);
+    drop(held);
+    manager.rollback_origin(id).unwrap();
+    assert_eq!(fs::read_to_string(root.join("a")).unwrap(), "a0");
+    assert_eq!(fs::read_to_string(root.join("b")).unwrap(), "b0");
+    drop(views);
+    drop(before);
+    manager.shutdown().unwrap();
+    assets.cleanup().unwrap();
+}
+
+#[test]
+fn overlapping_sealed_view_is_rejected_without_losing_the_first_staged_delta() {
+    use msync::transaction::filesystem::SnapshotStore;
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("a"), "a0").unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let id = TransactionId(0);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    let before = manager.read_snapshot(id, &root).unwrap();
+    let mut assets = SnapshotStore::new(&workspace.path().join("assets")).unwrap();
+    let path = workspace.path().join("view");
+    let mut publication = assets.prepare(&before, &path).unwrap();
+    publication.publish().unwrap();
+    publication.finalize().unwrap();
+    fs::write(path.join("a"), "a1").unwrap();
+    let first = assets.capture(&path).unwrap();
+    fs::write(path.join("a"), "a2").unwrap();
+    let second = assets.capture(&path).unwrap();
+    manager
+        .stage_view_delta(id, &root, &before, &first)
+        .unwrap();
+    assert!(
+        manager
+            .stage_view_delta(id, &root, &before, &second)
+            .is_err()
+    );
+    manager.finish(id).unwrap();
+    assert_eq!(fs::read_to_string(root.join("a")).unwrap(), "a1");
+    drop((first, second, before));
+    manager.shutdown().unwrap();
+    assets.cleanup().unwrap();
+}
+
+#[test]
+fn metadata_only_view_changes_have_compensating_receipts_without_root_replacement() {
+    use msync::transaction::filesystem::{NodeMetadata, SnapshotStore};
+    use same_file::Handle;
+    use std::time::{Duration, UNIX_EPOCH};
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("kept"), "unchanged").unwrap();
+    let identity = Handle::from_path(&root).unwrap();
+    let before_time = fs::metadata(&root).unwrap().modified().unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let id = TransactionId(0);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    let before = manager.read_snapshot(id, &root).unwrap();
+    let mut assets = SnapshotStore::new(&workspace.path().join("assets")).unwrap();
+    let view = workspace.path().join("view");
+    let mut publication = assets.prepare(&before, &view).unwrap();
+    publication.publish().unwrap();
+    publication.finalize().unwrap();
+    NodeMetadata::new(
+        fs::metadata(&view).unwrap().permissions(),
+        UNIX_EPOCH + Duration::from_secs(1293840000),
+    )
+    .apply(&view)
+    .unwrap();
+    let after = assets.capture(&view).unwrap();
+    manager
+        .stage_view_delta(id, &root, &before, &after)
+        .unwrap();
+    let epoch = manager.epoch();
+    let failure = manager
+        .checkpoint_with(id, |path, event| {
+            assert_eq!(Handle::from_path(path)?, identity);
+            assert_eq!(event, PublishEvent::AfterInstall);
+            Err(io::Error::other("cancel after metadata install"))
+        })
+        .unwrap_err();
+    assert!(matches!(failure, ManagerError::Publication { .. }));
+    assert_eq!(manager.epoch(), epoch);
+    assert_eq!(
+        fs::metadata(&root).unwrap().modified().unwrap(),
+        before_time
+    );
+    assert!(manager.retained_journals().is_empty());
+    let report = manager.finish(id).unwrap();
+    assert_eq!(report.published_roots, 0);
+    assert_eq!(
+        fs::metadata(&root).unwrap().modified().unwrap(),
+        after.entries()[Path::new("")].metadata().modified
+    );
+    assert_eq!(Handle::from_path(&root).unwrap(), identity);
+    manager.rollback_origin(id).unwrap();
+    assert_eq!(
+        fs::metadata(&root).unwrap().modified().unwrap(),
+        before_time
+    );
+    drop((before, after));
+    manager.shutdown().unwrap();
+    assets.cleanup().unwrap();
+}
+
+#[test]
+fn disjoint_domains_can_be_enrolled_between_finished_submissions_without_losing_named_undo() {
+    let workspace = workspace();
+    let first = workspace.path().join("first");
+    let second = workspace.path().join("second");
+    fs::write(&first, "first0").unwrap();
+    fs::write(&second, "second0").unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&first).unwrap();
+    let new = payload(&manager, workspace.path(), "new", "new");
+    manager
+        .begin(TransactionId(0), Isolation::Serializable)
+        .unwrap();
+    manager
+        .replace_snapshot(TransactionId(0), &first, &new)
+        .unwrap();
+    manager.finish(TransactionId(0)).unwrap();
+    manager.enroll(&second).unwrap();
+    manager
+        .begin(TransactionId(1), Isolation::Serializable)
+        .unwrap();
+    manager
+        .replace_snapshot(TransactionId(1), &second, &new)
+        .unwrap();
+    manager.finish(TransactionId(1)).unwrap();
+    manager.rollback_origin(TransactionId(0)).unwrap();
+    assert_eq!(fs::read_to_string(&first).unwrap(), "first0");
+    assert_eq!(fs::read_to_string(&second).unwrap(), "new");
+}
+
+#[test]
+fn an_enrolled_read_ancestor_can_contain_its_owned_invocation_without_being_renamed() {
+    use msync::transaction::filesystem::InvocationRoot;
+    use same_file::Handle;
+    let workspace = workspace();
+    let root = workspace.path().join("work");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("a"), "a0").unwrap();
+    let invocation = InvocationRoot::create(&root.join(".temp")).unwrap();
+    let root_identity = Handle::from_path(&root).unwrap();
+    let mut manager = Manager::new_in(&invocation.path().join("manager"), &invocation).unwrap();
+    manager.enroll(&root).unwrap();
+    let new = payload(&manager, workspace.path(), "new", "a1");
+    let id = TransactionId(0);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    let view = manager.read_snapshot(id, &root).unwrap();
+    assert!(view.excludes_invocation(&invocation).unwrap());
+    assert!(manager.read_snapshot(id, invocation.path()).is_err());
+    drop(view);
+    manager.replace_snapshot(id, &root.join("a"), &new).unwrap();
+    manager.finish(id).unwrap();
+    invocation.verify().unwrap();
+    assert_eq!(Handle::from_path(&root).unwrap(), root_identity);
+    manager.rollback_origin(id).unwrap();
+    assert_eq!(fs::read_to_string(root.join("a")).unwrap(), "a0");
+    drop(new);
+    manager.shutdown().unwrap();
+    invocation.cleanup().unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn metadata_cleanup_cannot_overwrite_a_later_directory_version() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let new = payload(&manager, workspace.path(), "new", "bytes");
+    let id = TransactionId(0);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    manager.replace_snapshot(id, &root.join("a"), &new).unwrap();
+    let store = manager.artifact_root().to_owned();
+    let mut guard = None;
+    let report = manager
+        .checkpoint_with(id, |_, event| {
+            if event == PublishEvent::AfterInstall {
+                let journal = fs::read_dir(&store)?
+                    .filter_map(Result::ok)
+                    .find(|entry| entry.file_name().to_string_lossy().starts_with("metadata-"))
+                    .expect("metadata journal prepared before data")
+                    .path();
+                guard = Some(
+                    fs::OpenOptions::new()
+                        .read(true)
+                        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                        .open(journal)?,
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert!(report.cleanup_pending());
+    let first_epoch = manager.epoch();
+    manager.replace_snapshot(id, &root.join("b"), &new).unwrap();
+    assert!(matches!(
+        manager.checkpoint(id),
+        Err(ManagerError::Cleanup { .. })
+    ));
+    assert_eq!(manager.epoch(), first_epoch);
+    assert!(!root.join("b").exists());
+    let expected = manager.read_snapshot(id, &root).unwrap().entries()[Path::new("")]
+        .metadata()
+        .modified;
+    drop(guard);
+    assert!(manager.retry_cleanup().is_empty());
+    manager.finish(id).unwrap();
+    assert_eq!(fs::metadata(&root).unwrap().modified().unwrap(), expected);
+    assert!(root.join("b").exists());
+    manager.rollback_origin(id).unwrap();
+    assert!(!root.join("a").exists());
+    assert!(!root.join("b").exists());
+}
+
+#[test]
 fn actual_file_checkpoints_pending_rewind_and_named_origin_are_distinct() {
     let workspace = workspace();
     let target = workspace.path().join("target");
@@ -790,4 +1128,386 @@ fn dirty_tree_reads_do_not_expose_a_child_beneath_a_file_parent() {
         .as_deref(),
         Some("data")
     );
+}
+
+#[test]
+fn sparse_namespace_preserves_unknown_siblings_and_named_origins() {
+    let workspace = workspace();
+    let root = workspace.path().join("namespace");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("unknown"), "not observed").unwrap();
+    let identity = same_file::Handle::from_path(&root).unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll_namespace(&root).unwrap();
+    manager.enroll_namespace(&root).unwrap();
+    manager.enroll_entry(&root.join("out")).unwrap();
+    let new = payload(&manager, workspace.path(), "payload", "first");
+    let first = TransactionId(81);
+    manager.begin(first, Isolation::Serializable).unwrap();
+    assert!(matches!(
+        manager.read_entry(first, &root).unwrap(),
+        Some(Entry::Directory { .. })
+    ));
+    assert!(manager.read_entry(first, &root.join("unknown")).is_err());
+    assert!(matches!(
+        manager.enroll_entry(&root.join("unknown")),
+        Err(ManagerError::EnrollmentClosed)
+    ));
+    assert!(manager.read_snapshot(first, &root).is_err());
+    assert!(manager.read_snapshot(first, &root.join("unknown")).is_err());
+    assert!(
+        manager
+            .replace_snapshot(first, &root.join("unknown"), &new)
+            .is_err()
+    );
+    assert!(
+        manager
+            .read_snapshot(first, &root.join("out"))
+            .unwrap()
+            .is_missing()
+    );
+    manager
+        .replace_snapshot(first, &root.join("out"), &new)
+        .unwrap();
+    manager.finish(first).unwrap();
+    manager.enroll_entry(&root.join("out")).unwrap();
+    manager.enroll_entry(&root.join("later")).unwrap();
+    manager.rollback_origin(first).unwrap();
+    let second = TransactionId(82);
+    manager.begin(second, Isolation::Serializable).unwrap();
+    manager
+        .replace_snapshot(second, &root.join("later"), &new)
+        .unwrap();
+    manager.finish(second).unwrap();
+    manager.rollback_origin(second).unwrap();
+    assert!(!root.join("out").exists());
+    assert!(!root.join("later").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("unknown")).unwrap(),
+        "not observed"
+    );
+    assert_eq!(same_file::Handle::from_path(&root).unwrap(), identity);
+}
+
+#[cfg(unix)]
+#[test]
+fn sparse_namespace_can_publish_beside_a_fifo_without_reading_it() {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::FileTypeExt;
+    let workspace = workspace();
+    let root = workspace.path().join("namespace");
+    fs::create_dir(&root).unwrap();
+    let fifo = root.join("pipe");
+    let native = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    assert!(manager.enroll(&root).is_err());
+    manager.enroll_namespace(&root).unwrap();
+    assert!(manager.enroll_entry(&fifo).is_err());
+    manager.enroll_entry(&root.join("out")).unwrap();
+    manager.refresh_host().unwrap();
+    let content = payload(&manager, workspace.path(), "payload", "stream output");
+    let id = TransactionId(83);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    assert!(manager.read_snapshot(id, &fifo).is_err());
+    manager
+        .replace_snapshot(id, &root.join("out"), &content)
+        .unwrap();
+    manager.finish(id).unwrap();
+    assert_eq!(
+        fs::read_to_string(root.join("out")).unwrap(),
+        "stream output"
+    );
+    assert!(fs::symlink_metadata(&fifo).unwrap().file_type().is_fifo());
+}
+
+#[test]
+fn ancestor_enrollment_preserves_loaded_context_versions_and_named_undo() {
+    use msync::transaction::filesystem::SnapshotStore;
+    let workspace = workspace();
+    let root = workspace.path().join("cwd");
+    let first = root.join("first");
+    let second = root.join("second");
+    fs::create_dir_all(&first).unwrap();
+    fs::create_dir_all(&second).unwrap();
+    fs::write(first.join("asset"), "original asset").unwrap();
+    fs::write(second.join("asset"), "second asset").unwrap();
+    let first_identity = same_file::Handle::from_path(&first).unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&first).unwrap();
+    let updated = payload(&manager, workspace.path(), "updated", "saved version");
+    let saved = TransactionId(91);
+    manager.begin(saved, Isolation::Serializable).unwrap();
+    let before = manager.read_snapshot(saved, &first).unwrap();
+    manager
+        .replace_snapshot(saved, &first.join("asset"), &updated)
+        .unwrap();
+    manager.finish(saved).unwrap();
+    manager.enroll(&second).unwrap();
+    // Extending coverage must not reinterpret existing resources as fresh host
+    // captures, even if ambient bytes changed after their immutable enrollment.
+    fs::write(first.join("asset"), "external drift").unwrap();
+    #[cfg(windows)]
+    let held = {
+        use std::os::windows::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(first.join("asset"))
+            .unwrap()
+    };
+    manager.enroll(&root).unwrap();
+    #[cfg(windows)]
+    drop(held);
+    let capture = TransactionId(92);
+    manager.begin(capture, Isolation::Serializable).unwrap();
+    assert_eq!(
+        text(
+            &manager
+                .read_snapshot(capture, &first.join("asset"))
+                .unwrap()
+        )
+        .as_deref(),
+        Some("saved version")
+    );
+    let source = manager
+        .read_snapshot(capture, &first.join("asset"))
+        .unwrap();
+    manager
+        .replace_snapshot(capture, &root.join("captured.txt"), &source)
+        .unwrap();
+    manager.finish(capture).unwrap();
+    assert_eq!(
+        fs::read_to_string(root.join("captured.txt")).unwrap(),
+        "saved version"
+    );
+    manager.rollback_origin(saved).unwrap();
+    assert_eq!(
+        fs::read_to_string(first.join("asset")).unwrap(),
+        "original asset"
+    );
+    // A view sealed under the old child descriptor still imports under the new
+    // ancestor descriptor using identical resource keys.
+    let assets = SnapshotStore::new(&workspace.path().join("assets")).unwrap();
+    let view = workspace.path().join("view");
+    let mut publication = assets.prepare(&before, &view).unwrap();
+    publication.publish().unwrap();
+    publication.finalize().unwrap();
+    fs::write(view.join("asset"), "program delta").unwrap();
+    let after = assets.capture(&view).unwrap();
+    let edit = TransactionId(93);
+    manager.begin(edit, Isolation::Serializable).unwrap();
+    manager
+        .stage_view_delta(edit, &first, &before, &after)
+        .unwrap();
+    manager.finish(edit).unwrap();
+    assert_eq!(
+        fs::read_to_string(first.join("asset")).unwrap(),
+        "program delta"
+    );
+    manager.rollback_origin(edit).unwrap();
+    assert_eq!(
+        fs::read_to_string(first.join("asset")).unwrap(),
+        "original asset"
+    );
+    assert_eq!(
+        same_file::Handle::from_path(&first).unwrap(),
+        first_identity
+    );
+}
+
+#[test]
+fn sparse_ancestor_addition_retains_existing_child_origin_identity() {
+    let workspace = workspace();
+    let parent = workspace.path().join("parent");
+    let child = parent.join("loaded");
+    fs::create_dir_all(&child).unwrap();
+    fs::write(child.join("asset"), "old").unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&child).unwrap();
+    let new = payload(&manager, workspace.path(), "new", "new");
+    let original = TransactionId(94);
+    manager.begin(original, Isolation::Serializable).unwrap();
+    manager
+        .replace_snapshot(original, &child.join("asset"), &new)
+        .unwrap();
+    manager.finish(original).unwrap();
+    manager.enroll_namespace(&parent).unwrap();
+    manager.enroll_entry(&parent.join("out")).unwrap();
+    let later = TransactionId(95);
+    manager.begin(later, Isolation::Serializable).unwrap();
+    assert!(manager.read_snapshot(later, &parent).is_err());
+    assert_eq!(
+        text(&manager.read_snapshot(later, &child.join("asset")).unwrap()).as_deref(),
+        Some("new")
+    );
+    manager
+        .replace_snapshot(later, &parent.join("out"), &new)
+        .unwrap();
+    manager.finish(later).unwrap();
+    manager.rollback_origin(original).unwrap();
+    assert_eq!(fs::read_to_string(child.join("asset")).unwrap(), "old");
+    assert_eq!(fs::read_to_string(parent.join("out")).unwrap(), "new");
+}
+
+#[test]
+fn root_origin_undo_preserves_a_parent_enrolled_after_the_original_write() {
+    let workspace = workspace();
+    let parent = workspace.path().join("parent");
+    let child = parent.join("child");
+    let replacement = workspace.path().join("replacement");
+    fs::create_dir_all(&child).unwrap();
+    fs::create_dir(&replacement).unwrap();
+    fs::write(child.join("old"), "old").unwrap();
+    fs::write(replacement.join("new"), "new").unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&child).unwrap();
+    let snapshot = manager.capture(&replacement).unwrap();
+    let id = TransactionId(96);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    manager.replace_snapshot(id, &child, &snapshot).unwrap();
+    manager.finish(id).unwrap();
+    manager.enroll(&parent).unwrap();
+    let before = fs::metadata(&parent).unwrap().modified().unwrap();
+    manager.rollback_origin(id).unwrap();
+    assert_eq!(fs::metadata(&parent).unwrap().modified().unwrap(), before);
+    assert_eq!(fs::read_to_string(child.join("old")).unwrap(), "old");
+    assert!(!child.join("new").exists());
+}
+
+#[test]
+fn foreign_refresh_observes_same_stat_bytes_and_protects_named_origins() {
+    use msync::transaction::filesystem::NodeMetadata;
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    let path = root.join("source");
+    fs::write(&path, "initial").unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let managed = payload(&manager, workspace.path(), "payload", "managed");
+    let saved = TransactionId(101);
+    manager.begin(saved, Isolation::Serializable).unwrap();
+    manager.replace_snapshot(saved, &path, &managed).unwrap();
+    manager.finish(saved).unwrap();
+    let immutable = managed.clone();
+    let metadata = NodeMetadata::capture(&fs::metadata(&path).unwrap()).unwrap();
+    fs::write(&path, "foreign").unwrap();
+    metadata.apply(&path).unwrap();
+    manager.refresh_host().unwrap();
+    let reader = TransactionId(102);
+    manager.begin(reader, Isolation::Serializable).unwrap();
+    assert_eq!(
+        text(&manager.read_snapshot(reader, &path).unwrap()).as_deref(),
+        Some("foreign")
+    );
+    manager.finish(reader).unwrap();
+    assert_eq!(text(&immutable).as_deref(), Some("managed"));
+    assert!(matches!(
+        manager.rollback_origin(saved),
+        Err(ManagerError::Store(_))
+    ));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "foreign");
+}
+
+#[test]
+fn foreign_refresh_updates_membership_without_advancing_unchanged_versions() {
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("removed"), "old").unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let epoch = manager.epoch();
+    assert_eq!(manager.refresh_host().unwrap(), epoch);
+    fs::remove_file(root.join("removed")).unwrap();
+    fs::write(root.join("added"), "new").unwrap();
+    assert!(manager.refresh_host().unwrap() > epoch);
+    let id = TransactionId(103);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    assert!(matches!(
+        manager.refresh_host(),
+        Err(ManagerError::ActiveTransactions(_))
+    ));
+    let snapshot = manager.read_snapshot(id, &root).unwrap();
+    assert!(snapshot.entries().contains_key(Path::new("added")));
+    assert!(!snapshot.entries().contains_key(Path::new("removed")));
+    manager.finish(id).unwrap();
+    let epoch = manager.epoch();
+    assert_eq!(manager.refresh_host().unwrap(), epoch);
+}
+
+#[test]
+fn failed_foreign_refresh_does_not_partially_import_other_roots() {
+    let workspace = workspace();
+    let first = workspace.path().join("first");
+    let second = workspace.path().join("second");
+    fs::write(&first, "before").unwrap();
+    fs::create_dir(&second).unwrap();
+    let leaf = second.join("leaf");
+    fs::write(&leaf, "second").unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&first).unwrap();
+    manager.enroll(&second).unwrap();
+    let epoch = manager.epoch();
+    fs::write(&first, "after").unwrap();
+    #[cfg(windows)]
+    let fault = {
+        use std::os::windows::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&leaf)
+            .unwrap()
+    };
+    #[cfg(unix)]
+    let fault = std::os::unix::net::UnixListener::bind(second.join("live")).unwrap();
+    assert!(manager.refresh_host().is_err());
+    assert_eq!(manager.epoch(), epoch);
+    drop(fault);
+    #[cfg(unix)]
+    fs::remove_file(second.join("live")).unwrap();
+    let id = TransactionId(104);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    assert_eq!(
+        text(&manager.read_snapshot(id, &first).unwrap()).as_deref(),
+        Some("before")
+    );
+    manager.finish(id).unwrap();
+    manager.refresh_host().unwrap();
+    let id = TransactionId(105);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    assert_eq!(
+        text(&manager.read_snapshot(id, &first).unwrap()).as_deref(),
+        Some("after")
+    );
+    manager.finish(id).unwrap();
+}
+
+#[test]
+fn foreign_refresh_preserves_sparse_unknown_coverage() {
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("known"), "old").unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll_namespace(&root).unwrap();
+    manager.enroll_entry(&root.join("known")).unwrap();
+    fs::write(root.join("known"), "new").unwrap();
+    fs::write(root.join("unknown"), "not enrolled").unwrap();
+    manager.refresh_host().unwrap();
+    let id = TransactionId(106);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    assert_eq!(
+        text(&manager.read_snapshot(id, &root.join("known")).unwrap()).as_deref(),
+        Some("new")
+    );
+    assert!(manager.read_entry(id, &root.join("unknown")).is_err());
+    assert!(manager.read_snapshot(id, &root).is_err());
+    assert!(matches!(
+        manager.read_entry(id, &root).unwrap(),
+        Some(Entry::Directory { .. })
+    ));
+    manager.finish(id).unwrap();
 }

@@ -1,12 +1,14 @@
 //! Filesystem-backed transactions over a finite, enrolled local resource domain.
 //!
 //! Every managed read comes from an immutable version, never from the live host
-//! filesystem. Enrollment finishes before the first transaction begins. A future
+//! filesystem. Read coverage can expand between transactions while
+//! retaining ended transactions' named origins. A future
 //! process-view provider must enroll or lock dynamically discovered resources;
 //! this manager does not pretend that unknown child IO has been isolated.
 //!
-//! Exclusive mutable ownership is the publication guard. Physical roots are
-//! replaced separately, with retained compensating receipts; only after every
+//! Exclusive mutable ownership is the publication guard. Read enrollment is not
+//! a write footprint: only dirty subtrees and directory metadata are published.
+//! Every physical change has a retained compensating receipt; only after every
 //! replacement succeeds is the logical version store swapped. This is atomic to
 //! manager readers, not to unmediated host observers, and is not crash recovery.
 
@@ -17,12 +19,45 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use super::filesystem::{Entry, FsError, Publication, PublishEvent, Snapshot, SnapshotStore};
+use super::filesystem::{
+    Entry, FsError, InvocationRoot, NodeMetadata, PublishEvent, Snapshot, SnapshotStore,
+};
 use super::{Epoch, ResourceKey, Store, StoreError};
 use crate::hir::TransactionId;
 use crate::language::Isolation;
 
 type Result<T> = std::result::Result<T, ManagerError>;
+
+mod delta;
+mod enrollment;
+mod receipt;
+mod refresh;
+use receipt::{Batch, DirectoryReceipt};
+
+#[derive(Clone, Debug, Default)]
+struct WriteSet {
+    data: BTreeSet<ResourceKey>,
+    metadata: BTreeSet<ResourceKey>,
+}
+
+impl WriteSet {
+    fn extend(&mut self, other: Self) {
+        self.data.extend(other.data);
+        self.metadata.extend(other.metadata);
+    }
+
+    fn minimal_data(&self) -> Vec<ResourceKey> {
+        let mut keys = self.data.iter().collect::<Vec<_>>();
+        keys.sort_by_key(|key| key.components().len());
+        let mut roots = Vec::<ResourceKey>::new();
+        for key in keys {
+            if !roots.iter().any(|root| root.tree().contains(key)) {
+                roots.push(key.clone());
+            }
+        }
+        roots
+    }
+}
 
 #[derive(Debug)]
 pub enum ManagerError {
@@ -59,11 +94,11 @@ impl fmt::Display for ManagerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPath { path, reason } => write!(f, "managed path {}: {reason}", path.display()),
-            Self::EnrollmentClosed => f.write_str("resource enrollment is closed; enroll every known root before beginning a transaction"),
+            Self::EnrollmentClosed => f.write_str("resource enrollment is closed while transactions are active; finish them before extending read coverage"),
             Self::Lifecycle(state) => write!(f, "transaction manager is {state:?}; no new resource operations are allowed"),
             Self::ActiveTransactions(ids) => write!(f, "finish or roll back active transactions before shutdown: {ids:?}"),
             Self::Cleanup { failures, journals } => {
-                f.write_str("shutdown has not started because publication cleanup is incomplete")?;
+                f.write_str("publication cleanup is incomplete; repair retained journals before another publication or shutdown")?;
                 for failure in failures { write!(f, "; {failure}")?; }
                 write!(f, "; retain journals {journals:?}")
             }
@@ -108,7 +143,7 @@ impl From<FsError> for ManagerError {
 
 #[derive(Clone, Debug)]
 struct ManagedEntry {
-    /// Native spelling is a value, not a case-folded resource identity.
+    /// Absolute native spelling is a value, independent of read descriptors.
     relative: PathBuf,
     entry: Entry,
 }
@@ -116,12 +151,22 @@ struct ManagedEntry {
 #[derive(Clone, Debug)]
 struct Root {
     path: PathBuf,
-    namespace: String,
+    key: ResourceKey,
+    coverage: Coverage,
+}
+
+#[derive(Clone, Debug)]
+enum Coverage {
+    Complete,
+    /// Only these complete child trees are known. The root value is metadata,
+    /// not evidence that its unobserved children are absent.
+    Namespace(BTreeSet<ResourceKey>),
 }
 
 #[derive(Clone, Debug, Default)]
 struct Domain {
     roots: Vec<Root>,
+    volumes: Vec<PathBuf>,
     keys: BTreeSet<ResourceKey>,
     names: NameIndex,
 }
@@ -155,29 +200,46 @@ pub struct Manager {
     snapshots: SnapshotStore,
     store: Store<ManagedEntry>,
     domain: Domain,
-    pending_roots: BTreeMap<TransactionId, BTreeSet<usize>>,
-    origin_roots: BTreeMap<TransactionId, BTreeSet<usize>>,
-    sealed: bool,
-    recovery: Vec<Publication>,
-    cleanup: Vec<Publication>,
+    pending_roots: BTreeMap<TransactionId, WriteSet>,
+    origin_roots: BTreeMap<TransactionId, WriteSet>,
+    invocation: Option<InvocationRoot>,
+    recovery: Vec<Batch>,
+    cleanup: Vec<Batch>,
     active: BTreeSet<TransactionId>,
     lifecycle: Lifecycle,
 }
 
 impl Manager {
     pub fn new(scratch: &Path) -> Result<Self> {
-        Ok(Self {
-            snapshots: SnapshotStore::new(scratch)?,
+        Ok(Self::with_store(SnapshotStore::new(scratch)?))
+    }
+
+    fn with_store(snapshots: SnapshotStore) -> Self {
+        Self {
+            snapshots,
             store: Store::new(),
             domain: Domain::default(),
             pending_roots: BTreeMap::new(),
             origin_roots: BTreeMap::new(),
-            sealed: false,
+            invocation: None,
             recovery: Vec::new(),
             cleanup: Vec::new(),
             active: BTreeSet::new(),
             lifecycle: Lifecycle::Open,
-        })
+        }
+    }
+
+    pub fn new_in(scratch: &Path, invocation: &InvocationRoot) -> Result<Self> {
+        invocation.verify()?;
+        if relative_to(&normalize(scratch)?, &normalize(invocation.path())?).is_none() {
+            return Err(invalid(
+                scratch,
+                "the snapshot store must belong to the owned invocation",
+            ));
+        }
+        let mut manager = Self::with_store(SnapshotStore::new_in(scratch, invocation)?);
+        manager.invocation = Some(invocation.clone());
+        Ok(manager)
     }
 
     pub fn epoch(&self) -> Epoch {
@@ -191,15 +253,21 @@ impl Manager {
         self.lifecycle
     }
 
+    pub fn has_active_transactions(&self) -> bool {
+        !self.active.is_empty()
+    }
+
     pub fn artifact_root(&self) -> &Path {
         self.snapshots.root()
     }
 
-    /// Captures a disjoint known root, including an explicitly missing root.
+    /// Extends complete read coverage, including an explicitly missing root.
+    /// Existing versions and named origins retain their physical-path identity;
+    /// enrolling an ancestor imports only previously unknown nodes.
     /// Parent directories must already exist for eventual physical publication.
     pub fn enroll(&mut self, path: &Path) -> Result<()> {
         self.ready()?;
-        if self.sealed {
+        if !self.active.is_empty() {
             return Err(ManagerError::EnrollmentClosed);
         }
         let path = normalize(path)?;
@@ -220,36 +288,171 @@ impl Manager {
         }
         for root in &self.domain.roots {
             if roots_overlap(&path, &root.path)? {
+                if relative_to(&root.path, &path).is_some() {
+                    continue;
+                }
                 return Err(invalid(
                     &path,
-                    "enrolled roots must be disjoint; enroll their common managed ancestor once",
+                    "the resource is already covered or aliases an enrolled root",
                 ));
             }
         }
-        let snapshot = self.snapshots.capture(&path)?;
+        let snapshot = self.capture_extension(&path)?;
         validate_snapshot_case_policy(&path, &snapshot)?;
         validate_names(snapshot.entries())?;
         let mut domain = self.domain.clone();
-        let index = domain.roots.len();
-        let namespace = format!("local-root-{index}");
-        domain.roots.push(Root { path, namespace });
+        let index = domain.add_root(path.clone(), Coverage::Complete)?;
         let root_key = domain.key(index, Path::new(""))?;
         let mut candidate = self.store.clone();
-        if snapshot.is_missing() {
+        if snapshot.is_missing() && !self.domain.known(&root_key) {
             candidate.seed(root_key.clone(), None)?;
         }
         domain.keys.insert(root_key);
         for (relative, entry) in snapshot.entries() {
             let key = domain.key(index, relative)?;
+            if self.domain.known(&key) {
+                continue;
+            }
             candidate.seed(
                 key.clone(),
                 Some(ManagedEntry {
-                    relative: relative.clone(),
+                    relative: join(&path, relative),
                     entry: entry.clone(),
                 }),
             )?;
             domain.keys.insert(key);
         }
+        self.store = candidate;
+        self.domain = domain;
+        Ok(())
+    }
+
+    /// Enroll directory identity/kind/metadata without observing its children.
+    /// Live FIFO/socket siblings are not snapshot data. Explicitly enroll each
+    /// ordinary direct child with `enroll_entry` before starting transactions.
+    /// A namespace is not a complete directory snapshot and cannot be read or
+    /// replaced as one. Registration never refreshes already versioned values.
+    pub fn enroll_namespace(&mut self, path: &Path) -> Result<()> {
+        self.ready()?;
+        if !self.active.is_empty() {
+            return Err(ManagerError::EnrollmentClosed);
+        }
+        let path = normalize(path)?;
+        if let Ok((root, relative)) = self.locate(&path) {
+            if relative.as_os_str().is_empty() {
+                return Ok(());
+            }
+            if matches!(self.domain.roots[root].coverage, Coverage::Complete) {
+                return Ok(());
+            }
+            return Err(invalid(
+                &path,
+                "nested sparse namespaces require explicit complete child enrollment",
+            ));
+        }
+        if path.file_name().is_none() {
+            return Err(invalid(
+                &path,
+                "a filesystem root cannot be a publication root",
+            ));
+        }
+        for root in &self.domain.roots {
+            if roots_overlap(&path, &root.path)? && relative_to(&root.path, &path).is_none() {
+                return Err(invalid(
+                    &path,
+                    "a namespace cannot alias an already enrolled root",
+                ));
+            }
+        }
+        if let Some(invocation) = &self.invocation
+            && invocation.contains_private(&path)?
+        {
+            return Err(invalid(
+                &path,
+                "owned invocation data is not a user resource",
+            ));
+        }
+        let metadata = fs::symlink_metadata(&path).map_err(|cause| ManagerError::Io {
+            action: "inspect sparse namespace",
+            path: path.clone(),
+            cause,
+        })?;
+        if !metadata.is_dir() {
+            return Err(invalid(
+                &path,
+                "a sparse namespace must be an existing directory",
+            ));
+        }
+        let metadata = NodeMetadata::capture(&metadata).map_err(|cause| ManagerError::Io {
+            action: "capture sparse namespace metadata",
+            path: path.clone(),
+            cause,
+        })?;
+        let mut domain = self.domain.clone();
+        let root = domain.add_root(path.clone(), Coverage::Namespace(BTreeSet::new()))?;
+        let key = domain.key(root, Path::new(""))?;
+        let mut candidate = self.store.clone();
+        candidate.seed(
+            key.clone(),
+            Some(ManagedEntry {
+                relative: path,
+                entry: Entry::Directory { metadata },
+            }),
+        )?;
+        domain.keys.insert(key);
+        self.store = candidate;
+        self.domain = domain;
+        Ok(())
+    }
+
+    /// Capture a complete direct-child subtree, or its explicit absence, in a
+    /// sparse namespace. Unknown siblings remain unknown, not missing. Repeated
+    /// registration is a no-op, preserving versions and named rollback origins.
+    pub fn enroll_entry(&mut self, path: &Path) -> Result<()> {
+        self.ready()?;
+        if !self.active.is_empty() {
+            return Err(ManagerError::EnrollmentClosed);
+        }
+        let (root, relative) = self.locate(path)?;
+        let mut domain = self.domain.clone();
+        let key = domain.key(root, &relative)?;
+        if self.require_coverage(root, &key, path).is_ok() {
+            return Ok(());
+        }
+        if relative.components().count() != 1 {
+            return Err(invalid(
+                path,
+                "enroll a complete direct child of the sparse namespace",
+            ));
+        }
+        let path = normalize(path)?;
+        let snapshot = self.capture_host(&path)?;
+        validate_snapshot_case_policy(&path, &snapshot)?;
+        validate_names(snapshot.entries())?;
+        let mut candidate = self.store.clone();
+        if snapshot.is_missing() && !self.domain.known(&key) {
+            candidate.seed(key.clone(), None)?;
+        }
+        domain.keys.insert(key.clone());
+        for (suffix, entry) in snapshot.entries() {
+            let relative = join(&relative, suffix);
+            let child = domain.key(root, &relative)?;
+            if self.domain.known(&child) {
+                continue;
+            }
+            candidate.seed(
+                child.clone(),
+                Some(ManagedEntry {
+                    relative: join(&domain.roots[root].path, &relative),
+                    entry: entry.clone(),
+                }),
+            )?;
+            domain.keys.insert(child);
+        }
+        let Coverage::Namespace(known) = &mut domain.roots[root].coverage else {
+            unreachable!("complete roots already have coverage");
+        };
+        known.insert(key);
         self.store = candidate;
         self.domain = domain;
         Ok(())
@@ -268,7 +471,7 @@ impl Manager {
                 ));
             }
         }
-        let snapshot = self.snapshots.capture(&path)?;
+        let snapshot = self.capture_host(&path)?;
         validate_snapshot_case_policy(&path, &snapshot)?;
         validate_names(snapshot.entries())?;
         Ok(snapshot)
@@ -278,13 +481,51 @@ impl Manager {
         self.ready()?;
         self.store.begin(id, isolation)?;
         self.active.insert(id);
-        self.sealed = true;
         Ok(())
     }
 
     pub fn start_statement(&mut self, id: TransactionId) -> Result<Epoch> {
         self.ready()?;
         Ok(self.store.start_statement(id)?)
+    }
+
+    /// Read one immutable node, without claiming knowledge of its children.
+    /// This is the directory-kind/metadata capability of a sparse namespace;
+    /// unlike `read_snapshot`, reading that namespace itself is permitted.
+    pub fn read_entry(&mut self, id: TransactionId, path: &Path) -> Result<Option<Entry>> {
+        self.open()?;
+        let (root, relative) = self.locate(path)?;
+        let mut domain = self.domain.clone();
+        let key = domain.key(root, &relative)?;
+        if !relative.as_os_str().is_empty() {
+            self.require_coverage(root, &key, path)?;
+        }
+        let mut candidate = self.store.clone();
+        let mut prefix = PathBuf::new();
+        for part in relative.components() {
+            let parent = domain.key(root, &prefix)?;
+            match candidate.read(id, &parent)? {
+                Some(ManagedEntry {
+                    entry: Entry::Directory { .. },
+                    ..
+                }) => prefix.push(part),
+                None => {
+                    self.domain = domain;
+                    self.store = candidate;
+                    return Ok(None);
+                }
+                Some(_) => {
+                    return Err(invalid(
+                        path,
+                        "an ancestor in this transaction view is not a directory",
+                    ));
+                }
+            }
+        }
+        let value = candidate.read(id, &key)?.map(|value| value.entry);
+        self.domain = domain;
+        self.store = candidate;
+        Ok(value)
     }
 
     pub fn read_snapshot(&mut self, id: TransactionId, path: &Path) -> Result<Snapshot> {
@@ -294,6 +535,7 @@ impl Manager {
         let (root, relative) = self.locate(path)?;
         let mut domain = self.domain.clone();
         let key = domain.key(root, &relative)?;
+        self.require_coverage(root, &key, path)?;
         let mut candidate = self.store.clone();
         let mut prefix = PathBuf::new();
         let mut reachable = true;
@@ -321,7 +563,7 @@ impl Manager {
         } else {
             Vec::new()
         };
-        let snapshot = self.assemble(values, relative.components().count())?;
+        let snapshot = self.assemble(values, key.components().len(), path)?;
         self.domain = domain;
         self.store = candidate;
         Ok(snapshot)
@@ -341,7 +583,9 @@ impl Manager {
         let (root, relative) = self.locate(path)?;
         let mut domain = self.domain.clone();
         let key = domain.key(root, &relative)?;
+        self.require_coverage(root, &key, path)?;
         let mut candidate = self.store.clone();
+        let mut writes = self.pending_roots.get(&id).cloned().unwrap_or_default();
         let previous_kind = candidate
             .read(id, &key)?
             .map(|value| matches!(value.entry, Entry::Directory { .. }));
@@ -365,8 +609,9 @@ impl Manager {
             };
             if previous_kind != replacement_kind {
                 metadata.modified = std::time::SystemTime::now();
-                candidate.write(id, parent, parent_value)?;
+                candidate.write(id, parent.clone(), parent_value)?;
             }
+            writes.metadata.insert(parent);
         }
         for (old, _) in candidate.enumerate(id, &key.tree())? {
             candidate.delete(id, old)?;
@@ -382,15 +627,16 @@ impl Manager {
                 id,
                 key.clone(),
                 ManagedEntry {
-                    relative,
+                    relative: join(&domain.roots[root].path, &relative),
                     entry: entry.clone(),
                 },
             )?;
             added.push(key);
         }
-        domain.keys.insert(key);
+        domain.keys.insert(key.clone());
         domain.keys.extend(added);
-        self.pending_roots.entry(id).or_default().insert(root);
+        writes.data.insert(key);
+        self.pending_roots.insert(id, writes);
         self.store = candidate;
         self.domain = domain;
         Ok(())
@@ -400,7 +646,7 @@ impl Manager {
         self.checkpoint_with(id, |_, _| Ok(()))
     }
 
-    /// The observer runs at physical rename boundaries while the manager owns
+    /// The observer runs at data/metadata install boundaries while the manager owns
     /// the publication guard. It can inject cancellation without bypassing undo.
     pub fn checkpoint_with(
         &mut self,
@@ -479,6 +725,7 @@ impl Manager {
             }
         }
         self.snapshots.cleanup()?;
+        self.invocation = None;
         self.lifecycle = Lifecycle::Closed {
             epoch: self.epoch(),
         };
@@ -488,7 +735,8 @@ impl Manager {
     pub fn recovery_journals(&self) -> Vec<PathBuf> {
         self.recovery
             .iter()
-            .map(|receipt| receipt.journal().to_owned())
+            .flat_map(Batch::journals)
+            .map(Path::to_owned)
             .collect()
     }
 
@@ -496,7 +744,8 @@ impl Manager {
         self.recovery
             .iter()
             .chain(&self.cleanup)
-            .map(|receipt| receipt.journal().to_owned())
+            .flat_map(Batch::journals)
+            .map(Path::to_owned)
             .collect()
     }
 
@@ -505,13 +754,13 @@ impl Manager {
     pub fn recover(&mut self) -> Vec<FsError> {
         let mut failures = Vec::new();
         let mut retained = Vec::new();
-        for mut receipt in self.recovery.drain(..).rev() {
-            match receipt.restore_before_image() {
-                Ok(()) => self.cleanup.push(receipt),
-                Err(error) => {
-                    failures.push(error);
-                    retained.push(receipt);
-                }
+        for mut batch in self.recovery.drain(..).rev() {
+            let mut errors = batch.restore();
+            if errors.is_empty() {
+                self.cleanup.push(batch);
+            } else {
+                failures.append(&mut errors);
+                retained.push(batch);
             }
         }
         retained.reverse();
@@ -524,10 +773,10 @@ impl Manager {
     pub fn retry_cleanup(&mut self) -> Vec<FsError> {
         let mut failures = Vec::new();
         let mut retained = Vec::new();
-        for mut receipt in self.cleanup.drain(..) {
-            if let Err(error) = receipt.finalize() {
-                failures.push(error);
-                retained.push(receipt);
+        for mut batch in self.cleanup.drain(..) {
+            failures.extend(batch.cleanup());
+            if !batch.is_empty() {
+                retained.push(batch);
             }
         }
         self.cleanup = retained;
@@ -553,13 +802,22 @@ impl Manager {
 
     fn locate(&self, path: &Path) -> Result<(usize, PathBuf)> {
         let path = normalize(path)?;
+        if let Some(invocation) = &self.invocation
+            && invocation.contains_private(&path)?
+        {
+            return Err(invalid(
+                &path,
+                "owned invocation data is not a user resource",
+            ));
+        }
         self.domain
             .roots
             .iter()
             .enumerate()
-            .find_map(|(index, root)| {
+            .filter_map(|(index, root)| {
                 relative_to(&path, &root.path).map(|relative| (index, relative))
             })
+            .min_by_key(|(index, _)| self.domain.roots[*index].path.components().count())
             .ok_or_else(|| {
                 invalid(
                     &path,
@@ -568,7 +826,30 @@ impl Manager {
             })
     }
 
-    fn assemble(&self, values: Vec<(ResourceKey, ManagedEntry)>, skip: usize) -> Result<Snapshot> {
+    fn require_coverage(&self, root: usize, key: &ResourceKey, path: &Path) -> Result<()> {
+        let _ = root;
+        if self.domain.complete(key) {
+            return Ok(());
+        }
+        Err(invalid(
+            path,
+            "resource has unknown sparse coverage; enroll its complete child subtree before begin (namespace metadata is not a directory snapshot)",
+        ))
+    }
+
+    fn capture_host(&self, path: &Path) -> Result<Snapshot> {
+        Ok(match &self.invocation {
+            Some(invocation) => self.snapshots.capture_in(path, invocation)?,
+            None => self.snapshots.capture(path)?,
+        })
+    }
+
+    fn assemble(
+        &self,
+        values: Vec<(ResourceKey, ManagedEntry)>,
+        skip: usize,
+        logical: &Path,
+    ) -> Result<Snapshot> {
         let mut entries = BTreeMap::new();
         let mut parents = BTreeMap::<Vec<String>, PathBuf>::new();
         for (key, value) in values {
@@ -591,65 +872,134 @@ impl Manager {
             }
             entries.insert(relative, value.entry);
         }
-        Ok(self.snapshots.from_entries(entries)?)
+        Ok(match &self.invocation {
+            Some(invocation) => self
+                .snapshots
+                .from_entries_in(entries, logical, invocation)?,
+            None => self.snapshots.from_entries(entries)?,
+        })
     }
 
-    fn committed_snapshot(&self, candidate: &Store<ManagedEntry>, root: usize) -> Result<Snapshot> {
-        let namespace = &self.domain.roots[root].namespace;
+    fn committed_snapshot(
+        &self,
+        candidate: &Store<ManagedEntry>,
+        root: &ResourceKey,
+    ) -> Result<Snapshot> {
         let values = self
             .domain
             .keys
             .iter()
-            .filter(|key| key.namespace() == namespace)
+            .filter(|key| root.tree().contains(key))
             .filter_map(|key| candidate.committed(key).map(|value| (key.clone(), value)))
             .collect();
-        self.assemble(values, 0)
+        self.assemble(
+            values,
+            root.components().len(),
+            &self.key_path(candidate, root)?,
+        )
+    }
+
+    fn key_path(&self, candidate: &Store<ManagedEntry>, key: &ResourceKey) -> Result<PathBuf> {
+        if let Some(value) = candidate
+            .committed(key)
+            .or_else(|| self.store.committed(key))
+        {
+            return Ok(value.relative);
+        }
+        let volume = self
+            .domain
+            .volumes
+            .iter()
+            .enumerate()
+            .find(|(index, _)| key.namespace() == format!("local-volume-{index}"))
+            .map(|(_, base)| base)
+            .ok_or_else(|| invalid(Path::new(""), "write resource has no enrolled volume"))?;
+        Ok(key
+            .components()
+            .iter()
+            .fold(volume.clone(), |path, part| path.join(part)))
     }
 
     fn publish(
         &mut self,
         transaction: TransactionId,
         candidate: Store<ManagedEntry>,
-        roots: &BTreeSet<usize>,
+        writes: &WriteSet,
         mut observe: impl FnMut(&Path, PublishEvent) -> io::Result<()>,
     ) -> Result<CommitReport> {
+        if !writes.data.is_empty() || !writes.metadata.is_empty() {
+            let failures = self.retry_cleanup();
+            if !self.cleanup.is_empty() {
+                return Err(ManagerError::Cleanup {
+                    failures,
+                    journals: self.retained_journals(),
+                });
+            }
+        }
+        let roots = writes.minimal_data();
         let views = roots
             .iter()
-            .map(|root| {
+            .map(|key| {
                 Ok((
-                    self.domain.roots[*root].path.clone(),
-                    self.committed_snapshot(&candidate, *root)?,
+                    self.key_path(&candidate, key)?,
+                    self.committed_snapshot(&candidate, key)?,
                 ))
             })
             .collect::<Result<Vec<_>>>()?;
-        let mut receipts = Vec::new();
+        let mut batch = Batch::default();
+        let mut metadata_keys = writes.metadata.clone();
+        for key in &roots {
+            let parts = key.components();
+            if !parts.is_empty() {
+                metadata_keys.insert(ResourceKey::new(
+                    key.namespace(),
+                    &format!("/{}", parts[..parts.len() - 1].join("/")),
+                )?);
+            }
+        }
+        // Capture all namespace before-images before sibling data journals are
+        // allocated: those allocations themselves change directory mtimes.
+        // An origin may predate enrollment of its parent. Its original write
+        // set remains unchanged, but a now-managed parent's metadata must still
+        // survive the physical journals used to publish that origin's undo.
+        for key in &metadata_keys {
+            if roots.iter().any(|root| root.tree().contains(key)) {
+                continue;
+            }
+            let Some(ManagedEntry {
+                entry: Entry::Directory { metadata },
+                ..
+            }) = candidate.committed(key)
+            else {
+                continue;
+            };
+            let path = self.key_path(&candidate, key)?;
+            match DirectoryReceipt::prepare(&path, metadata, self.snapshots.root()) {
+                Ok(receipt) => batch.metadata.push(receipt),
+                Err(cause) => return Err(self.compensate(transaction, cause, batch)),
+            }
+        }
         for (path, view) in views {
             match self.snapshots.prepare(&view, &path) {
-                Ok(receipt) => receipts.push(receipt),
+                Ok(receipt) => batch.data.push(receipt),
                 Err(error) => {
-                    self.cleanup.extend(receipts);
-                    let compensation = self.retry_cleanup();
-                    let mut journals = self.retained_journals();
-                    journals.extend(error.journal.iter().cloned());
-                    return Err(ManagerError::Publication {
-                        transaction,
-                        cause: Box::new(error),
-                        compensation,
-                        journals,
-                    });
+                    let orphan = error.journal.clone();
+                    let mut failure = self.compensate(transaction, error, batch);
+                    if let ManagerError::Publication { journals, .. } = &mut failure {
+                        journals.extend(orphan);
+                    }
+                    return Err(failure);
                 }
             }
         }
-        for index in 0..receipts.len() {
-            let target = receipts[index].target().to_owned();
-            if let Err(cause) = receipts[index].publish_with(|event| observe(&target, event)) {
-                return Err(self.compensate(transaction, cause, receipts));
-            }
+        if let Err(cause) = batch.publish(&mut observe) {
+            return Err(self.compensate(transaction, cause, batch));
         }
         let epoch = candidate.epoch();
         self.store = candidate;
-        let published_roots = receipts.len();
-        self.cleanup.extend(receipts);
+        let published_roots = batch.data.len();
+        batch.committed = true;
+        self.cleanup.push(batch);
         Ok(CommitReport {
             epoch,
             published_roots,
@@ -661,17 +1011,13 @@ impl Manager {
         &mut self,
         transaction: TransactionId,
         cause: FsError,
-        receipts: Vec<Publication>,
+        mut batch: Batch,
     ) -> ManagerError {
-        let mut compensation = Vec::new();
-        for mut receipt in receipts.into_iter().rev() {
-            match receipt.restore_before_image() {
-                Ok(()) => self.cleanup.push(receipt),
-                Err(error) => {
-                    compensation.push(error);
-                    self.recovery.push(receipt);
-                }
-            }
+        let mut compensation = batch.restore();
+        if compensation.is_empty() {
+            self.cleanup.push(batch);
+        } else {
+            self.recovery.push(batch);
         }
         compensation.extend(self.retry_cleanup());
         ManagerError::Publication {
@@ -685,18 +1031,31 @@ impl Manager {
 
 impl Domain {
     fn key(&mut self, root: usize, relative: &Path) -> Result<ResourceKey> {
+        self.physical_key(&join(&self.roots[root].path, relative))
+    }
+
+    fn physical_key(&mut self, path: &Path) -> Result<ResourceKey> {
+        let base = volume_root(path);
+        let volume = match self
+            .volumes
+            .iter()
+            .position(|existing| native_eq(existing.as_os_str(), base.as_os_str()))
+        {
+            Some(index) => index,
+            None => {
+                self.volumes.push(base);
+                self.volumes.len() - 1
+            }
+        };
         let mut parts = Vec::new();
-        for part in relative.components() {
+        for part in path.components() {
             let Component::Normal(name) = part else {
-                return Err(invalid(
-                    relative,
-                    "relative resources require normal path components",
-                ));
+                continue;
             };
             let spelling = name
                 .to_str()
-                .ok_or_else(|| invalid(relative, "managed resource names must be UTF-8"))?;
-            let names = self.names.entry((root, parts.clone())).or_default();
+                .ok_or_else(|| invalid(path, "managed resource names must be UTF-8"))?;
+            let names = self.names.entry((volume, parts.clone())).or_default();
             let canonical = names
                 .iter()
                 .find(|(existing, _)| native_eq(existing, name))
@@ -708,16 +1067,69 @@ impl Domain {
             parts.push(canonical);
         }
         Ok(ResourceKey::new(
-            self.roots[root].namespace.clone(),
+            format!("local-volume-{volume}"),
             &format!("/{}", parts.join("/")),
         )?)
     }
+
+    fn add_root(&mut self, path: PathBuf, coverage: Coverage) -> Result<usize> {
+        let key = self.physical_key(&path)?;
+        let index = self.roots.len();
+        self.roots.push(Root {
+            path,
+            key,
+            coverage,
+        });
+        Ok(index)
+    }
+
+    fn complete(&self, key: &ResourceKey) -> bool {
+        self.roots.iter().any(|root| match &root.coverage {
+            Coverage::Complete => root.key.tree().contains(key),
+            Coverage::Namespace(known) => known.iter().any(|entry| entry.tree().contains(key)),
+        })
+    }
+
+    fn known(&self, key: &ResourceKey) -> bool {
+        self.keys.contains(key) || self.complete(key)
+    }
+}
+
+fn volume_root(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if let Some(Component::Prefix(prefix)) = path.components().next() {
+        use std::path::Prefix;
+        match prefix.kind() {
+            Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => {
+                return PathBuf::from(format!("{}:\\", char::from(letter)));
+            }
+            Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                return PathBuf::from(format!(
+                    "\\\\{}\\{}\\",
+                    server.to_string_lossy(),
+                    share.to_string_lossy()
+                ));
+            }
+            _ => {}
+        }
+    }
+    path.ancestors()
+        .last()
+        .expect("absolute managed path has a volume root")
+        .to_owned()
 }
 
 fn relative_to(path: &Path, root: &Path) -> Option<PathBuf> {
     let mut parts = path.components();
     for prefix in root.components() {
-        if !native_eq(parts.next()?.as_os_str(), prefix.as_os_str()) {
+        let part = parts.next()?;
+        let equal = match (part, prefix) {
+            (Component::Prefix(_), Component::Prefix(_)) => {
+                native_eq(volume_root(path).as_os_str(), volume_root(root).as_os_str())
+            }
+            _ => native_eq(part.as_os_str(), prefix.as_os_str()),
+        };
+        if !equal {
             return None;
         }
     }
@@ -866,8 +1278,8 @@ fn validate_case_policy(path: &Path) -> Result<()> {
 
 #[cfg(windows)]
 fn validate_snapshot_case_policy(source: &Path, snapshot: &Snapshot) -> Result<()> {
-    // Whole-root publication recreates every directory, including unmodified
-    // children. Reject policy metadata this adapter cannot faithfully restore.
+    // Managed views may rematerialize any captured directory. Reject policy
+    // metadata this adapter cannot faithfully restore, even on read-only nodes.
     for (relative, entry) in snapshot.entries() {
         if matches!(entry, Entry::Directory { .. }) {
             validate_case_policy(&join(source, relative))?;
