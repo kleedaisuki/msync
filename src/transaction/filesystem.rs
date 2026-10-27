@@ -34,6 +34,7 @@ pub struct FsError {
     pub journal: Option<PathBuf>,
     pub recovery: Recovery,
     pub recovery_error: Option<io::Error>,
+    pub help: Option<&'static str>,
 }
 
 impl fmt::Display for FsError {
@@ -47,6 +48,9 @@ impl fmt::Display for FsError {
                 f,
                 "; recovery failed: {error}; retain the journal and retry recovery"
             )?;
+        }
+        if let Some(help) = self.help {
+            write!(f, "; help: {help}")?;
         }
         Ok(())
     }
@@ -68,6 +72,7 @@ fn error(action: &'static str, path: &Path, cause: io::Error) -> FsError {
         journal: None,
         recovery: Recovery::Unchanged,
         recovery_error: None,
+        help: None,
     }
 }
 
@@ -416,9 +421,10 @@ impl Publication {
         self.check_workspace()?;
         ensure_identity(&self.target, self.original.as_ref())
             .map_err(|failure| self.annotate(failure))?;
-        if self.original.is_some() {
-            move_new(&self.target, &self.old_path())
-                .map_err(|cause| self.failure("retain destination before-image", cause))?;
+        if self.original.is_some()
+            && let Err(cause) = move_new(&self.target, &self.old_path())
+        {
+            return Err(self.compensate("retain destination before-image", cause));
         }
         self.phase = Phase::BackedUp;
         if let Err(cause) = observe(PublishEvent::AfterBackup) {
@@ -561,7 +567,7 @@ impl Publication {
 fn materialize(snapshot: &Snapshot, root: &Path) -> Result<()> {
     ensure_identity(&snapshot.owner.path, Some(&snapshot.owner.identity))?;
     for (relative, entry) in &snapshot.entries {
-        let target = root.join(relative);
+        let target = entry_path(root, relative);
         match entry {
             Entry::Directory { .. } => fs::create_dir(&target)
                 .map_err(|cause| error("create private directory", &target, cause))?,
@@ -580,7 +586,7 @@ fn materialize(snapshot: &Snapshot, root: &Path) -> Result<()> {
     // directory does not prevent materialization of its own contents.
     for (relative, entry) in snapshot.entries.iter().rev() {
         if let Entry::Directory { permissions } = entry {
-            let target = root.join(relative);
+            let target = entry_path(root, relative);
             fs::set_permissions(&target, permissions.clone())
                 .map_err(|cause| error("restore directory permissions", &target, cause))?;
         }
@@ -590,6 +596,14 @@ fn materialize(snapshot: &Snapshot, root: &Path) -> Result<()> {
 
 fn next_id() -> u64 {
     NEXT_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+fn entry_path(root: &Path, relative: &Path) -> PathBuf {
+    if relative.as_os_str().is_empty() {
+        root.to_owned()
+    } else {
+        root.join(relative)
+    }
 }
 
 fn create_owned_directory(parent: &Path, prefix: &str) -> Result<PathBuf> {
@@ -622,7 +636,64 @@ fn copy_new(source: &Path, target: &Path) -> Result<()> {
 }
 
 fn move_new(source: &Path, target: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let metadata = fs::symlink_metadata(source)?;
+        if metadata.is_dir() && metadata.permissions().mode() & 0o200 == 0 {
+            // A cross-parent directory rename updates `..` and may require owner
+            // write permission. Both this mutation and restoration address the
+            // same open directory; ordinary files are never chmod'ed.
+            let directory = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(source)?;
+            let original = directory.metadata()?.permissions();
+            let mut writable = original.clone();
+            writable.set_mode(original.mode() | 0o200);
+            directory.set_permissions(writable)?;
+            let moved = crate::io::publish_file(source, target, true);
+            if let Err(restore) = directory.set_permissions(original) {
+                return Err(io::Error::new(
+                    restore.kind(),
+                    DirectoryModeFailure {
+                        moved: moved.err(),
+                        restore,
+                    },
+                ));
+            }
+            return moved;
+        }
+    }
     crate::io::publish_file(source, target, true)
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct DirectoryModeFailure {
+    moved: Option<io::Error>,
+    restore: io::Error,
+}
+
+#[cfg(unix)]
+impl fmt::Display for DirectoryModeFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(moved) = &self.moved {
+            write!(f, "directory rename failed: {moved}; ")?;
+        }
+        write!(
+            f,
+            "restoring original directory mode failed: {}",
+            self.restore
+        )
+    }
+}
+
+#[cfg(unix)]
+impl std::error::Error for DirectoryModeFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.moved.as_ref().unwrap_or(&self.restore))
+    }
 }
 
 fn identity_at(path: &Path) -> Result<Option<Handle>> {
@@ -775,14 +846,20 @@ fn remove_owned(path: &Path, identity: &Handle) -> Result<()> {
     }
     check_path(path)?;
     ensure_identity(path, Some(identity))?;
-    make_removable(path)?;
-    fs::remove_dir_all(path).map_err(|cause| error("cleanup owned directory", path, cause))
+    remove_owned_entry(path)
 }
 
-fn make_removable(path: &Path) -> Result<()> {
+fn remove_owned_entry(path: &Path) -> Result<()> {
     let Some(metadata) = safe_metadata(path)? else {
         return Ok(());
     };
+    if !metadata.is_dir() {
+        require_file(&metadata, path)?;
+        return remove_file(path, &metadata);
+    }
+    // File modes/attributes belong to the inode and may be shared by hard links
+    // outside this journal. Only directories need permissions normalized for
+    // traversal/unlink; directory hard links and reparse points are rejected.
     let mut permissions = metadata.permissions();
     #[cfg(unix)]
     {
@@ -797,10 +874,69 @@ fn make_removable(path: &Path) -> Result<()> {
     }
     fs::set_permissions(path, permissions)
         .map_err(|cause| error("prepare owned cleanup permissions", path, cause))?;
-    if metadata.is_dir() {
-        for entry in children(path)? {
-            make_removable(&entry.path())?;
-        }
+    for entry in children(path)? {
+        remove_owned_entry(&entry.path())?;
+    }
+    fs::remove_dir(path).map_err(|cause| error("cleanup owned directory", path, cause))
+}
+
+fn remove_file(path: &Path, metadata: &Metadata) -> Result<()> {
+    #[cfg(windows)]
+    if metadata.permissions().readonly() {
+        return remove_readonly_link(path);
+    }
+    #[cfg(not(windows))]
+    let _ = metadata;
+    fs::remove_file(path).map_err(|cause| error("unlink owned file", path, cause))
+}
+
+#[cfg(windows)]
+fn remove_readonly_link(path: &Path) -> Result<()> {
+    // POSIX disposition removes one name while preserving surviving hard-link
+    // attributes: https://learn.microsoft.com/windows-hardware/drivers/ddi/ntddk/ns-ntddk-_file_disposition_information_ex
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+        FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FileDispositionInfoEx, SetFileInformationByHandle,
+    };
+
+    let failure = |cause| {
+        let mut failure = error(
+            "unlink read-only owned file without changing shared attributes",
+            path,
+            cause,
+        );
+        failure.help = Some(
+            "Retain the journal and retry on a filesystem supporting FileDispositionInfoEx with IGNORE_READONLY_ATTRIBUTE; cleanup never clears attributes shared with other hard links.",
+        );
+        failure
+    };
+    let file = fs::OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(failure)?;
+    let disposition = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE
+            | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+    };
+    // SAFETY: Live DELETE-capable file handle and correctly sized typed buffer.
+    // This removes this link rather than changing inode-wide read-only attributes.
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileDispositionInfoEx,
+            (&disposition as *const FILE_DISPOSITION_INFO_EX).cast(),
+            std::mem::size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+        )
+    } == 0
+    {
+        return Err(failure(io::Error::last_os_error()));
     }
     Ok(())
 }

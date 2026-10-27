@@ -380,6 +380,28 @@ fn immutable_entry_versions_can_be_assembled_without_allowing_path_escape() {
     store.cleanup().unwrap();
 }
 
+#[cfg(windows)]
+#[test]
+fn ordinary_windows_paths_preserve_the_file_root_without_a_trailing_separator() {
+    let workspace = workspace();
+    let text = workspace.path().to_str().unwrap();
+    let ordinary = PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(text));
+    assert!(!ordinary.to_string_lossy().starts_with(r"\\?\"));
+    let source = ordinary.join("source");
+    let target = ordinary.join("target");
+    fs::write(&source, "ordinary file root").unwrap();
+    let mut store = store(&ordinary);
+    let snapshot = store.capture(&source).unwrap();
+    let mut publication = store.prepare(&snapshot, &target).unwrap();
+    publication.publish().unwrap();
+    assert_eq!(read(&target), "ordinary file root");
+    publication.rollback().unwrap();
+    assert!(!target.exists());
+    publication.finalize().unwrap();
+    drop(snapshot);
+    store.cleanup().unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn symlink_entries_and_ancestors_are_rejected_without_following_them() {
