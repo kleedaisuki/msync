@@ -2,6 +2,7 @@ use msync::language::{self, Version, select_version};
 
 #[test]
 fn caller_selected_fallback_is_explicit_and_never_guessed_from_file_existence() {
+    assert_eq!(Version::default(), Version::Structured);
     for text in [
         "\"source.txt\" -> result\n",
         "\"success\" -> result\n",

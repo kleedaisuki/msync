@@ -14,6 +14,146 @@ fn workspace() -> tempfile::TempDir {
         .unwrap()
 }
 
+#[cfg(windows)]
+#[test]
+fn repl_shell_edits_are_not_hidden_by_prior_managed_snapshots() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let workspace = workspace();
+    fs::write(workspace.path().join("source"), b"before shell").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_msync"))
+        .args(["repl", "--color", "never"])
+        .current_dir(workspace.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(
+        b"source -> first\n/pwsh Set-Content -LiteralPath 'source' -Value 'after shell' -NoNewline\nsource -> second\n/quit\n"
+    ).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(workspace.path().join("source")).unwrap(),
+        b"after shell"
+    );
+    assert_eq!(
+        fs::read(workspace.path().join("second")).unwrap(),
+        b"after shell",
+        "REPL copied a pre-shell snapshot; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn named_rollback_does_not_erase_a_later_authorized_shell_edit() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let workspace = workspace();
+    fs::write(workspace.path().join("source"), b"original").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_msync"))
+        .args(["repl", "--color", "never"])
+        .current_dir(workspace.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(
+        b"transaction A:\n    \"transaction value\" -> source\n\n/pwsh Set-Content -LiteralPath 'source' -Value 'after shell' -NoNewline\nrollback A\n/quit\n"
+    ).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(workspace.path().join("source")).unwrap(),
+        b"after shell",
+        "named rollback erased a later shell edit; stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn dead_write_elimination_preserves_metadata_needed_by_a_following_literal() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let workspace = workspace();
+    let source = workspace.path().join("source");
+    let target = workspace.path().join("target");
+    fs::write(&source, b"source bytes").unwrap();
+    fs::write(&target, b"old target").unwrap();
+    #[cfg(windows)]
+    {
+        let mut permissions = fs::metadata(&source).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&source, permissions).unwrap();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o750)).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let mut child = Command::new(env!("CARGO_BIN_EXE_msync"))
+        .args(["run", "-", "--color", "never"])
+        .current_dir(workspace.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"source -> target\n\"literal\" -> target\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    #[cfg(windows)]
+    {
+        let after = fs::metadata(&target).unwrap().permissions().readonly();
+        // Source and target may both be readonly in the correct execution.
+        for path in [&source, &target] {
+            let mut permissions = fs::metadata(path).unwrap().permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+            fs::set_permissions(path, permissions).unwrap();
+        }
+        assert!(
+            after,
+            "optimizer erased the permission-producing file assignment; status={} stdout={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o750,
+            "optimizer erased executable metadata; stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 #[test]
 fn finalizing_a_replaced_tree_must_not_change_permissions_through_external_hardlinks() {
     let workspace = workspace();

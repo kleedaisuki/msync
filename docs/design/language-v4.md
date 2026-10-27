@@ -413,3 +413,81 @@ sources. The original `Vec<Report>` preparation APIs remain compatibility wrappe
 This boundary must not recover operand roles by matching diagnostic wording.
 Directory-mode failures identify the destination token and suggest explicit `/`
 container or `/.` replacement intent before any mutation.
+
+## Interactive work ownership
+
+The default grammar is not the owner of running work. `ReplState` routes `/jobs`,
+`/wait`, `/stop`, Ctrl-C and shutdown to the actual structured session even when
+an explicitly versioned `/load` uses a different grammar from `/syntax`. A legacy
+copy cannot start a second, independently budgeted executor while structured work
+is active; it fails before file mutation. Pending legacy path/namespace changes
+are bridged once on the next structured submission or explicit syntax switch,
+not repeatedly over already-owned structured macro/source provenance.
+
+Human job IDs identify submissions which create pending publication cohorts.
+Runtime transaction IDs are the ownership key: attaching a port to an existing
+cohort does not invent an independent job. Independent stream submissions can
+remain live together. Completed physical cohorts are reaped from actual task
+readiness; an existing but finished task handle is not evidence that a job is
+still running. No `done` message is emitted for an unfinished physical flow.
+Completion counters are drained as explicitly labelled session progress rather
+than silently attributed to the next unrelated command. Asynchronous errors
+retain their publication transaction so independent jobs select their owned
+Compilation instead of rendering source offsets against `<runtime>`.
+Flows and programs additionally capture their instruction origin at creation.
+That owned source/operand site takes precedence over the cohort fallback when a
+later input attaches a failing producer to an already-running program; replacing
+the current submission's origin map cannot change an earlier flow's diagnostics.
+
+While structured work is active, a scoped thread owns the ordinary editor read
+and the main thread services ready publication work at a bounded 20 ms quantum.
+Once work finishes it blocks on the input channel instead of continuing to poll.
+No unsafe Send implementation or permanent detached editor thread is used.
+Lifecycle notices and owned diagnostics are queued until the read returns, so
+background completion cannot corrupt a partially edited terminal line. File
+publication itself happens while the editor waits: EOF never requires a further
+keystroke. The readiness predicate avoids creating empty execute traces every
+poll. Runtime global waits also service ready later cohorts instead of blocking
+all publication behind an earlier idle source.
+
+Focused actual journeys in `repl_jobs` cover physical EOF publication before any
+further input, independent job identities, a ready second flow during global
+wait, actual-owner dispatch across syntax headers, cross-executor rejection,
+owned-source background errors, piped EOF versus explicit quit, and no invented
+completion when no work exists. The real terminal Ctrl-C observer reads the exact
+accepted prefix from a private invocation stage under `.temp`, verifies native
+peer EOF and target preservation, then checks both stage and invocation cleanup.
+
+Async runtime diagnostics retain `InstructionOrigin` when a flow, deferred
+publication, or program is created. `RuntimeSession::set_origins` registers only
+the next submission's map; a later source-less submission cannot accidentally
+reuse previous instruction IDs. An `ExecutionError` carries its owned origin,
+independently of publication-cohort identity. Human-facing code renders that
+origin before falling back to the cohort's compilation: one cohort may contain
+ports connected by several differently named REPL inputs. Read/write flow errors
+select the source/destination argument structurally, while preserving the macro
+operation's definition as a related label. No source file is reopened.
+
+Value provenance still follows a bound value's definition (including an alias
+used as a join base). It is intentionally distinct from an operation's submission
+source. Capturing runtime origins preserves that established choice; it does not
+rebase definition offsets into whichever input happened to trigger a later wait.
+
+The focused default-v0.4 Windows `cargo test --locked --test repl_jobs` gate
+passed all twelve cases after this ownership integration. Targeted strict
+Clippy also passed. The actual Windows ConPTY Ctrl-C journey passed with its
+exact-prefix stage observer and physical peer EOF checks; this was not inferred
+from piped stdin.
+
+The additional native-backend provenance journey was explicitly executed in WSL,
+not merely compiled or left ignored: `a_later_input_failure_keeps_its_source_inside_an_existing_program_job`
+passed in 0.14 seconds. A real `cat` process starts from `launch.msync`; a later
+`feed.msync` submission attaches a TCP producer which fails connection. The error
+must identify line 4 of `feed.msync` and its transfer text, not the program-launch
+source, while retaining job 1 and not inventing job 2. `/help` proves recovery.
+This run used a private mount/user/network namespace, loopback enabled, and an
+project `.temp` mounted on tmpfs (128 MiB). It is native IPC/filesystem correctness
+evidence, not an ext4 disk-performance measurement. Build output stayed in
+`target/wsl-performance`; the test binary was executed directly inside the
+namespace so a private user mapping did not depend on traversing the host user's
+Rust toolchain directory. No SSH/system configuration was changed.

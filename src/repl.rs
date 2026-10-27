@@ -52,23 +52,61 @@ impl Drop for ActiveJob {
 
 struct ReplState {
     compiler: Compiler,
+    structured: structured::State,
+    syntax: Version,
     dry_run: bool,
     active: Option<ActiveJob>,
     next_job: u64,
+    legacy_dirty: bool,
 }
 
 impl ReplState {
+    fn read(
+        &mut self,
+        input: &mut editor::Input,
+        prompt: &str,
+        color: Color,
+    ) -> Result<editor::InputEvent, String> {
+        if !self.structured.active() {
+            return input.read(prompt);
+        }
+        thread::scope(|scope| {
+            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            let reader = scope.spawn(move || {
+                let _ = sender.send(input.read(prompt));
+            });
+            let result = loop {
+                if !self.structured.active() {
+                    break receiver
+                        .recv()
+                        .map_err(|_| "input reader exited without a result".to_owned());
+                }
+                match receiver.recv_timeout(std::time::Duration::from_millis(20)) {
+                    Ok(event) => break Ok(event),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => self.structured.poll(color),
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        break Err("input reader exited without a result".to_owned());
+                    }
+                }
+            };
+            reader
+                .join()
+                .map_err(|_| "input reader panicked".to_owned())?;
+            result?
+        })
+    }
+
     fn join(&mut self, stop: bool, color: Color) -> CliResult {
         match self.active.take() {
             Some(job) => job.join(stop, color),
-            None => print_status(
-                "jobs: no active jobs; enter a transfer or /load FILE",
-                color,
-            ),
+            None => self.structured.wait(stop, color),
         }
     }
 
     fn reap(&mut self, color: Color) {
+        if let Err(message) = self.structured.reap(color) {
+            print_error(&message, color);
+        }
         if self.active.as_ref().is_some_and(ActiveJob::finished)
             && let Err(message) = self.join(false, color)
         {
@@ -86,6 +124,26 @@ fn repl_submit(input: SourceUnit<'_>, state: &mut ReplState, options: &Args) -> 
 }
 
 fn repl_submit_inner(input: SourceUnit<'_>, state: &mut ReplState, options: &Args) -> CliResult {
+    let version = language::select_version(input.text, None, state.syntax)
+        .map_err(|reports| diagnostics(input.name, input.text, &reports, options.color))?;
+    if version == Version::Structured {
+        if state.active.is_some() {
+            return Err("a legacy background plan is active; use /wait or /stop first".into());
+        }
+        if state.legacy_dirty {
+            state
+                .structured
+                .compiler
+                .try_merge_legacy(&state.compiler)
+                .map_err(|report| diagnostics(input.name, input.text, &[report], options.color))?;
+            state.legacy_dirty = false;
+        }
+        let result = state
+            .structured
+            .submit(input, "run", state.dry_run, options, true);
+        state.compiler = state.structured.compiler.legacy().clone();
+        return result;
+    }
     let SourceUnit {
         text: source,
         name: file,
@@ -97,7 +155,7 @@ fn repl_submit_inner(input: SourceUnit<'_>, state: &mut ReplState, options: &Arg
         .statements
         .iter()
         .any(|statement| matches!(statement.kind, StatementKind::Copy { .. }));
-    if copies && state.active.is_some() {
+    if copies && (state.active.is_some() || state.structured.active()) {
         return Err(
             "a background plan is active; use /wait or /stop before submitting another copy plan"
                 .into(),
@@ -117,6 +175,7 @@ fn repl_submit_inner(input: SourceUnit<'_>, state: &mut ReplState, options: &Arg
     })?;
     if !copies {
         state.compiler = candidate;
+        state.legacy_dirty = true;
         return Ok(());
     }
     if state.dry_run {
@@ -131,6 +190,7 @@ fn repl_submit_inner(input: SourceUnit<'_>, state: &mut ReplState, options: &Arg
             )?;
         }
         state.compiler = candidate;
+        state.legacy_dirty = true;
         return Ok(());
     }
     let streaming = plan.nodes.iter().any(|node| {
@@ -141,6 +201,7 @@ fn repl_submit_inner(input: SourceUnit<'_>, state: &mut ReplState, options: &Arg
         let result = scheduler::execute_plan(&plan, &options.limits);
         execution.finish_result(&result);
         state.compiler = candidate;
+        state.legacy_dirty = true;
         return print_summary(
             result.map_err(|error| {
                 diagnostics(
@@ -183,6 +244,7 @@ fn repl_submit_inner(input: SourceUnit<'_>, state: &mut ReplState, options: &Arg
         removed,
     });
     state.compiler = candidate;
+    state.legacy_dirty = true;
     print_status(
         &format!("job {id}: running in background; use /jobs, /wait or /stop\n"),
         options.color,
@@ -214,14 +276,27 @@ fn repl_inner(options: &Args) -> CliResult {
     }
     let mut state = ReplState {
         compiler: Compiler::new(),
+        structured: structured::State::default(),
+        syntax: options.syntax.unwrap_or(Version::Structured),
         dry_run: options.dry_run,
         active: None,
         next_job: 1,
+        legacy_dirty: false,
     };
+    let mut pending = language::SubmissionBuffer::default();
     loop {
         state.reap(options.color);
-        let event =
-            input.read("msync> ").map_err(|cause| {
+        let event = state
+            .read(
+                &mut input,
+                if pending.is_pending() {
+                    "....> "
+                } else {
+                    "msync> "
+                },
+                options.color,
+            )
+            .map_err(|cause| {
                 Issue::new("cannot read REPL input")
             .field("cause", cause)
             .help("Check that the terminal is still attached and that piped input is UTF-8 text.")
@@ -230,7 +305,8 @@ fn repl_inner(options: &Args) -> CliResult {
         let line = match event {
             editor::InputEvent::Line(line) => line,
             editor::InputEvent::Interrupted => {
-                if state.active.is_some() {
+                pending.cancel();
+                if state.active.is_some() || state.structured.active() {
                     state.join(true, options.color)?;
                 } else if interactive {
                     print_status(
@@ -240,21 +316,57 @@ fn repl_inner(options: &Args) -> CliResult {
                 }
                 continue;
             }
-            editor::InputEvent::Eof => return finish_repl(&mut state, interactive, options.color),
+            editor::InputEvent::Eof => {
+                if let Some(source) = pending.finish()
+                    && let Err(error) = SourceUnit::repl(&source)
+                        .and_then(|input| repl_submit(input, &mut state, options))
+                {
+                    print_error(&error, options.color);
+                }
+                return finish_repl(&mut state, interactive, options.color);
+            }
         };
         state.reap(options.color);
         let trimmed = line.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() && !pending.is_pending() {
             continue;
         }
         if matches!(trimmed, "/quit" | "/exit" | ":quit" | ":q") {
+            pending.cancel();
             return finish_repl(&mut state, true, options.color);
         }
         let command_line = line.trim_start().trim_end_matches(['\r', '\n']);
         let result = if is_repl_command(command_line) {
+            if pending.is_pending()
+                && command_line
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|command| command.trim_start_matches(['/', ':']) == "syntax")
+            {
+                print_error(
+                    &Issue::new("finish or cancel the current block before changing syntax").into(),
+                    options.color,
+                );
+                continue;
+            }
             repl_command(command_line, &mut state, options, &mut input)
         } else {
-            SourceUnit::repl(&line).and_then(|input| repl_submit(input, &mut state, options))
+            let source = if state.syntax == Version::Structured {
+                match pending.push_line(&line) {
+                    Ok(language::Submission::Ready(source)) => source,
+                    Ok(_) => continue,
+                    Err(report) => {
+                        print_error(
+                            &diagnostics("<repl>", &line, &[report], options.color),
+                            options.color,
+                        );
+                        continue;
+                    }
+                }
+            } else {
+                line
+            };
+            SourceUnit::repl(&source).and_then(|input| repl_submit(input, &mut state, options))
         };
         if let Err(message) = result {
             print_error(&message, options.color);
@@ -263,11 +375,13 @@ fn repl_inner(options: &Args) -> CliResult {
 }
 
 fn finish_repl(state: &mut ReplState, stop: bool, color: Color) -> CliResult {
-    if state.active.is_some() {
+    let joined = if state.active.is_some() {
         state.join(stop, color)
     } else {
         Ok(())
-    }
+    };
+    let structured = state.structured.finish(stop, color);
+    joined.and(structured)
 }
 fn is_repl_command(input: &str) -> bool {
     let (command, argument) = input.split_once(char::is_whitespace).unwrap_or((input, ""));
@@ -336,7 +450,9 @@ fn repl_command_inner(
             .help(format!("Usage: {command}"))
             .into());
     }
-    if state.active.is_some() && matches!(name, "cd" | "fmt" | "bash" | "pwsh") {
+    if (state.active.is_some() || state.structured.active())
+        && matches!(name, "cd" | "fmt" | "bash" | "pwsh" | "syntax")
+    {
         return Err(format!(
             "{command} changes shared working-directory or filesystem state; use /wait or /stop before this command"
         ).into());
@@ -355,17 +471,18 @@ fn repl_command_inner(
         "bash" | "pwsh" => run_shell(name, raw_argument, editor.interactive(), options.color),
         "jobs" => match &state.active {
             Some(job) => print_status(&format!("job {}: running", job.id), options.color),
-            None => print_status(
-                "jobs: no active jobs; enter a transfer or /load FILE",
-                options.color,
-            ),
+            None => state.structured.jobs(options.color),
         },
         "wait" => state.join(false, options.color),
         "stop" => state.join(true, options.color),
         "help" | "?" => print_help(REPL_HELP, options.color),
         "limits" => print_limits(&options.limits, options.color),
         "bindings" => {
-            let bindings = state.compiler.bindings();
+            let bindings = if state.syntax == Version::Structured {
+                state.structured.compiler.bindings()
+            } else {
+                state.compiler.bindings()
+            };
             let text = if bindings.is_empty() {
                 "# no user bindings; try: root := $pwd::pwd\n".to_owned()
             } else {
@@ -375,6 +492,8 @@ fn repl_command_inner(
         }
         "reset" => {
             state.compiler = Compiler::new();
+            state.structured.compiler.reset();
+            state.legacy_dirty = false;
             print_status(
                 "bindings cleared: ready for new declarations",
                 options.color,
@@ -409,14 +528,63 @@ fn repl_command_inner(
                 "dry-run: off\n"
             })
         }
+        "syntax" => {
+            if !argument.is_empty() {
+                let version = argument
+                    .parse::<Version>()
+                    .map_err(|help| Issue::new("unsupported syntax version").help(help))?;
+                if version == Version::Structured && state.legacy_dirty {
+                    state
+                        .structured
+                        .compiler
+                        .try_merge_legacy(&state.compiler)
+                        .map_err(|report| diagnostics("<repl>", "", &[report], options.color))?;
+                    state.legacy_dirty = false;
+                } else if version == Version::Legacy && !state.legacy_dirty {
+                    state.compiler = state.structured.compiler.legacy().clone();
+                }
+                state.syntax = version;
+            }
+            print_status(&format!("syntax: {}", state.syntax), options.color)
+        }
         "load" | "check" | "plan" | "fmt" => {
             if argument.is_empty() || argument == "-" {
                 return Err(format!("usage: {command} FILE (not stdin)").into());
             }
             let source = read_source(argument)?;
             match command.trim_start_matches(['/', ':']) {
-                "fmt" => format_file(argument, &source, options),
+                "fmt" => {
+                    let mut formatting = options.clone();
+                    formatting.syntax = Some(
+                        language::select_version(&source, None, state.syntax).map_err(
+                            |reports| diagnostics(argument, &source, &reports, options.color),
+                        )?,
+                    );
+                    format_file(argument, &source, &formatting)
+                }
                 "load" => repl_submit(SourceUnit::file(&source, argument)?, state, options),
+                mode if language::select_version(&source, None, state.syntax).map_err(
+                    |reports| diagnostics(argument, &source, &reports, options.color),
+                )? == Version::Structured =>
+                {
+                    let mut preview = structured::State::default();
+                    preview.compiler = state.structured.compiler.clone();
+                    if state.legacy_dirty {
+                        preview
+                            .compiler
+                            .try_merge_legacy(&state.compiler)
+                            .map_err(|report| {
+                                diagnostics(argument, &source, &[report], options.color)
+                            })?;
+                    }
+                    preview.submit(
+                        SourceUnit::file(&source, argument)?,
+                        mode,
+                        state.dry_run,
+                        options,
+                        false,
+                    )
+                }
                 mode => submit(
                     SourceUnit::file(&source, argument)?,
                     &mut state.compiler.clone(),

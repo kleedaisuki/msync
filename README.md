@@ -2,6 +2,64 @@
 
 A typed synchronization DSL in Rust: source-mapped diagnostics, an optimizing dependency-graph planner, bounded file/stream execution, a comment-preserving script formatter, and a persistent REPL.
 
+## v0.4 development grammar
+
+The development branch uses syntax **0.4 by default**. This is an intentional
+breaking language update: a quoted value is UTF-8 data, not a filename chosen by
+its position or by whether a file happens to exist. `/` composes typed paths;
+`::` selects an item in a namespace. Spaces around the operator are insignificant.
+Quoted path components allow internal spaces but reject leading/trailing
+whitespace. Literal data, including leading/trailing whitespace, is preserved
+byte-for-byte.
+
+```text
+message := "hello, 可莉"
+message -> result.txt
+$pwd / "input file.txt" -> copied.txt
+
+macro copy_agents(src, des):
+    src / "agents" -> des / "agents" / .
+
+copy_agents($wsl::~/.codex, $pwd / "wsl")
+```
+
+Macros inline typed values in an isolated lexical environment; `global name`
+imports a binding declared before that macro's definition. A transaction is a
+runtime context, not a lexical scope. It supports `read uncommitted`,
+`read committed`, `repeatable read`, and default `serializable` isolation.
+`commit` publishes a checkpoint, bare `rollback` discards changes since the last
+checkpoint, and top-level `rollback NAME` restores that transaction's retained
+origin. A named rollback cannot target another transaction from inside a block.
+
+```text
+transaction update(serializable):
+    "checkpoint" -> result.txt
+    commit
+    "discard this" -> result.txt
+    rollback
+
+rollback update
+```
+
+The REPL keeps macros, bindings and named origins between inputs. End an indented
+block with a blank line; Ctrl-C discards the entire pending block. `/wait` and
+`/stop` manage active program/stream work. `--syntax 0.3` and `/syntax 0.3` select
+the older grammar explicitly; no version header is required for new scripts.
+An optional `# msync: 0.4` header can make a file's grammar self-describing.
+The legacy Rust `syntax`/`compiler::Compiler` APIs remain available.
+
+Program calls use exact argv, never implicit shell reparsing:
+`p => $path::bash("-c", "cat")`. Its `stdin`, `stdout`, `stderr`, `pid`,
+`exit_code`, and `meta` items are typed ports. Nonzero exit status is replayable
+data, not automatically a transport failure. Managed file publication waits for
+the program tree and physical output drains. Native Linux filesystem views use
+explicitly available bubblewrap/user namespaces; the Windows provider requires
+an explicitly installed signed Sandboxie backend. Missing capabilities do not
+silently become unisolated execution. No driver is automatically installed on a
+user's machine. See the [runtime/verification checkpoint](docs/design/architecture-v4.md)
+for integration boundaries and native-gate evidence; this branch is not yet the
+completed v0.4 release or performance acceptance.
+
 ```text
 remote => $wsl
 .codex := ~/.codex

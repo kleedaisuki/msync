@@ -2,6 +2,7 @@ mod editor;
 mod presentation;
 mod repl;
 mod shell;
+mod structured;
 
 use std::env;
 use std::fs;
@@ -11,6 +12,7 @@ use std::process::ExitCode;
 use std::thread::{self, JoinHandle};
 
 use msync::compiler::{CompileContext, Compiler};
+use msync::language::{self, Version};
 use msync::plan::{FileClass, Plan};
 use msync::scheduler::{self, ResourceLimits};
 use msync::syntax::{self, Report, Script, StatementKind};
@@ -36,6 +38,7 @@ OPTIONS
   --check            Check formatting without modifying the file (fmt only)
   --stdout           Explicit formatting preview, never writes the file (fmt only)
   --color auto|always|never   Color policy (default: auto; honors NO_COLOR)
+  --syntax 0.3|0.4   Select grammar; must agree with '# msync: VERSION'
   --trace FILE        Write private, local JSONL telemetry ('-' = stderr)
   -h, --help          Show this help
   -V, --version       Show version
@@ -47,7 +50,10 @@ EXAMPLES
   msync fmt sync.msync --check    Check script formatting without rewriting
 
 REPL: /help or /? for commands. No arguments starts the REPL.
-Paths containing whitespace or '#' may be double quoted.
+Syntax 0.4 is the default; use --syntax 0.3 for legacy quoted file sources.
+An optional '# msync: VERSION' header makes the grammar explicit.
+In syntax 0.4 every bare quoted value is literal UTF-8 data, never an implicit file.
+Use ./\"file name\" or $local::\"file name\" for quoted path fragments.
 Use $pwd::pwd/file for working-directory paths; $file::this and $file::parent identify the source script.
 Pipes and sockets end independently; Ctrl-C cancels active streams.
 ";
@@ -68,13 +74,16 @@ const REPL_HELP: &str = "REPL commands
   /plan FILE               Print a resolved plan without executing it
   /fmt FILE                Format a script file in place (never executes it)
   /limits                  Show copy, stream and buffer resource limits
-  /jobs                    Show the single active background plan
-  /wait                    Wait for the active plan to finish
-  /stop                    Cancel and join the active plan
+  /syntax [0.3|0.4]         Show or change grammar (default: 0.4)
+  /jobs                    Show background jobs and their identifiers
+  /wait                    Wait for all active work, publishing each ready flow
+  /stop                    Cancel and join active work
 Enter DSL statements directly; bindings persist across submissions.
-Stream plans run in the background; /wait or /stop before another copy plan.
+Macro/transaction blocks end with a blank line; Ctrl-C discards a pending block.
+Streams and programs run in the background; independent submissions may continue.
+Use /wait or /stop before changing shared cwd, files or syntax through a command.
 In supported terminals, Tab completes commands/namespaces and Up/Down browse history.
-Ctrl-C clears the edit and stops an active plan; Ctrl-D exits safely.
+Ctrl-C clears the edit and stops active work; Ctrl-D exits safely.
 Shells share the current directory, not parent bindings or later directory changes.
 ";
 
@@ -131,7 +140,7 @@ fn requested_color(args: &[String]) -> Color {
     color
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Args {
     command: String,
     file: Option<String>,
@@ -142,6 +151,7 @@ struct Args {
     color: Color,
     trace: Option<String>,
     limits: ResourceLimits,
+    syntax: Option<Version>,
 }
 
 fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -196,6 +206,14 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--trace" => {
                 options.trace = Some(args.next().ok_or("--trace requires a filename or '-'")?);
             }
+            "--syntax" => {
+                options.syntax = Some(
+                    args.next()
+                        .ok_or("--syntax requires 0.3 or 0.4")?
+                        .parse::<Version>()
+                        .map_err(str::to_owned)?,
+                );
+            }
             value if value.starts_with('-') && value != "-" => {
                 let suggestion = msync::suggest::closest(
                     value,
@@ -212,6 +230,7 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
                         "--write",
                         "--color",
                         "--trace",
+                        "--syntax",
                     ],
                 )
                 .map_or_else(
@@ -523,6 +542,20 @@ fn run_file(options: &Args) -> CliResult {
     if options.command == "fmt" {
         return format_file(file, &source, options);
     }
+    let version = language::select_version(&source, options.syntax, Version::Structured)
+        .map_err(|errors| diagnostics(file, &source, &errors, options.color))?;
+    if version == Version::Structured {
+        let mut state = structured::State::default();
+        let outcome = state.submit(
+            SourceUnit::file(&source, file)?,
+            &options.command,
+            options.dry_run,
+            options,
+            false,
+        );
+        let closed = state.shutdown(options.color);
+        return outcome.and(closed);
+    }
     submit(
         SourceUnit::file(&source, file)?,
         &mut Compiler::new(),
@@ -541,8 +574,13 @@ fn format_file(file: &str, source: &str, options: &Args) -> CliResult {
 }
 
 fn format_file_inner(file: &str, source: &str, options: &Args) -> CliResult {
-    let formatted = syntax::format_rich(source)
+    let version = language::select_version(source, options.syntax, Version::Structured)
         .map_err(|errors| diagnostics(file, source, &errors, options.color))?;
+    let formatted = match version {
+        Version::Legacy => syntax::format_rich(source),
+        Version::Structured => language::format(source),
+    }
+    .map_err(|errors| diagnostics(file, source, &errors, options.color))?;
     if options.check_format {
         return if formatted == source {
             Ok(())

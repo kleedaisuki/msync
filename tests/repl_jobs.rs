@@ -225,7 +225,10 @@ fn live_stream_keeps_repl_responsive_and_stop_joins_resources() {
     repl.until("job 1: running");
     repl.until("root :=");
     repl.until("memory-limit=");
-    assert!(!directory.path().join("extra.txt").exists());
+    assert_eq!(
+        fs::read(directory.path().join("extra.txt")).unwrap(),
+        b"finite"
+    );
     repl.send("/stop\n/jobs\n/quit\n");
     repl.until("job 1: stopped");
     repl.until("no active jobs");
@@ -368,5 +371,202 @@ fn background_errors_keep_owned_source_and_repl_recovers() {
         "{errors}"
     );
     assert!(repl.output.contains("job 1: running in background"));
+    assert!(repl.output.contains("REPL commands"));
+}
+
+#[test]
+fn natural_eof_publishes_while_the_editor_waits_without_another_input() {
+    let directory = workspace();
+    let mut source = HeldSource::start(b"published without another command");
+    let mut repl = Repl::start(directory.path());
+    launch(&mut repl, &source);
+    assert!(!repl.output.contains("done:"));
+    source.close();
+    let target = directory.path().join("output.bin");
+    let deadline = Instant::now() + DEADLINE;
+    while fs::read(&target).ok().as_deref() != Some(b"published without another command") {
+        assert!(
+            Instant::now() < deadline,
+            "EOF must publish without a keystroke"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(repl.child.try_wait().unwrap().is_none());
+    repl.send("/jobs\n/quit\n");
+    let (status, errors) = repl.finish();
+    assert!(status.success(), "{errors}");
+    assert!(repl.output.contains("job 1: completed"), "{}", repl.output);
+    assert!(repl.output.contains("no active jobs"), "{}", repl.output);
+    assert!(
+        repl.output.contains("session progress: 1 assignment(s)"),
+        "{}",
+        repl.output
+    );
+}
+
+#[test]
+fn distinct_live_submissions_have_independent_job_ids_and_completion() {
+    let directory = workspace();
+    let mut slow = HeldSource::start(b"slow source");
+    let mut fast = HeldSource::start(b"fast source");
+    let mut repl = Repl::start(directory.path());
+    launch(&mut repl, &slow);
+    repl.send(&format!(
+        "fast => tcp://{}\nfast::/ -> $pwd::pwd/fast.bin\n",
+        fast.address
+    ));
+    fast.connected();
+    repl.until("job 2: running in background");
+    fast.close();
+    let deadline = Instant::now() + DEADLINE;
+    while fs::read(directory.path().join("fast.bin")).ok().as_deref() != Some(b"fast source") {
+        assert!(
+            Instant::now() < deadline,
+            "ready second job must not wait for first job EOF"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(!directory.path().join("output.bin").exists());
+    repl.send("/jobs\n/stop\n/quit\n");
+    let (status, errors) = repl.finish();
+    slow.close();
+    assert!(status.success(), "{errors}");
+    assert!(repl.output.contains("job 2: completed"), "{}", repl.output);
+    assert!(repl.output.contains("job 1: stopped"), "{}", repl.output);
+    assert!(!repl.output.contains("job 2: stopped"), "{}", repl.output);
+}
+
+#[test]
+fn explicit_structured_source_owns_jobs_even_with_legacy_default_and_blocks_cross_engine_effects() {
+    let directory = workspace();
+    let mut source = HeldSource::start(b"owned by structured session");
+    fs::write(
+        directory.path().join("stream.msync"),
+        format!(
+            "# msync: 0.4\nwire => tcp://{}\nwire::/ -> output.bin\n",
+            source.address
+        ),
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("legacy.msync"),
+        "# msync: 0.3\ninput.txt -> copied.txt\n",
+    )
+    .unwrap();
+    fs::write(directory.path().join("input.txt"), "must remain unassigned").unwrap();
+    let mut repl = Repl::start(directory.path());
+    repl.send("/syntax 0.3\n/load stream.msync\n");
+    source.connected();
+    repl.until("job 1: running in background");
+    repl.send("/jobs\n/load legacy.msync\n/stop\n/quit\n");
+    let (status, errors) = repl.finish();
+    source.close();
+    assert!(status.success(), "{errors}");
+    assert!(repl.output.contains("job 1: stopped"), "{}", repl.output);
+    assert!(errors.contains("use /wait or /stop"), "{errors}");
+    assert!(!directory.path().join("copied.txt").exists());
+}
+
+#[test]
+fn wait_does_not_hold_a_ready_second_job_behind_an_idle_first_job() {
+    let directory = workspace();
+    let mut slow = HeldSource::start(b"still open");
+    let mut fast = HeldSource::start(b"ready during wait");
+    let mut repl = Repl::start(directory.path());
+    launch(&mut repl, &slow);
+    repl.send(&format!(
+        "fast => tcp://{}\nfast::/ -> fast.bin\n",
+        fast.address
+    ));
+    fast.connected();
+    repl.until("job 2: running in background");
+    repl.send("/wait\n");
+    fast.close();
+    let deadline = Instant::now() + DEADLINE;
+    while fs::read(directory.path().join("fast.bin")).ok().as_deref() != Some(b"ready during wait")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "global wait must service a ready later cohort"
+        );
+        thread::sleep(Duration::from_millis(2));
+    }
+    assert!(!directory.path().join("output.bin").exists());
+    slow.close();
+    repl.until("job 1: completed");
+    repl.until("job 2: completed");
+    repl.send("/quit\n");
+    let (status, errors) = repl.finish();
+    assert!(status.success(), "{errors}");
+}
+
+#[test]
+fn waiting_without_work_does_not_invent_a_completed_job() {
+    let directory = workspace();
+    let mut repl = Repl::start(directory.path());
+    repl.send("/wait\n/stop\n/quit\n");
+    let (status, errors) = repl.finish();
+    assert!(status.success(), "{errors}");
+    assert!(repl.output.contains("no active jobs"));
+    assert!(!repl.output.contains("completed"), "{}", repl.output);
+    assert!(!repl.output.contains("stopped"), "{}", repl.output);
+}
+
+#[test]
+fn header_selected_structured_input_imports_pending_legacy_bindings_once() {
+    let directory = workspace();
+    fs::write(directory.path().join("input.txt"), "shared path binding").unwrap();
+    fs::write(
+        directory.path().join("modern.msync"),
+        "# msync: 0.4\nroot/input.txt -> copied.txt\n",
+    )
+    .unwrap();
+    let mut repl = Repl::start(directory.path());
+    repl.send("/syntax 0.3\nroot := $pwd::pwd\n/load modern.msync\n/quit\n");
+    let (status, errors) = repl.finish();
+    assert!(status.success(), "{errors}");
+    assert!(errors.is_empty(), "{errors}");
+    assert_eq!(
+        fs::read(directory.path().join("copied.txt")).unwrap(),
+        b"shared path binding"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "requires an available native bubblewrap process-resource backend"]
+fn a_later_input_failure_keeps_its_source_inside_an_existing_program_job() {
+    let directory = workspace();
+    let unused = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = unused.local_addr().unwrap();
+    drop(unused);
+    fs::write(
+        directory.path().join("launch.msync"),
+        "child => $path::cat()\n",
+    )
+    .unwrap();
+    let transfer = "wire::/ -> child::stdin";
+    fs::write(
+        directory.path().join("feed.msync"),
+        format!("\n\nwire => tcp://{address}\n{transfer}\n"),
+    )
+    .unwrap();
+    let mut repl = Repl::start(directory.path());
+    repl.send("/load launch.msync\n/load feed.msync\n/wait\n/help\n/quit\n");
+    let (status, errors) = repl.finish();
+    assert!(status.success(), "{errors}");
+    assert!(errors.contains("feed.msync:4:"), "{errors}");
+    assert!(errors.contains(transfer), "{errors}");
+    assert!(!errors.contains("launch.msync:"), "{errors}");
+    assert!(
+        repl.output.contains("job 1: running in background"),
+        "{}",
+        repl.output
+    );
+    assert!(
+        !repl.output.contains("job 2: running in background"),
+        "{}",
+        repl.output
+    );
     assert!(repl.output.contains("REPL commands"));
 }

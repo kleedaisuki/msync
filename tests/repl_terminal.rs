@@ -19,6 +19,31 @@ fn workspace() -> tempfile::TempDir {
         .unwrap()
 }
 
+fn unpublished_stages(directory: &Path) -> Vec<std::path::PathBuf> {
+    let mut directories = vec![directory.join(".temp")];
+    let mut stages = Vec::new();
+    while let Some(directory) = directories.pop() {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                directories.push(entry.path());
+            } else if kind.is_file() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with(".msync-") && name.ends_with(".part") {
+                    stages.push(entry.path());
+                }
+            }
+        }
+    }
+    stages
+}
+
 #[test]
 fn native_terminal_plan_and_limits_separate_paths_dependencies_and_resource_units() {
     let directory = workspace();
@@ -124,10 +149,22 @@ fn native_terminal_highlights_before_enter_and_keeps_unicode_editing_history_and
         "actual edited path"
     );
     repl.exit();
+    let mut entries: Vec<_> = fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    entries.sort();
     assert_eq!(
-        fs::read_dir(directory.path()).unwrap().count(),
-        3,
-        "the editor must not persist a history/cache file into its isolated HOME"
+        entries,
+        [".temp", "after-clear.txt", "copied.txt", "x"].map(std::ffi::OsString::from),
+        "the editor must not persist history/cache files into its isolated HOME"
+    );
+    assert_eq!(
+        fs::read_dir(directory.path().join(".temp"))
+            .unwrap()
+            .count(),
+        0,
+        "the structured runtime must clean its owned invocation scratch after exit"
     );
 }
 
@@ -295,16 +332,13 @@ fn terminal_ctrl_c_joins_an_open_flow_preserves_target_and_physically_closes_the
     connected.recv_timeout(Duration::from_secs(5)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let staged = fs::read_dir(directory.path())
-            .unwrap()
-            .filter_map(Result::ok)
-            .any(|entry| {
-                entry.path() != target
-                    && fs::File::open(entry.path())
-                        .and_then(|file| file.metadata())
-                        .is_ok_and(|metadata| {
-                            metadata.is_file() && metadata.len() >= prefix.len() as u64
-                        })
+        let staged = unpublished_stages(directory.path())
+            .into_iter()
+            .any(|path| {
+                fs::File::open(path).is_ok_and(|mut file| {
+                    let mut bytes = vec![0; prefix.len()];
+                    file.read_exact(&mut bytes).is_ok() && bytes == prefix
+                })
             });
         if staged {
             break;
@@ -330,15 +364,21 @@ fn terminal_ctrl_c_joins_an_open_flow_preserves_target_and_physically_closes_the
     );
     source.join().unwrap();
     assert_eq!(fs::read_to_string(&target).unwrap(), "keep published bytes");
-    assert_eq!(
-        fs::read_dir(directory.path()).unwrap().count(),
-        1,
+    assert!(
+        unpublished_stages(directory.path()).is_empty(),
         "no uncommitted stage may survive the joined cancellation"
     );
     repl.mark();
     repl.send("/?\r");
     repl.until("REPL commands");
     repl.exit();
+    assert_eq!(
+        fs::read_dir(directory.path().join(".temp"))
+            .unwrap()
+            .count(),
+        0,
+        "shutdown must release the owned invocation, not merely its stream stage"
+    );
 }
 
 #[cfg(unix)]

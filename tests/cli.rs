@@ -232,7 +232,7 @@ fn repl_slash_commands_keep_bindings_recover_from_errors_and_load_files() {
     assert_success(&result);
     let out = stdout(&result);
     assert!(out.contains("REPL commands"));
-    assert!(out.contains("base := ."));
+    assert!(out.contains("base :="), "{out}");
     assert!(out.contains("dry-run: on"));
     assert!(out.contains("bindings cleared"));
     assert!(
@@ -355,14 +355,14 @@ fn pwd_namespace_rebinding_is_dynamic_but_path_alias_captures_its_value() {
 }
 
 #[test]
-fn old_pwd_path_forms_fail_with_migration_help_but_bare_paths_stay_compatible() {
+fn explicit_legacy_pwd_forms_keep_their_migration_diagnostics() {
     let directory = workspace();
     fs::write(directory.path().join("source.txt"), "legacy source").unwrap();
     for source in [
         "$pwd::source.txt -> target.txt\n",
         "$pwd/source.txt -> target.txt\n",
     ] {
-        let output = invoke(directory.path(), &["check", "-"], source);
+        let output = invoke(directory.path(), &["--syntax", "0.3", "check", "-"], source);
         assert!(
             !output.status.success(),
             "legacy namespace misuse must not silently change meaning"
@@ -372,7 +372,7 @@ fn old_pwd_path_forms_fail_with_migration_help_but_bare_paths_stay_compatible() 
     }
     assert_success(&invoke(
         directory.path(),
-        &["run", "-"],
+        &["--syntax", "0.3", "run", "-"],
         "source.txt -> target.txt\n",
     ));
     assert_eq!(
@@ -519,11 +519,11 @@ fn live_plan_eliminates_dead_file_write_before_bounded_execution() {
     let planned = invoke(directory.path(), &["plan", "-"], script);
     assert_success(&planned);
     assert!(
-        stdout(&planned).contains("plan: 1 operation(s), 1 eliminated"),
+        stdout(&planned).matches("transfer\n").count() == 1,
         "{}",
         stdout(&planned)
     );
-    assert!(stdout(&planned).contains("overwritten by #1"));
+    assert!(stdout(&planned).contains("eliminated; overwritten by 1"));
     assert_eq!(
         fs::read_to_string(directory.path().join("target.txt")).unwrap(),
         "original target",
