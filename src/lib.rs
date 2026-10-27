@@ -8,6 +8,7 @@ pub mod io;
 pub mod language;
 pub mod pipeline;
 pub mod plan;
+pub mod process;
 pub mod runtime;
 pub mod scheduler;
 pub mod streams;
