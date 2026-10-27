@@ -6,6 +6,7 @@
 //! before it can claim the same isolation outside this store.
 
 pub mod filesystem;
+pub mod manager;
 mod store;
 
 pub use store::{
