@@ -97,7 +97,11 @@ impl PreparedProgram {
         }
         let (program, rewrites) = optimize::run(
             &self.original,
-            &rewrite_facts(&self.witness.original_context),
+            &rewrite_facts(
+                &self.witness.original_context,
+                &self.original,
+                &self.witness.resources,
+            ),
             &self.witness.resources,
             false,
         );
@@ -160,9 +164,11 @@ pub fn prepare_with_context_detailed(
     mut context: PlanningContext,
 ) -> Result<PreparedProgram, Vec<Diagnostic>> {
     let mut resolved = program.clone();
-    let mut observations = Observations::default();
+    let initial = State::with_live_processes(&context);
+    let mut observations = Observations::new(initial.clone());
     resolve_region(&mut resolved.body, &mut observations)?;
     observations.complete(live)?;
+    let mut state = initial.clone();
     let mut interpreter = Types {
         observations: &observations,
         context: &mut context,
@@ -170,12 +176,12 @@ pub fn prepare_with_context_detailed(
         errors: Vec::new(),
         live,
     };
-    interpreter.region(&resolved.body, &mut State::default(), None);
+    interpreter.region(&resolved.body, &mut state, None);
     if !interpreter.errors.is_empty() {
         return Err(interpreter.errors);
     }
-    let resources = resources(&resolved);
-    let facts = rewrite_facts(&context);
+    let resources = resources(&resolved, &initial);
+    let facts = rewrite_facts(&context, &resolved, &resources);
     let (optimized, rewrites) = optimize::run(&resolved, &facts, &resources, true);
     let original_context = context.clone();
     let graph = graph::build_with_context(&optimized, &context);
@@ -214,13 +220,41 @@ pub fn prepare_with_context_detailed(
     Ok(result)
 }
 
-fn rewrite_facts(context: &PlanningContext) -> BTreeMap<InstructionId, OperationFacts> {
-    context
+fn rewrite_facts(
+    context: &PlanningContext,
+    program: &hir::Program,
+    resources: &HashMap<Location, Resource>,
+) -> BTreeMap<InstructionId, OperationFacts> {
+    fn retain(
+        region: &Region,
+        facts: &mut BTreeMap<InstructionId, OperationFacts>,
+        resources: &HashMap<Location, Resource>,
+    ) {
+        for node in &region.instructions {
+            match &node.kind {
+                InstructionKind::Transfer {
+                    source,
+                    destination,
+                } => {
+                    let source_verified = !matches!(source, Input::File { location, .. } if !resources.contains_key(location));
+                    let destination_verified = !matches!(destination, Output::File { location, .. } if !resources.contains_key(location));
+                    if !source_verified || !destination_verified {
+                        facts.remove(&node.id);
+                    }
+                }
+                InstructionKind::Transaction { body, .. } => retain(body, facts, resources),
+                _ => {}
+            }
+        }
+    }
+    let mut facts = context
         .operation_facts
         .iter()
         .filter(|(id, _)| !context.pinned_inputs.contains_key(id))
         .map(|(id, facts)| (*id, *facts))
-        .collect()
+        .collect();
+    retain(&program.body, &mut facts, resources);
+    facts
 }
 
 fn validate(
@@ -358,31 +392,35 @@ fn absolute(path: &Path) -> std::io::Result<PathBuf> {
     Ok(clean)
 }
 
-fn resources(program: &hir::Program) -> HashMap<Location, Resource> {
-    fn walk(region: &Region, output: &mut HashMap<Location, Resource>) {
+fn resources(program: &hir::Program, initial: &State) -> HashMap<Location, Resource> {
+    fn walk(region: &Region, initial: &State, output: &mut HashMap<Location, Resource>) {
         for node in &region.instructions {
             match &node.kind {
                 InstructionKind::Transfer {
                     source,
                     destination,
                 } => {
-                    if let Input::File { location, .. } = source {
+                    if let Input::File { location, .. } = source
+                        && initial.host_is_stable(location)
+                    {
                         output.entry(location.clone()).or_insert_with(|| {
                             crate::plan::snapshot_resource(location, AccessScope::Exact)
                         });
                     }
-                    if let Output::File { location, .. } = destination {
+                    if let Output::File { location, .. } = destination
+                        && initial.host_is_stable(location)
+                    {
                         output.entry(location.clone()).or_insert_with(|| {
                             crate::plan::snapshot_resource(location, AccessScope::Exact)
                         });
                     }
                 }
-                InstructionKind::Transaction { body, .. } => walk(body, output),
+                InstructionKind::Transaction { body, .. } => walk(body, initial, output),
                 _ => {}
             }
         }
     }
     let mut output = HashMap::new();
-    walk(&program.body, &mut output);
+    walk(&program.body, initial, &mut output);
     output
 }

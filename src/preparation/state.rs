@@ -2,13 +2,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::endpoint::{Backend, Location};
-use crate::hir::effects::{FileResource, Scope};
+use crate::hir::effects::{AccessKind, FileResource, Resource, Scope};
+use crate::hir::graph::PlanningContext;
 use crate::plan::FileClass;
 
 #[derive(Clone, Default)]
 pub(super) struct State {
     events: Vec<Event>,
     unknown: bool,
+    pending_writes: Vec<Resource>,
 }
 
 #[derive(Clone)]
@@ -25,6 +27,46 @@ enum Value {
 }
 
 impl State {
+    pub(super) fn with_live_processes(context: &PlanningContext) -> Self {
+        let mut state = Self::default();
+        for process in &context.live_processes {
+            let Some(effects) = context.process_effects.get(process) else {
+                state.unknown = true;
+                continue;
+            };
+            state.unknown |= effects.footprint().unknown_external;
+            state.pending_writes.extend(
+                effects
+                    .footprint()
+                    .accesses
+                    .iter()
+                    .filter(|access| access.kind == AccessKind::Write)
+                    .map(|access| access.resource.clone()),
+            );
+        }
+        state
+    }
+
+    pub(super) fn host_is_stable(&self, location: &Location) -> bool {
+        if self.unknown {
+            return false;
+        }
+        if !self.pending_writes.is_empty()
+            && location
+                .path
+                .replace('\\', "/")
+                .split('/')
+                .any(|part| part == "..")
+        {
+            return false;
+        }
+        let resource = Resource::File(FileResource::new(location.clone(), Scope::Exact));
+        !self
+            .pending_writes
+            .iter()
+            .any(|write| write.may_overlap(&resource))
+    }
+
     pub(super) fn unknown(&mut self) {
         self.events.clear();
         self.unknown = true;
@@ -88,7 +130,9 @@ impl State {
                 return FileClass::Unknown;
             }
         }
-        if self.unknown {
+        // Host observations precede pending native imports. Own ordered writes
+        // above are postconditions after their gates, not those stale snapshots.
+        if !self.host_is_stable(location) {
             FileClass::Unknown
         } else {
             initial.get(location).copied().unwrap_or(FileClass::Unknown)

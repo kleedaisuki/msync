@@ -117,8 +117,11 @@ impl Types<'_> {
         state: &mut State,
         current: Option<TransactionId>,
     ) {
+        let pinned_file = matches!(source, Input::File { location, pattern: None }
+            if self.context.pinned_inputs.get(&node.id).is_some_and(|proof| proof.covers(location)));
         let inferred = OperationFacts {
             source: match source {
+                Input::File { .. } if pinned_file => FileClass::Regular,
                 Input::File { location, .. } => self.class(state, location),
                 Input::Literal(_) => FileClass::Regular,
                 Input::Port {
@@ -132,11 +135,15 @@ impl Types<'_> {
                 Output::Stdin(_) => FileClass::Stream,
             },
         };
-        let facts = *self
+        let facts = self
             .context
             .operation_facts
             .entry(node.id)
             .or_insert(inferred);
+        if pinned_file {
+            facts.source = FileClass::Regular;
+        }
+        let facts = *facts;
         if let Output::File { location, .. } = destination
             && let Some(frontier) = parents(location)
                 .into_iter()

@@ -111,6 +111,298 @@ fn differing_source_endpoints_do_not_prevent_dead_store_proof_with_explicit_type
     prepared.verify().unwrap();
 }
 
+fn pending_root_write(root: &Path) -> PlanningContext {
+    use msync::hir::effects::{Access, AccessKind, Effects, FileResource, Resource, Scope};
+    use msync::hir::graph::ProcessEffects;
+    let process = hir::ProcessId(900);
+    let mut context = PlanningContext {
+        live_processes: vec![process],
+        ..PlanningContext::default()
+    };
+    context.process_effects.insert(
+        process,
+        ProcessEffects::mediated(
+            Effects {
+                accesses: vec![Access {
+                    resource: Resource::File(FileResource::new(
+                        msync::endpoint::Location {
+                            backend: Backend::Local,
+                            path: root.to_string_lossy().into_owned(),
+                        },
+                        Scope::Tree,
+                    )),
+                    kind: AccessKind::Write,
+                }],
+                unknown_external: false,
+            },
+            "retained-native-view",
+            "pending-import-epoch",
+        )
+        .unwrap(),
+    );
+    context
+}
+
+#[test]
+fn a_previous_live_root_writer_invalidates_host_metadata_before_its_import_gate() {
+    let root = workspace();
+    fs::write(root.path().join("one"), "first").unwrap();
+    fs::write(root.path().join("two"), "second").unwrap();
+    fs::write(root.path().join("output"), "host version before import").unwrap();
+    let program = compile(root.path(), "one -> output\ntwo -> output\n");
+    let prepared =
+        preparation::prepare_with_context(&program, true, pending_root_write(root.path())).unwrap();
+    assert_eq!(transfers(&prepared.program.body).len(), 2);
+    assert!(prepared.rewrites.is_empty());
+    assert_eq!(
+        prepared.facts[&program.body.instructions[0].id].source,
+        FileClass::Unknown
+    );
+    assert_eq!(
+        prepared.facts[&program.body.instructions[0].id].destination,
+        FileClass::Unknown
+    );
+    assert!(!prepared.is_execution_ready());
+    assert!(
+        !prepared
+            .context
+            .existing_parent_frontiers
+            .contains_key(&program.body.instructions[0].id)
+    );
+    prepared.verify().unwrap();
+}
+
+#[test]
+fn pending_imports_defer_host_missing_source_and_directory_destination_errors() {
+    let root = workspace();
+    fs::create_dir(root.path().join("output")).unwrap();
+    let program = compile(root.path(), "produced-later -> output\n");
+    let prepared =
+        preparation::prepare_with_context(&program, true, pending_root_write(root.path())).unwrap();
+    let facts = prepared.facts[&program.body.instructions[0].id];
+    assert_eq!(facts.source, FileClass::Unknown);
+    assert_eq!(facts.destination, FileClass::Unknown);
+    assert!(!prepared.is_execution_ready());
+    prepared.verify().unwrap();
+}
+
+#[test]
+fn pending_write_defers_enotdir_probes_without_collapsing_unverified_parent_segments() {
+    let root = workspace();
+    fs::write(
+        root.path().join("blocker"),
+        "currently a non-directory ancestor",
+    )
+    .unwrap();
+    fs::write(root.path().join("source"), "source after import").unwrap();
+    for text in [
+        "blocker/child -> output\n",
+        "blocker/../source -> output\n",
+        "source -> blocker/child\n",
+    ] {
+        let original = compile(root.path(), text);
+        let prepared =
+            preparation::prepare_with_context(&original, true, pending_root_write(root.path()))
+                .unwrap();
+        let node = &prepared.original.body.instructions[0];
+        assert_eq!(prepared.facts[&node.id].source, FileClass::Unknown);
+        assert_eq!(prepared.facts[&node.id].destination, FileClass::Unknown);
+        assert!(!prepared.is_execution_ready());
+        assert!(prepared.rewrites.is_empty());
+        assert!(
+            !prepared
+                .context
+                .existing_parent_frontiers
+                .contains_key(&node.id)
+        );
+        if text.contains("../") {
+            let InstructionKind::Transfer {
+                source: Input::File { location, .. },
+                ..
+            } = &node.kind
+            else {
+                panic!()
+            };
+            assert!(Path::new(&location.path).is_absolute());
+            assert!(
+                Path::new(&location.path)
+                    .components()
+                    .any(|part| part == std::path::Component::ParentDir)
+            );
+        }
+        prepared.verify().unwrap();
+    }
+    let mut malformed = compile(root.path(), "source -> output\n");
+    let InstructionKind::Transfer {
+        source: Input::File { location, .. },
+        ..
+    } = &mut malformed.body.instructions[0].kind
+    else {
+        panic!()
+    };
+    location.path.push('\0');
+    let errors = preparation::prepare_with_context_detailed(
+        &malformed,
+        true,
+        pending_root_write(root.path()),
+    )
+    .unwrap_err();
+    assert_eq!(errors[0].operand, preparation::Operand::Source);
+    assert!(errors[0].report.diagnostic.message.contains("NUL"));
+}
+
+#[test]
+fn unrelated_or_readonly_writer_does_not_suppress_real_enotdir_errors() {
+    use msync::hir::effects::AccessKind;
+    use msync::hir::graph::ProcessEffects;
+    let root = workspace();
+    fs::write(root.path().join("blocker"), "not a directory").unwrap();
+    fs::create_dir(root.path().join("unrelated")).unwrap();
+    let program = compile(root.path(), "blocker/child -> output\n");
+    let unrelated = pending_root_write(&root.path().join("unrelated"));
+    let mut readonly = pending_root_write(root.path());
+    let effects = readonly
+        .process_effects
+        .get_mut(&hir::ProcessId(900))
+        .unwrap();
+    let mut footprint = effects.footprint().clone();
+    for access in &mut footprint.accesses {
+        access.kind = AccessKind::Read;
+    }
+    *effects = ProcessEffects::mediated(footprint, "readonly-native-view", "read-epoch").unwrap();
+    for context in [unrelated, readonly] {
+        let errors =
+            preparation::prepare_with_context_detailed(&program, true, context).unwrap_err();
+        assert_eq!(errors[0].operand, preparation::Operand::Source);
+        assert_eq!(errors[0].instruction, Some(program.body.instructions[0].id));
+        assert!(
+            errors[0]
+                .report
+                .help
+                .iter()
+                .any(|help| help.contains("blocker"))
+        );
+    }
+}
+
+#[test]
+fn unrelated_or_readonly_live_footprints_do_not_erase_regular_file_type_proofs() {
+    use msync::hir::effects::AccessKind;
+    use msync::hir::graph::ProcessEffects;
+    let root = workspace();
+    fs::write(root.path().join("one"), "first").unwrap();
+    fs::write(root.path().join("two"), "second").unwrap();
+    fs::write(root.path().join("output"), "existing").unwrap();
+    fs::create_dir(root.path().join("unrelated")).unwrap();
+    let program = compile(root.path(), "one -> output\ntwo -> output\n");
+    let unrelated = pending_root_write(&root.path().join("unrelated"));
+    let mut readonly = pending_root_write(root.path());
+    let effects = readonly
+        .process_effects
+        .get_mut(&hir::ProcessId(900))
+        .unwrap();
+    let mut footprint = effects.footprint().clone();
+    for access in &mut footprint.accesses {
+        access.kind = AccessKind::Read;
+    }
+    *effects = ProcessEffects::mediated(footprint, "readonly-native-view", "read-epoch").unwrap();
+    for context in [unrelated, readonly] {
+        let prepared = preparation::prepare_with_context(&program, true, context).unwrap();
+        assert_eq!(transfers(&prepared.program.body).len(), 1);
+        assert_eq!(
+            prepared.facts[&program.body.instructions[0].id].source,
+            FileClass::Regular
+        );
+        prepared.verify().unwrap();
+    }
+}
+
+#[test]
+fn an_actual_pinned_input_retains_its_type_despite_a_pending_path_replacement() {
+    use msync::hir::graph::VersionReadProof;
+    use msync::transaction::filesystem::{Entry, SnapshotStore};
+    let root = workspace();
+    let managed = root.path().join("managed");
+    fs::create_dir(&managed).unwrap();
+    fs::write(managed.join("source"), "retained version").unwrap();
+    let mut store = SnapshotStore::new(&root.path().join("versions")).unwrap();
+    let snapshot = store.capture(&managed.join("source")).unwrap();
+    let Entry::File { artifact, .. } = &snapshot.entries()[Path::new("")] else {
+        panic!()
+    };
+    let program = compile(root.path(), "managed/source -> output\n");
+    let InstructionKind::Transfer {
+        source: Input::File { location, .. },
+        ..
+    } = &program.body.instructions[0].kind
+    else {
+        panic!()
+    };
+    let mut context = pending_root_write(&managed);
+    context.pinned_inputs.insert(
+        program.body.instructions[0].id,
+        VersionReadProof::pinned_file(
+            location.clone(),
+            "retained-test-store",
+            artifact.path().to_string_lossy(),
+        )
+        .unwrap(),
+    );
+    fs::remove_file(managed.join("source")).unwrap();
+    let mut mismatched = context.clone();
+    mismatched.pinned_inputs.insert(
+        program.body.instructions[0].id,
+        VersionReadProof::pinned_file(
+            msync::endpoint::Location {
+                backend: Backend::Local,
+                path: managed.join("other").to_string_lossy().into_owned(),
+            },
+            "retained-test-store",
+            "different-file-version",
+        )
+        .unwrap(),
+    );
+    let uncertain = preparation::prepare_with_context(&program, true, mismatched).unwrap();
+    assert_eq!(
+        uncertain.facts[&program.body.instructions[0].id].source,
+        FileClass::Unknown
+    );
+    assert!(!uncertain.is_execution_ready());
+    let prepared = preparation::prepare_with_context(&program, true, context).unwrap();
+    assert_eq!(
+        prepared.facts[&program.body.instructions[0].id].source,
+        FileClass::Regular
+    );
+    assert_eq!(prepared.context.pinned_inputs.len(), 1);
+    assert!(prepared.rewrites.is_empty());
+    prepared.verify().unwrap();
+    drop(snapshot);
+    store.cleanup().unwrap();
+}
+
+#[test]
+fn runtime_owned_epoch_facts_survive_an_outstanding_opaque_process() {
+    let root = workspace();
+    let program = compile(root.path(), "source -> output\n");
+    let context = PlanningContext {
+        live_processes: vec![hir::ProcessId(900)],
+        operation_facts: BTreeMap::from([(
+            program.body.instructions[0].id,
+            OperationFacts {
+                source: FileClass::Regular,
+                destination: FileClass::Missing,
+            },
+        )]),
+        ..PlanningContext::default()
+    };
+    let prepared = preparation::prepare_with_context(&program, true, context).unwrap();
+    assert_eq!(
+        prepared.facts[&program.body.instructions[0].id].source,
+        FileClass::Regular
+    );
+    prepared.verify().unwrap();
+}
+
 #[test]
 fn literal_backed_file_versions_keep_their_metadata_producer() {
     let root = workspace();

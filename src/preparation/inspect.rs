@@ -1,3 +1,4 @@
+use super::state::State;
 use super::{Diagnostic, Operand, absolute, endpoint_error, parents};
 use crate::endpoint::{Backend, Location};
 use crate::hir::{self, Input, InstructionId, InstructionKind, Output, Region};
@@ -23,6 +24,7 @@ impl Site {
 
 #[derive(Default)]
 pub(super) struct Observations {
+    initial: State,
     native: runtime::Inspection,
     resolved: HashMap<(Location, bool), Location>,
     pub(super) classes: HashMap<Location, FileClass>,
@@ -31,6 +33,13 @@ pub(super) struct Observations {
 }
 
 impl Observations {
+    pub(super) fn new(initial: State) -> Self {
+        Self {
+            initial,
+            ..Self::default()
+        }
+    }
+
     fn resolve(
         &mut self,
         location: &mut Location,
@@ -42,6 +51,14 @@ impl Observations {
             *location = snapshot.clone();
             return Ok(());
         }
+        if location.path.contains('\0') {
+            return Err(site.report(endpoint_error(
+                "file path contains a NUL character",
+                location,
+                site.span,
+            )));
+        }
+        let mut deferred = false;
         let local_class = if let Some(path) = runtime::local_path(location, source)
             .map_err(|message| site.report(endpoint_error(message, location, site.span)))?
         {
@@ -49,13 +66,24 @@ impl Observations {
                 backend: Backend::Local,
                 path: path.to_string_lossy().into_owned(),
             };
-            let class = self
-                .native
-                .inspect(&native, source)
-                .map_err(|message| site.report(endpoint_error(message, location, site.span)))?;
-            let path = absolute(&path).map_err(|error| {
-                site.report(endpoint_error(error.to_string(), location, site.span))
-            })?;
+            deferred = !self.initial.host_is_stable(&native);
+            let class = if deferred {
+                FileClass::Unknown
+            } else {
+                self.native
+                    .inspect(&native, source)
+                    .map_err(|message| site.report(endpoint_error(message, location, site.span)))?
+            };
+            let path = if deferred {
+                if path.is_absolute() {
+                    Ok(path)
+                } else {
+                    std::env::current_dir().map(|cwd| cwd.join(path))
+                }
+            } else {
+                absolute(&path)
+            }
+            .map_err(|error| site.report(endpoint_error(error.to_string(), location, site.span)))?;
             location.backend = Backend::Local;
             location.path = path.to_string_lossy().into_owned();
             Some(class)
@@ -71,7 +99,11 @@ impl Observations {
                 .flatten()
                 .any(|queued| queued == location)
         {
-            if matches!(location.backend, Backend::Ssh { .. } | Backend::Wsl) {
+            if matches!(location.backend, Backend::Ssh { .. } | Backend::Wsl)
+                && !self.initial.host_is_stable(location)
+            {
+                self.classes.insert(location.clone(), FileClass::Unknown);
+            } else if matches!(location.backend, Backend::Ssh { .. } | Backend::Wsl) {
                 self.remote
                     .entry(location.backend.clone())
                     .or_default()
@@ -86,7 +118,7 @@ impl Observations {
                 self.classes.insert(location.clone(), class);
             }
         }
-        if location.backend == Backend::Local {
+        if location.backend == Backend::Local && !deferred {
             for parent in parents(location) {
                 let class = if let Some(class) = self.classes.get(&parent) {
                     *class
