@@ -23,7 +23,7 @@ struct Selection {
     source: Option<PathBuf>,
 }
 
-impl Engine<'_> {
+impl Engine {
     pub(super) fn transfer(
         &mut self,
         instruction: InstructionId,
@@ -91,6 +91,7 @@ impl Engine<'_> {
         transaction: TransactionId,
     ) -> Result<Selection> {
         let (snapshot, basename, source) = match &transfer.source {
+            Source::Captured { snapshot, basename } => (snapshot.clone(), basename.clone(), None),
             Source::Local(path) => (
                 self.read(transaction, path, transfer.span)?,
                 path.file_name().map(OsString::from),
@@ -102,7 +103,7 @@ impl Engine<'_> {
                     transfer.span,
                     &self.imports,
                     &self.assets,
-                    self.options,
+                    &self.options,
                     instruction,
                 )?,
                 basename.clone(),
@@ -340,10 +341,15 @@ impl Engine<'_> {
         path: &Path,
         span: Span,
     ) -> Result<()> {
-        let old = self.read(transaction, path, span)?;
-        if old.is_directory() {
+        let old = self
+            .manager
+            .read_entry(transaction, path)
+            .map_err(|cause| {
+                self.manager_error("cannot inspect destination directory", span, cause)
+            })?;
+        if matches!(old, Some(Entry::Directory { .. })) {
             #[cfg(unix)]
-            if matches!(old.entries().get(Path::new("")), Some(Entry::Directory { metadata }) if metadata.permissions.readonly())
+            if matches!(&old, Some(Entry::Directory { metadata }) if metadata.permissions.readonly())
             {
                 return Err(ExecutionError::caused(
                     "destination directory is read-only",
@@ -353,7 +359,7 @@ impl Engine<'_> {
             }
             return Ok(());
         }
-        if !old.is_missing() {
+        if old.is_some() {
             return Err(ExecutionError::new(
                 format!("destination parent is not a directory: {}", path.display()),
                 span,

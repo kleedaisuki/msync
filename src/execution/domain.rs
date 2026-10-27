@@ -23,6 +23,10 @@ pub(super) enum Source {
         basename: Option<OsString>,
     },
     Literal(std::sync::Arc<str>),
+    Captured {
+        snapshot: Snapshot,
+        basename: Option<OsString>,
+    },
 }
 
 #[derive(Debug)]
@@ -175,7 +179,8 @@ impl Domain {
                         unreachable!("capabilities validated")
                     };
                     let destination = local(location, false, instruction.span)?;
-                    self.roots.push(envelope(&destination));
+                    self.roots
+                        .push(destination_envelope(&destination, instruction.span)?);
                     let (source, pattern) = match source {
                         Input::Literal(text) => (Source::Literal(text.clone()), None),
                         Input::File { location, pattern } => {
@@ -335,6 +340,27 @@ fn envelope(path: &Path) -> PathBuf {
         root = root.parent().unwrap();
     }
     root.to_owned()
+}
+
+fn destination_envelope(path: &Path, span: Span) -> Result<PathBuf> {
+    if path.exists() {
+        return Ok(envelope(path));
+    }
+    let mut parent = path
+        .parent()
+        .ok_or_else(|| ExecutionError::new("destination needs a containing directory", span))?;
+    while !parent.exists() {
+        parent = parent.parent().ok_or_else(|| {
+            ExecutionError::new("destination has no existing containing directory", span)
+        })?;
+    }
+    if parent.file_name().is_none() {
+        return Err(ExecutionError::new(
+            "a new resource at a filesystem root needs an explicit managed directory",
+            span,
+        ));
+    }
+    Ok(parent.to_owned())
 }
 
 pub(super) fn relative_to(path: &Path, root: &Path) -> Option<PathBuf> {

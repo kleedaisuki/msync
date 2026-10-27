@@ -11,9 +11,8 @@
 //! integration obligations and are capability-rejected before execution starts.
 //! Finite remote sources are imported at their atomic top-level transfer, not
 //! pre-downloaded before earlier statements can publish. Sources that contain the
-//! configured scratch domain are currently refused rather than recursively
-//! capturing the executor's own artifacts; explicit owned-root exclusion remains
-//! an integration obligation. Windows enrollment requires the manager's supported
+//! configured scratch domain omit only the identity-checked current invocation.
+//! Pre-existing user scratch data remains part of the source. Windows enrollment requires the manager's supported
 //! ordinal-insensitive domain policy and rejects case-sensitive NTFS ancestors.
 
 mod domain;
@@ -21,11 +20,10 @@ mod error;
 mod native;
 mod transfer;
 
+
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
 
 use tokio_util::sync::CancellationToken;
 
@@ -33,7 +31,7 @@ use crate::hir::{self, Instruction, InstructionKind, Region, RollbackScope, Tran
 use crate::language::Isolation;
 use crate::scheduler::ResourceLimits;
 use crate::syntax::Span;
-use crate::transaction::filesystem::{Snapshot, SnapshotStore};
+use crate::transaction::filesystem::{InvocationRoot, Snapshot, SnapshotStore};
 use crate::transaction::manager::{CommitReport, Manager};
 
 use domain::Domain;
@@ -135,32 +133,42 @@ pub fn execute(program: &hir::Program, options: &Options) -> Result<ExecutionRep
     }
 }
 
-struct Engine<'a> {
+struct Engine {
     manager: Manager,
     assets: SnapshotStore,
     workspace: PathBuf,
+    invocation: InvocationRoot,
     imports: PathBuf,
     directory: fs::Permissions,
     roots: Vec<PathBuf>,
-    options: &'a Options,
+    options: Options,
     named: BTreeMap<TransactionId, TransactionId>,
     next_transaction: usize,
     report: ExecutionReport,
 }
 
-impl<'a> Engine<'a> {
-    fn new(domain: &Domain, options: &'a Options) -> Result<Self> {
-        let workspace = workspace(&options.scratch_root)?;
-        let assets = SnapshotStore::new(&workspace.join("assets")).map_err(|cause| {
+impl Engine {
+    fn new(domain: &Domain, options: &Options) -> Result<Self> {
+        let invocation = InvocationRoot::create(&options.scratch_root).map_err(|cause| {
             ExecutionError::caused(
-                "cannot create immutable import store",
+                "cannot create owned execution invocation",
                 Span::default(),
                 cause,
             )
         })?;
-        let manager = Manager::new(&workspace.join("manager")).map_err(|cause| {
-            ExecutionError::caused("cannot create transaction manager", Span::default(), cause)
-        })?;
+        let workspace = invocation.path().to_owned();
+        let assets =
+            SnapshotStore::new_in(&workspace.join("assets"), &invocation).map_err(|cause| {
+                ExecutionError::caused(
+                    "cannot create immutable import store",
+                    Span::default(),
+                    cause,
+                )
+            })?;
+        let manager =
+            Manager::new_in(&workspace.join("manager"), &invocation).map_err(|cause| {
+                ExecutionError::caused("cannot create transaction manager", Span::default(), cause)
+            })?;
         let imports = workspace.join("imports");
         fs::create_dir(&imports).map_err(|cause| {
             ExecutionError::caused("cannot create private imports", Span::default(), cause)
@@ -178,10 +186,11 @@ impl<'a> Engine<'a> {
             manager,
             assets,
             workspace,
+            invocation,
             imports,
             directory,
             roots: domain.roots.clone(),
-            options,
+            options: options.clone(),
             named: BTreeMap::new(),
             next_transaction: 0,
             report: ExecutionReport::default(),
@@ -421,7 +430,7 @@ impl<'a> Engine<'a> {
             });
             return;
         }
-        if let Err(cause) = fs::remove_dir_all(&self.workspace) {
+        if let Err(cause) = self.invocation.cleanup() {
             self.report.cleanup.push(CleanupIssue {
                 retained_paths: vec![self.workspace.clone()],
                 cause: Box::new(cause),
@@ -448,55 +457,4 @@ impl<'a> Engine<'a> {
     ) -> ExecutionError {
         ExecutionError::caused(action, span, cause)
     }
-}
-
-static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(0);
-
-fn workspace(root: &Path) -> Result<PathBuf> {
-    crate::runtime::check_ancestors(root)
-        .map_err(|message| ExecutionError::new(message, Span::default()))?;
-    fs::create_dir_all(root).map_err(|cause| {
-        ExecutionError::caused(
-            format!("cannot create execution scratch {}", root.display()),
-            Span::default(),
-            cause,
-        )
-    })?;
-    for _ in 0..128 {
-        let path = root.join(format!(
-            "execute-{}-{}",
-            std::process::id(),
-            NEXT_WORKSPACE.fetch_add(1, Ordering::Relaxed)
-        ));
-        match fs::create_dir(&path) {
-            Ok(()) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).map_err(
-                        |cause| {
-                            ExecutionError::caused(
-                                "cannot protect execution scratch",
-                                Span::default(),
-                                cause,
-                            )
-                        },
-                    )?;
-                }
-                return Ok(path);
-            }
-            Err(cause) if cause.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(cause) => {
-                return Err(ExecutionError::caused(
-                    "cannot allocate execution scratch",
-                    Span::default(),
-                    cause,
-                ));
-            }
-        }
-    }
-    Err(ExecutionError::new(
-        "cannot allocate a unique execution scratch directory",
-        Span::default(),
-    ))
 }
