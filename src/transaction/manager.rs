@@ -227,6 +227,7 @@ impl Manager {
             }
         }
         let snapshot = self.snapshots.capture(&path)?;
+        validate_snapshot_case_policy(&path, &snapshot)?;
         validate_names(snapshot.entries())?;
         let mut domain = self.domain.clone();
         let index = domain.roots.len();
@@ -267,7 +268,10 @@ impl Manager {
                 ));
             }
         }
-        Ok(self.snapshots.capture(&path)?)
+        let snapshot = self.snapshots.capture(&path)?;
+        validate_snapshot_case_policy(&path, &snapshot)?;
+        validate_names(snapshot.entries())?;
+        Ok(snapshot)
     }
 
     pub fn begin(&mut self, id: TransactionId, isolation: Isolation) -> Result<()> {
@@ -338,19 +342,30 @@ impl Manager {
         let mut domain = self.domain.clone();
         let key = domain.key(root, &relative)?;
         let mut candidate = self.store.clone();
+        let previous_kind = candidate
+            .read(id, &key)?
+            .map(|value| matches!(value.entry, Entry::Directory { .. }));
+        let replacement_kind = snapshot
+            .entries()
+            .get(Path::new(""))
+            .map(|entry| matches!(entry, Entry::Directory { .. }));
         if !relative.as_os_str().is_empty() {
             let parent = domain.key(root, relative.parent().unwrap_or_else(|| Path::new("")))?;
-            if !matches!(
-                candidate.read(id, &parent)?,
-                Some(ManagedEntry {
-                    entry: Entry::Directory { .. },
-                    ..
-                })
-            ) {
+            let Some(mut parent_value) = candidate.read(id, &parent)? else {
                 return Err(invalid(
                     path,
                     "a subtree replacement requires a directory parent in the transaction view",
                 ));
+            };
+            let Entry::Directory { metadata } = &mut parent_value.entry else {
+                return Err(invalid(
+                    path,
+                    "a subtree replacement requires a directory parent in the transaction view",
+                ));
+            };
+            if previous_kind != replacement_kind {
+                metadata.modified = std::time::SystemTime::now();
+                candidate.write(id, parent, parent_value)?;
             }
         }
         for (old, _) in candidate.enumerate(id, &key.tree())? {
@@ -796,6 +811,7 @@ fn normalize(path: &Path) -> Result<PathBuf> {
             }
         }
     }
+    validate_case_policy(&raw)?;
     let mut clean = PathBuf::new();
     for part in raw.components() {
         match part {
@@ -832,6 +848,37 @@ fn normalize(path: &Path) -> Result<PathBuf> {
         result.push(name);
     }
     Ok(result)
+}
+
+fn validate_case_policy(path: &Path) -> Result<()> {
+    #[cfg(windows)]
+    crate::io::windows::require_case_insensitive_ancestors(path).map_err(|cause| {
+        ManagerError::Io {
+            action: "inspect native directory case policy",
+            path: path.to_owned(),
+            cause,
+        }
+    })?;
+    #[cfg(not(windows))]
+    let _ = path;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_snapshot_case_policy(source: &Path, snapshot: &Snapshot) -> Result<()> {
+    // Whole-root publication recreates every directory, including unmodified
+    // children. Reject policy metadata this adapter cannot faithfully restore.
+    for (relative, entry) in snapshot.entries() {
+        if matches!(entry, Entry::Directory { .. }) {
+            validate_case_policy(&join(source, relative))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn validate_snapshot_case_policy(_: &Path, _: &Snapshot) -> Result<()> {
+    Ok(())
 }
 
 fn validate_names(entries: &BTreeMap<PathBuf, Entry>) -> Result<()> {

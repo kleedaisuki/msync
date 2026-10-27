@@ -514,7 +514,10 @@ fn case_colliding_manifest_is_rejected_before_staging_or_publishing_any_entries(
             (
                 std::path::PathBuf::new(),
                 Entry::Directory {
-                    permissions: fs::metadata(&root).unwrap().permissions(),
+                    metadata: msync::transaction::filesystem::NodeMetadata::capture(
+                        &fs::metadata(&root).unwrap(),
+                    )
+                    .unwrap(),
                 },
             ),
             ("A".into(), file.clone()),
@@ -598,6 +601,149 @@ fn a_pending_parent_case_alias_keeps_the_visible_parent_spelling() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn flagged_windows_case_sensitive_domains_are_refused_before_names_can_alias() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_CASE_SENSITIVE_INFO, FILE_DELETE_CHILD,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FILE_WRITE_ATTRIBUTES, FileCaseSensitiveInfo, SetFileInformationByHandle,
+    };
+
+    fn enable(path: &Path, account: &str) {
+        // Grant only this newly created empty fixture directory. Setting the
+        // flag also requires add-file/add-directory/delete-child handle rights.
+        let grant = std::process::Command::new("icacls.exe")
+            .arg(path)
+            .arg("/grant")
+            .arg(format!("{account}:(OI)(CI)F"))
+            .output()
+            .unwrap();
+        assert!(
+            grant.status.success(),
+            "{}",
+            String::from_utf8_lossy(&grant.stderr)
+        );
+        let directory = fs::OpenOptions::new()
+            .access_mode(
+                FILE_READ_ATTRIBUTES
+                    | FILE_WRITE_ATTRIBUTES
+                    | FILE_ADD_FILE
+                    | FILE_ADD_SUBDIRECTORY
+                    | FILE_DELETE_CHILD,
+            )
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .unwrap();
+        let info = FILE_CASE_SENSITIVE_INFO { Flags: 1 };
+        // SAFETY: The typed flag is applied only to a newly owned fixture directory.
+        assert_ne!(
+            unsafe {
+                SetFileInformationByHandle(
+                    directory.as_raw_handle(),
+                    FileCaseSensitiveInfo,
+                    (&info as *const FILE_CASE_SENSITIVE_INFO).cast(),
+                    std::mem::size_of::<FILE_CASE_SENSITIVE_INFO>() as u32,
+                )
+            },
+            0,
+            "native case-sensitive fixture capability: {}",
+            io::Error::last_os_error()
+        );
+    }
+
+    let workspace = workspace();
+    let account = std::process::Command::new("whoami.exe").output().unwrap();
+    assert!(account.status.success());
+    let account = String::from_utf8(account.stdout).unwrap();
+    let account = account.trim();
+    let sensitive = workspace.path().join("sensitive");
+    let changed = workspace.path().join("changed-after-enrollment");
+    fs::create_dir(&sensitive).unwrap();
+    fs::create_dir(&changed).unwrap();
+    enable(&sensitive, account);
+    fs::write(sensitive.join("A"), "original-sensitive").unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    let error = manager.enroll(&sensitive).unwrap_err();
+    assert!(matches!(
+        error,
+        ManagerError::Io {
+            action: "inspect native directory case policy",
+            ..
+        }
+    ));
+    assert_eq!(
+        fs::read_to_string(sensitive.join("A")).unwrap(),
+        "original-sensitive"
+    );
+    assert!(!sensitive.join("a").exists());
+
+    let container = workspace.path().join("container");
+    let child = container.join("sensitive-child");
+    fs::create_dir_all(&child).unwrap();
+    enable(&child, account);
+    fs::write(child.join("A"), "preserve-nested-policy").unwrap();
+    assert!(
+        matches!(
+            manager.enroll(&container),
+            Err(ManagerError::Io {
+                action: "inspect native directory case policy",
+                ..
+            })
+        ),
+        "an insensitive root must not hide a case-sensitive descendant"
+    );
+    assert!(
+        matches!(
+            manager.capture(&container),
+            Err(ManagerError::Io {
+                action: "inspect native directory case policy",
+                ..
+            })
+        ),
+        "external directory import must not discard descendant policy metadata"
+    );
+    assert_eq!(
+        fs::read_to_string(child.join("A")).unwrap(),
+        "preserve-nested-policy"
+    );
+    assert!(!child.join("a").exists());
+
+    manager.enroll(&changed).unwrap();
+    manager
+        .begin(TransactionId(0), Isolation::Serializable)
+        .unwrap();
+    let file = payload(&manager, workspace.path(), "file", "must-not-publish");
+    enable(&changed, account);
+    fs::write(changed.join("A"), "preserve-after-policy-change").unwrap();
+    let error = manager
+        .replace_snapshot(TransactionId(0), &changed.join("a"), &file)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ManagerError::Io {
+            action: "inspect native directory case policy",
+            ..
+        }
+    ));
+    assert!(
+        manager
+            .read_snapshot(TransactionId(0), &changed.join("a"))
+            .is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(changed.join("A")).unwrap(),
+        "preserve-after-policy-change"
+    );
+    assert!(!changed.join("a").exists());
+    drop(file);
+    manager.finish(TransactionId(0)).unwrap();
+    manager.shutdown().unwrap();
+}
+
 #[test]
 fn dirty_tree_reads_do_not_expose_a_child_beneath_a_file_parent() {
     let workspace = workspace();
@@ -616,10 +762,12 @@ fn dirty_tree_reads_do_not_expose_a_child_beneath_a_file_parent() {
         .begin(TransactionId(2), Isolation::ReadUncommitted)
         .unwrap();
     manager
-        .replace_snapshot(TransactionId(0), &root.join("folder"), &file)
-        .unwrap();
-    manager
         .replace_snapshot(TransactionId(1), &root.join("folder/child"), &file)
+        .unwrap();
+    // Child creation writes a complete parent directory metadata version too.
+    // Make the file replacement the newest tentative parent version.
+    manager
+        .replace_snapshot(TransactionId(0), &root.join("folder"), &file)
         .unwrap();
     let view = manager.read_snapshot(TransactionId(2), &root).unwrap();
     assert!(matches!(

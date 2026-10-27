@@ -14,6 +14,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 
 use same_file::Handle;
 
@@ -112,16 +113,65 @@ impl Artifact {
     }
 }
 
+/// Portable version metadata. Identity, atime and platform ACLs are not copied.
+#[derive(Clone, Debug)]
+pub struct NodeMetadata {
+    pub permissions: Permissions,
+    pub modified: SystemTime,
+}
+
+impl NodeMetadata {
+    pub fn new(permissions: Permissions, modified: SystemTime) -> Self {
+        Self {
+            permissions,
+            modified,
+        }
+    }
+
+    pub fn capture(metadata: &Metadata) -> io::Result<Self> {
+        Ok(Self::new(metadata.permissions(), metadata.modified()?))
+    }
+
+    /// Only call this on a privately materialized node, never a shared source.
+    pub fn apply(&self, path: &Path) -> io::Result<()> {
+        let mut options = fs::OpenOptions::new();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_WRITE_ATTRIBUTES,
+            };
+            options
+                .access_mode(FILE_WRITE_ATTRIBUTES)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT);
+        }
+        #[cfg(not(windows))]
+        options.read(true);
+        options
+            .open(path)?
+            .set_times(fs::FileTimes::new().set_modified(self.modified))?;
+        fs::set_permissions(path, self.permissions.clone())
+    }
+}
+
 /// Values suitable for `transaction::Store<Entry>` without retaining file bytes.
 #[derive(Clone, Debug)]
 pub enum Entry {
     Directory {
-        permissions: Permissions,
+        metadata: NodeMetadata,
     },
     File {
         artifact: Artifact,
-        permissions: Permissions,
+        metadata: NodeMetadata,
     },
+}
+
+impl Entry {
+    pub fn metadata(&self) -> &NodeMetadata {
+        match self {
+            Self::Directory { metadata } | Self::File { metadata, .. } => metadata,
+        }
+    }
 }
 
 /// Flattened relative paths; the empty path is the root, and an empty map is absence.
@@ -254,9 +304,15 @@ impl SnapshotStore {
         let Some(metadata) = safe_metadata(source)? else {
             return Ok(());
         };
-        let permissions = metadata.permissions();
+        let version_metadata = NodeMetadata::capture(&metadata)
+            .map_err(|cause| error("capture modification time", source, cause))?;
         if metadata.is_dir() {
-            entries.insert(relative.to_owned(), Entry::Directory { permissions });
+            entries.insert(
+                relative.to_owned(),
+                Entry::Directory {
+                    metadata: version_metadata,
+                },
+            );
             for child in children(source)? {
                 self.capture_entry(&child.path(), &relative.join(child.file_name()), entries)?;
             }
@@ -276,7 +332,7 @@ impl SnapshotStore {
                     path,
                     length,
                 },
-                permissions,
+                metadata: version_metadata,
             },
         );
         Ok(())
@@ -586,24 +642,23 @@ fn materialize(snapshot: &Snapshot, root: &Path) -> Result<()> {
         match entry {
             Entry::Directory { .. } => fs::create_dir(&target)
                 .map_err(|cause| error("create private directory", &target, cause))?,
-            Entry::File {
-                artifact,
-                permissions,
-            } => {
+            Entry::File { artifact, metadata } => {
                 ensure_identity(&artifact.owner.path, Some(&artifact.owner.identity))?;
                 copy_new(&artifact.path, &target)?;
-                fs::set_permissions(&target, permissions.clone())
-                    .map_err(|cause| error("restore file permissions", &target, cause))?;
+                metadata
+                    .apply(&target)
+                    .map_err(|cause| error("restore file metadata", &target, cause))?;
             }
         }
     }
     // Directory permissions are applied after children, so a read-only snapshot
     // directory does not prevent materialization of its own contents.
     for (relative, entry) in snapshot.entries.iter().rev() {
-        if let Entry::Directory { permissions } = entry {
+        if let Entry::Directory { metadata } = entry {
             let target = entry_path(root, relative);
-            fs::set_permissions(&target, permissions.clone())
-                .map_err(|cause| error("restore directory permissions", &target, cause))?;
+            metadata
+                .apply(&target)
+                .map_err(|cause| error("restore directory metadata", &target, cause))?;
         }
     }
     Ok(())
