@@ -70,7 +70,7 @@ jobs:
           exit $LASTEXITCODE
       - if: needs.changes.outputs.docs == 'true' || needs.changes.outputs.full == 'true'
         run: cargo test --locked --doc
-      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_linux_v4') || contains(fromJSON(needs.changes.outputs.targets), 'program_execution_v4') || contains(fromJSON(needs.changes.outputs.targets), 'physical_execution_v4') || contains(fromJSON(needs.changes.outputs.targets), 'repl_jobs'))
+      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_linux_v4') || contains(fromJSON(needs.changes.outputs.targets), 'program_execution_v4') || contains(fromJSON(needs.changes.outputs.targets), 'physical_execution_v4') || contains(fromJSON(needs.changes.outputs.targets), 'repl_jobs') || contains(fromJSON(needs.changes.outputs.targets), 'execution_workspace_v4'))
         name: Provision the ephemeral Linux resource-view gate
         shell: bash
         run: |
@@ -94,10 +94,13 @@ jobs:
       - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'repl_jobs'))
         name: Exercise owned REPL proofs and provenance across native inputs
         run: cargo test --locked --test repl_jobs -- --ignored --nocapture
+      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'execution_workspace_v4'))
+        name: Exercise native writes into the shared user scratch namespace
+        run: cargo test --locked --test execution_workspace_v4 -- --ignored --skip scratch_namespace_child_fixture --nocapture
 
   windows-resource-view:
     needs: changes
-    if: needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_windows_v4') || contains(fromJSON(needs.changes.outputs.targets), 'program_execution_v4')
+    if: needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_windows_v4') || contains(fromJSON(needs.changes.outputs.targets), 'program_execution_v4') || contains(fromJSON(needs.changes.outputs.targets), 'execution_workspace_v4')
     runs-on: windows-2022
     timeout-minutes: 20
     steps:
@@ -116,6 +119,12 @@ jobs:
         shell: pwsh
         run: |
           cargo test --locked --test program_execution_v4 -- --ignored --skip program_child_fixture --nocapture 2>&1 | Tee-Object -FilePath .temp/sandboxie-ci/execution.log
+          exit $LASTEXITCODE
+      - if: needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'execution_workspace_v4')
+        name: Exercise actual native writes into the shared user scratch namespace
+        shell: pwsh
+        run: |
+          cargo test --locked --test execution_workspace_v4 -- --ignored --skip scratch_namespace_child_fixture --nocapture 2>&1 | Tee-Object -FilePath .temp/sandboxie-ci/workspace.log
           exit $LASTEXITCODE
       - if: failure()
         uses: actions/upload-artifact@v4
