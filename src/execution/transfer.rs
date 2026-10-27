@@ -8,9 +8,11 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
+use crate::endpoint::Backend;
 use crate::hir::{InstructionId, TransactionId};
 use crate::language::DestinationMode;
 use crate::syntax::Span;
+use crate::telemetry::SpanGuard;
 use crate::transaction::filesystem::{Entry, Snapshot};
 
 use super::Engine;
@@ -30,7 +32,70 @@ impl Engine {
         transfer: &Transfer,
         transaction: TransactionId,
     ) -> Result<()> {
+        let mut trace = crate::telemetry::span("copy");
+        trace.expect_completion();
+        trace.attribute("copy.kind", "immutable-assignment");
+        trace.attribute("phase", "snapshot");
+        // This phase creates a version; only the transaction publisher can
+        // report committed bytes after all receipts have settled.
+        trace.attribute("publication.policy", "transaction-checkpoint");
+        trace.attribute(
+            "destination.mode",
+            match transfer.mode {
+                DestinationMode::Exact => "exact",
+                DestinationMode::Container => "container",
+                DestinationMode::ReplaceTree => "replace-tree",
+            },
+        );
+        if let Some(pattern) = &transfer.pattern {
+            trace.attribute_lazy("selector.pattern", || pattern.clone());
+        }
+        trace.metric("instruction.id", instruction.0 as u64);
+        trace.metric("transaction.id", transaction.0 as u64);
+        trace.attribute_lazy("manager.root", || {
+            self.manager.artifact_root().display().to_string()
+        });
+        trace.attribute("destination.backend", "local");
+        trace.attribute_lazy("destination.path", || {
+            transfer.destination.display().to_string()
+        });
+        source_metadata(&mut trace, &transfer.source);
+        let files = self.report.assigned_files;
+        let bytes = self.report.assigned_bytes;
+        let result = self.transfer_staged(instruction, transfer, transaction, &mut trace);
+        trace.metric(
+            "files.staged",
+            self.report.assigned_files.saturating_sub(files) as u64,
+        );
+        trace.metric(
+            "bytes.staged",
+            self.report.assigned_bytes.saturating_sub(bytes),
+        );
+        trace.finish_result(&result);
+        match &result {
+            Ok(()) => trace.attribute("phase", "staged"),
+            Err(failure) => {
+                trace.record_error("copy.stage", failure);
+                if self.options.cancel.is_cancelled() {
+                    trace.attribute("phase", "cancelled");
+                    trace.cancelled();
+                } else {
+                    trace.attribute("phase", "failed");
+                }
+            }
+        }
+        result
+    }
+
+    fn transfer_staged(
+        &mut self,
+        instruction: InstructionId,
+        transfer: &Transfer,
+        transaction: TransactionId,
+        trace: &mut SpanGuard,
+    ) -> Result<()> {
         self.options.check(transfer.span)?;
+        trace.event("copy.source", &[("phase", "snapshot")], &[]);
         let literal = matches!(transfer.source, Source::Literal(_));
         let source = self.source(instruction, transfer, transaction)?;
         let selections = self.select(source, transfer.pattern.as_deref(), transfer.span)?;
@@ -66,6 +131,7 @@ impl Engine {
                 .map_err(|cause| {
                     self.manager_error("cannot stage immutable assignment", transfer.span, cause)
                 })?;
+            staged_event(trace, &selection, &target);
             self.report.assigned_files += selection
                 .snapshot
                 .entries()
@@ -116,9 +182,11 @@ impl Engine {
                     .create_new(true)
                     .open(&path)
                     .map_err(|cause| {
+                        crate::telemetry::io_error("literal.open", &cause);
                         ExecutionError::caused("cannot create literal source", transfer.span, cause)
                     })?;
                 file.write_all(text.as_bytes()).map_err(|cause| {
+                    crate::telemetry::io_error("literal.write", &cause);
                     ExecutionError::caused(
                         "cannot write UTF-8 literal source",
                         transfer.span,
@@ -380,6 +448,80 @@ impl Engine {
             .replace_snapshot(transaction, path, &directory)
             .map_err(|cause| self.manager_error("cannot stage destination directory", span, cause))
     }
+}
+
+fn source_metadata(trace: &mut SpanGuard, source: &Source) {
+    match source {
+        Source::Local(path) => {
+            trace.attribute("source.backend", "local");
+            trace.attribute("source.kind", "file-view");
+            trace.attribute_lazy("source.path", || path.display().to_string());
+        }
+        Source::Remote { location, .. } => {
+            let backend = match &location.backend {
+                Backend::Local | Backend::Path | Backend::Env => "local",
+                Backend::Wsl => "wsl",
+                Backend::Ssh { .. } => "ssh",
+                Backend::Http { .. } => "http",
+                Backend::Tcp { .. } => "tcp",
+            };
+            trace.attribute("source.backend", backend);
+            trace.attribute("source.kind", "remote-import");
+            trace.attribute_lazy("source.path", || location.path.clone());
+            trace.attribute_lazy("source.endpoint", || location.backend.to_string());
+        }
+        Source::Literal(_) => {
+            trace.attribute("source.backend", "literal");
+            trace.attribute("source.kind", "utf8-literal");
+            trace.attribute("source.path", "<literal>");
+        }
+        Source::Captured { basename, .. } => {
+            trace.attribute("source.backend", "snapshot");
+            trace.attribute("source.kind", "captured-snapshot");
+            trace.attribute("source.path", "<captured snapshot>");
+            if let Some(name) = basename {
+                trace.attribute_lazy("source.name", || name.to_string_lossy().into_owned());
+            }
+        }
+    }
+}
+
+fn staged_event(trace: &SpanGuard, selection: &Selection, target: &Path) {
+    if !trace.is_recording() {
+        return;
+    }
+    let target = target.display().to_string();
+    let source = selection
+        .source
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let mut attributes = vec![
+        ("phase", "stage"),
+        ("stage.kind", "immutable-version"),
+        ("destination.path", target.as_str()),
+    ];
+    if let Some(source) = &source {
+        attributes.push(("source.path", source.as_str()));
+    }
+    let artifact = match selection.snapshot.entries().get(Path::new("")) {
+        Some(Entry::File { artifact, .. }) => Some(artifact.path().display().to_string()),
+        _ => None,
+    };
+    if let Some(artifact) = &artifact {
+        attributes.push(("stage.path", artifact.as_str()));
+    }
+    let (files, bytes) = selection.snapshot.entries().values().fold(
+        (0u64, 0u64),
+        |(files, bytes), entry| match entry {
+            Entry::File { artifact, .. } => (files + 1, bytes.saturating_add(artifact.len())),
+            _ => (files, bytes),
+        },
+    );
+    trace.event(
+        "copy.stage",
+        &attributes,
+        &[("files.staged", files), ("bytes.staged", bytes)],
+    );
 }
 
 fn relation(source: &Selection, destination: &Path, span: Span) -> Result<()> {

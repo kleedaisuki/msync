@@ -927,6 +927,138 @@ impl Manager {
         writes: &WriteSet,
         mut observe: impl FnMut(&Path, PublishEvent) -> io::Result<()>,
     ) -> Result<CommitReport> {
+        let mut trace = crate::telemetry::span("transaction.publish");
+        trace.expect_completion();
+        trace.attribute("phase", "prepare");
+        trace.attribute("destination.backend", "local");
+        trace.attribute("publication.atomicity", "managed-readers");
+        trace.metric("transaction.id", transaction.0 as u64);
+        trace.attribute_lazy("manager.root", || {
+            self.snapshots.root().display().to_string()
+        });
+        trace.metric("resources.data", writes.data.len() as u64);
+        trace.metric("resources.metadata", writes.metadata.len() as u64);
+        let published = if trace.is_recording() {
+            writes
+                .minimal_data()
+                .iter()
+                .filter_map(|root| {
+                    let path = self.key_path(&candidate, root).ok()?;
+                    let (files, bytes) = self
+                        .domain
+                        .keys
+                        .iter()
+                        .filter(|key| root.tree().contains(key))
+                        .filter_map(|key| candidate.committed(key))
+                        .fold((0u64, 0u64), |(files, bytes), value| match value.entry {
+                            Entry::File { artifact, .. } => {
+                                (files + 1, bytes.saturating_add(artifact.len()))
+                            }
+                            _ => (files, bytes),
+                        });
+                    Some((path, files, bytes))
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let result = self.publish_inner(transaction, candidate, writes, |path, event| {
+            if trace.is_recording() {
+                let target = path.display().to_string();
+                let step = match event {
+                    PublishEvent::AfterBackup => "after-backup",
+                    PublishEvent::AfterInstall => "after-install",
+                };
+                trace.event(
+                    "file.publish.step",
+                    &[
+                        ("phase", step),
+                        ("destination.path", &target),
+                        ("publication.state", "tentative"),
+                    ],
+                    &[],
+                );
+            }
+            observe(path, event)
+        });
+        trace.finish_result(&result);
+        match &result {
+            Ok(report) => {
+                trace.attribute("phase", "committed");
+                trace.metric("epoch", report.epoch.0);
+                trace.metric("roots.published", report.published_roots as u64);
+                trace.metric("cleanup.pending", report.cleanup.len() as u64);
+                let state = if report.cleanup.is_empty() {
+                    "committed"
+                } else {
+                    "committed-cleanup-pending"
+                };
+                trace.attribute("publication.state", state);
+                for (path, files, bytes) in published {
+                    trace.event(
+                        "file.publish",
+                        &[
+                            ("phase", "commit"),
+                            ("destination.path", &path.display().to_string()),
+                            ("publication.state", state),
+                        ],
+                        &[("files.committed", files), ("bytes.committed", bytes)],
+                    );
+                }
+                trace.event(
+                    "transaction.commit",
+                    &[("phase", "commit"), ("publication.state", state)],
+                    &[],
+                );
+                for failure in &report.cleanup {
+                    record_publication_failure(&trace, "publication.cleanup", failure);
+                }
+            }
+            Err(failure) => {
+                trace.attribute("phase", "failed");
+                trace.attribute(
+                    "publication.state",
+                    if self.recovery.is_empty() {
+                        "not-committed"
+                    } else {
+                        "not-committed-recovery-pending"
+                    },
+                );
+                trace.record_error("publication", failure);
+                match failure {
+                    ManagerError::Publication {
+                        cause,
+                        compensation,
+                        ..
+                    } => {
+                        record_publication_failure(&trace, "publication.failure", cause);
+                        for failure in compensation {
+                            record_publication_failure(&trace, "publication.compensate", failure);
+                        }
+                        if cause.cause.kind() == io::ErrorKind::Interrupted {
+                            trace.attribute("phase", "cancelled");
+                            trace.cancelled();
+                        }
+                    }
+                    ManagerError::Cleanup { failures, .. } => {
+                        for failure in failures {
+                            record_publication_failure(&trace, "publication.cleanup", failure);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        result
+    }
+
+    fn publish_inner(
+        &mut self,
+        transaction: TransactionId,
+        candidate: Store<ManagedEntry>,
+        writes: &WriteSet,
+        mut observe: impl FnMut(&Path, PublishEvent) -> io::Result<()>,
+    ) -> Result<CommitReport> {
         if !writes.data.is_empty() || !writes.metadata.is_empty() {
             let failures = self.retry_cleanup();
             if !self.cleanup.is_empty() {
@@ -981,7 +1113,20 @@ impl Manager {
         }
         for (path, view) in views {
             match self.snapshots.prepare(&view, &path) {
-                Ok(receipt) => batch.data.push(receipt),
+                Ok(receipt) => {
+                    if let Some(context) = crate::telemetry::context() {
+                        context.event(
+                            "file.stage",
+                            &[
+                                ("phase", "prepare"),
+                                ("destination.path", &path.display().to_string()),
+                                ("stage.path", &receipt.journal().display().to_string()),
+                            ],
+                            &[("transaction.id", transaction.0 as u64)],
+                        );
+                    }
+                    batch.data.push(receipt);
+                }
                 Err(error) => {
                     let orphan = error.journal.clone();
                     let mut failure = self.compensate(transaction, error, batch);
@@ -1013,7 +1158,20 @@ impl Manager {
         cause: FsError,
         mut batch: Batch,
     ) -> ManagerError {
+        crate::telemetry::event(
+            "transaction.compensate",
+            &[("phase", "restore-before-images")],
+            &[("transaction.id", transaction.0 as u64)],
+        );
         let mut compensation = batch.restore();
+        crate::telemetry::event(
+            "transaction.compensate.result",
+            &[("phase", "restore-before-images")],
+            &[
+                ("transaction.id", transaction.0 as u64),
+                ("recovery.failures", compensation.len() as u64),
+            ],
+        );
         if compensation.is_empty() {
             self.cleanup.push(batch);
         } else {
@@ -1026,6 +1184,17 @@ impl Manager {
             compensation,
             journals: self.retained_journals(),
         }
+    }
+}
+
+fn record_publication_failure(
+    trace: &crate::telemetry::SpanGuard,
+    phase: &'static str,
+    failure: &FsError,
+) {
+    trace.record_error(phase, failure);
+    if let Some(cause) = &failure.recovery_error {
+        trace.io_error("publication.recovery", cause);
     }
 }
 
