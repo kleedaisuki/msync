@@ -27,4 +27,6 @@ $selector = Select-Changes @('scripts/ci-select.ps1', 'scripts/test-ci-select.ps
 Assert (-not $selector.full -and -not $selector.rust) 'Selector edits are checked by this regression script, not an unrelated Rust suite'
 $transactions = Select-Changes @('src/transaction/filesystem.rs')
 Assert (-not $transactions.full -and $transactions.targets -contains 'transaction_filesystem_v4' -and $transactions.targets -contains 'transaction_store_v4') 'Filesystem changes must check the version store and real publisher'
-Write-Output 'CI selection: 9 discriminating cases passed'
+$backend = Select-Changes @('.github/workflows/windows-backend.yml', 'scripts/ci-install-sandboxie.ps1')
+Assert (-not $backend.rust -and -not $backend.full) 'Dependency installation is proven independently without restarting unrelated Rust suites'
+Write-Output 'CI selection: 10 discriminating cases passed'
