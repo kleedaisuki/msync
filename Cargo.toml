@@ -1,6 +1,6 @@
 [package]
 name = "msync"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "A compiled file synchronization DSL with an interactive shell"
 license = "GPL-3.0-only"
@@ -18,12 +18,22 @@ tokio-util = { version = "0.7", features = ["rt"] }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Wdk_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO", "Wdk_Storage_FileSystem", "Win32_Networking_WinSock", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_Security"] }
+socket2 = "0.6"
 
 [dev-dependencies]
 tempfile = "3.23"
 proptest = "1.9"
+socket2 = "0.6"
 
 [[bench]]
 name = "pipeline"
+harness = false
+
+[[bench]]
+name = "planner"
+harness = false
+
+[[bench]]
+name = "startup"
 harness = false

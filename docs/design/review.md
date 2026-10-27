@@ -86,3 +86,160 @@ operation completed. Microsoft explicitly describes this limitation in
 [Synchronous and asynchronous I/O](https://learn.microsoft.com/en-us/windows/win32/fileio/synchronous-and-asynchronous-i-o).
 That is a reason to remove the unsupported fallback, not evidence that the
 documented synchronous API leaves the buffers pending on conforming Windows.
+
+## Indexed planner, namespace contexts and native I/O review
+
+`tests/review_v3.rs` adds independent checks beyond scalar final-state examples:
+
+- 96 generated mixed programs (up to 74 operations) check that **every raw hazard
+  between retained operations remains reachable** after frontier retirement and
+  sparse transitive reduction. Cases include hierarchical paths, unknown/missing
+  classes, unresolved ENV/PATH wildcard resources, real hardlink identity, and
+  Windows/native versus WSL `/mnt/<drive>` hazard projections. This checks the
+  planner's public effect contract rather than repeating the index implementation.
+- A 24-wave co-start pipeline checks ordering through each completed file snapshot
+  before the next atomic stream group. A separate finite copy must retain an empty
+  predecessor set instead of inheriting a global stream fence.
+- A real piped REPL loads definitions from one script, changes working directory,
+  then loads another script. Dynamic `$file` namespace aliases resolve the latter
+  source unit, while `:= $file::this` retains the first script. Direct REPL input
+  rejects missing source-file context instead of silently reusing the last load.
+
+Two native data/lifetime issues were confirmed and corrected:
+
+1. **Source reset was treated as successful EOF.** A loopback TCP server wrote an
+   incomplete prefix then closed with `SO_LINGER=0`. The stream pump classified
+   `ConnectionReset` as normal source closure and atomically published that prefix
+   over an existing complete file. The regression failed with the old target
+   replaced by the prefix. Only successful source EOF may publish a file stage;
+   source read errors now fail and discard it. The remote Python source helper
+   likewise must not convert reset/abort into exit status zero. Destination-close
+   handling remains a distinct one-way flow outcome.
+2. **A duplicated Windows source handle shared its mutable cursor.** The public
+   file-to-TCP API initially ignored a nonzero source cursor. After correcting its
+   explicit transfer offset, an actual seek-to-31 probe still observed the caller's
+   cursor advance to 32799 during a native attempt that requested fallback. The
+   buffered fallback delivered the correct suffix, so this was not reported as
+   duplicated network data. `File::try_clone` did not isolate the file object.
+   The native backend now opens an independent overlapped file object from the
+   existing handle rather than reopening a pathname, preserving both identity
+   and the caller's cursor through native attempts, fallback and future drop.
+   [ReOpenFile](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-reopenfile)
+   provides the handle-based reopening mechanism and explicit overlapped flags.
+   [TransmitFile's documented offset contract](https://learn.microsoft.com/en-us/windows/win32/api/mswsock/nf-mswsock-transmitfile)
+   is the relevant API boundary.
+
+All five V3 review tests were independently rerun successfully after those fixes.
+The cursor test permits a capability fallback, resumes on the same connection and
+source identity, and checks exact suffix bytes; it does not claim every provider
+or file shape used the native fast path. The Windows backend's separate capability
+test explicitly verifies a completed native transfer before making that claim.
+
+The owned native completion design was also inspected: the blocking worker owns
+its file/socket/event and OVERLAPPED record until that operation's private event
+is drained; dropping the async future requests stop without freeing worker-owned
+memory. A tagged private event suppresses an alien completion packet on Tokio's
+IOCP. Source/file stages must remain owned until Tokio's pending physical file I/O
+has drained, not merely until a future or cancellation token changes state.
+
+Fallback is authorized only by a pre-submission unsupported result. After
+TransmitFile accepts an operation, a failed completion query cannot authorize a
+retry of that request: Microsoft's
+[WSAGetOverlappedResult contract](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-wsagetoverlappedresult)
+does not supply an updated transferred-byte count on failure. The backend now
+fails such an ambiguous completed request instead of risking a duplicated
+socket prefix. An unsupported *next* submission may still resume buffered I/O
+after the exact prefix of earlier confirmed successful requests.
+
+The private completion event is independently owned and valid throughout its
+infinite wait. If that invariant nevertheless fails, returning or panicking
+could release a still-pending stack OVERLAPPED. The narrowly scoped policy is
+fail-stop, not unchecked completion-query fallback or speculative leak machinery;
+ordinary I/O failures and cancellation still follow normal drained error paths.
+
+The final independent rerun also passed all 11 Windows interruption tests,
+including abort after real file writes, existing/new target preservation,
+native file-handle release and write-only named-pipe disconnection. Strict Clippy
+also passes for `review_v3` with warnings denied after the integration settled.
+
+### Follow-up: Unix metadata compatibility and remote commit authorization
+
+The two explicit Unix review regressions were executed on a **private tmpfs
+mounted at the project's `.temp`**, not on DrvFs. The test process ran as UID/GID
+1000 with cleared supplementary groups/capability bounds; its recorded effective
+capability mask was `0000000000000000`. This matters because a root process with
+DAC override cannot establish ordinary write-permission behavior.
+
+- Copying a mode-0755 source over an existing mode-0644 file preserved the new
+  content and final mode 0755. The current finite-copy stage commit does not
+  silently restore the old target's mode.
+- For a mode-0400 existing target in a writable parent directory, an actual
+  non-truncating write-open first returned `PermissionDenied`. Executing the
+  finite copy likewise failed and left the original bytes intact. Thus atomic
+  replacement no longer bypasses the established target write-access contract.
+
+Reproduction setup: use the cached Linux `target/wsl-performance` build with
+`cargo test --offline --test review_v3 --no-run`; enter a private mount namespace,
+make mounts private, mount tmpfs with `size=128m,mode=1777` at `.temp`, then run the
+resulting test binary through
+`setpriv --reuid=1000 --regid=1000 --clear-groups --bounding-set=-all`.
+The exact ignored test names are
+`finite_copy_preserves_source_execute_mode_over_existing_target` and
+`atomic_file_publication_does_not_bypass_an_unwritable_existing_target`.
+Both passed independently.
+
+The exact production remote Python helper was also exercised directly under WSL,
+with its unchanged `path mode capacity` arguments and a 20-second process deadline.
+`remote_file_helper_requires_an_explicit_complete_finish_frame` passed all four
+wire cases: complete DATA followed by raw EOF, truncated DATA, and an oversized
+header all failed without changing the old target; complete DATA plus explicit
+zero-length FINISH published the new bytes. Every helper exit left no unpublished
+stage behind. This is executable evidence for the decoder and commit gate, not
+a claim that ordinary stdin closure authorizes file publication.
+
+The protocol audit also required two distinctions: the commit fence applies only
+to a remote regular-file sink (otherwise a finite producer feeding an unattached
+FIFO becomes uncancellable), and a fully authorized remote commit may have an
+ambiguous acknowledgement after transport loss. Post-FINISH errors must not claim
+that the target was rolled back. The implementation uses typed readiness,
+bounded frames, an explicit commit acknowledgement and a bounded finalization
+deadline rather than treating a disconnected SSH process as proof of rollback.
+
+### Final cache, deferred-kind and pathname-publication audit
+
+The preparation cache is scoped to one plan. Source-sensitive ENV/PATH resolution
+is keyed separately from physical endpoint classification; after resolution,
+the latter can safely deduplicate the same location across operands. Remote
+classification retains ordered, individually framed results, and operand-span
+selection happens after retrieval rather than being cached with a previous
+caller. Offline preparation does not launch a remote client. No substantive
+remaining defect was found in these paths during this review.
+
+A directory-producing predecessor may leave a descendant's pre-execution kind
+unknown. Execution admits that deferred finite case only behind a preceding
+finite write overlapping the resource; it does not globally equate unknown
+metadata with a usable stream. The actual finite executor revalidates the path
+after the dependency completes. The focused scheduler regression executes a real
+directory production followed by its child read, rather than merely checking
+that the planner accepts a graph.
+
+Atomic regular-file publication has an intentional, observable identity contract:
+assignment replaces the **destination pathname binding**, not the contents of
+every other hardlink to its old inode. Other hardlink aliases retain the old
+complete bytes. This differs from the earlier in-place copy implementation and
+must be documented as a migration boundary, not hidden as an optimization.
+Keeping in-place alias mutation would conflict with per-file interrupted-write
+rollback and with queued Linux sendfile references to old source pages.
+Existing same-file source/destination rejection remains in force, and planner
+identity hints remain conservative dependency evidence, not positive rewrite
+proofs.
+
+`publishing_a_file_replaces_its_path_not_other_hardlink_bindings` establishes real
+hardlink identity before copying, then verifies new destination bytes, untouched
+old alias bytes, distinct final identities, unchanged source and absence of leaked
+stage files. On Windows/NTFS, the final focused command
+`cargo test --locked --test review_v3 --test scheduler` passed six review tests
+and all eight scheduler tests. One explicitly ignored WSL helper audit is not
+counted in those six; its separately executed protocol evidence appears above.
+The scheduler set includes actual deferred-child execution, finite-flow shared
+capacity and remote framing-capacity rejection before any connection.

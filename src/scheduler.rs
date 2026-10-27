@@ -17,7 +17,7 @@ pub struct ResourceLimits {
     /// Separate background-flow slots, so idle streams do not occupy copy workers.
     pub max_streams: usize,
     pub buffer_bytes: usize,
-    /// Aggregate application-owned stream buffer capacity, not process RSS.
+    /// Aggregate transfer payload-buffer capacity, not process RSS.
     pub memory_bytes: usize,
 }
 
@@ -70,8 +70,22 @@ pub fn prepare_spanned(
     operands: &[(Span, Span)],
 ) -> Result<Plan, RuntimeError> {
     let mut trace = crate::telemetry::span("prepare");
-    let result = prepare_inner(program, live, operands);
+    let mut observations = Observations::default();
+    let result = prepare_inner(program, live, operands, &mut observations);
     trace.finish_result(&result);
+    trace.metric("inspection.local_probes", observations.local_probes);
+    trace.metric("inspection.remote_paths", observations.remote_paths);
+    trace.metric("inspection.remote_groups", observations.remote_groups);
+    trace.metric("inspection.cache_hits", observations.cache_hits);
+    trace.metric("inspection.leaf_probes", observations.native.leaf_probes);
+    trace.metric(
+        "inspection.ancestor_probes",
+        observations.native.ancestor_probes,
+    );
+    trace.metric(
+        "inspection.ancestor_hits",
+        observations.native.ancestor_hits,
+    );
     result
 }
 
@@ -79,12 +93,33 @@ fn prepare_inner(
     program: &Program,
     live: bool,
     operands: &[(Span, Span)],
+    observations: &mut Observations,
 ) -> Result<Plan, RuntimeError> {
     let mut resolved = program.clone();
     let mut kinds = Vec::with_capacity(resolved.operations.len());
     let mut failures = Vec::new();
+    let mut resolution_errors = Vec::with_capacity(resolved.operations.len());
+    for operation in &mut resolved.operations {
+        let result = observations
+            .resolve(&mut operation.source, true)
+            .map_err(|message| (false, message))
+            .and_then(|()| {
+                observations
+                    .resolve(&mut operation.destination, false)
+                    .map_err(|message| (true, message))
+            });
+        if result.is_ok() {
+            observations.observe(&operation.source, true, live);
+            observations.observe(&operation.destination, false, live);
+        }
+        resolution_errors.push(result.err());
+    }
+    observations.complete();
     for (index, operation) in resolved.operations.iter_mut().enumerate() {
-        let result = inspect_operation(operation, live);
+        let result = match resolution_errors[index].take() {
+            Some(failure) => Err(failure),
+            None => inspect_operation(operation, observations),
+        };
         match result {
             Ok(kind) => kinds.push(kind),
             Err((destination, message)) => {
@@ -138,17 +173,101 @@ fn prepare_inner(
     Ok(plan)
 }
 
-fn inspect_operation(operation: &mut CopyOp, live: bool) -> Result<OperationKinds, (bool, String)> {
-    snapshot_local(&mut operation.source, true).map_err(|message| (false, message))?;
-    snapshot_local(&mut operation.destination, false).map_err(|message| (true, message))?;
-    let inspect = if live {
-        runtime::inspect_location_live
-    } else {
-        runtime::inspect_location
-    };
+#[derive(Default)]
+struct Observations {
+    native: runtime::Inspection,
+    resolved: std::collections::HashMap<
+        (crate::compiler::Location, bool),
+        Result<crate::compiler::Location, String>,
+    >,
+    classes: std::collections::HashMap<crate::compiler::Location, Observation>,
+    remote: std::collections::HashMap<Backend, Vec<crate::compiler::Location>>,
+    local_probes: u64,
+    remote_paths: u64,
+    remote_groups: u64,
+    cache_hits: u64,
+}
+
+enum Observation {
+    Queued,
+    Ready(Result<FileClass, String>),
+}
+
+impl Observations {
+    fn resolve(
+        &mut self,
+        location: &mut crate::compiler::Location,
+        source: bool,
+    ) -> Result<(), String> {
+        let key = (location.clone(), source);
+        if let Some(result) = self.resolved.get(&key) {
+            self.cache_hits += 1;
+            *location = result.clone()?;
+            return Ok(());
+        }
+        let result = snapshot_local(location, source).map(|()| location.clone());
+        self.resolved.insert(key, result.clone());
+        result.map(|_| ())
+    }
+
+    fn observe(&mut self, location: &crate::compiler::Location, source: bool, live: bool) {
+        if self.classes.contains_key(location) {
+            self.cache_hits += 1;
+            return;
+        }
+        let observation = if live && matches!(location.backend, Backend::Wsl | Backend::Ssh { .. })
+        {
+            self.remote
+                .entry(location.backend.clone())
+                .or_default()
+                .push(location.clone());
+            self.remote_paths += 1;
+            Observation::Queued
+        } else {
+            self.local_probes += 1;
+            Observation::Ready(self.native.inspect(location, source))
+        };
+        self.classes.insert(location.clone(), observation);
+    }
+
+    fn complete(&mut self) {
+        let mut groups: Vec<_> = std::mem::take(&mut self.remote).into_iter().collect();
+        groups.sort_by_key(|(backend, _)| backend.to_string());
+        for (backend, locations) in groups {
+            self.remote_groups += 1;
+            let paths: Vec<_> = locations
+                .iter()
+                .map(|location| location.path.clone())
+                .collect();
+            let results = match runtime::inspect_locations_live(&backend, &paths) {
+                Ok(results) => results,
+                Err(message) => vec![Err(message); paths.len()],
+            };
+            for (location, result) in locations.into_iter().zip(results) {
+                self.classes.insert(location, Observation::Ready(result));
+            }
+        }
+    }
+
+    fn class(&self, location: &crate::compiler::Location) -> Result<FileClass, String> {
+        match self.classes.get(location) {
+            Some(Observation::Ready(result)) => result.clone(),
+            _ => Err("metadata observation did not complete; no execution was started".into()),
+        }
+    }
+}
+
+fn inspect_operation(
+    operation: &CopyOp,
+    observations: &Observations,
+) -> Result<OperationKinds, (bool, String)> {
     Ok(OperationKinds {
-        source: inspect(&operation.source, true).map_err(|message| (false, message))?,
-        destination: inspect(&operation.destination, false).map_err(|message| (true, message))?,
+        source: observations
+            .class(&operation.source)
+            .map_err(|message| (false, message))?,
+        destination: observations
+            .class(&operation.destination)
+            .map_err(|message| (true, message))?,
     })
 }
 
@@ -267,11 +386,13 @@ pub async fn execute_plan_async(
 ) -> Result<ExecutionSummary, RuntimeError> {
     let parent = crate::telemetry::context();
     let mut trace = crate::telemetry::linked_span("schedule", parent.as_ref());
+    trace.expect_completion();
     let result = async {
         limits
             .validate()
             .map_err(|message| error(message, first_span(plan)))?;
         validate_graph(plan)?;
+        validate_execution_kinds(plan)?;
         schedule(plan, limits, cancel, trace.context()).await
     }
     .await;
@@ -284,6 +405,31 @@ pub async fn execute_plan_async(
         trace.metric("peak_buffer_bytes", summary.peak_buffer_bytes as u64);
     }
     result
+}
+
+fn validate_execution_kinds(plan: &Plan) -> Result<(), RuntimeError> {
+    for node in &plan.nodes {
+        let produced = |resource: &crate::plan::Resource| {
+            plan.nodes[..node.id].iter().any(|producer| {
+                !matches!(
+                    producer.kinds.destination,
+                    FileClass::Stream | FileClass::Unknown
+                ) && producer
+                    .effects
+                    .writes
+                    .iter()
+                    .any(|write| write.overlaps(resource))
+            })
+        };
+        let source = node.kinds.source != FileClass::Unknown
+            || node.effects.reads.first().is_some_and(produced);
+        let destination = node.kinds.destination != FileClass::Unknown
+            || node.effects.writes.first().is_some_and(produced);
+        if !source || !destination {
+            return Err(error("execution requires inspected endpoint kinds; prepare the program live before executing (offline plans are previews)".into(), node.operation.span));
+        }
+    }
+    Ok(())
 }
 
 fn validate_graph(plan: &Plan) -> Result<(), RuntimeError> {
@@ -437,7 +583,13 @@ impl<'a> Scheduler<'a> {
         }
         let (groups, owners) = execution_groups(plan)?;
         for group in &groups {
-            let stream_count = group.iter().filter(|id| costs[**id] > 0).count();
+            let stream_count = group
+                .iter()
+                .filter(|id| {
+                    let kinds = plan.nodes[**id].kinds;
+                    kinds.source == FileClass::Stream || kinds.destination == FileClass::Stream
+                })
+                .count();
             let bytes = group
                 .iter()
                 .try_fold(0_usize, |total, id| total.checked_add(costs[*id]))
@@ -565,15 +717,12 @@ impl<'a> Scheduler<'a> {
         self.summary.max_active_streams = self.summary.max_active_streams.max(self.streams);
         self.summary.peak_buffer_bytes = self.summary.peak_buffer_bytes.max(self.buffer_bytes);
         let operation = self.plan.nodes[id].operation.clone();
+        let kinds = self.plan.nodes[id].kinds;
         let parent = self.parent.clone();
         let cancel = self.cancel.clone();
         let buffer = self.limits.buffer_bytes;
-        self.tasks.spawn(async move {
-            (
-                id,
-                run_node(operation, stream, buffer, cancel, parent).await,
-            )
-        });
+        self.tasks
+            .spawn(async move { (id, run_node(operation, kinds, buffer, cancel, parent).await) });
     }
 
     fn accept(&mut self, joined: Result<Completion, tokio::task::JoinError>) {
@@ -627,8 +776,8 @@ impl<'a> Scheduler<'a> {
         self.cancel.cancel();
     }
 
-    fn finish(mut self) -> Result<ExecutionSummary, RuntimeError> {
-        if let Some(error) = self.failure {
+    fn finish(&mut self) -> Result<ExecutionSummary, RuntimeError> {
+        if let Some(error) = self.failure.take() {
             return Err(error);
         }
         if self.summary.completed != self.plan.nodes.len() {
@@ -637,12 +786,19 @@ impl<'a> Scheduler<'a> {
                 first_span(self.plan),
             ));
         }
-        for report in self.reports.into_iter().flatten() {
+        for report in self.reports.iter_mut().filter_map(Option::take) {
             self.summary.report.copied_files += report.copied_files;
             self.summary.report.created_directories += report.created_directories;
+            self.summary.report.transferred_bytes += report.transferred_bytes;
             self.summary.report.actions.extend(report.actions);
         }
-        Ok(self.summary)
+        Ok(std::mem::take(&mut self.summary))
+    }
+}
+
+impl Drop for Scheduler<'_> {
+    fn drop(&mut self) {
+        self.cancel.cancel();
     }
 }
 
@@ -651,16 +807,21 @@ fn buffer_cost(
     kinds: OperationKinds,
     limits: &ResourceLimits,
 ) -> Result<usize, RuntimeError> {
-    if kinds.source != FileClass::Stream && kinds.destination != FileClass::Stream {
-        return Ok(0);
-    }
+    let stream = kinds.source == FileClass::Stream || kinds.destination == FileClass::Stream;
     let remote = [&operation.source, &operation.destination]
         .iter()
-        .filter(|location| matches!(location.backend, Backend::Wsl | Backend::Ssh { .. }))
+        .filter(|location| stream && matches!(location.backend, Backend::Wsl | Backend::Ssh { .. }))
         .count();
+    let remote_frame = usize::from(
+        stream
+            && matches!(
+                operation.destination.backend,
+                Backend::Wsl | Backend::Ssh { .. }
+            ),
+    );
     let bytes = limits
         .buffer_bytes
-        .checked_mul(1 + remote)
+        .checked_mul(1 + remote + remote_frame)
         .ok_or_else(|| error("flow buffer reservation overflow".into(), operation.span))?;
     if bytes > limits.memory_bytes {
         return Err(error("memory-limit cannot admit this flow's local and remote buffers; increase --memory-limit or lower --buffer-size".into(), operation.span));
@@ -679,20 +840,39 @@ async fn schedule(
 
 async fn run_node(
     operation: CopyOp,
-    stream: bool,
+    kinds: OperationKinds,
     buffer: usize,
     cancel: CancellationToken,
     parent: Option<crate::telemetry::TraceContext>,
 ) -> Result<(ExecutionReport, u64), RuntimeError> {
     let mut trace = crate::telemetry::linked_span("task", parent.as_ref());
+    trace.expect_completion();
+    trace.attribute_lazy("source.backend", || operation.source.backend.to_string());
+    trace.attribute_lazy("source.path", || operation.source.path.clone());
+    trace.attribute_lazy("destination.backend", || {
+        operation.destination.backend.to_string()
+    });
+    trace.attribute_lazy("destination.path", || operation.destination.path.clone());
+    let requested_cancel = cancel.clone();
+    let stream = kinds.source == FileClass::Stream || kinds.destination == FileClass::Stream;
+    let mut flow_end = None;
     let result = if stream {
-        crate::streams::transfer(&operation, buffer, cancel)
+        crate::io::transfer_known(&operation, kinds, buffer, cancel, trace.context())
             .await
             .map(|flow| {
+                flow_end = Some(flow.end);
                 (
                     ExecutionReport {
+                        copied_files: usize::from(
+                            flow.end == crate::io::FlowEnd::SourceClosed
+                                && !matches!(
+                                    kinds.destination,
+                                    FileClass::Stream | FileClass::Unknown
+                                ),
+                        ),
+                        transferred_bytes: flow.bytes,
                         actions: vec![format!(
-                            "{} -> {} (stream: {} bytes, {:?})",
+                            "{} -> {} (flow: {} bytes, {:?})",
                             operation.source, operation.destination, flow.bytes, flow.end
                         )],
                         ..ExecutionReport::default()
@@ -704,7 +884,9 @@ async fn run_node(
         let context = trace.context();
         let span = operation.span;
         tokio::task::spawn_blocking(move || {
-            crate::telemetry::with_context(context.as_ref(), || runtime::execute_copy(&operation))
+            crate::telemetry::with_context(context.as_ref(), || {
+                runtime::execute_copy_cancellable(&operation, buffer, cancel)
+            })
         })
         .await
         .map_err(|failure| error(format!("copy worker failed: {failure}"), span))
@@ -712,6 +894,17 @@ async fn run_node(
         .map(|report| (report, 0))
     };
     trace.finish_result(&result);
+    if flow_end == Some(crate::io::FlowEnd::Cancelled)
+        || (requested_cancel.is_cancelled() && result.is_err())
+    {
+        trace.cancelled();
+    }
+    if let Err(failure) = &result {
+        trace.record_error("execute", failure);
+    }
+    if let Ok((report, bytes)) = &result {
+        trace.metric("bytes.transferred", report.transferred_bytes.max(*bytes));
+    }
     result
 }
 

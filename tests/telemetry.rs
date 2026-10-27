@@ -5,10 +5,19 @@ use msync::telemetry;
 
 static SESSION_LOCK: Mutex<()> = Mutex::new(());
 
+fn workspace() -> tempfile::TempDir {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+    fs::create_dir_all(&root).unwrap();
+    tempfile::Builder::new()
+        .prefix("telemetry-")
+        .tempdir_in(root)
+        .unwrap()
+}
+
 #[test]
 fn public_api_traces_local_file_with_parent_ids_and_can_be_disabled() {
     let _exclusive = SESSION_LOCK.lock().unwrap();
-    let directory = tempfile::tempdir().unwrap();
+    let directory = workspace();
     let destination = directory.path().join("trace.jsonl");
     let path = destination.to_str().unwrap();
 
@@ -20,6 +29,10 @@ fn public_api_traces_local_file_with_parent_ids_and_can_be_disabled() {
     {
         let mut root = telemetry::span("run");
         root.metric("operations", 1);
+        root.attribute(
+            "source.path",
+            directory.path().join("config.toml").to_string_lossy(),
+        );
         {
             let mut parse = telemetry::span("parse");
             parse.finish_result(&Ok::<(), ()>(()));
@@ -34,6 +47,8 @@ fn public_api_traces_local_file_with_parent_ids_and_can_be_disabled() {
     assert!(telemetry::take_error().is_none());
     let first = fs::read_to_string(&destination).unwrap();
     assert_eq!(first.lines().count(), 3);
+    assert!(first.contains("source.path"));
+    assert!(first.contains("config.toml"));
     assert!(!first.contains("private source"));
     assert!(first.contains("\"name\":\"parse\""));
     assert!(first.contains("\"name\":\"compile\""));
@@ -64,7 +79,7 @@ fn field<'a>(record: &'a str, name: &str) -> &'a str {
 #[test]
 fn concurrent_async_tasks_and_blocking_workers_form_one_rooted_trace() {
     let _exclusive = SESSION_LOCK.lock().unwrap();
-    let directory = tempfile::tempdir().unwrap();
+    let directory = workspace();
     let destination = directory.path().join("async.jsonl");
     telemetry::init(destination.to_str().unwrap()).unwrap();
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -155,7 +170,7 @@ fn concurrent_async_tasks_and_blocking_workers_form_one_rooted_trace() {
 #[test]
 fn retained_context_keeps_its_sink_after_reconfiguration_and_disable() {
     let _exclusive = SESSION_LOCK.lock().unwrap();
-    let directory = tempfile::tempdir().unwrap();
+    let directory = workspace();
     let original = directory.path().join("original.jsonl");
     let replacement = directory.path().join("replacement.jsonl");
     telemetry::init(original.to_str().unwrap()).unwrap();
@@ -189,4 +204,143 @@ fn retained_context_keeps_its_sink_after_reconfiguration_and_disable() {
     }
     assert_ne!(field(next.lines().next().unwrap(), "trace_id"), trace);
     assert!(telemetry::context().is_none());
+}
+
+#[test]
+fn aborting_open_async_operation_is_incomplete_cancellation_not_success() {
+    let _exclusive = SESSION_LOCK.lock().unwrap();
+    let directory = workspace();
+    let destination = directory.path().join("abort.jsonl");
+    let source = directory.path().join("source.txt");
+    fs::write(&source, "payload must not be traced automatically").unwrap();
+    telemetry::init(destination.to_str().unwrap()).unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    {
+        let mut root = telemetry::span("schedule");
+        let parent = root.context();
+        runtime.block_on(async move {
+            let (opened, ready) = tokio::sync::oneshot::channel();
+            let operation = tokio::spawn(async move {
+                let mut task = telemetry::linked_span("task", parent.as_ref());
+                task.expect_completion();
+                task.attribute_lazy("source.path", || source.to_string_lossy().into_owned());
+                let _source = tokio::fs::File::open(&source).await.unwrap();
+                task.event("open", &[("phase", "open"), ("endpoint", "source")], &[]);
+                opened.send(()).unwrap();
+                std::future::pending::<()>().await;
+                task.finish_result(&Ok::<(), ()>(()));
+            });
+            ready.await.unwrap();
+            operation.abort();
+            assert!(operation.await.unwrap_err().is_cancelled());
+        });
+        root.cancelled();
+    }
+    telemetry::disable().unwrap();
+    let output = fs::read_to_string(destination).unwrap();
+    assert!(!output.contains("payload must not"));
+    assert!(output.contains("source.txt"));
+    let records: Vec<&str> = output.lines().collect();
+    assert_eq!(records.len(), 3);
+    let event = records
+        .iter()
+        .find(|line| field(line, "kind") == "event")
+        .unwrap();
+    let task = records
+        .iter()
+        .find(|line| field(line, "name") == "task")
+        .unwrap();
+    let root = records
+        .iter()
+        .find(|line| field(line, "name") == "schedule")
+        .unwrap();
+    assert_eq!(field(event, "span_id"), field(task, "span_id"));
+    assert_eq!(field(event, "trace_id"), field(root, "trace_id"));
+    assert_eq!(field(task, "parent_span_id"), field(root, "span_id"));
+    assert_eq!(field(task, "status"), "cancelled");
+    assert_eq!(field(task, "completion"), "incomplete");
+    assert_eq!(field(root, "status"), "cancelled");
+    assert_eq!(field(root, "completion"), "cancelled");
+}
+
+#[test]
+fn real_file_publication_trace_has_operation_paths_stages_and_committed_bytes() {
+    use msync::compiler::{Backend, CopyOp, Location, Program};
+    use msync::scheduler::{ResourceLimits, execute_plan, prepare};
+    use msync::syntax::Span;
+
+    let _exclusive = SESSION_LOCK.lock().unwrap();
+    let directory = workspace();
+    let trace_path = directory.path().join("copy.jsonl");
+    let source = directory.path().join("input.txt");
+    let destination = directory.path().join("output.txt");
+    let payload = b"file contents must not become telemetry metadata";
+    fs::write(&source, payload).unwrap();
+    fs::write(&destination, "old target").unwrap();
+    let program = Program {
+        operations: vec![CopyOp {
+            source: Location {
+                backend: Backend::Local,
+                path: source.to_string_lossy().into_owned(),
+            },
+            destination: Location {
+                backend: Backend::Local,
+                path: destination.to_string_lossy().into_owned(),
+            },
+            pattern: None,
+            span: Span { start: 0, end: 1 },
+        }],
+    };
+    telemetry::init(trace_path.to_str().unwrap()).unwrap();
+    {
+        let mut root = telemetry::span("run");
+        let plan = prepare(&program, true).unwrap();
+        let result = execute_plan(&plan, &ResourceLimits::default());
+        root.finish_result(&result);
+        assert_eq!(
+            result.unwrap().report.transferred_bytes,
+            payload.len() as u64
+        );
+    }
+    telemetry::disable().unwrap();
+    assert_eq!(fs::read(destination).unwrap(), payload);
+    let output = fs::read_to_string(trace_path).unwrap();
+    assert!(output.contains("input.txt"));
+    assert!(output.contains("output.txt"));
+    assert!(!output.contains(std::str::from_utf8(payload).unwrap()));
+    let records: Vec<&str> = output.lines().collect();
+    let spans: std::collections::BTreeMap<&str, &str> = records
+        .iter()
+        .filter(|record| field(record, "kind") == "span")
+        .map(|record| (field(record, "span_id"), *record))
+        .collect();
+    let roots: Vec<&&str> = spans
+        .values()
+        .filter(|record| field(record, "parent_span_id") == "null")
+        .collect();
+    assert_eq!(roots.len(), 1);
+    let root = *roots[0];
+    for record in &records {
+        assert_eq!(field(record, "trace_id"), field(root, "trace_id"));
+        assert!(spans.contains_key(field(record, "span_id")));
+        if field(record, "kind") == "span" {
+            let parent = field(record, "parent_span_id");
+            assert!(parent == "null" || spans.contains_key(parent));
+            assert_eq!(field(record, "status"), "ok");
+        }
+    }
+    for phase in ["file.open", "file.transfer", "file.commit"] {
+        let event = records
+            .iter()
+            .find(|record| field(record, "kind") == "event" && field(record, "name") == phase)
+            .unwrap_or_else(|| panic!("missing lifecycle event {phase}"));
+        assert_eq!(field(spans[field(event, "span_id")], "name"), "file_flow");
+        if phase == "file.commit" {
+            assert_eq!(field(event, "bytes.committed"), payload.len().to_string());
+        }
+    }
 }

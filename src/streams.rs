@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::pin::Pin;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(unix)]
 use std::task::{Context, Poll};
@@ -16,18 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::compiler::{Backend, CopyOp, Location};
 use crate::runtime::RuntimeError;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StreamEnd {
-    SourceClosed,
-    DestinationClosed,
-    Cancelled,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct StreamReport {
-    pub bytes: u64,
-    pub end: StreamEnd,
-}
+pub use crate::io::{FlowEnd as StreamEnd, FlowReport as StreamReport};
 
 type Reader = Box<dyn AsyncRead + Unpin + Send>;
 type Writer = Box<dyn AsyncWrite + Unpin + Send>;
@@ -36,13 +26,16 @@ struct Opened<T> {
     io: T,
     process: Option<RemoteProcess>,
     close: Option<CloseWatch>,
+    file: Option<crate::io::FileFinish>,
 }
 
 enum CloseWatch {
     Reader(Reader),
     #[cfg(windows)]
     NamedPipe(std::os::windows::io::OwnedHandle),
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
+    FifoReady(tokio::io::unix::AsyncFd<fs::File>),
+    #[cfg(all(unix, not(target_os = "linux")))]
     Fifo(fs::File),
 }
 
@@ -52,6 +45,7 @@ impl<T> Opened<T> {
             io,
             process: None,
             close: None,
+            file: None,
         }
     }
 }
@@ -70,12 +64,6 @@ enum Endpoint {
     Socket(PathBuf),
 }
 
-impl Endpoint {
-    fn is_stream(&self) -> bool {
-        !matches!(self, Self::File(_) | Self::Http(_))
-    }
-}
-
 /// Transfers one bounded-buffer flow. Cancelling drops its endpoint handles.
 /// No telemetry guard is held across an await: task context belongs to the scheduler.
 pub async fn transfer(
@@ -83,7 +71,30 @@ pub async fn transfer(
     buffer_bytes: usize,
     cancel: CancellationToken,
 ) -> Result<StreamReport, RuntimeError> {
-    let result = transfer_inner(operation, buffer_bytes, &cancel).await;
+    transfer_with_context(operation, buffer_bytes, cancel, crate::telemetry::context()).await
+}
+
+pub async fn transfer_with_context(
+    operation: &CopyOp,
+    buffer_bytes: usize,
+    cancel: CancellationToken,
+    context: Option<crate::telemetry::TraceContext>,
+) -> Result<StreamReport, RuntimeError> {
+    let mut trace = crate::telemetry::linked_span("io.flow", context.as_ref());
+    trace.expect_completion();
+    trace.attribute_lazy("source", || operation.source.to_string());
+    trace.attribute_lazy("destination", || operation.destination.to_string());
+    let result = transfer_inner(operation, buffer_bytes, &cancel, trace.context()).await;
+    if let Ok(report) = &result {
+        trace.metric("bytes", report.bytes);
+        if report.end == StreamEnd::Cancelled {
+            trace.cancelled();
+        } else {
+            trace.finish_result(&result);
+        }
+    } else {
+        trace.finish_result(&result);
+    }
     result.map_err(|message| RuntimeError {
         message,
         span: operation.span,
@@ -94,6 +105,7 @@ async fn transfer_inner(
     operation: &CopyOp,
     buffer_bytes: usize,
     cancel: &CancellationToken,
+    context: Option<crate::telemetry::TraceContext>,
 ) -> Result<StreamReport, String> {
     if buffer_bytes == 0 {
         return Err("stream buffer size must be greater than zero".into());
@@ -104,20 +116,92 @@ async fn transfer_inner(
     let source = endpoint(&operation.source, true)?;
     let (destination_location, no_clobber) = destination_location(operation)?;
     let destination = endpoint(&destination_location, false)?;
-    if !source.is_stream() && !destination.is_stream() {
-        return Err("stream transfer requires a pipe or socket endpoint".into());
+    if let (Endpoint::File(source), Endpoint::File(destination)) = (&source, &destination)
+        && destination.exists()
+        && same_file::is_same_file(source, destination).map_err(|error| error.to_string())?
+    {
+        return Err("source and destination refer to the same file".into());
+    }
+    if let (Endpoint::File(path), Endpoint::Tcp(host, port)) = (&source, &destination) {
+        return transfer_file_to_tcp(path, host, *port, buffer_bytes, cancel, context).await;
     }
     let source = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Ok(report(0, StreamEnd::Cancelled)),
-        source = open_reader(source, buffer_bytes) => source.map_err(|error| format!("cannot open stream source: {error}"))?,
+        source = open_reader(source, buffer_bytes, context.clone()) => source.map_err(|error| {
+            if let Some(context) = &context { context.io_error("open.source", &error); }
+            format!("cannot open stream source: {error}")
+        })?,
     };
     let destination = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Ok(report(0, StreamEnd::Cancelled)),
-        destination = open_writer(destination, no_clobber, buffer_bytes) => destination.map_err(|error| format!("cannot open stream destination: {error}"))?,
+        destination = open_writer(destination, no_clobber, buffer_bytes, context.clone()) => destination.map_err(|error| {
+            if let Some(context) = &context { context.io_error("open.destination", &error); }
+            format!("cannot open stream destination: {error}")
+        })?,
     };
-    pump(source, destination, buffer_bytes, cancel).await
+    run_opened(source, destination, buffer_bytes, cancel, context).await
+}
+
+async fn transfer_file_to_tcp(
+    path: &Path,
+    host: &str,
+    port: u16,
+    buffer_bytes: usize,
+    cancel: &CancellationToken,
+    context: Option<crate::telemetry::TraceContext>,
+) -> Result<StreamReport, String> {
+    use std::io::{Seek, SeekFrom};
+    let path = path.to_owned();
+    let mut file = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return Ok(report(0, StreamEnd::Cancelled)),
+        opened = tokio::task::spawn_blocking(move || fs::File::open(path)) => opened.map_err(|error| error.to_string())?.map_err(|error| error.to_string())?,
+    };
+    let socket = tokio::select! {
+        biased;
+        () = cancel.cancelled() => return Ok(report(0, StreamEnd::Cancelled)),
+        connected = tokio::net::TcpStream::connect((host, port)) => connected.map_err(|error| error.to_string())?,
+    };
+    // The source was opened here, so its initial cursor is known without a seek.
+    let initial = 0;
+    let progress = if crate::io::prefer_kernel_file_to_tcp(&file, initial)
+        .map_err(|error| error.to_string())?
+    {
+        crate::io::file_to_tcp_with_context(&file, &socket, buffer_bytes, cancel, context.clone())
+            .await
+            .map_err(|error| error.to_string())?
+    } else {
+        crate::io::KernelProgress {
+            bytes: 0,
+            end: None,
+        }
+    };
+    if let Some(end) = progress.end {
+        return Ok(report(progress.bytes, end));
+    }
+    file.seek(SeekFrom::Start(initial.saturating_add(progress.bytes)))
+        .map_err(|error| error.to_string())?;
+    let mut file = tokio::fs::File::from_std(file);
+    file.set_max_buf_size(buffer_bytes);
+    let (file, completion) = crate::io::managed_file(file, None);
+    let source: Opened<Reader> = Opened {
+        io: Box::new(file),
+        process: None,
+        close: None,
+        file: Some(completion),
+    };
+    let (reader, writer) = socket.into_split();
+    let destination = Opened {
+        io: Box::new(writer) as Writer,
+        process: None,
+        close: Some(CloseWatch::Reader(Box::new(reader))),
+        file: None,
+    };
+    let mut result = run_opened(source, destination, buffer_bytes, cancel, context).await?;
+    result.bytes = result.bytes.saturating_add(progress.bytes);
+    Ok(result)
 }
 
 fn report(bytes: u64, end: StreamEnd) -> StreamReport {
@@ -223,10 +307,25 @@ pub fn is_named_pipe_path(path: &str) -> bool {
     normalized.to_ascii_lowercase().starts_with(r"\\.\pipe\")
 }
 
-async fn open_reader(endpoint: Endpoint, buffer_bytes: usize) -> io::Result<Opened<Reader>> {
+async fn open_reader(
+    endpoint: Endpoint,
+    buffer_bytes: usize,
+    context: Option<crate::telemetry::TraceContext>,
+) -> io::Result<Opened<Reader>> {
+    if let Endpoint::File(path) = endpoint {
+        let mut file = tokio::fs::File::open(path).await?;
+        file.set_max_buf_size(buffer_bytes);
+        let (file, completion) = crate::io::managed_file(file, None);
+        return Ok(Opened {
+            io: Box::new(file),
+            process: None,
+            close: None,
+            file: Some(completion),
+        });
+    }
     if let Endpoint::Http(location) = endpoint {
         let command = crate::runtime::http_command_builder(&location).map_err(io::Error::other)?;
-        let mut process = RemoteProcess::capture(command)?;
+        let mut process = RemoteProcess::capture(command, context)?;
         let io: Reader = Box::new(
             process
                 .child
@@ -238,10 +337,11 @@ async fn open_reader(endpoint: Endpoint, buffer_bytes: usize) -> io::Result<Open
             io,
             process: Some(process),
             close: None,
+            file: None,
         });
     }
     if let Endpoint::Remote(location) = endpoint {
-        let mut process = RemoteProcess::open(&location, "r", buffer_bytes).await?;
+        let mut process = RemoteProcess::open(&location, "r", buffer_bytes, context).await?;
         let io: Reader = Box::new(
             process
                 .child
@@ -253,6 +353,7 @@ async fn open_reader(endpoint: Endpoint, buffer_bytes: usize) -> io::Result<Open
             io,
             process: Some(process),
             close: None,
+            file: None,
         });
     }
     open_native_reader(endpoint, buffer_bytes)
@@ -269,8 +370,7 @@ async fn open_native_reader(endpoint: Endpoint, buffer_bytes: usize) -> io::Resu
         }
         Endpoint::Tcp(host, port) => {
             let stream = tokio::net::TcpStream::connect((host.as_str(), port)).await?;
-            let (reader, _) = stream.into_split();
-            Ok(Box::new(reader))
+            Ok(Box::new(stream))
         }
         Endpoint::Remote(_) | Endpoint::Http(_) => {
             unreachable!("child reader is handled before native dispatch")
@@ -282,8 +382,7 @@ async fn open_native_reader(endpoint: Endpoint, buffer_bytes: usize) -> io::Resu
         #[cfg(unix)]
         Endpoint::Socket(path) => {
             let stream = tokio::net::UnixStream::connect(path).await?;
-            let (reader, _) = stream.into_split();
-            Ok(Box::new(reader))
+            Ok(Box::new(stream))
         }
     }
 }
@@ -292,7 +391,35 @@ async fn open_writer(
     endpoint: Endpoint,
     no_clobber: bool,
     buffer_bytes: usize,
+    context: Option<crate::telemetry::TraceContext>,
 ) -> io::Result<Opened<Writer>> {
+    if let Endpoint::File(path) = endpoint {
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let stage = tokio::task::spawn_blocking(move || {
+            let stage = crate::io::StagedFile::new_with_context(&path, no_clobber, context)?;
+            stage.preserve_target_permissions()?;
+            Ok::<_, io::Error>(stage)
+        })
+        .await
+        .map_err(io::Error::other)??;
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(stage.path())
+            .await?;
+        file.set_max_buf_size(buffer_bytes);
+        let (file, completion) = crate::io::managed_file(file, Some(stage));
+        return Ok(Opened {
+            io: Box::new(file),
+            process: None,
+            close: None,
+            file: Some(completion),
+        });
+    }
     if let Endpoint::Tcp(host, port) = endpoint {
         let stream = tokio::net::TcpStream::connect((host.as_str(), port)).await?;
         let (reader, writer) = stream.into_split();
@@ -300,6 +427,7 @@ async fn open_writer(
             io: Box::new(writer),
             process: None,
             close: Some(CloseWatch::Reader(Box::new(reader))),
+            file: None,
         });
     }
     #[cfg(unix)]
@@ -310,6 +438,7 @@ async fn open_writer(
             io: Box::new(writer),
             process: None,
             close: Some(CloseWatch::Reader(Box::new(reader))),
+            file: None,
         });
     }
     #[cfg(windows)]
@@ -321,6 +450,7 @@ async fn open_writer(
             io: Box::new(client),
             process: None,
             close: Some(CloseWatch::NamedPipe(watch)),
+            file: None,
         });
     }
     #[cfg(unix)]
@@ -332,7 +462,8 @@ async fn open_writer(
                     return Ok(Opened {
                         io: Box::new(writer),
                         process: None,
-                        close: Some(CloseWatch::Fifo(watch)),
+                        close: Some(fifo_watch(watch)?),
+                        file: None,
                     });
                 }
                 Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
@@ -343,20 +474,27 @@ async fn open_writer(
         }
     }
     if let Endpoint::Remote(location) = endpoint {
-        let mut process =
-            RemoteProcess::open(&location, if no_clobber { "x" } else { "w" }, buffer_bytes)
-                .await?;
-        let io: Writer = Box::new(
-            process
-                .child
-                .stdin
-                .take()
-                .ok_or_else(|| io::Error::other("remote stdin is unavailable"))?,
-        );
+        let mut process = RemoteProcess::open(
+            &location,
+            if no_clobber { "x" } else { "w" },
+            buffer_bytes,
+            context.clone(),
+        )
+        .await?;
+        let input = process
+            .child
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other("remote stdin is unavailable"))?;
+        let fence = process
+            .file_output()
+            .then(|| Arc::clone(&process.commit_requested));
+        let io: Writer = Box::new(FrameWriter::new(input, buffer_bytes, fence, context));
         return Ok(Opened {
             io,
             process: Some(process),
             close: None,
+            file: None,
         });
     }
     open_native_writer(endpoint, no_clobber, buffer_bytes)
@@ -438,90 +576,278 @@ async fn open_named_pipe(
 }
 
 async fn pump(
-    mut source: Opened<Reader>,
-    mut destination: Opened<Writer>,
+    source: &mut Opened<Reader>,
+    destination: &mut Opened<Writer>,
+    buffer_bytes: usize,
+    cancel: &CancellationToken,
+    context: Option<&crate::telemetry::TraceContext>,
+) -> Result<StreamReport, String> {
+    let framed = destination
+        .process
+        .as_ref()
+        .is_some_and(|process| process.writer);
+    let flow = relay_bytes(
+        Relay {
+            source: &mut source.io,
+            destination: &mut destination.io,
+            process: &mut destination.process,
+            watcher: &mut destination.close,
+            framed,
+            context,
+        },
+        buffer_bytes,
+        cancel,
+    )
+    .await?;
+    match flow.end {
+        StreamEnd::SourceClosed => {
+            if !wait_process(&mut source.process, cancel).await? {
+                return Ok(report(flow.bytes, StreamEnd::Cancelled));
+            }
+            finish(destination, flow.bytes, cancel).await
+        }
+        StreamEnd::DestinationClosed => {
+            if !wait_process(&mut destination.process, cancel).await? {
+                return Ok(report(flow.bytes, StreamEnd::Cancelled));
+            }
+            Ok(flow)
+        }
+        StreamEnd::Cancelled => Ok(flow),
+    }
+}
+
+struct Relay<'a> {
+    source: &'a mut Reader,
+    destination: &'a mut Writer,
+    process: &'a mut Option<RemoteProcess>,
+    watcher: &'a mut Option<CloseWatch>,
+    framed: bool,
+    context: Option<&'a crate::telemetry::TraceContext>,
+}
+
+async fn relay_bytes(
+    relay: Relay<'_>,
     buffer_bytes: usize,
     cancel: &CancellationToken,
 ) -> Result<StreamReport, String> {
+    let Relay {
+        source,
+        destination,
+        process,
+        watcher,
+        framed,
+        context,
+    } = relay;
     let mut buffer = vec![0_u8; buffer_bytes];
     let mut bytes = 0_u64;
+    let watch = process.is_some() || watcher.is_some();
+    // Keep this future alive across chunks. Recreating it would restart the
+    // named-pipe timer and query kernel state on every buffered read.
+    let closing = destination_exit(process, watcher);
+    tokio::pin!(closing);
     loop {
         let read = tokio::select! {
             biased;
-            _ = cancel.cancelled() => return Ok(report(bytes, StreamEnd::Cancelled)),
-            result = destination_exit(&mut destination.process, &mut destination.close), if destination.process.is_some() || destination.close.is_some() => {
-                result?;
-                return Ok(report(bytes, StreamEnd::DestinationClosed));
-            }
-            result = source.io.read(&mut buffer) => result,
+            () = cancel.cancelled() => return Ok(report(bytes, StreamEnd::Cancelled)),
+            result = &mut closing, if watch => { result?; return Ok(report(bytes, StreamEnd::DestinationClosed)); }
+            result = source.read(&mut buffer) => result,
         };
         let count = match read {
-            Ok(0) => {
-                if !wait_process(&mut source.process, cancel).await? {
-                    return Ok(report(bytes, StreamEnd::Cancelled));
-                }
-                return finish(destination, bytes, cancel).await;
-            }
+            Ok(0) => return Ok(report(bytes, StreamEnd::SourceClosed)),
             Ok(count) => count,
-            Err(error) if disconnected(&error) => {
-                if !wait_process(&mut source.process, cancel).await? {
-                    return Ok(report(bytes, StreamEnd::Cancelled));
+            Err(error) => {
+                if let Some(context) = context {
+                    context.io_error("read.source", &error);
+                    context.event(
+                        "flow.failed",
+                        &[("stage", "read.source")],
+                        &[("bytes.accepted", bytes)],
+                    );
                 }
-                return finish(destination, bytes, cancel).await;
+                return Err(format!(
+                    "cannot read stream source after {bytes} bytes: {error}"
+                ));
             }
-            Err(error) => return Err(format!("cannot read stream source: {error}")),
         };
         let mut offset = 0;
         while offset < count {
             let write = tokio::select! {
                 biased;
-                _ = cancel.cancelled() => return Ok(report(bytes, StreamEnd::Cancelled)),
-                result = destination.io.write(&buffer[offset..count]) => result,
+                () = cancel.cancelled() => return Ok(report(bytes, StreamEnd::Cancelled)),
+                result = &mut closing, if watch => { result?; return Ok(report(bytes, StreamEnd::DestinationClosed)); }
+                result = destination.write(&buffer[offset..count]) => result,
             };
             match write {
-                Ok(0) => {
-                    wait_process(&mut destination.process, cancel).await?;
-                    return Ok(report(bytes, StreamEnd::DestinationClosed));
-                }
+                Ok(0) => return Ok(report(bytes, StreamEnd::DestinationClosed)),
                 Ok(written) => {
                     offset += written;
                     bytes += written as u64;
                 }
                 Err(error) if disconnected(&error) => {
-                    wait_process(&mut destination.process, cancel).await?;
                     return Ok(report(bytes, StreamEnd::DestinationClosed));
                 }
-                Err(error) => return Err(format!("cannot write stream destination: {error}")),
+                Err(error) => {
+                    if let Some(context) = context {
+                        context.io_error("write.destination", &error);
+                        context.event(
+                            "flow.failed",
+                            &[("stage", "write.destination")],
+                            &[("bytes.accepted", bytes)],
+                        );
+                    }
+                    return Err(format!(
+                        "cannot write stream destination after {bytes} bytes: {error}"
+                    ));
+                }
+            }
+        }
+        if framed {
+            let flushed = tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Ok(report(bytes, StreamEnd::Cancelled)),
+                result = &mut closing, if watch => { result?; return Ok(report(bytes, StreamEnd::DestinationClosed)); }
+                result = destination.flush() => result,
+            };
+            if let Err(error) = flushed {
+                if disconnected(&error) {
+                    return Ok(report(bytes, StreamEnd::DestinationClosed));
+                }
+                if let Some(context) = context {
+                    context.io_error("write.frame", &error);
+                }
+                return Err(format!(
+                    "cannot flush remote DATA frame after {bytes} bytes: {error}"
+                ));
             }
         }
     }
 }
+async fn run_opened(
+    mut source: Opened<Reader>,
+    mut destination: Opened<Writer>,
+    buffer_bytes: usize,
+    cancel: &CancellationToken,
+    context: Option<crate::telemetry::TraceContext>,
+) -> Result<StreamReport, String> {
+    let mut result = pump(
+        &mut source,
+        &mut destination,
+        buffer_bytes,
+        cancel,
+        context.as_ref(),
+    )
+    .await;
+    source.io = Box::new(tokio::io::empty());
+    destination.io = Box::new(tokio::io::sink());
+    if let Some(completion) = source.file.take()
+        && let Err(error) = completion.finish(false, cancel).await
+    {
+        result = Err(format!("cannot finish source file I/O: {error}"));
+    }
+    if cancel.is_cancelled()
+        && !destination
+            .process
+            .as_ref()
+            .is_some_and(RemoteProcess::commit_requested)
+        && let Ok(flow) = &mut result
+    {
+        flow.end = StreamEnd::Cancelled;
+    }
+    if let Some(completion) = destination.file.take() {
+        let commit = matches!(&result, Ok(flow) if flow.end == StreamEnd::SourceClosed);
+        match completion.finish(commit, cancel).await {
+            Ok(false) if commit && cancel.is_cancelled() => {
+                if let Ok(flow) = &mut result {
+                    flow.end = StreamEnd::Cancelled;
+                }
+            }
+            Ok(_) => {}
+            Err(error) => result = Err(format!("cannot publish destination file: {error}")),
+        }
+    }
+    result
+}
 
 async fn finish(
-    mut destination: Opened<Writer>,
+    destination: &mut Opened<Writer>,
     bytes: u64,
     cancel: &CancellationToken,
 ) -> Result<StreamReport, String> {
+    let deadline = destination
+        .process
+        .as_ref()
+        .is_some_and(RemoteProcess::file_output)
+        .then(|| tokio::time::Instant::now() + std::time::Duration::from_secs(30));
     let result = tokio::select! {
         biased;
-        _ = cancel.cancelled() => return Ok(report(bytes, StreamEnd::Cancelled)),
-        result = async { destination.io.flush().await?; destination.io.shutdown().await } => result,
+        _ = cancel.cancelled() => {
+            if destination.process.as_ref().is_some_and(RemoteProcess::commit_requested) {
+                shutdown_output(&mut destination.io, deadline).await
+            } else { return Ok(report(bytes, StreamEnd::Cancelled)); }
+        },
+        result = shutdown_output(&mut destination.io, deadline) => result,
     };
     match result {
         Ok(()) => {
             destination.io = Box::new(tokio::io::sink());
-            let end = if wait_process(&mut destination.process, cancel).await? {
+            let completed = if destination
+                .process
+                .as_ref()
+                .is_some_and(RemoteProcess::commit_requested)
+            {
+                let process = destination
+                    .process
+                    .as_mut()
+                    .expect("commit fence belongs to a remote process");
+                process
+                    .wait_commit(deadline.expect("commit fence is only used for a remote file"))
+                    .await?;
+                true
+            } else {
+                wait_process(&mut destination.process, cancel).await?
+            };
+            let end = if completed {
                 StreamEnd::SourceClosed
             } else {
                 StreamEnd::Cancelled
             };
             Ok(report(bytes, end))
         }
+        Err(error)
+            if destination
+                .process
+                .as_ref()
+                .is_some_and(RemoteProcess::commit_requested) =>
+        {
+            let process = destination
+                .process
+                .as_mut()
+                .expect("commit intent owns a process");
+            process
+                .wait_commit(deadline.expect("commit intent owns a deadline"))
+                .await
+                .map_err(|outcome| format!("{outcome}; destination shutdown failed: {error}"))?;
+            Ok(report(bytes, StreamEnd::SourceClosed))
+        }
         Err(error) if disconnected(&error) => {
             wait_process(&mut destination.process, cancel).await?;
             Ok(report(bytes, StreamEnd::DestinationClosed))
         }
         Err(error) => Err(format!("cannot finish stream destination: {error}")),
+    }
+}
+
+async fn shutdown_output(
+    destination: &mut Writer,
+    deadline: Option<tokio::time::Instant>,
+) -> io::Result<()> {
+    let shutdown = async {
+        destination.flush().await?;
+        destination.shutdown().await
+    };
+    match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline, shutdown).await.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "remote commit outcome unknown after finalization deadline; inspect destination before retrying"))?,
+        None => shutdown.await,
     }
 }
 
@@ -554,7 +880,18 @@ async fn destination_exit(
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             },
-            #[cfg(unix)]
+            #[cfg(target_os = "linux")]
+            Some(CloseWatch::FifoReady(descriptor)) => loop {
+                let mut ready = descriptor
+                    .ready(tokio::io::Interest::ERROR)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if ready.ready().is_error() {
+                    return Ok(());
+                }
+                ready.clear_ready();
+            },
+            #[cfg(all(unix, not(target_os = "linux")))]
             Some(CloseWatch::Fifo(file)) => loop {
                 if fifo_closed(file)
                     .map_err(|error| format!("cannot inspect FIFO closure: {error}"))?
@@ -624,6 +961,24 @@ fn named_pipe_closed(handle: &std::os::windows::io::OwnedHandle) -> io::Result<b
 }
 
 #[cfg(unix)]
+fn fifo_watch(file: fs::File) -> io::Result<CloseWatch> {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: The owned nonblocking descriptor stays private and stable until
+        // this AsyncFd drops. EPOLLERR reports a FIFO's last reader disconnect.
+        let descriptor = unsafe {
+            tokio::io::unix::AsyncFd::register_with_interest(file, tokio::io::Interest::ERROR)
+        }
+        .map_err(io::Error::from)?;
+        Ok(CloseWatch::FifoReady(descriptor))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(CloseWatch::Fifo(file))
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
 fn fifo_closed(file: &fs::File) -> io::Result<bool> {
     use std::os::fd::AsRawFd;
     let mut event = libc::pollfd {
@@ -643,10 +998,128 @@ struct RemoteProcess {
     child: tokio::process::Child,
     stderr: Arc<Mutex<Vec<u8>>>,
     drain: tokio::task::JoinHandle<()>,
+    kind: RemoteKind,
+    writer: bool,
+    commit_requested: Arc<AtomicBool>,
+    committed: Arc<AtomicBool>,
+    context: Option<crate::telemetry::TraceContext>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RemoteKind {
+    File,
+    Stream,
+}
+
+struct FrameWriter {
+    input: tokio::process::ChildStdin,
+    frame: Vec<u8>,
+    offset: usize,
+    capacity: usize,
+    finishing: bool,
+    fence: Option<Arc<AtomicBool>>,
+    context: Option<crate::telemetry::TraceContext>,
+    accepted: u64,
+}
+
+impl FrameWriter {
+    fn new(
+        input: tokio::process::ChildStdin,
+        capacity: usize,
+        fence: Option<Arc<AtomicBool>>,
+        context: Option<crate::telemetry::TraceContext>,
+    ) -> Self {
+        Self {
+            input,
+            frame: Vec::with_capacity(capacity.saturating_add(8)),
+            offset: 0,
+            capacity,
+            finishing: false,
+            fence,
+            context,
+            accepted: 0,
+        }
+    }
+
+    fn poll_pending(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<io::Result<()>> {
+        while self.offset < self.frame.len() {
+            match std::task::ready!(
+                std::pin::Pin::new(&mut self.input).poll_write(cx, &self.frame[self.offset..])
+            ) {
+                Ok(0) => {
+                    return std::task::Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "remote frame transport accepted zero bytes",
+                    )));
+                }
+                Ok(count) => self.offset += count,
+                Err(error) => return std::task::Poll::Ready(Err(error)),
+            }
+        }
+        self.frame.clear();
+        self.offset = 0;
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for FrameWriter {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bytes: &[u8],
+    ) -> std::task::Poll<io::Result<usize>> {
+        if self.finishing {
+            return std::task::Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "remote flow is already finishing",
+            )));
+        }
+        std::task::ready!(self.poll_pending(cx))?;
+        let count = bytes.len().min(self.capacity);
+        if count == 0 {
+            return std::task::Poll::Ready(Ok(0));
+        }
+        self.frame.extend_from_slice(&(count as u64).to_be_bytes());
+        self.frame.extend_from_slice(&bytes[..count]);
+        self.accepted = self.accepted.saturating_add(count as u64);
+        std::task::Poll::Ready(Ok(count))
+    }
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::task::ready!(self.poll_pending(cx))?;
+        std::pin::Pin::new(&mut self.input).poll_flush(cx)
+    }
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<()>> {
+        std::task::ready!(self.poll_pending(cx))?;
+        if !self.finishing {
+            if let Some(fence) = &self.fence {
+                fence.store(true, Ordering::Release);
+                if let Some(context) = &self.context {
+                    context.event(
+                        "remote.commit.requested",
+                        &[],
+                        &[("bytes.accepted", self.accepted)],
+                    );
+                }
+            }
+            self.finishing = true;
+            self.frame.extend_from_slice(&0_u64.to_be_bytes());
+        }
+        std::task::ready!(self.poll_pending(cx))?;
+        std::pin::Pin::new(&mut self.input).poll_shutdown(cx)
+    }
 }
 
 impl RemoteProcess {
-    fn capture(command: std::process::Command) -> io::Result<Self> {
+    fn capture(
+        command: std::process::Command,
+        context: Option<crate::telemetry::TraceContext>,
+    ) -> io::Result<Self> {
         let mut command = tokio::process::Command::from(command);
         command
             .kill_on_drop(true)
@@ -659,14 +1132,30 @@ impl RemoteProcess {
             .take()
             .ok_or_else(|| io::Error::other("child stderr is unavailable"))?;
         let captured = Arc::new(Mutex::new(Vec::new()));
-        let drain = tokio::spawn(drain_remote_stderr(stderr, Arc::clone(&captured), None));
+        let committed = Arc::new(AtomicBool::new(false));
+        let drain = tokio::spawn(drain_remote_stderr(
+            stderr,
+            Arc::clone(&captured),
+            None,
+            Arc::clone(&committed),
+        ));
         Ok(Self {
             child,
             stderr: captured,
             drain,
+            kind: RemoteKind::Stream,
+            writer: false,
+            commit_requested: Arc::new(AtomicBool::new(false)),
+            committed,
+            context,
         })
     }
-    async fn open(location: &Location, mode: &str, buffer_bytes: usize) -> io::Result<Self> {
+    async fn open(
+        location: &Location,
+        mode: &str,
+        buffer_bytes: usize,
+        context: Option<crate::telemetry::TraceContext>,
+    ) -> io::Result<Self> {
         let command = crate::runtime::remote_command_builder(
             &location.backend,
             "exec python3 -u -c \"$1\" \"$2\" \"$3\" \"$4\"",
@@ -691,18 +1180,28 @@ impl RemoteProcess {
             .ok_or_else(|| io::Error::other("remote stderr is unavailable"))?;
         let captured = Arc::new(Mutex::new(Vec::new()));
         let (ready, receive) = tokio::sync::oneshot::channel();
+        let committed = Arc::new(AtomicBool::new(false));
         let drain = tokio::spawn(drain_remote_stderr(
             stderr,
             Arc::clone(&captured),
             Some(ready),
+            Arc::clone(&committed),
         ));
-        let process = Self {
+        let mut process = Self {
             child,
             stderr: captured,
             drain,
+            kind: RemoteKind::Stream,
+            writer: mode != "r",
+            commit_requested: Arc::new(AtomicBool::new(false)),
+            committed,
+            context,
         };
         match receive.await {
-            Ok(()) => Ok(process),
+            Ok(kind) => {
+                process.kind = kind;
+                Ok(process)
+            }
             Err(_) => Err(io::Error::other(format!(
                 "remote stream did not start; install Python 3 on the endpoint: {}",
                 process.error_text()
@@ -721,12 +1220,74 @@ impl RemoteProcess {
         .to_owned()
     }
 
+    fn file_output(&self) -> bool {
+        self.writer && self.kind == RemoteKind::File
+    }
+    fn commit_requested(&self) -> bool {
+        self.file_output() && self.commit_requested.load(Ordering::Acquire)
+    }
+
+    async fn wait_commit(&mut self, deadline: tokio::time::Instant) -> Result<(), String> {
+        let result = match tokio::time::timeout_at(deadline, self.wait()).await {
+            Ok(result) => result,
+            Err(_) => Err("remote acknowledgement deadline expired".into()),
+        };
+        if let Err(error) = &result {
+            let _ = self.child.start_kill();
+            // Publication cannot become unknown merely because the client fails
+            // to exit or another process keeps its stderr pipe open afterward.
+            if self.committed.load(Ordering::Acquire) {
+                if let Some(context) = &self.context {
+                    context.event("remote.commit.acknowledged", &[], &[]);
+                    context.event(
+                        "remote.transport.failed_after_commit",
+                        &[("reason", error)],
+                        &[],
+                    );
+                }
+                return Ok(());
+            }
+            return Err(format!(
+                "remote commit outcome unknown; inspect destination before retrying: {error}"
+            ));
+        }
+        result
+    }
+
     async fn wait(&mut self) -> Result<(), String> {
         let status = self.child.wait().await.map_err(|error| error.to_string())?;
-        if status.success() {
+        if self.file_output() || !status.success() {
+            let _ = (&mut self.drain).await;
+        }
+        if self.file_output() && self.committed.load(Ordering::Acquire) {
+            if let Some(context) = &self.context {
+                context.event(
+                    "remote.commit.acknowledged",
+                    &[("transport.status", &status.to_string())],
+                    &[],
+                );
+                if !status.success() {
+                    context.event(
+                        "remote.transport.failed_after_commit",
+                        &[("transport.status", &status.to_string())],
+                        &[],
+                    );
+                }
+            }
             return Ok(());
         }
-        let _ = (&mut self.drain).await;
+        if status.success() && !self.file_output() {
+            return Ok(());
+        }
+        if self.commit_requested() && !self.committed.load(Ordering::Acquire) {
+            return Err(format!(
+                "remote commit outcome unknown; inspect destination before retrying ({status}): {}",
+                self.error_text()
+            ));
+        }
+        if status.success() {
+            return Err("remote file helper exited without commit acknowledgement".into());
+        }
         Err(format!(
             "remote stream helper failed ({status}): {}",
             self.error_text()
@@ -736,6 +1297,24 @@ impl RemoteProcess {
 
 impl Drop for RemoteProcess {
     fn drop(&mut self) {
+        if let Some(context) = &self.context {
+            if self.commit_requested() && !self.committed.load(Ordering::Acquire) {
+                context.event(
+                    "remote.commit.outcome_unknown",
+                    &[(
+                        "reason",
+                        "flow dropped after commit intent without acknowledgement",
+                    )],
+                    &[],
+                );
+            } else if self.file_output() && !self.committed.load(Ordering::Acquire) {
+                context.event(
+                    "remote.rollback.requested",
+                    &[("reason", "flow closed without FINISH authorization")],
+                    &[],
+                );
+            }
+        }
         self.drain.abort();
         let _ = self.child.start_kill();
     }
@@ -749,6 +1328,7 @@ import select
 import socket
 import stat
 import sys
+import tempfile
 import time
 
 def channel_closed(source: bool) -> bool:
@@ -787,12 +1367,14 @@ class Endpoint:
     kind: str
     fd: int | None
     connection: socket.socket | None
+    stage: str | None
 
     def __init__(self, path: str, mode: str) -> None:
         self.path = safe_path(path)
         self.mode = mode
         self.fd = None
         self.connection = None
+        self.stage = None
         metadata: os.stat_result | None = None
         try:
             metadata = os.stat(self.path, follow_symlinks=False)
@@ -811,6 +1393,22 @@ class Endpoint:
             raise ValueError('directories cannot participate in a stream transfer')
         else:
             raise ValueError('expected a regular file, FIFO or Unix stream socket')
+        if self.kind == 'file' and mode != 'r':
+            if metadata is not None:
+                probe: int = os.open(self.path, os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+                os.close(probe)
+            directory: str = os.path.dirname(self.path)
+            os.makedirs(directory, exist_ok=True)
+            self.fd, self.stage = tempfile.mkstemp(prefix='.msync-flow-', suffix='.part', dir=directory)
+            try:
+                mask: int = os.umask(0)
+                os.umask(mask)
+                permissions: int = stat.S_IMODE(metadata.st_mode) if metadata is not None else 0o666 & ~mask
+                os.fchmod(self.fd, permissions)
+                os.set_blocking(self.fd, False)
+            except BaseException:
+                self.close()
+                raise
 
     def open(self) -> bool:
         if self.fd is not None:
@@ -834,10 +1432,7 @@ class Endpoint:
                 raise OSError(result, os.strerror(result))
             self.fd = self.connection.fileno()
             return True
-        flags: int = os.O_NONBLOCK | os.O_CLOEXEC | (os.O_RDONLY if self.mode == 'r' else os.O_WRONLY)
-        if self.kind == 'file' and self.mode != 'r':
-            os.makedirs(os.path.dirname(self.path), exist_ok=True)
-            flags |= os.O_CREAT | (os.O_EXCL if self.mode == 'x' else os.O_TRUNC)
+        flags: int = os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW | (os.O_RDONLY if self.mode == 'r' else os.O_WRONLY)
         try:
             self.fd = os.open(self.path, flags, 0o666)
             return True
@@ -869,6 +1464,82 @@ class Endpoint:
             self.connection.close()
         elif self.fd is not None:
             os.close(self.fd)
+            self.fd = None
+        if self.stage is not None:
+            try:
+                os.unlink(self.stage)
+            except FileNotFoundError:
+                pass
+
+    def commit(self) -> None:
+        if self.stage is None:
+            return
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+        if self.mode == 'x':
+            os.link(self.stage, self.path)
+            os.unlink(self.stage)
+        else:
+            os.replace(self.stage, self.path)
+        self.stage = None
+        sys.stderr.write('MSYNC_STREAM_COMMITTED\n')
+        sys.stderr.flush()
+
+class Frames:
+    header: bytearray
+    payload: bytearray
+    header_bytes: int
+    length: int | None
+    received: int
+    pending: int
+    offset: int
+    finished: bool
+
+    def __init__(self, capacity: int) -> None:
+        self.header = bytearray(8)
+        self.payload = bytearray(capacity)
+        self.header_bytes = 0
+        self.length = None
+        self.received = 0
+        self.pending = 0
+        self.offset = 0
+        self.finished = False
+
+    def read(self) -> None:
+        if self.finished or self.pending:
+            return
+        if self.length is None:
+            count: int = os.readv(0, [memoryview(self.header)[self.header_bytes:]])
+            if count == 0:
+                raise EOFError('remote transport ended before an explicit FINISH frame')
+            self.header_bytes += count
+            if self.header_bytes != 8:
+                return
+            self.length = int.from_bytes(self.header, 'big')
+            self.header_bytes = 0
+            if self.length == 0:
+                self.finished = True
+                return
+            if self.length > len(self.payload):
+                raise ValueError('remote DATA frame exceeds its configured buffer limit')
+        count = os.readv(0, [memoryview(self.payload)[self.received:self.length]])
+        if count == 0:
+            raise EOFError('remote transport ended inside a DATA frame')
+        self.received += count
+        if self.received == self.length:
+            self.pending = self.length
+            self.length = None
+            self.received = 0
+
+    def data(self) -> memoryview:
+        return memoryview(self.payload)[self.offset:self.pending]
+
+    def consume(self, count: int) -> None:
+        self.offset += count
+        if self.offset == self.pending:
+            self.pending = 0
+            self.offset = 0
 
 def read_flow(endpoint: Endpoint, capacity: int) -> None:
     pending: bytes = b''
@@ -892,34 +1563,30 @@ def read_flow(endpoint: Endpoint, capacity: int) -> None:
             if not pending:
                 return
 
-def write_flow(endpoint: Endpoint, capacity: int) -> None:
-    pending: bytes = b''
-    offset: int = 0
-    eof: bool = False
+def write_flow(endpoint: Endpoint, capacity: int) -> bool:
+    frames: Frames = Frames(capacity)
     while not channel_closed(False):
-        if not pending and not eof and ready(0, select.POLLIN, False):
+        if not frames.pending and not frames.finished and ready(0, select.POLLIN, False):
             try:
-                pending = os.read(0, capacity)
-                eof = not pending
+                frames.read()
             except BlockingIOError:
                 pass
         if not endpoint.open():
-            if eof and not pending:
-                return
             time.sleep(0.01)
             continue
         if endpoint.closed_writer():
-            return
-        if pending and endpoint.fd is not None and ready(endpoint.fd, select.POLLOUT, False):
+            return False
+        if frames.pending and endpoint.fd is not None and ready(endpoint.fd, select.POLLOUT, False):
             try:
-                offset += os.write(endpoint.fd, memoryview(pending)[offset:])
+                count: int = os.write(endpoint.fd, frames.data())
+                if count == 0:
+                    raise OSError(errno.EIO, 'destination accepted zero bytes')
+                frames.consume(count)
             except BlockingIOError:
                 continue
-            if offset == len(pending):
-                pending = b''
-                offset = 0
-        if eof and not pending:
-            return
+        if frames.finished and not frames.pending:
+            return True
+    return False
 
 def main() -> int:
     path: str = sys.argv[1]
@@ -937,19 +1604,29 @@ def main() -> int:
                 if channel_closed(True):
                     return 0
                 time.sleep(0.01)
-        sys.stderr.write('\nMSYNC_STREAM_READY\n')
+        sys.stderr.write('\nMSYNC_STREAM_READY:' + ('file' if endpoint.kind == 'file' else 'stream') + '\n')
         sys.stderr.flush()
         if source:
             read_flow(endpoint, capacity)
         else:
-            write_flow(endpoint, capacity)
+            completed: bool = write_flow(endpoint, capacity)
+            if completed:
+                endpoint.commit()
+            elif endpoint.kind == 'file':
+                raise EOFError('remote file flow ended before commit authorization')
         return 0
     finally:
         endpoint.close()
 
 try:
     raise SystemExit(main())
-except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as error:
+    if len(sys.argv) > 2 and sys.argv[2] == 'r':
+        try:
+            sys.stderr.write('msync source stream failed: ' + str(error) + '\n')
+        except OSError:
+            pass
+        raise SystemExit(1)
     raise SystemExit(0)
 except Exception as error:
     try:
@@ -962,7 +1639,8 @@ except Exception as error:
 async fn drain_remote_stderr(
     mut stderr: tokio::process::ChildStderr,
     captured: Arc<Mutex<Vec<u8>>>,
-    ready: Option<tokio::sync::oneshot::Sender<()>>,
+    ready: Option<tokio::sync::oneshot::Sender<RemoteKind>>,
+    committed: Arc<AtomicBool>,
 ) {
     let mut ready = ready;
     let mut line = Vec::new();
@@ -976,10 +1654,16 @@ async fn drain_remote_stderr(
         }
         for byte in &bytes[..count] {
             if *byte == b'\n' {
-                if line == b"MSYNC_STREAM_READY" {
+                if line == b"MSYNC_STREAM_READY:file" || line == b"MSYNC_STREAM_READY:stream" {
                     if let Some(ready) = ready.take() {
-                        let _ = ready.send(());
+                        let _ = ready.send(if line == b"MSYNC_STREAM_READY:file" {
+                            RemoteKind::File
+                        } else {
+                            RemoteKind::Stream
+                        });
                     }
+                } else if line == b"MSYNC_STREAM_COMMITTED" {
+                    committed.store(true, Ordering::Release);
                 } else {
                     let mut output = captured.lock().unwrap_or_else(|error| error.into_inner());
                     let remaining = 8192_usize.saturating_sub(output.len());
@@ -1081,5 +1765,121 @@ impl AsyncWrite for Fifo {
     }
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod commit_tests {
+    use super::*;
+
+    struct FailedShutdown;
+
+    impl AsyncWrite for FailedShutdown {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<io::Result<usize>> {
+            std::task::Poll::Ready(Ok(bytes.len()))
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::task::Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
+        }
+    }
+
+    fn committed_child(mode: &str) -> std::process::Command {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "streams::commit_tests::committed_child_process",
+            "--nocapture",
+        ]);
+        command.env("MSYNC_TEST_COMMITTED_CHILD", mode);
+        command
+    }
+
+    #[test]
+    fn committed_child_process() {
+        if let Ok(mode) = std::env::var("MSYNC_TEST_COMMITTED_CHILD") {
+            if mode != "unacked-hold" {
+                eprintln!("MSYNC_STREAM_COMMITTED");
+            }
+            if mode.ends_with("hold") {
+                eprintln!("MSYNC_TEST_HOLDING");
+                loop {
+                    std::thread::park();
+                }
+            }
+            std::process::exit(9);
+        }
+    }
+
+    #[tokio::test]
+    async fn acknowledged_commit_survives_shutdown_and_transport_failure() {
+        let mut process = RemoteProcess::capture(committed_child("exit"), None).unwrap();
+        process.kind = RemoteKind::File;
+        process.writer = true;
+        process.commit_requested.store(true, Ordering::Release);
+        let mut destination = Opened::native(Box::new(FailedShutdown) as Writer);
+        destination.process = Some(process);
+        let result = finish(&mut destination, 17, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(result.end, StreamEnd::SourceClosed);
+        assert_eq!(result.bytes, 17);
+    }
+
+    #[tokio::test]
+    async fn acknowledged_commit_survives_transport_timeout_and_releases_child() {
+        held_commit_outcome("acked-hold", true).await;
+    }
+
+    #[tokio::test]
+    async fn unacknowledged_commit_timeout_is_unknown_and_releases_child() {
+        held_commit_outcome("unacked-hold", false).await;
+    }
+
+    async fn held_commit_outcome(mode: &str, acknowledged: bool) {
+        let mut process = RemoteProcess::capture(committed_child(mode), None).unwrap();
+        process.kind = RemoteKind::File;
+        process.writer = true;
+        process.commit_requested.store(true, Ordering::Release);
+        let mut output = process.child.stdout.take().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !process.error_text().contains("MSYNC_TEST_HOLDING") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("child must actually enter its holding state");
+        assert_eq!(process.committed.load(Ordering::Acquire), acknowledged);
+        assert!(process.child.try_wait().unwrap().is_none());
+        let result = process
+            .wait_commit(tokio::time::Instant::now() + std::time::Duration::from_millis(10))
+            .await;
+        if acknowledged {
+            result.unwrap();
+        } else {
+            assert!(result.unwrap_err().contains("commit outcome unknown"));
+        }
+        drop(process);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            output.read_to_end(&mut Vec::new()),
+        )
+        .await
+        .expect("owned child must terminate and release its stdout")
+        .unwrap();
     }
 }

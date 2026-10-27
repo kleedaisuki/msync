@@ -34,6 +34,110 @@ fn files(operations: Vec<CopyOp>) -> Plan {
 }
 
 #[test]
+fn remote_absolute_and_relative_paths_do_not_prove_the_same_destination() {
+    let backend = Backend::Ssh {
+        host: "planner.invalid".into(),
+        user: None,
+        port: None,
+    };
+    let mut operations = vec![op("a", "out"), op("b", "/out")];
+    for operation in &mut operations {
+        operation.source.backend = backend.clone();
+        operation.destination.backend = backend.clone();
+    }
+    let plan = files(operations);
+    assert_eq!(plan.nodes.len(), 2);
+    assert!(plan.removed.is_empty());
+    // The remote working directory is unknown, so conflicts remain conservative.
+    assert_eq!(plan.nodes[1].dependencies, vec![0]);
+}
+
+#[test]
+fn a_relative_remote_descendant_does_not_prove_an_absolute_parent_kind() {
+    let backend = Backend::Ssh {
+        host: "planner.invalid".into(),
+        user: None,
+        port: None,
+    };
+    let mut operations = vec![op("a", "tree/file"), op("/tree", "output")];
+    for operation in &mut operations {
+        operation.source.backend = backend.clone();
+        operation.destination.backend = backend.clone();
+    }
+    let plan = Plan::build(
+        &Program { operations },
+        &[regular(), OperationKinds::default()],
+    );
+    assert_eq!(plan.nodes[1].kinds.source, FileClass::Unknown);
+}
+
+#[test]
+fn ancestor_write_cannot_retire_a_read_with_an_external_hardlink_alias() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+    std::fs::create_dir_all(&root).unwrap();
+    let directory = tempfile::tempdir_in(root).unwrap();
+    let tree = directory.path().join("tree");
+    let other = directory.path().join("other");
+    std::fs::create_dir(&tree).unwrap();
+    std::fs::create_dir(&other).unwrap();
+    let original = tree.join("file");
+    let alias = directory.path().join("alias");
+    let input = directory.path().join("input");
+    std::fs::write(&original, "old").unwrap();
+    std::fs::write(&input, "new").unwrap();
+    std::fs::hard_link(&original, &alias).unwrap();
+    let text = |path: &std::path::Path| path.to_string_lossy().into_owned();
+    let program = Program {
+        operations: vec![
+            op(&text(&original), &text(&directory.path().join("snapshot"))),
+            op(&text(&other), &text(&tree)),
+            op(&text(&input), &text(&alias)),
+        ],
+    };
+    let directory_kind = OperationKinds {
+        source: FileClass::Directory,
+        destination: FileClass::Directory,
+    };
+    let plan = Plan::build(&program, &[regular(), directory_kind, regular()]);
+    assert!(plan.nodes[2].dependencies.contains(&0));
+    assert!(!plan.nodes[2].dependencies.contains(&1));
+}
+
+#[test]
+fn profiled_planning_reuses_parent_probes_but_keeps_ordinary_file_identity_handles() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+    std::fs::create_dir_all(&root).unwrap();
+    let directory = tempfile::tempdir_in(root).unwrap();
+    let source = directory.path().join("source");
+    std::fs::write(&source, "value").unwrap();
+    let operations = (0..64)
+        .map(|index| {
+            op(
+                source.to_str().unwrap(),
+                directory
+                    .path()
+                    .join(format!("new-parent/file{index}"))
+                    .to_str()
+                    .unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let kinds = vec![
+        OperationKinds {
+            source: FileClass::Regular,
+            destination: FileClass::Missing
+        };
+        operations.len()
+    ];
+    let (plan, stats) = Plan::build_profiled(&Program { operations }, &kinds);
+    assert_eq!(plan.nodes.len(), 64);
+    assert_eq!(stats.resource_cache_misses, 65);
+    assert_eq!(stats.identity_handles, 1);
+    assert!(stats.canonicalize_probes <= 68, "{stats:?}");
+    assert_eq!(stats.dependency_candidates, 0);
+}
+
+#[test]
 fn final_write_eliminates_prior_file_copy_even_across_source_endpoints() {
     let mut last = op("~/.codex/config.toml", "~/Desktop/config.toml");
     last.source.backend = Backend::Wsl;

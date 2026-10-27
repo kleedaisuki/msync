@@ -1,7 +1,8 @@
 //! Opt-in, local-only JSONL spans shared by the entire language pipeline.
 //!
-//! Span names and metric names should be fixed vocabulary, never user paths or
-//! source text. Thread-scoped guards cannot cross task boundaries; use explicit
+//! Names and attribute keys use a fixed vocabulary; values describe actual paths,
+//! backends and decisions, never file payloads or credentials. Thread-scoped guards
+//! cannot cross task boundaries; use explicit
 //! contexts and linked spans for asynchronous or concurrent work. All guards and
 //! context snapshots retain their sink if the process reconfigures tracing.
 
@@ -37,6 +38,67 @@ impl TraceContext {
     /// Flushes this context's sink, even after global tracing is reconfigured.
     pub fn flush(&self) -> Result<(), String> {
         self.session.flush()
+    }
+
+    /// Emits a point-in-time event attributed to this span without entering TLS.
+    pub fn event(
+        &self,
+        name: &'static str,
+        attributes: &[(&'static str, &str)],
+        metrics: &[(&'static str, u64)],
+    ) {
+        self.session.write(&event_record(
+            self,
+            name,
+            &[],
+            attributes,
+            &[],
+            metrics,
+            None,
+        ));
+    }
+
+    /// Records typed I/O details before the caller flattens its diagnostic.
+    /// Recoverable kernel fallbacks must not automatically fail their parent span.
+    pub fn io_error(&self, stage: &'static str, error: &io::Error) {
+        self.error_event("io.error", stage, error);
+    }
+
+    pub fn record_error(&self, stage: &'static str, error: &(dyn std::error::Error + 'static)) {
+        self.error_event("error", stage, error);
+    }
+
+    fn error_event(
+        &self,
+        name: &'static str,
+        stage: &'static str,
+        error: &(dyn std::error::Error + 'static),
+    ) {
+        let details = error_details(error);
+        let mut attributes = vec![("phase", stage)];
+        if let Some(kind) = details.chain.iter().find_map(|cause| cause.kind.as_deref()) {
+            attributes.push(("error.kind", kind));
+        }
+        let raw_os_error = details
+            .chain
+            .iter()
+            .find_map(|cause| cause.raw_os_error)
+            .map(|code| code.to_string());
+        if let Some(code) = raw_os_error.as_deref() {
+            attributes.push(("error.raw_os_error", code));
+        }
+        if let Some(first) = details.chain.first() {
+            attributes.push(("error.message", &first.message));
+        }
+        self.session.write(&event_record(
+            self,
+            name,
+            &[],
+            &attributes,
+            &[],
+            &[],
+            Some(&details),
+        ));
     }
 }
 
@@ -91,6 +153,30 @@ pub fn with_context<T>(parent: Option<&TraceContext>, f: impl FnOnce() -> T) -> 
         thread_bound: PhantomData,
     });
     f()
+}
+
+/// Emits an event on the current synchronous span. No attached span means no event.
+pub fn event(
+    name: &'static str,
+    attributes: &[(&'static str, &str)],
+    metrics: &[(&'static str, u64)],
+) {
+    if let Some(context) = context() {
+        context.event(name, attributes, metrics);
+    }
+}
+
+/// Captures typed error kind, OS code and causal chain without parsing prose.
+pub fn io_error(stage: &'static str, error: &io::Error) {
+    if let Some(context) = context() {
+        context.io_error(stage, error);
+    }
+}
+
+pub fn record_error(stage: &'static str, error: &(dyn std::error::Error + 'static)) {
+    if let Some(context) = context() {
+        context.record_error(stage, error);
+    }
 }
 
 struct Sink {
@@ -254,13 +340,66 @@ impl LinkedSpan {
 
     pub fn error(&mut self) {
         if let Some(active) = &mut self.active {
-            active.failed = true;
+            active.error();
         }
     }
 
     pub fn finish_result<T, E>(&mut self, result: &Result<T, E>) {
-        if result.is_err() {
-            self.error();
+        if let Some(active) = &mut self.active {
+            active.finish_result(result);
+        }
+    }
+
+    /// Requires a terminal outcome; dropping an unfinished scope is cancellation.
+    pub fn expect_completion(&mut self) {
+        if let Some(active) = &mut self.active {
+            active.completion = Completion::Pending;
+        }
+    }
+
+    pub fn cancelled(&mut self) {
+        if let Some(active) = &mut self.active {
+            active.completion = Completion::Cancelled;
+        }
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.active.is_some()
+    }
+
+    pub fn attribute(&mut self, key: &'static str, value: impl Into<String>) {
+        if let Some(active) = &mut self.active {
+            active.attribute(key, value.into());
+        }
+    }
+
+    /// Avoids formatting expensive context when telemetry is disabled.
+    pub fn attribute_lazy(&mut self, key: &'static str, value: impl FnOnce() -> String) {
+        if let Some(active) = &mut self.active {
+            active.attribute(key, value());
+        }
+    }
+
+    pub fn event(
+        &self,
+        name: &'static str,
+        attributes: &[(&'static str, &str)],
+        metrics: &[(&'static str, u64)],
+    ) {
+        if let Some(active) = &self.active {
+            active.event(name, attributes, metrics);
+        }
+    }
+
+    pub fn io_error(&self, stage: &'static str, error: &io::Error) {
+        if let Some(context) = self.context() {
+            context.io_error(stage, error);
+        }
+    }
+
+    pub fn record_error(&self, stage: &'static str, error: &(dyn std::error::Error + 'static)) {
+        if let Some(context) = self.context() {
+            context.record_error(stage, error);
         }
     }
 
@@ -278,17 +417,71 @@ pub struct SpanGuard {
 }
 
 impl SpanGuard {
-    /// Marks a failed operation. Error messages remain in user diagnostics,
-    /// rather than accidentally leaking paths or secrets through telemetry.
+    pub fn context(&self) -> Option<TraceContext> {
+        self.active.as_ref().map(ActiveSpan::context)
+    }
+
+    /// Marks a failed operation without guessing its cause from a display string.
     pub fn error(&mut self) {
         if let Some(active) = &mut self.active {
-            active.failed = true;
+            active.error();
         }
     }
 
     pub fn finish_result<T, E>(&mut self, result: &Result<T, E>) {
-        if result.is_err() {
-            self.error();
+        if let Some(active) = &mut self.active {
+            active.finish_result(result);
+        }
+    }
+
+    pub fn expect_completion(&mut self) {
+        if let Some(active) = &mut self.active {
+            active.completion = Completion::Pending;
+        }
+    }
+
+    pub fn cancelled(&mut self) {
+        if let Some(active) = &mut self.active {
+            active.completion = Completion::Cancelled;
+        }
+    }
+
+    pub fn is_recording(&self) -> bool {
+        self.active.is_some()
+    }
+
+    pub fn attribute(&mut self, key: &'static str, value: impl Into<String>) {
+        if let Some(active) = &mut self.active {
+            active.attribute(key, value.into());
+        }
+    }
+
+    pub fn attribute_lazy(&mut self, key: &'static str, value: impl FnOnce() -> String) {
+        if let Some(active) = &mut self.active {
+            active.attribute(key, value());
+        }
+    }
+
+    pub fn event(
+        &self,
+        name: &'static str,
+        attributes: &[(&'static str, &str)],
+        metrics: &[(&'static str, u64)],
+    ) {
+        if let Some(active) = &self.active {
+            active.event(name, attributes, metrics);
+        }
+    }
+
+    pub fn io_error(&self, stage: &'static str, error: &io::Error) {
+        if let Some(active) = &self.active {
+            active.context().io_error(stage, error);
+        }
+    }
+
+    pub fn record_error(&self, stage: &'static str, error: &(dyn std::error::Error + 'static)) {
+        if let Some(active) = &self.active {
+            active.context().record_error(stage, error);
         }
     }
 
@@ -300,6 +493,14 @@ impl SpanGuard {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Completion {
+    Automatic,
+    Pending,
+    Complete,
+    Cancelled,
+}
+
 struct ActiveSpan {
     session: Arc<Session>,
     span_id: u64,
@@ -308,7 +509,9 @@ struct ActiveSpan {
     started: Instant,
     start_unix_ns: u128,
     failed: bool,
+    completion: Completion,
     metrics: Vec<(&'static str, u64)>,
+    attributes: Vec<(&'static str, String)>,
     attachment: Option<u64>,
 }
 
@@ -340,9 +543,55 @@ impl ActiveSpan {
             started: Instant::now(),
             start_unix_ns: unix_ns(),
             failed: false,
+            completion: Completion::Automatic,
             metrics: Vec::new(),
+            attributes: Vec::new(),
             attachment: None,
         }
+    }
+
+    fn context(&self) -> TraceContext {
+        TraceContext {
+            session: self.session.clone(),
+            span_id: self.span_id,
+        }
+    }
+
+    fn error(&mut self) {
+        self.failed = true;
+        self.completion = Completion::Complete;
+    }
+
+    fn finish_result<T, E>(&mut self, result: &Result<T, E>) {
+        if result.is_err() {
+            self.error();
+        } else if self.completion != Completion::Cancelled {
+            self.completion = Completion::Complete;
+        }
+    }
+
+    fn attribute(&mut self, key: &'static str, value: String) {
+        match self.attributes.iter_mut().find(|(name, _)| *name == key) {
+            Some((_, previous)) => *previous = value,
+            None => self.attributes.push((key, value)),
+        }
+    }
+
+    fn event(
+        &self,
+        name: &'static str,
+        attributes: &[(&'static str, &str)],
+        metrics: &[(&'static str, u64)],
+    ) {
+        self.session.write(&event_record(
+            &self.context(),
+            name,
+            &self.attributes,
+            attributes,
+            &self.metrics,
+            metrics,
+            None,
+        ));
     }
 
     fn metric(&mut self, name: &'static str, value: u64) {
@@ -361,6 +610,8 @@ impl ActiveSpan {
             .unwrap_or_else(|| "null".into());
         let status = if std::thread::panicking() {
             "panic"
+        } else if matches!(self.completion, Completion::Pending | Completion::Cancelled) {
+            "cancelled"
         } else if self.failed {
             "error"
         } else {
@@ -386,7 +637,14 @@ impl ActiveSpan {
             json_string(&mut output, name);
             let _ = write!(output, ":{value}");
         }
-        output.push_str("}}\n");
+        let completion = match self.completion {
+            Completion::Pending => "incomplete",
+            Completion::Cancelled => "cancelled",
+            Completion::Automatic | Completion::Complete => "complete",
+        };
+        output.push_str("},\"attributes\":");
+        json_attributes(&mut output, &self.attributes, &[]);
+        let _ = writeln!(output, ",\"completion\":\"{completion}\"}}");
         output
     }
 }
@@ -404,6 +662,160 @@ fn unix_ns() -> u128 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos())
+}
+
+struct ErrorDetail {
+    message: String,
+    kind: Option<String>,
+    raw_os_error: Option<i32>,
+}
+
+struct ErrorDetails {
+    chain: Vec<ErrorDetail>,
+    truncated: bool,
+}
+
+fn error_details(error: &(dyn std::error::Error + 'static)) -> ErrorDetails {
+    let mut chain = Vec::new();
+    let mut current = Some(error);
+    // Error implementations can contain cycles; recording an error must stay bounded.
+    for _ in 0..32 {
+        let Some(error) = current else {
+            break;
+        };
+        let io_error = error.downcast_ref::<io::Error>();
+        chain.push(ErrorDetail {
+            message: error.to_string(),
+            kind: io_error.map(|error| format!("{:?}", error.kind())),
+            raw_os_error: io_error.and_then(io::Error::raw_os_error),
+        });
+        // io::Error::source can skip its custom wrapper. Preserve that wrapper
+        // explicitly so CopyFailure progress and its underlying OS cause survive.
+        current = match io_error.and_then(io::Error::get_ref) {
+            Some(inner) => Some(inner as &(dyn std::error::Error + 'static)),
+            None => error.source(),
+        };
+    }
+    ErrorDetails {
+        chain,
+        truncated: current.is_some(),
+    }
+}
+
+fn event_record(
+    context: &TraceContext,
+    name: &'static str,
+    inherited_attributes: &[(&'static str, String)],
+    attributes: &[(&'static str, &str)],
+    inherited_metrics: &[(&'static str, u64)],
+    metrics: &[(&'static str, u64)],
+    errors: Option<&ErrorDetails>,
+) -> String {
+    use std::fmt::Write as _;
+    let mut output = String::with_capacity(384);
+    let _ = write!(
+        output,
+        "{{\"schema_version\":1,\"kind\":\"event\",\"trace_id\":\"{:032x}\",\"span_id\":\"{:016x}\",\"name\":",
+        context.session.trace_id, context.span_id
+    );
+    json_string(&mut output, name);
+    let _ = write!(
+        output,
+        ",\"timestamp_unix_ns\":{},\"attributes\":",
+        unix_ns()
+    );
+    json_attributes(&mut output, inherited_attributes, attributes);
+    output.push_str(",\"metrics\":");
+    json_metrics(&mut output, inherited_metrics, metrics);
+    if let Some(errors) = errors {
+        output.push_str(",\"error_chain\":[");
+        for (index, cause) in errors.chain.iter().enumerate() {
+            if index != 0 {
+                output.push(',');
+            }
+            output.push_str("{\"message\":");
+            json_string(&mut output, &cause.message);
+            output.push_str(",\"kind\":");
+            match &cause.kind {
+                Some(kind) => json_string(&mut output, kind),
+                None => output.push_str("null"),
+            }
+            output.push_str(",\"raw_os_error\":");
+            match cause.raw_os_error {
+                Some(code) => {
+                    let _ = write!(output, "{code}");
+                }
+                None => output.push_str("null"),
+            }
+            output.push('}');
+        }
+        let _ = write!(output, "],\"error_chain_truncated\":{}", errors.truncated);
+    }
+    output.push_str("}\n");
+    output
+}
+
+fn json_attributes(
+    output: &mut String,
+    inherited: &[(&'static str, String)],
+    attributes: &[(&'static str, &str)],
+) {
+    output.push('{');
+    let mut separator = "";
+    for (key, value) in inherited {
+        if attributes
+            .iter()
+            .any(|(override_key, _)| override_key == key)
+        {
+            continue;
+        }
+        output.push_str(separator);
+        json_string(output, key);
+        output.push(':');
+        json_string(output, value);
+        separator = ",";
+    }
+    for (index, (key, value)) in attributes.iter().enumerate() {
+        if attributes[index + 1..]
+            .iter()
+            .any(|(later, _)| later == key)
+        {
+            continue;
+        }
+        output.push_str(separator);
+        json_string(output, key);
+        output.push(':');
+        json_string(output, value);
+        separator = ",";
+    }
+    output.push('}');
+}
+
+fn json_metrics(
+    output: &mut String,
+    inherited: &[(&'static str, u64)],
+    metrics: &[(&'static str, u64)],
+) {
+    use std::fmt::Write as _;
+    output.push('{');
+    let mut separator = "";
+    for (index, (key, value)) in inherited.iter().chain(metrics).enumerate() {
+        let overridden = if index < inherited.len() {
+            metrics.iter().any(|(override_key, _)| override_key == key)
+        } else {
+            metrics[index - inherited.len() + 1..]
+                .iter()
+                .any(|(later, _)| later == key)
+        };
+        if overridden {
+            continue;
+        }
+        output.push_str(separator);
+        json_string(output, key);
+        let _ = write!(output, ":{value}");
+        separator = ",";
+    }
+    output.push('}');
 }
 
 fn json_string(output: &mut String, value: &str) {
@@ -655,5 +1067,175 @@ mod tests {
         assert!(disabled.context().is_none());
         drop(disabled);
         assert!(memory.output().is_empty());
+    }
+
+    #[test]
+    fn dynamic_attributes_and_event_overrides_preserve_useful_context() {
+        let memory = MemoryWriter::default();
+        let session = Arc::new(Session::new(Box::new(memory.clone())));
+        let mut trace = SpanGuard {
+            active: Some(ActiveSpan::new(session, "file_flow")),
+            thread_bound: PhantomData,
+        };
+        assert!(trace.is_recording());
+        trace.attribute("source.path", "D:\\資料\\a\".txt");
+        trace.attribute("destination.path", "old");
+        trace.attribute_lazy("destination.path", || "D:\\copy\\a.txt".to_string());
+        trace.attribute("phase", "transfer");
+        trace.metric("bytes.progress", 17);
+        trace.event(
+            "commit",
+            &[("phase", "wrong"), ("phase", "commit")],
+            &[("bytes.progress", 18), ("bytes.progress", 19)],
+        );
+        drop(trace);
+        let output = memory.output();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("\"kind\":\"event\""));
+        assert!(lines[0].contains("\"source.path\":\"D:\\\\資料\\\\a\\\".txt\""));
+        assert_eq!(lines[0].matches("\"phase\":").count(), 1);
+        assert!(lines[0].contains("\"phase\":\"commit\""));
+        assert_eq!(lines[0].matches("\"bytes.progress\":").count(), 1);
+        assert!(lines[0].contains("\"bytes.progress\":19"));
+        assert!(lines[1].contains("\"phase\":\"transfer\""));
+        assert!(lines[1].contains("\"bytes.progress\":17"));
+        assert!(!output.contains("wrong"));
+    }
+
+    #[test]
+    fn typed_error_event_preserves_wrapper_and_underlying_os_cause() {
+        #[derive(Debug)]
+        struct ProgressFailure {
+            bytes: u64,
+            cause: io::Error,
+        }
+        impl std::fmt::Display for ProgressFailure {
+            fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(
+                    output,
+                    "transfer stopped after {} bytes: {}",
+                    self.bytes, self.cause
+                )
+            }
+        }
+        impl std::error::Error for ProgressFailure {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.cause)
+            }
+        }
+        let error = io::Error::new(
+            io::ErrorKind::Interrupted,
+            ProgressFailure {
+                bytes: 17,
+                cause: io::Error::from_raw_os_error(5),
+            },
+        );
+        let details = error_details(&error);
+        assert_eq!(details.chain.len(), 3);
+        assert_eq!(details.chain[0].kind.as_deref(), Some("Interrupted"));
+        assert!(details.chain[1].kind.is_none());
+        assert_eq!(details.chain[2].raw_os_error, Some(5));
+        assert!(!details.truncated);
+
+        let memory = MemoryWriter::default();
+        let session = Arc::new(Session::new(Box::new(memory.clone())));
+        let trace = SpanGuard {
+            active: Some(ActiveSpan::new(session, "file_flow")),
+            thread_bound: PhantomData,
+        };
+        trace.io_error("transfer", &error);
+        drop(trace);
+        let output = memory.output();
+        let event = output.lines().next().unwrap();
+        assert!(event.contains("\"name\":\"io.error\""));
+        assert!(event.contains("\"phase\":\"transfer\""));
+        assert!(event.contains("\"error.raw_os_error\":\"5\""));
+        assert!(event.contains("\"raw_os_error\":5"));
+        assert!(event.contains("\"error_chain\":["));
+        assert!(event.contains("transfer stopped after 17 bytes"));
+        // Recording a failed kernel candidate is not a terminal copy failure.
+        assert!(output.lines().last().unwrap().contains("\"status\":\"ok\""));
+    }
+
+    #[test]
+    fn cyclic_error_chains_are_bounded() {
+        #[derive(Debug)]
+        struct Cycle;
+        impl std::fmt::Display for Cycle {
+            fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                output.write_str("cyclic source")
+            }
+        }
+        impl std::error::Error for Cycle {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(self)
+            }
+        }
+        let details = error_details(&Cycle);
+        assert_eq!(details.chain.len(), 32);
+        assert!(details.truncated);
+    }
+
+    #[test]
+    fn pending_scopes_report_incomplete_cancellation_without_breaking_defaults() {
+        let memory = MemoryWriter::default();
+        let session = Arc::new(Session::new(Box::new(memory.clone())));
+        let root = ActiveSpan::new(session, "run");
+        let parent = context().unwrap();
+        drop(linked_span("legacy", Some(&parent)));
+        let mut pending = linked_span("pending", Some(&parent));
+        pending.expect_completion();
+        drop(pending);
+        let mut complete = linked_span("complete", Some(&parent));
+        complete.expect_completion();
+        complete.finish_result(&Ok::<(), ()>(()));
+        drop(complete);
+        let mut failed = linked_span("failed", Some(&parent));
+        failed.expect_completion();
+        failed.error();
+        drop(failed);
+        let mut cancelled = linked_span("cancelled", Some(&parent));
+        cancelled.expect_completion();
+        cancelled.cancelled();
+        cancelled.finish_result(&Ok::<(), ()>(()));
+        drop(cancelled);
+        drop(root);
+        let output = memory.output();
+        let lines: Vec<&str> = output.lines().collect();
+        assert!(lines[0].contains("\"status\":\"ok\""));
+        assert!(lines[1].contains("\"status\":\"cancelled\""));
+        assert!(lines[1].contains("\"completion\":\"incomplete\""));
+        assert!(lines[2].contains("\"status\":\"ok\""));
+        assert!(lines[2].contains("\"completion\":\"complete\""));
+        assert!(lines[3].contains("\"status\":\"error\""));
+        assert!(lines[3].contains("\"completion\":\"complete\""));
+        assert!(lines[4].contains("\"status\":\"cancelled\""));
+        assert!(lines[4].contains("\"completion\":\"cancelled\""));
+    }
+
+    #[test]
+    fn disabled_attributes_do_not_convert_or_evaluate_lazy_values() {
+        struct CannotConvert;
+        impl From<CannotConvert> for String {
+            fn from(_: CannotConvert) -> Self {
+                panic!("disabled attribute must not convert its input")
+            }
+        }
+        let mut thread = SpanGuard {
+            active: None,
+            thread_bound: PhantomData,
+        };
+        let mut linked = linked_span("disabled", None);
+        assert!(!thread.is_recording());
+        assert!(!linked.is_recording());
+        thread.attribute("path", CannotConvert);
+        linked.attribute("path", CannotConvert);
+        thread.attribute_lazy("path", || panic!("must remain lazy"));
+        linked.attribute_lazy("path", || panic!("must remain lazy"));
+        thread.expect_completion();
+        linked.expect_completion();
+        thread.io_error("open", &io::Error::other("unused"));
+        linked.io_error("open", &io::Error::other("unused"));
     }
 }

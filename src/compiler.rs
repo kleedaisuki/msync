@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use regex::Regex;
@@ -9,7 +11,7 @@ use crate::syntax::{
     Diagnostic, OperandSource, Operands, Report, Script, Span, Statement, StatementKind,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Backend {
     Local,
     Wsl,
@@ -29,7 +31,7 @@ pub enum Backend {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Location {
     pub backend: Backend,
     pub path: String,
@@ -48,15 +50,51 @@ pub struct Program {
     pub operations: Vec<CopyOp>,
 }
 
+/// Logical source identity and working directory, captured once per submission.
+/// Resolving a namespace never canonicalizes paths or reads filesystem metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompileContext {
+    pub pwd: PathBuf,
+    pub source_file: Option<PathBuf>,
+}
+
+impl CompileContext {
+    pub fn capture(source_file: Option<&Path>) -> io::Result<Self> {
+        let pwd = std::env::current_dir()?;
+        let source_file = source_file.map(std::path::absolute).transpose()?;
+        Ok(Self { pwd, source_file })
+    }
+
+    fn validate(&self) -> Result<(), Report> {
+        if !self.pwd.is_absolute()
+            || self
+                .source_file
+                .as_ref()
+                .is_some_and(|path| !path.is_absolute())
+        {
+            return Err(Report::new("compilation context paths must be absolute", Span::default()).help("Capture a context with CompileContext::capture, or supply absolute pwd and source_file paths."));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Space {
+    Endpoint(Backend),
+    Pwd,
+    File,
+}
+
 #[derive(Clone, Debug)]
 struct Alias {
     backend: Option<Backend>,
     path: String,
+    is_file: bool,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Compiler {
-    endpoints: Arc<BTreeMap<String, Backend>>,
+    spaces: Arc<BTreeMap<String, Space>>,
     aliases: Arc<BTreeMap<String, Alias>>,
 }
 
@@ -76,13 +114,47 @@ impl Compiler {
     }
 
     pub fn compile_rich(&mut self, script: &Script) -> Result<Program, Vec<Report>> {
+        let context = CompileContext::capture(None).map_err(|error| {
+            vec![Report::new(
+                format!("cannot capture working directory: {error}"),
+                Span::default(),
+            )]
+        })?;
+        self.compile_rich_with_context(script, &context)
+    }
+
+    pub fn compile_with_context(
+        &mut self,
+        script: &Script,
+        context: &CompileContext,
+    ) -> Result<Program, Vec<Diagnostic>> {
+        self.compile_rich_with_context(script, context)
+            .map_err(|reports| {
+                reports
+                    .into_iter()
+                    .map(|report| report.diagnostic)
+                    .collect()
+            })
+    }
+
+    pub fn compile_rich_with_context(
+        &mut self,
+        script: &Script,
+        context: &CompileContext,
+    ) -> Result<Program, Vec<Report>> {
         let mut trace = crate::telemetry::span("compile");
+        context.validate().map_err(|report| {
+            trace.error();
+            vec![report]
+        })?;
         let mut candidate = self.clone();
         let mut program = Program::default();
         let mut errors = Vec::new();
         let mut validated_patterns = HashSet::new();
         for statement in &script.statements {
-            if let Err(report) = candidate.lower(statement, &mut program, &mut validated_patterns) {
+            if let Err(report) =
+                candidate.lower(statement, &mut program, &mut validated_patterns, context)
+            {
                 errors.push(report);
             }
         }
@@ -97,7 +169,7 @@ impl Compiler {
     }
 
     pub fn bindings(&self) -> Vec<String> {
-        self.endpoints
+        self.spaces
             .iter()
             .map(|(name, backend)| format!("{name} => {backend}"))
             .chain(self.aliases.iter().map(|(name, alias)| {
@@ -116,6 +188,7 @@ impl Compiler {
         statement: &Statement,
         program: &mut Program,
         validated_patterns: &mut HashSet<String>,
+        context: &CompileContext,
     ) -> Result<(), Report> {
         let fallback = Operands {
             left: OperandSource::unmapped(statement.span),
@@ -129,8 +202,8 @@ impl Compiler {
             StatementKind::Comment(_) => Ok(()),
             StatementKind::Endpoint { name, value } => {
                 validate_name(name).map_err(|message| Report::new(message, left.content).help("Use letters, digits, '.', '_' or '-' for a binding name; built-ins begin with '$' and cannot be rebound."))?;
-                let backend = self.endpoint(value, right.content)?;
-                Arc::make_mut(&mut self.endpoints).insert(name.clone(), backend);
+                let space = self.space(value, right.content)?;
+                Arc::make_mut(&mut self.spaces).insert(name.clone(), space);
                 Ok(())
             }
             StatementKind::Alias { name, value } => {
@@ -139,7 +212,7 @@ impl Compiler {
                         "Use a single path component made of letters, digits, '.', '_' or '-'.",
                     )
                 })?;
-                let alias = self.expand(value, right)?;
+                let alias = self.expand(value, right, context)?;
                 if alias.path.contains('<') || alias.path.contains('>') {
                     return Err(Report::new("path aliases cannot contain a selector", selector_span(value, right)).help("Define an alias for the directory, then add '/<regex>' when copying from it."));
                 }
@@ -152,10 +225,10 @@ impl Compiler {
             } => {
                 let source_text = source;
                 let destination_text = destination;
-                let mut source = self.location(source, left)?;
-                let destination = self.location(destination, right)?;
+                let mut source = self.location(source, left, context)?;
+                let destination = self.location(destination, right, context)?;
                 if matches!(destination.backend, Backend::Http { .. } | Backend::Path) {
-                    return Err(Report::new("HTTP(S) and PATH endpoints are read-only", qualifier_span(destination_text, right)).label(right.content, "this is the destination").help("Use this endpoint on the left of '->', or choose a writable destination such as '$pwd::output/'."));
+                    return Err(Report::new("HTTP(S) and PATH endpoints are read-only", qualifier_span(destination_text, right)).label(right.content, "this is the destination").help("Use this endpoint on the left of '->', or choose a writable destination such as '$pwd::pwd/output/'."));
                 }
                 if destination.path.contains('<') || destination.path.contains('>') {
                     return Err(Report::new("selectors are only allowed in the source", selector_span(destination_text, right)).label(operands.operator, "copies flow from left to right").help("Move the selector to the source and use a destination directory ending in '/'."));
@@ -191,20 +264,22 @@ impl Compiler {
         }
     }
 
-    fn endpoint(&self, value: &str, span: Span) -> Result<Backend, Report> {
+    fn space(&self, value: &str, span: Span) -> Result<Space, Report> {
         match value {
-            "$local" | "$pwd" => return Ok(Backend::Local),
-            "$wsl" => return Ok(Backend::Wsl),
-            "$path" => return Ok(Backend::Path),
-            "$env" => return Ok(Backend::Env),
+            "$pwd" => return Ok(Space::Pwd),
+            "$file" => return Ok(Space::File),
+            "$local" => return Ok(Space::Endpoint(Backend::Local)),
+            "$wsl" => return Ok(Space::Endpoint(Backend::Wsl)),
+            "$path" => return Ok(Space::Endpoint(Backend::Path)),
+            "$env" => return Ok(Space::Endpoint(Backend::Env)),
             _ => {}
         }
-        if let Some(backend) = self.endpoints.get(value) {
-            return Ok(backend.clone());
+        if let Some(space) = self.spaces.get(value) {
+            return Ok(space.clone());
         }
         let url = Url::parse(value).map_err(|_| {
-            let mut report = Report::new(format!("unknown endpoint '{value}'"), span).help("Declare an endpoint first with 'name => $local', or use a built-in: $pwd, $local, $wsl, $path, $env.");
-            if let Some(name) = self.endpoints.keys().find(|name| edit_distance(name, value) <= 2) {
+            let mut report = Report::new(format!("unknown endpoint or namespace '{value}'"), span).help("Declare an endpoint first with 'name => $local', or use a built-in space: $pwd, $file, $local, $wsl, $path, $env.");
+            if let Some(name) = self.spaces.keys().find(|name| edit_distance(name, value) <= 2) {
                 report = report.help(format!("A similarly named endpoint is '{name}'."));
             }
             report
@@ -220,7 +295,7 @@ impl Compiler {
             )
             .help("Keep credentials in SSH/curl configuration and put paths after '::'."));
         }
-        match url.scheme() {
+        let backend = match url.scheme() {
             "tcp" => {
                 if !url.username().is_empty() || !matches!(url.path(), "" | "/") {
                     return Err(Report::new("TCP endpoint URLs cannot include credentials or paths", span).help("Use 'tcp://host:port'; stream framing and direction belong to execution, not the URL path."));
@@ -269,19 +344,30 @@ impl Compiler {
                 Report::new(format!("unsupported endpoint scheme '{scheme}'"), span)
                     .help("Supported URL schemes are ssh, http, https and tcp."),
             ),
-        }
+        }?;
+        Ok(Space::Endpoint(backend))
     }
 
-    fn location(&self, value: &str, site: &OperandSource) -> Result<Location, Report> {
-        let alias = self.expand(value, site)?;
+    fn location(
+        &self,
+        value: &str,
+        site: &OperandSource,
+        context: &CompileContext,
+    ) -> Result<Location, Report> {
+        let alias = self.expand(value, site, context)?;
         Ok(Location {
             backend: alias.backend.unwrap_or(Backend::Local),
             path: alias.path,
         })
     }
 
-    fn expand(&self, value: &str, site: &OperandSource) -> Result<Alias, Report> {
-        let alias = self.expand_inner(value, site)?;
+    fn expand(
+        &self,
+        value: &str,
+        site: &OperandSource,
+        context: &CompileContext,
+    ) -> Result<Alias, Report> {
+        let alias = self.expand_inner(value, site, context)?;
         if matches!(alias.backend, Some(Backend::Tcp { .. })) && alias.path != "/" {
             let start = value.find("::").map_or(0, |index| index + 2);
             return Err(tcp_path_report(site.interval(start, value.len())));
@@ -289,7 +375,12 @@ impl Compiler {
         Ok(alias)
     }
 
-    fn expand_inner(&self, value: &str, site: &OperandSource) -> Result<Alias, Report> {
+    fn expand_inner(
+        &self,
+        value: &str,
+        site: &OperandSource,
+        context: &CompileContext,
+    ) -> Result<Alias, Report> {
         if value.is_empty() || value.contains('\0') {
             return Err(Report::new(
                 "paths must be nonempty and cannot contain NUL",
@@ -298,10 +389,12 @@ impl Compiler {
             .help("Provide a non-empty filesystem path without NUL characters."));
         }
         let (mut backend, path) = match value.split_once("::") {
-            Some((name, path)) => (
-                Some(self.endpoint(name, site.interval(0, name.len()))?),
-                path,
-            ),
+            Some((name, path)) => match self.space(name, site.interval(0, name.len()))? {
+                Space::Endpoint(backend) => (Some(backend), path),
+                namespace => {
+                    return Self::namespace_item(namespace, path, value, site, context);
+                }
+            },
             None => (None, value),
         };
         if path.is_empty() {
@@ -312,7 +405,7 @@ impl Compiler {
                 "a qualified path must not be empty",
                 site.interval(value.len(), value.len()),
             )
-            .help("Add a path after '::'; use '$pwd::.' to refer to the current directory."));
+            .help("Add a path after '::'; use '$pwd::pwd' to refer to the current directory."));
         }
         if path.contains("::") {
             let start = value.len() - path.len() + path.find("::").unwrap();
@@ -322,17 +415,22 @@ impl Compiler {
             )
             .help("Choose one endpoint before '::' and put only a filesystem path after it."));
         }
-        if path == "$pwd" || path.starts_with("$pwd/") || path.starts_with("$pwd\\") {
-            if backend
-                .as_ref()
-                .is_some_and(|backend| !matches!(backend, Backend::Local))
-            {
-                return Err(Report::new("$pwd denotes the local working directory", qualifier_span(value, site)).label(site.interval(value.len() - path.len(), value.len() - path.len() + 4), "this path is explicitly local").help("Remove the remote qualifier, or use a relative path within that remote endpoint."));
-            }
-            return Ok(Alias {
-                backend: Some(Backend::Local),
-                path: format!(".{}", &path[4..]),
-            });
+        let component = path.split(['/', '\\']).next().unwrap_or(path);
+        if matches!(component, "$pwd" | "$file") {
+            let start = value.len() - path.len();
+            let help = if component == "$pwd" {
+                format!(
+                    "$pwd is a namespace, not a path; use '$pwd::pwd{}' instead.",
+                    &path[4..]
+                )
+            } else {
+                "Select '$file::this' for the script file or '$file::parent/path' for its directory.".to_string()
+            };
+            return Err(Report::new(
+                format!("{component} requires an explicit namespace item"),
+                site.interval(start, start + component.len()),
+            )
+            .help(help));
         }
         // Binding names are single components; unbound scripts need no path scan.
         let found = if self.aliases.is_empty() {
@@ -345,6 +443,7 @@ impl Compiler {
             return Ok(Alias {
                 backend,
                 path: path.to_string(),
+                is_file: false,
             });
         };
         if let Some(alias_backend) = &alias.backend {
@@ -358,12 +457,119 @@ impl Compiler {
             backend = Some(alias_backend.clone());
         }
         let suffix = &path[name.len()..];
+        if alias.is_file && !suffix.is_empty() {
+            let start = value.len() - suffix.len();
+            return Err(Report::new(
+                "a script-file value cannot have child path components",
+                site.interval(start, value.len()),
+            )
+            .help(
+                "Use '$file::parent/path' to address a sibling or child of the script directory.",
+            ));
+        }
         let path = if suffix.is_empty() {
             alias.path.clone()
         } else {
             format!("{}{}", alias.path.trim_end_matches(['/', '\\']), suffix)
         };
-        Ok(Alias { backend, path })
+        Ok(Alias {
+            backend,
+            path,
+            is_file: alias.is_file,
+        })
+    }
+
+    fn namespace_item(
+        namespace: Space,
+        path: &str,
+        value: &str,
+        site: &OperandSource,
+        context: &CompileContext,
+    ) -> Result<Alias, Report> {
+        let qualifier = value.split_once("::").map_or("", |(name, _)| name);
+        let item = path.split(['/', '\\']).next().unwrap_or(path);
+        let start = value.len() - path.len();
+        let item_span = site.interval(start, start + item.len());
+        let suffix = &path[item.len()..];
+        let (base, is_file) = match (&namespace, item) {
+            (Space::Pwd, "pwd") => (&context.pwd, false),
+            (Space::File, "this" | "parent") => {
+                let source = context.source_file.as_ref().ok_or_else(|| {
+                    Report::new("$file has no source-file context in this submission", site.interval(0, qualifier.len()))
+                        .help("Run or load a named script file to use '$file::this' or '$file::parent'; stdin and direct REPL input have no source file. Use '$pwd::pwd' for the working directory.")
+                })?;
+                if item == "this" {
+                    (source, true)
+                } else {
+                    let parent = source.parent().ok_or_else(|| Report::new("the source-file context has no parent directory", item_span).help("Provide the absolute path of a script file rather than a filesystem root."))?;
+                    return namespace_value(
+                        parent,
+                        suffix,
+                        false,
+                        site,
+                        start + item.len(),
+                        value.len(),
+                    );
+                }
+            }
+            _ => {
+                let help = match namespace {
+                    Space::Pwd => format!(
+                        "The $pwd namespace has one item, 'pwd'; use '{qualifier}::pwd/path' for working-directory-relative paths."
+                    ),
+                    Space::File => format!(
+                        "The $file namespace has items 'this' and 'parent'; use '{qualifier}::this' or '{qualifier}::parent/path'."
+                    ),
+                    Space::Endpoint(_) => {
+                        unreachable!("physical endpoints do not use namespace items")
+                    }
+                };
+                return Err(Report::new(
+                    format!("unknown item '{item}' in namespace '{qualifier}'"),
+                    item_span,
+                )
+                .help(help));
+            }
+        };
+        namespace_value(base, suffix, is_file, site, start + item.len(), value.len())
+    }
+}
+
+fn namespace_value(
+    base: &Path,
+    suffix: &str,
+    is_file: bool,
+    site: &OperandSource,
+    suffix_start: usize,
+    value_end: usize,
+) -> Result<Alias, Report> {
+    if is_file && !suffix.is_empty() {
+        return Err(Report::new(
+            "the script file cannot have child path components",
+            site.interval(suffix_start, value_end),
+        )
+        .help("Use '$file::parent/path' to address a sibling or child of the script directory."));
+    }
+    let base = base.to_str().ok_or_else(|| Report::new("the namespace value is not a Unicode path", site.content).help("This DSL represents paths as UTF-8; use a working directory and script filename representable in Unicode."))?;
+    let path = if suffix.is_empty() {
+        base.to_owned()
+    } else {
+        format!("{}{suffix}", base.trim_end_matches(['/', '\\']))
+    };
+    Ok(Alias {
+        backend: Some(Backend::Local),
+        path,
+        is_file,
+    })
+}
+
+impl fmt::Display for Space {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Endpoint(backend) => backend.fmt(formatter),
+            Self::Pwd => formatter.write_str("$pwd"),
+            Self::File => formatter.write_str("$file"),
+        }
     }
 }
 

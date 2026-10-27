@@ -157,6 +157,7 @@ impl HeldSource {
                     Err(error) => panic!("accept: {error}"),
                 }
             };
+            socket.set_nonblocking(false).unwrap();
             socket.write_all(payload).unwrap();
             let _ = accepted_sender.send(());
             let _ = receiver.recv_timeout(DEADLINE);
@@ -191,7 +192,7 @@ impl Drop for HeldSource {
 
 fn launch(repl: &mut Repl, source: &HeldSource) {
     repl.send(&format!(
-        "wire => tcp://{}\nwire::/ -> $pwd::output.bin\n",
+        "wire => tcp://{}\nwire::/ -> $pwd::pwd/output.bin\n",
         source.address
     ));
     source.connected();
@@ -219,7 +220,7 @@ fn live_stream_keeps_repl_responsive_and_stop_joins_resources() {
     let mut source = HeldSource::start(b"stream stays open");
     let mut repl = Repl::start(directory.path());
     launch(&mut repl, &source);
-    repl.send("/help\n/jobs\n/cd .\n/fmt copy.msync\n/load copy.msync\ninput.txt -> extra.txt\nroot := $pwd/configs\n/bindings\n/limits\n");
+    repl.send("/help\n/jobs\n/cd .\n/fmt copy.msync\n/load copy.msync\ninput.txt -> extra.txt\nroot := $pwd::pwd/configs\n/bindings\n/limits\n");
     repl.until("REPL commands");
     repl.until("job 1: running");
     repl.until("root :=");
@@ -331,14 +332,14 @@ fn failed_plan_preparation_does_not_commit_bindings() {
     fs::create_dir(directory.path().join("out")).unwrap();
     fs::write(
         directory.path().join("failed.msync"),
-        "leaked := $pwd/configs\n$pwd::input.txt -> $pwd::out\n",
+        "leaked := $pwd::pwd/configs\n$pwd::pwd/input.txt -> $pwd::pwd/out\n",
     )
     .unwrap();
     let mut repl = Repl::start(directory.path());
     repl.send("/load failed.msync\n/bindings\n/quit\n");
     let (status, errors) = repl.finish();
     assert!(status.success());
-    assert!(!errors.is_empty());
+    assert!(errors.contains("existing directory"), "{errors}");
     assert!(!repl.output.contains("leaked"), "{}", repl.output);
     assert_eq!(
         fs::read_dir(directory.path().join("out")).unwrap().count(),
@@ -354,11 +355,15 @@ fn background_errors_keep_owned_source_and_repl_recovers() {
     drop(unused);
     let mut repl = Repl::start(directory.path());
     repl.send(&format!(
-        "wire => tcp://{address}\nwire::/ -> $pwd::output.bin\n/wait\n/help\n/quit\n"
+        "wire => tcp://{address}\nwire::/ -> $pwd::pwd/output.bin\n/wait\n/help\n/quit\n"
     ));
     let (status, errors) = repl.finish();
     assert!(status.success(), "{errors}");
     assert!(errors.contains("error in <repl>"), "{errors}");
-    assert!(errors.contains("wire::/ -> $pwd::output.bin"), "{errors}");
+    assert!(
+        errors.contains("wire::/ -> $pwd::pwd/output.bin"),
+        "{errors}"
+    );
+    assert!(repl.output.contains("job 1: running in background"));
     assert!(repl.output.contains("REPL commands"));
 }

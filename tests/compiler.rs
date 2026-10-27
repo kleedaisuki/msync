@@ -1,5 +1,5 @@
 use msync::{
-    compiler::{Backend, Compiler},
+    compiler::{Backend, CompileContext, Compiler},
     syntax,
 };
 
@@ -107,7 +107,7 @@ fn reports(source: &str) -> Vec<syntax::Report> {
 
 #[test]
 fn unknown_endpoint_points_at_only_the_qualifier_with_constructive_help() {
-    let source = "  missing::some/long/file -> $pwd::out\n";
+    let source = "  missing::some/long/file -> $pwd::pwd/out\n";
     let report = &reports(source)[0];
     assert_eq!(
         &source[report.diagnostic.span.start..report.diagnostic.span.end],
@@ -123,13 +123,13 @@ fn unknown_endpoint_points_at_only_the_qualifier_with_constructive_help() {
 
 #[test]
 fn compiler_spans_map_through_quoted_escapes() {
-    let source = r#""missing::a\\b" -> "$pwd::out""#;
+    let source = r#""missing::a\\b" -> "$pwd::pwd/out""#;
     let report = &reports(source)[0];
     assert_eq!(
         &source[report.diagnostic.span.start..report.diagnostic.span.end],
         "missing"
     );
-    let source = r#""dir/<\\p{NoSuchProperty}>" -> "$pwd::out/""#;
+    let source = r#""dir/<\\p{NoSuchProperty}>" -> "$pwd::pwd/out/""#;
     let report = &reports(source)[0];
     assert_eq!(
         &source[report.diagnostic.span.start..report.diagnostic.span.end],
@@ -145,7 +145,7 @@ fn binding_and_readonly_destination_have_operand_spans() {
         &source[report.diagnostic.span.start..report.diagnostic.span.end],
         "bad/name"
     );
-    let source = "web => https://example.org\n$pwd::input -> web::output\n";
+    let source = "web => https://example.org\n$pwd::pwd/input -> web::output\n";
     let report = &reports(source)[0];
     assert_eq!(
         &source[report.diagnostic.span.start..report.diagnostic.span.end],
@@ -157,7 +157,7 @@ fn binding_and_readonly_destination_have_operand_spans() {
 
 #[test]
 fn qualifier_conflict_labels_both_endpoint_and_alias() {
-    let source = "root := $local::folder\n$wsl::root/file -> $pwd::out\n";
+    let source = "root := $local::folder\n$wsl::root/file -> $pwd::pwd/out\n";
     let report = &reports(source)[0];
     assert_eq!(
         &source[report.diagnostic.span.start..report.diagnostic.span.end],
@@ -171,7 +171,7 @@ fn qualifier_conflict_labels_both_endpoint_and_alias() {
 
 #[test]
 fn selector_destination_suggests_exact_trailing_slash_insertion() {
-    let source = "$pwd::files/<.+> -> $pwd::out\n";
+    let source = "$pwd::pwd/files/<.+> -> $pwd::pwd/out\n";
     let report = &reports(source)[0];
     assert_eq!(report.diagnostic.span.start, source.trim_end().len());
     assert_eq!(report.diagnostic.span.start, report.diagnostic.span.end);
@@ -179,25 +179,263 @@ fn selector_destination_suggests_exact_trailing_slash_insertion() {
 }
 
 #[test]
-fn explicit_pwd_prefix_and_endpoint_are_local_and_aliases_retain_locality() {
-    let program =
-        compile("root := $pwd/configs\n$pwd::source -> root/target\n$pwd/source -> $pwd\n");
+fn explicit_pwd_item_is_local_and_value_aliases_retain_locality() {
+    let program = compile(
+        "root := $pwd::pwd/configs\n$pwd::pwd/source -> root/target\n$pwd::pwd/source -> $pwd::pwd\n",
+    );
+    let pwd = std::env::current_dir().unwrap();
     assert_eq!(program.operations[0].source.backend, Backend::Local);
-    assert_eq!(program.operations[0].source.path, "source");
-    assert_eq!(program.operations[0].destination.path, "./configs/target");
-    assert_eq!(program.operations[1].source.path, "./source");
-    assert_eq!(program.operations[1].destination.path, ".");
+    assert_eq!(
+        std::path::Path::new(&program.operations[0].source.path),
+        pwd.join("source")
+    );
+    assert_eq!(
+        std::path::Path::new(&program.operations[0].destination.path),
+        pwd.join("configs/target")
+    );
+    assert_eq!(
+        std::path::Path::new(&program.operations[1].source.path),
+        pwd.join("source")
+    );
+    assert_eq!(
+        std::path::Path::new(&program.operations[1].destination.path),
+        pwd
+    );
     assert!(
-        reports("root := $pwd/configs\n$wsl::root/file -> $pwd::out\n")[0]
+        reports("root := $pwd::pwd/configs\n$wsl::root/file -> $pwd::pwd/out\n")[0]
             .diagnostic
             .message
             .contains("conflicting")
     );
 }
 
+fn namespace_context(pwd: &str, source: Option<&str>) -> CompileContext {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp/namespace-context");
+    CompileContext {
+        pwd: root.join(pwd),
+        source_file: source.map(|source| root.join(source)),
+    }
+}
+
+fn compile_in(
+    compiler: &mut Compiler,
+    source: &str,
+    context: &CompileContext,
+) -> msync::compiler::Program {
+    compiler
+        .compile_rich_with_context(&syntax::parse_rich(source).unwrap(), context)
+        .unwrap()
+}
+
+#[test]
+fn namespace_aliases_resolve_current_context_but_value_aliases_snapshot_declaration() {
+    let first = namespace_context("cwd-one", Some("scripts-one/sync.msync"));
+    let second = namespace_context("cwd-two", Some("scripts-two/sync.msync"));
+    let mut compiler = Compiler::new();
+    compile_in(
+        &mut compiler,
+        "this => $pwd\nfile => $file\nfixed := $pwd::pwd\nfixedfile := $file::this\nfixeddir := $file::parent\n",
+        &first,
+    );
+    let bindings = compiler.bindings();
+    assert!(bindings.contains(&"this => $pwd".to_string()));
+    assert!(bindings.contains(&"file => $file".to_string()));
+    let program = compile_in(
+        &mut compiler,
+        "this::pwd/input -> fixed/out\nfile::this -> fixedfile\nfile::parent/assets -> fixeddir/new\n",
+        &second,
+    );
+    assert_eq!(
+        std::path::Path::new(&program.operations[0].source.path),
+        second.pwd.join("input")
+    );
+    assert_eq!(
+        std::path::Path::new(&program.operations[0].destination.path),
+        first.pwd.join("out")
+    );
+    assert_eq!(
+        std::path::Path::new(&program.operations[1].source.path),
+        second.source_file.as_ref().unwrap()
+    );
+    assert_eq!(
+        std::path::Path::new(&program.operations[1].destination.path),
+        first.source_file.as_ref().unwrap()
+    );
+    assert_eq!(
+        std::path::Path::new(&program.operations[2].source.path),
+        second
+            .source_file
+            .as_ref()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("assets")
+    );
+    assert_eq!(
+        std::path::Path::new(&program.operations[2].destination.path),
+        first
+            .source_file
+            .as_ref()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("new")
+    );
+}
+
+#[test]
+fn same_named_script_files_have_distinct_source_and_parent_items() {
+    for directory in ["one", "two"] {
+        let context = namespace_context("unrelated-cwd", Some(&format!("{directory}/sync.msync")));
+        let program = compile_in(
+            &mut Compiler::new(),
+            "$file::this -> $file::parent/copy.msync\n",
+            &context,
+        );
+        let source = context.source_file.unwrap();
+        assert_eq!(
+            std::path::Path::new(&program.operations[0].source.path),
+            source
+        );
+        assert_eq!(
+            std::path::Path::new(&program.operations[0].destination.path),
+            source.parent().unwrap().join("copy.msync")
+        );
+    }
+}
+
+#[test]
+fn missing_source_context_points_to_namespace_qualifier_without_cwd_fallback() {
+    for source in [
+        "$file::this -> output\n",
+        "$file::parent/assets -> output\n",
+        "file => $file\nfile::this -> output\n",
+    ] {
+        let script = syntax::parse_rich(source).unwrap();
+        let context = namespace_context("cwd", None);
+        let report = &Compiler::new()
+            .compile_rich_with_context(&script, &context)
+            .unwrap_err()[0];
+        let span = report.diagnostic.span;
+        assert!(matches!(&source[span.start..span.end], "$file" | "file"));
+        assert!(report.diagnostic.message.contains("no source-file context"));
+        assert!(report.help[0].contains("stdin and direct REPL"));
+    }
+    let mut compiler = Compiler::new();
+    compile_in(
+        &mut compiler,
+        "file => $file\n",
+        &namespace_context("cwd", None),
+    );
+    assert_eq!(compiler.bindings(), ["file => $file"]);
+}
+
+#[test]
+fn namespace_unknown_items_never_become_child_paths_or_value_alias_lookups() {
+    for (source, expected) in [
+        ("$pwd::foo -> output\n", "foo"),
+        ("$pwd:: -> output\n", ""),
+        ("$file::unknown -> output\n", "unknown"),
+        ("this => $pwd\nthis::foo -> output\n", "foo"),
+        ("foo := known\n$pwd::foo -> output\n", "foo"),
+    ] {
+        let script = syntax::parse_rich(source).unwrap();
+        let report = &Compiler::new()
+            .compile_rich_with_context(
+                &script,
+                &namespace_context("cwd", Some("scripts/sync.msync")),
+            )
+            .unwrap_err()[0];
+        assert_eq!(
+            &source[report.diagnostic.span.start..report.diagnostic.span.end],
+            expected
+        );
+        assert!(report.diagnostic.message.contains("unknown item"));
+        assert!(!report.help.is_empty());
+    }
+}
+
+#[test]
+fn old_pwd_path_shorthand_has_precise_namespace_migration_help() {
+    for (operand, suggestion) in [
+        ("$pwd/configs", "$pwd::pwd/configs"),
+        ("$pwd", "$pwd::pwd"),
+        (r"$pwd\configs", r"$pwd::pwd\configs"),
+    ] {
+        let source = format!("{operand} -> output\n");
+        let report = &reports(&source)[0];
+        assert_eq!(
+            &source[report.diagnostic.span.start..report.diagnostic.span.end],
+            "$pwd"
+        );
+        assert!(report.help[0].contains(suggestion), "{:?}", report.help);
+    }
+    assert_eq!(
+        compile("legacy/input -> legacy/output\n").operations[0]
+            .source
+            .path,
+        "legacy/input"
+    );
+}
+
+#[test]
+fn script_file_items_reject_children_even_through_value_aliases() {
+    let context = namespace_context("cwd", Some("scripts/sync.msync"));
+    for source in [
+        "$file::this/child -> output\n",
+        "$file::this/ -> output\n",
+        "script := $file::this\nscript/child -> output\n",
+        "a := $file::this\nb := a\nb/child -> output\n",
+    ] {
+        let script = syntax::parse_rich(source).unwrap();
+        let report = &Compiler::new()
+            .compile_rich_with_context(&script, &context)
+            .unwrap_err()[0];
+        assert!(matches!(
+            &source[report.diagnostic.span.start..report.diagnostic.span.end],
+            "/child" | "/"
+        ));
+        assert!(report.help[0].contains("$file::parent/path"));
+    }
+}
+
+#[test]
+fn context_capture_is_absolute_and_compiler_rejects_relative_explicit_contexts() {
+    let context =
+        CompileContext::capture(Some(std::path::Path::new("scripts/main.msync"))).unwrap();
+    assert!(context.pwd.is_absolute());
+    assert!(context.source_file.as_ref().unwrap().is_absolute());
+    let source = syntax::parse("a -> b\n").unwrap();
+    let invalid = CompileContext {
+        pwd: "relative".into(),
+        source_file: None,
+    };
+    assert!(
+        Compiler::new()
+            .compile_with_context(&source, &invalid)
+            .is_err()
+    );
+}
+
+#[test]
+fn failed_namespace_resolution_rolls_back_namespace_and_value_bindings() {
+    let context = namespace_context("cwd", None);
+    let mut compiler = Compiler::new();
+    compile_in(&mut compiler, "kept => $pwd\n", &context);
+    let script =
+        syntax::parse_rich("newfile => $file\nnewpwd := $pwd::pwd\nnewfile::this -> output\n")
+            .unwrap();
+    assert!(
+        compiler
+            .compile_rich_with_context(&script, &context)
+            .is_err()
+    );
+    assert_eq!(compiler.bindings(), ["kept => $pwd"]);
+}
+
 #[test]
 fn tcp_endpoints_have_explicit_ports_and_no_credentials_or_paths() {
-    let program = compile("wire => tcp://127.0.0.1:9000\n$pwd::input -> wire::/\n");
+    let program = compile("wire => tcp://127.0.0.1:9000\n$pwd::pwd/input -> wire::/\n");
     assert!(
         matches!(&program.operations[0].destination.backend, Backend::Tcp {host,port} if host == "127.0.0.1" && *port == 9000)
     );
@@ -220,7 +458,7 @@ fn tcp_operands_require_explicit_socket_marker_with_precise_path_span() {
         "wire::~/file",
         "wire::",
     ] {
-        let source = format!("wire => tcp://127.0.0.1:9000\n{operand} -> $pwd::out\n");
+        let source = format!("wire => tcp://127.0.0.1:9000\n{operand} -> $pwd::pwd/out\n");
         let report = &reports(&source)[0];
         let path = operand.split_once("::").unwrap().1;
         assert_eq!(
@@ -230,7 +468,7 @@ fn tcp_operands_require_explicit_socket_marker_with_precise_path_span() {
         assert!(report.help.iter().any(|help| help.contains("endpoint::/")));
     }
     let source = r#"wire => tcp://127.0.0.1:9000
-"wire::folder\\file" -> $pwd::out
+"wire::folder\\file" -> $pwd::pwd/out
 "#;
     let report = &reports(source)[0];
     assert_eq!(
@@ -242,13 +480,13 @@ fn tcp_operands_require_explicit_socket_marker_with_precise_path_span() {
 #[test]
 fn tcp_path_aliases_preserve_socket_marker_and_reject_suffixes() {
     let program = compile(
-        "wire => tcp://127.0.0.1:9000\nchannel := wire::/\nchannel -> $pwd::out\n$pwd::input -> channel\n",
+        "wire => tcp://127.0.0.1:9000\nchannel := wire::/\nchannel -> $pwd::pwd/out\n$pwd::pwd/input -> channel\n",
     );
     assert_eq!(program.operations[0].source.path, "/");
     assert_eq!(program.operations[1].destination.path, "/");
     for statement in [
-        "channel/file -> $pwd::out",
-        "$pwd::input -> channel/file",
+        "channel/file -> $pwd::pwd/out",
+        "$pwd::pwd/input -> channel/file",
         "bad := channel/file",
         "bad := wire::file",
     ] {

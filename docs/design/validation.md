@@ -4,7 +4,7 @@ The supplied `docs/dsl/spread.msync` and `implementation.md` define the expected
 
 ## Verified journeys
 
-Run `cargo test --test cli` for the focused acceptance suite. The revised seventeen tests cover:
+Run `cargo test --test cli` for the focused acceptance suite. The current twenty-two tests cover:
 
 - Stdin frontend-only `check` and metadata-inspecting `compile`, typed alias expansion, and absence of copy side effects.
 - Real local overwrite followed by trailing-slash insertion conflict, including unchanged destination data and a located runtime diagnostic.
@@ -15,11 +15,12 @@ Run `cargo test --test cli` for the focused acceptance suite. The revised sevent
 - PATH lookup and ENV destination expansion using a controlled child-process environment.
 - Unicode diagnostic source/gutter/caret, exact endpoint-qualifier highlighting and similar-binding suggestions, destination-operand location for a directory type mismatch, and the actionable trailing-slash fix.
 - Actual ANSI highlights in both main and REPL help, plain piped output, forced ANSI color, `--color never`, and `NO_COLOR`. Help documents finite-copy, stream, buffer and aggregate-buffer-budget options.
-- `$pwd::file` and `$pwd/file` resolving relative to a REPL `/cd`, while legacy bare paths remain usable.
+- `$pwd::pwd/file` resolving relative to a REPL `/cd`; namespace aliases bound with `=>` remain dynamic, whereas values bound with `:=` capture their directory at declaration. Old `$pwd::arbitrary` and `$pwd/file` forms report migration help, while legacy bare local paths remain usable.
+- `$file::this` and `$file::parent` distinguish same-basename scripts in different directories when invoked from an unrelated cwd. `/load` supplies a scoped script context; a namespace alias follows the next loaded file while a captured value stays fixed. Returning to direct REPL input or stdin does not invent a source-file context, nor an implicit `file` alias. Formatting preserves this namespace grammar without executing it.
 - Rejection of an existing directory as a non-trailing-slash exact destination, before mutation.
 - Live plan dead-store elimination of the first of two regular-file writes to one target. Planning leaves destination contents intact; bounded execution writes the final source and leaves both source files intact.
 - CLI acceptance of all four resource limit options, and rejection of impossible/zero budgets before any target is written.
-- Telemetry persistence after process exit; one shared trace ID, unique span IDs, valid parent references, and one session root connecting parsing, compilation, execution, and copy. Compiler errors propagate to enclosing submission/session statuses. Paths, file contents, and source text are absent.
+- Telemetry persistence after process exit; one shared trace ID, unique completed-span IDs, valid parent references, event-to-owner references, and one session root connecting parsing, compilation, execution, and copy. Compiler errors propagate to enclosing submission/session statuses. Useful path/error metadata is permitted; file payloads and automatic secret-environment snapshots are absent.
 - An actual HTTP GET against a bounded localhost TCP server, including the expected base URL path and byte-exact downloaded body. This uses the native `curl` transport rather than a mock.
 
 ## Validation environment and limits
@@ -117,3 +118,116 @@ that installed executable, not Cargo's debug binary: `fmt` modified a script
 in place, `--check` passed, `plan` showed two regular-file assignments reduced
 to one, and resource-configured `run` copied the final source exactly once
 without modifying either input. Installed help emitted real ANSI highlights.
+
+## Explicit source namespaces and physical interruption ownership
+
+On 2026-10-27, the focused command below passed **38 tests on Windows and 38 on actual WSL/Linux**: 22 CLI journeys, eleven interruption journeys, and five scheduler journeys.
+
+```sh
+cargo test --test cli --test interruptions --test scheduler
+```
+
+The namespace journeys distinguish lookup capability from a captured value: `space => $pwd` observes a later `/cd`, while `frozen := $pwd::pwd` retains its declaration-time directory. They execute same-basename scripts in separate directories from an unrelated cwd, copy `$file::this`, and resolve `$file::parent` against each actual script. A namespace alias declared in one `/load` resolves against the next loaded script; a captured path remains fixed. Direct REPL/stdin submissions do not inherit the previous load's file context. Legacy `$pwd::arbitrary` and `$pwd/file` uses fail with migration help, without changing ordinary bare-path behavior. Namespace formatting is checked independently of semantic execution.
+
+`tests/interruptions.rs` uses the common `io::transfer` entrypoint for finite files and streams. Its tests observe real I/O state rather than merely asserting an end enum:
+
+- Already-cancelled transfers preserve an existing target and create no transaction artifact. Ordinary file-to-file transfers use the same cancellation and source-EOF contract as socket flows.
+- After both TCP endpoints open, token cancellation and forced task abort release both physical connections. The abort test explicitly leaves the cancellation token unset.
+- After a socket sink acknowledges a binary prefix, abort closes the endpoints without injecting additional bytes. Source EOF flushes the exact binary payload and closes the destination normally.
+- Windows directional named-pipe abort releases the writer and its duplicated close watcher, as observed by server EOF/disconnection. A backpressured regular-file-to-TCP flow is aborted after a received prefix; a Windows `share_mode(0)` open fails while the source handle is live and succeeds after cleanup, demonstrating physical handle release.
+- Native Unix-socket and FIFO tests observe EOF after abort, including the FIFO writer's duplicated close-watch descriptor. These are real native filesystem endpoints, not mocks or metadata-only classifications.
+- For regular-file sinks, a TCP source deliberately withholds EOF. The test waits until the same-directory unpublished stage contains a complete 4096-byte prefix, then cancels or aborts. This creates a stable after-write/before-publication boundary without sleeping or depending on copy speed. Existing targets retain their old bytes, new targets remain absent, and all stages disappear. A matching successful test publishes only after normal EOF.
+
+The transaction assertion is **per regular file**. It does not promise to undo already committed files, structural directories, or bytes consumed by an external socket/pipe peer. The external-peer tests instead verify the observed exact prefix and physical closure. Completion counters are not used as a timing oracle for cancellation; actual received/staged bytes establish that I/O happened.
+
+The Linux run used the private mount-namespace `.temp` tmpfs wrapper from `streams.md`, because DrvFs cannot create the required FIFO/socket fixtures. It used cached Rust 1.97.1, `CARGO_TARGET_DIR=target/wsl-performance`, `CARGO_NET_OFFLINE=true`, `CARGO_HOME=/mnt/c/Users/STONE/.cargo`, and `RUSTUP_HOME=/home/moesegfault/.rustup` as per-command environment settings. No package-manager or system configuration was changed. Windows used Rust 1.99.0. Both runs exercised native platform-specific tests rather than skipping them.
+
+The isolated SSH fixture independently extends the same drop boundary: `ssh_fifo_socket_and_cancellation_use_real_remote_helpers` first observes a live remote Python helper, aborts the local transfer task while its token remains unset, and audits zero surviving helpers. The existing token-cancellation route remains separate. That actual fixture run passed; its remote setup and isolation remain documented in `runtime.md` rather than duplicated here.
+
+The CLI trace-graph check now branches on the documented `kind`: completed spans own unique IDs, whereas lifecycle events reuse their owning span ID. Events must reference a span present in the same trace; they are not extra roots or graph vertices. This corrected a test assumption exposed by native Linux I/O events without weakening the single-session parent graph or payload/environment privacy assertions.
+
+## Final v0.3.0 acceptance (2026-10-27)
+
+The final source includes preparation-owned ancestor caching, ignored-directory-
+suffix symlink guards and the known-COMMITTED/transport-timeout fix. Both platforms
+ran the **default parallel** test harness, not only selected serial targets:
+
+| Gate | Executed result |
+| --- | --- |
+| Windows `cargo test --locked --all-targets` | 207 passed, no failures |
+| WSL/Linux `cargo test --locked --all-targets` | 202 passed, no failures; private native tmpfs fixtures |
+| Both platforms `cargo clippy --locked --all-targets -- -D warnings` | Passed |
+| `cargo fmt --check`, both release builds | Passed |
+| Actual isolated Windows OpenSSH/WSL fixture, all six tests | Passed together, 81.36 seconds |
+| Explicit native after-open cancellation and WSL round-trip runtime tests | Both passed |
+| Explicit live WSL metadata batching/classification tests | Both passed |
+| Actual Windows I/O Ring capability plus nonaligned positioned read | Passed, READ/WRITE supported, max version 400 |
+| WSL regular file to real native TCP, and WSL/native alias-order regression | Both passed |
+| Exact production Python file-helper protocol | Passed complete DATA/no-FINISH, truncated DATA, oversized frame and valid FINISH cases |
+| Native POSIX source executable mode and unwritable-target checks | Both passed as UID/GID 1000 with capability bounding set cleared |
+
+Ignored host-dependent or performance cases are not counted as passed in the
+normal-suite totals. Windows-only SSH tests are not inferred from Linux's empty
+target. The POSIX access test first proves a real nontruncating write-open is
+denied before checking that atomic publication cannot bypass it.
+
+The full rerun exposed two stale REPL fixtures whose old `$pwd` syntax caused
+frontend errors instead of reaching their intended background/preparation
+journeys. They now use `$pwd::pwd`, require an actually started background job,
+and assert the actual existing-directory preparation diagnostic. A parallel
+Windows HTTP fixture also exposed inherited nonblocking accepted sockets; test
+servers now explicitly choose blocking accepted I/O with bounded read waits.
+No production error was hidden by weakening those assertions or serializing
+the final normal suites.
+
+### Requirement-to-evidence audit
+
+| Requested contract | Authoritative coverage |
+| --- | --- |
+| `$pwd` namespace, `this => $pwd`, captured `this := $pwd::pwd` | Compiler and actual CLI/REPL tests distinguish dynamic namespace lookup from declaration-time captured paths and preserve ordinary bare-path behavior |
+| `$file::this` and `$file::parent` | Named-file/run/load/check/plan contexts, unrelated cwd, same basenames, transitive file aliases, missing stdin/REPL context and transaction rollback |
+| Uniform `->` byte flow, structural directories | Public `io::transfer`, native finite file tests, actual TCP/FIFO/Unix socket/named pipe, HTTP and authenticated remote journeys |
+| Open-resource cancellation, reset, abort and independent EOF | Actual accepted/staged prefixes, old/new target preservation, physical handle/peer EOF, helper process cleanup, real 256 MiB native-copy cancellation and empty remote FIFO cancellation |
+| Remote commit knowledge | Explicit FINISH authorizes publication; real child-process tests distinguish known COMMITTED followed by shutdown/exit/timeout failure from an unacknowledged ambiguous timeout |
+| Graph optimization and bounded execution | Fixed-point/state-equivalence properties, indexed overlap property, source-version/identity guards, hazard closure/co-start tests, finite/stream shared buffer admission and deferred child kinds |
+| Cross-platform native I/O and event-driven performance | Actual CopyFileExW/TransmitFile and Linux range/sendfile tests, ring operations, 480 verified matched-storage samples and ten native-ext4 cold reactor flows |
+| Millisecond startup and waiting | Actual paired CLI/REPL processes, native image/data and pathname-scope control, real WSL metadata clients, before/after tables in `performance-startup-v3.md` |
+| Useful diagnostics/observability | Token/source-map and ANSI tests; paths, engine/phase, typed causes and committed/discarded counters; dropped active operations are incomplete/cancelled |
+
+The storage challenge is resolved with opened-descriptor ext4 proof and verified
+zero Linux-page residency for cold ext4 samples, not by relabeling tmpfs or
+DrvFs as native disk. The durable 160-configuration CSV, ten-trial reactor CSV,
+reproduction harness and scoped interpretation are in `io-linux-v3.md`. Host
+physical cache is uncontrolled. Some deep DrvFs ring cases beat range copying;
+the notes retain that counterexample and do not claim universal ring inferiority.
+
+### Installed artifact journey
+
+The verified default-profile release was deployed to `D:\SystemScripts\msync.exe`
+and reports `msync 0.3.0`; command lookup resolves that same path. SHA-256:
+
+```text
+6D32BFABC48D9E70773113CA996ADDA0FA84AAA760E5BA7BB1C074B05566E419
+```
+
+It is byte-identical to `target/release/msync.exe`. The previous installed 0.2.0
+image is preserved in `target/perf-baseline/msync-installed-before-v3.exe`.
+Installation uses same-volume atomic replacement rather than in-place truncation,
+not an unmanaged service or SSH-configuration change.
+
+Acceptance then used the installed executable from an unrelated caller directory:
+in-place `fmt` and `fmt --check`, contextual `check`, metadata-only `plan`, and
+bounded `run --jobs 2 --buffer-size 1KiB --memory-limit 2KiB`. Four source statements
+became three retained operations, with exactly three copied files and 206 flow
+bytes. It copied the exact formatted `$file::this`, resolved `$file::parent` to
+the script directory, resolved a namespace alias of `$pwd` to the caller directory,
+preserved both input files, emitted useful trace path/ancestor counters and
+forced ANSI help, and accepted both `/help` and `/?`. A separate existing exact
+directory destination failed constructively without changing the directory.
+Disposable commands/logs/fixtures remain under repository `.temp`; the durable
+findings and procedures above do not depend on preserving that directory.
+
+Final formatter safety also rejects both `fmt --dry-run` and `fmt -n` before
+reading/writing a script, with guidance to use `--check` or `--stdout`. The real
+CLI journey asserts the unformatted source stays byte-identical; a global
+preview flag is never silently ignored while modifying the script.

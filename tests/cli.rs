@@ -169,6 +169,12 @@ fn formatter_defaults_to_in_place_and_stdout_check_remain_read_only() {
     let file = directory.path().join("sample.msync");
     let original = "# preserved\nsource->destination # inline\n";
     fs::write(&file, original).unwrap();
+    for flag in ["--dry-run", "-n"] {
+        let result = invoke(directory.path(), &["fmt", "sample.msync", flag], "");
+        assert!(!result.status.success());
+        assert!(stderr(&result).contains("--check"));
+        assert_eq!(fs::read_to_string(&file).unwrap(), original);
+    }
     let printed = invoke(directory.path(), &["fmt", "sample.msync", "--stdout"], "");
     assert_success(&printed);
     assert!(stdout(&printed).contains("source -> destination"));
@@ -285,6 +291,12 @@ fn help_and_repl_help_highlight_real_ansi_and_stay_plain_when_piped() {
             "missing documented option {option}"
         );
     }
+    for item in ["$pwd::pwd", "$file::this", "$file::parent"] {
+        assert!(
+            stdout(&plain).contains(item),
+            "help must document namespace item {item}"
+        );
+    }
     let no_color = invoke_command(
         command(directory.path())
             .args(["--help"])
@@ -299,14 +311,14 @@ fn help_and_repl_help_highlight_real_ansi_and_stay_plain_when_piped() {
 }
 
 #[test]
-fn pwd_endpoint_and_prefix_resolve_against_repl_current_directory() {
+fn pwd_namespace_item_and_alias_resolve_against_repl_current_directory() {
     let directory = workspace();
     fs::create_dir(directory.path().join("work")).unwrap();
     fs::write(directory.path().join("work/source.txt"), "cwd-owned").unwrap();
     let output = invoke(
         directory.path(),
         &["repl"],
-        "/cd work\n$pwd::source.txt -> $pwd/first.txt\n$pwd/source.txt -> $pwd::second.txt\n/quit\n",
+        "/cd work\n$pwd::pwd/source.txt -> $pwd::pwd/first.txt\nthis => $pwd\nthis::pwd/source.txt -> second.txt\n/quit\n",
     );
     assert_success(&output);
     assert!(stderr(&output).is_empty(), "{}", stderr(&output));
@@ -316,6 +328,159 @@ fn pwd_endpoint_and_prefix_resolve_against_repl_current_directory() {
             "cwd-owned"
         );
     }
+}
+
+#[test]
+fn pwd_namespace_rebinding_is_dynamic_but_path_alias_captures_its_value() {
+    let directory = workspace();
+    for (name, content) in [("first", "first context"), ("second", "second context")] {
+        fs::create_dir(directory.path().join(name)).unwrap();
+        fs::write(directory.path().join(name).join("source.txt"), content).unwrap();
+    }
+    let output = invoke(
+        directory.path(),
+        &["repl"],
+        "/cd first\nspace => $pwd\nfrozen := $pwd::pwd\n/cd ../second\nspace::pwd/source.txt -> dynamic.txt\nfrozen/source.txt -> captured.txt\n/quit\n",
+    );
+    assert_success(&output);
+    assert!(stderr(&output).is_empty(), "{}", stderr(&output));
+    assert_eq!(
+        fs::read_to_string(directory.path().join("second/dynamic.txt")).unwrap(),
+        "second context"
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("second/captured.txt")).unwrap(),
+        "first context"
+    );
+}
+
+#[test]
+fn old_pwd_path_forms_fail_with_migration_help_but_bare_paths_stay_compatible() {
+    let directory = workspace();
+    fs::write(directory.path().join("source.txt"), "legacy source").unwrap();
+    for source in [
+        "$pwd::source.txt -> target.txt\n",
+        "$pwd/source.txt -> target.txt\n",
+    ] {
+        let output = invoke(directory.path(), &["check", "-"], source);
+        assert!(
+            !output.status.success(),
+            "legacy namespace misuse must not silently change meaning"
+        );
+        assert!(stderr(&output).contains("$pwd::pwd"), "{}", stderr(&output));
+        assert!(!directory.path().join("target.txt").exists());
+    }
+    assert_success(&invoke(
+        directory.path(),
+        &["run", "-"],
+        "source.txt -> target.txt\n",
+    ));
+    assert_eq!(
+        fs::read_to_string(directory.path().join("target.txt")).unwrap(),
+        "legacy source"
+    );
+}
+
+#[test]
+fn file_namespace_distinguishes_same_basename_scripts_from_an_unrelated_cwd() {
+    let directory = workspace();
+    let caller = directory.path().join("caller");
+    fs::create_dir(&caller).unwrap();
+    let script = "$file::parent/asset.txt -> $file::parent/output.txt\n$file::this -> $file::parent/script-copy.msync\n";
+    for (name, contents) in [("first", "first asset"), ("second", "second asset")] {
+        let root = directory.path().join(name);
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("asset.txt"), contents).unwrap();
+        fs::write(root.join("sync.msync"), script).unwrap();
+        let result = invoke(
+            &caller,
+            &["run", root.join("sync.msync").to_str().unwrap()],
+            "",
+        );
+        assert_success(&result);
+        assert_eq!(
+            fs::read_to_string(root.join("output.txt")).unwrap(),
+            contents
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("script-copy.msync")).unwrap(),
+            script
+        );
+    }
+    assert!(!caller.join("output.txt").exists());
+    assert!(!caller.join("script-copy.msync").exists());
+}
+
+#[test]
+fn load_source_context_is_scoped_namespace_aliases_are_dynamic_and_values_persist() {
+    let directory = workspace();
+    for (name, contents) in [("first", "first asset"), ("second", "second asset")] {
+        let root = directory.path().join(name);
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("asset.txt"), contents).unwrap();
+    }
+    fs::write(directory.path().join("first/load.msync"), "file => $file\nfrozen := $file::parent\nfile::parent/asset.txt -> $file::parent/output.txt\n").unwrap();
+    fs::write(
+        directory.path().join("second/load.msync"),
+        "file::parent/asset.txt -> $file::parent/output.txt\n",
+    )
+    .unwrap();
+    let output = invoke(
+        directory.path(),
+        &["repl"],
+        "/load first/load.msync\n/load second/load.msync\n$file::this -> leaked-direct.msync\nfile::this -> leaked-alias.msync\nfrozen/asset.txt -> captured.txt\n/quit\n",
+    );
+    assert_success(&output);
+    let diagnostic = stderr(&output);
+    assert!(diagnostic.contains("source-file context"), "{diagnostic}");
+    assert_eq!(
+        fs::read_to_string(directory.path().join("first/output.txt")).unwrap(),
+        "first asset"
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("second/output.txt")).unwrap(),
+        "second asset"
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("captured.txt")).unwrap(),
+        "first asset"
+    );
+    assert!(!directory.path().join("leaked-direct.msync").exists());
+    assert!(!directory.path().join("leaked-alias.msync").exists());
+}
+
+#[test]
+fn stdin_has_no_file_context_or_implicit_file_alias_and_namespace_formatting_is_idempotent() {
+    let directory = workspace();
+    let missing_context = invoke(
+        directory.path(),
+        &["check", "-"],
+        "$file::parent/asset.txt -> output.txt\n",
+    );
+    assert!(!missing_context.status.success());
+    assert!(stderr(&missing_context).contains("source-file context"));
+    let unbound_alias = invoke(
+        directory.path(),
+        &["check", "-"],
+        "file::this -> output.txt\n",
+    );
+    assert!(!unbound_alias.status.success());
+    assert!(
+        stderr(&unbound_alias).contains("unknown endpoint")
+            || stderr(&unbound_alias).contains("unknown namespace")
+    );
+    let file = directory.path().join("namespaces.msync");
+    fs::write(
+        &file,
+        "file=>$file\nthis:=$pwd::pwd\nfile::parent/asset.txt->this/output.txt # keep namespace\n",
+    )
+    .unwrap();
+    assert_success(&invoke(directory.path(), &["fmt", "namespaces.msync"], ""));
+    let first = fs::read_to_string(&file).unwrap();
+    assert!(first.contains("file => $file"));
+    assert!(first.contains("this := $pwd::pwd"));
+    assert_success(&invoke(directory.path(), &["fmt", "namespaces.msync"], ""));
+    assert_eq!(fs::read_to_string(file).unwrap(), first);
 }
 
 #[test]
@@ -500,16 +665,20 @@ fn env_and_path_endpoints_use_the_child_environment() {
 }
 
 #[test]
-fn trace_file_survives_exit_and_connects_all_pipeline_phases_without_paths() {
+fn trace_file_survives_exit_and_connects_all_pipeline_phases_without_payload_capture() {
     let directory = workspace();
     fs::write(
         directory.path().join("private-source.txt"),
         "private payload",
     )
     .unwrap();
-    let result = invoke(
-        directory.path(),
-        &["run", "-", "--trace", "trace.jsonl"],
+    let result = invoke_command(
+        command(directory.path())
+            .args(["run", "-", "--trace", "trace.jsonl"])
+            .env(
+                "MSYNC_TEST_TELEMETRY_SECRET",
+                "sensitive env value must not leak",
+            ),
         "private-source.txt -> private-destination.txt\n",
     );
     assert_success(&result);
@@ -528,35 +697,56 @@ fn trace_file_survives_exit_and_connects_all_pipeline_phases_without_paths() {
         );
     }
     let lines: Vec<&str> = trace.lines().collect();
-    assert!(lines.len() >= 6);
+    let spans: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|line| string_field(line, "kind") == "span")
+        .collect();
+    assert!(spans.len() >= 6);
     let trace_id = string_field(lines[0], "trace_id");
-    let span_ids: std::collections::HashSet<&str> = lines
+    let span_ids: std::collections::HashSet<&str> = spans
         .iter()
         .map(|line| string_field(line, "span_id"))
         .collect();
     assert_eq!(trace_id.len(), 32);
-    assert_eq!(span_ids.len(), lines.len(), "span IDs must be unique");
+    assert_eq!(
+        span_ids.len(),
+        spans.len(),
+        "completed span IDs must be unique; events reference an existing span"
+    );
     for line in &lines {
         assert!(line.starts_with('{') && line.ends_with('}'));
         assert_eq!(string_field(line, "trace_id"), trace_id);
         assert_eq!(string_field(line, "span_id").len(), 16);
-        assert!(line.contains("\"duration_ns\":"));
-        if !line.contains("\"parent_span_id\":null") {
-            assert!(
-                span_ids.contains(string_field(line, "parent_span_id")),
-                "parent must exist in the session: {line}"
-            );
+        match string_field(line, "kind") {
+            "event" => {
+                assert!(
+                    span_ids.contains(string_field(line, "span_id")),
+                    "events must reference an existing owner span: {line}"
+                );
+                assert!(line.contains("\"timestamp_unix_ns\":"));
+            }
+            "span" => {
+                assert!(line.contains("\"duration_ns\":"));
+                if !line.contains("\"parent_span_id\":null") {
+                    assert!(
+                        span_ids.contains(string_field(line, "parent_span_id")),
+                        "parent must exist in the session: {line}"
+                    );
+                }
+            }
+            kind => panic!("unsupported trace record kind: {kind}"),
         }
     }
-    let root = lines
+    let root = spans
         .iter()
         .filter(|line| line.contains("\"parent_span_id\":null"))
         .collect::<Vec<_>>();
     assert_eq!(root.len(), 1, "one end-to-end session must have one root");
     assert_eq!(string_field(root[0], "name"), "session");
-    assert!(!trace.contains("private-source"));
-    assert!(!trace.contains("private-destination"));
     assert!(!trace.contains("private payload"));
+    assert!(!trace.contains("MSYNC_TEST_TELEMETRY_SECRET"));
+    assert!(!trace.contains("sensitive env value must not leak"));
 }
 
 #[test]
@@ -593,6 +783,7 @@ fn http_fetch_journey_uses_real_local_server_and_preserves_body() {
         loop {
             match listener.accept() {
                 Ok((mut connection, _)) => {
+                    connection.set_nonblocking(false).unwrap();
                     connection
                         .set_read_timeout(Some(Duration::from_secs(5)))
                         .unwrap();

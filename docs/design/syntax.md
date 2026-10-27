@@ -16,8 +16,26 @@ This follows the practical pattern in [rustfmt's contribution guide](https://git
 
 This design follows the [Rust compiler diagnostic guide](https://rustc-dev-guide.rust-lang.org/diagnostics.html): a standalone problem description, precise primary and secondary spans, and actionable suggestions. [Miette's diagnostic model](https://docs.rs/miette/latest/miette/) independently separates source labels from help text. The implementation uses this small model directly rather than introducing a rendering framework dependency for the current line-oriented language. Suggestions are advisory help rather than automatic edits: changing an endpoint or adding a destination slash can change copy semantics and requires the user's intent.
 
-## Explicit current-directory paths and streams
+## Contextual namespaces, physical endpoints and value aliases
 
-`$pwd::path` resolves a local path against the execution working directory. `$pwd/path` and bare `$pwd` are explicit local path markers that compile to `./path` and `.`. Path aliases containing this marker retain their local endpoint, so qualifying such an alias with WSL/SSH is an error with labels on both the qualifier and alias. Existing unqualified relative paths stay supported to preserve userspace; new help recommends `$pwd` without automatically rewriting path-polymorphic aliases.
+`=>` binds a space, while `:=` binds a path value. Private `Space` distinguishes contextual `Pwd`/`File` namespaces from physical `Endpoint(Backend)` transports. This prevents the old accidental equivalence between a namespace and a directory. Public `Backend`, `Location` and `CopyOp` remain physical execution contracts and have no contextual namespace variants.
+
+| Namespace access | Value | Permitted suffix |
+| --- | --- | --- |
+| `$pwd::pwd` | Absolute logical working-directory snapshot for this submission | Directory children, e.g. `$pwd::pwd/assets/` |
+| `$file::this` | Absolute logical path of the named source script | None: this item is a file, not a directory |
+| `$file::parent` | Parent directory of that source script | Directory children, e.g. `$file::parent/assets/` |
+
+Namespace items resolve before any value-alias lookup. `$pwd::foo` is an unknown-item error, never an implicit cwd child, even if `foo` is an existing path alias. The intentionally revised syntax rejects old `$pwd/foo` and bare `$pwd`, pointing at `$pwd` with migration help to `$pwd::pwd/foo` and `$pwd::pwd`. Legacy ordinary unqualified relative paths retain their previous local-path behavior. The formatter remains syntax-only and does not guess namespace rewrites.
+
+`this => $pwd` and `file => $file` bind namespace aliases without reading an item. Their items resolve against the context of each subsequent submission, including changes to cwd or the `/load` source script. `this := $pwd::pwd` and `script := $file::this` instead capture concrete absolute local paths at declaration. Value aliases transitively retain known-file provenance: `script/child` is rejected even after copying that value into another alias. Plain path-only aliases such as `root := ~/.codex` retain their existing endpoint-polymorphic behavior; binding a namespace item makes locality explicit.
+
+`CompileContext { pwd, source_file }` is passed to `Compiler::compile_rich_with_context` or `compile_with_context`. `CompileContext::capture(Some(path))` captures absolute logical source identity without canonicalizing symlinks or probing filesystem metadata. Explicit contexts require absolute paths. The context-free compilation APIs capture the current directory and have no source file. CLI named-file intake supplies source context; stdin and direct REPL submissions do not invent one. Missing `$file` context points at the namespace qualifier and recommends running/loading a named script or using `$pwd::pwd`, rather than silently substituting cwd. Two scripts with the same basename in different directories therefore have different `this` and `parent` values.
+
+Compiler state commits only after a complete successful compilation. A namespace alias can be declared even without its runtime source context (`file => $file` in a REPL); accessing `file::this` still requires a named-file context. Context capture is kept outside pure compile benchmarks so OS cwd lookup is measured separately from lowering.
+
+These are explicit binding-time rules, not filesystem-resolution heuristics: namespace aliases preserve a lookup capability, value aliases preserve its resolved result, and the execution plan sees only physical locations. No filesystem canonicalization, source reading or remote probing is introduced into semantic compilation.
+
+## Stream endpoint syntax
 
 TCP endpoint declarations use `tcp://host:port` with mandatory explicit port, no credentials/query/fragment and no nontrivial URL path. They lower to `Backend::Tcp`; execution and stream framing are owned by the plan/stream layers, not encoded as parser special cases.

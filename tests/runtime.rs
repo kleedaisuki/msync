@@ -11,6 +11,13 @@ fn temporary_directory() -> TempDir {
     tempfile::tempdir_in(root).unwrap()
 }
 
+fn current_metadata(entry: &fs::DirEntry) -> std::io::Result<fs::Metadata> {
+    // NTFS enumeration can cache lengths while the writer's handle is still open.
+    fs::File::open(entry.path())
+        .and_then(|file| file.metadata())
+        .or_else(|_| entry.metadata())
+}
+
 fn program(source: &Path, target: &Path, container: bool, pattern: Option<&str>) -> Program {
     Program {
         operations: vec![CopyOp {
@@ -401,4 +408,213 @@ fn compatibility_execute_dispatches_a_file_to_a_real_tcp_socket() {
 async fn synchronous_compatibility_execute_reports_nested_runtime_instead_of_panicking() {
     let result = execute(&Program::default(), &ExecutionOptions::default());
     assert!(result.unwrap_err().message.contains("execute_plan_async"));
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "real CopyFileEx cancellation after open; reserves a 256MiB finite source"]
+fn native_copy_cancellation_after_open_preserves_existing_or_absent_target() {
+    use msync::scheduler::{self, ResourceLimits};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    use std::thread;
+    use std::time::{Duration, Instant};
+    use tokio_util::sync::CancellationToken;
+    let directory = temporary_directory();
+    let source = directory.path().join("large-source.bin");
+    fs::File::create(&source)
+        .unwrap()
+        .set_len(256 * 1024 * 1024)
+        .unwrap();
+    let target = directory.path().join("target.bin");
+    for existing in [false, true] {
+        if existing {
+            fs::write(&target, "previous complete payload").unwrap();
+        }
+        let plan = scheduler::prepare(&program(&source, &target, false, None), true).unwrap();
+        let cancel = CancellationToken::new();
+        let finished = Arc::new(AtomicBool::new(false));
+        let watcher = thread::spawn({
+            let root = directory.path().to_owned();
+            let cancel = cancel.clone();
+            let finished = Arc::clone(&finished);
+            move || {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !finished.load(Ordering::Acquire) && Instant::now() < deadline {
+                    let opened = fs::read_dir(&root)
+                        .unwrap()
+                        .filter_map(Result::ok)
+                        .any(|entry| {
+                            entry.file_name().to_string_lossy().contains(".msync-")
+                                && current_metadata(&entry).is_ok_and(|metadata| metadata.len() > 0)
+                        });
+                    if opened {
+                        cancel.cancel();
+                        return true;
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+                cancel.cancel();
+                false
+            }
+        });
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(scheduler::execute_plan_async(
+                &plan,
+                &ResourceLimits::default(),
+                cancel,
+            ));
+        finished.store(true, Ordering::Release);
+        assert!(
+            watcher.join().unwrap(),
+            "copy completed before the after-open cancellation checkpoint"
+        );
+        assert!(result.unwrap_err().message.contains("cancelled"));
+        if existing {
+            assert_eq!(
+                fs::read_to_string(&target).unwrap(),
+                "previous complete payload"
+            );
+        } else {
+            assert!(!target.exists());
+        }
+        assert!(
+            !fs::read_dir(directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| entry.file_name().to_string_lossy().contains(".msync-"))
+        );
+    }
+}
+
+#[tokio::test]
+async fn regular_files_use_the_same_typed_flow_end_as_pipes_and_sockets() {
+    use msync::io::{self, FlowEnd};
+    use tokio_util::sync::CancellationToken;
+    let directory = temporary_directory();
+    let source = directory.path().join("source.bin");
+    let target = directory.path().join("target.bin");
+    fs::write(&source, b"finite\0flow").unwrap();
+    let operation = program(&source, &target, false, None).operations.remove(0);
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    let cancelled = io::transfer(&operation, 64 * 1024, cancel).await.unwrap();
+    assert_eq!(cancelled.end, FlowEnd::Cancelled);
+    assert_eq!(cancelled.bytes, 0);
+    assert!(!target.exists());
+    let completed = io::transfer(&operation, 64 * 1024, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(completed.end, FlowEnd::SourceClosed);
+    assert_eq!(completed.bytes, 11);
+    assert_eq!(fs::read(target).unwrap(), b"finite\0flow");
+}
+
+#[test]
+fn http_reset_after_body_prefix_never_publishes_a_partial_file() {
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+        time::{Duration, Instant},
+    };
+    for existing in [false, true] {
+        let directory = temporary_directory();
+        let target = directory.path().join("target.bin");
+        if existing {
+            fs::write(&target, "previous complete payload").unwrap();
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let root = directory.path().to_owned();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            assert!(socket.read(&mut request).unwrap() > 0);
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            socket.write_all(&vec![b'P'; 64 * 1024]).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !fs::read_dir(&root)
+                .unwrap()
+                .filter_map(Result::ok)
+                .any(|entry| {
+                    entry.file_name().to_string_lossy().contains(".msync-")
+                        && current_metadata(&entry)
+                            .is_ok_and(|metadata| metadata.len() >= 64 * 1024)
+                })
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "HTTP prefix was not accepted into the direct transaction stage"
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+            socket2::SockRef::from(&socket)
+                .set_linger(Some(Duration::ZERO))
+                .unwrap();
+        });
+        let mut plan = program(&directory.path().join("unused"), &target, false, None);
+        plan.operations[0].source = Location {
+            backend: Backend::Http {
+                base: format!("http://{address}/"),
+            },
+            path: "payload.bin".into(),
+        };
+        let result = execute(&plan, &ExecutionOptions::default());
+        server.join().unwrap();
+        assert!(result.is_err());
+        if existing {
+            assert_eq!(
+                fs::read_to_string(&target).unwrap(),
+                "previous complete payload"
+            );
+        } else {
+            assert!(!target.exists());
+        }
+        assert_eq!(
+            fs::read_dir(directory.path()).unwrap().count(),
+            usize::from(existing)
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn native_copy_preserves_long_path_support_for_overwrite_and_container_targets() {
+    let directory = temporary_directory();
+    let source = directory.path().join(format!("{}.bin", "s".repeat(230)));
+    let target = directory.path().join(format!("{}.bin", "t".repeat(230)));
+    fs::write(&source, "long path payload").unwrap();
+    execute(
+        &program(&source, &target, false, None),
+        &ExecutionOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(fs::read_to_string(&target).unwrap(), "long path payload");
+    fs::write(&source, "updated payload").unwrap();
+    execute(
+        &program(&source, &target, false, None),
+        &ExecutionOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(fs::read_to_string(&target).unwrap(), "updated payload");
+    let container = directory.path().join("container");
+    execute(
+        &program(&source, &container, true, None),
+        &ExecutionOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(container.join(source.file_name().unwrap())).unwrap(),
+        "updated payload"
+    );
 }

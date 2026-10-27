@@ -75,6 +75,10 @@ fn http_remote_basename_cannot_escape_scratch_directory() {
                 Err(error) => panic!("{error}"),
             }
         };
+        connection.set_nonblocking(false).unwrap();
+        connection
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
         let mut request = [0_u8; 4096];
         let _ = connection.read(&mut request).unwrap();
         connection

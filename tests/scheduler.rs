@@ -40,6 +40,147 @@ fn limits(jobs: usize, streams: usize) -> ResourceLimits {
     }
 }
 
+#[tokio::test]
+async fn finite_fallback_capacity_shares_the_payload_budget_with_flows() {
+    let root = workspace();
+    let source = root.path().join("source.bin");
+    fs::write(&source, b"shared capacity").unwrap();
+    let script = (0..12)
+        .map(|index| {
+            format!(
+                "{} -> {}\n",
+                operand(&source),
+                operand(&root.path().join(format!("out-{index}.bin")))
+            )
+        })
+        .collect::<String>();
+    let plan = prepare(&program(&script), true).unwrap();
+    let limits = ResourceLimits {
+        jobs: 8,
+        max_streams: 8,
+        buffer_bytes: 1024,
+        memory_bytes: 2048,
+    };
+    let summary = execute_plan_async(&plan, &limits, CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(summary.max_active_copies, 2);
+    assert_eq!(summary.max_active_streams, 0);
+    assert_eq!(summary.peak_buffer_bytes, 2048);
+    assert_eq!(
+        summary.report.transferred_bytes,
+        12 * b"shared capacity".len() as u64
+    );
+    for index in 0..12 {
+        assert_eq!(
+            fs::read(root.path().join(format!("out-{index}.bin"))).unwrap(),
+            b"shared capacity"
+        );
+    }
+}
+
+#[tokio::test]
+async fn prior_directory_production_defers_child_kind_until_dependency_completes() {
+    let root = workspace();
+    let source = root.path().join("tree");
+    fs::create_dir(&source).unwrap();
+    fs::write(
+        source.join("child.txt"),
+        b"created by the earlier tree flow",
+    )
+    .unwrap();
+    let produced = root.path().join("produced");
+    let output = root.path().join("output.txt");
+    let script = format!(
+        "{} -> {}\n{} -> {}\n",
+        operand(&source),
+        operand(&produced),
+        operand(&produced.join("child.txt")),
+        operand(&output)
+    );
+    let plan = prepare(&program(&script), true).unwrap();
+    let summary = execute_plan_async(&plan, &limits(2, 2), CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(summary.completed, 2);
+    assert_eq!(
+        fs::read(output).unwrap(),
+        b"created by the earlier tree flow"
+    );
+}
+
+#[tokio::test]
+async fn remote_destination_frame_capacity_is_reserved_before_any_connection() {
+    use msync::compiler::{Backend, CopyOp, Location};
+    use msync::plan::{FileClass, OperationKinds, Plan};
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let operation = CopyOp {
+        source: Location {
+            backend: Backend::Tcp {
+                host: "127.0.0.1".into(),
+                port: listener.local_addr().unwrap().port(),
+            },
+            path: "/".into(),
+        },
+        destination: Location {
+            backend: Backend::Ssh {
+                host: "127.0.0.1".into(),
+                user: None,
+                port: Some(1),
+            },
+            path: "/output.bin".into(),
+        },
+        pattern: None,
+        span: Default::default(),
+    };
+    let plan = Plan::build(
+        &Program {
+            operations: vec![operation],
+        },
+        &[OperationKinds {
+            source: FileClass::Stream,
+            destination: FileClass::Regular,
+        }],
+    );
+    let error = execute_plan_async(&plan, &limits(1, 2), CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(
+        error.message.contains("local and remote buffers"),
+        "{error}"
+    );
+    assert!(
+        timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn offline_remote_preview_is_not_an_executable_type_snapshot() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let script = format!(
+        "remote => ssh://127.0.0.1:1\nwire => tcp://{}\nremote::input.bin -> wire::/\n",
+        listener.local_addr().unwrap()
+    );
+    let plan = prepare(&program(&script), false).unwrap();
+    assert_eq!(plan.nodes.len(), 1);
+    assert_eq!(plan.nodes[0].kinds.source, msync::plan::FileClass::Unknown);
+    let error = execute_plan_async(&plan, &limits(1, 2), CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(
+        error.message.contains("prepare the program live"),
+        "{error}"
+    );
+    assert!(
+        timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err(),
+        "reject the offline preview before opening the known TCP endpoint"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fast_flow_and_finite_copy_finish_while_slow_flow_remains_open() {
     let directory = workspace();
@@ -314,4 +455,41 @@ async fn invalid_resource_budgets_fail_before_work_starts() {
                 .is_err()
         );
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn execution_rechecks_ancestors_after_the_preparation_snapshot_is_dropped() {
+    let root = workspace();
+    let source = root.path().join("source");
+    let parent = root.path().join("parent");
+    let redirected = root.path().join("redirected");
+    fs::write(&source, "new data").unwrap();
+    fs::create_dir(&parent).unwrap();
+    fs::create_dir(&redirected).unwrap();
+    fs::write(redirected.join("target"), "unrelated data").unwrap();
+    let input = program(&format!(
+        "{} -> {}\n",
+        operand(&source),
+        operand(&parent.join("target"))
+    ));
+    let plan = prepare(&input, true).unwrap();
+    fs::remove_dir(&parent).unwrap();
+    std::os::unix::fs::symlink(&redirected, &parent).unwrap();
+    let failure = execute_plan_async(&plan, &limits(1, 1), CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert!(
+        failure.message.contains("refusing symbolic link"),
+        "{failure}"
+    );
+    assert_eq!(
+        fs::read_to_string(redirected.join("target")).unwrap(),
+        "unrelated data"
+    );
+    let failure = prepare(&input, true).unwrap_err();
+    assert!(
+        failure.message.contains("refusing symbolic link"),
+        "{failure}"
+    );
 }

@@ -13,13 +13,13 @@ remote => $wsl
 The supplied [`spread.msync`](docs/dsl/spread.msync) is the original semantic seed. The implementation now separates **Plan → Execute**; compilation does not mean native machine-code generation.
 
 ```text
-source → parser + operand provenance → resolved Program
+source + CompileContext → parser/provenance → resolved Program
                                       ↓
              snapshot paths + inspect types → optimize to a fixed point
                                       ↓
                        dependency DAG + resource limits
                                       ↓
-                 bounded copies + asynchronous byte-stream flows
+                 directory expansion → leaf byte flows → OS-selected I/O
 ```
 
 ## Build and run
@@ -61,7 +61,7 @@ $wsl::config_file -> des/config.toml
 
 When metadata establishes ordinary-file assignments, the first write is dead: only the final source needs copying. An intervening read of the destination prevents blindly discarding its producer. The planner performs conservative source forwarding and dead-store elimination until no rewrite applies, then builds read-after-write, write-after-read, write-after-write, and consuming-stream dependencies. Plan output retains elimination/forwarding reasons and original operation provenance.
 
-Only proven ordinary-file assignments qualify for these rewrites. Directories, selectors, container insertions, unknown types, and observable stream effects are not treated as interchangeable scalar writes. Source forwarding does not duplicate dynamic HTTP fetches or replace a materialized remote-to-local snapshot with repeated downloads. Optimization preserves the modeled final file state and dependencies, not intermediate writes or the data reads/errors of eliminated copies. External concurrent observers are not part of that final-state model. See [planning invariants and tests](docs/design/planning.md).
+Only proven ordinary-file assignments qualify for these rewrites. Directories, selectors, container insertions, unknown types, and observable stream effects are not treated as interchangeable scalar writes. Source forwarding does not duplicate dynamic HTTP fetches or replace a materialized remote-to-local snapshot with repeated downloads. Optimization preserves the modeled final file state and dependencies, not intermediate writes or the data reads/errors of eliminated copies. External concurrent observers are not part of that final-state model. See [planning invariants and tests](docs/design/planning.md), [proof obligations/counterexamples](docs/design/planner-proof.md), and [current planner measurements](docs/design/performance-planner-v3.md).
 
 ### Bounded resources
 
@@ -74,9 +74,9 @@ msync run script.msync --jobs 4 --max-streams 8 --buffer-size 64KiB --memory-lim
 | `--jobs N` | Concurrent finite copy operations | 4 |
 | `--max-streams N` | Separate background pipe/socket flows | 16 |
 | `--buffer-size N` | Transfer buffer size; bytes or KiB/MiB/GiB | 64 KiB |
-| `--memory-limit N` | Aggregate explicit relay-buffer budget, not process RSS | 64 MiB |
+| `--memory-limit N` | Aggregate declared payload-buffer budget, not process RSS | 64 MiB |
 
-Idle streams do not consume finite-copy worker slots. Dependency edges still serialize conflicting resources. Each flow reserves its local relay buffer plus one buffer for each participating WSL/SSH helper. The budget does not promise to limit OS socket buffers, client processes, interpreter memory, or the entire process address space. Zero counts, zero buffers, and budgets unable to admit a flow fail before execution.
+Idle streams do not consume finite-copy worker slots, although both lanes share buffer admission. Dependency edges still serialize conflicting resources. Admission reserves the flow's local payload buffer, participating WSL/SSH helper buffers, and any remote-writer framing buffer; a finite kernel-assisted copy conservatively reserves its possible fallback buffer too. A directory worker expands one leaf at a time and reserves one local buffer, not one per child. Total declared payload buffers stay within the budget; OS socket buffers, framework-owned I/O staging, client/interpreter RSS, fixed diagnostic capture and the rest of the process address space are outside this cap. Configure enough shared capacity for the desired overlap. Zero counts, zero buffers, and budgets unable to admit a flow fail before execution.
 
 Complementary producers and consumers of a channel form a **co-start cohort**, not a completion dependency: `input -> fifo; fifo -> output` must open both flows together. Multi-pipe chains work the same way. The scheduler reserves the entire group's stream slots and buffers atomically; insufficient capacity is diagnosed before any endpoint opens. Ambiguous channel pairings, closed feedback and conflicting file dependencies are diagnosed instead of hanging. See [channel versus completion graphs](docs/design/planning.md).
 
@@ -91,21 +91,50 @@ One statement per nonempty line. `#` begins a comment at a whitespace boundary o
 | `public => https://example.com/` | Bind a read-only HTTP(S) source |
 | `wire => tcp://127.0.0.1:9000` | Bind an active TCP stream endpoint; use `wire::/` as its operand |
 | `.config := ~/.config` | Bind a path alias |
-| `$pwd::source -> $pwd::target` | Copy to an exact path; overwrite an existing regular file, reject an existing directory |
-| `$pwd::source -> $pwd::directory/` | Append the source basename; reject existing files, recursively merge directories without overwriting their files |
-| `$pwd/configs/<.+\.toml> -> $pwd/output/` | Match complete immediate child basenames; recursively copy a matched directory |
+| `$pwd::pwd/source -> $pwd::pwd/target` | Copy to an exact path; overwrite an existing regular file, reject an existing directory |
+| `$pwd::pwd/source -> $pwd::pwd/directory/` | Append the source basename; reject existing files, recursively merge directories without overwriting their files |
+| `$pwd::pwd/configs/<.+\.toml> -> $pwd::pwd/output/` | Match complete immediate child basenames; recursively copy a matched directory |
 
 Without a trailing `/`, a missing directory target can be created from a directory source, but an **existing directory target is an error even for a directory source**. Append `/` only when container semantics are intended. Unmentioned children in a merging container remain in place. This is one-way copying and streaming, not deletion, bidirectional reconciliation, or a watch daemon.
 
 Selectors use Rust `regex` syntax and full-basename matching. Backreferences and lookaround are unsupported. A selector is the final source component and needs a destination ending in `/`. Enumeration itself is not recursive; no matches is a successful no-op.
 
-### Explicit working-directory paths
+### Context namespaces, endpoint spaces, and path values
 
-Prefer `$pwd::file`, `$pwd/file`, or bare `$pwd` for local working-directory paths. The current directory is snapshotted during planning; in the REPL it follows `/cd`. Existing bare relative paths remain supported for compatibility, but new examples use explicit `$pwd`. Formatting does not silently prefix every bare path: an apparent relative operand may be a path-polymorphic alias.
+A **space is not a directory**. `=>` binds a space or lookup capability; `:=` binds a path value. Context namespaces expose named items rather than treating any text after `::` as a child path:
 
-| Endpoint | Behavior |
+| Access | Value | Children |
+| --- | --- | --- |
+| `$pwd::pwd` | Absolute logical cwd captured for this submission | `$pwd::pwd/assets/` |
+| `$file::this` | Absolute logical path of the named source script | Rejected: this item is a file |
+| `$file::parent` | That script's parent directory | `$file::parent/assets/` |
+
+Use `$pwd::pwd/file` for an explicit cwd-relative expression. The old `$pwd::file`, `$pwd/file`, and bare `$pwd` spellings are intentionally rejected with migration help; `$pwd` has exactly one item, `pwd`. Existing ordinary bare relative paths remain compatible. Formatting is syntax-only and does not guess namespace migrations or silently prefix bare operands that may be aliases.
+
+```text
+this => $pwd
+captured := $pwd::pwd
+```
+
+`this` preserves the namespace: `this::pwd` resolves against each later submission, so it follows REPL `/cd`. `captured` preserves the absolute path value from its declaration and does not move after `/cd`. Namespace-item lookup happens before path-alias lookup; `$pwd::foo` remains an unknown item even if a value alias named `foo` exists.
+
+Named script inputs supply a source identity independently of cwd:
+
+```text
+file => $file
+assets := file::parent/assets
+
+file::this -> $pwd::pwd/backups/
+assets/<.+\.toml> -> $pwd::pwd/copied-assets/
+```
+
+`file::this` is available only because `file => $file` explicitly binds that alias; the bare name `file` is not an implicit built-in. `run`, `plan`, `compile`, and `check` with a named file, and REPL `/load`, `/check`, or `/plan FILE`, carry that script's identity. Stdin and direct REPL submissions have no `$file` context and produce an actionable error instead of substituting cwd. `file => $file` itself can be declared before a script is loaded; accessing its items requires an actual named-file submission. A namespace alias does not cache the last loaded script: direct REPL item access still needs a named-file context, while a path value previously captured with `:=` remains usable. File-valued aliases retain provenance transitively, so appending `/child` to an alias of `$file::this` is rejected too.
+
+Source identity is an **absolute logical path**, not a canonicalized filesystem target. Namespace lookup does not read files or resolve symlinks. In the library, `CompileContext { pwd, source_file }` and `compile_with_context` / `compile_rich_with_context` make the input context explicit; the context-free APIs capture cwd but deliberately have no source file.
+
+| Physical endpoint space | Behavior |
 | --- | --- |
-| `$pwd`, `$local` | Local filesystem; `~/` uses HOME or USERPROFILE |
+| `$local` | Local filesystem; `~/` uses HOME or USERPROFILE |
 | `$wsl` | Default WSL distribution through `wsl --exec` |
 | `$path` | Read-only single filename lookup in PATH, e.g. `$path::gcc.exe` |
 | `$env` | First component names an environment variable, e.g. `$env::LOCALAPPDATA/tools/` |
@@ -113,7 +142,7 @@ Prefer `$pwd::file`, `$pwd/file`, or bare `$pwd` for local working-directory pat
 | HTTP(S) alias | One read-only file downloaded with `curl` |
 | TCP alias | One active connection to the declared host and mandatory port |
 
-Endpoint declarations can refer to earlier bindings. Aliases expand whole first components: `.config/x` expands `.config`, not `.config-old/x`. Prefix substitution is resolved at declaration time; concrete local cwd/home/environment/PATH resolution is snapshotted when preparing the plan. An unqualified alias such as `.config := ~/.config` remains endpoint-relative and works with both `.config/x` and `remote::.config/x`. An explicitly local `$pwd` alias cannot be requalified as WSL/SSH; a rich diagnostic labels both conflicting sites. Redefinition is allowed, but failed frontend compilation rolls back the entire submission's declarations.
+Spaces can refer to earlier space bindings. Value aliases expand whole first components: `.config/x` expands `.config`, not `.config-old/x`. An unqualified path-only alias such as `.config := ~/.config` remains endpoint-relative and works with both `.config/x` and `remote::.config/x`. A value obtained from a contextual namespace is explicitly local and cannot be requalified as WSL/SSH. Failed frontend compilation commits none of that submission's declarations.
 
 `~` means the current endpoint user's home, not `~another-user`. On HTTP, `~/` and leading `/` are endpoint-relative prefixes; a base ending in `/` appends below that directory. HTTP credentials belong in client configuration. Binding names contain letters, digits, `_`, `-`, or `.`, but cannot be `.` or `..`.
 
@@ -122,8 +151,8 @@ Endpoint declarations can refer to earlier bindings. Aliases expand whole first 
 Quote the entire operand when it contains whitespace, a comment delimiter, or an operator:
 
 ```text
-"$pwd/source files/config.toml" -> "$pwd/output files/config.toml"
-"C:\\Users\\Klee\\config.toml" -> $pwd/output/config.toml
+"$pwd::pwd/source files/config.toml" -> "$pwd::pwd/output files/config.toml"
+"C:\\Users\\Klee\\config.toml" -> $pwd::pwd/output/config.toml
 ```
 
 Inside double quotes, `\\`, `\"`, `\n`, `\r`, and `\t` are escapes. Unknown escapes retain their backslash. Use `/` or doubled backslashes in quoted Windows paths; unquoted backslashes are literal. The portable directory-mode marker is a trailing **forward slash**.
@@ -134,26 +163,42 @@ msync fmt script.msync --check     # Read-only check; nonzero if formatting diff
 msync fmt script.msync --stdout    # Explicit read-only canonical preview
 ```
 
-`--write` remains an alias for the default in-place behavior. Default `fmt -` is rejected rather than treating formatting as a transfer between stdin/stdout. The pure library formatter still returns text, and explicit preview can read stdin. The formatter preserves comments and operand values, canonicalizes spacing/quoting, ends nonempty source with a newline, and does not retain blank-line layout. In-place writes use exclusive temporary-file creation and refuse symlinks/read-only inputs.
+`--write` remains an alias for the default in-place behavior. `fmt --dry-run` is rejected with guidance to use `--check` or `--stdout`, never silently ignored while rewriting a script; dry-run previews transfer plans. Default `fmt -` is rejected rather than treating formatting as a transfer between stdin/stdout. The pure library formatter still returns text, and explicit preview can read stdin. The formatter preserves comments and operand values, canonicalizes spacing/quoting, ends nonempty source with a newline, and does not retain blank-line layout. In-place writes use exclusive temporary-file creation and refuse symlinks/read-only inputs.
 
 ## Pipes and sockets
 
-The execution model distinguishes ordinary files, directories, and byte streams (FIFO/named pipes and stream sockets). A directory cannot be sent to a stream. A non-directory source can flow to a pipe/socket, and streams can flow into exact regular-file targets or another stream. A named source can use a container destination with the normal no-clobber contract; an unnamed TCP source needs an exact output filename.
+Every non-directory transfer is a source-to-sink byte flow: ordinary files, FIFO/named pipes, sockets, HTTP responses and remote endpoints participate through adapters. Directories are structural: their entries expand into child flows instead of sending directory bytes to a socket. A directory cannot be sent to a stream. A named source can use a container destination with the normal no-clobber contract; an unnamed TCP source needs an exact output filename.
 
 ```text
 wire => tcp://127.0.0.1:9000
-$pwd/input.bin -> wire::/
+$pwd::pwd/input.bin -> wire::/
 ```
 
-TCP endpoints actively connect; msync is not implicitly a listening server. WSL/SSH endpoints participating in a stream flow additionally require Python 3 for the bounded nonblocking remote helper; ordinary remote file copies do not. Native Windows named-pipe paths use `\\.\pipe\name`; Unix uses FIFO or Unix-domain socket paths. Transfers are asynchronous and backpressured with bounded buffers. Source EOF or a closed destination ends **that flow only**, including when the source is idle. This is a one-way protocol: destination TCP/Unix EOF/FIN, including a sending-half shutdown, is a logical end-of-flow; reverse bytes are discarded by a bounded close watcher. Other independent tasks continue, and the process waits until its remaining flows finish. Ctrl-C cancels stream waits and closes their handles. Already launched native blocking copies drain rather than being unsafely aborted. See [stream transport details](docs/design/streams.md) for platform requirements and remote-helper behavior.
+TCP endpoints actively connect; msync is not implicitly a listening server. WSL/SSH adapters used by asynchronous socket/IPC relays additionally require Python 3 for the bounded nonblocking remote helper; the specialized ordinary remote filesystem-copy path does not. Native Windows named-pipe paths use `\\.\pipe\name`; Unix uses FIFO or Unix-domain socket paths. Transfers are asynchronous and backpressured with bounded buffers. Source EOF or a closed destination ends **that flow only**, including when the source is idle. This is a one-way protocol: destination TCP/Unix EOF/FIN, including a sending-half shutdown, is a logical end-of-flow; reverse bytes are discarded by a bounded close watcher. Other independent tasks continue, and the process waits until its remaining flows finish. Ctrl-C cancels stream waits and closes their handles. Cancellation is cooperative: asynchronous waits close and supported native operations receive cancellation; an operation that cannot be interrupted must drain before its owned handles are released. See [stream transport details](docs/design/streams.md) for platform requirements and remote-helper behavior.
+
+## Uniform I/O and file publication
+
+`->` describes a byte flow, not two unrelated APIs for "copy" and "IPC". The shared `io` layer owns progress/end states, cancellation, staged file publication and OS capability selection. Ordinary-file pairs may use a kernel-assisted bulk path; pipe/socket/HTTP/remote adapters retain asynchronous backpressure. Directories expand structurally into child flows and are not serialized as directory bytes.
+
+| Workload | Capability-selected implementation |
+| --- | --- |
+| Native file → file | Linux `copy_file_range` or Windows `CopyFileExW`, with a bounded fallback where needed |
+| Native file → plain TCP | Linux `sendfile`; Windows `TransmitFile` for at least 1 MiB remaining, buffered below that measured cutoff; readiness/completion and cancellation are preserved |
+| Other byte-flow pairs | Bounded asynchronous source/sink adapters over the same semantic flow contract |
+
+A fast-path fallback resumes the accepted prefix on the **same open file/connection**; it must not reconnect or retransmit already delivered bytes. OS event integration is Tokio's epoll/IOCP machinery plus the selected operation's readiness/completion contract. The optional remote Python helper is a transport adapter, not the application's event-loop runtime.
+
+Native finite ordinary-file outputs are copied into an exclusively owned sibling stage and published only after successful completion. Before publication, an error or cancellation removes the uncommitted stage: an existing target remains unchanged and a new target remains absent. No-clobber publication is atomic. Assignment replaces the destination **pathname binding**, not every hardlink to its old inode: other hardlink aliases retain their old content. This differs from an in-place overwrite and is necessary for the per-file rollback contract and already queued zero-copy source pages. A directory transfer is still a sequence of child-file commits: earlier successful leaves and created directories remain after a later failure. This is per-file protection, not a whole-tree transaction or a crash-durable commit promise. The individual sink/transport note records the corresponding stream and remote guarantees.
+
+`io_uring` and Windows I/O Ring capability probes and workload measurements are separate from production-path selection. A successful probe is not a claim that every transfer uses a ring, nor that rings outperform the simpler path on the relevant workload. The [Linux investigation](docs/design/io-linux-v3.md) separates native WSL ext4, tmpfs and Windows-backed DrvFs, including matched queue-depth/concurrency controls and verified Linux page-cache residency. Deep rings improved some large single-flow DrvFs cases, but not the native ext4 copy workload; neither a depth-one tmpfs test nor a cross-OS mount result represents all Linux storage. The [Windows investigation](docs/design/io-windows-v3.md) records actual ring operations and native transfer thresholds. Production keeps the selected kernel-copy/readiness paths rather than adding an unvalidated universal ring engine. Read the OS-specific notes before changing dispatch defaults; kernel-assisted file transfer does not make SSH encryption or arbitrary adapters universally zero-copy.
 
 ## REPL
 
 ```text
 msync> /?
-msync> root := $pwd/configs
+msync> root := $pwd::pwd/configs
 msync> /dry-run on
-msync> root/app.toml -> $pwd/output/app.toml
+msync> root/app.toml -> $pwd::pwd/output/app.toml
 msync> /limits
 msync> /quit
 ```
@@ -193,16 +238,17 @@ Create the trace parent directory first. Telemetry is **off by default, local-on
 - Permissions are copied where supported; ACLs, ownership, timestamps, alternate streams and every platform-specific attribute are not a portable contract.
 
 ```rust
-use msync::{compiler::Compiler, scheduler, syntax};
+use msync::{compiler::{CompileContext, Compiler}, scheduler, syntax};
 
-let source = "$pwd/configs/app.toml -> $pwd/output/app.toml\n";
+let source = "$pwd::pwd/configs/app.toml -> $pwd::pwd/output/app.toml\n";
 let ast = syntax::parse(source).expect("valid syntax");
-let program = Compiler::new().compile(&ast).expect("valid declarations");
+let context = CompileContext::capture(None).expect("cwd snapshot");
+let program = Compiler::new().compile_with_context(&ast, &context).expect("valid declarations");
 let plan = scheduler::prepare(&program, false).expect("offline plan");
 assert_eq!(plan.nodes.len(), 1);
 ```
 
-Execute a prepared graph with `scheduler::execute_plan` and `ResourceLimits`. Inside an existing Tokio runtime use `execute_plan_async` with a cancellation token; the synchronous wrapper refuses nested-runtime use instead of panicking. `runtime::execute` retains its original signature as a compatibility entrypoint and now routes through planning/scheduling. Basic diagnostics and pure `syntax::format` APIs remain available alongside rich reports and CLI in-place formatting.
+For real execution, use live preparation (`scheduler::prepare(&program, true)`) and execute the resulting graph with `scheduler::execute_plan` and `ResourceLimits`; the example above is an offline preview. Execution rejects uninspected `Unknown` file classes before I/O, with guidance to prepare live. A child whose kind is deferred until an earlier finite directory producer completes is allowed; its runtime adapter rechecks the actual filesystem before copying. `Missing` is different: an earlier graph operation may legitimately produce that resource. Inside an existing Tokio runtime use `execute_plan_async` with a cancellation token; the synchronous wrapper refuses nested-runtime use instead of panicking. `runtime::execute` retains its original signature as a compatibility entrypoint and now routes through planning/scheduling. Basic diagnostics and pure `syntax::format` APIs remain available alongside rich reports and CLI in-place formatting.
 
 ```sh
 cargo fmt --check
@@ -211,10 +257,11 @@ cargo test --all-targets
 cargo test --test runtime -- --ignored --test-threads=1
 cargo test --test ssh -- --ignored --nocapture --test-threads=1
 cargo bench --bench pipeline
+cargo bench --bench planner
 ```
 
 Tests exercise CLI/REPL journeys, graph state equivalence and fixed-point properties, bounded scheduling, real TCP/named-pipe I/O, local filesystems, HTTP, and telemetry parent graphs. The explicit SSH suite uses Windows OpenSSH plus a privately configured, chrooted WSL daemon; it does not modify existing SSH configuration. Platform-specific and optional remote-stream verification is recorded in [validation](docs/design/validation.md), not inferred from another OS's results.
 
-Design references: [architecture](docs/design/implementation.md), [planning](docs/design/planning.md), [syntax](docs/design/syntax.md), [runtime/SSH](docs/design/runtime.md), [streams](docs/design/streams.md), [telemetry](docs/design/telemetry.md), and [earlier compiler CPU performance](docs/design/performance.md). Earlier compiler microbenchmarks are not file/network throughput claims.
+Design references: [architecture](docs/design/implementation.md), [planning](docs/design/planning.md), [syntax](docs/design/syntax.md), [runtime/SSH](docs/design/runtime.md), [streams](docs/design/streams.md), [Linux I/O](docs/design/io-linux-v3.md), [Windows I/O](docs/design/io-windows-v3.md), [telemetry](docs/design/telemetry.md), and [earlier compiler CPU performance](docs/design/performance.md). Earlier compiler microbenchmarks are not file/network throughput claims. The [indexed-planner report](docs/design/performance-planner-v3.md) measures actual Plan construction separately and records its allocation/retained-memory measurements, tiny-script controls and comparison limits. The [startup report](docs/design/performance-startup-v3.md) measures complete CLI/REPL journeys and actual remote metadata waits in milliseconds rather than inferring user experience from parser throughput.
 
 License: GPL-3.0 (see LICENSE).

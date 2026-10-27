@@ -604,7 +604,8 @@ fn ssh_conflicts_failures_and_telemetry_leave_no_staging() {
     let trace = fs::read_to_string(fixture.root.path().join("trace.jsonl")).unwrap();
     assert!(trace.contains("\"name\":\"copy\""));
     assert!(trace.contains("\"status\":\"error\""));
-    assert!(!trace.contains("input.txt"));
+    assert!(trace.contains("input.txt"));
+    assert!(!trace.contains("must not replace"));
     fs::write(
         fixture.workspace().join("victim.txt"),
         "unrelated local data",
@@ -686,9 +687,26 @@ def count_python_helpers() -> int:
     return count
 
 
+def count_stages(nonempty: bool) -> int:
+    count: int = 0
+    for parent, _, names in os.walk('/root'):
+        for name in names:
+            if not name.startswith('.msync-flow-'):
+                continue
+            try:
+                if not nonempty or os.stat(os.path.join(parent, name)).st_size > 0:
+                    count += 1
+            except OSError:
+                continue
+    return count
+
+
 def main() -> int:
     if sys.argv[1] == 'count':
         print(count_python_helpers())
+        return 0
+    if sys.argv[1] in ('pending', 'stages'):
+        print(count_stages(sys.argv[1] == 'pending'))
         return 0
     serve(sys.argv[1], sys.argv[2], sys.argv[3])
     return 0
@@ -714,6 +732,41 @@ fn wait_for_remote_socket(fixture: &SshFixture, path: &str) {
     }
 }
 
+async fn wait_for_remote_counter(config: &Path, mode: &str, positive: bool) -> bool {
+    tokio::time::timeout(Duration::from_secs(8), async {
+        loop {
+            let output = tokio::process::Command::new("ssh")
+                .arg("-F")
+                .arg(config)
+                .args(["--", "root@127.0.0.1"])
+                .arg(format!("python3 /root/socket_fixture.py {mode}"))
+                .output()
+                .await
+                .unwrap();
+            if output.status.success()
+                && String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .parse::<usize>()
+                    .is_ok_and(|count| (count > 0) == positive)
+            {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+
+async fn wait_for_live_remote_helper(config: &Path) -> bool {
+    let mode = if std::env::var_os("MSYNC_TEST_REMOTE_STAGE_DATA").is_some() {
+        "pending"
+    } else {
+        "count"
+    };
+    wait_for_remote_counter(config, mode, true).await
+}
+
 fn run_cancelled_remote_flow(source: &str) {
     use msync::{
         compiler::Compiler,
@@ -724,42 +777,47 @@ fn run_cancelled_remote_flow(source: &str) {
     let script = syntax::parse(source).unwrap();
     let program = Compiler::new().compile(&script).unwrap();
     let plan = scheduler::prepare(&program, true).unwrap();
+    let config = PathBuf::from(std::env::var_os("MSYNC_SSH_CONFIG").unwrap());
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap()
         .block_on(async {
             let cancel = CancellationToken::new();
+            if std::env::var_os("MSYNC_TEST_ABORT_REMOTE_FLOW").is_some() {
+                let operation = plan.nodes[0].operation.clone();
+                let worker = tokio::spawn({
+                    let cancel = cancel.clone();
+                    async move { msync::io::transfer(&operation, 64 * 1024, cancel).await }
+                });
+                assert!(
+                    wait_for_live_remote_helper(&config).await,
+                    "remote helper was never observed before future abort"
+                );
+                worker.abort();
+                assert!(worker.await.unwrap_err().is_cancelled());
+                assert!(
+                    !cancel.is_cancelled(),
+                    "future abort must not rely on token cancellation"
+                );
+                assert!(
+                    wait_for_remote_counter(&config, "count", false).await,
+                    "helper survived future abort while caller process stayed alive"
+                );
+                assert!(
+                    wait_for_remote_counter(&config, "stages", false).await,
+                    "file stage survived future abort"
+                );
+                return;
+            }
             let timer = tokio::spawn({
                 let cancel = cancel.clone();
-                let config = std::env::var_os("MSYNC_SSH_CONFIG").unwrap();
+                let config = config.clone();
                 async move {
-                    let observed = tokio::time::timeout(Duration::from_secs(8), async {
-                        loop {
-                            let output = tokio::process::Command::new("ssh")
-                                .arg("-F")
-                                .arg(&config)
-                                .args([
-                                    "--",
-                                    "root@127.0.0.1",
-                                    "python3 /root/socket_fixture.py count",
-                                ])
-                                .output()
-                                .await
-                                .unwrap();
-                            if output.status.success()
-                                && String::from_utf8_lossy(&output.stdout)
-                                    .trim()
-                                    .parse::<usize>()
-                                    .is_ok_and(|count| count > 0)
-                            {
-                                return true;
-                            }
-                            tokio::time::sleep(Duration::from_millis(50)).await;
-                        }
-                    })
-                    .await
-                    .unwrap_or(false);
+                    let observed = wait_for_live_remote_helper(&config).await;
+                    if let Ok(delay) = std::env::var("MSYNC_TEST_DELAY_CANCEL_MS") {
+                        tokio::time::sleep(Duration::from_millis(delay.parse().unwrap())).await;
+                    }
                     cancel.cancel();
                     observed
                 }
@@ -771,9 +829,16 @@ fn run_cancelled_remote_flow(source: &str) {
                 timer.await.unwrap(),
                 "remote FIFO relay was never observed before cancellation"
             );
+            assert!(
+                wait_for_remote_counter(&config, "count", false).await,
+                "helper survived cancellation while caller process stayed alive"
+            );
+            assert!(
+                wait_for_remote_counter(&config, "stages", false).await,
+                "file stage survived cancellation"
+            );
         });
 }
-
 #[test]
 #[ignore = "requires Windows OpenSSH, WSL root, Python 3, sshd and mount/PID namespaces"]
 fn ssh_fifo_socket_and_cancellation_use_real_remote_helpers() {
@@ -862,6 +927,174 @@ fn ssh_fifo_socket_and_cancellation_use_real_remote_helpers() {
             .to_string()
             .replace('\\', "/")
     );
+    for abort in [false, true] {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "ssh_fifo_socket_and_cancellation_use_real_remote_helpers",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("MSYNC_SSH_CONFIG", &fixture.config)
+            .env("MSYNC_TEST_CANCELLED_REMOTE_FLOW", &source);
+        if abort {
+            command.env("MSYNC_TEST_ABORT_REMOTE_FLOW", "1");
+        }
+        success(&fixture.command(&mut command, None));
+        let count_helpers = "python3 /root/socket_fixture.py count";
+        let deadline = Instant::now() + Duration::from_secs(8);
+        loop {
+            let result = fixture.remote(count_helpers);
+            success(&result);
+            if String::from_utf8_lossy(&result.stdout).trim() == "0" {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "remote Python relay survived termination (abort={abort}): {}",
+                details(&result)
+            );
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+    fixture.finish();
+}
+
+fn wait_for_remote_stage_data(fixture: &SshFixture) {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let output = fixture.remote("python3 /root/socket_fixture.py pending");
+        success(&output);
+        if String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<usize>()
+            .is_ok_and(|count| count > 0)
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "remote file stage never accepted its body prefix"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn assert_remote_file_flow_clean(fixture: &SshFixture, existing: bool) {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let output = fixture.remote(
+            "python3 /root/socket_fixture.py count; python3 /root/socket_fixture.py stages",
+        );
+        success(&output);
+        if String::from_utf8_lossy(&output.stdout).trim() == "0\n0" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "remote helper or stage survived interruption: {}",
+            details(&output)
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    let command = if existing {
+        "test \"$(cat /root/flow-target.bin)\" = 'previous complete payload'"
+    } else {
+        "test ! -e /root/flow-target.bin"
+    };
+    success(&fixture.remote(command));
+}
+
+#[test]
+#[ignore = "requires real Windows OpenSSH/WSL Python chroot; verifies framed remote file rollback"]
+fn ssh_remote_file_stages_rollback_after_prefix_reset_cancel_and_future_abort() {
+    let fixture = SshFixture::with_python();
+    fs::write(
+        fixture.workspace().join("socket_fixture.py"),
+        SOCKET_FIXTURE_PYTHON,
+    )
+    .unwrap();
+    success(&fixture.run("socket_fixture.py -> remote::~/socket_fixture.py\n"));
+    for existing in [false, true] {
+        let setup = if existing {
+            "printf 'previous complete payload' > /root/flow-target.bin"
+        } else {
+            "rm -f /root/flow-target.bin"
+        };
+        success(&fixture.remote(setup));
+        thread::scope(|scope| {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let fixture_ref = &fixture;
+            let server = scope.spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.write_all(&vec![b'R'; 4096]).unwrap();
+                wait_for_remote_stage_data(fixture_ref);
+                socket2::SockRef::from(&socket)
+                    .set_linger(Some(Duration::ZERO))
+                    .unwrap();
+            });
+            let output = fixture.run(&format!(
+                "wire => tcp://127.0.0.1:{port}\nwire::/ -> remote::~/flow-target.bin\n"
+            ));
+            assert!(
+                !output.status.success(),
+                "RST must not be reported as successful source EOF: {}",
+                details(&output)
+            );
+            server.join().unwrap();
+        });
+        assert_remote_file_flow_clean(&fixture, existing);
+        for abort in [false, true] {
+            success(&fixture.remote(setup));
+            thread::scope(|scope| {
+                let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+                let port = listener.local_addr().unwrap().port();
+                let (release, released) = std::sync::mpsc::channel();
+                let server = scope.spawn(move || {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    socket.write_all(&vec![b'C'; 4096]).unwrap();
+                    // The client's unused write half closes at open, not at cancellation.
+                    released.recv_timeout(Duration::from_secs(35)).unwrap();
+                });
+                let source = format!(
+                    "remote => ssh://root@127.0.0.1:{}\nwire => tcp://127.0.0.1:{port}\nwire::/ -> remote::~/flow-target.bin\n",
+                    fixture.port
+                );
+                let mut child = Command::new(std::env::current_exe().unwrap());
+                child
+                    .args([
+                        "--exact",
+                        "ssh_fifo_socket_and_cancellation_use_real_remote_helpers",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("MSYNC_SSH_CONFIG", &fixture.config)
+                    .env("MSYNC_TEST_CANCELLED_REMOTE_FLOW", source)
+                    .env("MSYNC_TEST_REMOTE_STAGE_DATA", "1");
+                if abort {
+                    child.env("MSYNC_TEST_ABORT_REMOTE_FLOW", "1");
+                }
+                let output = fixture.command(&mut child, None);
+                release.send(()).unwrap();
+                server.join().unwrap();
+                success(&output);
+            });
+            assert_remote_file_flow_clean(&fixture, existing);
+        }
+    }
+    success(&fixture.remote("mkfifo /root/finish-no-reader"));
+    fs::write(fixture.workspace().join("empty.bin"), []).unwrap();
+    let source = format!(
+        "remote => ssh://root@127.0.0.1:{}\n{:?} -> remote::~/finish-no-reader\n",
+        fixture.port,
+        fixture
+            .workspace()
+            .join("empty.bin")
+            .to_string_lossy()
+            .replace('\\', "/")
+    );
     success(
         &fixture.command(
             Command::new(std::env::current_exe().unwrap())
@@ -872,24 +1105,11 @@ fn ssh_fifo_socket_and_cancellation_use_real_remote_helpers() {
                     "--nocapture",
                 ])
                 .env("MSYNC_SSH_CONFIG", &fixture.config)
-                .env("MSYNC_TEST_CANCELLED_REMOTE_FLOW", source),
+                .env("MSYNC_TEST_CANCELLED_REMOTE_FLOW", source)
+                .env("MSYNC_TEST_DELAY_CANCEL_MS", "200"),
             None,
         ),
     );
-    let count_helpers = "python3 /root/socket_fixture.py count";
-    let deadline = Instant::now() + Duration::from_secs(8);
-    loop {
-        let result = fixture.remote(count_helpers);
-        success(&result);
-        if String::from_utf8_lossy(&result.stdout).trim() == "0" {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "remote Python relay survived cancellation: {}",
-            details(&result)
-        );
-        thread::sleep(Duration::from_millis(100));
-    }
+    success(&fixture.remote("test -p /root/finish-no-reader"));
     fixture.finish();
 }

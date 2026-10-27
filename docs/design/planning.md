@@ -37,6 +37,12 @@ preparation, so scheduling and execution cannot resolve an ambient variable to
 different locations later. If an API caller leaves ENV/PATH unresolved, those
 resources conservatively overlap everything and cannot justify a rewrite.
 
+`Plan::build_profiled` is an additive inspection API returning `(Plan,
+PlanningStats)`. It reports resource-cache misses, calls to
+`std::fs::canonicalize`, ordinary-file identity handles, and dependency candidates.
+These are deterministic work counters, not kernel syscall or elapsed-time
+estimates. The original `build` API remains unchanged and returns the same plan.
+
 Each retained `PlanNode` owns its `CopyOp`, file classes, read/write/consume
 effects, original operation index, and dense node ID. `dependencies` contains
 retained predecessor IDs; `edges` explains RAW, WAR, WAW, and consuming-read
@@ -84,8 +90,9 @@ ordinary-file chains retain the useful forwarding rule.
 
 ### Backward dead-store elimination
 
-For each eligible write, the planner scans later live effects until the first
-overlapping observation or mutation. An overlapping read keeps the write. An
+For each eligible write, indexed future effects identify the first later live
+overlapping observation and mutation. A read at or before the first write keeps
+the write, including when one later operation both reads and writes it. An
 exact eligible overwrite kills it. Any other overlapping mutation blocks the
 proof, including a descendant path that depends on the destination being a
 directory rather than a file. The backward sweep ignores operations already
@@ -109,8 +116,10 @@ origin. These finite measures establish termination.
 ## Dependency and identity model
 
 Resources contain resolved endpoint identity and normalized path components.
-Local keys capture current-directory/home expansion and canonicalize the nearest
-existing prefix. Case folding is used only for conservative Windows conflict
+Local keys capture current-directory/home expansion once per plan and canonicalize
+the nearest existing prefix. Canonical-prefix results are cached for the lifetime
+of that plan, including common missing parents; each new child is still probed
+before a cached parent is used. Case folding is used only for conservative Windows conflict
 detection, never as an elimination proof. File-identity fingerprints add
 dependencies for existing hardlinks; a fingerprint collision can only add an
 unnecessary dependency and cannot eliminate an operation.
@@ -124,6 +133,11 @@ optimization; it cannot make a false equality eliminate a copy. This covers the
 real producer/consumer case of a WSL write to a drive-mounted file followed by a
 native read of that file. Arbitrary SSH aliases and custom cross-endpoint mount
 layouts still require explicit identity information beyond this model.
+
+Remote filesystem proof keys retain a rooted/relative distinction. `ssh::out`
+and `ssh::/out` do not prove the same destination or produced type. Their overlap
+comparisons remain conservative because an unknown remote working directory can
+make relative and absolute resources alias.
 
 Containment matters even for an exact file access: writing `a` changes whether
 `a/b` can exist. Sibling files remain independent, while ancestor paths conflict.
@@ -146,8 +160,8 @@ from progressing.
 The ordinary read-after-write rule cannot be applied blindly to a pipe:
 
 ```text
-$pwd/input -> FIFO
-FIFO -> $pwd/output
+$pwd::pwd/input -> FIFO
+FIFO -> $pwd::pwd/output
 ```
 
 Waiting for the producer to finish before starting the consumer can deadlock the
@@ -176,19 +190,45 @@ buffers remain bounded; cohort construction does not exempt a stream from limits
 Offline unknown remote kinds cannot establish these channel relationships: use
 live scheduler preparation before execution, not an uninspected offline plan.
 
-Every raw dependency points from an earlier operation to a later operation, so
-the operation graph is acyclic by construction. Compact ancestor bitsets remove
-transitive edges before exposing scheduler predecessors. For example, repeated
-consumers of one stream form a dependency chain rather than retaining every
-historical pair. The scheduler need not rediscover dependency closure.
+Every dependency points from an earlier operation to a later operation, so the
+operation graph is acyclic by construction. `src/plan/index.rs` indexes the exact
+union of may-overlap domains: endpoint/comparison-component prefixes, Windows
+drive projections, same-endpoint identity hints, and unresolved wildcard
+endpoints. Prefix tries own arena nodes rather than recursively allocated child
+objects. Singleton access-ID sets are stored inline; sets with several members
+use `BTreeSet`. Latest/earliest queries replace unrelated historical scans in
+classification, source-version forwarding, and backward DSE.
 
-The current builder checks operation pairs to find hazards. For `N` operations,
-path width `P`, and `R` rewrite rounds, the straightforward rewrite bound is
-`O(R N² P)`. Hazard discovery is quadratic, with ancestor bitset unions for
-transitive reduction; ancestor storage is `N²` bits, not a dense matrix of edge
-objects. This is deliberately simple for configuration scripts, not a claim of
-an industrial million-node build engine. Location normalization/identity work is
-cached and comparison keys are precomputed, avoiding allocations per pair.
+Proof-key components, folded comparison components and optional drive projections
+are immutable shared `Arc<[String]>` arrays. Scope and location remain owned by
+each access; sharing cannot mutate a sibling access. Equality stays value-based,
+and non-Windows comparisons reuse the exact-key component array. Resource-cache
+hits therefore do not deeply clone every path component into each effect/state.
+
+Dependency discovery uses separate read/write/consume frontiers. Ordinary reads
+do not query all previous ordinary reads: many independent destinations sharing
+one source therefore stay independent. A new write or consume retires an old
+frontier entry only if its conflict domains cover *all* that entry's resources.
+Parent-path coverage alone cannot retire an existing descendant file whose
+hardlink identity might be referenced outside the parent. Identity/projection
+coverage checks and paired-channel exceptions preserve those hazards. Co-start
+channels never use ordinary completion-frontier retirement.
+
+The remaining predecessor candidates are transitively reduced by a sparse,
+generation-stamped predecessor walk. A one-candidate node requires no reachability
+walk. There is no unconditional `N²` ancestor-bit matrix. Retained dependencies
+remain the DAG's exact transitive reduction, with the same hazard explanations
+and provenance; the scheduler does not rediscover dependency closure.
+
+For `N` operations, path width `P`, and `R` rewrite rounds, indexed nearest-effect
+passes perform `O(R N P log N)` work plus resource construction. Graph discovery
+is output/frontier-sensitive; sparse reduction may still need substantial
+reachability traversal on adversarial graphs. Wildcards, broad hierarchical
+effects, hardlink aliases and co-start exceptions can legitimately retain a large
+frontier. There is no claim of worst-case linear planning. Storage is
+`O(N P + N + E)` for resource/index memberships and the retained graph (apart from
+transient candidate/walk storage), rather than an always-allocated `N²` matrix.
+The fixed point is still reached without a round cutoff.
 
 Planning never opens a FIFO/socket to obtain identity. Opening one can block or
 consume a peer connection. Ordinary-file/directory metadata gates identity
@@ -206,6 +246,13 @@ cohorts, ordered channel waves, and invalid cohort diagnostics. Property tests
 generate ordinary-file assignment programs and compare both sequential optimized
 execution and reverse-ready topological schedules with an unoptimized state
 model. Replanning the optimized program must not change it further.
+
+The indexed implementation additionally passes overlap-index properties against
+brute force, a 10,000-program differential comparison against the archived
+`d96724d` planner, and independent raw-hazard reachability checks with hierarchical
+paths, hardlinks, unresolved resources and WSL projections. See
+`planner-proof.md` for the retirement argument and
+`performance-planner-v3.md` for workload-specific timing, memory and probe counts.
 
 [LLVM MemorySSA](https://llvm.org/docs/MemorySSA.html) distinguishes reaching
 memory definitions from observations, which is the relevant idea behind the

@@ -3,14 +3,16 @@ use crate::compiler::{Backend, CopyOp, Location, Program};
 use crate::plan::FileClass;
 use crate::syntax::Span;
 use regex::Regex;
+use std::cell::Cell;
 use std::env;
 use std::ffi::OsStr;
 use std::fmt;
-use std::fs::{self, OpenOptions};
-use std::io;
+use std::fs;
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug, Default)]
 pub struct ExecutionOptions {
@@ -21,6 +23,7 @@ pub struct ExecutionOptions {
 pub struct ExecutionReport {
     pub copied_files: usize,
     pub created_directories: usize,
+    pub transferred_bytes: u64,
     pub actions: Vec<String>,
 }
 
@@ -38,41 +41,191 @@ impl std::error::Error for RuntimeError {}
 
 type Result<T> = std::result::Result<T, String>;
 
-pub(crate) fn execute_copy(op: &CopyOp) -> std::result::Result<ExecutionReport, RuntimeError> {
+pub(crate) struct CopyOutcome {
+    pub report: ExecutionReport,
+    pub discarded_bytes: u64,
+    pub cancelled: bool,
+    pub interruption: Option<String>,
+}
+
+pub(crate) fn execute_copy_cancellable(
+    op: &CopyOp,
+    buffer_bytes: usize,
+    cancel: CancellationToken,
+) -> std::result::Result<ExecutionReport, RuntimeError> {
+    let outcome = execute_copy_flow(op, buffer_bytes, cancel)?;
+    if outcome.cancelled {
+        return Err(RuntimeError {
+            message: format!(
+                "copy cancelled: {}; discarded {} byte(s); earlier committed {} byte(s) in {} file(s)",
+                outcome
+                    .interruption
+                    .as_deref()
+                    .unwrap_or("copy cancelled; current target unchanged"),
+                outcome.discarded_bytes,
+                outcome.report.transferred_bytes,
+                outcome.report.copied_files
+            ),
+            span: op.span,
+        });
+    }
+    Ok(outcome.report)
+}
+
+pub(crate) fn execute_copy_flow(
+    op: &CopyOp,
+    buffer_bytes: usize,
+    cancel: CancellationToken,
+) -> std::result::Result<CopyOutcome, RuntimeError> {
     let mut trace = crate::telemetry::span("copy");
-    let mut report = ExecutionReport::default();
-    let result = execute_operation(op, &mut report).map_err(|message| RuntimeError {
-        message,
-        span: op.span,
+    trace.expect_completion();
+    trace.attribute_lazy("source.backend", || {
+        backend_kind(&op.source.backend).to_owned()
     });
+    trace.attribute_lazy("destination.backend", || {
+        backend_kind(&op.destination.backend).to_owned()
+    });
+    trace.attribute_lazy("source.path", || op.source.path.clone());
+    trace.attribute_lazy("destination.path", || op.destination.path.clone());
+    let mut report = ExecutionReport::default();
+    let context = CopyContext::new(buffer_bytes, &cancel);
+    let result = context
+        .check()
+        .and_then(|()| execute_operation(op, &mut report, &context));
     trace.finish_result(&result);
+    let cancelled = context.interrupted.get() || (cancel.is_cancelled() && result.is_err());
+    if cancelled {
+        trace.cancelled();
+    }
     trace.metric("files", report.copied_files as u64);
     trace.metric("directories", report.created_directories as u64);
-    result.map(|()| report)
+    trace.metric("bytes.committed", report.transferred_bytes);
+    trace.metric("bytes.discarded", context.discarded_bytes.get());
+    if cancelled {
+        return Ok(CopyOutcome {
+            report,
+            discarded_bytes: context.discarded_bytes.get(),
+            cancelled: true,
+            interruption: result.err(),
+        });
+    }
+    result
+        .map_err(|message| RuntimeError {
+            message,
+            span: op.span,
+        })
+        .map(|()| CopyOutcome {
+            report,
+            discarded_bytes: 0,
+            cancelled: false,
+            interruption: None,
+        })
+}
+
+fn backend_kind(backend: &Backend) -> &'static str {
+    match backend {
+        Backend::Local | Backend::Path | Backend::Env => "local",
+        Backend::Wsl => "wsl",
+        Backend::Ssh { .. } => "ssh",
+        Backend::Http { .. } => "http",
+        Backend::Tcp { .. } => "tcp",
+    }
+}
+
+struct CopyContext<'a> {
+    buffer_bytes: usize,
+    cancel: &'a CancellationToken,
+    discarded_bytes: Cell<u64>,
+    interrupted: Cell<bool>,
+}
+
+impl<'a> CopyContext<'a> {
+    fn new(buffer_bytes: usize, cancel: &'a CancellationToken) -> Self {
+        Self {
+            buffer_bytes,
+            cancel,
+            discarded_bytes: Cell::new(0),
+            interrupted: Cell::new(false),
+        }
+    }
+    fn check(&self) -> Result<()> {
+        if self.buffer_bytes == 0 {
+            return Err("copy buffer size must be greater than zero".into());
+        }
+        if self.cancel.is_cancelled() {
+            self.interrupted.set(true);
+            return Err("copy cancelled; uncommitted file data was discarded".into());
+        }
+        Ok(())
+    }
 }
 
 /// Classifies local metadata without opening a stream or contacting a remote endpoint.
 pub(crate) fn inspect_location(location: &Location, source: bool) -> Result<FileClass> {
-    if matches!(location.backend, Backend::Tcp { .. }) {
-        return Ok(FileClass::Stream);
+    Inspection::default().inspect(location, source)
+}
+
+/// Native metadata snapshot owned by one preparation, never by execution.
+#[derive(Default)]
+pub(crate) struct Inspection {
+    ancestors: std::collections::HashSet<PathBuf>,
+    pub(crate) leaf_probes: u64,
+    pub(crate) ancestor_probes: u64,
+    pub(crate) ancestor_hits: u64,
+}
+
+impl Inspection {
+    pub(crate) fn inspect(&mut self, location: &Location, source: bool) -> Result<FileClass> {
+        if matches!(location.backend, Backend::Tcp { .. }) {
+            return Ok(FileClass::Stream);
+        }
+        if matches!(location.backend, Backend::Http { .. }) && source {
+            return Ok(FileClass::Regular);
+        }
+        let Some(path) = local_path(location, source)? else {
+            return Ok(FileClass::Unknown);
+        };
+        #[cfg(windows)]
+        if path
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+            .starts_with(r"\\.\pipe\")
+        {
+            return Ok(FileClass::Stream);
+        }
+        self.leaf_probes += 1;
+        let leaf = metadata(&path)?;
+        self.check_parents(&path)?;
+        classify_metadata(leaf)
     }
-    if matches!(location.backend, Backend::Http { .. }) && source {
-        return Ok(FileClass::Regular);
+
+    fn check_parents(&mut self, path: &Path) -> Result<()> {
+        let raw = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            env::current_dir()
+                .map_err(|error| error.to_string())?
+                .join(path)
+        };
+        let mut pending = Vec::new();
+        for ancestor in ancestor_guards(&raw) {
+            if self.ancestors.contains(ancestor) {
+                self.ancestor_hits += 1;
+                break;
+            }
+            self.ancestor_probes += 1;
+            metadata(ancestor)?;
+            pending.push(ancestor.to_owned());
+        }
+        // A failed outer prefix must not bless inner prefixes that traversed it.
+        self.ancestors.extend(pending);
+        Ok(())
     }
-    let Some(path) = local_path(location, source)? else {
-        return Ok(FileClass::Unknown);
-    };
-    #[cfg(windows)]
-    if path
-        .to_string_lossy()
-        .replace('/', "\\")
-        .to_ascii_lowercase()
-        .starts_with(r"\\.\pipe\")
-    {
-        return Ok(FileClass::Stream);
-    }
-    check_ancestors(&path)?;
-    match metadata(&path)? {
+}
+
+fn classify_metadata(leaf: Option<fs::Metadata>) -> Result<FileClass> {
+    match leaf {
         None => Ok(FileClass::Missing),
         Some(meta) if meta.is_file() => Ok(FileClass::Regular),
         Some(meta) if meta.is_dir() => Ok(FileClass::Directory),
@@ -95,18 +248,123 @@ pub(crate) fn inspect_location(location: &Location, source: bool) -> Result<File
 }
 
 /// Remote classification uses stat-like shell tests only; it never opens file data.
+#[cfg(all(test, windows))]
 pub(crate) fn inspect_location_live(location: &Location, source: bool) -> Result<FileClass> {
     if !matches!(location.backend, Backend::Wsl | Backend::Ssh { .. }) {
         return inspect_location(location, source);
     }
-    let output = remote_command(&location.backend, REMOTE_INSPECT, &[&location.path])?;
-    match output.stdout.as_slice() {
-        b"missing\0" => Ok(FileClass::Missing),
-        b"regular\0" => Ok(FileClass::Regular),
-        b"directory\0" => Ok(FileClass::Directory),
-        b"stream\0" => Ok(FileClass::Stream),
-        _ => Err("remote metadata probe returned an invalid class".into()),
+    inspect_locations_live(&location.backend, std::slice::from_ref(&location.path))?
+        .pop()
+        .ok_or_else(|| "remote metadata result is missing".to_owned())?
+}
+
+pub(crate) fn inspect_locations_live(
+    backend: &Backend,
+    paths: &[String],
+) -> Result<Vec<Result<FileClass>>> {
+    let mut trace = crate::telemetry::span("inspect_remote_batch");
+    trace.expect_completion();
+    trace.attribute("backend", backend_kind(backend));
+    if let Backend::Ssh { host, user, port } = backend {
+        trace.attribute_lazy("endpoint.host", || host.clone());
+        if let Some(user) = user {
+            trace.attribute_lazy("endpoint.user", || user.clone());
+        }
+        if let Some(port) = port {
+            trace.metric("endpoint.port", *port as u64);
+        }
     }
+    trace.metric("paths", paths.len() as u64);
+    let result = inspect_remote_batch(backend, paths, &mut trace);
+    if let Ok(rows) = &result {
+        trace.metric(
+            "item_errors",
+            rows.iter().filter(|row| row.is_err()).count() as u64,
+        );
+        for (path, row) in paths.iter().zip(rows) {
+            if let Err(error) = row {
+                trace.event(
+                    "metadata.item_error",
+                    &[("path", path), ("reason", error)],
+                    &[],
+                );
+            }
+        }
+    }
+    trace.finish_result(&result);
+    result
+}
+
+fn inspect_remote_batch(
+    backend: &Backend,
+    paths: &[String],
+    trace: &mut crate::telemetry::SpanGuard,
+) -> Result<Vec<Result<FileClass>>> {
+    if !matches!(backend, Backend::Wsl | Backend::Ssh { .. }) {
+        return Err("remote metadata batch requires a WSL or SSH endpoint".into());
+    }
+    let mut results = Vec::with_capacity(paths.len());
+    let fixed = quote(REMOTE_INSPECT).len() + 32;
+    let mut start = 0;
+    let mut invocations = 0;
+    while start < paths.len() {
+        let mut end = start;
+        let mut budget = fixed;
+        while end < paths.len() {
+            let size = quote(&paths[end]).len() + 1;
+            if budget.saturating_add(size) > 8 * 1024 {
+                break;
+            }
+            budget += size;
+            end += 1;
+        }
+        if end == start {
+            results.push(Err(
+                "remote metadata path exceeds the bounded 8KiB command budget".into(),
+            ));
+            start += 1;
+            continue;
+        }
+        let args: Vec<&str> = paths[start..end].iter().map(String::as_str).collect();
+        invocations += 1;
+        trace.metric("client.invocations", invocations);
+        trace.event(
+            "metadata.batch",
+            &[],
+            &[("paths", args.len() as u64), ("argv.bytes", budget as u64)],
+        );
+        let output = remote_command(backend, REMOTE_INSPECT, &args)?;
+        results.extend(parse_remote_inspections(&output.stdout, args.len())?);
+        start = end;
+    }
+    Ok(results)
+}
+
+fn parse_remote_inspections(output: &[u8], expected: usize) -> Result<Vec<Result<FileClass>>> {
+    let fields: Vec<&[u8]> = output.split(|byte| *byte == 0).collect();
+    if fields.len() != expected.saturating_mul(2).saturating_add(1)
+        || fields.last() != Some(&b"".as_slice())
+    {
+        return Err("remote metadata probe returned an invalid record count or framing".into());
+    }
+    fields[..fields.len() - 1]
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|record| {
+            Ok(match record[0] {
+                b"error" => Err(String::from_utf8_lossy(record[1]).into_owned()),
+                b"ok" => Ok(match record[1] {
+                    b"missing" => FileClass::Missing,
+                    b"regular" => FileClass::Regular,
+                    b"directory" => FileClass::Directory,
+                    b"stream" => FileClass::Stream,
+                    _ => return Err("remote metadata probe returned an invalid class".into()),
+                }),
+                _ => return Err("remote metadata probe returned an invalid record tag".into()),
+            })
+        })
+        .collect()
 }
 
 /// Synchronous compatibility entry point using the same typed plan and scheduler as the CLI.
@@ -166,7 +424,12 @@ fn describe_operation(op: &CopyOp) -> String {
     format!("{}{selection} -> {}", op.source, op.destination)
 }
 
-fn execute_operation(op: &CopyOp, report: &mut ExecutionReport) -> Result<()> {
+fn execute_operation(
+    op: &CopyOp,
+    report: &mut ExecutionReport,
+    context: &CopyContext<'_>,
+) -> Result<()> {
+    context.check()?;
     if matches!(op.destination.backend, Backend::Http { .. } | Backend::Path) {
         return Err("HTTP and PATH endpoints are read-only".into());
     }
@@ -175,6 +438,9 @@ fn execute_operation(op: &CopyOp, report: &mut ExecutionReport) -> Result<()> {
     let destination = local_path(&op.destination, false)?;
     if let Some(destination) = &destination {
         validate_destination(destination, op.destination.path.ends_with('/'))?;
+        if matches!(op.source.backend, Backend::Http { .. }) {
+            return http_to_local(op, destination, report, context);
+        }
     }
     match (source, destination) {
         (Some(source), Some(destination)) => copy_selected(
@@ -183,11 +449,117 @@ fn execute_operation(op: &CopyOp, report: &mut ExecutionReport) -> Result<()> {
             op.destination.path.ends_with('/'),
             op.pattern.as_deref(),
             report,
+            context,
         ),
-        (source, destination) => {
-            transport_copy(op, source.as_deref(), destination.as_deref(), report)
-        }
+        (source, destination) => transport_copy(
+            op,
+            source.as_deref(),
+            destination.as_deref(),
+            report,
+            context,
+        ),
     }
+}
+
+fn http_to_local(
+    op: &CopyOp,
+    destination: &Path,
+    report: &mut ExecutionReport,
+    context: &CopyContext<'_>,
+) -> Result<()> {
+    if op.pattern.is_some() {
+        return Err("HTTP sources cannot enumerate a regex selection".into());
+    }
+    context.check()?;
+    let mut command = http_command_builder(&op.source)?;
+    let name = source_basename(&op.source.path);
+    validate_staging_basename(name)?;
+    let container = op.destination.path.ends_with('/');
+    let target = if container {
+        destination.join(name)
+    } else {
+        destination.to_owned()
+    };
+    check_ancestors(&target)?;
+    if let Some(parent) = target.parent() {
+        ensure_directory(parent, report)?;
+    }
+    let mut trace = crate::telemetry::span("file_flow");
+    trace.expect_completion();
+    trace.attribute("source.backend", "http");
+    trace.attribute("destination.backend", "local");
+    trace.attribute_lazy("source.path", || op.source.path.clone());
+    trace.attribute_lazy("destination.path", || target.display().to_string());
+    let result = (|| {
+        context.check()?;
+        trace.event(
+            "file.open",
+            &[("mode", if container { "create" } else { "overwrite" })],
+            &[],
+        );
+        let stage = crate::io::StagedFile::new(&target, container).map_err(|error| {
+            trace.io_error("open_stage", &error);
+            at(&target, error)
+        })?;
+        trace.attribute_lazy("stage.path", || stage.path().display().to_string());
+        trace.event("file.transfer", &[("strategy", "http_direct_stage")], &[]);
+        let transfer = run_cancellable(command.arg("--output").arg(stage.path()), context);
+        let bytes = match fs::metadata(stage.path()) {
+            Ok(metadata) => metadata.len(),
+            Err(_) if transfer.is_err() => 0,
+            Err(error) => {
+                trace.io_error("stage_metadata", &error);
+                return Err(at(stage.path(), error));
+            }
+        };
+        if let Err(error) = transfer {
+            context.discarded_bytes.set(bytes);
+            trace.metric("bytes.discarded", bytes);
+            trace.event(
+                "file.rollback",
+                &[("target_state", "unchanged")],
+                &[("bytes.discarded", bytes)],
+            );
+            return Err(format!(
+                "HTTP flow interrupted; target unchanged; discarded {bytes} uncommitted byte(s): {error}"
+            ));
+        }
+        if context.cancel.is_cancelled() {
+            context.interrupted.set(true);
+            context.discarded_bytes.set(bytes);
+            return Err(format!(
+                "HTTP flow cancelled; target unchanged; discarded {bytes} uncommitted byte(s)"
+            ));
+        }
+        metadata(&target)?;
+        stage.commit().map_err(|error| {
+            trace.io_error("commit", &error);
+            at(&target, error)
+        })?;
+        trace.metric("bytes.committed", bytes);
+        trace.event(
+            "file.commit",
+            &[("target_state", "published")],
+            &[("bytes.committed", bytes)],
+        );
+        Ok(bytes)
+    })();
+    trace.finish_result(&result);
+    if context.interrupted.get() || context.cancel.is_cancelled() {
+        trace.cancelled();
+    }
+    let bytes = result?;
+    report.copied_files += 1;
+    report.transferred_bytes = report.transferred_bytes.saturating_add(bytes);
+    Ok(())
+}
+
+fn source_basename(path: &str) -> &str {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|name| !matches!(*name, "" | "." | ".." | "~"))
+        .unwrap_or("download")
 }
 
 pub(crate) fn local_path(location: &Location, source: bool) -> Result<Option<PathBuf>> {
@@ -245,7 +617,9 @@ fn copy_selected(
     container: bool,
     pattern: Option<&str>,
     report: &mut ExecutionReport,
+    context: &CopyContext<'_>,
 ) -> Result<()> {
+    context.check()?;
     validate_destination(destination, container)?;
     check_ancestors(source)?;
     check_ancestors(destination)?;
@@ -256,6 +630,7 @@ fn copy_selected(
                 Regex::new(&format!("\\A(?:{pattern})\\z")).map_err(|error| error.to_string())?;
             let mut selected = Vec::new();
             for entry in fs::read_dir(source).map_err(|error| at(source, error))? {
+                context.check()?;
                 let entry = entry.map_err(|error| at(source, error))?;
                 if regex.is_match(&entry.file_name().to_string_lossy()) {
                     selected.push(entry.path());
@@ -271,6 +646,7 @@ fn copy_selected(
     }
     let mut plans = Vec::with_capacity(sources.len());
     for source in sources {
+        context.check()?;
         let target = if container {
             let name = source
                 .file_name()
@@ -279,11 +655,11 @@ fn copy_selected(
         } else {
             destination.to_owned()
         };
-        preflight(&source, &target, container)?;
+        preflight_cancellable(&source, &target, container, context)?;
         plans.push((source, target));
     }
     for (source, target) in plans {
-        copy_tree(&source, &target, container, report)?;
+        copy_tree(&source, &target, container, report, context)?;
     }
     Ok(())
 }
@@ -298,6 +674,12 @@ fn validate_destination(destination: &Path, container: bool) -> Result<()> {
 }
 
 fn at(path: &Path, error: io::Error) -> String {
+    crate::telemetry::event(
+        "filesystem.error",
+        &[("path", &path.to_string_lossy())],
+        &[],
+    );
+    crate::telemetry::io_error("filesystem", &error);
     format!("{}: {error}", path.display())
 }
 
@@ -350,13 +732,39 @@ pub(crate) fn check_ancestors(path: &Path) -> Result<()> {
             .map_err(|error| error.to_string())?
             .join(path)
     };
-    for ancestor in raw.ancestors() {
+    metadata(&raw)?;
+    for ancestor in ancestor_guards(&raw) {
         metadata(ancestor)?;
     }
     Ok(())
 }
 
+fn ancestor_guards(raw: &Path) -> impl Iterator<Item = &Path> {
+    // lstat("link/") and lstat("link/.") follow a directory link, while parent()
+    // skips that final component. Trim ignored suffixes without rebuilding the
+    // path: collecting/pushing Windows verbatim components could collapse '..'.
+    let trimmed = raw.components().as_path();
+    let checked_leaf = usize::from(trimmed.as_os_str() == raw.as_os_str());
+    trimmed.ancestors().skip(checked_leaf)
+}
+
+#[cfg(all(test, windows))]
 fn preflight(source: &Path, target: &Path, no_clobber: bool) -> Result<()> {
+    preflight_cancellable(
+        source,
+        target,
+        no_clobber,
+        &CopyContext::new(64 * 1024, &CancellationToken::new()),
+    )
+}
+
+fn preflight_cancellable(
+    source: &Path,
+    target: &Path,
+    no_clobber: bool,
+    context: &CopyContext<'_>,
+) -> Result<()> {
+    context.check()?;
     check_ancestors(source)?;
     check_ancestors(target)?;
     let source_meta =
@@ -382,7 +790,12 @@ fn preflight(source: &Path, target: &Path, no_clobber: bool) -> Result<()> {
         }
         for entry in fs::read_dir(source).map_err(|error| at(source, error))? {
             let entry = entry.map_err(|error| at(source, error))?;
-            preflight(&entry.path(), &target.join(entry.file_name()), no_clobber)?;
+            preflight_cancellable(
+                &entry.path(),
+                &target.join(entry.file_name()),
+                no_clobber,
+                context,
+            )?;
         }
     } else if source_meta.is_file() {
         if target_meta.as_ref().is_some_and(|meta| meta.is_dir()) {
@@ -428,13 +841,14 @@ fn ancestor_has_identity(root: &same_file::Handle, path: &Path) -> Result<bool> 
     Ok(false)
 }
 
-fn validate_source_tree(source: &Path) -> Result<()> {
+fn validate_source_tree(source: &Path, context: &CopyContext<'_>) -> Result<()> {
+    context.check()?;
     check_ancestors(source)?;
     let meta =
         metadata(source)?.ok_or_else(|| format!("source does not exist: {}", source.display()))?;
     if meta.is_dir() {
         for entry in fs::read_dir(source).map_err(|error| at(source, error))? {
-            validate_source_tree(&entry.map_err(|error| at(source, error))?.path())?;
+            validate_source_tree(&entry.map_err(|error| at(source, error))?.path(), context)?;
         }
     } else if !meta.is_file() {
         return Err(format!("unsupported special file: {}", source.display()));
@@ -478,7 +892,9 @@ fn copy_tree(
     target: &Path,
     no_clobber: bool,
     report: &mut ExecutionReport,
+    context: &CopyContext<'_>,
 ) -> Result<()> {
+    context.check()?;
     let source_meta =
         metadata(source)?.ok_or_else(|| format!("source disappeared: {}", source.display()))?;
     if source_meta.is_dir() {
@@ -490,6 +906,7 @@ fn copy_tree(
                 &target.join(entry.file_name()),
                 no_clobber,
                 report,
+                context,
             )?;
         }
         return Ok(());
@@ -497,27 +914,94 @@ fn copy_tree(
     if let Some(parent) = target.parent() {
         ensure_directory(parent, report)?;
     }
-    // create_new is the atomic no-clobber contract; never emulate it with exists().
-    if no_clobber {
-        let mut input = fs::File::open(source).map_err(|error| at(source, error))?;
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(target)
-            .map_err(|error| at(target, error))?;
-        if let Err(error) = io::copy(&mut input, &mut output) {
-            drop(output);
-            let _ = fs::remove_file(target);
-            return Err(at(target, error));
-        }
-        fs::set_permissions(target, source_meta.permissions())
-            .map_err(|error| at(target, error))?;
-    } else {
-        metadata(target)?;
-        fs::copy(source, target).map_err(|error| at(target, error))?;
+    metadata(target)?;
+    let mut trace = crate::telemetry::span("file_flow");
+    trace.expect_completion();
+    trace.attribute_lazy("source.path", || source.display().to_string());
+    trace.attribute_lazy("destination.path", || target.display().to_string());
+    trace.attribute("source.backend", "local");
+    trace.attribute("destination.backend", "local");
+    trace.metric("buffer_bytes", context.buffer_bytes as u64);
+    let result = transfer_regular_file(
+        source,
+        target,
+        no_clobber,
+        source_meta.permissions(),
+        context,
+        &mut trace,
+    );
+    trace.finish_result(&result);
+    if context.cancel.is_cancelled() {
+        trace.cancelled();
     }
+    let bytes = result?;
     report.copied_files += 1;
+    report.transferred_bytes = report.transferred_bytes.saturating_add(bytes);
     Ok(())
+}
+
+fn transfer_regular_file(
+    source: &Path,
+    target: &Path,
+    no_clobber: bool,
+    permissions: fs::Permissions,
+    context: &CopyContext<'_>,
+    trace: &mut crate::telemetry::SpanGuard,
+) -> Result<u64> {
+    trace.event(
+        "file.open",
+        &[("mode", if no_clobber { "create" } else { "overwrite" })],
+        &[],
+    );
+    let stage = crate::io::StagedFile::new(target, no_clobber).map_err(|error| {
+        trace.io_error("open_stage", &error);
+        at(target, error)
+    })?;
+    trace.attribute_lazy("stage.path", || stage.path().display().to_string());
+    trace.event("file.transfer", &[("strategy", "kernel_assisted")], &[]);
+    let bytes = crate::io::copy_file(source, stage.path(), context.buffer_bytes, context.cancel)
+        .map_err(|error| {
+            let bytes = crate::io::transferred_bytes(&error);
+            context.discarded_bytes.set(bytes);
+            if error.kind() == io::ErrorKind::Interrupted { context.interrupted.set(true); }
+            trace.io_error("transfer", &error);
+            trace.metric("bytes.discarded", bytes);
+            trace.event("file.rollback", &[("target_state", "unchanged")], &[("bytes.discarded", bytes)]);
+            let outcome = if error.kind() == io::ErrorKind::Interrupted || context.cancel.is_cancelled() { "cancelled" } else { "failed" };
+            format!("file flow {outcome}; target unchanged; discarded {bytes} uncommitted byte(s): {error}")
+        })?;
+    if context.cancel.is_cancelled() {
+        context.discarded_bytes.set(bytes);
+        context.interrupted.set(true);
+        trace.metric("bytes.discarded", bytes);
+        return Err(format!(
+            "file flow cancelled; target unchanged; discarded {bytes} uncommitted byte(s)"
+        ));
+    }
+    fs::set_permissions(stage.path(), permissions).map_err(|error| {
+        trace.io_error("permissions", &error);
+        at(stage.path(), error)
+    })?;
+    metadata(target)?;
+    if context.cancel.is_cancelled() {
+        context.discarded_bytes.set(bytes);
+        context.interrupted.set(true);
+        trace.metric("bytes.discarded", bytes);
+        return Err(format!(
+            "file flow cancelled; target unchanged; discarded {bytes} uncommitted byte(s)"
+        ));
+    }
+    stage.commit().map_err(|error| {
+        trace.io_error("commit", &error);
+        at(target, error)
+    })?;
+    trace.metric("bytes.committed", bytes);
+    trace.event(
+        "file.commit",
+        &[("target_state", "published")],
+        &[("bytes.committed", bytes)],
+    );
+    Ok(bytes)
 }
 
 static SCRATCH_ID: AtomicU64 = AtomicU64::new(0);
@@ -551,18 +1035,140 @@ impl Drop for Scratch {
 }
 
 fn run(command: &mut Command) -> Result<Output> {
+    run_cancellable(
+        command,
+        &CopyContext::new(64 * 1024, &CancellationToken::new()),
+    )
+}
+
+fn run_cancellable(command: &mut Command, context: &CopyContext<'_>) -> Result<Output> {
+    let mut trace = crate::telemetry::span("transport_process");
+    trace.expect_completion();
+    trace.attribute_lazy("program", || {
+        command.get_program().to_string_lossy().into_owned()
+    });
+    let result = run_process(command, context, &mut trace);
+    trace.finish_result(&result);
+    if context.cancel.is_cancelled() {
+        trace.cancelled();
+    }
+    result
+}
+
+fn run_process(
+    command: &mut Command,
+    context: &CopyContext<'_>,
+    trace: &mut crate::telemetry::SpanGuard,
+) -> Result<Output> {
+    context.check()?;
     let name = command.get_program().to_string_lossy().into_owned();
-    let output = command
-        .output()
-        .map_err(|error| format!("cannot start {name}: {error}"))?;
-    if !output.status.success() {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            trace.io_error("spawn", &error);
+            format!("cannot start {name}: {error}")
+        })?;
+    trace.metric("pid", child.id() as u64);
+    trace.event("process.open", &[], &[]);
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("subprocess stdout is unavailable")?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or("subprocess stderr is unavailable")?;
+    let output = std::thread::spawn(move || drain_bounded(stdout, 8 * 1024 * 1024));
+    let errors = std::thread::spawn(move || drain_bounded(stderr, 64 * 1024));
+    let mut cancelled = false;
+    let status = loop {
+        if context.cancel.is_cancelled() {
+            cancelled = true;
+            let _ = child.kill();
+            break child.wait();
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(error);
+            }
+        }
+    };
+    let stdout = output
+        .join()
+        .map_err(|_| "subprocess output reader failed")?
+        .map_err(|error| {
+            trace.io_error("stdout_read", &error);
+            error.to_string()
+        })?;
+    let stderr = errors
+        .join()
+        .map_err(|_| "subprocess error reader failed")?
+        .map_err(|error| {
+            trace.io_error("stderr_read", &error);
+            error.to_string()
+        })?;
+    trace.metric("stdout_bytes", stdout.0.len() as u64);
+    trace.metric("stderr_bytes", stderr.0.len() as u64);
+    if cancelled {
+        context.interrupted.set(true);
+        return Err(format!("{name} cancelled; transport process closed"));
+    }
+    let status = status.map_err(|error| {
+        trace.io_error("wait", &error);
+        format!("cannot wait for {name}: {error}")
+    })?;
+    trace.event("process.exit", &[("status", &status.to_string())], &[]);
+    if stdout.1 {
         return Err(format!(
-            "{name} failed ({}): {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim()
+            "{name} metadata output exceeded the 8MiB bound; split the source selection"
         ));
     }
-    Ok(output)
+    if !status.success() {
+        trace.event(
+            "process.error",
+            &[
+                ("status", &status.to_string()),
+                ("stderr", &String::from_utf8_lossy(&stderr.0)),
+            ],
+            &[],
+        );
+        return Err(format!(
+            "{name} failed ({status}): {}{}",
+            String::from_utf8_lossy(&stderr.0).trim(),
+            if stderr.1 { " [stderr truncated]" } else { "" }
+        ));
+    }
+    Ok(Output {
+        status,
+        stdout: stdout.0,
+        stderr: stderr.0,
+    })
+}
+
+fn drain_bounded(mut reader: impl Read, capacity: usize) -> io::Result<(Vec<u8>, bool)> {
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let mut truncated = false;
+    loop {
+        let amount = match reader.read(&mut buffer) {
+            Ok(amount) => amount,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if amount == 0 {
+            return Ok((output, truncated));
+        }
+        let keep = amount.min(capacity.saturating_sub(output.len()));
+        output.extend_from_slice(&buffer[..keep]);
+        truncated |= keep < amount;
+    }
 }
 
 fn quote(value: &str) -> String {
@@ -571,6 +1177,15 @@ fn quote(value: &str) -> String {
 
 pub(crate) fn remote_command(backend: &Backend, script: &str, args: &[&str]) -> Result<Output> {
     run(&mut remote_command_builder(backend, script, args)?)
+}
+
+fn remote_command_cancellable(
+    backend: &Backend,
+    script: &str,
+    args: &[&str],
+    context: &CopyContext<'_>,
+) -> Result<Output> {
+    run_cancellable(&mut remote_command_builder(backend, script, args)?, context)
 }
 
 pub(crate) fn remote_command_builder(
@@ -624,14 +1239,16 @@ fn transport_copy(
     source: Option<&Path>,
     destination: Option<&Path>,
     report: &mut ExecutionReport,
+    context: &CopyContext<'_>,
 ) -> Result<()> {
+    context.check()?;
     let uses_wsl =
         matches!(op.source.backend, Backend::Wsl) || matches!(op.destination.backend, Backend::Wsl);
     let wsl_source = source.is_some() || matches!(op.source.backend, Backend::Wsl);
     let wsl_destination = destination.is_some() || matches!(op.destination.backend, Backend::Wsl);
     if uses_wsl && wsl_source && wsl_destination {
-        let source_path = wsl_path(source, &op.source.path)?;
-        let target_path = wsl_path(destination, &op.destination.path)?;
+        let source_path = wsl_path_cancellable(source, &op.source.path, context)?;
+        let target_path = wsl_path_cancellable(destination, &op.destination.path, context)?;
         remote_copy(
             &Backend::Wsl,
             &source_path,
@@ -639,6 +1256,7 @@ fn transport_copy(
             op.destination.path.ends_with('/'),
             op.pattern.as_deref(),
             report,
+            context,
         )?;
         return Ok(());
     }
@@ -652,6 +1270,7 @@ fn transport_copy(
             op.destination.path.ends_with('/'),
             op.pattern.as_deref(),
             report,
+            context,
         );
     }
     if let Some(source) = source {
@@ -661,10 +1280,11 @@ fn transport_copy(
             op.destination.path.ends_with('/'),
             op.pattern.as_deref(),
             report,
+            context,
         );
     }
     let scratch = Scratch::new()?;
-    let staged = receive(&op.source, &scratch, op.pattern.as_deref())?;
+    let staged = receive(&op.source, &scratch, op.pattern.as_deref(), context)?;
     let source = &staged;
     if let Some(destination) = destination {
         let pattern = if matches!(op.source.backend, Backend::Http { .. }) {
@@ -678,6 +1298,7 @@ fn transport_copy(
             op.destination.path.ends_with('/'),
             pattern,
             report,
+            context,
         );
     }
     send(
@@ -686,42 +1307,63 @@ fn transport_copy(
         op.destination.path.ends_with('/'),
         op.pattern.as_deref(),
         report,
+        context,
     )
 }
 
+#[cfg(all(test, windows))]
 fn wsl_path(local: Option<&Path>, remote: &str) -> Result<String> {
+    wsl_path_cancellable(
+        local,
+        remote,
+        &CopyContext::new(64 * 1024, &CancellationToken::new()),
+    )
+}
+
+fn wsl_path_cancellable(
+    local: Option<&Path>,
+    remote: &str,
+    context: &CopyContext<'_>,
+) -> Result<String> {
     let Some(path) = local else {
         return Ok(remote.to_owned());
     };
     let path = absolute(path)?;
-    let output = run(Command::new("wsl").args([
-        OsStr::new("--exec"),
-        OsStr::new("wslpath"),
-        OsStr::new("-a"),
-        OsStr::new("-u"),
-        path.as_os_str(),
-    ]))?;
+    let output = run_cancellable(
+        Command::new("wsl").args([
+            OsStr::new("--exec"),
+            OsStr::new("wslpath"),
+            OsStr::new("-a"),
+            OsStr::new("-u"),
+            path.as_os_str(),
+        ]),
+        context,
+    )?;
     Ok(String::from_utf8(output.stdout)
         .map_err(|_| "wslpath returned non-UTF-8 output")?
         .trim_end()
         .to_owned())
 }
 
-fn receive(location: &Location, scratch: &Scratch, pattern: Option<&str>) -> Result<PathBuf> {
+fn receive(
+    location: &Location,
+    scratch: &Scratch,
+    pattern: Option<&str>,
+    context: &CopyContext<'_>,
+) -> Result<PathBuf> {
     let listing = if matches!(location.backend, Backend::Ssh { .. }) {
-        let output = remote_command(&location.backend, REMOTE_VALIDATE, &[&location.path])?;
+        let output = remote_command_cancellable(
+            &location.backend,
+            REMOTE_VALIDATE,
+            &[&location.path],
+            context,
+        )?;
         validate_remote_names(&output.stdout)?;
         Some(output.stdout)
     } else {
         None
     };
-    let fallback_name = location
-        .path
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .filter(|name| !name.is_empty() && *name != "." && *name != "..")
-        .unwrap_or("download");
+    let fallback_name = source_basename(&location.path);
     let name = match &listing {
         Some(listing) => std::str::from_utf8(
             listing
@@ -739,13 +1381,16 @@ fn receive(location: &Location, scratch: &Scratch, pattern: Option<&str>) -> Res
             if pattern.is_some() {
                 return Err("HTTP sources cannot enumerate a regex selection".into());
             }
-            run(http_command_builder(location)?.arg("--output").arg(&target))?;
+            run_cancellable(
+                http_command_builder(location)?.arg("--output").arg(&target),
+                context,
+            )?;
         }
         Backend::Ssh { .. } => {
-            scp(location, &target, false)?;
+            scp(location, &target, false, context)?;
         }
         Backend::Wsl => {
-            let path = wsl_path(Some(&target), "")?;
+            let path = wsl_path_cancellable(Some(&target), "", context)?;
             let mut ignored = ExecutionReport::default();
             remote_copy(
                 &Backend::Wsl,
@@ -754,6 +1399,7 @@ fn receive(location: &Location, scratch: &Scratch, pattern: Option<&str>) -> Res
                 false,
                 None,
                 &mut ignored,
+                context,
             )?;
         }
         _ => return Err("unsupported source endpoint".into()),
@@ -860,20 +1506,22 @@ fn send(
     container: bool,
     pattern: Option<&str>,
     report: &mut ExecutionReport,
+    context: &CopyContext<'_>,
 ) -> Result<()> {
     let source = absolute(source)?;
     let source = source.as_path();
     match &location.backend {
         Backend::Ssh { .. } => {
-            validate_source_tree(source)?;
+            validate_source_tree(source, context)?;
             let name = source
                 .file_name()
                 .and_then(OsStr::to_str)
                 .ok_or("source has no UTF-8 basename")?;
-            let output = remote_command(
+            let output = remote_command_cancellable(
                 &location.backend,
                 "umask 077; mktemp -d /tmp/msync.XXXXXXXXXX",
                 &[],
+                context,
             )?;
             let remote_root = String::from_utf8(output.stdout)
                 .map_err(|_| "remote temporary directory is not UTF-8")?
@@ -886,7 +1534,7 @@ fn send(
                 backend: location.backend.clone(),
                 path: format!("{remote_root}/{name}"),
             };
-            let result = scp(&staged, source, true).and_then(|()| {
+            let result = scp(&staged, source, true, context).and_then(|()| {
                 remote_copy(
                     &location.backend,
                     &staged.path,
@@ -894,6 +1542,7 @@ fn send(
                     container,
                     pattern,
                     report,
+                    context,
                 )
             });
             let cleanup = remote_command(&location.backend, "rm -rf -- \"$1\"", &[&remote_root]);
@@ -902,7 +1551,7 @@ fn send(
             Ok(())
         }
         Backend::Wsl => {
-            let path = wsl_path(Some(source), "")?;
+            let path = wsl_path_cancellable(Some(source), "", context)?;
             remote_copy(
                 &Backend::Wsl,
                 &path,
@@ -910,13 +1559,14 @@ fn send(
                 container,
                 pattern,
                 report,
+                context,
             )
         }
         _ => Err("unsupported destination endpoint".into()),
     }
 }
 
-fn scp(location: &Location, local: &Path, upload: bool) -> Result<()> {
+fn scp(location: &Location, local: &Path, upload: bool, context: &CopyContext<'_>) -> Result<()> {
     let Backend::Ssh { host, user, port } = &location.backend else {
         return Err("SCP requires SSH endpoint".into());
     };
@@ -945,7 +1595,7 @@ fn scp(location: &Location, local: &Path, upload: bool) -> Result<()> {
     } else {
         command.arg(remote).arg(absolute(local)?);
     }
-    run(&mut command)?;
+    run_cancellable(&mut command, context)?;
     Ok(())
 }
 
@@ -981,14 +1631,16 @@ fn remote_copy(
     container: bool,
     pattern: Option<&str>,
     report: &mut ExecutionReport,
+    context: &CopyContext<'_>,
 ) -> Result<()> {
+    context.check()?;
     if let Some(pattern) = pattern {
         if !container {
             return Err("a regex selection requires a destination ending in /".into());
         }
         let regex =
             Regex::new(&format!("\\A(?:{pattern})\\z")).map_err(|error| error.to_string())?;
-        let listing = remote_command(backend, REMOTE_LIST, &[source])?;
+        let listing = remote_command_cancellable(backend, REMOTE_LIST, &[source], context)?;
         let mut names: Vec<&str> = std::str::from_utf8(&listing.stdout)
             .map_err(|_| "remote directory contains non-UTF-8 names")?
             .split('\0')
@@ -997,23 +1649,35 @@ fn remote_copy(
         names.sort_unstable();
         for name in &names {
             let source = format!("{}/{name}", source.trim_end_matches('/'));
-            remote_command(backend, REMOTE_COPY, &[&source, destination, "1", "1"])?;
+            remote_command_cancellable(
+                backend,
+                REMOTE_COPY,
+                &[&source, destination, "1", "1"],
+                context,
+            )?;
         }
         for name in names {
             let source = format!("{}/{name}", source.trim_end_matches('/'));
-            remote_copy(backend, &source, destination, true, None, report)?;
+            remote_copy(backend, &source, destination, true, None, report, context)?;
         }
         return Ok(());
     }
-    let output = remote_command(
+    let output = remote_command_cancellable(
         backend,
         REMOTE_COPY,
         &[source, destination, if container { "1" } else { "0" }],
+        context,
     )?;
     let counts = String::from_utf8_lossy(&output.stdout);
     for line in counts.lines() {
         match line {
-            "file" => report.copied_files += 1,
+            _ if line.starts_with("file ") => {
+                let bytes = line[5..]
+                    .parse::<u64>()
+                    .map_err(|_| "remote copy returned an invalid byte count")?;
+                report.copied_files += 1;
+                report.transferred_bytes = report.transferred_bytes.saturating_add(bytes);
+            }
             "directory" => report.created_directories += 1,
             _ => {}
         }
@@ -1023,20 +1687,30 @@ fn remote_copy(
 
 const REMOTE_INSPECT: &str = r#"
 set -eu
+inspect_one() (
 p=$1
 case $p in '~') p=$HOME;; '~/'*) p=$HOME/${p#\~/};; esac
 case $p in /*) ;; *) p=$PWD/$p;; esac
 a=$p
 while [ "$a" != / ]; do
     [ ! -L "$a" ] || { echo 'refusing symbolic link in metadata probe' >&2; exit 1; }
-    a=$(dirname -- "$a")
+    a=${a%/*}
+    [ -n "$a" ] || a=/
 done
-if [ -f "$p" ]; then printf 'regular\0'
-elif [ -d "$p" ]; then printf 'directory\0'
-elif [ -p "$p" ] || [ -S "$p" ]; then printf 'stream\0'
-elif [ ! -e "$p" ]; then printf 'missing\0'
+if [ -f "$p" ]; then printf regular
+elif [ -d "$p" ]; then printf directory
+elif [ -p "$p" ] || [ -S "$p" ]; then printf stream
+elif [ ! -e "$p" ]; then printf missing
 else echo 'unsupported remote filesystem entry' >&2; exit 1
 fi
+)
+for item in "$@"; do
+    if value=$(inspect_one "$item" 2>&1); then
+        printf 'ok\0%s\0' "$value"
+    else
+        printf 'error\0%s\0' "$value"
+    fi
+done
 "#;
 
 const REMOTE_LIST: &str = r#"
@@ -1129,11 +1803,17 @@ copy() (
         done
     else
         mkdir -p -- "$(dirname -- "$b")"
+        part=$(mktemp "$(dirname -- "$b")/.msync.XXXXXXXXXX")
+        trap 'rm -f -- "$part"' EXIT
+        trap 'exit 130' HUP INT TERM
+        bytes=$(stat -c %s -- "$a")
+        cp -p -- "$a" "$part"
         if [ "$mode" = 1 ]; then
-            (set -C; cat -- "$a" > "$b") || fail "cannot create destination: $b"
-            chmod --reference="$a" -- "$b"
-        else cp -p -- "$a" "$b"; fi
-        echo file
+            ln -- "$part" "$b" || fail "cannot create destination: $b"
+        else mv -fT -- "$part" "$b"; fi
+        rm -f -- "$part"
+        trap - EXIT HUP INT TERM
+        echo "file $bytes"
     fi
 )
 check "$s" "$d"
@@ -1145,6 +1825,217 @@ copy "$s" "$d"
 mod transport_tests {
     use super::{escape_sftp_pattern, validate_remote_names, validate_staging_basename};
 
+    fn inspection_workspace() -> tempfile::TempDir {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        std::fs::create_dir_all(&root).unwrap();
+        tempfile::tempdir_in(root).unwrap()
+    }
+
+    fn inspection_local(path: &std::path::Path) -> crate::compiler::Location {
+        crate::compiler::Location {
+            backend: crate::compiler::Backend::Local,
+            path: path.to_string_lossy().into_owned(),
+        }
+    }
+
+    #[test]
+    fn inspection_shares_verified_ancestors_but_reprobes_each_leaf() {
+        let root = inspection_workspace();
+        let directory = root.path().join("nested");
+        std::fs::create_dir(&directory).unwrap();
+        let first = directory.join("first");
+        let second = directory.join("second");
+        std::fs::write(&first, "first").unwrap();
+        std::fs::write(&second, "second").unwrap();
+        let mut inspection = super::Inspection::default();
+        assert_eq!(
+            inspection.inspect(&inspection_local(&first), true).unwrap(),
+            super::FileClass::Regular
+        );
+        let probes = inspection.ancestor_probes;
+        assert!(probes > 0);
+        assert_eq!(
+            inspection
+                .inspect(&inspection_local(&second), true)
+                .unwrap(),
+            super::FileClass::Regular
+        );
+        assert_eq!(inspection.ancestor_probes, probes);
+        assert_eq!(inspection.ancestor_hits, 1);
+        assert_eq!(inspection.leaf_probes, 2);
+        std::fs::remove_file(&second).unwrap();
+        assert_eq!(
+            inspection
+                .inspect(&inspection_local(&second), true)
+                .unwrap(),
+            super::FileClass::Missing
+        );
+        assert_eq!(inspection.leaf_probes, 3);
+        assert_eq!(inspection.ancestor_probes, probes);
+    }
+
+    #[test]
+    fn inspection_keeps_parent_file_errors_and_never_opens_stream_endpoints() {
+        let root = inspection_workspace();
+        let parent = root.path().join("not-a-directory");
+        std::fs::write(&parent, "ordinary file").unwrap();
+        let mut inspection = super::Inspection::default();
+        for child in ["first", "second"] {
+            let location = inspection_local(&parent.join(child));
+            assert_eq!(
+                inspection.inspect(&location, true),
+                super::inspect_location(&location, true)
+            );
+        }
+        let before = inspection.leaf_probes;
+        let endpoint = crate::compiler::Location {
+            backend: crate::compiler::Backend::Tcp {
+                host: "127.0.0.1".into(),
+                port: 1,
+            },
+            path: "/".into(),
+        };
+        assert_eq!(
+            inspection.inspect(&endpoint, true).unwrap(),
+            super::FileClass::Stream
+        );
+        assert_eq!(inspection.leaf_probes, before);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn inspection_guards_preserve_verbatim_parent_steps_and_trim_directory_markers() {
+        let path = std::path::Path::new(r"\\?\C:\parent\link\..\file");
+        let guards: Vec<_> = super::ancestor_guards(path).collect();
+        assert_eq!(guards[0], std::path::Path::new(r"\\?\C:\parent\link\.."));
+        assert_eq!(guards[1], std::path::Path::new(r"\\?\C:\parent\link"));
+        for path in [
+            r"C:\parent\link\",
+            r"C:\parent\link\.",
+            r"\\?\C:\parent\link\",
+        ] {
+            let path = std::path::Path::new(path);
+            assert_eq!(
+                super::ancestor_guards(path)
+                    .next()
+                    .unwrap()
+                    .file_name()
+                    .unwrap(),
+                "link"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inspection_failed_symlink_chain_does_not_cache_inner_prefixes() {
+        let root = inspection_workspace();
+        let target = root.path().join("target");
+        std::fs::create_dir_all(target.join("nested")).unwrap();
+        for name in ["first", "second"] {
+            std::fs::write(target.join("nested").join(name), name).unwrap();
+        }
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let mut inspection = super::Inspection::default();
+        for name in ["first", "second"] {
+            let location = inspection_local(&link.join("nested").join(name));
+            let failure = inspection.inspect(&location, true).unwrap_err();
+            assert!(failure.contains("refusing symbolic link"), "{failure}");
+            assert!(inspection.ancestors.is_empty());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inspection_and_execution_reject_directory_links_with_ignored_suffixes() {
+        use crate::compiler::{CopyOp, Program};
+        let root = inspection_workspace();
+        let target = root.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("child"), "protected").unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        for suffix in ["/", "/.", "/./"] {
+            let path = std::path::PathBuf::from(format!("{}{suffix}", link.display()));
+            let mut inspection = super::Inspection::default();
+            assert!(
+                inspection
+                    .inspect(&inspection_local(&path), true)
+                    .unwrap_err()
+                    .contains("refusing symbolic link")
+            );
+            assert!(inspection.ancestors.is_empty());
+            assert!(
+                super::check_ancestors(&path)
+                    .unwrap_err()
+                    .contains("refusing symbolic link")
+            );
+            let output = root.path().join("output");
+            let result = super::execute(
+                &Program {
+                    operations: vec![CopyOp {
+                        source: inspection_local(&path),
+                        destination: inspection_local(&output),
+                        pattern: None,
+                        span: crate::syntax::Span::default(),
+                    }],
+                },
+                &super::ExecutionOptions::default(),
+            );
+            assert!(
+                result
+                    .unwrap_err()
+                    .message
+                    .contains("refusing symbolic link")
+            );
+            assert!(!output.exists());
+            assert_eq!(
+                std::fs::read_to_string(target.join("child")).unwrap(),
+                "protected"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn inspection_does_not_normalize_away_symlinks_or_outlive_preparation() {
+        let root = inspection_workspace();
+        let target = root.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        let safe = root.path().join("safe");
+        std::fs::write(&safe, "safe").unwrap();
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let mut inspection = super::Inspection::default();
+        inspection.inspect(&inspection_local(&safe), true).unwrap();
+        let failure = inspection
+            .inspect(&inspection_local(&link.join("..").join("safe")), true)
+            .unwrap_err();
+        assert!(failure.contains("refusing symbolic link"), "{failure}");
+
+        let parent = root.path().join("parent");
+        std::fs::create_dir(&parent).unwrap();
+        std::fs::write(parent.join("child"), "before").unwrap();
+        inspection
+            .inspect(&inspection_local(&parent.join("child")), true)
+            .unwrap();
+        std::fs::remove_file(parent.join("child")).unwrap();
+        std::fs::remove_dir(&parent).unwrap();
+        std::fs::write(target.join("child"), "after").unwrap();
+        std::os::unix::fs::symlink(&target, &parent).unwrap();
+        assert!(
+            super::inspect_location(&inspection_local(&parent.join("child")), true)
+                .unwrap_err()
+                .contains("refusing symbolic link")
+        );
+        assert!(
+            super::check_ancestors(&parent.join("child"))
+                .unwrap_err()
+                .contains("refusing symbolic link")
+        );
+    }
+
     #[test]
     fn sftp_downloads_escape_globs_without_changing_home_expansion() {
         assert_eq!(escape_sftp_pattern("~/a[1].txt"), "~/a[[]1[]].txt");
@@ -1153,6 +2044,75 @@ mod transport_tests {
             r"dir/a[*][?][[][]]\\file"
         );
         assert_eq!(escape_sftp_pattern("~/plain 文件.txt"), "~/plain 文件.txt");
+    }
+
+    #[test]
+    fn metadata_batch_frames_preserve_per_item_errors_and_order() {
+        use super::{FileClass, parse_remote_inspections};
+        let rows = parse_remote_inspections(
+            b"ok\0regular\0error\0unsafe path\0ok\0missing\0ok\0regular\0",
+            4,
+        )
+        .unwrap();
+        assert!(matches!(rows[0], Ok(FileClass::Regular)));
+        assert_eq!(rows[1].as_ref().unwrap_err(), "unsafe path");
+        assert!(matches!(rows[2], Ok(FileClass::Missing)));
+        assert!(matches!(rows[3], Ok(FileClass::Regular)));
+        for output in [
+            b"ok\0regular".as_slice(),
+            b"ok\0regular\0".as_slice(),
+            b"ok\0bogus\0ok\0regular\0".as_slice(),
+        ] {
+            assert!(parse_remote_inspections(output, 2).is_err());
+        }
+    }
+
+    #[test]
+    fn cancelled_native_copy_does_not_create_or_modify_a_target() {
+        use super::execute_copy_cancellable;
+        use crate::{
+            compiler::{Backend, CopyOp, Location},
+            syntax::Span,
+        };
+        use std::{fs, path::Path};
+        use tokio_util::sync::CancellationToken;
+        let temporary = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&temporary).unwrap();
+        let directory = tempfile::tempdir_in(temporary).unwrap();
+        let source = directory.path().join("source");
+        let target = directory.path().join("target");
+        fs::write(&source, "new payload").unwrap();
+        for existing in [false, true] {
+            if existing {
+                fs::write(&target, "previous payload").unwrap();
+            }
+            let operation = CopyOp {
+                source: Location {
+                    backend: Backend::Local,
+                    path: source.to_str().unwrap().into(),
+                },
+                destination: Location {
+                    backend: Backend::Local,
+                    path: target.to_str().unwrap().into(),
+                },
+                pattern: None,
+                span: Span { start: 0, end: 1 },
+            };
+            let cancel = CancellationToken::new();
+            cancel.cancel();
+            assert!(
+                execute_copy_cancellable(&operation, 64 * 1024, cancel)
+                    .unwrap_err()
+                    .message
+                    .contains("cancelled")
+            );
+            if existing {
+                assert_eq!(fs::read_to_string(&target).unwrap(), "previous payload");
+            } else {
+                assert!(!target.exists());
+            }
+        }
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
     }
 
     #[test]
@@ -1328,5 +2288,74 @@ mod transport_tests {
         ));
         assert_eq!(fs::read_to_string(source).unwrap(), "unchanged");
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        let remote_file = remote(&directory.path().join("source.bin"));
+        let paths = vec![
+            remote_file.path.clone(),
+            "/dev/null".into(),
+            remote(directory.path()).path,
+            remote(&directory.path().join("missing")).path,
+            remote_file.path.clone(),
+        ];
+        let batch = super::inspect_locations_live(&Backend::Wsl, &paths).unwrap();
+        assert!(matches!(batch[0], Ok(FileClass::Regular)));
+        assert!(batch[1].is_err());
+        assert!(matches!(batch[2], Ok(FileClass::Directory)));
+        assert!(matches!(batch[3], Ok(FileClass::Missing)));
+        assert!(matches!(batch[4], Ok(FileClass::Regular)));
+        let repeated = vec![remote_file.path; 160];
+        assert!(
+            super::inspect_locations_live(&Backend::Wsl, &repeated)
+                .unwrap()
+                .into_iter()
+                .all(|row| matches!(row, Ok(FileClass::Regular)))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "measures actual WSL client startup for 16 real metadata paths"]
+    fn live_remote_metadata_batch_amortizes_native_client_startup() {
+        use super::{FileClass, inspect_locations_live, wsl_path};
+        use crate::compiler::Backend;
+        use std::{fs, path::Path, time::Instant};
+        let temporary = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&temporary).unwrap();
+        let directory = tempfile::tempdir_in(temporary).unwrap();
+        let root = wsl_path(Some(directory.path()), "").unwrap();
+        let paths: Vec<String> = (0..16)
+            .map(|index| {
+                fs::write(
+                    directory.path().join(format!("source-{index}.bin")),
+                    [index],
+                )
+                .unwrap();
+                format!("{root}/source-{index}.bin")
+            })
+            .collect();
+        inspect_locations_live(&Backend::Wsl, &paths[..1]).unwrap();
+        let started = Instant::now();
+        let serial: Vec<_> = paths
+            .iter()
+            .map(|path| {
+                inspect_locations_live(&Backend::Wsl, std::slice::from_ref(path))
+                    .unwrap()
+                    .pop()
+                    .unwrap()
+            })
+            .collect();
+        let serial_time = started.elapsed();
+        let started = Instant::now();
+        let batched = inspect_locations_live(&Backend::Wsl, &paths).unwrap();
+        let batch_time = started.elapsed();
+        assert!(
+            serial
+                .iter()
+                .chain(batched.iter())
+                .all(|row| matches!(row, Ok(FileClass::Regular)))
+        );
+        eprintln!(
+            "WSL metadata 16 real paths: 16 client processes {:?}, batched one process {:?}",
+            serial_time, batch_time
+        );
     }
 }

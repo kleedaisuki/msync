@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::thread::{self, JoinHandle};
 
-use msync::compiler::Compiler;
+use msync::compiler::{CompileContext, Compiler};
 use msync::plan::{FileClass, Plan};
 use msync::scheduler::{self, ResourceLimits};
 use msync::syntax::{self, Report, Script, StatementKind};
@@ -26,7 +26,7 @@ OPTIONS
   --jobs N           Maximum concurrent finite copies (default: 4)
   --max-streams N    Maximum background pipe/socket flows (default: 16)
   --buffer-size N    Buffer bytes per flow (default: 64KiB)
-  --memory-limit N   Aggregate relay buffer budget (default: 64MiB; not RSS)
+  --memory-limit N   Aggregate payload-buffer budget (default: 64MiB; not RSS)
   --check            Check formatting without modifying the file (fmt only)
   --stdout           Explicit formatting preview, never writes the file (fmt only)
   --color auto|always|never   Color policy (default: auto; honors NO_COLOR)
@@ -36,7 +36,7 @@ OPTIONS
 
 REPL: /help or /? for commands. No arguments starts the REPL.
 Paths containing whitespace or '#' may be double quoted.
-Use $pwd::file or $pwd/file for explicit working-directory-relative paths.
+Use $pwd::pwd/file for working-directory paths; $file::this and $file::parent identify the source script.
 Pipes and sockets end independently; Ctrl-C cancels active streams.
 ";
 
@@ -168,6 +168,9 @@ fn arguments() -> Result<Args, String> {
     }
     if options.command.is_empty() {
         options.command = "repl".into();
+    }
+    if options.command == "fmt" && options.dry_run {
+        return Err("--dry-run previews transfer plans, not formatting; use 'fmt FILE --check' or '--stdout' for a read-only formatting command".into());
     }
     if (options.write || options.check_format || options.stdout) && options.command != "fmt" {
         return Err("--write, --check and --stdout are only valid with fmt".into());
@@ -326,6 +329,51 @@ fn read_source_inner(file: &str) -> Result<String, String> {
     Ok(source)
 }
 
+struct SourceUnit<'a> {
+    text: &'a str,
+    name: &'a str,
+    context: CompileContext,
+}
+
+impl<'a> SourceUnit<'a> {
+    fn annotate(&self, trace: &mut msync::telemetry::SpanGuard) {
+        trace.attribute(
+            "source.kind",
+            if self.context.source_file.is_some() {
+                "file"
+            } else if self.name == "-" {
+                "stdin"
+            } else {
+                "repl"
+            },
+        );
+        trace.attribute_lazy("source.pwd", || {
+            self.context.pwd.to_string_lossy().into_owned()
+        });
+        if let Some(file) = &self.context.source_file {
+            trace.attribute_lazy("source.file", || file.to_string_lossy().into_owned());
+        }
+    }
+    fn file(text: &'a str, name: &'a str) -> Result<Self, String> {
+        let file = (name != "-").then(|| Path::new(name));
+        Self::new(text, name, file)
+    }
+
+    fn repl(text: &'a str) -> Result<Self, String> {
+        Self::new(text, "<repl>", None)
+    }
+
+    fn new(text: &'a str, name: &'a str, file: Option<&Path>) -> Result<Self, String> {
+        let context = CompileContext::capture(file)
+            .map_err(|error| format!("cannot capture source context: {error}"))?;
+        Ok(Self {
+            text,
+            name,
+            context,
+        })
+    }
+}
+
 fn run_file(options: &Args) -> Result<(), String> {
     let file = options
         .file
@@ -339,8 +387,7 @@ fn run_file(options: &Args) -> Result<(), String> {
         return format_file(file, &source, options);
     }
     submit(
-        &source,
-        file,
+        SourceUnit::file(&source, file)?,
         &mut Compiler::new(),
         &options.command,
         options.dry_run,
@@ -413,8 +460,7 @@ fn write_formatted(file: &str, formatted: &str) -> Result<(), String> {
 }
 
 fn submit(
-    source: &str,
-    file: &str,
+    input: SourceUnit<'_>,
     compiler: &mut Compiler,
     command: &str,
     dry_run: bool,
@@ -422,12 +468,18 @@ fn submit(
     limits: &ResourceLimits,
 ) -> Result<(), String> {
     let mut trace = msync::telemetry::span("submission");
+    input.annotate(&mut trace);
+    let SourceUnit {
+        text: source,
+        name: file,
+        context,
+    } = input;
     let result = (|| {
         let script = syntax::parse_rich(source)
             .map_err(|errors| diagnostics(file, source, &errors, color))?;
         let mut candidate = compiler.clone();
         let program = candidate
-            .compile_rich(&script)
+            .compile_rich_with_context(&script, &context)
             .map_err(|errors| diagnostics(file, source, &errors, color))?;
         if command == "check" {
             *compiler = candidate;
@@ -496,12 +548,12 @@ fn print_summary(
         return Ok(());
     }
     let status = format!(
-        "done: {} operation(s), {} eliminated, {} file(s), {} directories, {} stream bytes\n",
+        "done: {} operation(s), {} eliminated, {} file(s), {} directories, {} flow bytes\n",
         summary.completed,
         removed,
         report.copied_files,
         report.created_directories,
-        summary.stream_bytes
+        report.transferred_bytes
     );
     print_text(&if color.stdout() {
         format!("\x1b[32m{status}\x1b[0m")
@@ -612,24 +664,24 @@ impl ReplState {
     }
 }
 
-fn repl_submit(
-    source: &str,
-    file: &str,
-    state: &mut ReplState,
-    options: &Args,
-) -> Result<(), String> {
+fn repl_submit(input: SourceUnit<'_>, state: &mut ReplState, options: &Args) -> Result<(), String> {
     let mut trace = msync::telemetry::span("submission");
-    let result = repl_submit_inner(source, file, state, options);
+    input.annotate(&mut trace);
+    let result = repl_submit_inner(input, state, options);
     trace.finish_result(&result);
     result
 }
 
 fn repl_submit_inner(
-    source: &str,
-    file: &str,
+    input: SourceUnit<'_>,
     state: &mut ReplState,
     options: &Args,
 ) -> Result<(), String> {
+    let SourceUnit {
+        text: source,
+        name: file,
+        context,
+    } = input;
     let script = syntax::parse_rich(source)
         .map_err(|errors| diagnostics(file, source, &errors, options.color))?;
     let copies = script
@@ -644,7 +696,7 @@ fn repl_submit_inner(
     }
     let mut candidate = state.compiler.clone();
     let program = candidate
-        .compile_rich(&script)
+        .compile_rich_with_context(&script, &context)
         .map_err(|errors| diagnostics(file, source, &errors, options.color))?;
     let plan = prepare(&program, &script, !state.dry_run).map_err(|error| {
         diagnostics(
@@ -780,7 +832,7 @@ fn repl_inner(options: &Args) -> Result<(), String> {
         let result = if is_repl_command(input) {
             repl_command(input, &mut state, options)
         } else {
-            repl_submit(&line, "<repl>", &mut state, options)
+            repl_submit(SourceUnit::repl(&line)?, &mut state, options)
         };
         if let Err(message) = result {
             print_error(&message);
@@ -864,10 +916,9 @@ fn repl_command_inner(input: &str, state: &mut ReplState, options: &Args) -> Res
             let source = read_source(argument)?;
             match command.trim_start_matches(['/', ':']) {
                 "fmt" => format_file(argument, &source, options),
-                "load" => repl_submit(&source, argument, state, options),
+                "load" => repl_submit(SourceUnit::file(&source, argument)?, state, options),
                 mode => submit(
-                    &source,
-                    argument,
+                    SourceUnit::file(&source, argument)?,
                     &mut state.compiler.clone(),
                     if mode == "plan" { "compile" } else { "check" },
                     state.dry_run,

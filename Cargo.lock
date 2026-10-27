@@ -431,13 +431,14 @@ dependencies = [
 
 [[package]]
 name = "msync"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anstream",
  "libc",
  "proptest",
  "regex",
  "same-file",
+ "socket2",
  "tempfile",
  "tokio",
  "tokio-util",

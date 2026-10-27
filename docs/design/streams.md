@@ -2,15 +2,20 @@
 
 ## Endpoint model and API
 
-`streams::transfer(&CopyOp, buffer_bytes, CancellationToken)` runs one one-way
-flow and returns a byte count plus `StreamEnd::{SourceClosed, DestinationClosed,
-Cancelled}`. The scheduler owns task admission, dependency release, global
+`io::transfer(&CopyOp, buffer_bytes, CancellationToken)` is the common one-way
+byte-flow entry. `io::transfer_known` accepts the planner's inspected endpoint
+types and explicit trace context, avoiding metadata re-probes. Ordinary files are
+finite stream resources, not a separate meaning of `->`. `FlowReport` returns a
+byte count plus `FlowEnd::{SourceClosed, DestinationClosed, Cancelled}`; the old
+`streams::StreamReport`/`StreamEnd` names are compatible aliases. Directories are
+structural collections of child file flows, never opaque directory byte streams.
+The scheduler owns task admission, dependency release, global
 cancellation and trace correlation; this module owns opened endpoint handles and
 its relay buffers. A completed flow never cancels another flow.
 
 | Endpoint | Native transport |
 | --- | --- |
-| Regular file | Tokio file I/O, with internal file buffer size capped to the configured relay size |
+| Regular file | Kernel-assisted finite copy, or a bounded file/IPC relay; guarded per-file staging and publication |
 | `tcp://host:port` endpoint | Active Tokio TCP connection on either side; use `wire::/` as the qualified endpoint operand |
 | Windows `\\.\pipe\name` | IOCP-backed named-pipe client with source read-only or destination write-only access |
 | Unix FIFO | `O_NONBLOCK` file descriptor registered with Tokio `AsyncFd` |
@@ -18,8 +23,8 @@ its relay buffers. A completed flow never cancels another flow.
 | WSL/SSH regular file, FIFO or Unix socket | Native client child process carrying a bounded, nonblocking Python 3 relay |
 | HTTP(S) source | Controlled native curl stdout, sharing runtime URL/origin/protocol validation; HTTP is read-only |
 
-At least one side is a stream endpoint. A directory is never interpreted as a
-byte stream. Endpoint shapes and native path ancestors are validated before
+The common contract supports regular-file → regular-file flows as well as IPC.
+A directory is never interpreted as a byte stream. Endpoint shapes and native path ancestors are validated before
 opening a destination. Native named-pipe paths are deliberately recognized before
 ordinary filesystem metadata checks. Exact regular-file destinations overwrite;
 a trailing `/` retains container semantics for sources with a basename and uses
@@ -32,6 +37,8 @@ queue is created here. Pipe-busy/first-reader rendezvous waits yield asynchronou
 and can be cancelled. A missing Windows pipe is an error, while an existing busy
 instance is retried without allocating another flow. FIFO readers wait for the
 first writer rather than mistaking the pre-connection state for EOF.
+Source TCP/Unix sockets retain both transport halves until the flow ends; merely
+opening a reader does not send a premature FIN to its producer.
 
 ## Lifetime and close semantics
 
@@ -51,15 +58,37 @@ The DSL is one-way, not a general bidirectional application protocol:
   20 ms intervals. No probing write, extra connection, or read permission is
   needed. `GetNamedPipeInfo` alone was experimentally insufficient: it succeeds
   after a server handle closes because it exposes attributes but not pipe state.
-- Native FIFO destinations inspect non-consuming `POLLERR/POLLHUP` on an owned
-  duplicate descriptor, also at 20 ms intervals. No fake data is injected.
-- Broken pipe, connection reset/abort and disconnected I/O are normal flow ends;
-  unrelated I/O or helper failures remain located runtime errors.
+- Linux FIFO destinations register their owned duplicate descriptor for Tokio
+  error readiness (`EPOLLERR` when the last reader disconnects), with no polling
+  timer or probing data. Other Unix platforms retain the bounded 20 ms fallback.
+- Destination broken pipe/reset/disconnection is a normal peer-close outcome.
+  Source reset/abort is **not EOF**: it is an I/O failure and must not publish an
+  incomplete file. Only an actual successful zero-byte read authorizes completion.
 
 The cancellation token is selected while connecting, waiting, reading, writing
 and finalizing. Dropping a flow releases native handles and kills its owned
 client process, rather than waiting for unrelated producers to send another byte.
 This directly fixes the reproduced idle-source/closed-destination lifetime leak.
+
+### One publication policy for file sinks
+
+Both finite copies and file sinks fed by TCP, FIFO, sockets or HTTP write an
+exclusively owned sibling stage. A normal EOF flushes data, drains physical file
+I/O, closes the file and atomically publishes it. Cancellation, source failure
+and future drop discard the unpublished stage and preserve an old target (or
+leave a new target absent). Prior completed files in a directory flow remain;
+this is a per-file transaction, not whole-directory rollback. Existing target
+write capability is checked without truncation, so staging does not bypass
+read-only/ACL failure semantics. Ordinary copies preserve source permissions;
+stream-fed outputs retain existing target permissions where supported.
+
+`ManagedFile`/`FileFinish` encode physical completion ownership. Token cancellation
+awaits Tokio's outstanding file I/O before discarding the stage. If a future is
+aborted while file I/O is pending, one owned cleanup future retains the file and
+stage until `into_std().await` drains the operation; no cleanup is spawned per
+chunk. Native kernel workers likewise own their submitted handles and buffers
+until completion/cancellation drain. Successful publication consumes the stage
+name; its destructor never removes the target.
 
 ## Buffers, backpressure and resource limits
 
@@ -70,8 +99,11 @@ than growing an application queue. Tokio regular-file buffers are explicitly
 capped to the configured size as well.
 
 Each WSL/SSH endpoint adds at most one remote relay data buffer of the same size;
-the scheduler reserves `(1 + number_of_remote_endpoints) * buffer_bytes` declared
-relay capacity. Kernel socket/pipe buffers, interpreter/runtime/process RSS,
+each remote destination additionally owns one local bounded DATA-frame buffer.
+The scheduler reserves `(1 + remote_endpoints + remote_destination_frame) *
+buffer_bytes` declared payload capacity: local → remote uses 3 buffers and
+remote → remote uses 4. Fixed eight-byte framing headers, kernel socket/pipe
+buffers, interpreter/runtime/process RSS,
 Tokio file internals, and fixed bounded close-watch/error-report overhead are not
 represented as exact RSS by the memory-limit option. Helpers have bounded stderr
 capture (8 KiB recorded output and an 8 KiB partial line) and a finite number of
@@ -89,9 +121,12 @@ plus `select.poll`, and does not create a remote script file or staging tree.
 Arguments pass through the runtime's existing shell-quoting and SSH `-F` policy;
 the Python program is a fixed argument, never interpolated with an untrusted path.
 
-A bounded stderr reader recognizes a ready marker before allowing a remote
+A bounded stderr reader recognizes a typed file/stream ready marker before allowing a remote
 source to cause destination mutation. Helpers carry only payload on stdout for
-readers and stdin for writers. A source keeps its unused input channel open as
+readers. Writer stdin uses exact, bounded DATA frames (eight-byte big-endian
+length plus payload) and an explicit zero-length FINISH frame. User payload is
+never escaped or confused with a magic marker. Transport EOF or a truncated or
+oversized frame is an error, not permission to publish a file. A source keeps its unused input channel open as
 its lifetime signal; a writer watches its unused output channel for client
 disconnect while opening or writing a FIFO/socket. The helper stops without an
 unknown PID kill, persistent daemon or detached shell worker. Its nonzero status
@@ -99,9 +134,66 @@ is checked at EOF so authentication, missing interpreter and path failures canno
 silently become an empty successful stream. HTTP uses the same owned-child/status
 discipline without a Python handshake.
 
-No telemetry guard crosses an await: those guards are thread-bound. The scheduler
-provides explicit task context and records structural status/byte counters rather
-than paths or source contents.
+Remote ordinary-file writers use a same-directory `.msync-flow-*.part` stage,
+not in-place truncation. Only verified normal source EOF plus successful source
+helper exit reaches `AsyncWrite::shutdown`, which submits FINISH. The helper
+closes its data file and atomically replaces/links the target, then emits a
+COMMITTED acknowledgement. Dropping/cancelling a flow before FINISH cannot
+mistake closed stdin for successful completion. Once regular-file finalization
+starts, cancellation is shielded only through the bounded 30-second commit/ack
+fence; lost acknowledgement is reported as **commit outcome unknown**, with
+advice to verify the destination. An acknowledgement proves publication even if
+the transport subsequently fails. FIFO/socket finalization is never shielded:
+even an empty FINISH waiting for a FIFO reader remains cancellable. The ready
+metadata distinguishes these cases before choosing a commit policy.
+
+The final transport shutdown is not itself the publication oracle. If shutdown
+fails after FINISH authorization, the caller still drains the helper's bounded
+commit/ack fence. A COMMITTED acknowledgement proves publication even when that
+shutdown reported BrokenPipe and the transport subsequently exits nonzero. A
+regression drives both failures with an actual child stderr acknowledgement;
+it must report SourceClosed, not advise retrying an already committed file.
+Both finalization branches share `RemoteProcess::wait_commit`: after a bounded
+wait it rechecks COMMITTED even if child waiting failed, the client never exited,
+or stderr draining timed out. A known commit remains successful and records the
+later transport/cleanup failure separately. The owned client is killed on a
+failed wait, with Tokio's child owner retaining its kill/reap-on-drop policy.
+Focused real-child tests emit an acknowledgement and then hold stdout/stderr
+open indefinitely. They synchronize on observed stderr markers before applying
+a short injected deadline, distinguish acknowledged from unknown publication,
+and require physical stdout EOF after cleanup. An otherwise identical child
+without COMMITTED must still produce an unknown-outcome diagnostic.
+
+The destination close-watch future is pinned once per relay rather than rebuilt
+per chunk. This preserves the Windows pipe watcher's 20 ms timer instead of
+querying kernel state on every buffered read. The data loop allocates one buffer,
+handles partial writes and keeps cancellation/peer closure live during reads,
+writes and frame flushes.
+
+Thread-local guards never cross awaits. Send-safe linked spans carry explicit
+task context through capability selection and native workers. Events record
+source/destination/stage paths, engine choice, typed OS errors and cause chains,
+accepted/committed/discarded progress and commit/cleanup state; source file
+contents are not logged. A dropped active span is incomplete/cancelled rather
+than falsely successful.
+
+## Kernel capability dispatch
+
+The file-to-TCP path opens its source and connection once, then offers those
+owned resources to the platform adapter. Linux uses bounded `sendfile`; Windows
+uses cancellable `TransmitFile` with owned handles and completion drain. Windows
+chooses that path only at a measured remaining size of at least 1 MiB; smaller
+files keep the buffered path. The forced low-level capability API remains
+available for reproducible backend tests. Unsupported capability results include
+an accepted prefix count, so fallback seeks the existing file to that position
+and reuses the same socket—never reconnecting or duplicating bytes.
+
+Finite local copies use bounded `copy_file_range` on Linux and cancellation-aware
+`CopyFileExW` on Windows, with the same staged-file publication policy. Every
+failure retains typed progress in `CopyFailure`, rather than parsing English
+messages to determine cancellation or discarded bytes. See the platform I/O
+notes for capability probes, measured thresholds and rejected I/O-ring paths;
+this note does not claim that a newer queue API is automatically faster.
 
 ## Real verification
 

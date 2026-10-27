@@ -4,8 +4,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use crate::compiler::{Backend, CopyOp, Location, Program};
+
+#[path = "plan/index.rs"]
+mod index;
+
+use index::ResourceIndex;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FileClass {
@@ -32,7 +38,8 @@ pub enum AccessScope {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct ResourceKey {
     endpoint: String,
-    components: Vec<String>,
+    components: Arc<[String]>,
+    rooted: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -40,8 +47,8 @@ pub struct Resource {
     pub location: Location,
     pub scope: AccessScope,
     key: ResourceKey,
-    comparison: Vec<String>,
-    possible_windows_path: Option<Vec<String>>,
+    comparison: Arc<[String]>,
+    possible_windows_path: Option<Arc<[String]>>,
     // A collision only adds a conservative dependency; it never justifies DSE.
     identity_hint: Option<u64>,
 }
@@ -72,6 +79,23 @@ impl Resource {
 
     fn same_path(&self, other: &Self) -> bool {
         self.key == other.key
+    }
+
+    fn covers_conflicts(&self, other: &Self) -> bool {
+        if self.key.endpoint == "*" {
+            return true;
+        }
+        if self.key.endpoint != other.key.endpoint
+            || !other.comparison.starts_with(&self.comparison)
+            || (other.identity_hint.is_some() && self.identity_hint != other.identity_hint)
+        {
+            return false;
+        }
+        match (&self.possible_windows_path, &other.possible_windows_path) {
+            (_, None) => true,
+            (Some(cover), Some(path)) => path.starts_with(cover),
+            (None, Some(_)) => false,
+        }
     }
 }
 
@@ -147,12 +171,28 @@ pub struct Plan {
     pub issues: Vec<PlanIssue>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlanningStats {
+    pub resource_cache_misses: u64,
+    /// Calls to std::fs::canonicalize, not a count of underlying kernel requests.
+    pub canonicalize_probes: u64,
+    pub identity_handles: u64,
+    pub dependency_candidates: u64,
+}
+
 impl Plan {
     /// Missing inspection rows are unknown, never assumed to be ordinary files.
     pub fn build(program: &Program, kinds: &[OperationKinds]) -> Self {
+        Self::build_profiled(program, kinds).0
+    }
+
+    pub fn build_profiled(program: &Program, kinds: &[OperationKinds]) -> (Self, PlanningStats) {
         let mut trace = crate::telemetry::span("plan");
         let mut cache = ResourceCache::default();
-        let mut work = classify(program, kinds, &mut cache);
+        let mut work = {
+            let _phase = crate::telemetry::span("plan.classify");
+            classify(program, kinds, &mut cache)
+        };
         let mut plan = Self::default();
         loop {
             plan.optimization_rounds += 1;
@@ -173,7 +213,7 @@ impl Plan {
             });
         }
         plan.connect_streams();
-        plan.build_dependencies();
+        let dependency_candidates = plan.build_dependencies();
         plan.validate_stream_groups();
         plan.removed.sort_by_key(|removed| removed.original_index);
         trace.metric("input_operations", program.operations.len() as u64);
@@ -181,7 +221,16 @@ impl Plan {
         trace.metric("eliminated", plan.removed.len() as u64);
         trace.metric("dependencies", plan.edges.len() as u64);
         trace.metric("stream_groups", plan.stream_groups.len() as u64);
-        plan
+        trace.metric("resource_cache_misses", cache.resources.len() as u64);
+        trace.metric("canonicalize_probes", cache.canonicalize_probes);
+        trace.metric("identity_handles", cache.identity_handles);
+        let stats = PlanningStats {
+            resource_cache_misses: cache.resources.len() as u64,
+            canonicalize_probes: cache.canonicalize_probes,
+            identity_handles: cache.identity_handles,
+            dependency_candidates,
+        };
+        (plan, stats)
     }
 
     pub fn offline(program: &Program) -> Self {
@@ -198,41 +247,70 @@ impl Plan {
         }
     }
 
-    fn build_dependencies(&mut self) {
-        let words = self.nodes.len().div_ceil(64);
-        let mut ancestors = vec![vec![0_u64; words]; self.nodes.len()];
+    fn build_dependencies(&mut self) -> u64 {
+        let mut trace = crate::telemetry::span("plan.dependencies");
+        let mut reads = ResourceIndex::default();
+        let mut writes = ResourceIndex::default();
+        let mut consumes = ResourceIndex::default();
+        let mut shared = BTreeMap::<(usize, usize), Vec<usize>>::new();
+        let mut channels = BTreeSet::new();
+        for (index, connection) in self.stream_connections.iter().enumerate() {
+            let pair = (
+                connection.producer.min(connection.consumer),
+                connection.producer.max(connection.consumer),
+            );
+            shared.entry(pair).or_default().push(index);
+            channels.insert(connection.resource.key.clone());
+        }
+        let mut visited = vec![0_usize; self.nodes.len()];
+        let mut candidate_count = 0_u64;
         for after in 0..self.nodes.len() {
-            let mut candidates = Vec::new();
-            let mut inherited = vec![0_u64; words];
-            for (before, previous_ancestors) in ancestors.iter().enumerate().take(after) {
-                let shared: Vec<&Resource> = self
-                    .stream_connections
-                    .iter()
-                    .filter(|connection| {
-                        (connection.producer == before && connection.consumer == after)
-                            || (connection.consumer == before && connection.producer == after)
-                    })
-                    .map(|connection| &connection.resource)
-                    .collect();
-                let hazards = hazards(
-                    &self.nodes[before].effects,
-                    &self.nodes[after].effects,
-                    &shared,
-                );
-                if hazards.is_empty() {
-                    continue;
-                }
-                for (word, ancestor) in inherited.iter_mut().zip(previous_ancestors) {
-                    *word |= ancestor;
-                }
-                candidates.push((before, hazards));
+            let effects = &self.nodes[after].effects;
+            let mut candidates = BTreeSet::new();
+            for resource in &effects.reads {
+                writes.candidates(resource, &mut candidates);
+                consumes.candidates(resource, &mut candidates);
             }
-            ancestors[after] = inherited.clone();
-            for (before, hazards) in candidates {
-                ancestors[after][before / 64] |= 1_u64 << (before % 64);
-                if inherited[before / 64] & (1_u64 << (before % 64)) != 0 {
-                    continue;
-                }
+            for resource in effects.writes.iter().chain(&effects.consumes) {
+                reads.candidates(resource, &mut candidates);
+                writes.candidates(resource, &mut candidates);
+                consumes.candidates(resource, &mut candidates);
+            }
+            candidate_count += candidates.len() as u64;
+            let candidates = candidates
+                .into_iter()
+                .filter_map(|before| {
+                    let shared: Vec<&Resource> = shared
+                        .get(&(before, after))
+                        .into_iter()
+                        .flatten()
+                        .map(|&index| &self.stream_connections[index].resource)
+                        .collect();
+                    let hazards = hazards(&self.nodes[before].effects, effects, &shared);
+                    (!hazards.is_empty()).then_some((before, hazards))
+                })
+                .collect::<Vec<_>>();
+            let retained = reduced_predecessors(&self.nodes, candidates, &mut visited, after + 1);
+            for resource in effects
+                .writes
+                .iter()
+                .chain(&effects.consumes)
+                .filter(|resource| !channels.contains(&resource.key))
+            {
+                retire_frontier(&mut reads, resource, &self.nodes, AccessKind::Read);
+                retire_frontier(&mut writes, resource, &self.nodes, AccessKind::Write);
+                retire_frontier(&mut consumes, resource, &self.nodes, AccessKind::Consume);
+            }
+            for resource in &effects.reads {
+                reads.insert(resource, after);
+            }
+            for resource in &effects.writes {
+                writes.insert(resource, after);
+            }
+            for resource in &effects.consumes {
+                consumes.insert(resource, after);
+            }
+            for (before, hazards) in retained {
                 self.nodes[after].dependencies.push(before);
                 self.edges.push(Dependency {
                     before,
@@ -241,6 +319,8 @@ impl Plan {
                 });
             }
         }
+        trace.metric("candidates", candidate_count);
+        candidate_count
     }
 
     fn connect_streams(&mut self) {
@@ -264,6 +344,7 @@ impl Plan {
             }
         }
         let mut owners: Vec<usize> = (0..self.nodes.len()).collect();
+        let mut members = BTreeSet::new();
         for channel in channels.into_values() {
             if channel.writers.is_empty() || channel.readers.is_empty() {
                 continue;
@@ -288,6 +369,8 @@ impl Plan {
                 let left = owner(&owners, producer);
                 let right = owner(&owners, consumer);
                 owners[left.max(right)] = left.min(right);
+                members.insert(producer);
+                members.insert(consumer);
                 self.stream_connections.push(StreamConnection {
                     producer,
                     consumer,
@@ -296,7 +379,7 @@ impl Plan {
             }
         }
         let mut groups: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-        for node in 0..self.nodes.len() {
+        for node in members {
             groups.entry(owner(&owners, node)).or_default().push(node);
         }
         self.stream_groups = groups
@@ -306,6 +389,9 @@ impl Plan {
     }
 
     fn validate_stream_groups(&mut self) {
+        if self.stream_groups.is_empty() {
+            return;
+        }
         for group in &self.stream_groups {
             if self
                 .edges
@@ -392,6 +478,79 @@ impl Plan {
     }
 }
 
+#[derive(Clone, Copy)]
+enum AccessKind {
+    Read,
+    Write,
+    Consume,
+}
+
+impl AccessKind {
+    fn resources(self, effects: &Effects) -> &[Resource] {
+        match self {
+            Self::Read => &effects.reads,
+            Self::Write => &effects.writes,
+            Self::Consume => &effects.consumes,
+        }
+    }
+}
+
+fn retire_frontier(
+    index: &mut ResourceIndex,
+    modifier: &Resource,
+    nodes: &[PlanNode],
+    kind: AccessKind,
+) {
+    let mut candidates = BTreeSet::new();
+    index.candidates(modifier, &mut candidates);
+    for candidate in candidates {
+        let resources = kind.resources(&nodes[candidate].effects);
+        if resources
+            .iter()
+            .all(|resource| modifier.covers_conflicts(resource))
+        {
+            // Retire an entire access ID together; shared trie prefixes may
+            // contain several contributions from that same operation.
+            for resource in resources {
+                index.remove(resource, candidate);
+            }
+        }
+    }
+}
+
+fn reduced_predecessors(
+    nodes: &[PlanNode],
+    candidates: Vec<(usize, Vec<Hazard>)>,
+    visited: &mut [usize],
+    generation: usize,
+) -> Vec<(usize, Vec<Hazard>)> {
+    if candidates.len() < 2 {
+        return candidates;
+    }
+    let mut pending: BTreeSet<usize> = candidates.iter().map(|(before, _)| *before).collect();
+    let mut retained = Vec::new();
+    let mut stack = Vec::new();
+    for (before, hazards) in candidates.into_iter().rev() {
+        if visited[before] == generation {
+            continue;
+        }
+        retained.push((before, hazards));
+        pending.remove(&before);
+        stack.extend(&nodes[before].dependencies);
+        while let (Some(ancestor), Some(&oldest)) = (stack.pop(), pending.first()) {
+            if ancestor < oldest || visited[ancestor] == generation {
+                continue;
+            }
+            visited[ancestor] = generation;
+            pending.remove(&ancestor);
+            stack.extend(&nodes[ancestor].dependencies);
+        }
+        stack.clear();
+    }
+    retained.reverse();
+    retained
+}
+
 struct ChannelRoles {
     resource: Resource,
     writers: Vec<usize>,
@@ -439,16 +598,72 @@ impl WorkingNode {
     }
 }
 
-#[derive(Default)]
-struct ResourceCache(BTreeMap<(String, String), Resource>);
+struct ResourceCache {
+    resources: BTreeMap<(String, String), Resource>,
+    canonical: BTreeMap<PathBuf, PathBuf>,
+    working_directory: PathBuf,
+    home: Option<std::ffi::OsString>,
+    canonicalize_probes: u64,
+    identity_handles: u64,
+}
+
+impl Default for ResourceCache {
+    fn default() -> Self {
+        Self {
+            resources: BTreeMap::new(),
+            canonical: BTreeMap::new(),
+            working_directory: std::env::current_dir().unwrap_or_default(),
+            home: std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")),
+            canonicalize_probes: 0,
+            identity_handles: 0,
+        }
+    }
+}
 
 impl ResourceCache {
     fn get(&mut self, location: &Location, scope: AccessScope) -> Resource {
         let key = (location.backend.to_string(), location.path.clone());
-        let resource = self.0.entry(key).or_insert_with(|| resource(location));
-        let mut result = resource.clone();
+        let mut result = match self.resources.get(&key) {
+            Some(resource) => resource.clone(),
+            None => {
+                let resource = resource(location, self);
+                self.resources.insert(key, resource.clone());
+                resource
+            }
+        };
         result.scope = scope;
         result
+    }
+
+    fn local_absolute(&self, path: &str) -> PathBuf {
+        local_absolute(path, &self.working_directory, self.home.as_deref())
+    }
+
+    fn canonical_existing_prefix(&mut self, path: &Path) -> PathBuf {
+        let mut unresolved = Vec::new();
+        let mut cursor = path;
+        let mut canonical = loop {
+            if let Some(cached) = self.canonical.get(cursor) {
+                break cached.clone();
+            }
+            self.canonicalize_probes += 1;
+            if let Ok(canonical) = cursor.canonicalize() {
+                self.canonical.insert(cursor.to_owned(), canonical.clone());
+                break canonical;
+            }
+            let (Some(parent), Some(_)) = (cursor.parent(), cursor.file_name()) else {
+                break cursor.to_owned();
+            };
+            unresolved.push(cursor.to_owned());
+            cursor = parent;
+        };
+        for path in unresolved.into_iter().rev() {
+            if let Some(name) = path.file_name() {
+                canonical.push(name);
+            }
+            self.canonical.insert(path, canonical.clone());
+        }
+        canonical
     }
 }
 
@@ -458,6 +673,7 @@ fn classify(
     cache: &mut ResourceCache,
 ) -> Vec<WorkingNode> {
     let mut states: Vec<(Resource, FileClass)> = Vec::new();
+    let mut state_index = ResourceIndex::default();
     let mut nodes = Vec::with_capacity(program.operations.len());
     for (index, operation) in program.operations.iter().enumerate() {
         let mut inspected = kinds.get(index).copied().unwrap_or_default();
@@ -470,8 +686,8 @@ fn classify(
         let source = cache.get(&operation.source, AccessScope::Tree);
         let destination = cache.get(&operation.destination, AccessScope::Tree);
         let kinds = OperationKinds {
-            source: inferred_kind(&states, &source, inspected.source),
-            destination: inferred_kind(&states, &destination, inspected.destination),
+            source: inferred_kind(&states, &state_index, &source, inspected.source),
+            destination: inferred_kind(&states, &state_index, &destination, inspected.destination),
         };
         let effects = effects(operation, kinds, cache);
         let resulting = match (kinds.source, kinds.destination) {
@@ -481,9 +697,11 @@ fn classify(
             _ => FileClass::Unknown,
         };
         if operation.destination.path.ends_with('/') && kinds.destination != FileClass::Stream {
+            state_index.insert(&destination, states.len());
             states.push((destination, FileClass::Directory));
         }
         for write in &effects.writes {
+            state_index.insert(write, states.len());
             states.push((write.clone(), resulting));
         }
         nodes.push(WorkingNode {
@@ -499,17 +717,20 @@ fn classify(
 
 fn inferred_kind(
     states: &[(Resource, FileClass)],
+    index: &ResourceIndex,
     resource: &Resource,
     inspected: FileClass,
 ) -> FileClass {
     if inspected == FileClass::Stream {
         return inspected;
     }
-    for (previous, kind) in states.iter().rev() {
+    if let Some(event) = index.latest(resource) {
+        let (previous, kind) = &states[event];
         if previous.same_path(resource) {
             return *kind;
         }
         if previous.key.endpoint == resource.key.endpoint
+            && previous.key.rooted == resource.key.rooted
             && previous.key.components.len() > resource.key.components.len()
             && previous
                 .key
@@ -518,13 +739,11 @@ fn inferred_kind(
         {
             return FileClass::Directory;
         }
-        if previous.overlaps(resource) {
-            return if inspected == FileClass::Directory {
-                inspected
-            } else {
-                FileClass::Unknown
-            };
-        }
+        return if inspected == FileClass::Directory {
+            inspected
+        } else {
+            FileClass::Unknown
+        };
     }
     inspected
 }
@@ -536,7 +755,9 @@ fn effects(operation: &CopyOp, kinds: OperationKinds, cache: &mut ResourceCache)
     ) || operation.pattern.is_some();
     let container =
         operation.destination.path.ends_with('/') && kinds.destination != FileClass::Stream;
-    let preserved_name = container.then(|| basename(&operation.source)).flatten();
+    let preserved_name = container
+        .then(|| basename(&operation.source, cache))
+        .flatten();
     let destination_tree = source_tree
         || kinds.destination == FileClass::Directory
         || (container && preserved_name.is_none());
@@ -574,9 +795,10 @@ fn effects(operation: &CopyOp, kinds: OperationKinds, cache: &mut ResourceCache)
     }
 }
 
-fn basename(location: &Location) -> Option<String> {
+fn basename(location: &Location, cache: &ResourceCache) -> Option<String> {
     if matches!(location.backend, Backend::Local) {
-        return local_absolute(&location.path)
+        return cache
+            .local_absolute(&location.path)
             .file_name()
             .and_then(|name| name.to_str())
             .map(str::to_owned);
@@ -595,106 +817,131 @@ fn forward_sources(
     cache: &mut ResourceCache,
     records: &mut Vec<ForwardedSource>,
 ) -> bool {
+    let _phase = crate::telemetry::span("plan.forward");
+    let Some(last_assignment) = nodes
+        .iter()
+        .rposition(|node| node.alive && node.assignment())
+    else {
+        return false;
+    };
     let mut changed = false;
-    for index in 0..nodes.len() {
-        if !nodes[index].alive || !nodes[index].assignment() {
+    let mut writes = ResourceIndex::default();
+    let mut modifications = ResourceIndex::default();
+    for index in 0..=last_assignment {
+        if !nodes[index].alive {
             continue;
         }
-        let read = &nodes[index].effects.reads[0];
-        let producer = (0..index).rev().find(|&previous| {
-            nodes[previous].alive
-                && nodes[previous]
-                    .effects
-                    .writes
-                    .iter()
-                    .any(|write| write.overlaps(read))
-        });
-        let Some(producer) = producer else {
-            continue;
-        };
-        let origin = &nodes[producer].effects.reads[0];
-        let origin_backend = &nodes[producer].operation.source.backend;
-        let crosses_remote_snapshot = !matches!(origin_backend, Backend::Local)
-            && origin_backend != &nodes[index].operation.source.backend;
-        if !nodes[producer].assignment()
-            || !nodes[producer].effects.writes[0].same_path(read)
-            || origin.overlaps(&nodes[index].effects.writes[0])
-            || nodes[index].operation.source == nodes[producer].operation.source
-            || matches!(origin_backend, Backend::Http { .. })
-            || crosses_remote_snapshot
+        if nodes[index].assignment()
+            && let Some(record) = forward_source(nodes, index, cache, &writes, &modifications)
         {
-            continue;
+            records.push(record);
+            changed = true;
         }
-        let modified = nodes[producer + 1..index].iter().any(|node| {
-            node.alive
-                && node
-                    .effects
-                    .writes
-                    .iter()
-                    .chain(&node.effects.consumes)
-                    .any(|write| write.overlaps(origin))
-        });
-        if modified {
-            continue;
+        for write in &nodes[index].effects.writes {
+            writes.insert(write, index);
+            modifications.insert(write, index);
         }
-        let from = nodes[index].operation.source.clone();
-        let to = nodes[producer].operation.source.clone();
-        nodes[index].operation.source = to.clone();
-        nodes[index].effects = effects(&nodes[index].operation, nodes[index].kinds, cache);
-        records.push(ForwardedSource {
-            original_index: nodes[index].original_index,
-            from,
-            to,
-        });
-        changed = true;
+        for consume in &nodes[index].effects.consumes {
+            modifications.insert(consume, index);
+        }
     }
     changed
 }
 
+fn forward_source(
+    nodes: &mut [WorkingNode],
+    index: usize,
+    cache: &mut ResourceCache,
+    writes: &ResourceIndex,
+    modifications: &ResourceIndex,
+) -> Option<ForwardedSource> {
+    let read = &nodes[index].effects.reads[0];
+    let producer = writes.latest(read)?;
+    let origin = &nodes[producer].effects.reads[0];
+    let origin_backend = &nodes[producer].operation.source.backend;
+    let crosses_remote_snapshot = !matches!(origin_backend, Backend::Local)
+        && origin_backend != &nodes[index].operation.source.backend;
+    if !nodes[producer].assignment()
+        || !nodes[producer].effects.writes[0].same_path(read)
+        || origin.overlaps(&nodes[index].effects.writes[0])
+        || nodes[index].operation.source == nodes[producer].operation.source
+        || matches!(origin_backend, Backend::Http { .. })
+        || crosses_remote_snapshot
+        || modifications
+            .latest(origin)
+            .is_some_and(|latest| latest > producer)
+    {
+        return None;
+    }
+    let from = nodes[index].operation.source.clone();
+    let to = nodes[producer].operation.source.clone();
+    nodes[index].operation.source = to.clone();
+    nodes[index].effects = effects(&nodes[index].operation, nodes[index].kinds, cache);
+    Some(ForwardedSource {
+        original_index: nodes[index].original_index,
+        from,
+        to,
+    })
+}
+
 fn remove_dead_writes(nodes: &mut [WorkingNode], records: &mut Vec<RemovedOperation>) -> bool {
+    let _phase = crate::telemetry::span("plan.eliminate");
+    let Some(first_assignment) = nodes
+        .iter()
+        .position(|node| node.alive && node.assignment())
+    else {
+        return false;
+    };
     let mut changed = false;
-    for index in (0..nodes.len()).rev() {
-        if !nodes[index].alive || !nodes[index].assignment() {
+    let mut reads = ResourceIndex::default();
+    let mut writes = ResourceIndex::default();
+    for index in (first_assignment..nodes.len()).rev() {
+        if !nodes[index].alive {
             continue;
         }
-        let written = &nodes[index].effects.writes[0];
-        let mut overwriter = None;
-        for (later, next) in nodes.iter().enumerate().skip(index + 1) {
-            if !next.alive {
-                continue;
-            }
-            if next
-                .effects
-                .reads
-                .iter()
-                .chain(&next.effects.consumes)
-                .any(|read| read.overlaps(written))
-            {
-                break;
-            }
-            if !next
-                .effects
-                .writes
-                .iter()
-                .any(|write| write.overlaps(written))
-            {
-                continue;
-            }
-            if next.assignment() && next.effects.writes[0].same_path(written) {
-                overwriter = Some(later);
-            }
-            break;
-        }
-        if let Some(overwriter) = overwriter {
+        if nodes[index].assignment()
+            && let Some(overwriter) = dead_write(nodes, index, &reads, &writes)
+        {
             records.push(RemovedOperation {
                 original_index: nodes[index].original_index,
                 overwritten_by: nodes[overwriter].original_index,
             });
             nodes[index].alive = false;
             changed = true;
+            continue;
+        }
+        for read in nodes[index]
+            .effects
+            .reads
+            .iter()
+            .chain(&nodes[index].effects.consumes)
+        {
+            reads.insert(read, index);
+        }
+        for write in &nodes[index].effects.writes {
+            writes.insert(write, index);
         }
     }
     changed
+}
+
+fn dead_write(
+    nodes: &[WorkingNode],
+    index: usize,
+    reads: &ResourceIndex,
+    writes: &ResourceIndex,
+) -> Option<usize> {
+    let written = &nodes[index].effects.writes[0];
+    let overwriter = writes.earliest(written)?;
+    if reads
+        .earliest(written)
+        .is_some_and(|read| read <= overwriter)
+        || !nodes[overwriter].assignment()
+        || !nodes[overwriter].effects.writes[0].same_path(written)
+    {
+        return None;
+    }
+    Some(overwriter)
 }
 
 fn hazards(before: &Effects, after: &Effects, shared: &[&Resource]) -> Vec<Hazard> {
@@ -729,14 +976,14 @@ fn intersects(left: &[Resource], right: &[Resource], shared: &[&Resource]) -> bo
     })
 }
 
-fn resource(location: &Location) -> Resource {
+fn resource(location: &Location, cache: &mut ResourceCache) -> Resource {
     let mut path = location.path.clone();
     if matches!(location.backend, Backend::Tcp { .. }) {
         path = "/".into();
     }
     let mut identity_hint = None;
     if matches!(location.backend, Backend::Local) {
-        let expanded = local_absolute(&path);
+        let expanded = cache.local_absolute(&path);
         let named_pipe = cfg!(windows)
             && path
                 .replace('/', "\\")
@@ -750,11 +997,13 @@ fn resource(location: &Location) -> Resource {
             let ordinary = std::fs::symlink_metadata(&expanded)
                 .is_ok_and(|metadata| metadata.is_file() || metadata.is_dir());
             if ordinary && let Ok(handle) = same_file::Handle::from_path(&expanded) {
+                cache.identity_handles += 1;
                 let mut hash = DefaultHasher::new();
                 handle.hash(&mut hash);
                 identity_hint = Some(hash.finish());
             }
-            path = canonical_existing_prefix(&expanded)
+            path = cache
+                .canonical_existing_prefix(&expanded)
                 .to_string_lossy()
                 .into_owned();
         }
@@ -776,18 +1025,24 @@ fn resource(location: &Location) -> Resource {
         Backend::Env | Backend::Path => "*".into(),
         _ => location.backend.to_string(),
     };
-    let comparison = if cfg!(windows) && matches!(location.backend, Backend::Local) {
-        components.iter().map(|part| part.to_uppercase()).collect()
+    let components: Arc<[String]> = components.into();
+    let comparison: Arc<[String]> = if cfg!(windows) && matches!(location.backend, Backend::Local) {
+        components
+            .iter()
+            .map(|part| part.to_uppercase())
+            .collect::<Vec<_>>()
+            .into()
     } else {
-        components.clone()
+        Arc::clone(&components)
     };
-    let possible_windows_path = possible_windows_path(location, &components);
+    let possible_windows_path = possible_windows_path(location, &components, cache).map(Arc::from);
     Resource {
         location: location.clone(),
         scope: AccessScope::Exact,
         key: ResourceKey {
             endpoint,
             components,
+            rooted: path.starts_with('/'),
         },
         comparison,
         possible_windows_path,
@@ -795,10 +1050,14 @@ fn resource(location: &Location) -> Resource {
     }
 }
 
-fn possible_windows_path(location: &Location, components: &[String]) -> Option<Vec<String>> {
+fn possible_windows_path(
+    location: &Location,
+    components: &[String],
+    cache: &mut ResourceCache,
+) -> Option<Vec<String>> {
     #[cfg(not(windows))]
     {
-        let _ = (location, components);
+        let _ = (location, components, cache);
         None
     }
     #[cfg(windows)]
@@ -815,13 +1074,16 @@ fn possible_windows_path(location: &Location, components: &[String]) -> Option<V
                 }
                 let native =
                     PathBuf::from(format!("{}:\\", drive.to_uppercase())).join(rest.join("\\"));
-                let canonical = canonical_existing_prefix(&native)
+                let canonical = cache
+                    .canonical_existing_prefix(&native)
                     .to_string_lossy()
                     .replace('\\', "/");
                 drive_components(&canonical.split('/').map(str::to_owned).collect::<Vec<_>>())
             }
             Backend::Wsl if !location.path.starts_with('~') && !location.path.contains('\\') => {
-                let canonical = canonical_existing_prefix(&local_absolute(&location.path))
+                let native = cache.local_absolute(&location.path);
+                let canonical = cache
+                    .canonical_existing_prefix(&native)
                     .to_string_lossy()
                     .replace('\\', "/");
                 drive_components(&canonical.split('/').map(str::to_owned).collect::<Vec<_>>())
@@ -844,13 +1106,12 @@ fn drive_components(components: &[String]) -> Option<Vec<String>> {
     )
 }
 
-fn local_absolute(path: &str) -> PathBuf {
+fn local_absolute(path: &str, working_directory: &Path, home: Option<&std::ffi::OsStr>) -> PathBuf {
     let path = if path == "$pwd" {
         ".".into()
     } else if let Some(suffix) = path.strip_prefix("$pwd/") {
         format!("./{suffix}")
     } else if path == "~" || path.starts_with("~/") || path.starts_with("~\\") {
-        let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
         home.map(|home| {
             PathBuf::from(home)
                 .join(path.get(2..).unwrap_or(""))
@@ -865,7 +1126,7 @@ fn local_absolute(path: &str) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_owned()
     } else {
-        std::env::current_dir().unwrap_or_default().join(path)
+        working_directory.join(path)
     };
     let mut normalized = PathBuf::new();
     for component in absolute.components() {
@@ -878,18 +1139,6 @@ fn local_absolute(path: &str) -> PathBuf {
         }
     }
     normalized
-}
-
-fn canonical_existing_prefix(path: &Path) -> PathBuf {
-    for ancestor in path.ancestors() {
-        if let Ok(canonical) = ancestor.canonicalize() {
-            return path
-                .strip_prefix(ancestor)
-                .map(|suffix| canonical.join(suffix))
-                .unwrap_or(canonical);
-        }
-    }
-    path.to_owned()
 }
 
 impl fmt::Display for Plan {
