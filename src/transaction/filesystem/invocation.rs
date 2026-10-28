@@ -207,7 +207,7 @@ impl InvocationRoot {
             .any(|directory| directory.identity == identity))
     }
 
-    pub(super) fn logical_metadata(
+    pub(crate) fn logical_metadata(
         &self,
         source: &Path,
         metadata: &mut NodeMetadata,

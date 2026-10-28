@@ -42,6 +42,376 @@ fn set_modified(path: &Path) {
         .unwrap();
 }
 
+async fn run_live(runtime: &mut RuntimeSession, compiler: &mut Session, cwd: &Path, script: &str) {
+    let context = CompileContext {
+        pwd: cwd.to_owned(),
+        source_file: None,
+    };
+    let compilation = pipeline::compile(compiler, script, &context, &[]).unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        runtime.execute(&compilation.program),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+}
+
+fn private_files(path: &Path) -> (usize, u64) {
+    let mut files = 0;
+    let mut bytes = 0;
+    for entry in fs::read_dir(path).unwrap() {
+        let entry = entry.unwrap();
+        let metadata = entry.metadata().unwrap();
+        if metadata.is_dir() {
+            let (nested_files, nested_bytes) = private_files(&entry.path());
+            files += nested_files;
+            bytes += nested_bytes;
+        } else {
+            files += 1;
+            bytes += metadata.len();
+        }
+    }
+    (files, bytes)
+}
+
+#[tokio::test]
+async fn missing_file_enrolls_payload_and_parent_metadata_not_unrelated_children() {
+    let workspace = workspace();
+    let cwd = workspace.path().join("work");
+    fs::create_dir(&cwd).unwrap();
+    let payload = vec![b'P'; 65536];
+    fs::write(cwd.join("input"), &payload).unwrap();
+    fs::write(cwd.join("unrelated"), vec![b'X'; 1024 * 1024]).unwrap();
+    let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
+    let mut compiler = Session::new();
+    run_live(&mut runtime, &mut compiler, &cwd, "input -> output\n").await;
+    assert_eq!(fs::read(cwd.join("output")).unwrap(), payload);
+    assert_eq!(private_files(&cwd.join(".temp")), (1, 65536));
+    assert_eq!(
+        fs::read(cwd.join("unrelated")).unwrap(),
+        vec![b'X'; 1024 * 1024]
+    );
+    run_live(
+        &mut runtime,
+        &mut compiler,
+        &cwd,
+        "$pwd::pwd -> $pwd::pwd/../copy/.\n",
+    )
+    .await;
+    assert_eq!(
+        fs::read(workspace.path().join("copy/output")).unwrap(),
+        payload
+    );
+    assert_eq!(
+        fs::read(workspace.path().join("copy/unrelated"))
+            .unwrap()
+            .len(),
+        1024 * 1024
+    );
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn sparse_named_origin_restores_parent_time_and_unknown_siblings() {
+    let workspace = workspace();
+    let cwd = workspace.path().join("work");
+    fs::create_dir(&cwd).unwrap();
+    fs::write(cwd.join("kept"), b"unobserved").unwrap();
+    set_modified(&cwd);
+    let before = fs::metadata(&cwd).unwrap().modified().unwrap();
+    let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
+    let mut compiler = Session::new();
+    run_live(
+        &mut runtime,
+        &mut compiler,
+        &cwd,
+        "transaction A:\n    \"new\" -> result\n    commit\n",
+    )
+    .await;
+    run_live(&mut runtime, &mut compiler, &cwd, "rollback A\n").await;
+    assert!(!cwd.join("result").exists());
+    assert_eq!(fs::read(cwd.join("kept")).unwrap(), b"unobserved");
+    assert_eq!(fs::metadata(&cwd).unwrap().modified().unwrap(), before);
+    runtime.shutdown().await.unwrap();
+    assert_eq!(fs::metadata(&cwd).unwrap().modified().unwrap(), before);
+}
+
+#[tokio::test]
+async fn sparse_files_extend_while_an_existing_file_flow_in_another_directory_is_active() {
+    use tokio::io::AsyncWriteExt;
+    let workspace = workspace();
+    let cwd = workspace.path().join("work");
+    let other = workspace.path().join("other");
+    fs::create_dir(&cwd).unwrap();
+    fs::create_dir(&other).unwrap();
+    fs::write(cwd.join("a1"), b"first").unwrap();
+    fs::write(cwd.join("a2"), b"second").unwrap();
+    fs::create_dir(cwd.join("nested")).unwrap();
+    fs::write(cwd.join("nested/a3"), b"third").unwrap();
+    fs::write(other.join("existing"), b"old").unwrap();
+    let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
+    let mut compiler = Session::new();
+    run_live(&mut runtime, &mut compiler, &cwd, "a1 -> new1\n").await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let context = CompileContext {
+        pwd: cwd.clone(),
+        source_file: None,
+    };
+    let stream = pipeline::compile(
+        &mut compiler,
+        &format!(
+            "wire => tcp://{}\nwire::/ -> $pwd::pwd/../other/existing\n",
+            listener.local_addr().unwrap()
+        ),
+        &context,
+        &[],
+    )
+    .unwrap();
+    runtime.submit(&stream.program).await.unwrap();
+    let mut peer = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .unwrap()
+        .unwrap()
+        .0;
+    let second = pipeline::compile(&mut compiler, "a2 -> new2\n", &context, &[]).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), runtime.submit(&second.program))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read(cwd.join("new2")).unwrap(), b"second");
+    let third = pipeline::compile(&mut compiler, "nested/a3 -> new3\n", &context, &[]).unwrap();
+    runtime.submit(&third.program).await.unwrap();
+    assert_eq!(fs::read(cwd.join("new3")).unwrap(), b"third");
+    let fourth = pipeline::compile(&mut compiler, "\"fourth\" -> new4\n", &context, &[]).unwrap();
+    runtime.submit(&fourth.program).await.unwrap();
+    assert_eq!(fs::read(cwd.join("new4")).unwrap(), b"fourth");
+    assert_eq!(fs::read(other.join("existing")).unwrap(), b"old");
+    peer.write_all(b"new").await.unwrap();
+    peer.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), runtime.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read(other.join("existing")).unwrap(), b"new");
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn sparse_root_upgrade_preserves_an_active_immutable_reader_of_a_known_file() {
+    use tokio::io::AsyncReadExt;
+    let workspace = workspace();
+    let cwd = workspace.path().join("work");
+    fs::create_dir(&cwd).unwrap();
+    fs::create_dir(cwd.join("nested")).unwrap();
+    let payload = vec![b'R'; 4 * 1024 * 1024];
+    fs::write(cwd.join("a1"), &payload).unwrap();
+    fs::write(cwd.join("nested/a2"), b"second").unwrap();
+    let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
+    let mut compiler = Session::new();
+    run_live(&mut runtime, &mut compiler, &cwd, "a1 -> new1\n").await;
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )
+    .unwrap();
+    socket.set_recv_buffer_size(1024).unwrap();
+    socket.set_nonblocking(true).unwrap();
+    socket
+        .bind(&std::net::SocketAddr::from(([127, 0, 0, 1], 0)).into())
+        .unwrap();
+    socket.listen(4).unwrap();
+    let listener = tokio::net::TcpListener::from_std(socket.into()).unwrap();
+    let context = CompileContext {
+        pwd: cwd.clone(),
+        source_file: None,
+    };
+    let stream = pipeline::compile(
+        &mut compiler,
+        &format!(
+            "sink => tcp://{}\na1 -> sink::/\n",
+            listener.local_addr().unwrap()
+        ),
+        &context,
+        &[],
+    )
+    .unwrap();
+    runtime.submit(&stream.program).await.unwrap();
+    let mut peer = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .unwrap()
+        .unwrap()
+        .0;
+    assert!(!runtime.work_ids().is_empty());
+    let second = pipeline::compile(&mut compiler, "nested/a2 -> new2\n", &context, &[]).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), runtime.submit(&second.program))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read(cwd.join("new2")).unwrap(), b"second");
+    socket2::SockRef::from(&peer)
+        .set_recv_buffer_size(1024 * 1024)
+        .unwrap();
+    let receiver = tokio::spawn(async move {
+        let mut bytes = Vec::new();
+        peer.read_to_end(&mut bytes).await.unwrap();
+        bytes
+    });
+    tokio::time::timeout(Duration::from_secs(15), runtime.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(receiver.await.unwrap(), payload);
+    runtime.shutdown().await.unwrap();
+}
+
+#[test]
+#[ignore = "native child fixture, launched only by the sparse-to-complete view test"]
+fn sparse_view_child_fixture() {
+    assert_eq!(fs::read("seed").unwrap(), b"seed");
+    for root in
+        std::env::args().filter_map(|argument| argument.strip_prefix("root:").map(str::to_owned))
+    {
+        let root = Path::new(&root);
+        assert_eq!(fs::read(root.join("input")).unwrap(), b"managed");
+        assert_eq!(fs::read(root.join("output")).unwrap(), b"managed");
+        assert_eq!(
+            fs::read(root.join("extra")).unwrap(),
+            b"previously unobserved"
+        );
+        assert!(
+            !root.join(".temp").exists(),
+            "runtime backing leaked into the native view"
+        );
+    }
+    fs::write("native-file", b"private native write").unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a provisioned native process-resource backend"]
+async fn sparse_file_coverage_upgrades_to_a_complete_native_program_view() {
+    let workspace = workspace();
+    let cwd = workspace.path().join("work");
+    fs::create_dir(&cwd).unwrap();
+    let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
+    runtime.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let mut compiler = Session::new();
+    run_live(&mut runtime, &mut compiler, &cwd, "\"seed\" -> seed\n").await;
+    let executable = std::env::current_exe()
+        .unwrap()
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    run_live(&mut runtime, &mut compiler, &cwd,
+        &format!("child => $local::\"{executable}\"(\"--exact\", \"sparse_view_child_fixture\", \"--ignored\", \"--nocapture\")\nchild::exit_code -> code\n")).await;
+    assert_eq!(fs::read(cwd.join("seed")).unwrap(), b"seed");
+    assert_eq!(
+        fs::read(cwd.join("native-file")).unwrap(),
+        b"private native write"
+    );
+    assert_eq!(fs::read(cwd.join("code")).unwrap(), b"0\n");
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a provisioned native process-resource backend"]
+async fn sparse_parents_in_other_directories_upgrade_before_a_new_native_view() {
+    let workspace = workspace();
+    let a1 = workspace.path().join("a1");
+    let a2 = workspace.path().join("a2");
+    let b = workspace.path().join("b");
+    for directory in [&a1, &a2, &b] {
+        fs::create_dir(directory).unwrap();
+    }
+    for directory in [&a1, &a2] {
+        fs::write(directory.join("input"), b"managed").unwrap();
+        fs::write(directory.join("extra"), b"previously unobserved").unwrap();
+    }
+    fs::write(b.join("seed"), b"seed").unwrap();
+    let mut runtime = RuntimeSession::new(&Options::new(a1.join(".temp"))).unwrap();
+    runtime.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let mut compiler = Session::new();
+    let quoted = |path: &Path| {
+        path.to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+    };
+    run_live(
+        &mut runtime,
+        &mut compiler,
+        &a1,
+        &format!(
+            "input -> output\n$local::\"{}/input\" -> $local::\"{}/output\"\n",
+            quoted(&a2),
+            quoted(&a2)
+        ),
+    )
+    .await;
+    assert_eq!(
+        private_files(&a1.join(".temp")),
+        (2, 14),
+        "both parents must initially remain sparse"
+    );
+    let executable = std::env::current_exe()
+        .unwrap()
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    run_live(&mut runtime, &mut compiler, &b,
+        &format!("child => $local::\"{executable}\"(\"--exact\", \"sparse_view_child_fixture\", \"--ignored\", \"--nocapture\", \"--skip\", \"root:{}\", \"--skip\", \"root:{}\")\nchild::exit_code -> code\n", quoted(&a1), quoted(&a2))).await;
+    for directory in [&a1, &a2] {
+        assert_eq!(fs::read(directory.join("output")).unwrap(), b"managed");
+        assert_eq!(
+            fs::read(directory.join("extra")).unwrap(),
+            b"previously unobserved"
+        );
+    }
+    assert_eq!(
+        fs::read(b.join("native-file")).unwrap(),
+        b"private native write"
+    );
+    assert_eq!(fs::read(b.join("code")).unwrap(), b"0\n");
+    runtime.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn finite_missing_file_preserves_unobserved_fifo_and_socket_siblings() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let workspace = workspace();
+    let cwd = workspace.path().join("work");
+    fs::create_dir(&cwd).unwrap();
+    fs::write(cwd.join("input"), b"finite").unwrap();
+    let fifo = std::ffi::CString::new(cwd.join("fifo").as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let listener = std::os::unix::net::UnixListener::bind(cwd.join("socket")).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let pipe_before = fs::symlink_metadata(cwd.join("fifo")).unwrap();
+    let socket_before = fs::symlink_metadata(cwd.join("socket")).unwrap();
+    let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
+    run_live(&mut runtime, &mut Session::new(), &cwd, "input -> output\n").await;
+    assert_eq!(fs::read(cwd.join("output")).unwrap(), b"finite");
+    assert_eq!(private_files(&cwd.join(".temp")), (1, 6));
+    let pipe_after = fs::symlink_metadata(cwd.join("fifo")).unwrap();
+    let socket_after = fs::symlink_metadata(cwd.join("socket")).unwrap();
+    assert!(pipe_after.file_type().is_fifo() && socket_after.file_type().is_socket());
+    assert_eq!(
+        (pipe_after.dev(), pipe_after.ino()),
+        (pipe_before.dev(), pipe_before.ino())
+    );
+    assert_eq!(
+        (socket_after.dev(), socket_after.ino()),
+        (socket_before.dev(), socket_before.ino())
+    );
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    runtime.shutdown().await.unwrap();
+}
+
 #[test]
 fn capture_omits_only_the_current_owned_invocation_and_retains_user_temp_data() {
     let workspace = workspace();

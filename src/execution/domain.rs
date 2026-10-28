@@ -42,7 +42,11 @@ pub(super) struct Transfer {
 #[derive(Debug, Default)]
 pub(super) struct Domain {
     pub transfers: BTreeMap<InstructionId, Transfer>,
+    /// Complete payload coverage, including an explicit absent subtree.
     pub roots: Vec<PathBuf>,
+    /// Directory identity/kind/metadata, not its unrelated children.
+    pub namespace_roots: BTreeSet<PathBuf>,
+    pub native_view: bool,
 }
 
 /// Reject unsupported effects before allocating stages, downloading or publishing.
@@ -165,18 +169,51 @@ impl Domain {
         options: &Options,
         unstable: &BTreeSet<EndpointKey>,
     ) -> Result<Self> {
+        Self::resolve_enrollment(program, options, unstable, &BTreeSet::new())
+    }
+
+    pub(super) fn resolve_enrollment(
+        program: &Program,
+        options: &Options,
+        unstable: &BTreeSet<EndpointKey>,
+        sparse_destinations: &BTreeSet<InstructionId>,
+    ) -> Result<Self> {
         let mut domain = Self::default();
-        domain.region(&program.body, options, unstable)?;
-        domain.roots.sort_by_key(|root| root.components().count());
+        domain.region(&program.body, options, unstable, sparse_destinations)?;
+        domain.normalize_coverage();
+        Ok(domain)
+    }
+
+    pub(super) fn normalize_coverage(&mut self) {
+        // Nested sparse namespaces are not a capability of the Manager yet.
+        // Preserve complete envelopes when another read needs that structure.
+        let promoted = self
+            .namespace_roots
+            .iter()
+            .filter(|parent| {
+                self.roots.iter().any(|root| {
+                    relative_to(root, parent)
+                        .is_some_and(|relative| relative.components().count() > 1)
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        self.roots.extend(promoted);
+        self.roots.sort_by_key(|root| root.components().count());
         let mut roots = Vec::<PathBuf>::new();
-        for path in &domain.roots {
+        for path in &self.roots {
             if roots.iter().any(|root| relative_to(path, root).is_some()) {
                 continue;
             }
             roots.push(path.clone());
         }
-        domain.roots = roots;
-        Ok(domain)
+        self.roots = roots;
+        self.namespace_roots.retain(|parent| {
+            !self
+                .roots
+                .iter()
+                .any(|root| relative_to(parent, root).is_some())
+        });
     }
 
     fn region(
@@ -184,6 +221,7 @@ impl Domain {
         region: &Region,
         options: &Options,
         unstable: &BTreeSet<EndpointKey>,
+        sparse_destinations: &BTreeSet<InstructionId>,
     ) -> Result<()> {
         for instruction in &region.instructions {
             options.check(instruction.span)?;
@@ -204,11 +242,21 @@ impl Domain {
                     } else {
                         local(location, false, instruction.span)?
                     };
-                    self.roots.push(if deferred_destination {
-                        deferred_envelope(&destination, instruction.span)?
-                    } else {
-                        destination_envelope(&destination, instruction.span)?
-                    });
+                    self.roots.push(
+                        if !deferred_destination
+                            && sparse_destinations.contains(&instruction.id)
+                            && !destination.exists()
+                            && destination.parent().is_some_and(Path::is_dir)
+                        {
+                            self.namespace_roots
+                                .insert(destination.parent().unwrap().to_owned());
+                            destination.clone()
+                        } else if deferred_destination {
+                            deferred_envelope(&destination, instruction.span)?
+                        } else {
+                            destination_envelope(&destination, instruction.span)?
+                        },
+                    );
                     let (source, pattern) = match source {
                         Input::Literal(text) => (Source::Literal(text.clone()), None),
                         Input::File { location, pattern } => {
@@ -253,7 +301,7 @@ impl Domain {
                     );
                 }
                 InstructionKind::Transaction { body, .. } => {
-                    self.region(body, options, unstable)?
+                    self.region(body, options, unstable, sparse_destinations)?
                 }
                 _ => {}
             }

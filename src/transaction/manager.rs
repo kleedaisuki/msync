@@ -30,6 +30,7 @@ type Result<T> = std::result::Result<T, ManagerError>;
 
 mod delta;
 mod enrollment;
+mod enrollment_active;
 mod namespace;
 mod paths;
 mod receipt;
@@ -278,6 +279,10 @@ impl Manager {
         if !self.active.is_empty() {
             return Err(ManagerError::EnrollmentClosed);
         }
+        self.enroll_inner(path)
+    }
+
+    fn enroll_inner(&mut self, path: &Path) -> Result<()> {
         let path = normalize(path)?;
         let mut coverage = self.domain.clone();
         let scope = coverage.physical_key(&path)?;
@@ -394,11 +399,14 @@ impl Manager {
                 "a sparse namespace must be an existing directory",
             ));
         }
-        let metadata = NodeMetadata::capture(&metadata).map_err(|cause| ManagerError::Io {
+        let mut metadata = NodeMetadata::capture(&metadata).map_err(|cause| ManagerError::Io {
             action: "capture sparse namespace metadata",
             path: path.clone(),
             cause,
         })?;
+        if let Some(invocation) = &self.invocation {
+            invocation.logical_metadata(&path, &mut metadata)?;
+        }
         let mut domain = self.domain.clone();
         let root = domain.add_root(path.clone(), Coverage::Namespace(BTreeSet::new()))?;
         let key = domain.key(root, Path::new(""))?;
@@ -424,6 +432,10 @@ impl Manager {
         if !self.active.is_empty() {
             return Err(ManagerError::EnrollmentClosed);
         }
+        self.enroll_entry_inner(path)
+    }
+
+    fn enroll_entry_inner(&mut self, path: &Path) -> Result<()> {
         let (root, relative) = self.locate(path)?;
         let mut domain = self.domain.clone();
         let key = domain.key(root, &relative)?;

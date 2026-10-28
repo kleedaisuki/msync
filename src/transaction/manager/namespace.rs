@@ -106,6 +106,14 @@ pub(super) struct Namespaces {
 }
 
 impl Namespaces {
+    pub(super) fn observes_import(&self, id: TransactionId, key: &ResourceKey) -> bool {
+        self.accesses.get(&id).is_some_and(|accesses| {
+            accesses.iter().any(|access| {
+                key.tree().contains(&access.key) || access.tree && access.key.tree().contains(key)
+            })
+        })
+    }
+
     pub(super) fn has_pending(&self) -> bool {
         self.epochs.values().any(|epoch| !epoch.pending.is_empty())
     }

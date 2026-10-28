@@ -308,6 +308,30 @@ impl<V: Clone> Store<V> {
         self.transactions.get(&id).map(Arc::as_ref)
     }
 
+    pub(super) fn permits_disjoint_import(&self, id: TransactionId, key: &ResourceKey) -> bool {
+        let Ok(transaction) = self.active(id) else {
+            return false;
+        };
+        let overlaps =
+            |other: &ResourceKey| key.tree().contains(other) || other.tree().contains(key);
+        transaction.isolation == Isolation::ReadCommitted
+            && !transaction.pending.keys().any(overlaps)
+            && !transaction.write_bases.keys().any(overlaps)
+            && !transaction
+                .reads
+                .keys()
+                .any(|other| key.tree().contains(other))
+            && !transaction
+                .predicates
+                .keys()
+                .any(|prefix| prefix.contains(key) || key.tree().contains(&prefix.root))
+    }
+
+    pub(super) fn active_read_committed(&self, id: TransactionId) -> bool {
+        self.active(id)
+            .is_ok_and(|transaction| transaction.isolation == Isolation::ReadCommitted)
+    }
+
     /// Install an adapter-observed initial value or an external publication.
     /// Existing snapshots remain valid and serializable validations see the change.
     pub fn seed(&mut self, key: ResourceKey, value: Option<V>) -> Result<Epoch, StoreError> {

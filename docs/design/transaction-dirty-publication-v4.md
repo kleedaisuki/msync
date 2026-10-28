@@ -279,3 +279,68 @@ Latest joined Windows scaffold gate: **40 manager tests, four metadata tests and
 explicitly ignored. Scoped Clippy reports no Manager/helper diagnostics; strict
 whole-library completion still depends on the independently evolving event/pump
 module's unused-code/lint work. Owned source/test rustfmt and diff checks pass.
+
+## Disjoint file coverage while an implicit flow is active
+
+Sparse enrollment must not turn an unrelated live TCP flow into a global ban on
+reading a second file in an already enrolled directory. The public `enroll` and
+`enroll_entry` lifecycle guards remain unchanged. A crate-private runtime path
+can import one previously unobserved finite direct-child subtree (or absence) under an
+existing sparse namespace when every active Manager owner has a corresponding
+retained implicit-flow effect witness. Running/pending native programs, named
+contexts, missing witnesses, unknown effects, and overlapping resources do not
+qualify. The runtime builds this inventory from the actual old WorkNode plans,
+not reused IDs in a new input.
+
+The Manager independently checks the complete active ID set, ReadCommitted
+isolation, actual pending writes/dirty parent metadata, observed subtrees and
+exact observations in the imported scope. Retained parent-kind lookups do not
+become fictional directory enumerations. A directory tree/predicate read, dirty
+parent, overlapping byte/stream path or changed native parent attributes fences
+the import. Path comparisons use native canonicalization and the existing native
+name index, not portable guesses about Unicode or Windows verbatim spellings.
+TCP/HTTP byte endpoint names cannot alias native filesystem paths; WSL/SSH and
+unresolved endpoint evidence stay conservative.
+
+The observation does not publish a filesystem change or update the directory's
+logical mtime. Capture, validation, foreign `seed` operations and coverage update
+are installed atomically, and every new version uses its real current epoch.
+Nothing is backdated into an older statement or repeatable snapshot. A new RC
+statement can see the imported value; an already-open RC statement retains its
+older visibility until its explicit statement boundary. RR/Serializable owners
+remain outside this narrow private path. New stream/device roots are refused before payload capture; finite directory
+imports keep the normal guarded snapshot capture and reject unsupported entries. Parent metadata is checked after applying
+only the identity-proved invocation mtime normalization.
+
+Focused units cover safe disjoint import with a retained TCP and filesystem
+footprint, unchanged parent metadata and old RC visibility, incomplete/unknown/
+overlapping/tree-read inventories, RR/Serializable refusal, actual dirty-parent
+and external-parent changes, and finite-directory import visibility. Complete promotion of an existing sparse
+namespace computes a semantic import frontier using native directory names only.
+Complete known branches are skipped; known metadata-only directories recurse;
+an unknown node/tree (including an unknown structural ancestor) is a new
+visibility obligation. Owner/observation/write guards apply to these actual
+frontiers rather than a fictitious write to the entire existing root. Real
+namespace/tree observers and dirty directory metadata remain anchor fences even
+when no new keys are found. Thus an already-pinned exact read of known `A/a1`
+does not serialize capture of an unrelated unseen `A/nested` tree.
+The established `capture_extension` path keeps known branches and metadata
+unchanged, while only unseen keys receive current-epoch foreign observations.
+It must not substitute a nested child import for an explicit `.` directory
+source. A focused promotion test checks that known managed bytes are not refreshed
+even if the live host changed, and older statements still see their old subset.
+The runtime's real two-directory REPL/TCP regressions are separate gates.
+Final compatibility gates for the private path passed on Windows (seven focused
+import/visibility/fence units, 46 existing Manager filesystem cases, strict
+library Clippy) and in actual WSL private tmpfs (15 ordinary workspace cases and
+four native program-view cases). In particular,
+`sparse_files_extend_while_an_existing_file_flow_in_another_directory_is_active`
+exercises a new flat child, a previously unobserved nested source, explicit
+complete-root use and a later literal while an unrelated existing-file TCP job
+remains active. `sparse_root_upgrade_preserves_an_active_immutable_reader_of_a_known_file`
+holds a real 4-MiB known-file-to-TCP flow against a tiny receiver window during
+namespace upgrade and nested-file copying. These are actual held flows, not just
+independent path strings. The native cases also verify sparse roots in another
+cwd are upgraded before a new program view, without changing parent metadata or
+snapshotting unrelated FIFO/socket siblings. Correctness runtimes are not
+performance measurements.

@@ -1031,63 +1031,128 @@ impl RuntimeSession {
 
     fn enroll(&mut self, domain: &Domain) -> Result<()> {
         if self.engine.is_none() {
-            self.engine = Some(Engine::new(domain, &self.options)?);
-            return Ok(());
+            self.sparse_roots.clear();
+            if domain.namespace_roots.is_empty() {
+                self.engine = Some(Engine::new(domain, &self.options)?);
+                return Ok(());
+            }
+            self.engine = Some(Engine::new(&Domain::default(), &self.options)?);
         }
+        let active_enrollment = self.active_enrollment();
         let sparse_roots = self.sparse_roots.clone();
         let engine = self.engine_mut()?;
-        for root in &domain.roots {
+        let mut required = domain.roots.clone();
+        if domain.native_view {
+            required.extend(sparse_roots.iter().cloned());
+        }
+        required.sort_by_key(|root| root.components().count());
+        for root in &required {
             if engine
                 .roots
                 .iter()
                 .any(|old| domain::relative_to(root, old).is_some())
             {
-                if let Some(sparse) = sparse_roots
-                    .iter()
-                    .find(|sparse| domain::relative_to(root, sparse).is_some())
-                {
-                    let mut entries = BTreeSet::new();
-                    if let Some(relative) = domain::relative_to(root, sparse)
-                        && let Some(first) = relative.components().next()
-                    {
-                        entries.insert(sparse.join(first));
-                    }
-                    for transfer in domain.transfers.values() {
-                        let paths =
-                            std::iter::once(&transfer.destination).chain(match &transfer.source {
-                                Source::Local(path) => Some(path),
-                                _ => None,
-                            });
-                        for path in paths {
-                            if let Some(relative) = domain::relative_to(path, sparse)
-                                && let Some(first) = relative.components().next()
-                            {
-                                entries.insert(sparse.join(first));
-                            }
-                        }
-                    }
-                    for entry in entries {
-                        engine.manager.enroll_entry(&entry).map_err(|cause| {
-                            ExecutionError::caused(
-                                "cannot enroll managed entry",
-                                domain.site(root),
-                                cause,
-                            )
-                        })?;
-                    }
-                }
                 continue;
             }
-            engine.manager.enroll(root).map_err(|cause| {
+            let covered_child = sparse_roots.iter().find_map(|parent| {
+                let relative = domain::relative_to(root, parent)?;
+                let first = relative.components().next()?;
+                Some(parent.join(first))
+            });
+            let complete = covered_child.as_ref().unwrap_or(root);
+            let enrolled = match &covered_child {
+                Some(child) => match &active_enrollment {
+                    Some(owners) => engine.manager.enroll_disjoint_entry(child, owners),
+                    None => engine.manager.enroll_entry(child),
+                },
+                None => match &active_enrollment {
+                    Some(owners) if sparse_roots.contains(root) => {
+                        engine.manager.enroll_disjoint_root(root, owners)
+                    }
+                    _ => engine.manager.enroll(root),
+                },
+            };
+            enrolled.map_err(|cause| {
                 ExecutionError::caused(
                     "cannot extend the persistent resource domain",
                     domain.site(root),
                     cause,
                 )
             })?;
-            engine.roots.push(root.clone());
+            engine
+                .roots
+                .retain(|old| domain::relative_to(old, complete).is_none());
+            engine.roots.push(complete.clone());
         }
+        for parent in &domain.namespace_roots {
+            if sparse_roots.contains(parent) {
+                continue;
+            }
+            if engine
+                .roots
+                .iter()
+                .any(|root| domain::relative_to(parent, root).is_some())
+            {
+                continue;
+            }
+            engine.manager.enroll_namespace(parent).map_err(|cause| {
+                ExecutionError::caused(
+                    "cannot enroll destination namespace metadata",
+                    domain.site(parent),
+                    cause,
+                )
+            })?;
+        }
+        let complete = engine.roots.clone();
+        self.sparse_roots.retain(|parent| {
+            !complete
+                .iter()
+                .any(|root| domain::relative_to(parent, root).is_some())
+        });
+        self.sparse_roots.extend(
+            domain
+                .namespace_roots
+                .iter()
+                .filter(|parent| {
+                    !complete
+                        .iter()
+                        .any(|root| domain::relative_to(parent, root).is_some())
+                })
+                .cloned(),
+        );
         Ok(())
+    }
+
+    fn active_enrollment(&self) -> Option<BTreeMap<TransactionId, hir::effects::Effects>> {
+        let active = self.engine.as_ref()?.manager.active_transaction_ids();
+        if active.is_empty() {
+            return None;
+        }
+        let mut owners = BTreeMap::new();
+        for id in active {
+            if !self.implicit.contains(&id)
+                || self
+                    .programs
+                    .values()
+                    .any(|program| program.transaction == id)
+            {
+                return None;
+            }
+            let mut effects = hir::effects::Effects::default();
+            let mut observed = false;
+            for work in self
+                .outstanding_work()
+                .filter(|work| work.transaction == id)
+            {
+                effects.append(work.plan.effects(work.key.instruction).ok()?.clone());
+                observed = true;
+            }
+            if !observed {
+                return None;
+            }
+            owners.insert(id, effects);
+        }
+        Some(owners)
     }
 
     fn enroll_physical_namespaces(&mut self, program: &hir::Program) -> Result<()> {
@@ -1120,6 +1185,7 @@ impl RuntimeSession {
             return Ok(());
         }
         if self.engine.is_none() {
+            self.sparse_roots.clear();
             self.engine = Some(Engine::new(&Domain::default(), &self.options)?);
         }
         self.sparse_roots
@@ -1136,9 +1202,9 @@ impl RuntimeSession {
             if !engine
                 .roots
                 .iter()
-                .any(|root| domain::relative_to(&parent, root).is_some())
+                .any(|root| domain::relative_to(&target, root).is_some())
             {
-                engine.roots.push(parent);
+                engine.roots.push(target);
             }
         }
         Ok(())
@@ -3802,6 +3868,51 @@ fn live_domain(
     options: &Options,
     context: &crate::hir::graph::PlanningContext,
 ) -> Result<Domain> {
+    fn sparse_destinations(
+        region: &Region,
+        context: &crate::hir::graph::PlanningContext,
+        result: &mut BTreeSet<InstructionId>,
+    ) {
+        use crate::plan::FileClass;
+        for node in &region.instructions {
+            if let InstructionKind::Transaction { body, .. } = &node.kind {
+                sparse_destinations(body, context, result);
+            }
+            let InstructionKind::Transfer {
+                source,
+                destination:
+                    Output::File {
+                        location,
+                        mode: DestinationMode::Exact,
+                    },
+            } = &node.kind
+            else {
+                continue;
+            };
+            let Some(facts) = context.operation_facts.get(&node.id) else {
+                continue;
+            };
+            let finite = matches!(source, Input::Literal(_))
+                || matches!(source,
+                Input::File { location, pattern: None }
+                if matches!(location.backend, Backend::Local | Backend::Env | Backend::Path)
+                    && facts.source == FileClass::Regular);
+            if finite
+                && facts.destination == FileClass::Missing
+                && matches!(location.backend, Backend::Local | Backend::Env)
+                && !transfer_unstable(context, node.id)
+            {
+                result.insert(node.id);
+            }
+        }
+    }
+    fn has_program(region: &Region) -> bool {
+        region.instructions.iter().any(|node| match &node.kind {
+            InstructionKind::Spawn { .. } => true,
+            InstructionKind::Transaction { body, .. } => has_program(body),
+            _ => false,
+        })
+    }
     fn finite(
         region: &Region,
         roots: &mut Vec<PathBuf>,
@@ -3960,18 +4071,15 @@ fn live_domain(
         body: finite(&program.body, &mut roots, context)?,
         transactions: program.transactions.clone(),
     };
-    let mut domain = Domain::resolve_deferred(&filtered, options, &context.host_unstable)?;
-    roots.extend(domain.roots);
-    roots.sort_by_key(|root| root.components().count());
-    domain.roots = roots.into_iter().fold(Vec::new(), |mut result, root| {
-        if !result
-            .iter()
-            .any(|old| domain::relative_to(&root, old).is_some())
-        {
-            result.push(root);
-        }
-        result
-    });
+    let mut sparse = BTreeSet::new();
+    if !has_program(&program.body) {
+        sparse_destinations(&filtered.body, context, &mut sparse);
+    }
+    let mut domain =
+        Domain::resolve_enrollment(&filtered, options, &context.host_unstable, &sparse)?;
+    domain.native_view = has_program(&program.body);
+    domain.roots.extend(roots);
+    domain.normalize_coverage();
     Ok(domain)
 }
 
