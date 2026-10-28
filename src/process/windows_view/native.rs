@@ -293,6 +293,7 @@ impl Api {
     }
 
     pub fn wait_hive_unmounted(&self, name: &str) -> io::Result<()> {
+        let storage = self.box_path(name)?.join("RegHive");
         let mut name = wide(OsStr::new(name))?;
         name.resize(40, 0);
         let mut root = vec![0u16; 32767];
@@ -314,7 +315,7 @@ impl Api {
             .ok_or_else(|| io::Error::other("Sandboxie returned an unterminated registry root"))?;
         let root = String::from_utf16(&root[..end])
             .map_err(|cause| io::Error::new(io::ErrorKind::InvalidData, cause))?;
-        super::hive::wait_unmounted(&root, std::time::Duration::from_secs(10))
+        super::hive::wait_unmounted(&root, &storage, std::time::Duration::from_secs(10))
     }
 
     /// Inspect the actual open handle, not the DLL's virtualized DOS spelling.

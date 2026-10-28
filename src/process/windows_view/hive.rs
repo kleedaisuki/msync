@@ -2,13 +2,19 @@
 
 use std::ffi::OsStr;
 use std::fmt;
+use std::fs;
 use std::io;
+use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::ptr::{null, null_mut};
 use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{
-    ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, WAIT_OBJECT_0, WAIT_TIMEOUT,
+    ERROR_FILE_NOT_FOUND, ERROR_KEY_DELETED, ERROR_PATH_NOT_FOUND, ERROR_SHARING_VIOLATION,
+    WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
+use windows_sys::Win32::Storage::FileSystem::{
+    DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
 };
 use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_LOCAL_MACHINE, HKEY_USERS, KEY_NOTIFY, KEY_READ, REG_NOTIFY_CHANGE_NAME,
@@ -18,7 +24,11 @@ use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
 use super::native::wide;
 
-pub(super) fn wait_unmounted(native: &str, timeout: Duration) -> io::Result<()> {
+pub(super) fn wait_unmounted(
+    native: &str,
+    storage: &std::path::Path,
+    timeout: Duration,
+) -> io::Result<()> {
     let outcome = || {
         let (root, relative) = native_root(native)?;
         let (parent, child) = relative.rsplit_once('\\').unwrap_or(("", relative));
@@ -27,7 +37,9 @@ pub(super) fn wait_unmounted(native: &str, timeout: Duration) -> io::Result<()> 
             child: wide(OsStr::new(child))?,
             event: event()?,
         };
-        wait_absent(&mut watch, timeout)
+        let deadline = Instant::now() + timeout;
+        wait_absent(&mut watch, timeout)?;
+        wait_storage(&mut watch, storage, deadline)
     };
     outcome().map_err(|cause| {
         io::Error::new(
@@ -151,8 +163,7 @@ impl UnmountWatch for HiveWatch {
                 drop(Key(raw));
                 Ok(true)
             }
-            ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => Ok(false),
-            code => Err(io::Error::from_raw_os_error(code as i32)),
+            code => namespace_present(code),
         }
     }
 
@@ -163,6 +174,113 @@ impl UnmountWatch for HiveWatch {
             WAIT_TIMEOUT => Ok(false),
             _ => Err(io::Error::last_os_error()),
         }
+    }
+}
+
+fn namespace_present(code: u32) -> io::Result<bool> {
+    match code {
+        // KEY_DELETED proves namespace withdrawal, not release of RegHive.
+        // The separate storage barrier must also succeed before box deletion.
+        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND | ERROR_KEY_DELETED => Ok(false),
+        code => Err(io::Error::from_raw_os_error(code as i32)),
+    }
+}
+
+fn storage_released(path: &std::path::Path) -> io::Result<()> {
+    let lease = match fs::OpenOptions::new()
+        .access_mode(DELETE)
+        .share_mode(FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+    {
+        Ok(lease) => lease,
+        Err(cause) if cause.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(cause) => return Err(cause),
+    };
+    let metadata = lease.metadata()?;
+    if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "private registry hive storage is not an ordinary non-reparse file",
+        ));
+    }
+    // DELETE-only sharing excludes every outstanding reader/writer, including
+    // service handles that themselves permit deletion. After namespace withdrawal
+    // and worker joins no legitimate participant can remount this exclusive box.
+    // Release our lease before recursive deletion to avoid a self-held pending
+    // DeleteFile name preventing removal of its parent directory.
+    Ok(())
+}
+
+fn wait_storage(
+    watch: &mut impl UnmountWatch,
+    path: &std::path::Path,
+    deadline: Instant,
+) -> io::Result<()> {
+    let started = Instant::now();
+    let budget = deadline.saturating_duration_since(started);
+    let mut delay = Duration::from_millis(1);
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        match storage_released(path) {
+            Ok(()) => return Ok(()),
+            Err(cause) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if cause.raw_os_error() != Some(ERROR_SHARING_VIOLATION as i32)
+                    || remaining.is_zero()
+                {
+                    return Err(io::Error::new(
+                        cause.kind(),
+                        StorageFailure {
+                            path: path.to_owned(),
+                            attempts,
+                            elapsed: started.elapsed(),
+                            budget,
+                            deadline_expired: remaining.is_zero(),
+                            cause,
+                        },
+                    ));
+                }
+                // Hive namespace deletion has no guaranteed second notification
+                // when its final storage handle closes. Only this proven pending
+                // service-close state uses a bounded adaptive quiescence probe;
+                // the normal released case incurs no timed wait or delete retry.
+                watch.wait(delay.min(remaining))?;
+                delay = (delay * 2).min(Duration::from_millis(32));
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct StorageFailure {
+    path: std::path::PathBuf,
+    attempts: usize,
+    elapsed: Duration,
+    budget: Duration,
+    deadline_expired: bool,
+    cause: io::Error,
+}
+
+impl fmt::Display for StorageFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "private hive storage {} remains unavailable after {} quiescence probes ({:.3} ms elapsed / {:.3} ms budget; deadline expired={}): {}",
+            self.path.display(),
+            self.attempts,
+            self.elapsed.as_secs_f64() * 1000.0,
+            self.budget.as_secs_f64() * 1000.0,
+            self.deadline_expired,
+            self.cause
+        )
+    }
+}
+
+impl std::error::Error for StorageFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
     }
 }
 
@@ -263,6 +381,137 @@ mod tests {
         ] {
             assert!(native_root(invalid).is_err());
         }
+    }
+
+    #[test]
+    fn a_real_marked_deleted_key_does_not_prove_storage_handles_closed() {
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        use windows_sys::Win32::System::Registry::{
+            HKEY_CURRENT_USER, KEY_ALL_ACCESS, RegCreateKeyExW, RegDeleteKeyW, RegQueryValueExW,
+        };
+
+        let path = format!(
+            r"Software\msync-deleted-hive-{}",
+            super::super::native::nonce().unwrap()
+        );
+        let path = wide(OsStr::new(&path)).unwrap();
+        let mut raw = null_mut();
+        result(unsafe {
+            RegCreateKeyExW(
+                HKEY_CURRENT_USER,
+                path.as_ptr(),
+                0,
+                null(),
+                0,
+                KEY_ALL_ACCESS,
+                null(),
+                &mut raw,
+                null_mut(),
+            )
+        })
+        .unwrap();
+        let key = Key(raw);
+        result(unsafe { RegDeleteKeyW(HKEY_CURRENT_USER, path.as_ptr()) }).unwrap();
+        let value = wide(OsStr::new("any-value")).unwrap();
+        let marked = unsafe {
+            RegQueryValueExW(
+                key.0,
+                value.as_ptr(),
+                null(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            )
+        };
+        assert_eq!(marked, ERROR_KEY_DELETED);
+        assert!(!namespace_present(marked).unwrap());
+
+        let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&scratch).unwrap();
+        let fixture = tempfile::tempdir_in(scratch).unwrap();
+        let storage = fixture.path().join("RegHive");
+        fs::write(&storage, b"private hive bytes").unwrap();
+        let reader = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&storage)
+            .unwrap();
+        assert_eq!(
+            storage_released(&storage).unwrap_err().raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION as i32),
+            "even a reader allowing deletion must prevent a quiescence receipt"
+        );
+        let mut unused = Fake {
+            existence: [].into(),
+            notifications: [].into(),
+            armed: false,
+        };
+        let failure = wait_storage(&mut unused, &storage, Instant::now()).unwrap_err();
+        let detail = failure
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<StorageFailure>()
+            .unwrap();
+        assert_eq!(detail.attempts, 1);
+        assert!(detail.deadline_expired);
+        assert_eq!(
+            detail.cause.raw_os_error(),
+            Some(ERROR_SHARING_VIOLATION as i32)
+        );
+        assert!(failure.to_string().contains(&storage.display().to_string()));
+        drop(reader);
+        storage_released(&storage).unwrap();
+        drop(key);
+    }
+
+    #[test]
+    fn pending_storage_probe_observes_actual_handle_release_before_cleanup() {
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&scratch).unwrap();
+        let fixture = tempfile::tempdir_in(scratch).unwrap();
+        let path = fixture.path().join("RegHive");
+        fs::write(&path, b"private hive bytes").unwrap();
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .open(&path)
+            .unwrap();
+        let (release, command) = std::sync::mpsc::channel();
+        let (done, joined) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            command.recv().unwrap();
+            drop(held);
+            done.send(()).unwrap();
+        });
+        struct Releasing {
+            release: Option<std::sync::mpsc::Sender<()>>,
+            joined: std::sync::mpsc::Receiver<()>,
+        }
+        impl UnmountWatch for Releasing {
+            fn arm(&mut self) -> io::Result<()> {
+                unreachable!()
+            }
+            fn exists(&mut self) -> io::Result<bool> {
+                unreachable!()
+            }
+            fn wait(&mut self, _: Duration) -> io::Result<bool> {
+                self.release.take().unwrap().send(()).unwrap();
+                self.joined.recv().unwrap();
+                Ok(false)
+            }
+        }
+        let mut watch = Releasing {
+            release: Some(release),
+            joined,
+        };
+        wait_storage(&mut watch, &path, Instant::now() + Duration::from_secs(1)).unwrap();
+        assert!(
+            watch.release.is_none(),
+            "the first probe must see the actual live reader"
+        );
+        worker.join().unwrap();
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -33,15 +33,42 @@ an unrelated sibling event does not establish completion. No handle is retained
 to the target hive itself, because that would obstruct unloading. A bounded
 deadline reports the actual registry root and preserved native cause and retains
 the owned box on failure. Only after this boundary does existing owned-path
-identity validation, owned-section removal and physical deletion proceed. No
-sleep, repeated deletion attempt, service restart, or global configuration change
-is involved.
+identity validation, owned-section removal and physical deletion proceed. There
+is no repeated deletion attempt, service restart, or global configuration change.
 
 Five driver-free focused regressions cover a deletion before the query,
 unrelated notifications, a real timeout, native-root validation, and a real OS
 notification for an independently created private HKCU child. These establish
-the wait protocol, not the native service's successful unload; the expanded
-signed-driver workspace journey still requires a new provisioned gate.
+the wait protocol, not the native service's successful unload.
+
+[Run 40619023964](https://github.com/kleedaisuki/msync/actions/runs/40619023964)
+then passed native views 4/4 and program journeys 8/9, exposing
+`ERROR_KEY_DELETED` (1018) during a cross-submission pipeline's hive query. This
+is namespace withdrawal, not proof that the service has closed the hive storage.
+A parent-name notification need not be emitted again when the last old handle
+closes, so simply retrying the registry wait can also miss the required state
+transition.
+
+The cleanup barrier now independently proves physical storage release. It derives
+`RegHive` from the driver-returned private file-root path (the pinned
+`Key_MountHive` storage contract), opens it with DELETE access and DELETE-only
+sharing, and rejects reparse/non-file storage. Windows sharing checks therefore
+exclude every extant reader/writer, including one that itself allows deletion.
+An absent backing file is also a completed physical namespace. The lease is
+closed before recursive deletion so it cannot keep its own DeleteFile name
+pending; after worker joins and registry namespace withdrawal no legitimate
+participant can remount the exclusive box.
+
+Only a real storage sharing violation after namespace withdrawal enables a
+bounded service-quiescence probe: event waits use 1, 2, 4, ... up to 32 ms,
+within the original ten-second deadline. Normal released storage performs one
+probe and no timed wait. Other native errors fail immediately; deadline failure
+retains the exact backing path, attempt count and underlying native error. This
+is not a general retry policy for box deletion. Two additional real-OS
+regressions preserve a marked-deleted HKCU key while a file reader remains and
+prove that 1018 alone cannot pass, then control a live storage reader's release
+and verify the next probe succeeds before any deletion. Native cloud acceptance
+of this expanded barrier remains required.
 
 ## First provisioned-driver result and path-policy correction
 
