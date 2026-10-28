@@ -1400,20 +1400,7 @@ fn roots_overlap(left: &Path, right: &Path) -> Result<bool> {
 }
 
 fn identity(path: &Path) -> Result<Option<same_file::Handle>> {
-    if !path.try_exists().map_err(|cause| ManagerError::Io {
-        action: "inspect enrolled root",
-        path: path.to_owned(),
-        cause,
-    })? {
-        return Ok(None);
-    }
-    same_file::Handle::from_path(path)
-        .map(Some)
-        .map_err(|cause| ManagerError::Io {
-            action: "identify enrolled root",
-            path: path.to_owned(),
-            cause,
-        })
+    Ok(super::filesystem::identity_at(path)?)
 }
 
 fn invalid(path: &Path, reason: &'static str) -> ManagerError {

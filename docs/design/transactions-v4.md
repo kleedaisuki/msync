@@ -661,3 +661,26 @@ invocation exclusion, checkpoint/origin undo, pending case-only names, existing
 case aliases, and changed case-sensitive-directory policy. Strict changed-target
 Clippy passes. Actual program-driven import gates and the Unix adapter remain
 separate integration gates; these counts do not claim their completion.
+
+### Identity lookup must not acquire a stream
+
+The first Linux full-matrix run to reach the sparse-namespace FIFO regression
+blocked inside identity inspection, not a byte transfer. The pinned `same-file`
+Unix implementation obtains a handle with ordinary read-only `open`; using it
+before classifying a FIFO waits for a writer. Snapshot identity lookup now rejects
+non-file/non-directory nodes before acquisition and shares that rule with Manager
+root identity checks. Linux uses `O_PATH | O_NOFOLLOW` and validates the opened
+node's metadata before constructing the retained identity. Unlike an ordinary
+read-open, [`O_PATH`](https://man7.org/linux/man-pages/man2/open.2.html) refers to
+the filesystem object without opening it for data IO and supports `fstat`.
+Other Unix targets use a guarded nonblocking/no-follow fallback; Windows retains
+its native directory/file identity implementation.
+
+The FIFO journey runs in a bounded child process so a regression cannot hold the
+whole CI job indefinitely. It still verifies failed full enrollment, successful
+sparse enrollment, explicit rejection of the FIFO as snapshot data, publication
+of an ordinary sibling, and preservation of the original FIFO inode kind.
+The focused WSL UID-1000 run passed the bounded FIFO case and both selected-view
+path cases with project `.temp` privately mounted tmpfs; the same uninstrumented
+build also passed both actual native workspace journeys. Windows changed-target
+Clippy passed. These correctness controls are not performance measurements.

@@ -991,10 +991,46 @@ impl std::error::Error for DirectoryModeFailure {
     }
 }
 
-fn identity_at(path: &Path) -> Result<Option<Handle>> {
-    safe_metadata(path)?
-        .map(|_| Handle::from_path(path).map_err(|cause| error("identify path", path, cause)))
-        .transpose()
+pub(super) fn identity_at(path: &Path) -> Result<Option<Handle>> {
+    let Some(metadata) = safe_metadata(path)? else {
+        return Ok(None);
+    };
+    if !metadata.is_dir() && !metadata.is_file() {
+        return Err(invalid(
+            "identify managed node",
+            path,
+            "ordinary files and directories are snapshot resources; use a stream endpoint for FIFO/socket/device data",
+        ));
+    }
+    #[cfg(unix)]
+    let handle = {
+        use std::os::unix::fs::OpenOptionsExt;
+        #[cfg(target_os = "linux")]
+        let flags = libc::O_PATH | libc::O_NOFOLLOW;
+        #[cfg(not(target_os = "linux"))]
+        let flags = libc::O_NONBLOCK | libc::O_NOFOLLOW;
+        // Identity inspection must never rendezvous with a FIFO peer, even if
+        // an uncooperative host replaces the checked node before this open.
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(flags)
+            .open(path)
+            .and_then(|file| {
+                let actual = file.metadata()?;
+                if !actual.is_file() && !actual.is_dir() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "managed identity changed to a stream, device or symbolic link",
+                    ));
+                }
+                Handle::from_file(file)
+            })
+    };
+    #[cfg(not(unix))]
+    let handle = Handle::from_path(path);
+    handle
+        .map(Some)
+        .map_err(|cause| error("identify path", path, cause))
 }
 
 fn overlaps_store(path: &Path, store: &ArtifactRoot) -> Result<bool> {
