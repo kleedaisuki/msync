@@ -270,3 +270,34 @@ Publication retains the old root as a before-image, restores it on helper failur
 Named remote transactions and program-output/remote publication cohorts still require a real versioned endpoint participant. The live preflight rejects them before any preceding statement executes; it never presents independent remote publication as a distributed transaction. No SSH configuration is changed. The explicit Windows `endpoint_execution_v4` integration target exercises native WSL filesystem destinations, Unicode/apostrophe paths, upload/download, directory replacement, container conflict rollback, literals, missing ancestors and named-transaction preflight. These are correctness journeys, not cross-filesystem performance measurements.
 
 The finite remote implementation moves an already-owned payload into the private replacement root for exact assignments and absent container slots, eliminating a redundant full data copy before the publication rename. Existing container clones and merges request GNU `cp --reflink=auto`, preserving independent file identities with an ordinary-copy fallback on filesystems without copy-on-write cloning. The real WSL suite also covers a read-only before-image that makes cleanup fail after commit: the assignment succeeds with a retained-journal cleanup issue rather than being misreported as an unknown or failed transfer. A publication worker remains alive to cancel and settle its receipt if its caller drops the future; settlement timeout explicitly kills and joins the client instead of merely dropping its process future.
+
+#### Actual default-runtime remote acceptance (2026-10-28)
+
+After the source-capability publication fix at `26b83a7`, the Windows
+`endpoint_execution_v4` target passed all four cases with `--include-ignored
+--test-threads=1` (25.18 seconds). This exercises real WSL upload/download,
+recursive replacement and collision rejection, literal overwrite, rejection of
+named remote transactions before prior effects, and the known-COMMITTED cleanup
+warning. Its ordinary HTTP destination control also passed. The fixture uses an
+exclusively owned native WSL filesystem directory, not a simulated transport.
+
+Four actual Windows OpenSSH/chrooted-WSL journeys passed together under the
+default v0.4 CLI grammar (102.95 seconds):
+
+- `ssh_upload_download_and_overwrite_are_real_and_isolated`;
+- `ssh_recursive_directories_merge_and_conflicts_preflight`;
+- `ssh_literal_filenames_and_regex_selections_preserve_semantics`;
+- `ssh_conflicts_failures_and_telemetry_leave_no_staging`.
+
+The new journal protocol exposed one fixture dependency: its minimal chroot
+lacked `flock`. The fixture now copies the already-installed executable and its
+shared libraries into its private tmpfs; no package, persistent SSH configuration
+or account file is changed. Filename fixtures use explicit `$pwd / "name"` and
+`remote::"~/name"` paths rather than overriding the default grammar. Cleanup
+audits cover both the legacy `msync.*` temporaries and `.msync-v4.*` journals
+throughout the private remote home and temporary directories. Each successful
+SSH journey verified unchanged Windows/WSL SSH and account-file fingerprints,
+no remaining stages, and no surviving authenticated service after teardown.
+The two larger SSH streaming/interruption cases were deliberately excluded from
+this finite-endpoint acceptance run. These times describe correctness harness
+runtimes, not performance benchmarks.

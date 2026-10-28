@@ -185,7 +185,8 @@ impl SshFixture {
     }
 
     fn assert_clean_staging(&self) {
-        let remote = self.remote("find /tmp -mindepth 1 -maxdepth 1 -name 'msync.*' -print");
+        let remote =
+            self.remote("find /tmp /root \\( -name 'msync.*' -o -name '.msync-v4.*' \\) -print");
         success(&remote);
         assert!(
             remote.stdout.is_empty(),
@@ -535,10 +536,10 @@ fn ssh_literal_filenames_and_regex_selections_preserve_semantics() {
         "wrong local glob match",
     )
     .unwrap();
-    let operand = format!("\"{name}\"");
+    let operand = format!("$pwd / \"{name}\"");
     success(&fixture.run(&format!("{operand} -> remote::~/\n")));
     success(&fixture.remote("printf wrong > '/root/a1 '\"'\"' ;$(mkdir injected).txt'"));
-    success(&fixture.run(&format!("\"remote::~/{name}\" -> literal.txt\n")));
+    success(&fixture.run(&format!("remote::\"~/{name}\" -> literal.txt\n")));
     assert_eq!(
         fs::read_to_string(fixture.workspace().join("literal.txt")).unwrap(),
         "literal brackets and shell syntax"

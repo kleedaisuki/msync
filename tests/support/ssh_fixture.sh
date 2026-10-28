@@ -35,7 +35,8 @@ install_binary() {
     done < <(ldd "$path" | awk '$2 == "=>" && $3 ~ /^\// {print $3} $1 ~ /^\// {print $1}')
 }
 for path in /bin/bash /bin/sh /bin/cat /bin/cp /bin/chmod /bin/mkdir /bin/rm /bin/mv /bin/ln \
-    /usr/bin/find /usr/bin/realpath /usr/bin/dirname /usr/bin/basename /usr/bin/mktemp /usr/bin/stat; do
+    /usr/bin/find /usr/bin/realpath /usr/bin/dirname /usr/bin/basename /usr/bin/mktemp /usr/bin/stat \
+    /usr/bin/flock; do
     install_binary "$path"
 done
 if [ "$python" = 1 ]; then
