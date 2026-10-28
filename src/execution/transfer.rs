@@ -32,34 +32,16 @@ impl Engine {
         transfer: &Transfer,
         transaction: TransactionId,
     ) -> Result<()> {
-        let mut trace = crate::telemetry::span("copy");
-        trace.expect_completion();
-        trace.attribute("copy.kind", "immutable-assignment");
-        trace.attribute("phase", "snapshot");
-        // This phase creates a version; only the transaction publisher can
-        // report committed bytes after all receipts have settled.
-        trace.attribute("publication.policy", "transaction-checkpoint");
-        trace.attribute(
-            "destination.mode",
-            match transfer.mode {
-                DestinationMode::Exact => "exact",
-                DestinationMode::Container => "container",
-                DestinationMode::ReplaceTree => "replace-tree",
-            },
+        let mut trace = self.assignment_trace(
+            instruction,
+            &transfer.source,
+            &transfer.destination,
+            transfer.mode,
+            transaction,
         );
         if let Some(pattern) = &transfer.pattern {
             trace.attribute_lazy("selector.pattern", || pattern.clone());
         }
-        trace.metric("instruction.id", instruction.0 as u64);
-        trace.metric("transaction.id", transaction.0 as u64);
-        trace.attribute_lazy("manager.root", || {
-            self.manager.artifact_root().display().to_string()
-        });
-        trace.attribute("destination.backend", "local");
-        trace.attribute_lazy("destination.path", || {
-            transfer.destination.display().to_string()
-        });
-        source_metadata(&mut trace, &transfer.source);
         let files = self.report.assigned_files;
         let bytes = self.report.assigned_bytes;
         let result = self.transfer_staged(instruction, transfer, transaction, &mut trace);
@@ -85,6 +67,40 @@ impl Engine {
             }
         }
         result
+    }
+
+    pub(super) fn assignment_trace(
+        &self,
+        instruction: InstructionId,
+        source: &Source,
+        destination: &Path,
+        mode: DestinationMode,
+        transaction: TransactionId,
+    ) -> SpanGuard {
+        let mut trace = crate::telemetry::span("copy");
+        trace.expect_completion();
+        trace.attribute("copy.kind", "immutable-assignment");
+        trace.attribute("phase", "snapshot");
+        // This phase creates a version; only the transaction publisher can
+        // report committed bytes after all receipts have settled.
+        trace.attribute("publication.policy", "transaction-checkpoint");
+        trace.attribute(
+            "destination.mode",
+            match mode {
+                DestinationMode::Exact => "exact",
+                DestinationMode::Container => "container",
+                DestinationMode::ReplaceTree => "replace-tree",
+            },
+        );
+        trace.metric("instruction.id", instruction.0 as u64);
+        trace.metric("transaction.id", transaction.0 as u64);
+        trace.attribute_lazy("manager.root", || {
+            self.manager.artifact_root().display().to_string()
+        });
+        trace.attribute("destination.backend", "local");
+        trace.attribute_lazy("destination.path", || destination.display().to_string());
+        source_metadata(&mut trace, source);
+        trace
     }
 
     fn transfer_staged(

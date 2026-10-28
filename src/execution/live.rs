@@ -1545,12 +1545,15 @@ impl RuntimeSession {
         {
             return Ok(());
         }
-        let eligible = matches!(source, Input::Literal(_))
-            || matches!(source, Input::File { pattern: None, .. })
-                && matches!(
-                    facts.source,
-                    crate::plan::FileClass::Regular | crate::plan::FileClass::Stream
-                );
+        // Shape is not a local immutable-reader capability. Remote regular
+        // sources must first pass through the import adapter, not this lease.
+        let local_file = matches!(source,
+            Input::File { location, pattern: None }
+            if matches!(location.backend, Backend::Local | Backend::Env | Backend::Path)
+                && facts.source == crate::plan::FileClass::Regular
+        );
+        let captured_flow = physical.is_some_and(|spec| spec.managed.is_some());
+        let eligible = matches!(source, Input::Literal(_)) || local_file || captured_flow;
         if !eligible || physical.is_some_and(|spec| spec.managed.is_none()) {
             return Ok(());
         }
@@ -1626,6 +1629,7 @@ impl RuntimeSession {
         &mut self,
         work: &WorkNode,
         snapshot: &Snapshot,
+        source: &Source,
         span: Span,
     ) -> Result<()> {
         let slot = self
@@ -1633,13 +1637,63 @@ impl RuntimeSession {
             .get(&work.key)
             .expect("namespace publication retains its actual permit");
         let (permit, target) = (slot.permit.clone(), slot.target.clone());
+        let mut trace = self.engine_mut()?.assignment_trace(
+            work.key.instruction,
+            source,
+            &target,
+            DestinationMode::Exact,
+            work.transaction,
+        );
+        trace.attribute("phase", "publication");
+        trace.attribute("publication.policy", "namespace-receipt");
+        let result = self.publish_namespace_inner(work, snapshot, span, permit, &target);
+        trace.finish_result(&result);
+        match &result {
+            Ok(()) => {
+                trace.attribute("phase", "committed");
+                trace.metric(
+                    "files.assigned",
+                    snapshot
+                        .entries()
+                        .values()
+                        .filter(|entry| matches!(entry, Entry::File { .. }))
+                        .count() as u64,
+                );
+                trace.metric(
+                    "bytes.assigned",
+                    snapshot
+                        .entries()
+                        .values()
+                        .filter_map(|entry| match entry {
+                            Entry::File { artifact, .. } => Some(artifact.len()),
+                            _ => None,
+                        })
+                        .sum(),
+                );
+            }
+            Err(failure) => {
+                trace.attribute("phase", "failed");
+                trace.record_error("copy.publish", failure);
+            }
+        }
+        result
+    }
+
+    fn publish_namespace_inner(
+        &mut self,
+        work: &WorkNode,
+        snapshot: &Snapshot,
+        span: Span,
+        permit: NamespaceMergePermit,
+        target: &Path,
+    ) -> Result<()> {
         let receipt = self
             .engine_mut()?
             .manager
             .publish_merged_file(
                 work.transaction,
                 &permit,
-                &target,
+                target,
                 snapshot,
                 NamespacePublicationOrder(work.order.0),
             )
@@ -2382,14 +2436,15 @@ impl RuntimeSession {
             (_, Output::File { location, mode }) => {
                 let work = self.work()?;
                 if self.namespaces.contains_key(&work.key) {
-                    let snapshot = match file_source(source, span)? {
+                    let source = file_source(source, span)?;
+                    let snapshot = match &source {
                         Source::Literal(bytes) => {
                             self.capture_bytes(bytes.as_bytes(), span).await?
                         }
                         Source::Local(path) => self
                             .engine_mut()?
                             .manager
-                            .read_committed_file(&path)
+                            .read_committed_file(path)
                             .map_err(|cause| {
                                 ExecutionError::caused(
                                     "cannot pin the committed namespace source",
@@ -2405,7 +2460,7 @@ impl RuntimeSession {
                         }
                     };
                     self.event(Event::Node(work.key, NodeEvent::ServiceReady))?;
-                    return self.publish_namespace(&work, &snapshot, span);
+                    return self.publish_namespace(&work, &snapshot, &source, span);
                 }
                 if let Some(id) = current {
                     self.quiesce(id).await?;
@@ -3135,7 +3190,16 @@ impl RuntimeSession {
                 continue;
             }
             if self.namespaces.contains_key(&assignment.work.key) {
-                self.publish_namespace(&assignment.work, &assignment.source, assignment.span)?;
+                let source = Source::Captured {
+                    snapshot: assignment.source.clone(),
+                    basename: assignment.basename.clone(),
+                };
+                self.publish_namespace(
+                    &assignment.work,
+                    &assignment.source,
+                    &source,
+                    assignment.span,
+                )?;
                 continue;
             }
             self.engine_mut()?

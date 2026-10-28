@@ -631,6 +631,14 @@ directory-mtime observers.
 
 Scope is implicit, exact, missing local file destinations in an already existing
 parent, for literal/ordinary finite sources or physical EOF file publication.
+`FileClass::Regular` is not itself a local immutable-reader capability. A finite
+HTTP/WSL/SSH source still requires its import adapter; it must not enter the
+local-file namespace source path solely because its eventual payload is finite.
+Only an already supported literal/local source or actual physical-flow capture
+uses that fast path. Namespace publication retains a logical `copy` span with
+source/destination metadata, `publication.policy=namespace-receipt`, and assigned
+file/byte metrics. The nested transaction publisher still owns committed-byte
+metrics; an omitted span or fabricated staging copy is not an optimization.
 Named transactions, selectors, directory replacements, new-parent creation and
 program-view exports remain on their existing strict contracts. A barrier closes
 the active Manager merge epoch; a blocked REPL barrier must offer actionable

@@ -765,6 +765,24 @@ fn trace_file_survives_exit_and_connects_all_pipeline_phases_without_payload_cap
         .collect::<Vec<_>>();
     assert_eq!(root.len(), 1, "one end-to-end session must have one root");
     assert_eq!(string_field(root[0], "name"), "session");
+    let copy = spans
+        .iter()
+        .find(|line| string_field(line, "name") == "copy")
+        .unwrap();
+    assert!(
+        copy.contains("\"publication.policy\":\"namespace-receipt\""),
+        "{copy}"
+    );
+    assert!(copy.contains("\"phase\":\"committed\""), "{copy}");
+    assert!(
+        copy.contains("private-source.txt") && copy.contains("private-destination.txt"),
+        "{copy}"
+    );
+    assert!(copy.contains("\"files.assigned\":1"), "{copy}");
+    assert!(
+        !copy.contains("\"bytes.committed\""),
+        "the transaction publisher owns committed-byte metrics: {copy}"
+    );
     assert!(!trace.contains("private payload"));
     assert!(!trace.contains("MSYNC_TEST_TELEMETRY_SECRET"));
     assert!(!trace.contains("sensitive env value must not leak"));
@@ -799,6 +817,7 @@ fn http_fetch_journey_uses_real_local_server_and_preserves_body() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     listener.set_nonblocking(true).unwrap();
+    let (stop, stopped) = std::sync::mpsc::channel();
     let server = thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -827,6 +846,9 @@ fn http_fetch_journey_uses_real_local_server_and_preserves_body() {
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stopped.try_recv().is_ok() {
+                        return;
+                    }
                     assert!(Instant::now() < deadline, "HTTP client never connected");
                     thread::sleep(Duration::from_millis(10));
                 }
@@ -839,8 +861,10 @@ fn http_fetch_journey_uses_real_local_server_and_preserves_body() {
         &["run", "-"],
         &format!("web => http://{address}/base/\nweb::~/help.txt -> help.txt\n"),
     );
-    server.join().unwrap();
+    let _ = stop.send(());
+    let served = server.join();
     assert_success(&result);
+    served.unwrap();
     assert_eq!(
         fs::read(directory.path().join("help.txt")).unwrap(),
         b"hello via HTTP"
