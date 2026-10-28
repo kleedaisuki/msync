@@ -1,5 +1,32 @@
 # v0.4 structured compiler and execution architecture
 
+## Current integration checkpoint (2026-10-28)
+
+The development CLI defaults to structured v0.4. Typed lexical macros,
+transactions/checkpoints/origin undo, real native process views, persistent
+program ports, physical flows and submission-owned Start/Publish/RegionCommit
+gates are integrated. The earlier dated foundation tables below retain their
+historical counts; they are not the current remaining-work list.
+
+The complete Windows/Linux compatibility matrix and actual native gates passed
+at [`1121571`](https://github.com/kleedaisuki/msync/actions/runs/40636799976), then
+again with byte-verified file refresh at
+[`0b51616`](https://github.com/kleedaisuki/msync/actions/runs/40638558941).
+The later proof-sharing revision passed both ordinary matrices but exposed a
+Windows cancellation/output-channel race in its native gate; that has a separate
+provider repair in progress, not a reason to suppress the native check.
+
+Following the user's parallel-performance authorization, committed components
+are being measured and optimized independently. Store candidate sharing,
+byte-verified artifact reuse and immutable graph-proof sharing have focused
+measurements in [performance-v4.md](performance-v4.md). Final performance/release
+acceptance remains open; no debug correctness runtime is a latency benchmark.
+The single-input opaque-program/external-FIFO bootstrap boundary described at
+the end of this note is still an explicit capability limitation, not implemented
+support inferred from the split-input native fixture.
+
+## Original design and historical evidence
+
 Status: implementation-facing design, not a claim that the features below are
 already implemented. This note integrates the supplied v0.4 example with the
 existing v0.3.1 public contracts. See [implementation.md](implementation.md),
@@ -698,3 +725,36 @@ the original host file. No pre-import host type probe or unchecked lexical
 collapse substitutes for the selected transaction view. The current Windows
 signed-driver run remains a separate acceptance gate. Performance acceptance
 has not started.
+
+### Pending portal intent: single-input opaque spawn and external FIFO
+
+This is a design investigation, not implemented support. A single batch with
+an opaque spawn followed by an external FIFO-to-stdin connection currently
+marks that FIFO's type host-unstable before the provider has supplied effects.
+The deferred directory envelope is then captured as snapshot data and fails on
+the live FIFO. Declaring the program in an earlier submission avoids that
+bootstrap problem because its actual mediated footprint is already available.
+
+Do not infer safety from cwd or argv strings. Managed roots also include typed
+argv envelopes and other declared finite resources. Preparing a frozen view
+before preceding literal assignments would be wrong too: the program must see
+the version after those logically prior assignments.
+
+A bounded possible extension is a pending physical-portal intent: hold a native
+metadata-only FIFO generation observation without declaring a final Stream type
+or enrolling it as snapshot payload. Retain every cwd/argv/finite structural
+root. At the actual provider preparation/admission boundary, before launching
+payload, validate the complete writable filesystem footprint is disjoint and
+the held FIFO still matches; only then refine future endpoint facts and physical
+co-start gates. An earlier explicit filesystem write overlapping that endpoint
+cannot use this shortcut. A cwd, argv or structural root covering the FIFO must
+retain the existing snapshot-capability rejection, not silently lose coverage.
+
+Filesystem-shape stability is not byte-IO purity. A focused WSL experiment in a
+private mount namespace remounted the fixture directory read-only and still
+transferred `byte-through-ro` through its FIFO successfully. Therefore a readonly
+host mount alone cannot prove that a native process cannot consume or write the
+external channel. The extension must explicitly preserve the external-portal
+semantics or require an enforced channel-access policy; it must not invent an
+absence of stream-content effects from a filesystem write bound. No persistent
+mount or host configuration changed during this probe.
