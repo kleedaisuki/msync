@@ -161,24 +161,6 @@ fn local_volume_device(path: &str) -> bool {
     digits > 0 && tail.as_bytes().get(digits) == Some(&b'\\')
 }
 
-#[cfg(test)]
-mod tests {
-    use super::local_volume_device;
-
-    #[test]
-    fn local_volume_identity_rejects_redirectors_and_lookalikes() {
-        assert!(local_volume_device(r"\Device\HarddiskVolume42\work\target"));
-        assert!(!local_volume_device(r"\Device\Mup\server\share\target"));
-        assert!(!local_volume_device(
-            r"\Device\LanmanRedirector\server\share"
-        ));
-        assert!(!local_volume_device(
-            r"\Device\HarddiskVolumeShadowCopy1\target"
-        ));
-        assert!(!local_volume_device(r"\Device\HarddiskVolume1fake\target"));
-    }
-}
-
 const WSL_NATIVE_FILE: &str = r#"
 set -eu
 p=$1
@@ -197,3 +179,21 @@ else exit 1
 fi
 printf '%s\0%s\0%s\0' "$p" "$f" "$k"
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::local_volume_device;
+
+    #[test]
+    fn local_volume_identity_rejects_redirectors_and_lookalikes() {
+        assert!(local_volume_device(r"\Device\HarddiskVolume42\work\target"));
+        assert!(!local_volume_device(r"\Device\Mup\server\share\target"));
+        assert!(!local_volume_device(
+            r"\Device\LanmanRedirector\server\share"
+        ));
+        assert!(!local_volume_device(
+            r"\Device\HarddiskVolumeShadowCopy1\target"
+        ));
+        assert!(!local_volume_device(r"\Device\HarddiskVolume1fake\target"));
+    }
+}
