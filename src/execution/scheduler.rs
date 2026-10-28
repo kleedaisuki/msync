@@ -15,6 +15,45 @@ pub(super) struct Admission {
     streams: Arc<Semaphore>,
     buffers: Arc<Semaphore>,
     buffer_bytes: usize,
+    capacity: Demand,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Demand {
+    pub programs: usize,
+    pub streams: usize,
+    pub buffers: usize,
+}
+
+impl Demand {
+    pub const PROGRAM: Self = Self {
+        programs: 1,
+        streams: 0,
+        buffers: 6,
+    };
+
+    pub fn flows(count: usize) -> Self {
+        Self {
+            programs: 0,
+            streams: count,
+            buffers: count.saturating_mul(2),
+        }
+    }
+
+    pub fn with_programs(self, count: usize) -> Self {
+        Self {
+            programs: self.programs.saturating_add(count),
+            streams: self.streams,
+            buffers: self.buffers.saturating_add(count.saturating_mul(6)),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Availability {
+    Ready,
+    Busy,
+    Impossible,
 }
 
 pub(super) struct Lease {
@@ -80,7 +119,42 @@ impl Admission {
             streams: Arc::new(Semaphore::new(limits.max_streams)),
             buffers: Arc::new(Semaphore::new(units)),
             buffer_bytes: limits.buffer_bytes,
+            capacity: Demand {
+                programs: limits.jobs,
+                streams: limits.max_streams,
+                buffers: units,
+            },
         })
+    }
+
+    pub fn availability(&self, demand: Demand) -> Availability {
+        if !fits(demand, self.capacity) {
+            return Availability::Impossible;
+        }
+        if fits(demand, self.available()) {
+            Availability::Ready
+        } else {
+            Availability::Busy
+        }
+    }
+
+    pub fn available(&self) -> Demand {
+        Demand {
+            programs: self.programs.available_permits(),
+            streams: self.streams.available_permits(),
+            buffers: self.buffers.available_permits(),
+        }
+    }
+
+    pub fn feasible(&self, demand: Demand, span: Span) -> Result<()> {
+        if fits(demand, self.capacity) {
+            return Ok(());
+        }
+        Err(ExecutionError::new(format!(
+            "this admission requires {} program slots, {} stream slots and {} payload buffers; configured capacity is {}, {} and {}",
+            demand.programs, demand.streams, demand.buffers,
+            self.capacity.programs, self.capacity.streams, self.capacity.buffers,
+        ), span).help("Increase --jobs/--max-streams/--memory-limit or reduce --buffer-size. An inseparable co-start group must fit together; independent operations wait for occupied capacity."))
     }
 
     pub fn program(&self, span: Span) -> Result<Lease> {
@@ -127,5 +201,44 @@ impl Admission {
         }
         trace.finish_result(&result);
         result
+    }
+}
+
+fn fits(demand: Demand, capacity: Demand) -> bool {
+    demand.programs <= capacity.programs
+        && demand.streams <= capacity.streams
+        && demand.buffers <= capacity.buffers
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn occupied_capacity_is_busy_not_an_impossible_request() {
+        let limits = ResourceLimits {
+            jobs: 1,
+            max_streams: 1,
+            buffer_bytes: 1,
+            memory_bytes: 2,
+        };
+        let admission = Admission::new(&limits).unwrap();
+        assert_eq!(
+            admission.availability(Demand::flows(1)),
+            Availability::Ready
+        );
+        let lease = admission.flow(Span::default()).unwrap();
+        let occupied = admission.available();
+        assert_eq!(admission.availability(Demand::flows(1)), Availability::Busy);
+        assert_eq!(
+            admission.availability(Demand::flows(2)),
+            Availability::Impossible
+        );
+        drop(lease);
+        assert_ne!(admission.available(), occupied);
+        assert_eq!(
+            admission.availability(Demand::flows(1)),
+            Availability::Ready
+        );
     }
 }

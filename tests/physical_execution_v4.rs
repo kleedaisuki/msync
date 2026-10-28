@@ -238,6 +238,138 @@ async fn closing_one_flow_does_not_stop_an_independent_flow() {
     runtime.shutdown().await.unwrap();
 }
 
+#[tokio::test]
+async fn independent_tcp_inputs_queue_at_the_concurrent_capacity_limit() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    for low_memory in [false, true] {
+        let root = workspace();
+        let work = root.path().join("work");
+        fs::create_dir(&work).unwrap();
+        fs::create_dir(work.join("out1")).unwrap();
+        fs::create_dir(work.join("out2")).unwrap();
+        let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut compiler = Session::new();
+        let program = compile(
+            &mut compiler,
+            &work,
+            &format!(
+                "left => tcp://{}\nright => tcp://{}\nleft::/ -> out1/result\nright::/ -> out2/result\n",
+                first.local_addr().unwrap(),
+                second.local_addr().unwrap(),
+            ),
+        );
+        let first_closed = Arc::new(AtomicBool::new(false));
+        let observed = first_closed.clone();
+        let first_server = tokio::spawn(async move {
+            let mut peer = accept(&first).await;
+            peer.write_all(b"one").await.unwrap();
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            first_closed.store(true, Ordering::Release);
+            peer.shutdown().await.unwrap();
+        });
+        let second_server = tokio::spawn(async move {
+            let mut peer = accept(&second).await;
+            assert!(
+                observed.load(Ordering::Acquire),
+                "a second flow opened before occupied capacity was released"
+            );
+            peer.write_all(b"two").await.unwrap();
+            peer.shutdown().await.unwrap();
+        });
+        let mut options = Options::new(root.path().join("scratch"));
+        options.limits.max_streams = if low_memory { 2 } else { 1 };
+        if low_memory {
+            options.limits.memory_bytes = options.limits.buffer_bytes * 2;
+        }
+        let mut runtime = RuntimeSession::new(&options).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(5), runtime.execute(&program)).await;
+        if !matches!(result, Ok(Ok(_))) {
+            first_server.abort();
+            second_server.abort();
+            let cleanup = runtime.shutdown().await;
+            panic!(
+                "queued batch failed (low_memory={low_memory}): {result:?}; cleanup={cleanup:?}"
+            );
+        }
+        first_server.await.unwrap();
+        second_server.await.unwrap();
+        assert_eq!(fs::read(work.join("out1/result")).unwrap(), b"one");
+        assert_eq!(fs::read(work.join("out2/result")).unwrap(), b"two");
+        assert!(!runtime.has_work());
+        runtime.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn interactive_capacity_refusal_preserves_the_old_flow_and_can_be_retried() {
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut compiler = Session::new();
+    let initial = compile(
+        &mut compiler,
+        &work,
+        &format!(
+            "left => tcp://{}\nright => tcp://{}\nleft::/ -> output\n",
+            first.local_addr().unwrap(),
+            second.local_addr().unwrap(),
+        ),
+    );
+    let mut options = Options::new(root.path().join("scratch"));
+    options.limits.max_streams = 1;
+    let mut runtime = RuntimeSession::new(&options).unwrap();
+    runtime.submit(&initial).await.unwrap();
+    let mut sender = accept(&first).await;
+    let next = compile(&mut compiler, &work, "\"two\" -> right::/\n");
+    let error = tokio::time::timeout(Duration::from_secs(2), runtime.submit(&next))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        error
+            .report
+            .diagnostic
+            .message
+            .contains("capacity is occupied"),
+        "{error}"
+    );
+    assert!(
+        error
+            .report
+            .help
+            .iter()
+            .any(|help| help.contains("/wait") && help.contains("/stop")),
+        "{error:?}"
+    );
+    assert!(runtime.has_work());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), second.accept())
+            .await
+            .is_err()
+    );
+    sender.write_all(b"one").await.unwrap();
+    sender.shutdown().await.unwrap();
+    drop(sender);
+    tokio::time::timeout(Duration::from_secs(5), runtime.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read(work.join("output")).unwrap(), b"one");
+    runtime.submit(&next).await.unwrap();
+    let mut receiver = accept(&second).await;
+    let mut bytes = Vec::new();
+    receiver.read_to_end(&mut bytes).await.unwrap();
+    assert_eq!(bytes, b"two");
+    runtime.wait().await.unwrap();
+    runtime.shutdown().await.unwrap();
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn fifo_writer_and_reader_co_start_without_waiting_for_each_other() {
@@ -640,6 +772,45 @@ async fn a_reader_first_fifo_pipeline_can_feed_a_native_program_stdin() {
             .unwrap()
             .success()
     );
+    let mut limited_options = Options::new(root.path().join("limited-scratch"));
+    limited_options.limits.max_streams = 2;
+    limited_options.limits.memory_bytes = limited_options.limits.buffer_bytes * 8;
+    let mut limited = RuntimeSession::new(&limited_options).unwrap();
+    limited.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let mut limited_compiler = Session::new();
+    limited
+        .submit(&compile(
+            &mut limited_compiler,
+            &work,
+            "child => $path::cat()\n",
+        ))
+        .await
+        .unwrap();
+    let limited_program = compile(
+        &mut limited_compiler,
+        &work,
+        &format!(
+            "\"must not publish\" -> earlier\n$local::\"{}\" -> child::stdin\n\"reader-first bytes\" -> $local::\"{}\"\n",
+            fifo.display(),
+            fifo.display(),
+        ),
+    );
+    let error = limited.execute(&limited_program).await.unwrap_err();
+    assert!(
+        error
+            .report
+            .diagnostic
+            .message
+            .contains("retain 1 native program spaces"),
+        "{error}"
+    );
+    assert!(!work.join("earlier").exists());
+    assert_eq!(
+        limited.live_processes().len(),
+        1,
+        "the refused input must not discard its earlier live program"
+    );
+    limited.shutdown().await.unwrap();
     let mut compiler = Session::new();
     let mut session = runtime(root.path());
     session.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();

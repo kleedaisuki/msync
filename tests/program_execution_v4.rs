@@ -390,6 +390,33 @@ async fn the_requested_checkpoint_and_program_port_lifecycle_runs_end_to_end() {
 
 #[tokio::test]
 #[ignore = "requires a provisioned native process-resource backend"]
+async fn replayed_scalars_finish_each_implicit_statement_before_staging_its_sibling() {
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    let mut compiler = Session::new();
+    let mut runtime = runtime(root.path());
+    runtime
+        .execute(&compile(&mut compiler, &work, &command("child", "verify")))
+        .await
+        .unwrap();
+    let copies =
+        "child::exit_code -> first\nchild::exit_code -> second\nchild::exit_code -> third\n";
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        runtime.execute(&compile(&mut compiler, &work, copies)),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    for name in ["first", "second", "third"] {
+        assert_eq!(fs::read(work.join(name)).unwrap(), b"0\n");
+    }
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a provisioned native process-resource backend"]
 async fn large_stderr_and_stdin_co_start_and_nonzero_exit_remains_replayable_data() {
     let root = workspace();
     let work = root.path().join("work");

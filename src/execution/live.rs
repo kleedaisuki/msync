@@ -36,7 +36,7 @@ use super::events::{
 };
 use super::physical;
 use super::program::{self, Program, Reader, Writer};
-use super::scheduler::{Admission, Lease};
+use super::scheduler::{Admission, Availability, Demand, Lease};
 use super::{Engine, ExecutionReport, Options};
 
 #[derive(Clone)]
@@ -161,7 +161,7 @@ pub struct RuntimeSession {
     pending_planning: Option<crate::hir::graph::PlanningContext>,
     planning: crate::hir::graph::PlanningContext,
     native_fifo_pins: BTreeMap<hir::effects::EndpointKey, crate::streams::FifoIdentity>,
-    fifo_admission: BTreeMap<InstructionId, Lease>,
+    flow_reservations: BTreeMap<InstructionId, Lease>,
     rejected_before_start: bool,
     sparse_roots: BTreeSet<PathBuf>,
     admission: Admission,
@@ -229,7 +229,7 @@ impl RuntimeSession {
             pending_planning: None,
             planning: crate::hir::graph::PlanningContext::default(),
             native_fifo_pins: BTreeMap::new(),
-            fifo_admission: BTreeMap::new(),
+            flow_reservations: BTreeMap::new(),
             rejected_before_start: false,
             sparse_roots: BTreeSet::new(),
             admission: Admission::new(&options.limits)?,
@@ -492,6 +492,7 @@ impl RuntimeSession {
             self.preflight_fifo_input(program)?;
         }
         self.preflight_fifo_resources(program)?;
+        self.preflight_flow_resources(&program.body)?;
         let domain = live_domain(program, &self.options, &self.planning)?;
         self.enroll_physical_namespaces(program)?;
         self.enroll(&domain)?;
@@ -532,7 +533,7 @@ impl RuntimeSession {
         self.remember_plan(self.plan.as_ref().expect("submission bound").clone());
         self.collect_plans();
         let result = self.region(&program.body, None, program).await;
-        self.fifo_admission.clear();
+        self.flow_reservations.clear();
         let result = match result {
             Ok(()) if complete => self.wait().await,
             other => other,
@@ -642,7 +643,7 @@ impl RuntimeSession {
         }
         self.owner_tokens.clear();
         self.prepared_readers.clear();
-        self.fifo_admission.clear();
+        self.flow_reservations.clear();
         self.cancel = self.options.cancel.child_token();
         if !joined
             || failure.cause.is_some()
@@ -706,11 +707,15 @@ impl RuntimeSession {
     }
 
     fn preflight_fifo_resources(&self, program: &hir::Program) -> Result<()> {
-        let limits = &self.options.limits;
         for group in hir::graph::physical_groups(&self.planning.physical_rendezvous) {
-            if group.len() <= limits.max_streams
-                && group.len() <= limits.memory_bytes / limits.buffer_bytes / 2
-            {
+            let mut processes = BTreeSet::new();
+            fifo_consumers(&program.body, &group, &mut processes);
+            let processes = processes
+                .iter()
+                .filter(|process| self.programs.get(process).is_none_or(Program::is_running))
+                .count();
+            let demand = Demand::flows(group.len()).with_programs(processes);
+            if self.admission.availability(demand) != Availability::Impossible {
                 continue;
             }
             let span = program
@@ -719,8 +724,8 @@ impl RuntimeSession {
                 .iter()
                 .find(|node| group.contains(&node.id))
                 .map_or(Span::default(), |node| node.span);
-            return Err(ExecutionError::new(format!("this FIFO cohort must co-start {} flows with two buffers each", group.len()), span)
-                .help("No payloads were captured and no flow started. Increase --max-streams/--memory-limit, reduce --buffer-size, or separate independent channels."));
+            return Err(ExecutionError::new(format!("this FIFO cohort must co-start {} flows with two buffers each and retain {processes} native program spaces", group.len()), span)
+                .help("No payloads were captured and no flow started. Increase --jobs/--max-streams/--memory-limit, reduce --buffer-size, or separate independent channels."));
         }
         Ok(())
     }
@@ -757,27 +762,112 @@ impl RuntimeSession {
         Ok(())
     }
 
+    fn preflight_flow_resources(&self, region: &Region) -> Result<()> {
+        for node in &region.instructions {
+            if let InstructionKind::Transaction { body, .. } = &node.kind {
+                self.preflight_flow_resources(body)?;
+            }
+            let facts = self.planning.operation_facts.get(&node.id);
+            let stream = facts.is_some_and(|facts| {
+                facts.source == crate::plan::FileClass::Stream
+                    || facts.destination == crate::plan::FileClass::Stream
+            });
+            if !stream && !port_flow(node) {
+                continue;
+            }
+            let programs = usize::from(matches!(
+                node.kind,
+                InstructionKind::Transfer {
+                    destination: Output::Stdin(_),
+                    ..
+                }
+            ));
+            self.admission
+                .feasible(Demand::flows(1).with_programs(programs), node.span)?;
+        }
+        Ok(())
+    }
+
     fn flow_lease(&mut self, instruction: InstructionId, span: Span) -> Result<Lease> {
-        if let Some(lease) = self.fifo_admission.remove(&instruction) {
+        if let Some(lease) = self.flow_reservations.remove(&instruction) {
             return Ok(lease);
         }
-        let group = hir::graph::physical_groups(&self.work()?.plan.context().physical_rendezvous)
+        self.reserve_flows(instruction, span)?;
+        Ok(self
+            .flow_reservations
+            .remove(&instruction)
+            .expect("reservation contains its admitted member"))
+    }
+
+    fn flow_group(&self, instruction: InstructionId) -> Vec<InstructionId> {
+        hir::graph::physical_groups(&self.planning.physical_rendezvous)
             .into_iter()
-            .find(|group| group.contains(&instruction));
-        let Some(group) = group else {
-            return self.admission.flow(span);
-        };
+            .find(|group| group.contains(&instruction))
+            .unwrap_or_else(|| vec![instruction])
+    }
+
+    fn reserve_flows(
+        &mut self,
+        instruction: InstructionId,
+        span: Span,
+    ) -> Result<Vec<InstructionId>> {
+        if self.flow_reservations.contains_key(&instruction) {
+            return Ok(Vec::new());
+        }
+        let group = self.flow_group(instruction);
         // Reserve the entire connected cohort before its first endpoint can
         // open. Failure drops partial reservations, never half-starts a pipe.
         let leases = group
-            .into_iter()
+            .iter()
+            .copied()
             .map(|member| self.admission.flow(span).map(|lease| (member, lease)))
             .collect::<Result<BTreeMap<_, _>>>()?;
-        self.fifo_admission.extend(leases);
-        Ok(self
-            .fifo_admission
-            .remove(&instruction)
-            .expect("cohort contains its admitted member"))
+        self.flow_reservations.extend(leases);
+        Ok(group)
+    }
+
+    fn demand(&self, node: &Instruction, work: &WorkNode) -> Demand {
+        if matches!(node.kind, InstructionKind::Spawn { .. }) {
+            return Demand::PROGRAM;
+        }
+        if self.flow_reservations.contains_key(&node.id) {
+            return Demand::default();
+        }
+        let flow = work.physical.is_some() || port_flow(node);
+        if flow {
+            Demand::flows(self.flow_group(node.id).len())
+        } else {
+            Demand::default()
+        }
+    }
+
+    fn owner_capacity_blocked(&self, node: &Instruction, work: &WorkNode, demand: Demand) -> bool {
+        if !matches!(
+            node.kind,
+            InstructionKind::Transfer {
+                destination: Output::Stdin(_),
+                ..
+            }
+        ) {
+            return false;
+        }
+        let programs = self
+            .programs
+            .values()
+            .filter(|program| program.transaction == work.transaction && program.is_running())
+            .count();
+        let streams = self
+            .flows
+            .iter()
+            .filter(|flow| {
+                flow.transaction == work.transaction
+                    && !flow.ready.load(Ordering::Acquire)
+                    && !flow.handle.is_finished()
+            })
+            .count();
+        let retained =
+            Demand::flows(streams.saturating_add(demand.streams)).with_programs(programs);
+        self.admission.availability(retained) == Availability::Impossible
     }
 
     fn preflight(&self, program: &hir::Program) -> Result<()> {
@@ -1879,6 +1969,7 @@ impl RuntimeSession {
     ) -> Result<()> {
         let mut pending = region.instructions.iter().collect::<Vec<_>>();
         while !pending.is_empty() {
+            let available = self.admission.available();
             if self.cancel.is_cancelled() {
                 return Err(ExecutionError::cancelled(
                     "execution cancelled",
@@ -1886,12 +1977,43 @@ impl RuntimeSession {
                 ));
             }
             let mut selected = None;
+            let mut capacity_blocked = None;
+            let mut owner_blocked = None;
             for (index, instruction) in pending.iter().enumerate() {
                 if !self.ports_available(instruction) {
                     continue;
                 }
                 let (mut work, candidate) = self.prepare_work(instruction, current)?;
-                if self.may_pin_input(instruction, &work)? {
+                // Observe failed gates before considering capacity; a busy
+                // resource must not obscure the original producer failure.
+                let start_ready = self.gate(&work, Phase::Start)?;
+                let pin_input = self.may_pin_input(instruction, &work)?;
+                if !start_ready && !pin_input {
+                    self.discard_candidate(work.key, candidate, instruction.span)?;
+                    continue;
+                }
+                let demand = self.demand(instruction, &work);
+                match self.admission.availability(demand) {
+                    Availability::Ready => {}
+                    Availability::Impossible => {
+                        self.admission.feasible(demand, instruction.span)?
+                    }
+                    Availability::Busy => {
+                        let site = (instruction.span, work.plan.origin(instruction.id).cloned());
+                        capacity_blocked.get_or_insert_with(|| site.clone());
+                        if self.owner_capacity_blocked(instruction, &work, demand) {
+                            owner_blocked.get_or_insert(site);
+                        }
+                        self.discard_candidate(work.key, candidate, instruction.span)?;
+                        continue;
+                    }
+                }
+                let reserved = if demand.streams > 0 {
+                    self.reserve_flows(instruction.id, instruction.span)?
+                } else {
+                    Vec::new()
+                };
+                if pin_input {
                     self.plan = Some(work.plan.clone());
                     self.active_work = Some(work.clone());
                     let InstructionKind::Transfer { source, .. } = &instruction.kind else {
@@ -1907,25 +2029,25 @@ impl RuntimeSession {
                     selected = Some((index, work, candidate));
                     break;
                 }
-                self.release_namespace(work.key)?;
-                if let Some((_, prepared)) = candidate {
-                    prepared.discard().map_err(|cause| {
-                        ExecutionError::caused(
-                            "cannot release an unadmitted shared-view lease",
-                            instruction.span,
-                            cause,
-                        )
-                    })?;
+                for member in reserved {
+                    self.flow_reservations.remove(&member);
                 }
+                self.discard_candidate(work.key, candidate, instruction.span)?;
             }
             let Some((index, work, candidate)) = selected else {
                 let before = self.progress;
                 self.reap_physical().await?;
-                if before != self.progress {
+                // A task can release its lease before its owner can import or
+                // commit. Capacity progress is not a logical-completion event.
+                if before != self.progress || available != self.admission.available() {
                     continue;
                 }
                 if !self.complete_submission && current.is_none() {
                     self.rejected_before_start = true;
+                    if let Some((span, origin)) = capacity_blocked {
+                        return Err(ExecutionError::new("concurrent resource capacity is occupied; no blocked operation started", span)
+                            .help("Use /wait to finish an existing finite job, /stop to release an open producer, or increase the concurrent resource limits before retrying.").with_origin(origin.as_ref()));
+                    }
                     let fifo = pending.iter().any(|node| {
                         self.native_fifo_pins
                             .keys()
@@ -1947,6 +2069,10 @@ impl RuntimeSession {
                     if !has_pending_input {
                         program.close_unused_stdin();
                     }
+                }
+                if let Some((span, origin)) = owner_blocked {
+                    return Err(ExecutionError::new("a live program owner retains the capacity needed by its pending input", span)
+                        .help("Connect program input before opening a dependent output drain, or increase --max-streams/--memory-limit. Waiting cannot admit this input while its own owner retains those resources.").with_origin(origin.as_ref()));
                 }
                 if self.flows.is_empty() && self.live_processes().is_empty() {
                     return Err(ExecutionError::new(
@@ -1985,6 +2111,25 @@ impl RuntimeSession {
                     self.owner_committed(work.transaction)?;
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn discard_candidate(
+        &mut self,
+        key: NodeKey,
+        candidate: Option<program::SharedView>,
+        span: Span,
+    ) -> Result<()> {
+        self.release_namespace(key)?;
+        if let Some((_, prepared)) = candidate {
+            prepared.discard().map_err(|cause| {
+                ExecutionError::caused(
+                    "cannot release an unadmitted shared-view lease",
+                    span,
+                    cause,
+                )
+            })?;
         }
         Ok(())
     }
@@ -2563,6 +2708,9 @@ impl RuntimeSession {
                     .any(|program| program.transaction == transaction && program.is_running())
                 {
                     self.quiesce(transaction).await?;
+                    // A replayed scalar is a complete atomic statement, not a
+                    // pending version for the next sibling to snapshot around.
+                    self.finish_implicit(transaction)?;
                 }
                 Ok(())
             }
@@ -2951,20 +3099,30 @@ impl RuntimeSession {
             {
                 continue;
             }
-            if !self.implicit.contains(&transaction) {
-                continue;
-            }
-            if !self.closed_owners.remove(&transaction) {
-                self.engine_mut()?
-                    .finish(transaction, Span::default())
-                    .map_err(|mut error| {
-                        error.transaction = Some(transaction);
-                        error
-                    })?;
-            }
-            self.owner_committed(transaction)?;
-            self.implicit.remove(&transaction);
+            self.finish_implicit(transaction)?;
         }
+        Ok(())
+    }
+
+    fn finish_implicit(&mut self, transaction: TransactionId) -> Result<()> {
+        if !self.implicit.contains(&transaction)
+            || self
+                .deferred
+                .iter()
+                .any(|assignment| assignment.transaction == transaction)
+        {
+            return Ok(());
+        }
+        if !self.closed_owners.remove(&transaction) {
+            self.engine_mut()?
+                .finish(transaction, Span::default())
+                .map_err(|mut error| {
+                    error.transaction = Some(transaction);
+                    error
+                })?;
+        }
+        self.owner_committed(transaction)?;
+        self.implicit.remove(&transaction);
         Ok(())
     }
 
@@ -3132,14 +3290,14 @@ impl RuntimeSession {
         output: Option<(PathBuf, PathBuf, DestinationMode)>,
         span: Span,
     ) -> Result<()> {
-        let lease = self.admission.flow(span)?;
+        let work = self.work()?;
+        let lease = self.flow_lease(work.key.instruction, span)?;
         let instruction = self.fresh_instruction()?;
         let size = self.options.limits.buffer_bytes;
         let cancel = self.owner_token(transaction);
         let managed = output.as_ref().map(|(_, target, _)| target.clone());
         let task = lease.task("program.port");
         let origin = self.active_origin.clone();
-        let work = self.work()?;
         let flow_work = work.clone();
         let ready = Arc::new(AtomicBool::new(false));
         let notice = TerminalNotice {
@@ -3820,3 +3978,36 @@ fn live_domain(
 #[cfg(test)]
 #[path = "source_tests.rs"]
 mod source_tests;
+
+fn port_flow(node: &Instruction) -> bool {
+    matches!(
+        node.kind,
+        InstructionKind::Transfer {
+            destination: Output::Stdin(_),
+            ..
+        } | InstructionKind::Transfer {
+            source: Input::Port {
+                port: ReadPort::Stdout | ReadPort::Stderr,
+                ..
+            },
+            ..
+        }
+    )
+}
+
+fn fifo_consumers(region: &Region, group: &[InstructionId], result: &mut BTreeSet<ProcessId>) {
+    for node in &region.instructions {
+        match &node.kind {
+            InstructionKind::Transfer {
+                destination: Output::Stdin(process),
+                ..
+            } if group.contains(&node.id) => {
+                // Outputs/scalars can replay after exit; a stdin consumer must
+                // stay live while its FIFO peers open together.
+                result.insert(*process);
+            }
+            InstructionKind::Transaction { body, .. } => fifo_consumers(body, group, result),
+            _ => {}
+        }
+    }
+}

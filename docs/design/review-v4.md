@@ -450,3 +450,37 @@ refuse constructively when progress depends on future human input or an absent
 external peer. Any queueing correction must preserve atomic whole-cohort
 reservation and must not hide a genuinely impossible process/flow component
 behind an infinite resource wait.
+
+The correction now classifies non-consuming demand as Ready, Busy or Impossible.
+Independent busy batch nodes remain queued until actual permits are released;
+whole flow cohorts reserve before input pinning or port extraction. Actual Windows
+and WSL controls passed for one-stream and two-buffer limits, interactive
+refusal/retry preserving the old flow, and permanent FIFO overflow. The native
+stdin control additionally counts the consumer's six retained buffers with both
+physical peers, refusing an eight-buffer total before new-input effects while
+leaving the previous program alive. Strict related-target Clippy passed. This
+closes the reproduced transient-capacity failure without changing the ceiling.
+
+## Resolved native scalar publication race
+
+Linux Actions run 40632649319 at `c190bfb` passed ordinary verification and all
+six native view cases, but its large-stderr/exit-replay program failed with a
+parent-directory write conflict: implicit transaction 2 observed epoch 3 while
+transaction 1 had published epoch 4. Windows passing the same native case did
+not establish absence of this scheduling race.
+
+After a program was already sealed, scalar capture eagerly called `quiesce` on
+a fresh implicit owner. That staged the file and its namespace metadata without
+finishing the atomic statement. Another scalar could then stage a sibling from
+the same committed parent version; the eventual reaper committed the first and
+correctly rejected the stale second write. Refreshing read-committed state before
+staging was insufficient once the pending write already existed.
+
+The eager scalar path now calls the same `finish_implicit` helper as the reaper
+after quiescence. Only implicit owners with no deferred publication finish there;
+named transactions retain their checkpoint boundary. No conflict validation or
+metadata receipt is weakened or rebased. A native regression first completes a
+program, then replays its exit code into three sibling files. On WSL UID 1000
+with private project-local tmpfs it passed, and the original failing large-stderr
+case passed ten consecutive exact runs. These are correctness repetitions, not
+performance measurements.

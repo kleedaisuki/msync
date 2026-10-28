@@ -774,6 +774,35 @@ progress information must reflect actual outstanding work rather than confusing
 an activated operator with a completed computation. We use that distinction,
 not Timely's distributed timestamp protocol.
 
+### Occupied capacity is not an impossible cohort
+
+The live admission layer distinguishes a request that fits now, a feasible
+request whose permits are occupied, and one exceeding the configured total.
+An independent batch node in the second category stays on the ready frontier:
+the runtime pumps owned tasks/publications and retries after actual capacity is
+released. The concurrent ceiling does not cap the total number of operations.
+The frontier compares available slot/buffer counts as well as ledger progress,
+because a completed IO task can release its lease before its native owner can
+import or commit. Releasing a permit does not fabricate logical completion.
+
+Flow reservations are acquired before input-version pinning, port extraction or
+endpoint open. An inseparable FIFO group reserves all its members together and
+retains their real external Start prerequisites. Static FIFO capacity checks
+also count native stdin consumers that must stay live with their peers, not only
+the two buffers per physical flow. Buffered producer output and replayable
+scalars do not themselves require that simultaneous native space. A group that
+cannot fit fails before new-input payloads;
+an owner retaining capacity required by its own pending stdin produces explicit
+ordering/limit advice instead of an indefinite self-wait.
+
+Interactive submissions do not block the editor on occupied resources. They
+return a located `/wait`/`/stop` diagnostic before the blocked operation starts,
+preserve the earlier live flow, and can be retried after it finishes. The focused
+physical-runtime regressions use two real TCP peers and distinct existing output
+directories to check serialization with one stream slot or two shared buffers,
+plus interactive refusal/retry and the existing impossible-FIFO-group control.
+Their bounded peer delays establish ordering and liveness, not performance.
+
 ### Local rollback is an epoch reset, not a seal
 
 Commit joins and seals admitted native work before publishing. Bare local
