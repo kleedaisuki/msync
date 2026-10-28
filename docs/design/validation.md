@@ -1,6 +1,14 @@
 # End-to-end verification
 
-The supplied `docs/dsl/spread.msync` and `implementation.md` define the expected language behavior. Independent CLI tests live in `tests/cli.rs`; they invoke the built binary, with each journey isolated beneath repository-local `.temp/`. Tests set environment variables on child processes only, so parallel tests do not race over process-wide environment or working directory.
+This note retains successive verification checkpoints; older counts and
+limitations describe their recorded revision, not the current branch.
+The v0.4 semantic contract is in [language-v4.md](language-v4.md), with current
+integration boundaries in [architecture-v4.md](architecture-v4.md). The supplied
+`docs/dsl/spread.msync` and [implementation.md](implementation.md) remain the legacy
+language reference. Independent CLI tests live in `tests/cli.rs`; they invoke the
+built binary, with each journey isolated beneath repository-local `.temp/`.
+Tests set environment variables on child processes only, so parallel tests do not
+race over process-wide environment or working directory.
 
 ## Verified journeys
 
