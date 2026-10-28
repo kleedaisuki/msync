@@ -22,6 +22,7 @@ use crate::process::view_windows as view;
 
 pub(super) type Reader = Pin<Box<dyn AsyncRead + Send>>;
 pub(super) type Writer = Pin<Box<dyn AsyncWrite + Send>>;
+pub(super) type SharedView = (ProcessId, view::PreparedView);
 
 pub(super) struct Program {
     pub id: ProcessId,
@@ -62,6 +63,34 @@ pub(super) struct Launch<'a> {
 }
 
 impl Program {
+    #[cfg(test)]
+    pub(super) fn exited_fixture(id: ProcessId, transaction: crate::hir::TransactionId) -> Self {
+        let exit_signal = tokio_util::sync::CancellationToken::new();
+        exit_signal.cancel();
+        Self {
+            id,
+            cohort: id,
+            transaction,
+            span: Span::default(),
+            origin: None,
+            baseline: Vec::new(),
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            pid: 1,
+            effects: crate::hir::graph::ProcessEffects::mediated(
+                crate::hir::effects::Effects::default(),
+                "test-only",
+                "signalled-exit",
+            )
+            .unwrap(),
+            exit_signal,
+            running: None,
+            completed: None,
+            lease: None,
+        }
+    }
+
     pub async fn launch(
         launch: Launch<'_>,
         assets: &SnapshotStore,
@@ -272,6 +301,23 @@ impl Program {
                 "this member is a consuming program stream",
                 self.span,
             )),
+        }
+    }
+
+    pub async fn read_scalar(
+        &mut self,
+        port: ReadPort,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Vec<u8>> {
+        if port == ReadPort::Pid || self.completed.is_some() {
+            return self.scalar(port);
+        }
+        let running = self.running.as_mut().ok_or_else(|| {
+            ExecutionError::new("program status has no retained native receipt", self.span)
+        })?;
+        tokio::select! {
+            () = cancel.cancelled() => Err(ExecutionError::new("program status observation was cancelled", self.span)),
+            result = running.scalar(port) => result.map_err(|cause| ExecutionError::caused("cannot observe native program status", self.span, cause)),
         }
     }
 

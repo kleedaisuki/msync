@@ -67,8 +67,17 @@ retains the exact backing path, attempt count and underlying native error. This
 is not a general retry policy for box deletion. Two additional real-OS
 regressions preserve a marked-deleted HKCU key while a file reader remains and
 prove that 1018 alone cannot pass, then control a live storage reader's release
-and verify the next probe succeeds before any deletion. Native cloud acceptance
-of this expanded barrier remains required.
+and verify the next probe succeeds before any deletion.
+
+The expanded barrier passed the actual signed-driver gate in
+[run 40620510069](https://github.com/kleedaisuki/msync/actions/runs/40620510069)
+at `4ea7654`: native resource views **4/4**, production program journeys **9/9**,
+and native user-scratch create/copy/origin-undo **1/1**. This closes the observed
+sharing/deleted-key cleanup failures for those journeys. It does not count the
+later all-phase runtime, future-ancestor workspace or four-mode macro changes,
+which still need their current-revision native gates. The Windows ordinary job
+also passed. The Linux ordinary job at that revision exposed an independent
+FIFO identity-open hang, fixed separately in the transaction adapter.
 
 ## First provisioned-driver result and path-policy correction
 

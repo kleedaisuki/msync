@@ -1,10 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use crate::compiler::CopyOp;
 use crate::endpoint::{Backend, Location};
+use crate::hir::effects::{EndpointKey, EndpointRole};
 use crate::hir::{
     Input, InstructionId, InstructionKind, Output, Program, Region, RollbackScope, TransactionId,
 };
@@ -153,8 +154,19 @@ impl Domain {
     }
 
     pub fn resolve(program: &Program, options: &Options) -> Result<Self> {
+        Self::resolve_deferred(program, options, &BTreeSet::new())
+    }
+
+    /// Resolve read enrollment without using a producer-invalidated host path
+    /// as a final endpoint identity. Start/publication must still normalize it.
+    /// Deferral is operand-specific and independent of its logical file kind.
+    pub fn resolve_deferred(
+        program: &Program,
+        options: &Options,
+        unstable: &BTreeSet<EndpointKey>,
+    ) -> Result<Self> {
         let mut domain = Self::default();
-        domain.region(&program.body, options)?;
+        domain.region(&program.body, options, unstable)?;
         domain.roots.sort_by_key(|root| root.components().count());
         let mut roots = Vec::<PathBuf>::new();
         for path in &domain.roots {
@@ -167,7 +179,12 @@ impl Domain {
         Ok(domain)
     }
 
-    fn region(&mut self, region: &Region, options: &Options) -> Result<()> {
+    fn region(
+        &mut self,
+        region: &Region,
+        options: &Options,
+        unstable: &BTreeSet<EndpointKey>,
+    ) -> Result<()> {
         for instruction in &region.instructions {
             options.check(instruction.span)?;
             match &instruction.kind {
@@ -178,9 +195,20 @@ impl Domain {
                     let Output::File { location, mode } = destination else {
                         unreachable!("capabilities validated")
                     };
-                    let destination = local(location, false, instruction.span)?;
-                    self.roots
-                        .push(destination_envelope(&destination, instruction.span)?);
+                    let deferred_destination = unstable.contains(&EndpointKey {
+                        instruction: instruction.id,
+                        role: EndpointRole::Destination,
+                    });
+                    let destination = if deferred_destination {
+                        deferred_local(location, false, instruction.span)?
+                    } else {
+                        local(location, false, instruction.span)?
+                    };
+                    self.roots.push(if deferred_destination {
+                        deferred_envelope(&destination, instruction.span)?
+                    } else {
+                        destination_envelope(&destination, instruction.span)?
+                    });
                     let (source, pattern) = match source {
                         Input::Literal(text) => (Source::Literal(text.clone()), None),
                         Input::File { location, pattern } => {
@@ -188,8 +216,20 @@ impl Domain {
                                 .map_err(|message| ExecutionError::new(message, instruction.span))?
                             {
                                 Some(path) => {
-                                    let path = normalize(&path, instruction.span)?;
-                                    self.roots.push(envelope(&path));
+                                    let deferred_source = unstable.contains(&EndpointKey {
+                                        instruction: instruction.id,
+                                        role: EndpointRole::Source,
+                                    });
+                                    let path = if deferred_source {
+                                        let path = raw_absolute(&path, instruction.span)?;
+                                        self.roots
+                                            .push(deferred_envelope(&path, instruction.span)?);
+                                        path
+                                    } else {
+                                        let path = normalize(&path, instruction.span)?;
+                                        self.roots.push(envelope(&path));
+                                        path
+                                    };
                                     Source::Local(path)
                                 }
                                 None => Source::Remote {
@@ -212,7 +252,9 @@ impl Domain {
                         },
                     );
                 }
-                InstructionKind::Transaction { body, .. } => self.region(body, options)?,
+                InstructionKind::Transaction { body, .. } => {
+                    self.region(body, options, unstable)?
+                }
                 _ => {}
             }
         }
@@ -289,8 +331,11 @@ fn local(location: &Location, source: bool, span: Span) -> Result<PathBuf> {
 }
 
 pub(super) fn normalize(path: &Path, span: Span) -> Result<PathBuf> {
+    let native = native_path(path);
+    let path = native.as_path();
     super::native::validate_case_policy(path, span)?;
     crate::runtime::check_ancestors(path).map_err(|message| ExecutionError::new(message, span))?;
+    validate_directory_ancestors(path, span)?;
     let absolute = std::path::absolute(path).map_err(|cause| {
         ExecutionError::caused(format!("cannot resolve {}", path.display()), span, cause)
     })?;
@@ -332,6 +377,121 @@ pub(super) fn normalize(path: &Path, span: Span) -> Result<PathBuf> {
         root.push(name);
     }
     Ok(root)
+}
+
+fn validate_directory_ancestors(path: &Path, span: Span) -> Result<()> {
+    for ancestor in path.ancestors().skip(1) {
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(ExecutionError::caused(
+                    format!(
+                        "resource ancestor is not a directory: {}",
+                        ancestor.display()
+                    ),
+                    span,
+                    std::io::Error::from(std::io::ErrorKind::NotADirectory),
+                ));
+            }
+            Ok(_) => {}
+            // Windows may report a child below an ordinary file as missing.
+            // Continue upward to identify that actual non-directory ancestor.
+            Err(cause)
+                if matches!(
+                    cause.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) => {}
+            Err(cause) => {
+                return Err(ExecutionError::caused(
+                    format!("cannot inspect resource ancestor {}", ancestor.display()),
+                    span,
+                    cause,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Keep the unresolved spelling until the producer's import gate. In particular,
+/// `..` after a currently non-directory ancestor is not yet a lexical rewrite.
+pub(super) fn deferred_local(location: &Location, source: bool, span: Span) -> Result<PathBuf> {
+    let path = crate::runtime::local_path(location, source)
+        .map_err(|message| ExecutionError::new(message, span))?
+        .ok_or_else(|| ExecutionError::new("a local resource was expected", span))?;
+    raw_absolute(&path, span)
+}
+
+fn raw_absolute(path: &Path, span: Span) -> Result<PathBuf> {
+    let native = native_path(path);
+    let path = native.as_path();
+    if path.as_os_str().as_encoded_bytes().contains(&0) {
+        return Err(ExecutionError::new(
+            "file path contains a NUL character",
+            span,
+        ));
+    }
+    if path.is_absolute() {
+        return Ok(path.to_owned());
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .map_err(|cause| ExecutionError::caused("cannot resolve deferred endpoint", span, cause))
+}
+
+fn native_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(path.to_string_lossy().replace('/', "\\"))
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_owned()
+    }
+}
+
+/// Select only an existing, verified directory for read enrollment. This is not
+/// endpoint admission: unknown suffixes may change kind, and their final native
+/// traversal/case/alias checks belong after the typed producer dependency gate.
+pub(super) fn deferred_envelope(path: &Path, span: Span) -> Result<PathBuf> {
+    let absolute = raw_absolute(path, span)?;
+    let mut directory = None;
+    // Borrow original prefixes: rebuilding Windows verbatim paths with push()
+    // would collapse `..` before its preceding component becomes traversable.
+    for prefix in absolute.ancestors().collect::<Vec<_>>().into_iter().rev() {
+        let metadata = match fs::symlink_metadata(prefix) {
+            Ok(metadata) => metadata,
+            Err(cause)
+                if matches!(
+                    cause.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                break;
+            }
+            Err(cause) => {
+                return Err(ExecutionError::caused(
+                    format!("cannot inspect enrollment directory {}", prefix.display()),
+                    span,
+                    cause,
+                ));
+            }
+        };
+        crate::runtime::check_ancestors(prefix)
+            .map_err(|message| ExecutionError::new(message, span))?;
+        if !metadata.is_dir() {
+            break;
+        }
+        directory = Some(prefix);
+    }
+    let directory = directory
+        .filter(|path| path.file_name().is_some())
+        .ok_or_else(|| {
+            ExecutionError::new(
+                "a deferred endpoint needs an existing managed directory below the filesystem root",
+                span,
+            )
+        })?;
+    normalize(directory, span)
 }
 
 fn envelope(path: &Path) -> PathBuf {
@@ -393,3 +553,7 @@ fn component_eq(left: &std::ffi::OsStr, right: &std::ffi::OsStr) -> bool {
         CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) == CSTR_EQUAL
     }
 }
+
+#[cfg(test)]
+#[path = "domain_tests.rs"]
+mod tests;

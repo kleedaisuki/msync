@@ -105,6 +105,41 @@ pub(crate) fn snapshot_resource(location: &Location, scope: AccessScope) -> Reso
     ResourceCache::default().get(location, scope)
 }
 
+/// Construct a remote logical identity without observing a native alias. WSL
+/// drive projections and unresolved parent traversal still require inspection.
+pub(crate) fn logical_remote_resource(location: &Location, scope: AccessScope) -> Option<Resource> {
+    if !matches!(location.backend, Backend::Wsl | Backend::Ssh { .. })
+        || !location.path.starts_with('/')
+        || location.path.contains(['\\', '\0'])
+    {
+        return None;
+    }
+    let components = location
+        .path
+        .split('/')
+        .filter(|part| !matches!(*part, "" | "."))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if components.iter().any(|part| part == "..")
+        || location.backend == Backend::Wsl && components.first().is_some_and(|part| part == "mnt")
+    {
+        return None;
+    }
+    let components: Arc<[String]> = components.into();
+    Some(Resource {
+        location: location.clone(),
+        scope,
+        key: ResourceKey {
+            endpoint: location.backend.to_string(),
+            components: components.clone(),
+            rooted: true,
+        },
+        comparison: components,
+        possible_windows_path: None,
+        identity_hint: None,
+    })
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Effects {
     pub reads: Vec<Resource>,

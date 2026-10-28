@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use msync::compiler::{Backend, Location};
 use msync::hir::effects::{
-    Access, AccessKind, Effects, FileResource, OperationFacts, Resource, Scope,
+    Access, AccessKind, Effects, FileResource, NamespaceMergeEpoch, NamespaceMergeProof,
+    OperationFacts, Resource, Scope,
 };
 use msync::hir::graph::{self, Reason, Wait};
 use msync::hir::{
@@ -12,6 +13,7 @@ use msync::hir::{
 use msync::language::DestinationMode;
 use msync::plan::FileClass;
 use msync::syntax::Span;
+use msync::transaction::ResourceKey;
 use proptest::prelude::*;
 
 fn location(path: &str) -> Location {
@@ -209,6 +211,317 @@ fn parent_metadata_write_does_not_alias_existing_sibling_file_bytes() {
     assert!(graph.dependencies.is_empty());
     assert_eq!(permitted_orders(&graph).len(), 2);
     assert!(graph.is_execution_ready());
+}
+
+fn merge_epoch(id: &str) -> NamespaceMergeEpoch {
+    NamespaceMergeEpoch::verified(
+        "verified-native-manager",
+        id,
+        ResourceKey::new("native-name-index", "/parent").unwrap(),
+    )
+    .unwrap()
+}
+
+fn namespace_insert(
+    context: &mut graph::PlanningContext,
+    id: usize,
+    parent: &str,
+    target: &str,
+    native_name: &str,
+    order: u64,
+    epoch: &str,
+) {
+    let proof = NamespaceMergeProof::insert_file(
+        merge_epoch(epoch),
+        location(parent),
+        location(target),
+        ResourceKey::new("native-name-index", &format!("/parent/{native_name}")).unwrap(),
+        order,
+    )
+    .unwrap();
+    context.namespace_merges.insert(InstructionId(id), proof);
+    context
+        .existing_parent_frontiers
+        .insert(InstructionId(id), location(parent));
+    context
+        .operation_facts
+        .get_mut(&InstructionId(id))
+        .unwrap()
+        .destination = FileClass::Missing;
+}
+
+#[test]
+fn certified_disjoint_namespace_insertions_do_not_order_a_ready_sibling_behind_an_idle_flow() {
+    let mut slow = copy(0, "/", "/shared/slow");
+    if let InstructionKind::Transfer {
+        source: Input::File { location, .. },
+        ..
+    } = &mut slow.kind
+    {
+        location.backend = Backend::Tcp {
+            host: "127.0.0.1".into(),
+            port: 9000,
+        };
+    }
+    let ir = program(vec![slow, literal(1, "/shared/extra")]);
+    let mut context = finite_context(&ir);
+    context
+        .operation_facts
+        .get_mut(&InstructionId(0))
+        .unwrap()
+        .source = FileClass::Stream;
+    for facts in context.operation_facts.values_mut() {
+        facts.destination = FileClass::Missing;
+    }
+    let strict = graph::build_with_context(&ir, &context);
+    assert!(
+        strict
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(0) && edge.after == InstructionId(1))
+    );
+    namespace_insert(
+        &mut context,
+        0,
+        "/shared",
+        "/shared/slow",
+        "slow-key",
+        0,
+        "existing-parent-epoch",
+    );
+    namespace_insert(
+        &mut context,
+        1,
+        "/shared",
+        "/shared/extra",
+        "extra-key",
+        1,
+        "existing-parent-epoch",
+    );
+    let merged = graph::build_with_context(&ir, &context);
+    assert!(merged.issues.is_empty(), "{:?}", merged.issues);
+    assert!(merged.dependencies.is_empty(), "{:?}", merged.dependencies);
+    assert!(merged.publication_dependencies.is_empty());
+    assert!(merged.nodes.iter().all(|node| {
+        node.effects.accesses.iter().any(|access| {
+            access.kind == AccessKind::NamespaceMerge
+                && matches!(access.resource, Resource::NamespaceChange(_))
+        })
+    }));
+    assert_eq!(merged.namespace_merges, context.namespace_merges);
+    assert!(merged.verify_with_context(&ir, &context).is_ok());
+    assert!(
+        merged
+            .refinements
+            .iter()
+            .any(|refinement| refinement.kind == graph::RefinementKind::PhysicalStreamScheduling),
+        "namespace commutation does not pretend to prepare physical transport scheduling"
+    );
+}
+
+#[test]
+fn canonical_child_keys_not_lexical_case_guesses_control_entry_conflicts() {
+    let ir = program(vec![literal(0, "D:/shared/Σ"), literal(1, "D:/shared/ς")]);
+    assert!(
+        FileResource::new(location("D:/shared/Σ"), Scope::Exact)
+            .may_overlap(&FileResource::new(location("D:/shared/ς"), Scope::Exact))
+    );
+    let mut context = finite_context(&ir);
+    namespace_insert(
+        &mut context,
+        0,
+        "D:/shared",
+        "D:/shared/Σ",
+        "same-native-alias",
+        0,
+        "epoch",
+    );
+    namespace_insert(
+        &mut context,
+        1,
+        "D:/shared",
+        "D:/shared/ς",
+        "same-native-alias",
+        1,
+        "epoch",
+    );
+    assert!(
+        !graph::build_with_context(&ir, &context)
+            .dependencies
+            .is_empty()
+    );
+    namespace_insert(
+        &mut context,
+        1,
+        "D:/shared",
+        "D:/shared/ς",
+        "distinct-verified-name",
+        1,
+        "epoch",
+    );
+    let distinct = graph::build_with_context(&ir, &context);
+    assert!(
+        distinct.dependencies.is_empty(),
+        "only the actual native index can establish these two write keys are distinct"
+    );
+}
+
+#[test]
+fn namespace_merge_remains_ordered_against_directory_observers_and_explicit_attributes() {
+    let ir = program(vec![
+        literal(0, "/shared/a"),
+        copy(1, "/shared", "/snapshot"),
+        literal(2, "/shared/b"),
+    ]);
+    let mut context = finite_context(&ir);
+    context.operation_facts.insert(
+        InstructionId(1),
+        OperationFacts {
+            source: FileClass::Directory,
+            destination: FileClass::Missing,
+        },
+    );
+    namespace_insert(&mut context, 0, "/shared", "/shared/a", "a", 0, "epoch");
+    namespace_insert(&mut context, 2, "/shared", "/shared/b", "b", 2, "epoch");
+    let graph = graph::build_with_context(&ir, &context);
+    assert_eq!(
+        permitted_orders(&graph),
+        vec![vec![0, 1, 2]],
+        "a tree/predicate observation is a real serialization fence"
+    );
+    let explicit_attributes = Effects {
+        accesses: vec![Access {
+            resource: Resource::DirectoryMetadata(FileResource::new(
+                location("/shared"),
+                Scope::Exact,
+            )),
+            kind: AccessKind::Write,
+        }],
+        unknown_external: false,
+    };
+    assert!(
+        !graph.nodes[0]
+            .effects
+            .conflicts(&explicit_attributes)
+            .is_empty()
+    );
+    assert!(
+        !explicit_attributes
+            .conflicts(&graph.nodes[0].effects)
+            .is_empty()
+    );
+}
+
+#[test]
+fn namespace_epoch_changes_and_duplicate_order_tickets_do_not_claim_commutation() {
+    let ir = program(vec![literal(0, "/shared/a"), literal(1, "/shared/b")]);
+    let mut context = finite_context(&ir);
+    namespace_insert(
+        &mut context,
+        0,
+        "/shared",
+        "/shared/a",
+        "a",
+        0,
+        "epoch-before-barrier",
+    );
+    namespace_insert(
+        &mut context,
+        1,
+        "/shared",
+        "/shared/b",
+        "b",
+        1,
+        "epoch-after-barrier",
+    );
+    assert!(
+        !graph::build_with_context(&ir, &context)
+            .dependencies
+            .is_empty()
+    );
+    namespace_insert(
+        &mut context,
+        1,
+        "/shared",
+        "/shared/b",
+        "b",
+        0,
+        "epoch-before-barrier",
+    );
+    let invalid = graph::build_with_context(&ir, &context);
+    assert!(!invalid.issues.is_empty());
+    assert!(!invalid.is_execution_ready());
+}
+
+#[test]
+fn namespace_merge_never_erases_observable_http_request_order() {
+    let mut instructions = vec![
+        copy(0, "/counter", "/shared/a"),
+        copy(1, "/counter", "/shared/b"),
+    ];
+    for instruction in &mut instructions {
+        if let InstructionKind::Transfer {
+            source: Input::File { location, .. },
+            ..
+        } = &mut instruction.kind
+        {
+            location.backend = Backend::Http {
+                base: "https://example.invalid/".into(),
+            };
+        }
+    }
+    let ir = program(instructions);
+    let mut context = finite_context(&ir);
+    namespace_insert(&mut context, 0, "/shared", "/shared/a", "a", 0, "epoch");
+    namespace_insert(&mut context, 1, "/shared", "/shared/b", "b", 1, "epoch");
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(graph.dependencies.iter().any(|edge| edge.reasons.iter().any(|reason| matches!(reason, Reason::Hazard(conflict) if matches!(conflict.before.resource, Resource::HttpRequests(_))))));
+}
+
+#[test]
+fn namespace_proofs_cannot_weaken_named_transactions_trees_or_new_parent_creation() {
+    let body = Region {
+        instructions: vec![literal(0, "/shared/a")],
+    };
+    let ir = program(vec![node(
+        10,
+        InstructionKind::Transaction {
+            transaction: TransactionId(0),
+            body,
+        },
+    )]);
+    let mut context = finite_context(&ir);
+    namespace_insert(&mut context, 0, "/shared", "/shared/a", "a", 0, "epoch");
+    let named = graph::build_with_context(&ir, &context);
+    assert!(!named.issues.is_empty());
+    assert!(named.namespace_merges.is_empty());
+    let ir = program(vec![copy(0, "/source-tree", "/shared/a")]);
+    context = finite_context(&ir);
+    context
+        .operation_facts
+        .get_mut(&InstructionId(0))
+        .unwrap()
+        .source = FileClass::Directory;
+    namespace_insert(&mut context, 0, "/shared", "/shared/a", "a", 0, "epoch");
+    assert!(!graph::build_with_context(&ir, &context).issues.is_empty());
+    let ir = program(vec![literal(0, "/shared/new-parent/a")]);
+    context = finite_context(&ir);
+    namespace_insert(
+        &mut context,
+        0,
+        "/shared/new-parent",
+        "/shared/new-parent/a",
+        "a",
+        0,
+        "epoch",
+    );
+    context
+        .existing_parent_frontiers
+        .insert(InstructionId(0), location("/shared"));
+    assert!(
+        !graph::build_with_context(&ir, &context).issues.is_empty(),
+        "an old ancestor fact does not prove the immediate parent already exists"
+    );
 }
 
 #[test]
@@ -1061,35 +1374,112 @@ fn a_retained_peer_and_a_real_prepared_fork_admit_a_cross_submission_connection(
 }
 
 #[test]
-fn cohort_outputs_are_published_after_the_whole_view_even_between_member_launches() {
+fn a_managed_output_before_a_later_native_reader_requires_a_new_published_epoch() {
     let ir = program(vec![
         spawn(0, 0),
-        port(1, 0, ReadPort::Pid, "/managed/pid"),
-        spawn(2, 1),
-        connect(3, 0, 1),
+        node(
+            1,
+            InstructionKind::Transfer {
+                source: Input::Literal(Arc::from("new")),
+                destination: Output::Stdin(ProcessId(0)),
+            },
+        ),
+        port(2, 0, ReadPort::Stdout, "/managed/input"),
+        spawn(3, 1),
+        port(4, 1, ReadPort::Stdout, "/managed/output"),
     ]);
     let mut context = finite_context(&ir);
     shared_view(&mut context, &[0, 1], "one-native-mutable-view", "epoch");
-    let graph = graph::build_with_context(&ir, &context);
-    assert!(graph.issues.is_empty());
-    assert!(graph.is_execution_ready(), "{:?}", graph.cohort_refinements);
+    let stale = graph::build_with_context(&ir, &context);
     assert!(
-        !graph
+        !stale.issues.is_empty(),
+        "a reused native backing would make q read old managed/input despite the preceding stdout assignment"
+    );
+    context.cohort_views.clear();
+    let effects = context.process_effects[&ProcessId(1)].footprint().clone();
+    context.process_effects.insert(
+        ProcessId(1),
+        graph::ProcessEffects::mediated(
+            effects,
+            "verified-native-view",
+            "fresh-view-after-input-publication",
+        )
+        .unwrap(),
+    );
+    let correct = graph::build_with_context(&ir, &context);
+    assert!(correct.issues.is_empty(), "{:?}", correct.issues);
+    assert!(correct.is_execution_ready());
+    assert!(
+        correct
             .dependencies
             .iter()
-            .any(|edge| edge.before == InstructionId(1) && edge.after == InstructionId(2)),
-        "a deferred output's publication cannot block launching the peer needed to seal that view"
+            .any(|edge| edge.before == InstructionId(2)
+                && edge.after == InstructionId(3)
+                && edge.wait == Wait::Completion)
     );
-    assert!(graph.publication_dependencies.iter().any(|edge| {
-        edge.before == InstructionId(2)
-            && edge.after == InstructionId(1)
-            && edge.wait == Wait::CohortSealed(graph::CohortId(0))
-            && edge
-                .reasons
-                .iter()
-                .any(|reason| matches!(reason, Reason::SharedViewPublication { .. }))
-    }));
-    assert!(graph.verify_with_context(&ir, &context).is_ok());
+    assert!(
+        correct
+            .publication_dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(0)
+                && edge.after == InstructionId(2)
+                && edge.wait == Wait::ProcessSealed(ProcessId(0)))
+    );
+    assert!(correct.verify_with_context(&ir, &context).is_ok());
+    fn observed_input(published: bool) -> &'static str {
+        if published { "new" } else { "old" }
+    }
+    assert_ne!(observed_input(false), "new");
+    assert_eq!(observed_input(true), "new");
+}
+
+#[test]
+fn native_launch_order_helper_never_waives_an_old_managed_assignment_or_mutable_read() {
+    let ir = pipeline();
+    let mut context = finite_context(&ir);
+    shared_view(&mut context, &[0, 1], "actual-native-fork", "epoch");
+    let proof = &context.cohort_views[0];
+    let before = &ir.body.instructions[0];
+    let candidate = &ir.body.instructions[1];
+    let left = context.process_effects[&ProcessId(0)].footprint();
+    let right = context.process_effects[&ProcessId(1)].footprint();
+    assert_eq!(
+        graph::shared_native_launch_order(before, left, candidate, right, proof),
+        Some(Wait::ProcessStarted(ProcessId(0)))
+    );
+    let output = port(9, 0, ReadPort::Stdout, "/managed/input");
+    let output_effects = msync::hir::effects::summarize_with_facts(
+        &output,
+        OperationFacts {
+            source: FileClass::Stream,
+            destination: FileClass::Regular,
+        },
+    );
+    assert_eq!(
+        graph::shared_native_launch_order(&output, &output_effects, candidate, right, proof),
+        None
+    );
+    let file_read = copy(10, "/managed/input", "/managed/result");
+    let read_effects = msync::hir::effects::summarize_with_facts(
+        &file_read,
+        OperationFacts {
+            source: FileClass::Regular,
+            destination: FileClass::Regular,
+        },
+    );
+    assert_eq!(
+        graph::shared_native_launch_order(&file_read, &read_effects, candidate, right, proof),
+        None
+    );
+    assert_eq!(
+        graph::shared_native_launch_order(before, &Effects::default(), candidate, right, proof),
+        None,
+        "the runtime's actual effect certificate must match this producer, not only its owner string"
+    );
+    assert_eq!(
+        graph::shared_native_launch_order(before, left, candidate, &Effects::default(), proof),
+        None
+    );
 }
 
 #[test]
@@ -1233,6 +1623,238 @@ transaction B2(serializable):
                     Resource::File(_) | Resource::DirectoryMetadata(_)
                 ))
     );
+}
+
+#[test]
+fn local_rollback_cancels_a_started_native_epoch_without_waiting_for_its_exit() {
+    let ir = program(vec![
+        spawn(0, 0),
+        node(
+            1,
+            InstructionKind::Rollback {
+                transaction: TransactionId(7),
+                scope: RollbackScope::Checkpoint,
+            },
+        ),
+        literal(2, "/managed/after"),
+    ]);
+    let context = finite_context(&ir);
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(graph.issues.is_empty(), "{:?}", graph.issues);
+    let reset = &graph.epoch_resets[0];
+    assert_eq!(reset.controller, InstructionId(1));
+    assert_eq!(reset.checkpoint, None);
+    assert_eq!(reset.reverted, vec![InstructionId(0)]);
+    assert_eq!(reset.cancel, vec![InstructionId(0)]);
+    assert_eq!(reset.processes, vec![ProcessId(0)]);
+    assert!(graph.dependencies.iter().any(|edge| {
+        edge.before == InstructionId(0)
+            && edge.after == InstructionId(1)
+            && edge.wait == Wait::ProcessStarted(ProcessId(0))
+            && edge
+                .reasons
+                .contains(&Reason::CancelEpoch(InstructionId(1)))
+    }));
+    assert!(
+        !graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.after == InstructionId(1)
+                && matches!(
+                    edge.wait,
+                    Wait::ProcessSealed(_) | Wait::CohortSealed(_) | Wait::ProcessExited(_)
+                ))
+    );
+    assert!(
+        graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(1)
+                && edge.after == InstructionId(2)
+                && edge.wait == Wait::EpochReset)
+    );
+    assert!(
+        !graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(0) && edge.after == InstructionId(2))
+    );
+    assert!(graph.verify_with_context(&ir, &context).is_ok());
+}
+
+#[test]
+fn pending_program_file_output_uses_admission_then_discard_not_false_publication() {
+    let ir = program(vec![
+        spawn(0, 0),
+        port(1, 0, ReadPort::Stdout, "/managed/output"),
+        node(
+            2,
+            InstructionKind::Rollback {
+                transaction: TransactionId(7),
+                scope: RollbackScope::Checkpoint,
+            },
+        ),
+        copy(3, "/managed/output", "/managed/restored"),
+    ]);
+    let mut context = finite_context(&ir);
+    context
+        .process_effects
+        .insert(ProcessId(0), mediated_effects("/managed"));
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(graph.issues.is_empty(), "{:?}", graph.issues);
+    assert_eq!(
+        graph.epoch_resets[0].reverted,
+        vec![InstructionId(0), InstructionId(1)]
+    );
+    assert_eq!(
+        graph.epoch_resets[0].cancel,
+        vec![InstructionId(0), InstructionId(1)]
+    );
+    assert!(
+        graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(1)
+                && edge.after == InstructionId(2)
+                && edge.wait == Wait::Admitted)
+    );
+    assert!(
+        !graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.after == InstructionId(3)
+                && [InstructionId(0), InstructionId(1)].contains(&edge.before))
+    );
+    assert!(
+        graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(2)
+                && edge.after == InstructionId(3)
+                && edge.wait == Wait::EpochReset)
+    );
+    assert!(
+        graph
+            .publication_dependencies
+            .iter()
+            .any(|edge| edge.after == InstructionId(1)),
+        "a discarded stage is never re-labelled as published; its old publication obligation remains historical but is controlled by EpochReset"
+    );
+    assert!(graph.verify_with_context(&ir, &context).is_ok());
+}
+
+#[test]
+fn rollback_keeps_committed_prefix_and_redirects_later_reads_to_checkpoint_state() {
+    let ir = program(vec![
+        literal(0, "/managed/x"),
+        node(
+            1,
+            InstructionKind::Commit {
+                transaction: TransactionId(7),
+            },
+        ),
+        literal(2, "/managed/x"),
+        spawn(3, 0),
+        port(4, 0, ReadPort::Stdout, "/managed/x"),
+        node(
+            5,
+            InstructionKind::Rollback {
+                transaction: TransactionId(7),
+                scope: RollbackScope::Checkpoint,
+            },
+        ),
+        copy(6, "/managed/x", "/managed/y"),
+    ]);
+    let context = finite_context(&ir);
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(graph.issues.is_empty(), "{:?}", graph.issues);
+    let reset = &graph.epoch_resets[0];
+    assert_eq!(reset.checkpoint, Some(InstructionId(1)));
+    assert_eq!(
+        reset.reverted,
+        vec![InstructionId(2), InstructionId(3), InstructionId(4)]
+    );
+    assert!(!reset.reverted.contains(&InstructionId(0)));
+    assert!(!reset.reverted.contains(&InstructionId(1)));
+    assert_eq!(reset.cancel, vec![InstructionId(3), InstructionId(4)]);
+    assert!(
+        graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(2)
+                && edge.after == InstructionId(5)
+                && edge.wait == Wait::ObservationComplete),
+        "already source-ordered ordinary assignments must execute before control, not vanish"
+    );
+    assert!(
+        graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(5)
+                && edge.after == InstructionId(6)
+                && edge.wait == Wait::EpochReset)
+    );
+    assert!(
+        !graph
+            .dependencies
+            .iter()
+            .any(|edge| reset.reverted.contains(&edge.before) && edge.after == InstructionId(6))
+    );
+    assert!(graph.verify_with_context(&ir, &context).is_ok());
+}
+
+#[test]
+fn rollback_does_not_erase_or_cancel_an_observable_http_read_prefix() {
+    let mut request = copy(0, "/counter", "/managed/output");
+    if let InstructionKind::Transfer {
+        source: Input::File { location, .. },
+        ..
+    } = &mut request.kind
+    {
+        location.backend = Backend::Http {
+            base: "https://example.invalid/".into(),
+        };
+    }
+    let ir = program(vec![
+        request,
+        node(
+            1,
+            InstructionKind::Rollback {
+                transaction: TransactionId(7),
+                scope: RollbackScope::Checkpoint,
+            },
+        ),
+        literal(2, "/managed/after"),
+    ]);
+    let context = finite_context(&ir);
+    let graph = graph::build_with_context(&ir, &context);
+    assert!(graph.epoch_resets[0].cancel.is_empty());
+    assert_eq!(graph.epoch_resets[0].reverted, vec![InstructionId(0)]);
+    assert!(
+        graph.nodes[0]
+            .effects
+            .accesses
+            .iter()
+            .any(|access| access.kind == AccessKind::Consume
+                && matches!(access.resource, Resource::HttpRequests(_)))
+    );
+    assert!(
+        graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(0)
+                && edge.after == InstructionId(1)
+                && edge.wait == Wait::ObservationComplete)
+    );
+    assert!(
+        graph
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(1)
+                && edge.after == InstructionId(2)
+                && edge.wait == Wait::EpochReset)
+    );
+    assert!(graph.verify_with_context(&ir, &context).is_ok());
 }
 
 #[test]
@@ -1660,13 +2282,17 @@ fn unknown_output_type_keeps_an_explicit_staging_obligation_until_prepared() {
             .any(|refinement| refinement.kind == graph::RefinementKind::OutputPublication)
     );
     assert!(!pending.is_execution_ready());
-    assert!(
-        pending.publication_dependencies.is_empty(),
-        "unknown file/socket destinations are not silently assumed to be private stages"
-    );
-    assert!(pending.dependencies.iter().any(
+    assert!(!pending.dependencies.iter().any(
         |edge| edge.after == InstructionId(1) && edge.wait == Wait::ProcessSealed(ProcessId(0))
     ));
+    assert!(
+        pending
+            .publication_dependencies
+            .iter()
+            .any(|edge| edge.after == InstructionId(1)
+                && edge.wait == Wait::ProcessSealed(ProcessId(0))),
+        "private capture may start before target refinement; target effects still await import and publication-time type validation"
+    );
     context
         .operation_facts
         .get_mut(&InstructionId(1))
@@ -1680,6 +2306,128 @@ fn unknown_output_type_keeps_an_explicit_staging_obligation_until_prepared() {
     assert!(prepared.publication_dependencies.iter().any(
         |edge| edge.after == InstructionId(1) && edge.wait == Wait::ProcessSealed(ProcessId(0))
     ));
+}
+
+#[test]
+fn a_private_stdout_drain_does_not_cross_a_checkpoint_after_finite_assignments() {
+    let body = Region {
+        instructions: vec![
+            spawn(1, 0),
+            copy(2, "/managed/node/../node/x", "/managed/observed"),
+            literal(3, "/managed/node/../node/literal"),
+            port(4, 0, ReadPort::Stdout, "/managed/node/../node/stdout"),
+        ],
+    };
+    let ir = program(vec![node(
+        0,
+        InstructionKind::Transaction {
+            transaction: TransactionId(0),
+            body,
+        },
+    )]);
+    for unknown in [false, true] {
+        let mut context = finite_context(&ir);
+        for id in [2, 3, 4] {
+            context
+                .operation_facts
+                .get_mut(&InstructionId(id))
+                .unwrap()
+                .destination = FileClass::Missing;
+        }
+        context
+            .process_effects
+            .insert(ProcessId(0), mediated_effects("/managed"));
+        if unknown {
+            context
+                .operation_facts
+                .get_mut(&InstructionId(4))
+                .unwrap()
+                .destination = FileClass::Unknown;
+        }
+        let planned = graph::build_with_context(&ir, &context);
+        assert!(planned.issues.is_empty(), "{:?}", planned.issues);
+        let child = planned.nodes[0].children.as_ref().unwrap();
+        assert!(
+            child
+                .dependencies
+                .iter()
+                .any(|edge| edge.before == InstructionId(1)
+                    && edge.after == InstructionId(4)
+                    && edge.wait == Wait::ProcessStarted(ProcessId(0)))
+        );
+        assert!(
+            !child
+                .dependencies
+                .iter()
+                .any(|edge| edge.after == InstructionId(4)
+                    && (edge.before == InstructionId(2)
+                        || edge.before == InstructionId(3)
+                        || edge.wait == Wait::ProcessSealed(ProcessId(0))))
+        );
+        assert!(
+            child
+                .publication_dependencies
+                .iter()
+                .any(|edge| edge.before == InstructionId(3)
+                    && edge.after == InstructionId(4)
+                    && edge.wait == Wait::Completion)
+        );
+        assert!(planned.verify_with_context(&ir, &context).is_ok());
+    }
+}
+
+#[test]
+fn native_epoch_eligibility_keeps_launch_boundaries_but_not_late_spool_positions() {
+    let ir = program(vec![
+        spawn(0, 0),
+        spawn(1, 1),
+        copy(2, "/managed/input", "/managed/output"),
+        port(3, 0, ReadPort::Stdout, "/managed/captured"),
+        spawn(4, 2),
+        node(
+            5,
+            InstructionKind::Rollback {
+                transaction: TransactionId(0),
+                scope: RollbackScope::Checkpoint,
+            },
+        ),
+        spawn(6, 3),
+    ]);
+    let mut context = finite_context(&ir);
+    shared_view(&mut context, &[0, 1], "original-backing", "initial-epoch");
+    assert!(graph::same_native_epoch(
+        &ir,
+        &context,
+        ProcessId(0),
+        ProcessId(1)
+    ));
+    assert!(!graph::same_native_epoch(
+        &ir,
+        &context,
+        ProcessId(0),
+        ProcessId(2)
+    ));
+    assert!(!graph::same_native_epoch(
+        &ir,
+        &context,
+        ProcessId(2),
+        ProcessId(3)
+    ));
+    assert!(!graph::same_native_epoch(
+        &ir,
+        &context,
+        ProcessId(99),
+        ProcessId(0)
+    ));
+    let planned = graph::build_with_context(&ir, &context);
+    assert!(
+        !planned
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("shared-view certificate")),
+        "{:?}",
+        planned.issues
+    );
 }
 
 #[test]
@@ -2165,5 +2913,40 @@ proptest! {
         let graph = graph::build_with_context(&ir, &context);
         prop_assert!(graph.is_execution_ready());
         prop_assert!(all_orders_preserve(&graph, &operations, &expected, &initial, 0), "an admitted schedule changed finite resource values, read results or parent-directory metadata: {operations:?}");
+    }
+
+    #[test]
+    fn certified_namespace_receipts_join_to_the_source_order_fixed_point_without_clock_max(
+        receipts in prop::collection::vec((-1000i64..1000, 32u8..127), 1..7)
+    ) {
+        let ir = program(receipts.iter().enumerate().map(|(id, (_, payload))| {
+            node(id, InstructionKind::Transfer {
+                source: Input::Literal(Arc::from(char::from(*payload).to_string())),
+                destination: Output::File { location: location(&format!("/shared/file-{id}")), mode: DestinationMode::Exact },
+            })
+        }).collect());
+        let mut context = finite_context(&ir);
+        for id in 0..receipts.len() {
+            namespace_insert(&mut context, id, "/shared", &format!("/shared/file-{id}"), &format!("native-entry-{id}"), id as u64, "existing-parent-permission-version");
+        }
+        let graph = graph::build_with_context(&ir, &context);
+        prop_assert!(graph.dependencies.is_empty());
+        let expected_names: std::collections::BTreeMap<_, _> = receipts.iter().enumerate().map(|(id, (_, bytes))| (id, *bytes)).collect();
+        let expected_modified = receipts.last().unwrap().0;
+        for order in permitted_orders(&graph) {
+            let mut names = std::collections::BTreeMap::new();
+            let mut winning_order = None;
+            let mut modified = i64::MAX / 2; // An old future mtime is not a receipt.
+            for id in order {
+                let (observed_stamp, bytes) = receipts[id];
+                names.insert(id, bytes);
+                if winning_order.is_none_or(|old| id > old) {
+                    winning_order = Some(id);
+                    modified = observed_stamp;
+                }
+            }
+            prop_assert_eq!(&names, &expected_names);
+            prop_assert_eq!(modified, expected_modified, "choose the actual stamp of the greatest logical publication ticket, not physical completion order, max clock value or old baseline");
+        }
     }
 }

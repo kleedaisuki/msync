@@ -5,9 +5,26 @@
 //! Native/WSL projections and unresolved contextual endpoints remain aliases.
 
 use crate::compiler::{Backend, Location};
-use crate::hir::{Input, Instruction, InstructionKind, Output, ProcessId, ReadPort};
+use crate::hir::{Input, Instruction, InstructionId, InstructionKind, Output, ProcessId, ReadPort};
 use crate::language::DestinationMode;
 use crate::plan::{FileClass, OperationKinds};
+
+mod namespace;
+pub use namespace::{NamespaceMergeEpoch, NamespaceMergeProof};
+
+/// Physical endpoint stability is independent of its logical file class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EndpointRole {
+    Source,
+    Destination,
+    Executable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EndpointKey {
+    pub instruction: InstructionId,
+    pub role: EndpointRole,
+}
 
 /// Observations/snapshot premises supplied by preparation, never discovered by
 /// the pure graph builder. A missing source is not a finite-file proof.
@@ -285,6 +302,10 @@ impl From<ReadPort> for Port {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resource {
     File(FileResource),
+    /// Canonical native child identity for one certified file insertion.
+    NamespaceEntry(NamespaceMergeProof),
+    /// Parent membership/mtime delta committed by the Manager receipt algebra.
+    NamespaceChange(NamespaceMergeProof),
     /// Bytes already selected by a retained immutable-version reader. Private
     /// writes to the original pathname do not mutate this captured object.
     SnapshotFile(VersionReadProof),
@@ -301,8 +322,28 @@ pub enum Resource {
 
 impl Resource {
     pub fn may_overlap(&self, other: &Self) -> bool {
+        if let (Self::NamespaceEntry(left), Self::NamespaceEntry(right)) = (self, other) {
+            return left.entry_overlaps(right);
+        }
+        if let (Self::NamespaceEntry(entry), Self::NamespaceChange(change))
+        | (Self::NamespaceChange(change), Self::NamespaceEntry(entry)) = (self, other)
+            && entry.same_native_parent(change)
+        {
+            return false;
+        }
+        if let (Some(left), Some(right)) = (self.file(), other.file()) {
+            return left.may_overlap(right);
+        }
+        if let (Some(left), Some(right)) = (self.metadata(), other.metadata()) {
+            return left.same_path(right);
+        }
+        if let (Some(file), Some(metadata)) = (self.file(), other.metadata()) {
+            return file_metadata_overlap(file, metadata);
+        }
+        if let (Some(metadata), Some(file)) = (self.metadata(), other.file()) {
+            return file_metadata_overlap(file, metadata);
+        }
         match (self, other) {
-            (Self::File(left), Self::File(right)) => left.may_overlap(right),
             (Self::SnapshotFile(left), Self::SnapshotFile(right)) => {
                 left.provider == right.provider
                     && left.version_id == right.version_id
@@ -310,17 +351,6 @@ impl Resource {
             }
             (Self::HttpRequests(left), Self::HttpRequests(right)) => {
                 left.is_none() || right.is_none() || left == right
-            }
-            (Self::DirectoryMetadata(left), Self::DirectoryMetadata(right)) => {
-                left.same_path(right)
-            }
-            (Self::File(file), Self::DirectoryMetadata(metadata))
-            | (Self::DirectoryMetadata(metadata), Self::File(file)) => {
-                if file.scope == Scope::Tree {
-                    file.contains_path(metadata)
-                } else {
-                    file.same_path(metadata)
-                }
             }
             (
                 Self::Port {
@@ -335,6 +365,30 @@ impl Resource {
             _ => false,
         }
     }
+
+    fn file(&self) -> Option<&FileResource> {
+        match self {
+            Self::File(file) => Some(file),
+            Self::NamespaceEntry(proof) => Some(proof.target_resource()),
+            _ => None,
+        }
+    }
+
+    fn metadata(&self) -> Option<&FileResource> {
+        match self {
+            Self::DirectoryMetadata(file) => Some(file),
+            Self::NamespaceChange(proof) => Some(proof.parent_resource()),
+            _ => None,
+        }
+    }
+}
+
+fn file_metadata_overlap(file: &FileResource, metadata: &FileResource) -> bool {
+    if file.scope == Scope::Tree {
+        file.contains_path(metadata)
+    } else {
+        file.same_path(metadata)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -342,6 +396,7 @@ pub enum AccessKind {
     Read,
     Write,
     Consume,
+    NamespaceMerge,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -370,12 +425,27 @@ impl Effects {
                 if !before.resource.may_overlap(&after.resource) {
                     continue;
                 }
+                if before.kind == AccessKind::NamespaceMerge
+                    && after.kind == AccessKind::NamespaceMerge
+                    && let (Resource::NamespaceChange(left), Resource::NamespaceChange(right)) =
+                        (&before.resource, &after.resource)
+                    && left.commutes_with(right)
+                {
+                    continue;
+                }
                 let kind = match (before.kind, after.kind) {
                     (AccessKind::Read, AccessKind::Read) => continue,
                     (AccessKind::Consume, _) | (_, AccessKind::Consume) => Hazard::ConsumingRead,
-                    (AccessKind::Write, AccessKind::Read) => Hazard::ReadAfterWrite,
-                    (AccessKind::Read, AccessKind::Write) => Hazard::WriteAfterRead,
-                    (AccessKind::Write, AccessKind::Write) => Hazard::WriteAfterWrite,
+                    (AccessKind::Write | AccessKind::NamespaceMerge, AccessKind::Read) => {
+                        Hazard::ReadAfterWrite
+                    }
+                    (AccessKind::Read, AccessKind::Write | AccessKind::NamespaceMerge) => {
+                        Hazard::WriteAfterRead
+                    }
+                    (
+                        AccessKind::Write | AccessKind::NamespaceMerge,
+                        AccessKind::Write | AccessKind::NamespaceMerge,
+                    ) => Hazard::WriteAfterWrite,
                 };
                 conflicts.push(Conflict {
                     kind,
@@ -408,7 +478,7 @@ pub fn summarize(instruction: &Instruction) -> Effects {
 }
 
 pub fn summarize_with_facts(instruction: &Instruction, facts: OperationFacts) -> Effects {
-    summarize_prepared(instruction, facts, None, None)
+    summarize_prepared(instruction, facts, None, None, None)
 }
 
 pub fn summarize_prepared(
@@ -416,12 +486,21 @@ pub fn summarize_prepared(
     facts: OperationFacts,
     existing_parent: Option<&Location>,
     pinned_input: Option<&VersionReadProof>,
+    namespace_merge: Option<&NamespaceMergeProof>,
 ) -> Effects {
+    let namespace_merge = namespace_merge.filter(|proof| proof.supports(instruction, facts));
     match &instruction.kind {
         InstructionKind::Transfer {
             source,
             destination,
-        } => transfer(source, destination, facts, existing_parent, pinned_input),
+        } => transfer(
+            source,
+            destination,
+            facts,
+            existing_parent,
+            pinned_input,
+            namespace_merge,
+        ),
         InstructionKind::Spawn { .. } => Effects {
             unknown_external: true,
             ..Effects::default()
@@ -452,6 +531,7 @@ fn transfer(
     facts: OperationFacts,
     existing_parent: Option<&Location>,
     pinned_input: Option<&VersionReadProof>,
+    namespace_merge: Option<&NamespaceMergeProof>,
 ) -> Effects {
     let mut effects = Effects::default();
     let pinned = match source {
@@ -541,6 +621,17 @@ fn transfer(
                 Scope::Tree
             };
             let resource = FileResource::new(location.clone(), scope);
+            if let Some(proof) = namespace_merge {
+                effects.accesses.push(Access {
+                    resource: Resource::NamespaceEntry(proof.clone()),
+                    kind: AccessKind::Write,
+                });
+                effects.accesses.push(Access {
+                    resource: Resource::NamespaceChange(proof.clone()),
+                    kind: AccessKind::NamespaceMerge,
+                });
+                return effects;
+            }
             effects.accesses.push(Access {
                 resource: Resource::File(resource.clone()),
                 kind: AccessKind::Write,

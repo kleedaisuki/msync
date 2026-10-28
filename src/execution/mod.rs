@@ -18,6 +18,7 @@
 mod domain;
 mod endpoint;
 mod error;
+pub(crate) mod events;
 pub mod live;
 mod native;
 mod physical;

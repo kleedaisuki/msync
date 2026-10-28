@@ -152,6 +152,109 @@ async fn dropping_a_live_session_closes_its_peer_without_publishing_pending_byte
 }
 
 #[tokio::test]
+async fn two_submissions_reusing_node_zero_publish_ready_namespaces_without_waiting_for_slow_peers()
+{
+    use tokio::io::AsyncWriteExt;
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    let slow = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fast = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut compiler = Session::new();
+    let mut runtime = runtime(root.path());
+    let first = compile(
+        &mut compiler,
+        &work,
+        &format!("a => tcp://{}\na::/ -> slow\n", slow.local_addr().unwrap()),
+    );
+    runtime.submit(&first).await.unwrap();
+    let (mut slow_peer, _) = slow.accept().await.unwrap();
+    let second = compile(
+        &mut compiler,
+        &work,
+        &format!("b => tcp://{}\nb::/ -> fast\n", fast.local_addr().unwrap()),
+    );
+    assert_eq!(
+        first.body.instructions[0].id,
+        second.body.instructions[0].id
+    );
+    runtime.submit(&second).await.unwrap();
+    let (mut fast_peer, _) = fast.accept().await.unwrap();
+    fast_peer.write_all(b"ready second").await.unwrap();
+    fast_peer.shutdown().await.unwrap();
+    drop(fast_peer);
+    let task = tokio::spawn(async move {
+        let result = runtime.wait().await;
+        (runtime, result)
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !work.join("fast").exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(fs::read(work.join("fast")).unwrap(), b"ready second");
+    assert!(!work.join("slow").exists());
+    let selected_modified = fs::metadata(&work).unwrap().modified().unwrap();
+    slow_peer.write_all(b"late first").await.unwrap();
+    slow_peer.shutdown().await.unwrap();
+    drop(slow_peer);
+    let (mut runtime, result) = tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    result.unwrap();
+    assert_eq!(fs::read(work.join("slow")).unwrap(), b"late first");
+    assert_eq!(
+        fs::metadata(&work).unwrap().modified().unwrap(),
+        selected_modified
+    );
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn stopping_a_reserved_missing_file_flow_releases_its_namespace_capability() {
+    use tokio::io::AsyncReadExt;
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut compiler = Session::new();
+    let mut runtime = runtime(root.path());
+    runtime
+        .submit(&compile(
+            &mut compiler,
+            &work,
+            &format!(
+                "wire => tcp://{}\nwire::/ -> target\n",
+                listener.local_addr().unwrap()
+            ),
+        ))
+        .await
+        .unwrap();
+    let (mut peer, _) = listener.accept().await.unwrap();
+    runtime.cancel_active().await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), peer.read(&mut [0u8; 1]))
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    assert!(!work.join("target").exists());
+    runtime
+        .execute(&compile(&mut compiler, &work, "\"after stop\" -> target\n"))
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(work.join("target")).unwrap(),
+        "after stop"
+    );
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn an_empty_runtime_submission_does_not_create_an_execution_workspace() {
     let root = workspace();
     let mut runtime = runtime(root.path());
@@ -515,6 +618,34 @@ fn program_child_fixture() {
             fs::write("consumer-side", "same native view").unwrap();
             println!("SHARED_PIPELINE_OK:{}", bytes.len());
         }
+        "input-producer" => {
+            let mut bytes = Vec::new();
+            std::io::stdin().read_to_end(&mut bytes).unwrap();
+            std::io::stdout().write_all(&bytes).unwrap();
+            std::io::stdout().flush().unwrap();
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        "input-consumer" => {
+            let input = fs::read_to_string("input").unwrap();
+            assert!(input.contains("new input version"), "{input}");
+            println!("FRESH_FILE_INPUT");
+            std::io::stdout().flush().unwrap();
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        "exit-value" => {
+            fs::write("scalar-shared", "native scalar cohort").unwrap();
+            std::process::exit(13);
+        }
+        "scalar-consumer" => {
+            let mut code = String::new();
+            std::io::stdin().read_to_string(&mut code).unwrap();
+            assert_eq!(code, "13\n");
+            assert_eq!(
+                fs::read_to_string("scalar-shared").unwrap(),
+                "native scalar cohort"
+            );
+            println!("SCALAR_PIPE_READY");
+        }
         _ => panic!("unexpected child mode"),
     }
 }
@@ -629,5 +760,167 @@ async fn rejected_prepared_member_never_starts_or_discards_an_existing_shared_pe
     runtime.cancel_active().await.unwrap();
     assert!(runtime.live_processes().is_empty());
     assert_eq!(fs::read_to_string(work.join("output")).unwrap(), "origin");
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a provisioned native process-resource backend"]
+async fn managed_output_seals_an_epoch_before_a_later_program_reads_its_pending_file() {
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    fs::write(work.join("input"), "old input version").unwrap();
+    let mut compiler = Session::new();
+    let mut runtime = runtime(root.path());
+    let script = format!(
+        "transaction A:\n    {}    \"new input version\" -> p::stdin\n    p::stdout -> input\n    {}    q::stdout -> result\n",
+        command("p", "input-producer"),
+        command("q", "input-consumer")
+    );
+    let program = compile(&mut compiler, &work, &script);
+    let private = root.path().to_owned();
+    let task = tokio::spawn(async move {
+        let result = runtime.execute(&program).await;
+        (runtime, result)
+    });
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while !has_marker(&private, b"FRESH_FILE_INPUT") {
+            assert!(
+                !task.is_finished(),
+                "the pending-view consumer failed before observing the new input"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(work.join("input")).unwrap(),
+        "old input version"
+    );
+    let (mut runtime, result) = tokio::time::timeout(Duration::from_secs(30), task)
+        .await
+        .unwrap()
+        .unwrap();
+    result.unwrap();
+    assert!(
+        fs::read_to_string(work.join("input"))
+            .unwrap()
+            .contains("new input version")
+    );
+    assert!(
+        fs::read_to_string(work.join("result"))
+            .unwrap()
+            .contains("FRESH_FILE_INPUT")
+    );
+    runtime
+        .execute(&compile(&mut compiler, &work, "rollback A\n"))
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(work.join("input")).unwrap(),
+        "old input version"
+    );
+    assert!(!work.join("result").exists());
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a provisioned native process-resource backend"]
+async fn exit_data_can_feed_a_live_peer_without_exporting_the_shared_view_first() {
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    let mut compiler = Session::new();
+    let mut runtime = runtime(root.path());
+    let script = format!(
+        "{}{}p::exit_code -> q::stdin\nq::stdout -> result\n",
+        command("p", "exit-value"),
+        command("q", "scalar-consumer")
+    );
+    let program = compile(&mut compiler, &work, &script);
+    tokio::time::timeout(Duration::from_secs(30), runtime.execute(&program))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        fs::read_to_string(work.join("result"))
+            .unwrap()
+            .contains("SCALAR_PIPE_READY")
+    );
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a provisioned native process-resource backend"]
+async fn checkpoint_rollback_cancels_pending_native_io_and_starts_a_fresh_epoch() {
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    let mut compiler = Session::new();
+    let mut runtime = runtime(root.path());
+    let script = format!(
+        "transaction A:\n    \"checkpoint\" -> saved\n    commit\n    {}    child::stdout -> discarded\n    child::pid -> pending_pid\n    rollback\n    {}    verifier::pid -> fresh_pid\n    \"after reset\" -> after\n",
+        command("child", "cancel"),
+        command("verifier", "verify"),
+    );
+    let program = compile(&mut compiler, &work, &script);
+    tokio::time::timeout(Duration::from_secs(30), runtime.execute(&program))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(work.join("saved")).unwrap(),
+        "checkpoint"
+    );
+    assert_eq!(
+        fs::read_to_string(work.join("after")).unwrap(),
+        "after reset"
+    );
+    assert!(work.join("fresh_pid").is_file());
+    for name in ["partial", "discarded", "pending_pid"] {
+        assert!(
+            !work.join(name).exists(),
+            "discarded epoch published {name}"
+        );
+    }
+    let undo = compile(&mut compiler, &work, "rollback A\n");
+    runtime.execute(&undo).await.unwrap();
+    for name in ["saved", "after", "fresh_pid"] {
+        assert!(!work.join(name).exists(), "origin undo retained {name}");
+    }
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires a provisioned native process-resource backend"]
+async fn stopping_a_native_owner_cancels_old_dependencies_without_poisoning_the_session() {
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    let mut compiler = Session::new();
+    let mut runtime = runtime(root.path());
+    let program = compile(
+        &mut compiler,
+        &work,
+        &format!("{}child::stdout -> discarded\n", command("child", "cancel"),),
+    );
+    runtime.submit(&program).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(30), runtime.cancel_active())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!runtime.has_work());
+    let old_dependency = compile(&mut compiler, &work, "child::exit_code -> old_exit\n");
+    let failure = tokio::time::timeout(Duration::from_secs(3), runtime.execute(&old_dependency))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(failure.to_string().contains("discarded"), "{failure}");
+    let fresh = compile(&mut compiler, &work, "\"fresh\" -> fresh\n");
+    runtime.execute(&fresh).await.unwrap();
+    assert_eq!(fs::read_to_string(work.join("fresh")).unwrap(), "fresh");
+    assert!(!work.join("partial").exists());
+    assert!(!work.join("old_exit").exists());
     runtime.shutdown().await.unwrap();
 }

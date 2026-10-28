@@ -32,9 +32,9 @@ Assert (-not $backend.rust -and -not $backend.full) 'Dependency installation is 
 $execution = Select-Changes @('src/execution/mod.rs')
 Assert (-not $execution.full -and $execution.targets -contains 'execution_v4' -and $execution.targets -contains 'review_metadata_v4') 'Reference execution changes must check actual state and metadata without unrelated transport sweeps'
 $production = Select-Changes @('src/execution/live.rs')
-Assert ($production.targets -contains 'program_execution_v4' -and $production.targets -contains 'physical_execution_v4' -and $production.targets -contains 'endpoint_execution_v4') 'Production engine changes must select real program and endpoint journeys'
+Assert ($production.targets -contains 'program_execution_v4' -and $production.targets -contains 'macro_native_v4' -and $production.targets -contains 'physical_execution_v4' -and $production.targets -contains 'endpoint_execution_v4') 'Production engine changes must select real program, typed macro and endpoint journeys'
 $source = Select-Changes @('src/source.rs', 'src/language/version.rs')
-Assert (-not $source.full -and $source.targets -contains 'source_v4' -and $source.targets -contains 'join_v4' -and $source.targets -contains 'version_v4') 'Source and grammar changes need token provenance and explicit join coverage'
+Assert (-not $source.full -and $source.targets -contains 'source_v4' -and $source.targets -contains 'join_v4' -and $source.targets -contains 'version_v4' -and $source.targets -contains 'macro_native_v4') 'Source and grammar changes need token provenance, explicit joins and native typed macro coverage'
 $prepare = Select-Changes @('src/preparation.rs')
 Assert (-not $prepare.full -and $prepare.targets -contains 'preparation_v4' -and $prepare.targets -contains 'cli_structured_v4') 'Preparation must check its certificate and actual CLI handoff'
 Write-Output 'CI selection: 14 discriminating cases passed'

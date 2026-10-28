@@ -87,10 +87,20 @@ enum ExprKind {
 Keep the quote distinction in the AST: the new source `"success" -> result.txt`
 is UTF-8 bytes without an implicit trailing newline, not a filename. An explicit
 qualified reference such as `$local::"folder name/input.txt"` denotes a path.
-Destination and alias expression contexts retain path interpretation where the
-language requires it. The old parser remains available to callers requiring
+Bare quoted expressions remain literals in destinations and bindings too;
+only structural `/` joins and explicit namespace `::` operations coerce their
+components into paths. The old parser remains available to callers requiring
 legacy quoted-operand semantics; the v0.4 frontend must not silently erase the
 distinction by storing only the decoded strings.
+
+Endpoint admission distinguishes logical type from host stability. Preparation
+marks future source/destination operands before runtime preflight or enrollment
+can inspect them. Enrollment captures an existing directory envelope, retaining
+raw parent traversal for the owning version view to validate after its producer
+gate. Program argv paths are values, not required source files; enrollment does
+not assert that their leaves exist. The native future-ancestor fixture exercises
+an ordinary file becoming a directory before file reads, literal writes and
+stdout publication, followed by named origin undo.
 
 The v0.4 example deliberately uses `$pwd::des/agents/.` and
 `$pwd::prompt.txt`, whereas v0.3 accepted only `$pwd::pwd` and its children.
@@ -523,6 +533,18 @@ Native providers must retain the snapshot's `invocation_for_path` token while a
 prepared/running view uses backing data before lifting their initial disjoint-root
 restriction; a lexical prefix alone is not that ownership proof.
 
+Deferred endpoint enrollment is a separate proof from a logical file kind.
+`PlanningContext::host_unstable` identifies the exact instruction operand whose
+host traversal is invalidated by a producer, including operands with a known
+future regular-file kind. `Domain::resolve_deferred` retains that operand's raw
+absolute spelling and selects only a verified existing directory envelope. It
+does not collapse a `..` behind a currently non-directory component, capture the
+future source, establish its final alias, or fall back to a volume root. Actual
+source start and destination publication must revalidate native traversal after
+their typed import dependency gate. Stable operands keep strict validation;
+Windows missing-child results are checked against the original ancestor kinds
+before lexical normalization, so a file ancestor cannot disappear behind `..`.
+
 Read enrollment and physical publication are separate domains. The original
 prototype republished an entire enrolled root after a subtree change. That
 was adequate for isolated finite fixtures, but cannot simply be used
@@ -591,8 +613,12 @@ filename written directly by its child, a two-child 512 KiB pipeline whose
 consumer reads the producer's private file followed by named origin rollback,
 connecting that pipeline across separate REPL submissions, and rejecting a
 candidate at pre-payload admission without cancelling its existing peer. Strict
-library/binary/live-target Clippy passed. Windows protocol and
-file-only controls do not stand in for an actual signed-driver live-engine run.
+library/binary/live-target Clippy passed. The signed-driver Windows CI run
+`40542243926` at `b91d7fb` also passed all four resource-view and nine program
+execution journeys. Its subsequently added workspace scratch-publication gate
+exposed a Windows private-box cleanup sharing violation; that separate regression
+is not covered by the earlier program passes. New all-phase event/late-domain
+changes still require their own integration evidence.
 
 Opaque programs launched within the same owner/epoch now share the actual native
 managed filesystem: Linux namespace mounts bind the same backing tree; Windows
@@ -623,11 +649,52 @@ actual view identities and owner/epoch proofs, not infer shared storage from
 argv or a future port connection. These are unified scheduler obligations, not
 a reason to waive certificate checks or call the full v0.4 goal complete.
 
-Shared-view contraction and actual pre-payload Spawn admission are implemented.
-All-phase scheduling is not yet complete: finite assignments still use
-conservative source order and actual resource-conflict guards. The next
-submission-owned event ledger must gate flows, finite work and publication as
-well, without confusing reused source instruction IDs, private delta import or
-owner commit. See the focused next-integration section in `planning.md`.
-Performance acceptance has not started; correctness counts above are not latency
-benchmarks.
+### Submission-owned event execution
+
+The runtime retains an immutable `SubmissionPlan` with each flow and deferred
+assignment. A `NodeKey` includes the submission identity; a separate preorder
+`PublicationOrder` determines logical receipt order. Runtime owner bindings are
+extended without rebinding an already admitted operation. Start, managed-file
+publication and region commit consult their distinct ledger gates. Private
+cohort import establishes owner-local visibility, not foreign committed data.
+The named region cannot finish until its actual child/reset obligations hold.
+At actual named-transaction begin, its whole body and declared process owners
+are bound before capturing a child plan. Lexical ownership is already known:
+an early private stdout drain may depend on a later-admitted finite statement
+of that same transaction. Leaving that future node unbound would conservatively
+but incorrectly require its final commit, deadlocking the region that owns it.
+
+The ready frontier may select independent work without awaiting an earlier idle
+socket. A bounded notification channel is only a wakeup hint. Flow-owned atomic
+readiness and native process exit signals survive saturation; service reconciles
+unobserved exits into the ledger before waiting. This matters when one shared
+child exits while another still waits for its exit-code bytes. An already
+observed exit does not keep an otherwise idle REPL polling.
+Ready service advances to a ledger fixed point before subscribing for another
+wakeup, so a producer committed later in one pass cannot strand a previously
+visited dependent whose gate has just become ready.
+
+Bare rollback uses the certified pending-epoch cancellation cut, joins actual
+native/stdio work, restores the Manager checkpoint and only then records the
+reset. PID scalar capture records admission/readiness independently of later
+file publication, just like a private byte drain. `/stop` uses the same typed
+owner cancellation path; it does not leave old prerequisites pending forever or
+turn cancelled output into a completed receipt. Already committed status remains
+replayable, and historical PID data remains meaningful. Cleanup/join failures
+retain their causes and paths and prevent a false successful stop.
+
+Actual native Linux regression evidence covers a managed stdout file handed to
+a fresh program view, exit-code bytes feeding a still-live peer, cancellation
+and reuse after `/stop`, and pending native/stdio rollback followed by a fresh
+epoch and eventual named-origin undo. The program suite passed twelve cases in
+one run; its thirteenth, the new pending-epoch rollback case, passed separately
+after fixing scalar admission (0.50 seconds). These are correctness fixtures on
+private project-local tmpfs, not production latency measurements. The latest
+uninstrumented workspace native gate passed both cases in 0.48 seconds. In the
+late-domain regression a native child
+replaces a host file with a private directory; subsequent source, literal and
+stdout destinations traverse raw `node/../node/...`, and named undo restores
+the original host file. No pre-import host type probe or unchecked lexical
+collapse substitutes for the selected transaction view. The current Windows
+signed-driver run remains a separate acceptance gate. Performance acceptance
+has not started.

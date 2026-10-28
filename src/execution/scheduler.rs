@@ -1,6 +1,5 @@
 //! Admission for co-started program pipes. A pipe must never wait behind itself.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::future::{Future, poll_fn};
 use std::sync::Arc;
 
@@ -23,74 +22,6 @@ pub(super) struct Lease {
     _slot: OwnedSemaphorePermit,
     _memory: OwnedSemaphorePermit,
     context: Option<crate::telemetry::TraceContext>,
-}
-
-pub(super) fn admit_spawn(
-    graph: &crate::hir::graph::PlanGraph,
-    instruction: crate::hir::InstructionId,
-    events: &BTreeMap<crate::hir::ProcessId, (bool, bool)>,
-    completed: &BTreeSet<crate::hir::InstructionId>,
-    span: Span,
-) -> Result<()> {
-    use crate::hir::graph::Wait;
-    if let Some(issue) = graph.issues.first() {
-        return Err(ExecutionError::new(
-            format!("program admission failed: {}", issue.message),
-            span,
-        ));
-    }
-    let graph = region_graph(graph, instruction).ok_or_else(|| {
-        ExecutionError::new("admission node is absent from the prepared graph", span)
-    })?;
-    if let Some(issue) = graph.issues.first() {
-        return Err(ExecutionError::new(
-            format!("program admission failed: {}", issue.message),
-            span,
-        ));
-    }
-    let ready = |wait: Wait, before: Option<crate::hir::InstructionId>| match wait {
-        Wait::Completion => before.is_some_and(|id| completed.contains(&id)),
-        Wait::ProcessStarted(process) => events.contains_key(&process),
-        Wait::ProcessExited(process) => events.get(&process).is_some_and(|(exited, _)| *exited),
-        Wait::ProcessSealed(process) => events.get(&process).is_some_and(|(_, sealed)| *sealed),
-        Wait::CohortSealed(cohort) => graph.cohort_views[cohort.0]
-            .members()
-            .keys()
-            .all(|process| events.get(process).is_some_and(|(_, sealed)| *sealed)),
-    };
-    let blocked = graph
-        .dependencies
-        .iter()
-        .filter(|edge| edge.after == instruction)
-        .any(|edge| !ready(edge.wait, Some(edge.before)))
-        || graph
-            .external_processes
-            .iter()
-            .filter(|edge| edge.instruction == instruction)
-            .any(|edge| !ready(edge.wait, None));
-    if blocked {
-        return Err(ExecutionError::new("program admission is waiting on an unsealed resource epoch; no candidate payload started", span)
-            .help("Finish the preceding resource cohort before this launch, or connect co-started programs through one verified shared view."));
-    }
-    Ok(())
-}
-
-fn region_graph(
-    graph: &crate::hir::graph::PlanGraph,
-    instruction: crate::hir::InstructionId,
-) -> Option<&crate::hir::graph::PlanGraph> {
-    if graph
-        .nodes
-        .iter()
-        .any(|node| node.instruction == instruction)
-    {
-        return Some(graph);
-    }
-    graph
-        .nodes
-        .iter()
-        .filter_map(|node| node.children.as_ref())
-        .find_map(|child| region_graph(child, instruction))
 }
 
 impl Lease {

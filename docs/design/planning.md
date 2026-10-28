@@ -15,6 +15,55 @@ boundary, not facts inferred from a filename. Opaque program launch invalidates
 unproved subsequent filesystem kind assumptions; missing host output is then
 unknown rather than an automatic source-not-found diagnostic.
 
+Live processes retained from earlier submissions also bound host observations.
+Their certified write footprints invalidate overlapping initial host file kinds
+until the correct seal/import event gate; a missing footprint is conservatively
+opaque. A read-only or disjoint footprint does not invalidate unrelated kinds.
+This prevents premature directory/missing-source errors and byte-only DSE based
+on a host file that a pending native import may replace. Own ordered assignments
+still establish their normal postconditions. Runtime-supplied epoch facts remain
+trusted only after the runtime has selected the correct managed version at its
+event gate. An actual matching retained `VersionReadProof` proves its input is a
+regular file independently of subsequent replacements of the original pathname;
+preparation neither discards that pin nor fabricates one from host metadata.
+
+`PlanningContext.pending_effects` carries the actual retained write domains of
+earlier asynchronous flows/deferred nodes as the same conservative premise. It
+invalidates host classifications even without a live process (for example, a TCP
+flow that has not yet published its missing target). These effects neither mint
+external node identities nor prove that a namespace insertion's bytes already
+exist. The runtime keeps the real producer/`NodeCommitted` gate in its event
+ledger and refines the source after that gate; the preparer leaves overlapping
+types unknown. No namespace WAW exemption follows from this field.
+
+`host_unstable: BTreeSet<EndpointKey>` is a separate, per-instruction/per-operand
+premise. `EndpointRole` distinguishes transfer source/destination and executable;
+argv path values are not promoted to required file inputs. A logically known
+future regular file/directory can still require deferred physical enrollment:
+an earlier unpublished directory replacement may leave the current host ancestor
+as an ordinary file. Inspection walks ordered writes before probing each next
+endpoint and retains that instability across checkpoints (and conservatively
+across rollback). It keeps raw `..` and does not downgrade correct logical kinds
+to encode this condition. Runtime/domain uses the marker to enroll an envelope,
+then resolves/revalidates only after the actual producer start/publication gate.
+An unrelated unknown file's scoped write does not defer independent bad paths.
+
+Inspection uses the same pending-write predicate before probing a leaf or its
+ancestors. A currently non-directory ancestor or denied host lookup must not
+preempt a native import that may replace it. Deferred paths retain their raw
+absolute spelling, including `..`; unverified symlink traversal is not collapsed
+into a positive path/alias proof. No physical-identity resource is captured for
+these endpoints, so even later inferred types cannot accidentally enable rewrites
+using pre-import aliases. Syntax/backend validation still runs (including NUL
+rejection); execution revalidates the actual type/ancestry after its event gate.
+
+Unverified absolute remote paths may retain a pure logical resource key without
+capturing a host alias. This preserves dead-store proofs between a native source
+and an explicitly typed remote source. WSL drive projections (`/mnt/...`), parent
+traversal, relative paths and native unverified operands remain excluded: their
+canonical/physical alias premises cannot be recovered from the old host. No
+filesystem probe is hidden in the logical remote resource constructor.
+
 The ordered type interpreter keeps origin and latest-checkpoint states separate.
 Bare rollback discards pending type writes; only successful checkpoints and block
 completion contribute to named undo. Origin restoration affects the named
@@ -397,9 +446,31 @@ wait for the relevant sealed delta. File type, metadata inspection and argv
 alone never invent a pin. Program output, including an immediately captured PID,
 can be staged while peers launch; its managed-file assignment waits for the
 whole shared export. File/namespace WAW and WAR obligations remain recorded on
-that publication phase. This also handles an output declaration between member
-launches without making a future peer wait for the publication that itself
-requires that peer to finish.
+that publication phase. A managed-file assignment is not a native process
+effect: if a subsequent program may read that path, the old epoch must seal,
+publish the assignment and, where required, commit before preparing its fresh
+view. Reusing the old backing would expose the old file even when owner/ViewId
+strings match. Direct port-to-port connections remain true shared co-start.
+
+`shared_native_launch_order` classifies only a native-Spawn to native-Spawn
+witness whose complete actual effects match a real shared-view certificate.
+It never relaxes a deferred file assignment or mutable file read, and callers
+must check every other pending witness independently. Multiple existing-peer
+output drains can continue in one epoch; a later native launch after a managed
+assignment starts a new one. This keeps private IO progress separate from the
+visibility that a later program's file argument actually requires.
+
+Native launch epochs and live-port checkpoints are distinct. A finite managed
+assignment separates later native launches from an earlier mutable backing, but
+does not stop an earlier process's private stdout capture. Only an actual
+commit/rollback boundary makes that live service cross a checkpoint. Likewise,
+an unknown program-output destination permits private capture while retaining
+`DestinationType`/`OutputPublication` refinement; its resource writes remain
+publication-gated and its actual selected-view kind must be checked there. This
+does not assert that the destination is a regular file or waive a known socket,
+directory, mutable-input or filesystem hazard. `same_native_epoch` lets admission
+reject an incompatible speculative fork before constructing its real cohort
+certificate, rather than treating an invalid certificate as normal scheduling.
 
 A stream-connected group with unknown/overlapping effects but no actual shared
 view evidence is a typed `SharedMutableView` refinement: `check`/planning can
@@ -502,3 +573,115 @@ same-owner read-your-writes before commit versus a foreign committed read;
 late completion subscription/cancellation; and a REPL operation blocked by an
 unconnected stdin that returns advice without starting any new effects. Actual
 native cohort tests remain required; a spawn-only gate does not close this work.
+
+### Bounded namespace receipt algebra
+
+An idle stream and a ready sibling file must not be ordered merely because both
+eventually insert names into the same existing directory. Treating the whole
+directory metadata record as an ordinary long-lived WAW dependency introduces
+head-of-line blocking. Omitting that metadata effect entirely is also wrong:
+directory reads, predicates, permission changes and origin undo observe it.
+
+The supported abstraction is a narrowly certified Manager operation, not general
+metadata commutativity. An active `NamespaceMergeEpoch` binds one actual native
+parent identity, unchanged attributes/permissions, its canonical `NativeNameIndex`
+keys, and reversible publication receipts. `NamespaceMergeProof::insert_file`
+binds one direct-child ordinary file insertion and its preallocated logical
+`PublicationOrder`. The real Manager permit must remain retained and publication
+must use that permit's receipt method; the pure graph certificate is not a native
+capability by itself. Neither a basename guess nor ReadCommitted parent refresh
+alone proves this algebra.
+
+For successful native mutation receipts `r_i`, the operation is:
+
+```text
+r_i = (canonical child key, immutable file value, logical order, observed mtime)
+names      = disjoint-key union of successful inserted file values
+winner     = successful receipt with greatest logical order
+parent mtime = winner.observed_mtime, or the exact before-state if none succeeded
+parent attributes/permissions = unchanged before-state
+```
+
+The stamp comes from the successful native data installation, not a synthetic
+counter converted to wall-clock time. Selection is by logical order, **not**
+maximum wall-clock value and not maximum with the old baseline. A future-dated
+baseline or a backward clock step must not silently win. For example, an earlier
+source instruction may finish later with stamp 200 while a later instruction
+already finished with stamp 100; receipt order still selects that later source
+instruction's actual stamp 100. The fixed point replays the same per-write
+receipt values in logical source order. This is not a globally monotonic mtime
+promise or equality with a different POSIX execution at another wall-clock time.
+
+Native installation, metadata application, Store publication and receipt-ledger
+advancement must share the Manager's guarded commit/compensation boundary.
+Failed or cancelled/compensated mutations do not advance the winner. A committed
+mutation with cleanup still pending remains committed. Origin restoration keeps
+the exact observed before-state and remains a strict boundary, not a general
+remove-contribution CRDT operation.
+
+The HIR represents certified bytes/name binding as `Resource::NamespaceEntry`
+and the parent delta as `Resource::NamespaceChange` with `AccessKind::NamespaceMerge`.
+Only distinct canonical child keys with distinct logical tickets in the same
+actual merge epoch commute. The native index, not portable Unicode/case folding,
+decides distinctness. Same-name aliases, different epochs and duplicate tickets
+cannot acquire a disjointness proof. A normal `DirectoryMetadata` read/write,
+directory/tree or predicate read, permission mutation and rollback still fence
+these changes. Plain existing sibling file-byte reads do not accidentally become
+directory-mtime observers.
+
+Scope is implicit, exact, missing local file destinations in an already existing
+parent, for literal/ordinary finite sources or physical EOF file publication.
+Named transactions, selectors, directory replacements, new-parent creation and
+program-view exports remain on their existing strict contracts. A barrier closes
+the active Manager merge epoch; a blocked REPL barrier must offer actionable
+advice before effects rather than hiding the conflict or hanging behind an idle
+peer. The default remains ordinary metadata WAW until an actual permit exists.
+
+This follows the useful distinction between abstract operation conflicts and
+representation-level writes in
+[transactional boosting](https://www.cs.brandeis.edu/~cs220/reads/p207-herlihy.pdf).
+The metadata and observation preconditions matter as much as distinct names:
+[invariant-confluence analysis](https://www.vldb.org/pvldb/vol8/p185-bailis.pdf)
+motivates checking the chosen merge and application invariants together rather
+than calling every set insertion coordination-free. We do not import a general
+CRDT runtime or weaken the four named-transaction isolation levels.
+
+### Local rollback is an epoch reset, not a seal
+
+Commit joins and seals admitted native work before publishing. Bare local
+rollback instead stops the current uncommitted epoch, joins/discards its owned
+native and stdio work, and restores the Manager checkpoint. Requiring a sleeping
+child's import, or a child's stdin/output EOF, before that cancellation would
+make the control action wait for exactly the work it is meant to stop.
+
+`PlanGraph.epoch_resets` records each controller, transaction, previous commit
+node (or transaction start), all reverted definitions, the still-pending work
+eligible for cancellation, and its native process IDs. The controller waits for
+actual `ProcessStarted` acknowledgements and flow `Admitted` facts, not private
+stage EOF or file publication. Admission is a separate fact from `ServiceReady`.
+Successful `EpochReset` is emitted only after joins and checkpoint restoration.
+
+Cancelled child definitions never become successful `LogicalComplete` or
+`Committed` events. Previously completed observations remain historical facts,
+but an epoch-discard marker prevents using them as current resource versions.
+Region commit replaces reverted-child visibility obligations with that
+controller's successful reset; checkpoint-protected nodes stay untouched.
+Following file reads depend on the restored checkpoint/reset, not on a canceled
+producer's import or unpublished output. Restoration effects cover managed
+file/namespace writes, never a second acquisition of stdin/stdout or a repeated
+HTTP request. Each runtime reset must also leave a usable fresh cancellation
+scope for the next epoch rather than poisoning the session. Its cancellation
+authority is owner/epoch-local; a future independent transaction is not cancelled
+merely because it shares the session's top-level interruption token.
+
+Rollback remains source ordered. Ordinary finite assignments, HTTP consumption
+and explicit exit-status observations before the control action must really
+complete; `ObservationComplete` preserves that factual completion even when
+later resource visibility is discarded. Rollback is not time travel through an
+earlier ordered blocking statement. Thus `spawn sleep; rollback; literal` can
+cancel promptly, while `spawn opaque; conflicting finite assignment; rollback`
+may first wait for the preceding assignment. A REPL dependency on future human
+stdin must return constructive connection/`/wait`/`/stop` advice before effects,
+not hang the command loop. A separate future dead-epoch proof could eliminate
+unobserved pure managed writes, but this control mechanism never silently drops
+observable IO in order to reach the rollback.

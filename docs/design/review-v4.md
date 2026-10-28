@@ -197,3 +197,104 @@ journey passed with its new timestamp assertion. The fourth portable metadata
 case was added afterward and remains for the remote cross-platform gate. The
 Windows control was not used to infer Linux behavior. Disposable launcher script:
 `.temp/check-metadata-native-v4.sh`; no persistent host mounts/policy changes.
+
+## Independent integration acceptance map (2026-10-28)
+
+Scope: current working tree after `b91d7fb`, including the unfinished all-phase
+runtime changes. This review traced actual compiler/runtime/store call paths and
+read the named regression bodies; it did not rebuild the project or repeat CI.
+A test's existence below identifies the right acceptance gate, not a claim that
+its current working-tree version has passed. Keep native-provider execution
+results distinct from in-memory graph/codec tests.
+
+| Required behavior | Concrete implementation and regression gate | Current assessment |
+| --- | --- | --- |
+| Typed, hygienic macro parameters (path, namespace, stream/program), declaration-time `global`, no nested macros | `compiler/structured.rs::expand_macro` resolves argument `Value`s in the caller and constructs a new parameter scope with captured declaration globals; `lowering_v4::{user_macro_expands_typed_remote_sources_and_contextual_destination_items,macro_global_uses_definition_snapshot_and_locals_do_not_leak,namespace_arguments_and_stream_arguments_retain_types,manually_constructed_nested_macro_ast_is_rejected_even_if_not_called}` | Implemented. Values include `Process` and `Port`, not textual interpolation. A dedicated `macro_native_v4::whole_program_macro_arguments_execute_and_undo_in_each_isolation_mode` fixture now checks a whole-program argument, formal stdin/stdout, declaration-time global capture, exact UTF-8 bytes and origin undo. It was inspected here; actual execution is a pending native gate. |
+| Python-like indentation and precise structured formatting | `language_v4::{canonical_format_is_idempotent_and_preserves_nested_regions,diagnoses_ambiguous_indentation_and_nested_macros}` and `cli_structured_v4::structured_format_edits_the_script_and_stdout_preview_remains_machine_text` | Implemented frontend and actual CLI journey; in-place format is separate from stdout preview. |
+| Transactions share lexical environment; cross-transaction local undo forbidden | `compiler/structured.rs` passes the same mutable `Scope` into a transaction body; `lowering_v4::{transaction_checkpoints_named_origin_and_shared_bindings_are_distinct,a_transaction_does_not_create_a_macro_lexical_scope,other_transaction_rollback_is_forbidden_inside_a_transaction}` | Implemented; runtime also checks owner identity before local rewind. |
+| Original `copy_codex` replaces destination tree, rather than nesting the source | `execution_v4::typed_macro_copies_a_real_tree_into_explicit_replacement_without_nesting`; Windows ignored `real_wsl_macro_source_replaces_a_native_existing_directory`; default CLI macro/check/plan/run journey | Real local-tree regression and real WSL-source fixture exist. Native WSL fixture is not an ext4 performance measurement: its source fixture is translated from a Windows path. |
+| Original A1/checkpoint/scalar/local-rewind/origin-undo then B2/pid and literal lifecycle | Native ignored `program_execution_v4::the_requested_checkpoint_and_program_port_lifecycle_runs_end_to_end` | Covers the requested lifecycle with an owned Rust child fixture instead of depending on an installed Python script. It asserts that output, stderr, direct child file, exit files and pending file disappear after origin undo; B2 pid remains and exact literal bytes are published. Its current event-ledger integration needs the new native gate, not only the earlier baseline pass. |
+| Four isolation levels and default serializable | `Store::read`, `Transaction::read_epoch`, `Store::validate`; `transaction_store_v4` dirty-read, RC statement-refresh, RR snapshot, write-skew, absent-read and phantom tests; real disk `transaction_manager_v4::visibility_reads_are_immutable_even_while_other_transactions_stage_and_publish` | Actual Store semantics, not merely accepted spelling. Native launch uses `Manager::read_snapshot` and the declared transaction isolation; frozen native-view tests demonstrate immutable baseline reads. The new `macro_native_v4` fixture loops a complete mediated program/checkpoint/origin lifecycle through all four modes; actual execution is pending. It does not distinguish concurrent native visibility. Conservative native-view conflict ordering is allowed; do not claim a native four-mode visibility experiment from the Store tests alone. |
+| `commit` publishes without discarding named origin; local rollback resets only current segment | Store/Manager checkpoint, rollback-pending and origin APIs; `transaction_manager_v4::actual_file_checkpoints_pending_rewind_and_named_origin_are_distinct`; native A1/B2 fixture above | Existing disk/version semantics are implemented. Cancelling an already-admitted long-running native/stdio epoch rather than waiting for EOF is new runtime work and needs its own current native regression. |
+| Full origin undo does not erase unrelated or foreign history | `transaction_store_v4::{origin_rollback_never_erases_an_intervening_foreign_publication,origin_rollback_protects_a_foreign_version_from_before_the_first_own_checkpoint}`; Manager disjoint-tree, sparse-namespace, foreign-refresh tests; actual Windows REPL `review_foundation_v4::named_rollback_does_not_erase_a_later_authorized_shell_edit` | Implemented strict conflict behavior. Retained named history is not reset to hide foreign changes. |
+| Direct argv, UTF-8/NUL stdin, unique consuming streams, replayable scalars | Lowering typed argv/port tests; actual `process_v4::exact_argv_boundaries_are_not_shell_parsed_and_spools_are_removed`; native `large_stderr_and_stdin_co_start_and_nonzero_exit_remains_replayable_data` | Implemented. Native argv rejects NUL; binary stdin does not. Nonzero status is data, not an automatic failed transaction. |
+| External-program filesystem IO is genuinely mediated | Actual Linux/Windows provider tests assert absolute, relative and descendant private writes while host data stays unchanged; runtime imports provider deltas into Manager | Implemented providers, not a rewritten private cwd. Managed roots and provider capability rejection define the boundary; no unisolated fallback. |
+| Plan -> Execute, checkable optimization/effect proofs, all-phase admission | Preparation certificate replay, graph effects/cohorts/namespace receipts; new `execution/events.rs` retains submission, owner and view identities | Preparation/proofs implemented. Working-tree runtime now actually consults Start, staged-output Publish and RegionCommit gates, joins/cancels discarded epochs and restores the checkpoint before reporting EpochReset. Source review found no further concrete P1; current native/CI regression gates still determine acceptance, not pure graph tests alone. |
+| Configurable bounded asynchronous execution | Admission owns process/stream/buffer permits; native concurrent stdin/stdout/stderr and independent-flow EOF tests | Limits and real async tasks implemented. Over-budget inseparable pipe cohorts deliberately fail before an unsafe serial wait; independent-flow progress must survive a saturated notification channel. |
+| Persistent REPL lifetime and diagnostics | Actual CLI/REPL tests retain macros, programs, named origins and source provenance across inputs; runtime owns handles until wait/stop/shutdown | Baseline implemented. Administrative stop now records per-owner typed cancellation and propagates join/cleanup failure; the native `stopping_a_native_owner_cancels_old_dependencies_without_poisoning_the_session` fixture exercises an old scalar alias and fresh subsequent work. |
+| Post-integration algorithm/data-structure, contention and millisecond optimization | `performance-v4.md` specifies finite-copy, planner scaling, flow completion/publication and long-session retention workloads | Not started; still a required delivery phase, not replaced by correctness-suite runtimes. |
+
+### Resolved event integration review actions
+
+The follow-up inspected actual current source after the integration owner froze
+its changes. No additional build was started by the reviewer.
+
+1. **Resolved: persistent process state dominates lossy wakeups.**
+   `RuntimeSession::drain_terminals` now reconciles every persistent cancelled
+   `exit_signal` into `ProcessEvent::Exited`, independent of the bounded queue.
+   `has_ready_work` also observes an unrecorded persistent exit without turning
+   an already-recorded exit into a busy loop. The deterministic unit regression
+   `execution::source_tests::saturated_terminal_channel_reconciles_persistent_process_exit`
+   fills the queue, proves the process notice cannot enter, drains every hint,
+   then checks both event recovery and no repeated-ready spin. The actual native
+   `exit_data_can_feed_a_live_peer_without_exporting_the_shared_view_first` fixture
+   exercises the consumer which motivated the issue. This follows Tokio's
+   [`try_send`](https://docs.rs/tokio/latest/tokio/sync/mpsc/struct.Sender.html#method.try_send)
+   and persistent
+   [`CancellationToken`](https://docs.rs/tokio-util/latest/tokio_util/sync/struct.CancellationToken.html#method.cancelled)
+   contracts: the queue is a hint, not completion state.
+2. **Resolved: administrative stop records cancellation and propagates failed joins.**
+   `cancel_active` now calls `cancel_transaction` for each implicit owner before
+   manager abort. That path records node/process/cohort cancellation, joins real
+   native programs and flow tasks, releases namespace permits and removes pending
+   owner obligations. Previously successful checkpoint receipts are not rewritten
+   as cancellation. `retain_cleanup_failure` retains the typed cause and paths,
+   and a failed join makes stop return an error. Ordinary expected cancellation
+   remains nonfatal. The native `stopping_a_native_owner_cancels_old_dependencies_without_poisoning_the_session`
+   regression checks that an old scalar dependency fails constructively after
+   stop, no private bytes publish and a new independent assignment succeeds.
+
+The source review also traced `region` Start admission, `quiesce` staged-file
+Publish gates, `settle_region` RegionCommit before manager finish, and the local
+rollback sequence: mark the pending epoch discarded, physically join/discard its
+IO/native work, restore Manager pending state, then record EpochReset. Canceled
+children satisfy region closure only through the successful reset event, never
+fabricated LogicalComplete or Committed events. Finite/HTTP/status observations
+remain ordered observations, not general time-travel cancellation candidates.
+Fresh native launches after staged-file handoff use a new epoch; co-start proof
+is limited to an actual shared native view. This bounded re-review found no
+additional concrete P1 defect in those paths.
+
+Actual platform regression results remain owned by the integration/CI acceptance
+record. This review does not claim a full current-tree pass or performance
+acceptance. The suspected nested-reset lookup issue was retracted: graph
+construction already flattens child `epoch_resets` into the parent, so the root
+lookup is valid under that explicit invariant.
+### Resolved P1: native deferred-ancestor gate exposed an owner-binding cycle
+
+The actual WSL `execution_workspace_v4::native_import_gates_future_source_and_destination_traversal`
+journey timed out in the integration run while the scratch-user-data journey
+passed. The runtime trace showed stdout node 4 admitted/spooled before blocked
+finite nodes 1–3. Those finite copies subsequently ran correctly against the
+imported pending native view, but stdout retained its earlier immutable plan,
+which did not yet bind their owner. Its Publish gate therefore demanded foreign
+`NodeCommitted` events instead of same-owner `NodeLogicalComplete`; the named
+transaction could not commit until that output published. This is a real
+closure cycle, not a filesystem traversal or native export failure.
+
+The integration owner's correction binds every named-body node and each Spawn
+actually declared there to its known runtime owner at region begin, before any
+child WorkNode can retain a plan. References to foreign process ports are not
+relabelled. This uses ownership already determined by the language and preserves
+immutable retained witnesses and the stricter foreign-publication gate. The
+integration owner then ran the exact actual WSL native fixture successfully,
+including raw parent traversal for source/literal/stdout destinations and named
+origin undo. Its trace confirmed Imported and same-owner LogicalComplete gates.
+This closes the reproduced owner-binding cycle; it is not a full-platform
+acceptance claim. No additional reviewer build was launched.
+
+The reaper now drains ready owners to a ledger-progress fixed point before
+subscribing for a new event. A later owner's publication in the same pass can
+therefore unblock an earlier owner without requiring another external wakeup.
+Only newly recorded ledger outcomes advance the progress counter, so rereading
+persistent exited states does not create an unbounded fixed-point spin.

@@ -8,8 +8,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -22,16 +25,72 @@ use crate::language::{DestinationMode, Isolation};
 use crate::process::ProcessConfig;
 use crate::syntax::Span;
 use crate::transaction::filesystem::{Entry, Snapshot};
+use crate::transaction::manager::{NamespaceMergePermit, NamespacePublicationOrder};
 
 use super::domain::{self, Domain, Source, Transfer};
 use super::endpoint;
 use super::error::{ExecutionError, Result};
+use super::events::{
+    self, Bindings, CancelReason, CohortKey, Event, ExternalWork, GateState, Ledger, NodeEvent,
+    NodeKey, Outcome, OwnerKey, Phase, ProcessEvent, PublicationOrder, SubmissionPlan, Visibility,
+};
 use super::physical;
 use super::program::{self, Program, Reader, Writer};
 use super::scheduler::Admission;
 use super::{Engine, ExecutionReport, Options};
 
+#[derive(Clone)]
+struct WorkNode {
+    plan: Arc<SubmissionPlan>,
+    key: NodeKey,
+    order: PublicationOrder,
+    transaction: TransactionId,
+    physical: Option<physical::Spec>,
+}
+
+struct NamespaceSlot {
+    permit: NamespaceMergePermit,
+    target: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+enum Terminal {
+    Flow(NodeKey),
+    Process(ProcessId),
+}
+
+struct TerminalNotice {
+    sender: mpsc::Sender<Terminal>,
+    event: Terminal,
+    ready: Arc<AtomicBool>,
+}
+
+#[derive(Debug)]
+struct SharedFailure(Arc<ExecutionError>);
+
+impl std::fmt::Display for SharedFailure {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(output)
+    }
+}
+
+impl std::error::Error for SharedFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+impl Drop for TerminalNotice {
+    fn drop(&mut self) {
+        // Wakeups may coalesce; owned handles and the persistent ledger remain
+        // the truth of success/failure even when the bounded channel is full.
+        self.ready.store(true, Ordering::Release);
+        let _ = self.sender.try_send(self.event.clone());
+    }
+}
+
 struct FlowResult {
+    work: WorkNode,
     origin: Option<crate::source::InstructionOrigin>,
     instruction: InstructionId,
     transaction: TransactionId,
@@ -41,14 +100,16 @@ struct FlowResult {
 }
 
 struct Flow {
+    work: WorkNode,
+    ready: Arc<AtomicBool>,
     origin: Option<crate::source::InstructionOrigin>,
     transaction: TransactionId,
     handle: JoinHandle<Result<FlowResult>>,
-    physical: bool,
     managed: Option<PathBuf>,
 }
 
 struct Deferred {
+    work: WorkNode,
     origin: Option<crate::source::InstructionOrigin>,
     instruction: InstructionId,
     transaction: TransactionId,
@@ -79,7 +140,24 @@ pub struct RuntimeSession {
     deferred: Vec<Deferred>,
     pins: BTreeMap<InstructionId, PinnedInput>,
     latest_processes: BTreeSet<ProcessId>,
-    completed_nodes: BTreeSet<InstructionId>,
+    ledger: Ledger,
+    progress: u64,
+    plan: Option<Arc<SubmissionPlan>>,
+    retained_plans: BTreeMap<events::SubmissionId, Vec<Weak<SubmissionPlan>>>,
+    active_work: Option<WorkNode>,
+    candidate: Option<program::SharedView>,
+    orders: BTreeMap<InstructionId, PublicationOrder>,
+    node_transactions: BTreeMap<NodeKey, TransactionId>,
+    process_nodes: BTreeMap<ProcessId, NodeKey>,
+    process_cohorts: BTreeMap<ProcessId, CohortKey>,
+    pending_nodes: BTreeMap<TransactionId, BTreeSet<NodeKey>>,
+    owner_tokens: BTreeMap<TransactionId, CancellationToken>,
+    terminal_tx: mpsc::Sender<Terminal>,
+    terminal_rx: mpsc::Receiver<Terminal>,
+    prepared_readers: BTreeMap<NodeKey, Reader>,
+    namespaces: BTreeMap<NodeKey, NamespaceSlot>,
+    closed_owners: BTreeSet<TransactionId>,
+    complete_submission: bool,
     pending_planning: Option<crate::hir::graph::PlanningContext>,
     planning: crate::hir::graph::PlanningContext,
     rejected_before_start: bool,
@@ -110,6 +188,12 @@ impl RuntimeSession {
                 Span::default(),
             ));
         }
+        let capacity = options
+            .limits
+            .max_streams
+            .saturating_add(options.limits.jobs)
+            .clamp(1, 1024);
+        let (terminal_tx, terminal_rx) = mpsc::channel(capacity);
         Ok(Self {
             origins: crate::source::Origins::default(),
             pending_origins: crate::source::Origins::default(),
@@ -122,7 +206,24 @@ impl RuntimeSession {
             deferred: Vec::new(),
             pins: BTreeMap::new(),
             latest_processes: BTreeSet::new(),
-            completed_nodes: BTreeSet::new(),
+            ledger: Ledger::default(),
+            progress: 0,
+            plan: None,
+            retained_plans: BTreeMap::new(),
+            active_work: None,
+            candidate: None,
+            orders: BTreeMap::new(),
+            node_transactions: BTreeMap::new(),
+            process_nodes: BTreeMap::new(),
+            process_cohorts: BTreeMap::new(),
+            pending_nodes: BTreeMap::new(),
+            owner_tokens: BTreeMap::new(),
+            terminal_tx,
+            terminal_rx,
+            prepared_readers: BTreeMap::new(),
+            namespaces: BTreeMap::new(),
+            closed_owners: BTreeSet::new(),
+            complete_submission: false,
             pending_planning: None,
             planning: crate::hir::graph::PlanningContext::default(),
             rejected_before_start: false,
@@ -193,14 +294,22 @@ impl RuntimeSession {
     }
 
     pub fn has_ready_work(&self) -> bool {
-        self.implicit.iter().any(|id| self.is_ready(*id))
+        !self.terminal_rx.is_empty()
+            || self.programs.values().any(|program| {
+                program.exit_signal.is_cancelled()
+                    && self
+                        .ledger
+                        .outcome(&Event::Process(program.id, ProcessEvent::Exited))
+                        .is_none()
+            })
+            || self.implicit.iter().any(|id| self.is_ready(*id))
     }
 
     fn is_ready(&self, transaction: TransactionId) -> bool {
         self.flows
             .iter()
             .filter(|flow| flow.transaction == transaction)
-            .all(|flow| flow.handle.is_finished())
+            .all(|flow| flow.ready.load(Ordering::Acquire) || flow.handle.is_finished())
             && self
                 .programs
                 .values()
@@ -221,6 +330,10 @@ impl RuntimeSession {
                 .collect(),
             ..crate::hir::graph::PlanningContext::default()
         };
+        context.pending_effects = self
+            .outstanding_work()
+            .filter_map(|work| work.plan.effects(work.key.instruction).ok().cloned())
+            .collect();
         self.attach_cohorts(&mut context);
         context
     }
@@ -229,6 +342,7 @@ impl RuntimeSession {
     /// retained immutable leases must not be reused for a later input's IDs.
     pub fn refinement_context(&self) -> crate::hir::graph::PlanningContext {
         let mut context = self.planning_context();
+        context.host_unstable = self.planning.host_unstable.clone();
         let latest_cohorts = self
             .latest_processes
             .iter()
@@ -322,14 +436,15 @@ impl RuntimeSession {
         self.reap_physical().await?;
         self.origins = std::mem::take(&mut self.pending_origins);
         self.active_origin = None;
-        self.planning = self.pending_planning.take().unwrap_or_default();
-        self.completed_nodes.clear();
+        let supplied_plan = self.pending_planning.take();
+        self.planning = supplied_plan.clone().unwrap_or_default();
         self.rejected_before_start = false;
         let prior_work = self.implicit.clone();
         let prior_flows = self.flows.len();
         if program.body.instructions.is_empty() {
             return Ok(ExecutionReport::default());
         }
+        self.preflight_resources(program)?;
         if !self.has_work()
             && let Some(engine) = &mut self.engine
             && !engine.manager.has_active_transactions()
@@ -341,10 +456,67 @@ impl RuntimeSession {
         }
         self.pins.clear();
         self.latest_processes.clear();
+        if supplied_plan.is_none() {
+            self.planning =
+                crate::preparation::prepare_with_context(program, true, self.planning_context())
+                    .map_err(|reports| {
+                        let mut reports = reports.into_iter();
+                        let report = reports
+                            .next()
+                            .expect("preparation failures contain a diagnostic");
+                        let mut error = ExecutionError::new(
+                            report.diagnostic.message.clone(),
+                            report.diagnostic.span,
+                        );
+                        error.report = Box::new(report);
+                        error
+                            .report
+                            .help
+                            .extend(reports.map(|report| report.diagnostic.message));
+                        error
+                    })?
+                    .context;
+        }
         self.preflight(program)?;
-        let domain = live_domain(program, &self.options)?;
+        let domain = live_domain(program, &self.options, &self.planning)?;
         self.enroll_physical_namespaces(program)?;
         self.enroll(&domain)?;
+        self.planning.namespace_merges.clear();
+        let id = self.ledger.next_submission().map_err(Self::binding_error)?;
+        self.orders = self
+            .ledger
+            .publication_orders(program)
+            .map_err(Self::binding_error)?;
+        self.complete_submission = complete;
+        self.active_work = None;
+        let mut context = self.refinement_context();
+        context.operation_facts = self.planning.operation_facts.clone();
+        context.existing_parent_frontiers = self.planning.existing_parent_frontiers.clone();
+        context.host_unstable = self.planning.host_unstable.clone();
+        context.namespace_merges.clear();
+        let graph = crate::hir::graph::build_with_context(program, &context);
+        let mut bindings = Bindings {
+            external: self.external_work(id)?,
+            ..Bindings::default()
+        };
+        for (process, program) in &self.programs {
+            bindings
+                .processes
+                .insert(*process, self.owner_key(program.transaction)?);
+        }
+        self.plan = Some(
+            SubmissionPlan::bind(
+                id,
+                Arc::new(program.clone()),
+                self.origins.clone(),
+                context,
+                graph,
+                bindings,
+            )
+            .map_err(Self::binding_error)?,
+        );
+        self.remember_plan(self.plan.as_ref().expect("submission bound").clone());
+        self.collect_plans();
         let result = self.region(&program.body, None, program).await;
         let result = match result {
             Ok(()) if complete => self.wait().await,
@@ -366,15 +538,54 @@ impl RuntimeSession {
                 }
                 return Err(failure);
             }
-            self.cancel.cancel();
-            self.cancel_programs(&mut failure).await;
-            self.cancel_flows().await;
-            let pending = self.implicit.iter().copied().collect::<Vec<_>>();
-            for id in pending {
-                self.engine_mut()?.abort(id, &mut failure);
+            let mut affected = self
+                .implicit
+                .difference(&prior_work)
+                .copied()
+                .collect::<BTreeSet<_>>();
+            if let Some(id) = failure.transaction {
+                affected.insert(id);
+            }
+            if let Some(work) = &self.active_work {
+                affected.insert(work.transaction);
+            }
+            for process in &self.latest_processes {
+                affected.insert(self.programs[process].transaction);
+            }
+            if self.cancel.is_cancelled() {
+                affected.extend(self.implicit.iter().copied());
+            }
+            for id in affected {
+                if !self.implicit.contains(&id) {
+                    continue;
+                }
+                let namespace = self
+                    .namespaces
+                    .keys()
+                    .any(|key| self.node_transactions.get(key) == Some(&id));
+                self.cancel_transaction(id, &mut failure).await;
+                if !namespace && !self.closed_owners.remove(&id) {
+                    self.engine_mut()?.abort(id, &mut failure);
+                }
                 self.implicit.remove(&id);
             }
-            self.cancel = self.options.cancel.child_token();
+            let submission = self.plan.as_ref().map(|plan| plan.id());
+            let unstarted = self
+                .namespaces
+                .keys()
+                .filter(|key| Some(key.submission) == submission)
+                .copied()
+                .collect::<Vec<_>>();
+            for key in unstarted {
+                if let Err(error) = self.release_namespace(key) {
+                    failure.report.help.push(error.to_string());
+                }
+            }
+            self.prepared_readers
+                .retain(|key, _| Some(key.submission) != submission);
+            if !self.has_work() {
+                self.cancel = self.options.cancel.child_token();
+            }
             return Err(failure);
         }
         if self.live_processes().is_empty() && self.flows.is_empty() && self.implicit.is_empty() {
@@ -392,10 +603,7 @@ impl RuntimeSession {
             if self.implicit.is_empty() {
                 break;
             }
-            tokio::select! {
-                () = self.cancel.cancelled() => return Err(ExecutionError::new("execution cancelled while waiting for ready cohorts", Span::default())),
-                () = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
-            }
+            self.wait_event().await?;
         }
         Ok(())
     }
@@ -404,15 +612,24 @@ impl RuntimeSession {
         self.cancel.cancel();
         let mut failure =
             ExecutionError::new("active program execution was cancelled", Span::default());
-        self.cancel_programs(&mut failure).await;
-        self.cancel_flows().await;
         let ids = self.implicit.iter().copied().collect::<Vec<_>>();
+        let mut joined = true;
         for id in ids {
-            self.engine_mut()?.abort(id, &mut failure);
+            let reserved = self
+                .namespaces
+                .keys()
+                .any(|key| self.node_transactions.get(key) == Some(&id));
+            joined &= self.cancel_transaction(id, &mut failure).await;
+            if !reserved && !self.closed_owners.remove(&id) {
+                self.engine_mut()?.abort(id, &mut failure);
+            }
             self.implicit.remove(&id);
         }
+        self.owner_tokens.clear();
+        self.prepared_readers.clear();
         self.cancel = self.options.cancel.child_token();
-        if failure.cause.is_some()
+        if !joined
+            || failure.cause.is_some()
             || !failure.recovery.is_empty()
             || !failure.compensation.is_empty()
         {
@@ -454,6 +671,23 @@ impl RuntimeSession {
         })
     }
 
+    fn preflight_resources(&self, program: &hir::Program) -> Result<()> {
+        fn needs_program(region: &Region) -> bool {
+            region.instructions.iter().any(|node| match &node.kind {
+                InstructionKind::Spawn { .. } => true,
+                InstructionKind::Transaction { body, .. } => needs_program(body),
+                _ => false,
+            })
+        }
+        if needs_program(&program.body)
+            && self.options.limits.memory_bytes / self.options.limits.buffer_bytes < 6
+        {
+            return Err(ExecutionError::new("the payload budget cannot admit one program space", Span::default())
+                .help("One program reserves six configured buffers; increase --memory-limit or reduce --buffer-size before execution."));
+        }
+        Ok(())
+    }
+
     fn preflight(&self, program: &hir::Program) -> Result<()> {
         fn walk(
             session: &RuntimeSession,
@@ -467,13 +701,16 @@ impl RuntimeSession {
                     destination,
                 } = &node.kind
                 {
-                    let physical = physical::inspect(source, destination, node.span)?.is_some()
-                        || match (source, destination) {
-                            (Input::File { location, .. }, Output::Stdin(_)) => {
-                                physical::source_stream(location, node.span)?.is_some()
-                            }
-                            _ => false,
-                        };
+                    let unstable = transfer_unstable(&session.planning, node.id);
+                    let physical = unstable && known_physical(source, destination)
+                        || !unstable
+                            && (physical::inspect(source, destination, node.span)?.is_some()
+                                || match (source, destination) {
+                                    (Input::File { location, .. }, Output::Stdin(_)) => {
+                                        physical::source_stream(location, node.span)?.is_some()
+                                    }
+                                    _ => false,
+                                });
                     if physical {
                         if transactional {
                             return Err(ExecutionError::new("a named transaction requires a transactional peer for external pipe/socket IO", node.span)
@@ -486,10 +723,13 @@ impl RuntimeSession {
                             return Err(ExecutionError::new("remote publication needs a versioned participant inside a named transaction or program output cohort", node.span)
                                 .help("No effects started. Finite file/literal transfers are supported at the top level; remote program cohorts require a prepare/commit/abort participant."));
                         }
-                        session.guard_finite(source, destination, node.span)?;
+                        if !unstable {
+                            session.guard_finite(source, destination, node.span)?;
+                        }
                         continue;
                     }
                     if !transactional
+                        && !unstable
                         && matches!(destination, Output::File { .. })
                         && !matches!(source, Input::Port { .. })
                     {
@@ -537,10 +777,6 @@ impl RuntimeSession {
         let mut processes = false;
         walk(self, &program.body, &mut processes, false)?;
         if processes {
-            if self.options.limits.memory_bytes / self.options.limits.buffer_bytes < 6 {
-                return Err(ExecutionError::new("the payload budget cannot admit one program space", Span::default())
-                    .help("One program reserves six configured buffers; increase --memory-limit or reduce --buffer-size before execution."));
-            }
             let worker = self.worker.as_ref().ok_or_else(|| {
                 ExecutionError::new(
                     "configure the msync internal worker before launching a program",
@@ -672,6 +908,9 @@ impl RuntimeSession {
             else {
                 continue;
             };
+            if transfer_unstable(&self.planning, node.id) {
+                continue;
+            }
             let Some(spec) = physical::inspect(source, destination, node.span)? else {
                 continue;
             };
@@ -721,17 +960,822 @@ impl RuntimeSession {
         Ok(id)
     }
 
+    fn binding_error(error: events::BindingError) -> ExecutionError {
+        ExecutionError::caused(
+            "cannot bind the executable event plan",
+            Span::default(),
+            error,
+        )
+    }
+
+    fn retain_cleanup_failure(failure: &mut ExecutionError, error: ExecutionError) {
+        failure
+            .report
+            .help
+            .push(format!("owned cleanup failed: {error}"));
+        failure
+            .retained_paths
+            .extend(error.retained_paths.iter().cloned());
+        if failure.cause.is_none() {
+            failure.cause = Some(Box::new(SharedFailure(Arc::new(error))));
+        }
+    }
+
+    fn owner_key(&self, transaction: TransactionId) -> Result<OwnerKey> {
+        let engine = self.engine.as_ref().ok_or_else(|| {
+            ExecutionError::new(
+                "an event owner requires an execution workspace",
+                Span::default(),
+            )
+        })?;
+        OwnerKey::new(format!(
+            "{}:txn-{}",
+            engine.workspace.display(),
+            transaction.0
+        ))
+        .map_err(Self::binding_error)
+    }
+
+    fn event(&mut self, event: Event) -> Result<()> {
+        let changed = self
+            .ledger
+            .record(event, Outcome::Succeeded)
+            .map_err(Self::binding_error)?;
+        if changed {
+            self.progress = self.progress.checked_add(1).ok_or_else(|| {
+                ExecutionError::new("runtime event progress identity exhausted", Span::default())
+            })?;
+        }
+        Ok(())
+    }
+
+    fn failure(&mut self, work: &WorkNode, error: ExecutionError) -> ExecutionError {
+        let cause = Arc::new(error);
+        self.ledger.fail_node(work.key, cause.clone());
+        let mut error = ExecutionError::caused(
+            "a bound resource operation failed",
+            cause.report.diagnostic.span,
+            SharedFailure(cause.clone()),
+        );
+        error.report = cause.report.clone();
+        error.origin = cause.origin.clone();
+        error.transaction = Some(work.transaction);
+        error.retained_paths = cause.retained_paths.clone();
+        error
+    }
+
+    fn gate(&mut self, work: &WorkNode, phase: Phase) -> Result<bool> {
+        match self
+            .ledger
+            .gate(&work.plan, work.key.instruction, phase)
+            .map_err(Self::binding_error)?
+        {
+            GateState::Ready => Ok(true),
+            GateState::Pending(_) => Ok(false),
+            GateState::Cancelled {
+                event,
+                reason,
+                cause,
+            } => {
+                self.ledger.cancel_node(work.key, reason, cause);
+                Err(ExecutionError::new(
+                    format!("a prerequisite was discarded: {reason:?}"),
+                    work.plan
+                        .origin(work.key.instruction)
+                        .map_or(Span::default(), |origin| origin.site.span),
+                )
+                .help(format!(
+                    "cancelled prerequisite: {event:?}; submit a new producer before retrying"
+                )))
+            }
+            GateState::Failed { event, cause } => {
+                let mut error = ExecutionError::caused(
+                    "a prerequisite resource operation failed",
+                    cause.report.diagnostic.span,
+                    SharedFailure(cause.clone()),
+                )
+                .with_origin(cause.origin.as_deref());
+                error
+                    .report
+                    .help
+                    .push(format!("failed prerequisite: {event:?}"));
+                Err(self.failure(work, error))
+            }
+        }
+    }
+
+    fn terminal(&mut self, terminal: Terminal) -> Result<()> {
+        match terminal {
+            Terminal::Flow(key) => {
+                if let Some(flow) = self.flows.iter().find(|flow| flow.work.key == key) {
+                    debug_assert!(flow.ready.load(Ordering::Acquire));
+                }
+            }
+            Terminal::Process(process) => {
+                if self
+                    .programs
+                    .get(&process)
+                    .is_some_and(|program| program.exit_signal.is_cancelled())
+                {
+                    self.event(Event::Process(process, ProcessEvent::Exited))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn drain_terminals(&mut self) -> Result<()> {
+        while let Ok(event) = self.terminal_rx.try_recv() {
+            self.terminal(event)?;
+        }
+        // Notifications are bounded hints. A full channel must not hide an
+        // exited producer while its cohort peer still waits for its exit data.
+        let exited = self
+            .programs
+            .values()
+            .filter(|program| program.exit_signal.is_cancelled())
+            .map(|program| program.id)
+            .collect::<Vec<_>>();
+        for process in exited {
+            self.event(Event::Process(process, ProcessEvent::Exited))?;
+        }
+        Ok(())
+    }
+
+    async fn wait_event(&mut self) -> Result<()> {
+        let mut changed = self.ledger.subscribe();
+        tokio::select! {
+            () = self.cancel.cancelled() => Err(ExecutionError::new("execution cancelled while waiting for a resource event", Span::default())),
+            terminal = self.terminal_rx.recv() => match terminal {
+                Some(event) => self.terminal(event),
+                None => Err(ExecutionError::new("execution event channel closed with pending work", Span::default())),
+            },
+            _ = changed.changed() => Ok(()),
+        }
+    }
+
+    fn work(&self) -> Result<WorkNode> {
+        self.active_work.clone().ok_or_else(|| {
+            ExecutionError::new(
+                "an executable operation has no bound submission owner",
+                Span::default(),
+            )
+        })
+    }
+
+    fn owner_token(&mut self, transaction: TransactionId) -> CancellationToken {
+        self.owner_tokens
+            .entry(transaction)
+            .or_insert_with(|| self.cancel.child_token())
+            .clone()
+    }
+
+    fn bound_plan(&self, additions: Bindings) -> Result<Arc<SubmissionPlan>> {
+        let previous = self
+            .plan
+            .as_ref()
+            .expect("an executing submission retains its plan");
+        let mut context = self.refinement_context();
+        context.operation_facts = self.planning.operation_facts.clone();
+        context.existing_parent_frontiers = self.planning.existing_parent_frontiers.clone();
+        context.namespace_merges = self.planning.namespace_merges.clone();
+        let graph = crate::hir::graph::build_with_context(previous.program(), &context);
+        let mut bindings = additions;
+        bindings.external.extend(self.external_work(previous.id())?);
+        for (id, program) in &self.programs {
+            bindings
+                .processes
+                .insert(*id, self.owner_key(program.transaction)?);
+        }
+        let plan = previous
+            .rebind(context, graph, bindings)
+            .map_err(Self::binding_error)?;
+        Ok(plan)
+    }
+
+    fn outstanding_work(&self) -> impl Iterator<Item = &WorkNode> {
+        self.flows
+            .iter()
+            .map(|flow| &flow.work)
+            .chain(self.deferred.iter().map(|assignment| &assignment.work))
+    }
+
+    fn external_work(&self, submission: events::SubmissionId) -> Result<Vec<ExternalWork>> {
+        let mut seen = BTreeSet::new();
+        self.outstanding_work()
+            .filter(|work| work.key.submission != submission && seen.insert(work.key))
+            .map(|work| {
+                let phase = if self
+                    .deferred
+                    .iter()
+                    .any(|assignment| assignment.work.key == work.key)
+                    || self
+                        .flows
+                        .iter()
+                        .any(|flow| flow.work.key == work.key && flow.managed.is_some())
+                {
+                    Phase::Publish
+                } else {
+                    Phase::Start
+                };
+                ExternalWork::new(
+                    work.plan.clone(),
+                    work.key,
+                    self.owner_key(work.transaction)?,
+                    work.plan
+                        .effects(work.key.instruction)
+                        .map_err(Self::binding_error)?
+                        .clone(),
+                    phase,
+                )
+                .map_err(Self::binding_error)
+            })
+            .collect()
+    }
+
+    fn refresh_plan(&mut self, additions: Bindings) -> Result<Arc<SubmissionPlan>> {
+        let plan = self.bound_plan(additions)?;
+        self.remember_plan(plan.clone());
+        self.plan = Some(plan.clone());
+        Ok(plan)
+    }
+
+    fn remember_plan(&mut self, plan: Arc<SubmissionPlan>) {
+        let versions = self.retained_plans.entry(plan.id()).or_default();
+        if !versions
+            .iter()
+            .any(|version| version.ptr_eq(&Arc::downgrade(&plan)))
+        {
+            versions.push(Arc::downgrade(&plan));
+        }
+    }
+
+    fn collect_plans(&mut self) {
+        let protected = self
+            .pending_nodes
+            .values()
+            .flatten()
+            .copied()
+            .chain(self.process_nodes.values().copied())
+            .chain(self.prepared_readers.keys().copied())
+            .chain(self.namespaces.keys().copied())
+            .map(|key| key.submission)
+            .collect::<BTreeSet<_>>();
+        let mut retired = Vec::new();
+        self.retained_plans.retain(|id, versions| {
+            versions.retain(|version| version.strong_count() > 0);
+            if versions.is_empty() && !protected.contains(id) {
+                retired.push(*id);
+                false
+            } else {
+                true
+            }
+        });
+        for id in retired {
+            self.ledger.retire_submission(id);
+            self.node_transactions.retain(|key, _| key.submission != id);
+        }
+    }
+
+    fn prepare_work(
+        &mut self,
+        node: &Instruction,
+        current: Option<TransactionId>,
+    ) -> Result<(WorkNode, Option<program::SharedView>)> {
+        let plan = self
+            .plan
+            .as_ref()
+            .expect("submission plan bound before execution");
+        let key = plan.node_key(node.id).map_err(Self::binding_error)?;
+        let shared_peer = if let InstructionKind::Spawn { process, .. } = &node.kind {
+            self.programs
+                .values()
+                .find(|peer| {
+                    self.shareable(peer)
+                        && hir::graph::same_native_epoch(
+                            plan.program(),
+                            plan.context(),
+                            peer.id,
+                            *process,
+                        )
+                })
+                .map(|peer| peer.id)
+        } else {
+            None
+        };
+        let transaction = if let Some(id) = self.node_transactions.get(&key) {
+            *id
+        } else {
+            match &node.kind {
+                InstructionKind::Transaction { .. } => self.engine_mut()?.allocate()?,
+                _ if current.is_some() => current.unwrap(),
+                InstructionKind::Spawn { .. } => shared_peer
+                    .map(|process| self.programs[&process].transaction)
+                    .map_or_else(|| self.engine_mut()?.allocate(), Ok)?,
+                InstructionKind::Transfer {
+                    destination: Output::Stdin(process),
+                    ..
+                } => {
+                    self.programs
+                        .get(process)
+                        .ok_or_else(|| {
+                            ExecutionError::new("program input has no live owner", node.span)
+                        })?
+                        .transaction
+                }
+                InstructionKind::Transfer {
+                    source: Input::Port { process, .. },
+                    ..
+                } => match self
+                    .programs
+                    .get(process)
+                    .map(|program| program.transaction)
+                {
+                    Some(id) if self.implicit.contains(&id) => id,
+                    _ => self.engine_mut()?.allocate()?,
+                },
+                _ => self.engine_mut()?.allocate()?,
+            }
+        };
+        let unstable = self.host_unstable(node.id, hir::effects::EndpointRole::Source)
+            || self.host_unstable(node.id, hir::effects::EndpointRole::Destination);
+        let physical = match &node.kind {
+            InstructionKind::Transfer {
+                source,
+                destination,
+            } if !unstable => physical::inspect(source, destination, node.span)?,
+            _ => None,
+        };
+        self.observe_node(node, physical.as_ref())?;
+        if current.is_none() && !unstable {
+            self.reserve_namespace(key, node, physical.as_ref())?;
+        }
+        let mut bindings = Bindings::default();
+        bindings.nodes.insert(node.id, self.owner_key(transaction)?);
+        let mut plan = self.bound_plan(bindings)?;
+        let candidate = if let InstructionKind::Spawn { process, .. } = &node.kind {
+            shared_peer
+                .and_then(|peer| self.programs.get(&peer))
+                .filter(|program| program.transaction == transaction)
+                .and_then(Program::fork_shared)
+                .map(|candidate| (*process, candidate))
+        } else {
+            None
+        };
+        if let Some((process, (cohort, prepared))) = &candidate {
+            let effects = prepared.effects().clone();
+            let mut context = plan.context().clone();
+            context.process_effects.insert(*process, effects.clone());
+            context
+                .cohort_views
+                .retain(|proof| proof.view_id() != effects.view_id());
+            let mut members = self
+                .programs
+                .values()
+                .filter(|program| program.is_running() && program.cohort == *cohort)
+                .map(|program| (program.id, program.effects.clone()))
+                .collect::<Vec<_>>();
+            members.push((*process, effects.clone()));
+            context.cohort_views.push(
+                crate::hir::graph::CohortViewProof::shared(
+                    self.owner_key(transaction)?.as_str(),
+                    format!("{}:cohort-{}", effects.view_id(), cohort.0),
+                    members,
+                )
+                .map_err(|message| ExecutionError::new(message, node.span))?,
+            );
+            let graph = crate::hir::graph::build_with_context(plan.program(), &context);
+            let mut bindings = Bindings::default();
+            bindings
+                .processes
+                .insert(*process, self.owner_key(transaction)?);
+            plan = plan
+                .rebind(context, graph, bindings)
+                .map_err(Self::binding_error)?;
+        }
+        Ok((
+            WorkNode {
+                plan,
+                key,
+                order: self.orders[&node.id],
+                transaction,
+                physical,
+            },
+            candidate.map(|(_, candidate)| candidate),
+        ))
+    }
+
+    fn observe_node(
+        &mut self,
+        node: &Instruction,
+        physical: Option<&physical::Spec>,
+    ) -> Result<()> {
+        let InstructionKind::Transfer {
+            source,
+            destination,
+        } = &node.kind
+        else {
+            return Ok(());
+        };
+        let classify = |path: &Path| match fs::symlink_metadata(path) {
+            Ok(meta) if meta.is_file() => crate::plan::FileClass::Regular,
+            Ok(meta) if meta.is_dir() => crate::plan::FileClass::Directory,
+            Ok(_) => crate::plan::FileClass::Stream,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                crate::plan::FileClass::Missing
+            }
+            Err(_) => crate::plan::FileClass::Unknown,
+        };
+        let source_class = match source {
+            _ if self.host_unstable(node.id, hir::effects::EndpointRole::Source) => self
+                .planning
+                .operation_facts
+                .get(&node.id)
+                .map_or(crate::plan::FileClass::Unknown, |facts| facts.source),
+            Input::File { location, .. }
+                if matches!(
+                    location.backend,
+                    Backend::Local | Backend::Env | Backend::Path
+                ) =>
+            {
+                classify(&local(location, true, node.span)?)
+            }
+            Input::File { location, .. } if matches!(location.backend, Backend::Tcp { .. }) => {
+                crate::plan::FileClass::Stream
+            }
+            _ => crate::plan::FileClass::Unknown,
+        };
+        let destination_class = match destination {
+            _ if self.host_unstable(node.id, hir::effects::EndpointRole::Destination) => self
+                .planning
+                .operation_facts
+                .get(&node.id)
+                .map_or(crate::plan::FileClass::Unknown, |facts| facts.destination),
+            Output::File { location, .. }
+                if matches!(location.backend, Backend::Local | Backend::Env) =>
+            {
+                classify(&local(location, false, node.span)?)
+            }
+            _ => crate::plan::FileClass::Unknown,
+        };
+        self.planning
+            .operation_facts
+            .entry(node.id)
+            .or_insert_with(|| {
+                physical.map_or(
+                    crate::hir::effects::OperationFacts {
+                        source: source_class,
+                        destination: destination_class,
+                    },
+                    |spec| spec.kinds.into(),
+                )
+            });
+        Ok(())
+    }
+
+    fn host_unstable(&self, instruction: InstructionId, role: hir::effects::EndpointRole) -> bool {
+        self.planning
+            .host_unstable
+            .contains(&hir::effects::EndpointKey { instruction, role })
+    }
+
+    fn output_path(
+        &self,
+        instruction: InstructionId,
+        location: &Location,
+        span: Span,
+    ) -> Result<PathBuf> {
+        if self.host_unstable(instruction, hir::effects::EndpointRole::Destination) {
+            domain::deferred_local(location, false, span)
+        } else {
+            local(location, false, span)
+        }
+    }
+
+    fn selected_path(
+        &mut self,
+        transaction: TransactionId,
+        raw: &Path,
+        span: Span,
+    ) -> Result<PathBuf> {
+        self.engine_mut()?
+            .manager
+            .resolve_path(transaction, raw)
+            .map_err(|cause| {
+                ExecutionError::caused(
+                    "cannot resolve the endpoint in its transaction view",
+                    span,
+                    cause,
+                )
+            })
+    }
+
+    fn selected_source(
+        &mut self,
+        instruction: InstructionId,
+        source: &Input,
+        transaction: TransactionId,
+        span: Span,
+    ) -> Result<Source> {
+        if self.host_unstable(instruction, hir::effects::EndpointRole::Source)
+            && let Input::File { location, .. } = source
+            && matches!(
+                location.backend,
+                Backend::Local | Backend::Env | Backend::Path
+            )
+        {
+            let raw = domain::deferred_local(location, true, span)?;
+            return self
+                .selected_path(transaction, &raw, span)
+                .map(Source::Local);
+        }
+        file_source(source, span)
+    }
+
+    fn process_data(&self, process: ProcessId, port: ReadPort, span: Span) -> Result<()> {
+        if port == ReadPort::Pid {
+            return Ok(());
+        }
+        match self.ledger.outcome(&Event::Process(process, ProcessEvent::Imported)) {
+            Some(Outcome::Cancelled { reason, .. }) => Err(ExecutionError::new(
+                format!("program data belongs to a discarded epoch: {reason:?}"), span,
+            ).help("Launch a new program before consuming cancelled output or exit data; already committed receipts remain readable.")),
+            Some(Outcome::Failed(cause)) => Err(ExecutionError::caused(
+                "program data producer failed", span, SharedFailure(cause.clone()),
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    fn shareable(&self, program: &Program) -> bool {
+        program.is_running()
+            && !self
+                .flows
+                .iter()
+                .any(|flow| flow.transaction == program.transaction && flow.managed.is_some())
+            && !self
+                .deferred
+                .iter()
+                .any(|assignment| assignment.transaction == program.transaction)
+    }
+
+    fn reserve_namespace(
+        &mut self,
+        key: NodeKey,
+        node: &Instruction,
+        physical: Option<&physical::Spec>,
+    ) -> Result<()> {
+        if self.namespaces.contains_key(&key) {
+            return Ok(());
+        }
+        let InstructionKind::Transfer {
+            source,
+            destination:
+                Output::File {
+                    location,
+                    mode: DestinationMode::Exact,
+                },
+        } = &node.kind
+        else {
+            return Ok(());
+        };
+        let facts = self.planning.operation_facts[&node.id];
+        if location.backend != Backend::Local
+            || facts.destination != crate::plan::FileClass::Missing
+        {
+            return Ok(());
+        }
+        let eligible = matches!(source, Input::Literal(_))
+            || matches!(source, Input::File { pattern: None, .. })
+                && matches!(
+                    facts.source,
+                    crate::plan::FileClass::Regular | crate::plan::FileClass::Stream
+                );
+        if !eligible || physical.is_some_and(|spec| spec.managed.is_none()) {
+            return Ok(());
+        }
+        let target = local(location, false, node.span)?;
+        let Some(parent) = Path::new(&location.path).parent() else {
+            return Ok(());
+        };
+        let permit = match self
+            .engine_mut()?
+            .manager
+            .certify_namespace_children(std::slice::from_ref(&target))
+        {
+            Ok(permit) => permit,
+            Err(_) => return Ok(()),
+        };
+        let epoch = crate::hir::effects::NamespaceMergeEpoch::verified(
+            permit.provider(),
+            permit.epoch_id().to_string(),
+            permit.parent_key().clone(),
+        )
+        .map_err(|message| ExecutionError::new(message, node.span))?;
+        let proof = crate::hir::effects::NamespaceMergeProof::insert_file(
+            epoch,
+            Location {
+                backend: Backend::Local,
+                path: parent.to_string_lossy().into_owned(),
+            },
+            location.clone(),
+            permit
+                .child_key(&target)
+                .expect("minted permit contains its exact native child")
+                .clone(),
+            self.orders[&node.id].0,
+        )
+        .map_err(|message| ExecutionError::new(message, node.span))?;
+        self.planning.existing_parent_frontiers.insert(
+            node.id,
+            Location {
+                backend: Backend::Local,
+                path: parent.to_string_lossy().into_owned(),
+            },
+        );
+        self.planning.namespace_merges.insert(node.id, proof);
+        self.namespaces
+            .insert(key, NamespaceSlot { permit, target });
+        Ok(())
+    }
+
+    fn release_namespace(&mut self, key: NodeKey) -> Result<()> {
+        if let Some(slot) = self.namespaces.remove(&key) {
+            self.engine_mut()?
+                .manager
+                .cancel_namespace_child(&slot.permit, &slot.target)
+                .map_err(|cause| {
+                    ExecutionError::caused(
+                        "cannot release a reserved namespace child",
+                        Span::default(),
+                        cause,
+                    )
+                })?;
+            if self
+                .plan
+                .as_ref()
+                .is_some_and(|plan| plan.id() == key.submission)
+            {
+                self.planning.namespace_merges.remove(&key.instruction);
+            }
+        }
+        Ok(())
+    }
+
+    fn publish_namespace(
+        &mut self,
+        work: &WorkNode,
+        snapshot: &Snapshot,
+        span: Span,
+    ) -> Result<()> {
+        let slot = self
+            .namespaces
+            .get(&work.key)
+            .expect("namespace publication retains its actual permit");
+        let (permit, target) = (slot.permit.clone(), slot.target.clone());
+        let receipt = self
+            .engine_mut()?
+            .manager
+            .publish_merged_file(
+                work.transaction,
+                &permit,
+                &target,
+                snapshot,
+                NamespacePublicationOrder(work.order.0),
+            )
+            .map_err(|cause| {
+                ExecutionError::caused("cannot publish the reserved namespace child", span, cause)
+            })?;
+        self.namespaces.remove(&work.key);
+        let engine = self.engine_mut()?;
+        engine.report.assignments += 1;
+        for entry in snapshot.entries().values() {
+            if let Entry::File { artifact, .. } = entry {
+                engine.report.assigned_files += 1;
+                engine.report.assigned_bytes =
+                    engine.report.assigned_bytes.saturating_add(artifact.len());
+            }
+        }
+        engine.committed(receipt.report);
+        if self.implicit.contains(&work.transaction) {
+            self.closed_owners.insert(work.transaction);
+        }
+        self.logical_complete(work)?;
+        self.owner_committed(work.transaction)?;
+        Ok(())
+    }
+
+    fn logical_complete(&mut self, work: &WorkNode) -> Result<()> {
+        self.event(Event::Node(work.key, NodeEvent::LogicalComplete))?;
+        self.pending_nodes
+            .entry(work.transaction)
+            .or_default()
+            .insert(work.key);
+        Ok(())
+    }
+
+    fn owner_committed(&mut self, transaction: TransactionId) -> Result<()> {
+        for key in self.pending_nodes.remove(&transaction).unwrap_or_default() {
+            self.event(Event::Node(key, NodeEvent::Committed))?;
+        }
+        let processes = self
+            .programs
+            .values()
+            .filter(|program| program.transaction == transaction && program.is_sealed())
+            .map(|program| program.id)
+            .collect::<Vec<_>>();
+        for process in processes {
+            self.event(Event::Process(process, ProcessEvent::Committed))?;
+            if let Some(cohort) = self.process_cohorts.get(&process).cloned() {
+                self.event(Event::Cohort(cohort, Visibility::Committed))?;
+            }
+            self.process_nodes.remove(&process);
+        }
+        self.owner_tokens.remove(&transaction);
+        Ok(())
+    }
+
     async fn region(
         &mut self,
         region: &Region,
         current: Option<TransactionId>,
         program: &hir::Program,
     ) -> Result<()> {
-        for instruction in &region.instructions {
+        let mut pending = region.instructions.iter().collect::<Vec<_>>();
+        while !pending.is_empty() {
             if self.cancel.is_cancelled() {
-                return Err(ExecutionError::new("execution cancelled", instruction.span));
+                return Err(ExecutionError::new("execution cancelled", pending[0].span));
             }
-            let origin = self.origins.get(&instruction.id).cloned();
+            let mut selected = None;
+            for (index, instruction) in pending.iter().enumerate() {
+                if !self.ports_available(instruction) {
+                    continue;
+                }
+                let (mut work, candidate) = self.prepare_work(instruction, current)?;
+                if self.may_pin_input(instruction, &work)? {
+                    self.plan = Some(work.plan.clone());
+                    self.active_work = Some(work.clone());
+                    let InstructionKind::Transfer { source, .. } = &instruction.kind else {
+                        unreachable!()
+                    };
+                    let reader = self
+                        .reader(instruction.id, source, work.transaction, instruction.span)
+                        .await?;
+                    self.prepared_readers.insert(work.key, reader);
+                    work.plan = self.refresh_plan(Bindings::default())?;
+                }
+                if self.gate(&work, Phase::Start)? {
+                    selected = Some((index, work, candidate));
+                    break;
+                }
+                self.release_namespace(work.key)?;
+                if let Some((_, prepared)) = candidate {
+                    prepared.discard().map_err(|cause| {
+                        ExecutionError::caused(
+                            "cannot release an unadmitted shared-view lease",
+                            instruction.span,
+                            cause,
+                        )
+                    })?;
+                }
+            }
+            let Some((index, work, candidate)) = selected else {
+                let before = self.progress;
+                self.reap_physical().await?;
+                if before != self.progress {
+                    continue;
+                }
+                if !self.complete_submission && current.is_none() {
+                    self.rejected_before_start = true;
+                    return Err(ExecutionError::new("this submission is waiting for an owned resource producer; no blocked operation started", pending[0].span)
+                        .help("Connect the required stdin, finish its producer with /wait, or cancel the conflicting job with /stop before retrying."));
+                }
+                for program in self
+                    .programs
+                    .values_mut()
+                    .filter(|program| program.is_running())
+                {
+                    let has_pending_input = pending.iter().any(|node| matches!(node.kind, InstructionKind::Transfer { destination: Output::Stdin(process), .. } if process == program.id));
+                    if !has_pending_input {
+                        program.close_unused_stdin();
+                    }
+                }
+                if self.flows.is_empty() && self.live_processes().is_empty() {
+                    return Err(ExecutionError::new(
+                        "the executable event graph has no producer for its remaining prerequisites",
+                        pending[0].span,
+                    ));
+                }
+                self.wait_event().await?;
+                continue;
+            };
+            let instruction = pending.remove(index);
+            let origin = work.plan.origin(instruction.id).cloned();
+            self.plan = Some(work.plan.clone());
+            self.remember_plan(work.plan.clone());
+            self.node_transactions.insert(work.key, work.transaction);
+            self.candidate = candidate;
+            self.active_work = Some(work.clone());
             self.instruction(instruction, current, program)
                 .await
                 .map_err(|error| error.with_origin(origin.as_ref()))?;
@@ -743,15 +1787,76 @@ impl RuntimeSession {
                 } => {
                     matches!(source, Input::Port { .. })
                         || matches!(destination, Output::Stdin(_))
-                        || physical::inspect(source, destination, instruction.span)?.is_some()
+                        || work.physical.is_some()
                 }
                 _ => false,
             };
             if !deferred {
-                self.completed_nodes.insert(instruction.id);
+                self.event(Event::Node(work.key, NodeEvent::ServiceReady))?;
+                self.logical_complete(&work)?;
+                if current.is_none()
+                    || matches!(
+                        instruction.kind,
+                        InstructionKind::Commit { .. } | InstructionKind::Transaction { .. }
+                    )
+                {
+                    self.owner_committed(work.transaction)?;
+                }
             }
         }
         Ok(())
+    }
+
+    fn ports_available(&self, node: &Instruction) -> bool {
+        let InstructionKind::Transfer {
+            source,
+            destination,
+        } = &node.kind
+        else {
+            return true;
+        };
+        (!matches!(source, Input::Port { process, .. } if !self.programs.contains_key(process)))
+            && (!matches!(destination, Output::Stdin(process) if !self.programs.contains_key(process)))
+    }
+
+    fn may_pin_input(&self, node: &Instruction, work: &WorkNode) -> Result<bool> {
+        let InstructionKind::Transfer {
+            source:
+                Input::File {
+                    location,
+                    pattern: None,
+                },
+            destination: Output::Stdin(_),
+        } = &node.kind
+        else {
+            return Ok(false);
+        };
+        if self.prepared_readers.contains_key(&work.key)
+            || !self.host_unstable(node.id, hir::effects::EndpointRole::Source)
+                && physical::source_stream(location, node.span)?.is_some()
+        {
+            return Ok(false);
+        }
+        let pending = match self
+            .ledger
+            .gate(&work.plan, node.id, Phase::Start)
+            .map_err(Self::binding_error)?
+        {
+            GateState::Pending(pending) => pending,
+            GateState::Ready => Vec::new(),
+            GateState::Failed { .. } | GateState::Cancelled { .. } => return Ok(false),
+        };
+        let owner = self.owner_key(work.transaction)?;
+        Ok(pending.iter().all(|event| match event {
+            Event::Process(process, ProcessEvent::Imported) => {
+                self.programs.get(process).is_some_and(|program| {
+                    self.owner_key(program.transaction)
+                        .is_ok_and(|value| value == owner)
+                })
+            }
+            Event::Cohort(cohort, Visibility::Imported) => cohort.owner == owner,
+            _ => false,
+        }))
     }
 
     fn instruction<'a>(
@@ -772,7 +1877,6 @@ impl RuntimeSession {
                         .await
                 }
                 InstructionKind::Transaction { transaction, body } => {
-                    self.wait().await?;
                     let isolation = program
                         .transactions
                         .iter()
@@ -781,7 +1885,8 @@ impl RuntimeSession {
                             ExecutionError::new("transaction metadata is missing", node.span)
                         })?
                         .isolation;
-                    let id = self.engine_mut()?.allocate()?;
+                    let work = self.work()?;
+                    let id = work.transaction;
                     self.engine_mut()?
                         .manager
                         .begin(id, isolation)
@@ -789,10 +1894,19 @@ impl RuntimeSession {
                             ExecutionError::caused("cannot begin transaction", node.span, cause)
                         })?;
                     self.engine_mut()?.named.insert(*transaction, id);
+                    let mut bindings = Bindings::default();
+                    let owner = self.owner_key(id)?;
+                    for child in &body.instructions {
+                        bindings.nodes.insert(child.id, owner.clone());
+                        if let InstructionKind::Spawn { process, .. } = &child.kind {
+                            bindings.processes.insert(*process, owner.clone());
+                        }
+                    }
+                    self.refresh_plan(bindings)?;
                     let result = self.region(body, Some(id), program).await;
                     let result = match result {
                         Ok(()) => self
-                            .quiesce(id)
+                            .settle_region(&work)
                             .await
                             .and_then(|()| self.engine_mut()?.finish(id, node.span)),
                         error => error,
@@ -809,10 +1923,13 @@ impl RuntimeSession {
                         .engine_mut()?
                         .current(*transaction, current, node.span)?;
                     self.quiesce(id).await?;
+                    let work = self.work()?;
+                    self.await_gate(&work, Phase::Publish).await?;
                     let report = self.engine_mut()?.manager.checkpoint(id).map_err(|cause| {
                         ExecutionError::caused("checkpoint failed", node.span, cause)
                     })?;
                     self.engine_mut()?.committed(report);
+                    self.owner_committed(id)?;
                     Ok(())
                 }
                 InstructionKind::Rollback { transaction, scope } => {
@@ -830,21 +1947,56 @@ impl RuntimeSession {
                                     node.span,
                                 ));
                             }
+                            let work = self.work()?;
+                            let frame = self
+                                .ledger
+                                .cancel_epoch(work.plan.clone(), node.id)
+                                .map_err(Self::binding_error)?;
+                            debug_assert_eq!(frame.plan().id(), work.key.submission);
+                            debug_assert_eq!(frame.controller(), work.key);
+                            let controlled = &frame.cut().processes;
+                            debug_assert!(
+                                self.programs
+                                    .values()
+                                    .filter(
+                                        |program| program.transaction == id && program.is_running()
+                                    )
+                                    .all(|program| controlled.contains(&program.id))
+                            );
                             let mut failure = ExecutionError::new(
                                 "discarding the pending program epoch",
                                 node.span,
                             );
-                            self.cancel_transaction(id, &mut failure).await;
-                            self.engine_mut()?
-                                .manager
-                                .rollback_pending(id)
-                                .map_err(|cause| {
-                                    ExecutionError::caused(
-                                        "cannot restore checkpoint",
-                                        node.span,
-                                        cause,
-                                    )
-                                })?;
+                            if !self.cancel_transaction(id, &mut failure).await {
+                                let cause = Arc::new(failure);
+                                self.ledger
+                                    .fail_reset(frame, cause.clone())
+                                    .map_err(Self::binding_error)?;
+                                return Err(ExecutionError::caused(
+                                    "cannot join the discarded epoch before checkpoint restore",
+                                    node.span,
+                                    SharedFailure(cause),
+                                ));
+                            }
+                            let restored = self.engine_mut()?.manager.rollback_pending(id);
+                            if let Err(cause) = restored {
+                                let cause = Arc::new(ExecutionError::caused(
+                                    "cannot restore checkpoint",
+                                    node.span,
+                                    cause,
+                                ));
+                                self.ledger
+                                    .fail_reset(frame, cause.clone())
+                                    .map_err(Self::binding_error)?;
+                                return Err(ExecutionError::caused(
+                                    "checkpoint restoration failed",
+                                    node.span,
+                                    SharedFailure(cause),
+                                ));
+                            }
+                            self.ledger
+                                .finish_reset(frame)
+                                .map_err(Self::binding_error)?;
                         }
                         RollbackScope::Begin => {
                             if current.is_some() {
@@ -853,7 +2005,6 @@ impl RuntimeSession {
                                     node.span,
                                 ));
                             }
-                            self.wait().await?;
                             let report = self.engine_mut()?.manager.rollback_origin(id).map_err(
                                 |cause| {
                                     ExecutionError::caused(
@@ -893,12 +2044,21 @@ impl RuntimeSession {
         let span = node.span;
         // Connected opaque programs share one mutable native epoch, not two
         // independent snapshots whose final deltas merely happen to merge.
-        let peer = self.programs.values().find(|program| {
-            program.is_running() && current.is_none_or(|id| id == program.transaction)
-        });
-        let shared = peer.and_then(Program::fork_shared);
-        let baseline = peer.map(|program| program.baseline.clone());
-        let owner = peer.map(|program| program.transaction);
+        let (shared, baseline, owner) = {
+            let shared = self.candidate.take();
+            let peer = shared.as_ref().and_then(|(cohort, _)| {
+                self.programs.values().find(|program| {
+                    program.is_running()
+                        && program.cohort == *cohort
+                        && current.is_none_or(|id| id == program.transaction)
+                })
+            });
+            (
+                shared,
+                peer.map(|program| program.baseline.clone()),
+                peer.map(|program| program.transaction),
+            )
+        };
         if self.programs.contains_key(&id) {
             return Err(ExecutionError::new(
                 "program identity is already owned by this runtime",
@@ -906,12 +2066,11 @@ impl RuntimeSession {
             ));
         }
         let lease = self.admission.program(span)?;
-        let task = lease.task("program.launch", self.cancel.clone());
         let transaction = match current {
             Some(id) => id,
             None if owner.is_some() => owner.unwrap(),
             None => {
-                let id = self.engine_mut()?.allocate()?;
+                let id = self.work()?.transaction;
                 self.engine_mut()?
                     .manager
                     .begin(id, Isolation::Serializable)
@@ -922,6 +2081,7 @@ impl RuntimeSession {
                 id
             }
         };
+        let task = lease.task("program.launch", self.owner_token(transaction));
         let worker = self.worker.clone().expect("preflight worker");
         let buffer_bytes = self.options.limits.buffer_bytes;
         let origin = self.active_origin.clone();
@@ -933,19 +2093,17 @@ impl RuntimeSession {
             .filter(|program| program.is_running())
             .map(|program| (program.id, program.cohort, program.effects.clone()))
             .collect::<Vec<_>>();
-        let events = self
-            .programs
-            .values()
-            .map(|program| {
-                (
-                    program.id,
-                    (program.exit_signal.is_cancelled(), program.is_sealed()),
-                )
-            })
-            .collect();
-        let completed = self.completed_nodes.clone();
+        context.existing_parent_frontiers = self.planning.existing_parent_frontiers.clone();
+        context.namespace_merges = self.planning.namespace_merges.clone();
+        let work = self.work()?;
+        let owner_key = self.owner_key(transaction)?;
+        let ledger = &self.ledger;
+        let mut admitted = None;
         let mut rejected = false;
-        let engine = self.engine_mut()?;
+        let engine = self
+            .engine
+            .as_mut()
+            .expect("a bound program has an execution engine");
         let mut roots = baseline.unwrap_or_default();
         if shared.is_none() {
             for root in &engine.roots {
@@ -1013,13 +2171,15 @@ impl RuntimeSession {
                         context.cohort_views.push(proof);
                     }
                     let graph = crate::hir::graph::build_with_context(hir, &context);
-                    let result = super::scheduler::admit_spawn(
-                        &graph,
-                        instruction,
-                        &events,
-                        &completed,
-                        span,
-                    );
+                    let mut bindings = Bindings::default();
+                    bindings.processes.insert(id, owner_key);
+                    let bound = work.plan.rebind(context, graph, bindings).map_err(Self::binding_error)?;
+                    let result = match ledger.gate(&bound, instruction, Phase::Start).map_err(Self::binding_error)? {
+                        GateState::Ready => { admitted = Some(bound); Ok(()) },
+                        GateState::Pending(events) => Err(ExecutionError::new(format!("prepared program is waiting for {} resource events; no candidate payload started", events.len()), span)),
+                        GateState::Failed { cause, .. } => Err(ExecutionError::caused("prepared program has a failed prerequisite", span, SharedFailure(cause))),
+                        GateState::Cancelled { reason, .. } => Err(ExecutionError::new(format!("prepared program has a discarded prerequisite: {reason:?}"), span)),
+                    };
                     rejected = result.is_err();
                     result
                 },
@@ -1029,8 +2189,30 @@ impl RuntimeSession {
             self.rejected_before_start = true;
         }
         let program = launched?;
+        self.plan = admitted;
         self.programs.insert(id, program);
         self.latest_processes.insert(id);
+        let mut work = self.work()?;
+        work.plan = self.refresh_plan(Bindings::default())?;
+        self.active_work = Some(work.clone());
+        self.process_nodes.insert(id, work.key);
+        let program = &self.programs[&id];
+        let cohort = CohortKey {
+            provider: program.effects.provider().into(),
+            view_id: program.effects.view_id().into(),
+            owner: self.owner_key(transaction)?,
+            epoch: format!("{}:cohort-{}", program.effects.view_id(), program.cohort.0).into(),
+        };
+        self.process_cohorts.insert(id, cohort);
+        self.event(Event::Process(id, ProcessEvent::Started))?;
+        self.event(Event::Node(work.key, NodeEvent::Admitted))?;
+        self.event(Event::Node(work.key, NodeEvent::ServiceReady))?;
+        let signal = self.programs[&id].exit_signal.clone();
+        let sender = self.terminal_tx.clone();
+        tokio::spawn(async move {
+            signal.cancelled().await;
+            let _ = sender.try_send(Terminal::Process(id));
+        });
         Ok(())
     }
 
@@ -1042,7 +2224,17 @@ impl RuntimeSession {
         current: Option<TransactionId>,
         span: Span,
     ) -> Result<()> {
-        if let Some(spec) = physical::inspect(source, destination, span)? {
+        if let Input::Port { process, port } = source {
+            self.process_data(*process, *port, span)?;
+        }
+        let physical = match self.work()?.physical {
+            Some(spec) => Some(spec),
+            None if known_physical(source, destination) => {
+                physical::inspect(source, destination, span)?
+            }
+            None => None,
+        };
+        if let Some(spec) = physical {
             return self
                 .physical_transfer(instruction, source, spec, current)
                 .await;
@@ -1066,6 +2258,7 @@ impl RuntimeSession {
                     ));
                 }
                 if let Input::File { location, .. } = source
+                    && !self.host_unstable(instruction, hir::effects::EndpointRole::Source)
                     && let Some(endpoint) = physical::source_stream(location, span)?
                 {
                     if current.is_some() {
@@ -1093,7 +2286,11 @@ impl RuntimeSession {
                         consumer_closed,
                     );
                 }
-                let reader = self.reader(instruction, source, transaction, span).await?;
+                let work = self.work()?;
+                let reader = match self.prepared_readers.remove(&work.key) {
+                    Some(reader) => reader,
+                    None => self.reader(instruction, source, transaction, span).await?,
+                };
                 let sink = self
                     .programs
                     .get_mut(process)
@@ -1116,7 +2313,7 @@ impl RuntimeSession {
                     unreachable!()
                 };
                 let transaction = self.connection_transaction(*process, current, span)?;
-                let target = local(location, false, span)?;
+                let target = self.output_path(instruction, location, span)?;
                 let reader = self.programs.get_mut(process).unwrap().take_reader(*port)?;
                 let operation = self.fresh_instruction()?;
                 let path = self
@@ -1148,15 +2345,22 @@ impl RuntimeSession {
                         ExecutionError::new("program scalar has no preceding launch", span)
                     })?
                     .transaction;
-                if *port != ReadPort::Pid {
-                    self.quiesce(owner).await?;
-                }
-                let bytes = self.programs.get(process).unwrap().scalar(*port)?;
+                let cancel = self.owner_token(owner);
+                let bytes = self
+                    .programs
+                    .get_mut(process)
+                    .unwrap()
+                    .read_scalar(*port, &cancel)
+                    .await?;
                 let snapshot = self.capture_bytes(&bytes, span).await?;
-                let target = local(location, false, span)?;
+                let target = self.output_path(instruction, location, span)?;
                 let transaction = self.connection_transaction(*process, current, span)?;
                 let instruction = self.fresh_instruction()?;
+                let work = self.work()?;
+                self.event(Event::Node(work.key, NodeEvent::Admitted))?;
+                self.event(Event::Node(work.key, NodeEvent::ServiceReady))?;
                 self.deferred.push(Deferred {
+                    work,
                     origin: self.active_origin.clone(),
                     instruction,
                     transaction,
@@ -1176,14 +2380,48 @@ impl RuntimeSession {
                 Ok(())
             }
             (_, Output::File { location, mode }) => {
+                let work = self.work()?;
+                if self.namespaces.contains_key(&work.key) {
+                    let snapshot = match file_source(source, span)? {
+                        Source::Literal(bytes) => {
+                            self.capture_bytes(bytes.as_bytes(), span).await?
+                        }
+                        Source::Local(path) => self
+                            .engine_mut()?
+                            .manager
+                            .read_committed_file(&path)
+                            .map_err(|cause| {
+                                ExecutionError::caused(
+                                    "cannot pin the committed namespace source",
+                                    span,
+                                    cause,
+                                )
+                            })?,
+                        _ => {
+                            return Err(ExecutionError::new(
+                                "namespace merging requires one prepared ordinary file or literal source",
+                                span,
+                            ));
+                        }
+                    };
+                    self.event(Event::Node(work.key, NodeEvent::ServiceReady))?;
+                    return self.publish_namespace(&work, &snapshot, span);
+                }
                 if let Some(id) = current {
                     self.quiesce(id).await?;
                 }
                 let transaction = self.transaction(current, span)?;
                 let operation = self.fresh_instruction()?;
+                self.engine_mut()?
+                    .manager
+                    .start_statement(transaction)
+                    .map_err(|cause| {
+                        ExecutionError::caused("cannot begin statement view", span, cause)
+                    })?;
+                let raw = self.output_path(instruction, location, span)?;
                 let transfer = Transfer {
-                    source: file_source(source, span)?,
-                    destination: local(location, false, span)?,
+                    source: self.selected_source(instruction, source, transaction, span)?,
+                    destination: self.selected_path(transaction, &raw, span)?,
                     mode: *mode,
                     pattern: match source {
                         Input::File { pattern, .. } => pattern.clone(),
@@ -1191,12 +2429,6 @@ impl RuntimeSession {
                     },
                     span,
                 };
-                self.engine_mut()?
-                    .manager
-                    .start_statement(transaction)
-                    .map_err(|cause| {
-                        ExecutionError::caused("cannot begin statement view", span, cause)
-                    })?;
                 self.engine_mut()?
                     .transfer(operation, &transfer, transaction)?;
                 if current.is_none() {
@@ -1334,13 +2566,15 @@ impl RuntimeSession {
                 // The destination statement starts at EOF, not when an external
                 // peer connects. Independent streams must not pin an obsolete
                 // parent namespace while waiting for unrelated peers to close.
-                let id = self.engine_mut()?.allocate()?;
-                self.engine_mut()?
-                    .manager
-                    .begin(id, Isolation::ReadCommitted)
-                    .map_err(|cause| {
-                        ExecutionError::caused("cannot begin physical output", span, cause)
-                    })?;
+                let id = self.work()?.transaction;
+                if !self.namespaces.contains_key(&self.work()?.key) {
+                    self.engine_mut()?
+                        .manager
+                        .begin(id, Isolation::ReadCommitted)
+                        .map_err(|cause| {
+                            ExecutionError::caused("cannot begin physical output", span, cause)
+                        })?;
+                }
                 self.implicit.insert(id);
                 id
             }
@@ -1362,17 +2596,14 @@ impl RuntimeSession {
                     physical::Source::Endpoint(endpoint.clone())
                 } else {
                     let path = PathBuf::from(&endpoint.path);
-                    let snapshot = self
-                        .engine_mut()?
-                        .manager
-                        .read_snapshot(transaction, &path)
-                        .map_err(|cause| {
-                            ExecutionError::caused(
-                                "cannot read immutable physical flow input",
-                                span,
-                                cause,
-                            )
-                        })?;
+                    let manager = &mut self.engine_mut()?.manager;
+                    let snapshot = manager.read_committed_file(&path).map_err(|cause| {
+                        ExecutionError::caused(
+                            "cannot read immutable physical flow input",
+                            span,
+                            cause,
+                        )
+                    })?;
                     physical::Source::Snapshot(snapshot)
                 }
             }
@@ -1393,13 +2624,23 @@ impl RuntimeSession {
         let basename = spec.basename.clone();
         let lease = self.admission.flow(span)?;
         let buffer = self.options.limits.buffer_bytes;
-        let cancel = self.cancel.clone();
+        let cancel = self.owner_token(transaction);
         let managed = output.as_ref().map(|(_, target, _)| target.clone());
         let task = lease.task("physical.transfer", cancel.clone());
+        let work = self.work()?;
+        let flow_work = work.clone();
+        let ready = Arc::new(AtomicBool::new(false));
+        let notice = TerminalNotice {
+            sender: self.terminal_tx.clone(),
+            event: Terminal::Flow(work.key),
+            ready: ready.clone(),
+        };
         let handle = tokio::spawn(task.run(async move {
+            let _notice = notice;
             let _lease = lease;
             spec.run(source, capture, buffer, cancel).await?;
             Ok(FlowResult {
+                work,
                 origin: None,
                 instruction: operation,
                 transaction,
@@ -1409,10 +2650,11 @@ impl RuntimeSession {
             })
         }));
         self.flows.push(Flow {
+            work: flow_work,
+            ready,
             origin: self.active_origin.clone(),
             transaction,
             handle,
-            physical: true,
             managed,
         });
         Ok(())
@@ -1429,12 +2671,22 @@ impl RuntimeSession {
     ) -> Result<()> {
         let lease = self.admission.flow(span)?;
         let buffer = self.options.limits.buffer_bytes;
-        let cancel = self.cancel.clone();
+        let cancel = self.owner_token(transaction);
         let task = lease.task("physical.input", cancel.clone());
+        let work = self.work()?;
+        let flow_work = work.clone();
+        let ready = Arc::new(AtomicBool::new(false));
+        let notice = TerminalNotice {
+            sender: self.terminal_tx.clone(),
+            event: Terminal::Flow(work.key),
+            ready: ready.clone(),
+        };
         let handle = tokio::spawn(task.run(async move {
+            let _notice = notice;
             let _lease = lease;
             physical::to_writer(source, sink, buffer, cancel, span, consumer_closed).await?;
             Ok(FlowResult {
+                work,
                 origin: None,
                 instruction,
                 transaction,
@@ -1444,23 +2696,50 @@ impl RuntimeSession {
             })
         }));
         self.flows.push(Flow {
+            work: flow_work,
+            ready,
             origin: self
                 .active_origin
                 .as_ref()
                 .map(|origin| origin.for_operand(false)),
             transaction,
             handle,
-            physical: true,
             managed: None,
         });
         Ok(())
     }
 
     async fn reap_physical(&mut self) -> Result<()> {
-        let ready = self
+        loop {
+            let before = self.progress;
+            self.reap_ready().await?;
+            if before == self.progress {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn reap_ready(&mut self) -> Result<()> {
+        self.drain_terminals()?;
+        let owners = self
             .implicit
             .iter()
             .copied()
+            .chain(self.flows.iter().map(|flow| flow.transaction))
+            .chain(
+                self.deferred
+                    .iter()
+                    .map(|assignment| assignment.transaction),
+            )
+            .chain(
+                self.programs
+                    .values()
+                    .filter(|program| program.is_running())
+                    .map(|program| program.transaction),
+            )
+            .collect::<BTreeSet<_>>();
+        let ready = owners
+            .into_iter()
             .filter(|id| self.is_ready(*id))
             .collect::<Vec<_>>();
         for transaction in ready {
@@ -1468,12 +2747,25 @@ impl RuntimeSession {
                 error.transaction = Some(transaction);
                 error
             })?;
-            self.engine_mut()?
-                .finish(transaction, Span::default())
-                .map_err(|mut error| {
-                    error.transaction = Some(transaction);
-                    error
-                })?;
+            if self
+                .deferred
+                .iter()
+                .any(|assignment| assignment.transaction == transaction)
+            {
+                continue;
+            }
+            if !self.implicit.contains(&transaction) {
+                continue;
+            }
+            if !self.closed_owners.remove(&transaction) {
+                self.engine_mut()?
+                    .finish(transaction, Span::default())
+                    .map_err(|mut error| {
+                        error.transaction = Some(transaction);
+                        error
+                    })?;
+            }
+            self.owner_committed(transaction)?;
             self.implicit.remove(&transaction);
         }
         Ok(())
@@ -1483,10 +2775,13 @@ impl RuntimeSession {
         if let Some(id) = current {
             return Ok(id);
         }
-        let id = self.engine_mut()?.allocate()?;
+        let id = self.work()?.transaction;
+        if self.implicit.contains(&id) {
+            return Ok(id);
+        }
         self.engine_mut()?
             .manager
-            .begin(id, Isolation::Serializable)
+            .begin(id, Isolation::ReadCommitted)
             .map_err(|cause| {
                 ExecutionError::caused("cannot begin atomic statement", span, cause)
             })?;
@@ -1526,6 +2821,9 @@ impl RuntimeSession {
         transaction: TransactionId,
         span: Span,
     ) -> Result<Reader> {
+        if let Input::Port { process, port } = source {
+            self.process_data(*process, *port, span)?;
+        }
         match source {
             Input::Port {
                 process,
@@ -1549,10 +2847,13 @@ impl RuntimeSession {
                         ExecutionError::new("program scalar has no preceding launch", span)
                     })?
                     .transaction;
-                if *port != ReadPort::Pid {
-                    self.quiesce(owner).await?;
-                }
-                let bytes = self.programs.get(process).unwrap().scalar(*port)?;
+                let cancel = self.owner_token(owner);
+                let bytes = self
+                    .programs
+                    .get_mut(process)
+                    .unwrap()
+                    .read_scalar(*port, &cancel)
+                    .await?;
                 Ok(Box::pin(std::io::Cursor::new(bytes)))
             }
             Input::Literal(bytes) => Ok(Box::pin(std::io::Cursor::new(bytes.as_bytes().to_vec()))),
@@ -1563,7 +2864,12 @@ impl RuntimeSession {
                         span,
                     ));
                 }
-                let path = local(location, true, span)?;
+                let path = if self.host_unstable(instruction, hir::effects::EndpointRole::Source) {
+                    let raw = domain::deferred_local(location, true, span)?;
+                    self.selected_path(transaction, &raw, span)?
+                } else {
+                    local(location, true, span)?
+                };
                 let snapshot = self
                     .engine_mut()?
                     .manager
@@ -1632,11 +2938,20 @@ impl RuntimeSession {
         let lease = self.admission.flow(span)?;
         let instruction = self.fresh_instruction()?;
         let size = self.options.limits.buffer_bytes;
-        let cancel = self.cancel.clone();
+        let cancel = self.owner_token(transaction);
         let managed = output.as_ref().map(|(_, target, _)| target.clone());
         let task = lease.task("program.port", cancel.clone());
         let origin = self.active_origin.clone();
+        let work = self.work()?;
+        let flow_work = work.clone();
+        let ready = Arc::new(AtomicBool::new(false));
+        let notice = TerminalNotice {
+            sender: self.terminal_tx.clone(),
+            event: Terminal::Flow(work.key),
+            ready: ready.clone(),
+        };
         let handle = tokio::spawn(task.run(async move {
+            let _notice = notice;
             let _lease = lease;
             let mut bytes = vec![0; size];
             loop {
@@ -1650,6 +2965,7 @@ impl RuntimeSession {
                 ExecutionError::caused("cannot close program flow", span, cause).with_operand(origin.as_ref(), true)
             })?;
             Ok(FlowResult {
+                work,
                 origin: None,
                 instruction,
                 transaction,
@@ -1659,20 +2975,19 @@ impl RuntimeSession {
             })
         }));
         self.flows.push(Flow {
+            work: flow_work,
+            ready,
             origin: self.active_origin.clone(),
             transaction,
             handle,
-            physical: false,
             managed,
         });
+        self.event(Event::Node(self.work()?.key, NodeEvent::Admitted))?;
         Ok(())
     }
 
     async fn quiesce(&mut self, transaction: TransactionId) -> Result<()> {
-        let physical_output = self
-            .flows
-            .iter()
-            .any(|flow| flow.transaction == transaction && flow.physical);
+        let owner_cancel = self.owner_token(transaction);
         for program in self
             .programs
             .values_mut()
@@ -1688,7 +3003,7 @@ impl RuntimeSession {
         let mut selected = selected.into_iter();
         while let Some(mut flow) = selected.next() {
             let result = tokio::select! {
-                () = self.cancel.cancelled() => {
+                () = owner_cancel.cancelled() => {
                     let origin = flow.origin.clone();
                     self.flows.push(flow);
                     self.flows.extend(selected);
@@ -1718,18 +3033,18 @@ impl RuntimeSession {
         for id in &ids {
             let program = self.programs.get_mut(id).unwrap();
             program
-                .join(&self.cancel)
+                .join(&owner_cancel)
                 .await
                 .map_err(|error| error.with_origin(program.origin.as_ref()))?;
         }
         let mut imported = BTreeSet::new();
-        for id in ids {
+        for id in &ids {
             let engine = self.engine.as_mut().expect("initialized engine");
-            let program = self.programs.get_mut(&id).unwrap();
+            let program = self.programs.get_mut(id).unwrap();
             let cohort = program.cohort;
             let origin = program.origin.clone();
             let receipt = program
-                .seal(&engine.assets, &self.cancel)
+                .seal(&engine.assets, &owner_cancel)
                 .await
                 .map_err(|error| error.with_origin(origin.as_ref()))?;
             if let Some(receipt) = receipt
@@ -1763,7 +3078,22 @@ impl RuntimeSession {
                 }
             }
         }
+        for id in ids {
+            self.event(Event::Process(id, ProcessEvent::Exited))?;
+            self.event(Event::Process(id, ProcessEvent::Imported))?;
+            if let Some(cohort) = self.process_cohorts.get(&id).cloned() {
+                self.event(Event::Cohort(cohort, Visibility::Imported))?;
+            }
+            if let Some(key) = self.process_nodes.get(&id).copied() {
+                self.event(Event::Node(key, NodeEvent::LogicalComplete))?;
+                self.pending_nodes
+                    .entry(transaction)
+                    .or_default()
+                    .insert(key);
+            }
+        }
         for flow in completed {
+            self.event(Event::Node(flow.work.key, NodeEvent::ServiceReady))?;
             if let Some((path, target, mode)) = flow.output {
                 let snapshot = self.engine_mut()?.assets.capture(&path).map_err(|cause| {
                     ExecutionError::caused(
@@ -1774,6 +3104,7 @@ impl RuntimeSession {
                     .with_origin(flow.origin.as_ref())
                 })?;
                 self.deferred.push(Deferred {
+                    work: flow.work,
                     origin: flow.origin.clone(),
                     instruction: flow.instruction,
                     transaction: flow.transaction,
@@ -1783,6 +3114,8 @@ impl RuntimeSession {
                     span: flow.span,
                     basename: flow.basename,
                 });
+            } else {
+                self.logical_complete(&flow.work)?;
             }
         }
         let mut remaining = Vec::new();
@@ -1795,26 +3128,36 @@ impl RuntimeSession {
             }
         }
         self.deferred = remaining;
-        if physical_output {
+        assignments.sort_by_key(|assignment| assignment.work.order);
+        for assignment in assignments {
+            if !self.gate(&assignment.work, Phase::Publish)? {
+                self.deferred.push(assignment);
+                continue;
+            }
+            if self.namespaces.contains_key(&assignment.work.key) {
+                self.publish_namespace(&assignment.work, &assignment.source, assignment.span)?;
+                continue;
+            }
             self.engine_mut()?
                 .manager
                 .start_statement(transaction)
                 .map_err(|cause| {
                     ExecutionError::caused(
-                        "cannot start completed physical publication",
-                        Span::default(),
+                        "cannot start the gated assignment publication",
+                        assignment.span,
                         cause,
                     )
                 })?;
-        }
-        assignments.sort_by_key(|assignment| assignment.instruction);
-        for assignment in assignments {
             let transfer = Transfer {
                 source: Source::Captured {
                     snapshot: assignment.source,
                     basename: assignment.basename,
                 },
-                destination: assignment.target,
+                destination: self.selected_path(
+                    transaction,
+                    &assignment.target,
+                    assignment.span,
+                )?,
                 mode: assignment.mode,
                 pattern: None,
                 span: assignment.span,
@@ -1822,8 +3165,47 @@ impl RuntimeSession {
             self.engine_mut()?
                 .transfer(assignment.instruction, &transfer, transaction)
                 .map_err(|error| error.with_operand(assignment.origin.as_ref(), true))?;
+            self.logical_complete(&assignment.work)?;
         }
         Ok(())
+    }
+
+    async fn await_gate(&mut self, work: &WorkNode, phase: Phase) -> Result<()> {
+        loop {
+            self.reap_physical().await?;
+            if self.gate(work, phase)? {
+                return Ok(());
+            }
+            if !self.has_work() {
+                return Err(ExecutionError::new(
+                    "an execution prerequisite has no remaining producer",
+                    work.plan
+                        .origin(work.key.instruction)
+                        .map_or(Span::default(), |origin| origin.site.span),
+                ));
+            }
+            self.wait_event().await?;
+        }
+    }
+
+    async fn settle_region(&mut self, work: &WorkNode) -> Result<()> {
+        loop {
+            self.quiesce(work.transaction).await?;
+            if self.gate(work, Phase::RegionCommit)? {
+                return Ok(());
+            }
+            self.reap_physical().await?;
+            if self.gate(work, Phase::RegionCommit)? {
+                return Ok(());
+            }
+            if !self.has_work() {
+                return Err(ExecutionError::new(
+                    "transaction commit has an incomplete child with no remaining producer",
+                    Span::default(),
+                ));
+            }
+            self.wait_event().await?;
+        }
     }
 
     async fn capture_bytes(&mut self, bytes: &[u8], span: Span) -> Result<Snapshot> {
@@ -1844,24 +3226,87 @@ impl RuntimeSession {
         &mut self,
         transaction: TransactionId,
         failure: &mut ExecutionError,
-    ) {
+    ) -> bool {
+        let mut joined = true;
+        let works = self
+            .flows
+            .iter()
+            .filter(|flow| flow.transaction == transaction)
+            .map(|flow| flow.work.clone())
+            .chain(
+                self.deferred
+                    .iter()
+                    .filter(|assignment| assignment.transaction == transaction)
+                    .map(|assignment| assignment.work.clone()),
+            )
+            .collect::<Vec<_>>();
+        for work in works {
+            self.ledger
+                .cancel_node(work.key, CancelReason::Stopped, None);
+        }
+        for key in self
+            .pending_nodes
+            .get(&transaction)
+            .into_iter()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>()
+        {
+            self.ledger.cancel_node(key, CancelReason::Stopped, None);
+        }
+        for process in self
+            .programs
+            .values()
+            .filter(|program| program.transaction == transaction)
+            .map(|program| program.id)
+            .collect::<Vec<_>>()
+        {
+            self.ledger
+                .cancel_process(process, CancelReason::Stopped, None);
+            if let Some(key) = self.process_nodes.get(&process).copied() {
+                self.ledger.cancel_node(key, CancelReason::Stopped, None);
+            }
+            if let Some(cohort) = self.process_cohorts.get(&process).cloned() {
+                self.ledger
+                    .cancel_cohort(cohort, CancelReason::Stopped, None);
+            }
+        }
+        self.owner_token(transaction).cancel();
         for program in self
             .programs
             .values_mut()
             .filter(|program| program.transaction == transaction)
         {
             if let Err(error) = program.cancel().await {
-                failure
-                    .report
-                    .help
-                    .push(format!("program cleanup: {error}"));
+                joined = false;
+                Self::retain_cleanup_failure(failure, error);
             }
         }
         let mut remaining = Vec::new();
         for flow in std::mem::take(&mut self.flows) {
             if flow.transaction == transaction {
-                flow.handle.abort();
-                let _ = flow.handle.await;
+                match flow.handle.await {
+                    Err(error) => {
+                        joined = false;
+                        Self::retain_cleanup_failure(
+                            failure,
+                            ExecutionError::caused(
+                                "owned flow did not join cleanly",
+                                Span::default(),
+                                error,
+                            ),
+                        );
+                    }
+                    Ok(Err(error))
+                        if error.cause.is_some()
+                            || !error.recovery.is_empty()
+                            || !error.compensation.is_empty() =>
+                    {
+                        joined = false;
+                        Self::retain_cleanup_failure(failure, error);
+                    }
+                    _ => {}
+                }
             } else {
                 remaining.push(flow);
             }
@@ -1869,25 +3314,21 @@ impl RuntimeSession {
         self.flows = remaining;
         self.deferred
             .retain(|assignment| assignment.transaction != transaction);
-    }
-
-    async fn cancel_programs(&mut self, failure: &mut ExecutionError) {
-        for program in self.programs.values_mut() {
-            if let Err(error) = program.cancel().await {
-                failure
-                    .report
-                    .help
-                    .push(format!("program cleanup: {error}"));
+        let keys = self
+            .namespaces
+            .keys()
+            .filter(|key| self.node_transactions.get(key) == Some(&transaction))
+            .copied()
+            .collect::<Vec<_>>();
+        for key in keys {
+            if let Err(error) = self.release_namespace(key) {
+                joined = false;
+                Self::retain_cleanup_failure(failure, error);
             }
         }
-    }
-
-    async fn cancel_flows(&mut self) {
-        for flow in std::mem::take(&mut self.flows) {
-            flow.handle.abort();
-            let _ = flow.handle.await;
-        }
-        self.deferred.clear();
+        self.pending_nodes.remove(&transaction);
+        self.owner_tokens.remove(&transaction);
+        joined
     }
 }
 
@@ -1954,8 +3395,53 @@ fn file_source(source: &Input, span: Span) -> Result<Source> {
     }
 }
 
-fn live_domain(program: &hir::Program, options: &Options) -> Result<Domain> {
-    fn finite(region: &Region, roots: &mut Vec<PathBuf>) -> Result<Region> {
+fn endpoint_unstable(
+    context: &crate::hir::graph::PlanningContext,
+    instruction: InstructionId,
+    role: crate::hir::effects::EndpointRole,
+) -> bool {
+    context
+        .host_unstable
+        .contains(&crate::hir::effects::EndpointKey { instruction, role })
+}
+
+fn transfer_unstable(context: &crate::hir::graph::PlanningContext, id: InstructionId) -> bool {
+    use crate::hir::effects::EndpointRole;
+    endpoint_unstable(context, id, EndpointRole::Source)
+        || endpoint_unstable(context, id, EndpointRole::Destination)
+}
+
+fn known_physical(source: &Input, destination: &Output) -> bool {
+    transfer_locations(source, destination)
+        .any(|(location, _)| matches!(location.backend, Backend::Tcp { .. }))
+}
+
+fn transfer_locations<'a>(
+    source: &'a Input,
+    destination: &'a Output,
+) -> impl Iterator<Item = (&'a Location, bool)> {
+    let source = match source {
+        Input::File { location, .. } => Some((location, true)),
+        _ => None,
+    };
+    let destination = match destination {
+        Output::File { location, .. } => Some((location, false)),
+        _ => None,
+    };
+    source.into_iter().chain(destination)
+}
+
+fn live_domain(
+    program: &hir::Program,
+    options: &Options,
+    context: &crate::hir::graph::PlanningContext,
+) -> Result<Domain> {
+    fn finite(
+        region: &Region,
+        roots: &mut Vec<PathBuf>,
+        context: &crate::hir::graph::PlanningContext,
+    ) -> Result<Region> {
+        use crate::hir::effects::EndpointRole;
         let mut result = Region::default();
         for node in &region.instructions {
             if let InstructionKind::Transfer {
@@ -1963,7 +3449,9 @@ fn live_domain(program: &hir::Program, options: &Options) -> Result<Domain> {
                 destination,
             } = &node.kind
             {
-                if let Some(spec) = physical::inspect(source, destination, node.span)? {
+                let unstable = transfer_unstable(context, node.id);
+                if !unstable && let Some(spec) = physical::inspect(source, destination, node.span)?
+                {
                     if spec.kinds.source == crate::plan::FileClass::Regular
                         && let Some(location) = spec
                             .source
@@ -1988,12 +3476,32 @@ fn live_domain(program: &hir::Program, options: &Options) -> Result<Domain> {
                     continue;
                 }
                 if endpoint::inspect(source, destination, node.span)?.is_some() {
-                    if let Source::Local(path) = file_source(source, node.span)? {
-                        roots.push(path);
+                    if let Input::File { location, .. } = source
+                        && let Some(path) = crate::runtime::local_path(location, true)
+                            .map_err(|message| ExecutionError::new(message, node.span))?
+                    {
+                        roots.push(
+                            if endpoint_unstable(context, node.id, EndpointRole::Source) {
+                                domain::deferred_envelope(&path, node.span)?
+                            } else {
+                                domain::normalize(&path, node.span)?
+                            },
+                        );
+                    }
+                    continue;
+                }
+                if unstable && known_physical(source, destination) {
+                    for (location, source) in transfer_locations(source, destination) {
+                        if let Some(path) = crate::runtime::local_path(location, source)
+                            .map_err(|message| ExecutionError::new(message, node.span))?
+                        {
+                            roots.push(domain::deferred_envelope(&path, node.span)?);
+                        }
                     }
                     continue;
                 }
                 if let (Input::File { location, .. }, Output::Stdin(_)) = (source, destination)
+                    && !endpoint_unstable(context, node.id, EndpointRole::Source)
                     && physical::source_stream(location, node.span)?.is_some()
                 {
                     continue;
@@ -2004,12 +3512,8 @@ fn live_domain(program: &hir::Program, options: &Options) -> Result<Domain> {
                     roots.push(domain::normalize(cwd, node.span)?);
                     for argument in arguments {
                         if let hir::Argument::Path(location) = argument {
-                            let path = local(location, true, node.span)?;
-                            roots.push(if path.is_dir() {
-                                path
-                            } else {
-                                path.parent().unwrap_or(Path::new(".")).to_owned()
-                            });
+                            let path = domain::deferred_local(location, true, node.span)?;
+                            roots.push(domain::deferred_envelope(&path, node.span)?);
                         }
                     }
                 }
@@ -2017,6 +3521,11 @@ fn live_domain(program: &hir::Program, options: &Options) -> Result<Domain> {
                     source: Input::Port { .. },
                     destination: Output::File { location, .. },
                 } => {
+                    if endpoint_unstable(context, node.id, EndpointRole::Destination) {
+                        let path = domain::deferred_local(location, false, node.span)?;
+                        roots.push(domain::deferred_envelope(&path, node.span)?);
+                        continue;
+                    }
                     let path = local(location, false, node.span)?;
                     let mut parent = path.parent().unwrap_or(Path::new(".")).to_owned();
                     while !parent.exists() {
@@ -2037,6 +3546,11 @@ fn live_domain(program: &hir::Program, options: &Options) -> Result<Domain> {
                     source: Input::File { location, .. },
                     destination: Output::Stdin(_),
                 } => {
+                    if endpoint_unstable(context, node.id, EndpointRole::Source) {
+                        let path = domain::deferred_local(location, true, node.span)?;
+                        roots.push(domain::deferred_envelope(&path, node.span)?);
+                        continue;
+                    }
                     let path = local(location, true, node.span)?;
                     roots.push(path.parent().unwrap_or(Path::new(".")).to_owned());
                 }
@@ -2051,7 +3565,7 @@ fn live_domain(program: &hir::Program, options: &Options) -> Result<Domain> {
                         expansion: node.expansion.clone(),
                         kind: InstructionKind::Transaction {
                             transaction: *transaction,
-                            body: finite(body, roots)?,
+                            body: finite(body, roots, context)?,
                         },
                     })
                 }
@@ -2062,10 +3576,10 @@ fn live_domain(program: &hir::Program, options: &Options) -> Result<Domain> {
     }
     let mut roots = Vec::new();
     let filtered = hir::Program {
-        body: finite(&program.body, &mut roots)?,
+        body: finite(&program.body, &mut roots, context)?,
         transactions: program.transactions.clone(),
     };
-    let mut domain = Domain::resolve(&filtered, options)?;
+    let mut domain = Domain::resolve_deferred(&filtered, options, &context.host_unstable)?;
     roots.extend(domain.roots);
     roots.sort_by_key(|root| root.components().count());
     domain.roots = roots.into_iter().fold(Vec::new(), |mut result, root| {

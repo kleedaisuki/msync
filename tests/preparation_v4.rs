@@ -7,7 +7,7 @@ use std::path::Path;
 use msync::compiler::CompileContext;
 use msync::compiler::structured::Session;
 use msync::endpoint::Backend;
-use msync::hir::effects::OperationFacts;
+use msync::hir::effects::{EndpointKey, EndpointRole, OperationFacts};
 use msync::hir::graph::PlanningContext;
 use msync::hir::{self, Input, InstructionKind, Output, Region};
 use msync::language;
@@ -111,6 +111,33 @@ fn differing_source_endpoints_do_not_prevent_dead_store_proof_with_explicit_type
     prepared.verify().unwrap();
 }
 
+#[test]
+fn deferred_wsl_drive_projection_is_not_a_native_alias_proof_for_rewrites() {
+    for source in ["/mnt/c/future/config.toml", "/future/../config.toml"] {
+        let root = workspace();
+        fs::write(root.path().join("one"), "first").unwrap();
+        fs::write(root.path().join("output"), "existing").unwrap();
+        let program = compile(
+            root.path(),
+            &format!("one -> output\n$wsl::{source} -> output\n"),
+        );
+        let mut context = PlanningContext::default();
+        for node in &program.body.instructions {
+            context.operation_facts.insert(
+                node.id,
+                OperationFacts {
+                    source: FileClass::Regular,
+                    destination: FileClass::Regular,
+                },
+            );
+        }
+        let prepared = preparation::prepare_with_context(&program, false, context).unwrap();
+        assert_eq!(transfers(&prepared.program.body).len(), 2, "{source}");
+        assert!(prepared.rewrites.is_empty(), "{source}");
+        prepared.verify().unwrap();
+    }
+}
+
 fn pending_root_write(root: &Path) -> PlanningContext {
     use msync::hir::effects::{Access, AccessKind, Effects, FileResource, Resource, Scope};
     use msync::hir::graph::ProcessEffects;
@@ -141,6 +168,269 @@ fn pending_root_write(root: &Path) -> PlanningContext {
         .unwrap(),
     );
     context
+}
+
+fn pending_file_write(path: &Path) -> PlanningContext {
+    use msync::hir::effects::{Access, AccessKind, Effects, FileResource, Resource, Scope};
+    PlanningContext {
+        pending_effects: vec![Effects {
+            accesses: vec![Access {
+                resource: Resource::File(FileResource::new(
+                    msync::endpoint::Location {
+                        backend: Backend::Local,
+                        path: path.to_string_lossy().into_owned(),
+                    },
+                    Scope::Exact,
+                )),
+                kind: AccessKind::Write,
+            }],
+            unknown_external: false,
+        }],
+        ..PlanningContext::default()
+    }
+}
+
+#[test]
+fn a_pending_flow_file_write_defers_a_currently_missing_source_until_its_real_gate() {
+    let root = workspace();
+    let program = compile(root.path(), "target -> next\n");
+    let prepared = preparation::prepare_with_context(
+        &program,
+        true,
+        pending_file_write(&root.path().join("target")),
+    )
+    .unwrap();
+    assert_eq!(
+        prepared.facts[&program.body.instructions[0].id].source,
+        FileClass::Unknown
+    );
+    assert!(!prepared.is_execution_ready());
+    assert!(prepared.rewrites.is_empty());
+    assert!(prepared.graph.external_processes.is_empty());
+    assert_eq!(prepared.graph.nodes.len(), 1);
+    assert_eq!(
+        prepared.graph.pending_effects,
+        prepared.context.pending_effects
+    );
+    prepared.verify().unwrap();
+    let mut altered = prepared.clone();
+    altered.graph.pending_effects.clear();
+    assert!(altered.verify().is_err());
+    assert!(!root.path().join("target").exists());
+}
+
+#[test]
+fn a_pending_flow_ancestor_write_defers_enotdir_without_claiming_its_future_type() {
+    let root = workspace();
+    fs::write(
+        root.path().join("blocker"),
+        "old file before deferred directory publication",
+    )
+    .unwrap();
+    let program = compile(root.path(), "blocker/future-source -> next\n");
+    let prepared = preparation::prepare_with_context(
+        &program,
+        true,
+        pending_file_write(&root.path().join("blocker")),
+    )
+    .unwrap();
+    assert_eq!(
+        prepared.facts[&program.body.instructions[0].id].source,
+        FileClass::Unknown
+    );
+    assert!(!prepared.is_execution_ready());
+    assert!(prepared.context.live_processes.is_empty());
+    prepared.verify().unwrap();
+    assert!(root.path().join("blocker").is_file());
+}
+
+#[test]
+fn a_disjoint_pending_flow_write_does_not_erase_proven_regular_file_optimizations() {
+    let root = workspace();
+    fs::write(root.path().join("one"), "one").unwrap();
+    fs::write(root.path().join("two"), "two").unwrap();
+    fs::write(root.path().join("output"), "existing output").unwrap();
+    let program = compile(root.path(), "one -> output\ntwo -> output\n");
+    let prepared = preparation::prepare_with_context(
+        &program,
+        true,
+        pending_file_write(&root.path().join("unrelated")),
+    )
+    .unwrap();
+    assert_eq!(transfers(&prepared.program.body).len(), 1);
+    assert!(matches!(
+        prepared.rewrites[0].kind,
+        RewriteKind::DeadWrite { .. }
+    ));
+    prepared.verify().unwrap();
+}
+
+#[test]
+fn a_known_future_file_still_defers_traversal_of_its_old_host_ancestor() {
+    let root = workspace();
+    fs::create_dir(root.path().join("source-tree")).unwrap();
+    fs::write(root.path().join("node"), "old physical file").unwrap();
+    let program = compile(
+        root.path(),
+        "source-tree -> node/.\n\"literal\" -> node/../node/leaf\nnode/../node/leaf -> observed\n",
+    );
+    let mut context = PlanningContext::default();
+    context.operation_facts.insert(
+        program.body.instructions[0].id,
+        OperationFacts {
+            source: FileClass::Directory,
+            destination: FileClass::Missing,
+        },
+    );
+    let prepared = preparation::prepare_with_context(&program, true, context).unwrap();
+    let produced = program.body.instructions[1].id;
+    let consumed = program.body.instructions[2].id;
+    assert_eq!(prepared.facts[&consumed].source, FileClass::Regular);
+    assert!(prepared.context.host_unstable.contains(&EndpointKey {
+        instruction: produced,
+        role: EndpointRole::Destination
+    }));
+    assert!(prepared.context.host_unstable.contains(&EndpointKey {
+        instruction: consumed,
+        role: EndpointRole::Source
+    }));
+    assert!(!prepared.context.host_unstable.contains(&EndpointKey {
+        instruction: consumed,
+        role: EndpointRole::Destination
+    }));
+    let InstructionKind::Transfer {
+        source: Input::File { location, .. },
+        ..
+    } = &prepared.original.body.instructions[2].kind
+    else {
+        panic!()
+    };
+    assert!(
+        Path::new(&location.path)
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+    );
+    assert!(root.path().join("node").is_file());
+    prepared.verify().unwrap();
+    let mut tampered = prepared.clone();
+    tampered.graph.host_unstable.clear();
+    assert!(tampered.verify().is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn a_deferred_verbatim_native_path_keeps_parent_traversal_in_its_captured_spelling() {
+    let root = workspace();
+    fs::write(root.path().join("node"), b"old file").unwrap();
+    let mut program = compile(root.path(), "future -> observed\n");
+    let raw = format!(
+        "{}/node/../node/x",
+        fs::canonicalize(root.path()).unwrap().display()
+    );
+    let InstructionKind::Transfer {
+        source: Input::File { location, .. },
+        ..
+    } = &mut program.body.instructions[0].kind
+    else {
+        unreachable!()
+    };
+    location.path = raw;
+    let prepared = preparation::prepare_with_context(
+        &program,
+        true,
+        pending_file_write(&root.path().join("node")),
+    )
+    .unwrap();
+    let InstructionKind::Transfer {
+        source: Input::File { location, .. },
+        ..
+    } = &prepared.original.body.instructions[0].kind
+    else {
+        unreachable!()
+    };
+    assert!(
+        Path::new(&location.path)
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+    );
+    assert!(prepared.context.host_unstable.contains(&EndpointKey {
+        instruction: program.body.instructions[0].id,
+        role: EndpointRole::Source,
+    }));
+    prepared.verify().unwrap();
+}
+
+#[test]
+fn a_checkpoint_does_not_make_a_future_directory_replacement_exist_on_the_host() {
+    let root = workspace();
+    fs::create_dir(root.path().join("source-tree")).unwrap();
+    fs::write(root.path().join("node"), "old physical file").unwrap();
+    let program = compile(
+        root.path(),
+        "transaction T:\n    source-tree -> node/.\n    commit\n    \"value\" -> node/leaf\n    node/leaf -> observed\n",
+    );
+    let nodes = transfers(&program.body);
+    let mut context = PlanningContext::default();
+    context.operation_facts.insert(
+        nodes[0].id,
+        OperationFacts {
+            source: FileClass::Directory,
+            destination: FileClass::Missing,
+        },
+    );
+    let prepared = preparation::prepare_with_context(&program, true, context).unwrap();
+    assert_eq!(prepared.facts[&nodes[2].id].source, FileClass::Regular);
+    for (instruction, role) in [
+        (nodes[1].id, EndpointRole::Destination),
+        (nodes[2].id, EndpointRole::Source),
+    ] {
+        assert!(
+            prepared
+                .context
+                .host_unstable
+                .contains(&EndpointKey { instruction, role })
+        );
+    }
+    prepared.verify().unwrap();
+}
+
+#[test]
+fn an_unrelated_unknown_file_write_does_not_blanket_defer_a_bad_ancestor() {
+    let root = workspace();
+    fs::write(root.path().join("blocker"), "not a directory").unwrap();
+    let program = compile(
+        root.path(),
+        "future -> unrelated\nblocker/child -> observed\n",
+    );
+    let mut context = PlanningContext::default();
+    context.operation_facts.insert(
+        program.body.instructions[0].id,
+        OperationFacts {
+            source: FileClass::Unknown,
+            destination: FileClass::Missing,
+        },
+    );
+    let errors = preparation::prepare_with_context_detailed(&program, true, context).unwrap_err();
+    assert_eq!(errors[0].instruction, Some(program.body.instructions[1].id));
+    assert_eq!(errors[0].operand, preparation::Operand::Source);
+}
+
+#[test]
+fn a_program_path_argument_is_not_promoted_to_a_required_source_operand() {
+    let root = workspace();
+    fs::write(
+        root.path().join("program"),
+        "metadata-only executable placeholder",
+    )
+    .unwrap();
+    fs::write(root.path().join("blocker"), "not a directory").unwrap();
+    let program = compile(root.path(), "p => $pwd::program($pwd::blocker/child)\n");
+    let prepared = preparation::prepare(&program, true).unwrap();
+    assert!(!prepared.context.host_unstable.contains(&EndpointKey {
+        instruction: program.body.instructions[0].id,
+        role: EndpointRole::Source
+    }));
+    prepared.verify().unwrap();
 }
 
 #[test]

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::endpoint::{Backend, Location};
-use crate::hir::effects::{AccessKind, FileResource, Resource, Scope};
+use crate::hir::effects::{AccessKind, Effects, FileResource, Resource, Scope};
 use crate::hir::graph::PlanningContext;
 use crate::plan::FileClass;
 
@@ -27,24 +27,37 @@ enum Value {
 }
 
 impl State {
-    pub(super) fn with_live_processes(context: &PlanningContext) -> Self {
+    pub(super) fn initial(context: &PlanningContext) -> Self {
         let mut state = Self::default();
         for process in &context.live_processes {
             let Some(effects) = context.process_effects.get(process) else {
                 state.unknown = true;
                 continue;
             };
-            state.unknown |= effects.footprint().unknown_external;
-            state.pending_writes.extend(
-                effects
-                    .footprint()
-                    .accesses
-                    .iter()
-                    .filter(|access| access.kind == AccessKind::Write)
-                    .map(|access| access.resource.clone()),
-            );
+            state.invalidate_writes(effects.footprint());
+        }
+        for effects in &context.pending_effects {
+            state.invalidate_writes(effects);
         }
         state
+    }
+
+    pub(super) fn invalidate_writes(&mut self, effects: &Effects) {
+        self.unknown |= effects.unknown_external;
+        self.pending_writes.extend(
+            effects
+                .accesses
+                .iter()
+                .filter(|access| {
+                    matches!(access.kind, AccessKind::Write | AccessKind::NamespaceMerge)
+                })
+                .map(|access| access.resource.clone()),
+        );
+    }
+
+    pub(super) fn defer_write(&mut self, location: Location) {
+        self.pending_writes
+            .push(Resource::File(FileResource::new(location, Scope::Tree)));
     }
 
     pub(super) fn host_is_stable(&self, location: &Location) -> bool {

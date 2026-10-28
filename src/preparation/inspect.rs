@@ -1,15 +1,18 @@
 use super::state::State;
 use super::{Diagnostic, Operand, absolute, endpoint_error, parents};
 use crate::endpoint::{Backend, Location};
+use crate::hir::effects::{EndpointKey, EndpointRole};
+use crate::hir::graph::PlanningContext;
 use crate::hir::{self, Input, InstructionId, InstructionKind, Output, Region};
 use crate::plan::FileClass;
 use crate::runtime;
 use crate::syntax::{Report, Span};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, HashSet};
 #[derive(Clone, Copy)]
 struct Site {
     instruction: InstructionId,
     operand: Operand,
+    role: Option<EndpointRole>,
     span: Span,
 }
 impl Site {
@@ -24,18 +27,21 @@ impl Site {
 
 #[derive(Default)]
 pub(super) struct Observations {
-    initial: State,
+    host: State,
     native: runtime::Inspection,
     resolved: HashMap<(Location, bool), Location>,
     pub(super) classes: HashMap<Location, FileClass>,
+    pub(super) verified: HashSet<Location>,
+    pub(super) host_unstable: BTreeSet<EndpointKey>,
     remote: HashMap<Backend, Vec<Location>>,
     sites: HashMap<Location, Site>,
 }
 
 impl Observations {
-    pub(super) fn new(initial: State) -> Self {
+    pub(super) fn new(initial: State, host_unstable: BTreeSet<EndpointKey>) -> Self {
         Self {
-            initial,
+            host: initial,
+            host_unstable,
             ..Self::default()
         }
     }
@@ -47,10 +53,6 @@ impl Observations {
         site: Site,
     ) -> Result<(), Diagnostic> {
         let key = (location.clone(), source);
-        if let Some(snapshot) = self.resolved.get(&key) {
-            *location = snapshot.clone();
-            return Ok(());
-        }
         if location.path.contains('\0') {
             return Err(site.report(endpoint_error(
                 "file path contains a NUL character",
@@ -58,39 +60,78 @@ impl Observations {
                 site.span,
             )));
         }
-        let mut deferred = false;
-        let local_class = if let Some(path) = runtime::local_path(location, source)
-            .map_err(|message| site.report(endpoint_error(message, location, site.span)))?
-        {
-            let native = Location {
-                backend: Backend::Local,
-                path: path.to_string_lossy().into_owned(),
-            };
-            deferred = !self.initial.host_is_stable(&native);
-            let class = if deferred {
-                FileClass::Unknown
-            } else {
-                self.native
-                    .inspect(&native, source)
-                    .map_err(|message| site.report(endpoint_error(message, location, site.span)))?
-            };
-            let path = if deferred {
-                if path.is_absolute() {
-                    Ok(path)
+        let captured = if let Some(captured) = self.resolved.get(&key) {
+            captured.clone()
+        } else {
+            let captured = if let Some(path) = runtime::local_path(location, source)
+                .map_err(|message| site.report(endpoint_error(message, location, site.span)))?
+            {
+                let path = if path.is_absolute() {
+                    path
                 } else {
-                    std::env::current_dir().map(|cwd| cwd.join(path))
+                    std::env::current_dir()
+                        .map_err(|error| {
+                            site.report(endpoint_error(error.to_string(), location, site.span))
+                        })?
+                        .join(path)
+                };
+                Location {
+                    backend: Backend::Local,
+                    path: native_spelling(&path),
                 }
             } else {
-                absolute(&path)
+                location.clone()
+            };
+            self.resolved.insert(key, captured.clone());
+            captured
+        };
+        if site.role.is_none() {
+            // A path argument is a value, not a required filesystem input.
+            *location = captured;
+            return Ok(());
+        }
+        let endpoint = site.role.map(|role| EndpointKey {
+            instruction: site.instruction,
+            role,
+        });
+        let filesystem = matches!(
+            captured.backend,
+            Backend::Local | Backend::Ssh { .. } | Backend::Wsl
+        );
+        let deferred = filesystem
+            && (endpoint.is_some_and(|key| self.host_unstable.contains(&key))
+                || !self.host.host_is_stable(&captured));
+        if deferred && let Some(key) = endpoint {
+            self.host_unstable.insert(key);
+        }
+        *location = captured;
+        let local_class = if location.backend == Backend::Local {
+            let class = if deferred {
+                FileClass::Unknown
+            } else if self.verified.contains(location)
+                && let Some(class) = self.classes.get(location)
+            {
+                *class
+            } else {
+                self.native
+                    .inspect(location, source)
+                    .map_err(|message| site.report(endpoint_error(message, location, site.span)))?
+            };
+            if !deferred {
+                location.path = absolute(std::path::Path::new(&location.path))
+                    .map_err(|error| {
+                        site.report(endpoint_error(error.to_string(), location, site.span))
+                    })?
+                    .to_string_lossy()
+                    .into_owned();
             }
-            .map_err(|error| site.report(endpoint_error(error.to_string(), location, site.span)))?;
-            location.backend = Backend::Local;
-            location.path = path.to_string_lossy().into_owned();
             Some(class)
         } else {
             None
         };
-        self.resolved.insert(key, location.clone());
+        if !deferred {
+            self.verified.insert(location.clone());
+        }
         self.sites.entry(location.clone()).or_insert(site);
         if !self.classes.contains_key(location)
             && !self
@@ -99,9 +140,7 @@ impl Observations {
                 .flatten()
                 .any(|queued| queued == location)
         {
-            if matches!(location.backend, Backend::Ssh { .. } | Backend::Wsl)
-                && !self.initial.host_is_stable(location)
-            {
+            if matches!(location.backend, Backend::Ssh { .. } | Backend::Wsl) && deferred {
                 self.classes.insert(location.clone(), FileClass::Unknown);
             } else if matches!(location.backend, Backend::Ssh { .. } | Backend::Wsl) {
                 self.remote
@@ -182,15 +221,43 @@ impl Observations {
     }
 }
 
+fn native_spelling(path: &std::path::Path) -> String {
+    use std::path::{Component, MAIN_SEPARATOR};
+
+    #[cfg(windows)]
+    let native = std::path::PathBuf::from(path.to_string_lossy().replace('/', "\\"));
+    #[cfg(windows)]
+    let path = native.as_path();
+    let mut spelling = String::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => spelling.push_str(&prefix.as_os_str().to_string_lossy()),
+            Component::RootDir => spelling.push(MAIN_SEPARATOR),
+            Component::CurDir => {}
+            component => {
+                if !spelling.is_empty() && !spelling.ends_with(MAIN_SEPARATOR) {
+                    spelling.push(MAIN_SEPARATOR);
+                }
+                spelling.push_str(&component.as_os_str().to_string_lossy());
+            }
+        }
+    }
+    // PathBuf::push (including FromIterator<Component>) folds parent traversal
+    // in Windows verbatim paths. Only separators may change before admission.
+    spelling
+}
+
 pub(super) fn resolve_region(
     region: &mut Region,
     observations: &mut Observations,
+    context: &PlanningContext,
 ) -> Result<(), Vec<Diagnostic>> {
     let mut errors = Vec::new();
     for node in &mut region.instructions {
-        let site = |operand| Site {
+        let site = |operand, role| Site {
             instruction: node.id,
             operand,
+            role,
             span: node.span,
         };
         let result = match &mut node.kind {
@@ -199,15 +266,19 @@ pub(super) fn resolve_region(
                 destination,
             } => {
                 let result = match source {
-                    Input::File { location, .. } => {
-                        observations.resolve(location, true, site(Operand::Source))
-                    }
+                    Input::File { location, .. } => observations.resolve(
+                        location,
+                        true,
+                        site(Operand::Source, Some(EndpointRole::Source)),
+                    ),
                     _ => Ok(()),
                 };
                 result.and_then(|()| match destination {
-                    Output::File { location, .. } => {
-                        observations.resolve(location, false, site(Operand::Destination))
-                    }
+                    Output::File { location, .. } => observations.resolve(
+                        location,
+                        false,
+                        site(Operand::Destination, Some(EndpointRole::Destination)),
+                    ),
                     _ => Ok(()),
                 })
             }
@@ -216,18 +287,22 @@ pub(super) fn resolve_region(
                 arguments,
                 ..
             } => {
-                let result = observations.resolve(executable, true, site(Operand::Operation));
+                let result = observations.resolve(
+                    executable,
+                    true,
+                    site(Operand::Operation, Some(EndpointRole::Executable)),
+                );
                 result.and_then(|()| {
                     for argument in arguments {
                         if let hir::Argument::Path(location) = argument {
-                            observations.resolve(location, true, site(Operand::Source))?;
+                            observations.resolve(location, true, site(Operand::Source, None))?;
                         }
                     }
                     Ok(())
                 })
             }
             InstructionKind::Transaction { body, .. } => {
-                if let Err(child) = resolve_region(body, observations) {
+                if let Err(child) = resolve_region(body, observations, context) {
                     errors.extend(child);
                 }
                 Ok(())
@@ -236,6 +311,21 @@ pub(super) fn resolve_region(
         };
         if let Err(error) = result {
             errors.push(error);
+            continue;
+        }
+        match &node.kind {
+            InstructionKind::Transfer {
+                destination: Output::File { location, .. },
+                ..
+            } => observations.host.defer_write(location.clone()),
+            InstructionKind::Spawn { process, .. } => {
+                if let Some(effects) = context.process_effects.get(process) {
+                    observations.host.invalidate_writes(effects.footprint());
+                } else {
+                    observations.host.unknown();
+                }
+            }
+            _ => {}
         }
     }
     if errors.is_empty() {

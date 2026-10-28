@@ -8,7 +8,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use super::effects::VersionReadProof;
-use super::effects::{self, Conflict, Effects, OperationFacts, Port, Resource};
+use super::effects::{
+    self, Conflict, Effects, EndpointKey, NamespaceMergeProof, OperationFacts, Port, Resource,
+};
 use crate::compiler::Location;
 use crate::hir::{
     Instruction, InstructionId, InstructionKind, ProcessId, Program, Region, RollbackScope,
@@ -19,6 +21,13 @@ use crate::plan::FileClass;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Wait {
     Completion,
+    /// Owned asynchronous work was actually activated; not EOF or publication.
+    Admitted,
+    /// The controlling local rollback joined/discarded work and restored state.
+    EpochReset,
+    /// Source-ordered IO actually completed before this control action; later
+    /// visibility discard does not erase that historical observation.
+    ObservationComplete,
     ProcessStarted(ProcessId),
     ProcessExited(ProcessId),
     /// Process exited and its private filesystem delta has been imported.
@@ -39,10 +48,8 @@ pub enum Reason {
     RetainedTransactionOrigin(TransactionId),
     OutputPublication(ProcessId),
     SharedViewEpoch(CohortId),
-    SharedViewPublication {
-        cohort: CohortId,
-        conflict: Box<Conflict>,
-    },
+    CancelEpoch(InstructionId),
+    EpochRestored(InstructionId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -194,10 +201,37 @@ impl CohortViewProof {
     }
 }
 
+/// Classifies only one native-launch witness within a real shared mutable view.
+/// Other pending witnesses must still be checked independently. In particular,
+/// a deferred managed-file assignment is never a native launch: a later program
+/// that reads that path needs its actual publication and a fresh view epoch.
+pub fn shared_native_launch_order(
+    predecessor: &Instruction,
+    predecessor_effects: &Effects,
+    candidate: &Instruction,
+    candidate_effects: &Effects,
+    proof: &CohortViewProof,
+) -> Option<Wait> {
+    let before = spawn(predecessor)?;
+    let after = spawn(candidate)?;
+    if before == after
+        || proof.members.get(&before)?.footprint() != predecessor_effects
+        || proof.members.get(&after)?.footprint() != candidate_effects
+    {
+        return None;
+    }
+    Some(Wait::ProcessStarted(before))
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlanningContext {
     pub live_processes: Vec<ProcessId>,
     pub process_effects: BTreeMap<ProcessId, ProcessEffects>,
+    /// Actual retained flow/deferred-node footprints. These invalidate stale
+    /// host metadata, but do not identify a producer or waive its event gate.
+    pub pending_effects: Vec<Effects>,
+    /// Endpoints whose logical epoch differs from the current host tree.
+    pub host_unstable: BTreeSet<EndpointKey>,
     /// Type observations/version-store premises at this instruction's epoch.
     pub operation_facts: BTreeMap<InstructionId, OperationFacts>,
     /// Metadata-only premise: first existing directory above this destination.
@@ -207,6 +241,7 @@ pub struct PlanningContext {
     /// regular-file type facts alone cannot establish this premise.
     pub pinned_inputs: BTreeMap<InstructionId, VersionReadProof>,
     pub cohort_views: Vec<CohortViewProof>,
+    pub namespace_merges: BTreeMap<InstructionId, NamespaceMergeProof>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -262,6 +297,19 @@ pub struct SharedCohort {
     pub effects: Effects,
 }
 
+/// A local rollback cancels/joins only this uncommitted epoch and restores the
+/// latest checkpoint. These IDs are discarded definitions, not successful
+/// publications. Already successful observations retain their historical truth.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EpochReset {
+    pub controller: InstructionId,
+    pub transaction: TransactionId,
+    pub checkpoint: Option<InstructionId>,
+    pub reverted: Vec<InstructionId>,
+    pub cancel: Vec<InstructionId>,
+    pub processes: Vec<ProcessId>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PlanGraph {
     pub nodes: Vec<Node>,
@@ -275,12 +323,19 @@ pub struct PlanGraph {
     pub external_processes: Vec<ExternalProcessRequirement>,
     pub external_publications: Vec<ExternalProcessRequirement>,
     pub process_proofs: BTreeMap<ProcessId, ProcessEffects>,
+    pub pending_effects: Vec<Effects>,
+    pub host_unstable: BTreeSet<EndpointKey>,
     pub operation_facts: BTreeMap<InstructionId, OperationFacts>,
     pub existing_parent_frontiers: BTreeMap<InstructionId, Location>,
     pub pinned_inputs: BTreeMap<InstructionId, VersionReadProof>,
     pub cohort_views: Vec<CohortViewProof>,
     pub shared_cohorts: Vec<SharedCohort>,
     pub cohort_refinements: Vec<CohortRefinement>,
+    pub namespace_merges: BTreeMap<InstructionId, NamespaceMergeProof>,
+    /// Includes descendant regions' reset cuts, keyed by globally unique HIR IDs.
+    /// A retained submission can resolve a child controller without replacing
+    /// its original whole-program proof/source owner.
+    pub epoch_resets: Vec<EpochReset>,
     /// Physical streams require identity/co-start preparation. A valid pure
     /// scheduling certificate alone does not make this an executable I/O plan.
     pub refinements: Vec<Refinement>,
@@ -364,6 +419,9 @@ pub fn build_with_context(program: &Program, context: &PlanningContext) -> PlanG
     let mut transactions = BTreeMap::new();
     let mut ids = BTreeSet::new();
     let mut issues = Vec::new();
+    let mut effective = context.clone();
+    effective.namespace_merges = validate_namespace_merges(program, context, &mut issues);
+    let context = &effective;
     collect(
         &program.body,
         &mut transactions,
@@ -384,6 +442,68 @@ pub fn build_with_context(program: &Program, context: &PlanningContext) -> PlanG
     let mut graph = build_region(&program.body, &transactions, &external, context, &cohorts);
     graph.issues.extend(issues);
     graph
+}
+
+fn validate_namespace_merges(
+    program: &Program,
+    context: &PlanningContext,
+    issues: &mut Vec<Issue>,
+) -> BTreeMap<InstructionId, NamespaceMergeProof> {
+    fn visit(
+        region: &Region,
+        named: bool,
+        context: &PlanningContext,
+        valid: &mut BTreeMap<InstructionId, NamespaceMergeProof>,
+        seen: &mut BTreeSet<InstructionId>,
+        issues: &mut Vec<Issue>,
+    ) {
+        for instruction in &region.instructions {
+            seen.insert(instruction.id);
+            if let Some(proof) = context.namespace_merges.get(&instruction.id) {
+                let facts = context
+                    .operation_facts
+                    .get(&instruction.id)
+                    .copied()
+                    .unwrap_or_default();
+                let parent_consistent = context
+                    .existing_parent_frontiers
+                    .get(&instruction.id)
+                    .is_none_or(|parent| proof.parent_is(parent));
+                if !named && parent_consistent && proof.supports(instruction, facts) {
+                    valid.insert(instruction.id, proof.clone());
+                } else {
+                    issues.push(Issue { instructions: vec![instruction.id], message: "namespace merge proof does not cover an implicit exact missing-file insertion; named transactions, trees, selectors and new-parent creation remain strict".into() });
+                }
+            }
+            if let InstructionKind::Transaction { body, .. } = &instruction.kind {
+                visit(body, true, context, valid, seen, issues);
+            }
+        }
+    }
+    let mut valid = BTreeMap::new();
+    let mut seen = BTreeSet::new();
+    visit(&program.body, false, context, &mut valid, &mut seen, issues);
+    for id in context
+        .namespace_merges
+        .keys()
+        .filter(|id| !seen.contains(id))
+    {
+        issues.push(Issue {
+            instructions: vec![*id],
+            message: "namespace merge proof refers to an instruction outside this submission"
+                .into(),
+        });
+    }
+    let mut orders = BTreeMap::new();
+    for (id, proof) in &valid {
+        if let Some(previous) = orders.insert((proof.epoch().clone(), proof.logical_order()), *id) {
+            issues.push(Issue {
+                instructions: vec![previous, *id],
+                message: "a namespace merge epoch reused a logical publication ticket".into(),
+            });
+        }
+    }
+    valid
 }
 
 fn collect_port_owners(
@@ -457,8 +577,7 @@ fn validate_cohorts(
     issues: &mut Vec<Issue>,
 ) -> CohortIndex {
     let mut slots = BTreeMap::new();
-    let mut service_slots = Vec::new();
-    collect_epoch_slots(&program.body, &[], context, &mut slots, &mut service_slots);
+    collect_epoch_slots(&program.body, &[], context, &mut slots);
     let mut index = CohortIndex::default();
     for (number, proof) in context.cohort_views.iter().enumerate() {
         let mut expected_slot = None;
@@ -472,12 +591,9 @@ fn validate_cohorts(
             valid &= context.process_effects.get(process) == Some(effects);
             valid &= !index.membership.contains_key(process);
         }
-        valid &= service_slots.iter().all(|(processes, slot)| {
-            !processes
-                .iter()
-                .any(|process| proof.members.contains_key(process))
-                || expected_slot.as_ref() == Some(slot)
-        });
+        // A retained stdout spool can be drained after a managed-file epoch
+        // boundary. View membership certifies native launches, not the source
+        // position of private IO services; their Start/Publish gates still apply.
         valid &= context.process_effects.iter().all(|(process, effects)| {
             effects.provider != proof.provider
                 || effects.view_id != proof.view_id
@@ -513,26 +629,72 @@ fn collect_epoch_slots(
     path: &[InstructionId],
     context: &PlanningContext,
     slots: &mut BTreeMap<ProcessId, EpochSlot>,
-    service_slots: &mut Vec<(Vec<ProcessId>, EpochSlot)>,
 ) {
-    let mut epoch = 0;
+    let epochs = region_epochs(region, context);
     for instruction in &region.instructions {
+        let epoch = epochs[&instruction.id];
         if let Some(process) = spawn(instruction) {
             slots.insert(process, (path.to_vec(), epoch));
-        }
-        let processes = live_ports(instruction);
-        if !processes.is_empty() {
-            service_slots.push((processes, (path.to_vec(), epoch)));
         }
         if let InstructionKind::Transaction { body, .. } = &instruction.kind {
             let mut child = path.to_vec();
             child.push(instruction.id);
-            collect_epoch_slots(body, &child, context, slots, service_slots);
-        }
-        if epoch_boundary(instruction, context) {
-            epoch += 1;
+            collect_epoch_slots(body, &child, context, slots);
         }
     }
+}
+
+/// Whether two launches can belong to one native mutable-view epoch. This is
+/// only a structural prerequisite: the runtime must still prove actual shared
+/// provider/view ownership and satisfy the ordinary effect and version gates.
+/// Retained live processes precede the new submission's root epoch.
+pub fn same_native_epoch(
+    program: &Program,
+    context: &PlanningContext,
+    left: ProcessId,
+    right: ProcessId,
+) -> bool {
+    let mut slots = BTreeMap::new();
+    collect_epoch_slots(&program.body, &[], context, &mut slots);
+    let slot = |process| {
+        slots.get(&process).cloned().or_else(|| {
+            context
+                .live_processes
+                .contains(&process)
+                .then(EpochSlot::default)
+        })
+    };
+    slot(left)
+        .zip(slot(right))
+        .is_some_and(|(left, right)| left == right)
+}
+
+fn region_epochs(region: &Region, context: &PlanningContext) -> BTreeMap<InstructionId, usize> {
+    let mut epoch = 0;
+    let mut unpublished_file = false;
+    let mut epochs = BTreeMap::new();
+    for instruction in &region.instructions {
+        if spawn(instruction).is_some() && unpublished_file {
+            epoch += 1;
+            unpublished_file = false;
+        }
+        epochs.insert(instruction.id, epoch);
+        if epoch_boundary(instruction, context) {
+            epoch += 1;
+            unpublished_file = false;
+        } else if let InstructionKind::Transfer {
+            source: crate::hir::Input::Port { .. },
+            destination: crate::hir::Output::File { location, .. },
+        } = &instruction.kind
+        {
+            let destination = context
+                .operation_facts
+                .get(&instruction.id)
+                .map_or(FileClass::Unknown, |facts| facts.destination);
+            unpublished_file |= effects::file_class(location, destination) != FileClass::Stream;
+        }
+    }
+    epochs
 }
 
 fn live_ports(instruction: &Instruction) -> Vec<ProcessId> {
@@ -649,12 +811,44 @@ fn build_region(
     context: &PlanningContext,
     cohorts: &CohortIndex,
 ) -> PlanGraph {
+    let resets = local_epoch_resets(region, context);
+    let reset_positions = region
+        .instructions
+        .iter()
+        .enumerate()
+        .filter_map(|(index, instruction)| {
+            matches!(
+                instruction.kind,
+                InstructionKind::Rollback {
+                    scope: RollbackScope::Checkpoint,
+                    ..
+                }
+            )
+            .then_some((instruction.id, index))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let discarded_at = resets
+        .iter()
+        .flat_map(|reset| {
+            reset
+                .reverted
+                .iter()
+                .map(|id| (*id, (reset.controller, reset_positions[&reset.controller])))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let cancel_candidates = resets
+        .iter()
+        .flat_map(|reset| reset.cancel.iter().copied())
+        .collect::<BTreeSet<_>>();
     let mut graph = PlanGraph {
         process_proofs: context.process_effects.clone(),
+        pending_effects: context.pending_effects.clone(),
+        host_unstable: context.host_unstable.clone(),
         operation_facts: context.operation_facts.clone(),
         existing_parent_frontiers: context.existing_parent_frontiers.clone(),
         pinned_inputs: context.pinned_inputs.clone(),
         cohort_views: context.cohort_views.clone(),
+        namespace_merges: context.namespace_merges.clone(),
         ..PlanGraph::default()
     };
     for instruction in &region.instructions {
@@ -676,6 +870,9 @@ fn build_region(
             graph
                 .cohort_refinements
                 .extend(children.cohort_refinements.iter().cloned());
+            graph
+                .epoch_resets
+                .extend(children.epoch_resets.iter().cloned());
         }
         refine(instruction, context, &mut graph.refinements);
         let effects = footprint(instruction, transactions, context);
@@ -767,6 +964,22 @@ fn build_region(
             children,
         });
     }
+    for reset in &resets {
+        let mut restored = Effects::default();
+        for node in &graph.nodes {
+            if reset.reverted.contains(&node.instruction) {
+                restored.append(restoration_effects(&node.effects));
+            }
+        }
+        if let Some(controller) = graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.instruction == reset.controller)
+        {
+            controller.effects = restored;
+        }
+    }
+    graph.epoch_resets.extend(resets.iter().cloned());
     graph.shared_cohorts = cohorts
         .proofs
         .iter()
@@ -813,16 +1026,44 @@ fn build_region(
     let mut publications = BTreeMap::new();
     for (right, after) in region.instructions.iter().enumerate() {
         for (left, before) in region.instructions[..right].iter().enumerate() {
+            if discarded_at
+                .get(&before.id)
+                .is_some_and(|(controller, position)| *position < right && *controller != after.id)
+            {
+                // The reset event replaces these discarded reaching definitions.
+                // This is a control dependency, never a commutation proof.
+                continue;
+            }
             let mut reasons = ordering(
                 before,
                 after,
                 &graph.nodes[left].effects,
                 &graph.nodes[right].effects,
             );
-            if let (Some(left), Some(right)) = (spawn(before), spawn(after))
-                && let Some(cohort) = cohorts.same(left, right)
+            if discarded_at
+                .get(&before.id)
+                .is_some_and(|(controller, _)| *controller == after.id)
             {
-                reasons = vec![(Wait::ProcessStarted(left), Reason::SharedViewEpoch(cohort))];
+                let wait = if cancel_candidates.contains(&before.id) {
+                    spawn(before).map_or(Wait::Admitted, Wait::ProcessStarted)
+                } else {
+                    Wait::ObservationComplete
+                };
+                reasons = vec![(wait, Reason::CancelEpoch(after.id))];
+            } else if reset_positions.contains_key(&before.id) {
+                reasons = vec![(Wait::EpochReset, Reason::EpochRestored(before.id))];
+            }
+            if let (Some(before_process), Some(after_process)) = (spawn(before), spawn(after))
+                && let Some(cohort) = cohorts.same(before_process, after_process)
+                && let Some(wait) = shared_native_launch_order(
+                    before,
+                    &graph.nodes[left].effects,
+                    after,
+                    &graph.nodes[right].effects,
+                    &cohorts.proofs[&cohort],
+                )
+            {
+                reasons = vec![(wait, Reason::SharedViewEpoch(cohort))];
             }
             let staged = staged_output(after, context);
             let producer = staged.filter(|process| spawn(before) == Some(*process));
@@ -845,25 +1086,6 @@ fn build_region(
                     .push(Reason::OutputPublication(process));
             }
             for (wait, reason) in reasons.drain(..) {
-                if let (Some(producer), Some(launched)) =
-                    (staged_output(before, context), spawn(after))
-                    && let Some(cohort) = cohorts.same(producer, launched)
-                    && let Reason::Hazard(conflict) = &reason
-                    && conflict.before.kind == effects::AccessKind::Write
-                    && matches!(
-                        conflict.before.resource,
-                        Resource::File(_) | Resource::DirectoryMetadata(_)
-                    )
-                {
-                    publications
-                        .entry((after.id, before.id, Wait::CohortSealed(cohort)))
-                        .or_insert_with(Vec::new)
-                        .push(Reason::SharedViewPublication {
-                            cohort,
-                            conflict: conflict.clone(),
-                        });
-                    continue;
-                }
                 let edges = if staged.is_some() && publication_write(&reason) {
                     &mut publications
                 } else {
@@ -896,6 +1118,118 @@ fn build_region(
         .collect();
     connect_ports(region, context, &mut graph);
     graph
+}
+
+fn local_epoch_resets(region: &Region, context: &PlanningContext) -> Vec<EpochReset> {
+    let mut pending = Vec::<&Instruction>::new();
+    let mut checkpoint = None;
+    let mut resets = Vec::new();
+    for instruction in &region.instructions {
+        match instruction.kind {
+            InstructionKind::Commit { .. } => {
+                pending.clear();
+                checkpoint = Some(instruction.id);
+            }
+            InstructionKind::Rollback {
+                transaction,
+                scope: RollbackScope::Checkpoint,
+            } => {
+                resets.push(EpochReset {
+                    controller: instruction.id,
+                    transaction,
+                    checkpoint,
+                    reverted: pending.iter().map(|node| node.id).collect(),
+                    cancel: pending
+                        .iter()
+                        .filter(|node| cancellable_epoch_work(node, context))
+                        .map(|node| node.id)
+                        .collect(),
+                    processes: pending.iter().filter_map(|node| spawn(node)).collect(),
+                });
+                pending.clear();
+            }
+            InstructionKind::Spawn { .. } | InstructionKind::Transfer { .. } => {
+                pending.push(instruction)
+            }
+            _ => {}
+        }
+    }
+    resets
+}
+
+fn cancellable_epoch_work(instruction: &Instruction, context: &PlanningContext) -> bool {
+    let InstructionKind::Transfer {
+        source,
+        destination,
+    } = &instruction.kind
+    else {
+        return spawn(instruction).is_some();
+    };
+    if matches!(
+        source,
+        crate::hir::Input::Port {
+            port: crate::hir::ReadPort::ExitCode | crate::hir::ReadPort::Meta,
+            ..
+        }
+    ) {
+        return false;
+    }
+    let facts = context
+        .operation_facts
+        .get(&instruction.id)
+        .copied()
+        .unwrap_or_default();
+    match destination {
+        crate::hir::Output::Stdin(_) => match source {
+            crate::hir::Input::Literal(_) | crate::hir::Input::Port { .. } => true,
+            crate::hir::Input::File {
+                location,
+                pattern: None,
+            } => {
+                !matches!(
+                    location.backend,
+                    crate::compiler::Backend::Http { .. } | crate::compiler::Backend::Tcp { .. }
+                ) && !matches!(
+                    effects::file_class(location, facts.source),
+                    FileClass::Stream | FileClass::Directory
+                )
+            }
+            _ => false,
+        },
+        crate::hir::Output::File { location, .. } => {
+            matches!(source, crate::hir::Input::Port { .. })
+                && effects::file_class(location, facts.destination) != FileClass::Stream
+        }
+    }
+}
+
+fn restoration_effects(effects: &Effects) -> Effects {
+    let mut restored = Effects {
+        unknown_external: effects.unknown_external,
+        ..Effects::default()
+    };
+    for access in &effects.accesses {
+        let resource = match (&access.resource, access.kind) {
+            (Resource::File(_) | Resource::DirectoryMetadata(_), effects::AccessKind::Write) => {
+                access.resource.clone()
+            }
+            (Resource::NamespaceEntry(proof), effects::AccessKind::Write) => Resource::File(
+                effects::FileResource::new(proof.target().clone(), effects::Scope::Exact),
+            ),
+            (Resource::NamespaceChange(proof), effects::AccessKind::NamespaceMerge) => {
+                Resource::DirectoryMetadata(effects::FileResource::new(
+                    proof.parent().clone(),
+                    effects::Scope::Exact,
+                ))
+            }
+            _ => continue,
+        };
+        restored.accesses.push(effects::Access {
+            resource,
+            kind: effects::AccessKind::Write,
+        });
+    }
+    restored
 }
 
 fn needs_shared_view(
@@ -992,6 +1326,7 @@ fn summarize(instruction: &Instruction, context: &PlanningContext) -> Effects {
                 .unwrap_or_default(),
             context.existing_parent_frontiers.get(&instruction.id),
             context.pinned_inputs.get(&instruction.id),
+            context.namespace_merges.get(&instruction.id),
         ),
     }
 }
@@ -1041,7 +1376,8 @@ fn refine(instruction: &Instruction, context: &PlanningContext, refinements: &mu
         }
         if matches!(source, crate::hir::Input::Port { .. })
             && effects::file_class(location, facts.destination) != FileClass::Stream
-            && staged_output(instruction, context).is_none()
+            && (facts.destination == FileClass::Unknown
+                || staged_output(instruction, context).is_none())
         {
             refinements.push(Refinement { instruction: instruction.id, location: location.clone(), kind: RefinementKind::OutputPublication, message: "prove this program output is drained to a private regular-file stage before scheduling publication after the producer's sealed resource delta".into() });
         }
@@ -1098,7 +1434,7 @@ fn staged_output(instruction: &Instruction, context: &PlanningContext) -> Option
         .map_or(FileClass::Unknown, |facts| facts.destination);
     matches!(
         effects::file_class(location, destination),
-        FileClass::Regular | FileClass::Missing
+        FileClass::Regular | FileClass::Missing | FileClass::Unknown
     )
     .then_some(*process)
 }
@@ -1108,11 +1444,16 @@ fn publication_write(reason: &Reason) -> bool {
 }
 
 fn publication_conflict(conflict: &Conflict) -> bool {
-    conflict.after.kind == effects::AccessKind::Write
-        && matches!(
-            conflict.after.resource,
-            Resource::File(_) | Resource::DirectoryMetadata(_)
-        )
+    matches!(
+        conflict.after.kind,
+        effects::AccessKind::Write | effects::AccessKind::NamespaceMerge
+    ) && matches!(
+        conflict.after.resource,
+        Resource::File(_)
+            | Resource::DirectoryMetadata(_)
+            | Resource::NamespaceEntry(_)
+            | Resource::NamespaceChange(_)
+    )
 }
 
 fn ordering(
@@ -1204,15 +1545,23 @@ fn connect_ports(region: &Region, context: &PlanningContext, graph: &mut PlanGra
             });
         }
     }
-    reject_cross_checkpoint_services(region, context, graph);
+    reject_cross_checkpoint_services(region, graph);
     reject_internal_waits(region, context, graph);
 }
 
-fn reject_cross_checkpoint_services(
-    region: &Region,
-    context: &PlanningContext,
-    graph: &mut PlanGraph,
-) {
+fn reject_cross_checkpoint_services(region: &Region, graph: &mut PlanGraph) {
+    let mut epoch = 0;
+    let epochs = region
+        .instructions
+        .iter()
+        .map(|instruction| {
+            let current = epoch;
+            if cut(instruction) {
+                epoch += 1;
+            }
+            (instruction.id, current)
+        })
+        .collect::<BTreeMap<_, _>>();
     let positions: BTreeMap<_, _> = region
         .instructions
         .iter()
@@ -1230,10 +1579,7 @@ fn reject_cross_checkpoint_services(
                 });
                 continue;
             }
-            if region.instructions[launch..position]
-                .iter()
-                .any(|instruction| epoch_boundary(instruction, context))
-            {
+            if epochs[&cohort.launch] != epochs[member] {
                 graph.issues.push(Issue { instructions: vec![cohort.launch, *member], message: "a live process pipe crosses a checkpoint; drain/stage it before the checkpoint or launch a new process afterward".into() });
             }
         }
@@ -1296,6 +1642,7 @@ fn seals_process(graph: &PlanGraph, wait: Wait, process: ProcessId) -> bool {
 }
 
 fn stream_components(region: &Region, context: &PlanningContext) -> Vec<CohortRefinement> {
+    let epochs = region_epochs(region, context);
     let mut adjacent = BTreeMap::<ProcessId, BTreeSet<ProcessId>>::new();
     for instruction in &region.instructions {
         let InstructionKind::Transfer {
@@ -1330,7 +1677,6 @@ fn stream_components(region: &Region, context: &PlanningContext) -> Vec<CohortRe
             }
         }
         let mut slots = BTreeSet::new();
-        let mut epoch = 0;
         let mut instructions = Vec::new();
         for instruction in &region.instructions {
             if spawn(instruction).is_some_and(|process| processes.contains(&process))
@@ -1338,11 +1684,8 @@ fn stream_components(region: &Region, context: &PlanningContext) -> Vec<CohortRe
                     .iter()
                     .any(|process| processes.contains(process))
             {
-                slots.insert(epoch);
+                slots.insert(epochs[&instruction.id]);
                 instructions.push(instruction.id);
-            }
-            if epoch_boundary(instruction, context) {
-                epoch += 1;
             }
         }
         if slots.len() == 1 {

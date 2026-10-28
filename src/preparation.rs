@@ -11,7 +11,7 @@ mod optimize;
 mod state;
 mod types;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -164,10 +164,11 @@ pub fn prepare_with_context_detailed(
     mut context: PlanningContext,
 ) -> Result<PreparedProgram, Vec<Diagnostic>> {
     let mut resolved = program.clone();
-    let initial = State::with_live_processes(&context);
-    let mut observations = Observations::new(initial.clone());
-    resolve_region(&mut resolved.body, &mut observations)?;
+    let initial = State::initial(&context);
+    let mut observations = Observations::new(initial.clone(), context.host_unstable.clone());
+    resolve_region(&mut resolved.body, &mut observations, &context)?;
     observations.complete(live)?;
+    context.host_unstable = observations.host_unstable.clone();
     let mut state = initial.clone();
     let mut interpreter = Types {
         observations: &observations,
@@ -180,7 +181,7 @@ pub fn prepare_with_context_detailed(
     if !interpreter.errors.is_empty() {
         return Err(interpreter.errors);
     }
-    let resources = resources(&resolved, &initial);
+    let resources = resources(&resolved, &observations.verified);
     let facts = rewrite_facts(&context, &resolved, &resources);
     let (optimized, rewrites) = optimize::run(&resolved, &facts, &resources, true);
     let original_context = context.clone();
@@ -392,8 +393,20 @@ fn absolute(path: &Path) -> std::io::Result<PathBuf> {
     Ok(clean)
 }
 
-fn resources(program: &hir::Program, initial: &State) -> HashMap<Location, Resource> {
-    fn walk(region: &Region, initial: &State, output: &mut HashMap<Location, Resource>) {
+fn resources(program: &hir::Program, verified: &HashSet<Location>) -> HashMap<Location, Resource> {
+    fn capture(location: &Location, verified: &HashSet<Location>) -> Option<Resource> {
+        if verified.contains(location) {
+            Some(crate::plan::snapshot_resource(location, AccessScope::Exact))
+        } else {
+            crate::plan::logical_remote_resource(location, AccessScope::Exact)
+        }
+    }
+
+    fn walk(
+        region: &Region,
+        verified: &HashSet<Location>,
+        output: &mut HashMap<Location, Resource>,
+    ) {
         for node in &region.instructions {
             match &node.kind {
                 InstructionKind::Transfer {
@@ -401,26 +414,22 @@ fn resources(program: &hir::Program, initial: &State) -> HashMap<Location, Resou
                     destination,
                 } => {
                     if let Input::File { location, .. } = source
-                        && initial.host_is_stable(location)
+                        && let Some(resource) = capture(location, verified)
                     {
-                        output.entry(location.clone()).or_insert_with(|| {
-                            crate::plan::snapshot_resource(location, AccessScope::Exact)
-                        });
+                        output.entry(location.clone()).or_insert(resource);
                     }
                     if let Output::File { location, .. } = destination
-                        && initial.host_is_stable(location)
+                        && let Some(resource) = capture(location, verified)
                     {
-                        output.entry(location.clone()).or_insert_with(|| {
-                            crate::plan::snapshot_resource(location, AccessScope::Exact)
-                        });
+                        output.entry(location.clone()).or_insert(resource);
                     }
                 }
-                InstructionKind::Transaction { body, .. } => walk(body, initial, output),
+                InstructionKind::Transaction { body, .. } => walk(body, verified, output),
                 _ => {}
             }
         }
     }
     let mut output = HashMap::new();
-    walk(&program.body, initial, &mut output);
+    walk(&program.body, verified, &mut output);
     output
 }

@@ -350,6 +350,71 @@ fn scratch_namespace_child_fixture() {
     fs::write(".temp/user-file", b"native child bytes").unwrap();
 }
 
+#[test]
+#[ignore = "native child fixture, launched only by the mediated process test"]
+fn deferred_ancestor_child_fixture() {
+    fs::remove_file("node").unwrap();
+    fs::create_dir("node").unwrap();
+    fs::write("node/x", b"producer bytes").unwrap();
+    println!("producer stdout");
+}
+
+#[tokio::test]
+#[ignore = "requires a provisioned native process-resource backend"]
+async fn native_import_gates_future_source_and_destination_traversal() {
+    let workspace = workspace();
+    let cwd = workspace.path().join("work");
+    fs::create_dir(&cwd).unwrap();
+    fs::write(cwd.join("node"), b"original ordinary file").unwrap();
+    let executable = std::env::current_exe()
+        .unwrap()
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let script = format!(
+        "transaction A:\n    child => $local::\"{executable}\"(\"--exact\", \"deferred_ancestor_child_fixture\", \"--ignored\", \"--nocapture\")\n    $pwd::pwd/node/../node/x -> observed\n    \"literal bytes\" -> $pwd::pwd/node/../node/literal\n    $pwd::pwd/node/../node/literal -> observed-literal\n    child::stdout -> $pwd::pwd/node/../node/stdout\n"
+    );
+    let context = CompileContext {
+        pwd: cwd.clone(),
+        source_file: None,
+    };
+    let mut compiler = Session::new();
+    let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
+    runtime.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let compilation = pipeline::compile(&mut compiler, &script, &context, &[]).unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        runtime.execute(&compilation.program),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(fs::read(cwd.join("observed")).unwrap(), b"producer bytes");
+    assert_eq!(
+        fs::read(cwd.join("node/literal")).unwrap(),
+        b"literal bytes"
+    );
+    assert_eq!(
+        fs::read(cwd.join("observed-literal")).unwrap(),
+        b"literal bytes"
+    );
+    assert!(
+        fs::read_to_string(cwd.join("node/stdout"))
+            .unwrap()
+            .contains("producer stdout")
+    );
+    let rollback = pipeline::compile(&mut compiler, "rollback A\n", &context, &[]).unwrap();
+    runtime.execute(&rollback.program).await.unwrap();
+    runtime.shutdown().await.unwrap();
+    assert_eq!(
+        fs::read(cwd.join("node")).unwrap(),
+        b"original ordinary file"
+    );
+    assert!(!cwd.join("observed").exists());
+    assert!(!cwd.join("observed-literal").exists());
+    assert_eq!(fs::read_dir(cwd.join(".temp")).unwrap().count(), 0);
+}
+
 #[tokio::test]
 #[ignore = "requires a provisioned native process-resource backend"]
 async fn native_program_creates_user_scratch_then_copy_and_origin_undo() {
