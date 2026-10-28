@@ -522,3 +522,69 @@ controls 6/6, HIR graph 68/68 and effect-sharing/tamper control 1/1; strict libr
 binary, new-test and benchmark Clippy. Linux source-level integration and actual
 cross-WSL namespace proofs remain separate gates rather than inferred from this
 performance experiment.
+
+### Bounded State resource caching after the namespace-proof gate
+
+After `8e797bc` committed the permission/creation and OS namespace-proof rules,
+an isolated representation-only follow-up targets repeated normalization in
+`State::class`. Previously each unrelated historical event reconstructed both
+the query and event `FileResource`, including their logical path components.
+An event now retains one immutable `Arc<FileResource>` at exact scope, shared
+when states are cloned. Each `class` call constructs its query resource lazily,
+at most once. Event tree flags, ordered restore behavior, managed versus native
+pending writes, explicit endpoint-separation pairs and opaque invalidation are
+unchanged. This does not introduce an alias inference or remove a proof.
+
+The same maintained driver, Rust 1.97.1/LLVM 22.1.6, private WSL mount namespace,
+native `/tmp` context alias of project-owned ext4 fixtures, UID 1000 and CPU 0
+were used. Seven samples follow one warmup; allocation profiles are untimed.
+The two library source manifests differ only at `src/preparation/state.rs`.
+The new snapshot includes the already-frozen manager/latency WIP in both builds;
+these compiler/preparation cases do not execute those components. This is an
+isolated State comparison, not a comparison with the earlier `5cafd34` table.
+
+| Case / input nodes | Preparation median ms, before -> after | Allocation calls | Peak Rust bytes | Retained Rust bytes (both) |
+| --- | ---: | ---: | ---: | ---: |
+| Independent / 10 | 0.713398 -> 0.661333 | 7,495 -> 6,489 | 160,200 -> 169,522 | 69,856 |
+| Independent / 200 | 98.816906 -> 88.750601 | 754,396 -> 126,580 | 5,154,392 -> 5,359,954 | 2,423,012 |
+| Existing-target overwrite / 10 | 0.404431 -> 0.349097 | 3,183 -> 2,825 | 86,041 -> 95,373 | 22,705 |
+| Existing-target overwrite / 200 | 42.210849 -> 37.555666 | 355,285 -> 44,277 | 1,514,224 -> 1,719,696 | 420,400 |
+
+At 200 inputs this removes 83.2%/87.5% of allocation calls and reduces preparation
+median 10.2%/11.0%. Retained plans, surviving instructions, dependencies,
+commutations (45/19,900 for independent inputs) and rewrite counts are identical.
+Pure verification is a negative control: independent N=200 is 9.915861 ->
+9.997295 ms and overwrite N=200 is 1.225821 -> 1.229092 ms; it does not use State
+and is not advertised as faster. Tiny preparation controls did not regress in
+this run, but eager per-event normalization increases transient peak heap:
+about 9.3 KB at N=10 and 205.5 KB at N=200, or 4.0%/13.6% at N=200. That bounded
+temporary-memory cost buys materially fewer allocator calls; no total-memory or
+end-to-end transfer-throughput win is claimed.
+
+Before-cache state SHA-256 is
+`4d9b60fe978768f44f9b4071921bbe0b5f86b53a09587e78c5223f589026b2f2`;
+after-cache production state is
+`65149b553fab5045ad84724c3c5aeb31110fea29877adbc67acea886877800da`.
+The measured rlibs are respectively
+`b386a12b12fce5d4f3aab3d1161b3c624d0310d9583f0b782b33e665991e0a69` and
+`d7106cb75cdea8dcdc7fac51ece76f11bf521aebe62e28c969fbb91ec7d9834e`;
+same-source driver hashes are
+`b0ae094c20b8a4a37ac46c589a4adf2fc332d48a1508f16a66f053706ec85b90` and
+`c19f6373cac4fd3e7b1b9c663be0008c2c0f107ca063acfd181110ff6f5205c1`.
+An additional unit test added after measurement checks Arc sharing, exact
+resource scope and tree/restore postconditions; it does not alter production
+behavior. Saved rlibs/drivers are under `target/performance-v4/{baselines,probes}`
+with `state-before-final` / `state-after` suffixes; disposable raw output is
+`.temp/perf-v4/state-paired-native.txt`. Reproduce each case with the maintained
+private-mount runner above, setting `MSYNC_V4_PLANNER_CASE=independent` or
+`overwritten`, `MSYNC_V4_PLANNER_SIZES=10,200` and
+`MSYNC_V4_PLANNER_SAMPLES=7`.
+
+Post-change correctness gates: Windows State 2/2, optimizer 8/8, preparation
+39/39 and proof-sharing/tamper 1/1; Linux UID-1000 isolated project-local tmpfs
+State 2/2, optimizer 8/8, preparation 41/41 and proof-sharing/tamper 1/1.
+The integration controls include actual one-assignment execution, final bytes,
+permission/mtime correlations, readonly failures, sibling namespace ordering,
+restoration and certificate replay. Strict Windows Clippy for the library,
+binary, these three integration targets and planner benchmark is clean. These
+are correctness checks, not extra timing samples.

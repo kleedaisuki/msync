@@ -22,7 +22,7 @@ struct PendingWrite {
 
 #[derive(Clone)]
 struct Event {
-    location: Location,
+    resource: Arc<FileResource>,
     tree: bool,
     value: Value,
 }
@@ -143,7 +143,7 @@ impl State {
 
     pub(super) fn write(&mut self, location: Location, tree: bool, kind: FileClass) {
         self.events.push(Event {
-            location,
+            resource: Arc::new(FileResource::new(location, Scope::Exact)),
             tree,
             value: Value::Kind(kind),
         });
@@ -151,7 +151,7 @@ impl State {
 
     pub(super) fn restore(&mut self, location: Location, tree: bool, origin: Arc<Self>) {
         self.events.push(Event {
-            location,
+            resource: Arc::new(FileResource::new(location, Scope::Exact)),
             tree,
             value: Value::Restore(origin),
         });
@@ -162,17 +162,19 @@ impl State {
         location: &Location,
         initial: &HashMap<Location, FileClass>,
     ) -> FileClass {
+        let mut resource = None;
         for event in self.events.iter().rev() {
-            if self.independent(location, &event.location) {
+            let event_location = &event.resource.location;
+            if self.independent(location, event_location) {
                 continue;
             }
-            if event.location == *location {
+            if event_location == location {
                 return match &event.value {
                     Value::Kind(kind) => *kind,
                     Value::Restore(origin) => origin.class(location, initial),
                 };
             }
-            if descendant(location, &event.location)
+            if descendant(location, event_location)
                 && (event.tree
                     || matches!(
                         event.value,
@@ -187,17 +189,18 @@ impl State {
             }
             // A successful child assignment does not turn its ancestors into a
             // different kind. Explicit parent postconditions are recorded first.
-            if descendant(&event.location, location) {
+            if descendant(event_location, location) {
                 continue;
             }
-            if descendant(location, &event.location)
+            if descendant(location, event_location)
                 && !event.tree
                 && matches!(event.value, Value::Kind(FileClass::Directory))
             {
                 continue;
             }
-            if FileResource::new(location.clone(), Scope::Exact)
-                .may_overlap(&FileResource::new(event.location.clone(), Scope::Exact))
+            if resource
+                .get_or_insert_with(|| FileResource::new(location.clone(), Scope::Exact))
+                .may_overlap(&event.resource)
             {
                 return FileClass::Unknown;
             }
@@ -231,6 +234,34 @@ fn descendant(child: &Location, parent: &Location) -> bool {
 mod namespace_tests {
     use super::*;
     use crate::hir::effects::Access;
+
+    #[test]
+    fn cloned_events_share_exact_resources_and_preserve_restore_postconditions() {
+        let root = Location {
+            backend: Backend::Local,
+            path: "/state-cache".into(),
+        };
+        let child = Location {
+            backend: Backend::Local,
+            path: "/state-cache/child".into(),
+        };
+        let initial = HashMap::from([
+            (root.clone(), FileClass::Directory),
+            (child.clone(), FileClass::Regular),
+        ]);
+        let origin = Arc::new(State::default());
+        let mut state = State::default();
+        state.write(root.clone(), false, FileClass::Regular);
+        assert_eq!(state.class(&child, &initial), FileClass::Missing);
+        state.restore(root.clone(), true, origin);
+        let snapshot = state.clone();
+        for (event, cloned) in state.events.iter().zip(&snapshot.events) {
+            assert_eq!(event.resource.scope, Scope::Exact);
+            assert!(Arc::ptr_eq(&event.resource, &cloned.resource));
+        }
+        assert_eq!(snapshot.class(&root, &initial), FileClass::Directory);
+        assert_eq!(snapshot.class(&child, &initial), FileClass::Regular);
+    }
 
     #[test]
     fn managed_namespace_separation_does_not_waive_native_or_opaque_writers() {
