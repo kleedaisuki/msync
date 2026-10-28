@@ -15,7 +15,9 @@ fn workspace() -> tempfile::TempDir {
 }
 
 fn invoke(root: &Path, arguments: &[&str], source: &str) -> Output {
-    let mut process = Command::new(env!("CARGO_BIN_EXE_msync"))
+    let executable =
+        std::env::var_os("MSYNC_TEST_EXE").unwrap_or_else(|| env!("CARGO_BIN_EXE_msync").into());
+    let mut process = Command::new(executable)
         .args(arguments)
         .current_dir(root)
         .env("NO_COLOR", "1")

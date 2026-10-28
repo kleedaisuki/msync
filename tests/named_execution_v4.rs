@@ -9,7 +9,10 @@ use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 fn workspace() -> tempfile::TempDir {
-    let temporary = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+    let temporary = std::env::var_os("MSYNC_NAMED_FIXTURE_ROOT").map_or_else(
+        || Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp"),
+        std::path::PathBuf::from,
+    );
     fs::create_dir_all(&temporary).unwrap();
     tempfile::Builder::new()
         .prefix("named-frontier-v4-")

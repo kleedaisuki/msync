@@ -540,6 +540,137 @@ fn capture_scope(executables: &[Executable], payload: &[u8]) -> Result<()> {
     Ok(())
 }
 
+fn literal_processes(executables: &[Executable], count: usize) -> Result<()> {
+    let old_time = UNIX_EPOCH + Duration::from_secs(978307200);
+    let selected = std::env::var("MSYNC_PERF_LITERAL_CASE").ok();
+    let mut matched = false;
+    for (case, size, named) in [
+        ("literal-4b", 4, false),
+        ("literal-64k", 64 * 1024, false),
+        ("literal-1m", 1024 * 1024, false),
+        ("literal-named-two-4_5m", 9 * 1024 * 512, true),
+    ] {
+        let left = "A".repeat(size);
+        let right = "B".repeat(size);
+        let source = if named {
+            format!(
+                "transaction A:\n    \"{left}\" -> a/target.bin\ntransaction B:\n    \"{right}\" -> b/target.bin\n"
+            )
+        } else {
+            format!("\"{left}\" -> target.bin\n")
+        };
+        let outputs = if named {
+            vec![
+                ("a/target.bin", left.as_bytes()),
+                ("b/target.bin", right.as_bytes()),
+            ]
+        } else {
+            vec![("target.bin", left.as_bytes())]
+        };
+        for jobs in [1, 2] {
+            let name = format!("{case}-jobs{jobs}");
+            if selected.as_ref().is_some_and(|selected| selected != &name) {
+                continue;
+            }
+            matched = true;
+            let mut results = vec![Vec::new(); executables.len()];
+            let mut parent_changes = None;
+            for round in 0..count + 2 {
+                for offset in 0..executables.len() {
+                    let index = if round % 2 == 0 {
+                        offset
+                    } else {
+                        executables.len() - offset - 1
+                    };
+                    let executable = &executables[index];
+                    fs::create_dir_all(executable.work.join(".temp"))?;
+                    for (relative, _) in &outputs {
+                        let target = executable.work.join(relative);
+                        fs::create_dir_all(target.parent().unwrap())?;
+                        fs::write(&target, b"old")?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            fs::set_permissions(&target, fs::Permissions::from_mode(0o640))?;
+                        }
+                        fs::File::options()
+                            .write(true)
+                            .open(&target)?
+                            .set_times(fs::FileTimes::new().set_modified(old_time))?;
+                        fs::File::open(target.parent().unwrap())?
+                            .set_times(fs::FileTimes::new().set_modified(old_time))?;
+                    }
+                    let started = SystemTime::now();
+                    let elapsed = process(
+                        executable,
+                        &["run", "-", "--jobs", &jobs.to_string()],
+                        &source,
+                    )?;
+                    let mut changed = Vec::new();
+                    for (relative, expected) in &outputs {
+                        let target = executable.work.join(relative);
+                        let metadata = fs::metadata(&target)?;
+                        if !metadata.is_file() || fs::read(&target)? != *expected {
+                            return Err(
+                                format!("{name}: incorrect {} bytes", executable.label).into()
+                            );
+                        }
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if metadata.permissions().mode() & 0o777 != 0o640 {
+                                return Err(format!("{name}: changed target permissions").into());
+                            }
+                        }
+                        if metadata.modified()? < started
+                            || metadata.modified()? > SystemTime::now()
+                        {
+                            return Err(format!("{name}: invalid literal timestamp").into());
+                        }
+                        let parent_time = fs::metadata(target.parent().unwrap())?.modified()?;
+                        if parent_time != old_time
+                            && (parent_time < started || parent_time > SystemTime::now())
+                        {
+                            return Err(format!("{name}: invalid parent timestamp").into());
+                        }
+                        changed.push(parent_time != old_time);
+                    }
+                    if parent_changes
+                        .as_ref()
+                        .is_some_and(|expected| expected != &changed)
+                    {
+                        return Err(format!("{name}: parent timestamp behavior differs").into());
+                    }
+                    parent_changes = Some(changed);
+                    if round == 0 {
+                        descriptor_filesystem(
+                            "literal-destination",
+                            executable.label,
+                            &executable.work.join(outputs[0].0),
+                        )?;
+                    }
+                    if round >= 2 {
+                        results[index].push(elapsed);
+                        record(&name, executable.label, round - 2, elapsed);
+                    }
+                }
+            }
+            for (executable, samples) in executables.iter().zip(&mut results) {
+                summary(&name, executable.label, samples);
+            }
+            println!(
+                "validation,{name},bytes-per-output={size},outputs={},permissions=0640,literal-mtime=fresh,parent-mtime-changed={:?},buffer=default-65536",
+                outputs.len(),
+                parent_changes.unwrap()
+            );
+        }
+    }
+    if !matched {
+        return Err(format!("unknown literal case: {}", selected.unwrap_or_default()).into());
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
     if cfg!(debug_assertions) {
@@ -607,6 +738,9 @@ fn main() -> Result<()> {
     println!("environment,repl_ack,copy-submission-plus-pwd-roundtrip");
     for executable in &executables {
         descriptor_filesystem("binary", executable.label, &executable.path)?;
+    }
+    if std::env::var_os("MSYNC_PERF_ONLY_LITERAL").is_some() {
+        return literal_processes(&executables, count);
     }
     if let Some(profile) = std::env::var_os("MSYNC_PERF_PROFILE_DIR") {
         let profile = fs::canonicalize(profile)?;

@@ -678,3 +678,176 @@ Both variants already contain unchanged-file refresh reuse, so the separate
 both sides. Independent-flow bytes, EOF-only publication, namespace winner and
 input-barrier checks also passed. Raw paired samples are disposable
 `.temp/perf-v4/results/latency-sparse-paired-native.txt`.
+
+## Named-frame and bounded-literal latency acceptance
+
+The optional `MSYNC_PERF_ONLY_LITERAL=1` mode in `benches/latency_v4.rs` measures
+fresh `run -` processes without changing the established copy/REPL/EOF matrix.
+Each size is run with `--jobs 1` and `--jobs 2`, leaving the configured buffer at
+its default 65,536 bytes. Single literals contain 4, 65,536 or 1,048,576 ASCII
+bytes. The named case contains two independent default-serializable transaction
+frames writing 4,718,592 bytes each to existing targets in separate directories.
+Script delivery through stdin, parsing, planning, execution and runtime shutdown
+are included; fixture preparation and output verification are outside the timer.
+This is complete user-visible command latency, not an isolated IO throughput test.
+
+Immutable source archives compare accepted `181221eb08d857335614b7016a05b01701bfb41b`
+(tree `85c56984a4e488486406d802936a642bfc8d83bf`) with accepted
+`6631f28205a58440d22f97f9f6138b14ff671c7e`
+(tree `a0f0f21c41a199f7b9514cdf9970020622de57b2`). The latter includes both the
+named-frame frontier and bounded asynchronous literal path, so this comparison
+does not attribute the complete difference to a single Tokio operation.
+
+- Before binary SHA-256: `296a0fe9e51f0826258a14e015ba3814749f1f9ecaded44cd5e7b0fd28c07016`.
+- After binary SHA-256: `e50869b91d7613ef6b1bcd2dc93424b1b51cb14ff3d1f0866513de5f466350e5`.
+- Harness SHA-256: `f2084b0dac961bd75e7a1e4323dfbc9bf47a7596d229383f6a8b75e423f24eae`.
+
+The native-alias private-mount procedure above was reused: WSL kernel 6.18.33.2,
+Rust 1.97.1 normal release, UID 1000, CPU 0, warm source/loader cache, two warmups
+and 15 alternating paired samples per case. Loader and destination descriptors
+reported device 2096 and filesystem magic `ef53`; `findmnt` identifies the bound
+`/tmp` filesystem as ext4. Execution cwd and loader are addressed through `/tmp`,
+not the project-prefixed DrvFS alias. CPU affinity is a noise control, not a claim
+that the jobs-2 experiment measures maximum multicore throughput.
+
+| Literal journey | Jobs | Before p50 ms | After p50 ms | Before p95 ms | After p95 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 4 B | 1 | 2.580 | 3.458 | 2.919 | 4.631 |
+| 4 B | 2 | 3.182 | 2.887 | 4.385 | 3.584 |
+| 64 KiB | 1 | 3.649 | 4.062 | 4.989 | 5.393 |
+| 64 KiB | 2 | 3.768 | 4.097 | 4.994 | 5.618 |
+| 1 MiB | 1 | 14.653 | 14.930 | 16.280 | 16.208 |
+| 1 MiB | 2 | 12.731 | 13.386 | 13.618 | 14.494 |
+| Two named 4.5-MiB writes | 1 | 100.514 | 102.081 | 105.219 | 106.772 |
+| Two named 4.5-MiB writes | 2 | 105.435 | 112.137 | 115.017 | 119.383 |
+
+Every warmup and sample verified exact output bytes, regular-file type, preserved
+0640 permissions, fresh literal file timestamps and equivalent parent timestamp
+behavior. In both versions overwriting these literal targets updates the parent
+mtime into the current execution window; assuming the parent always retains its
+old timestamp would have incorrectly rejected the accepted baseline. An existing
+empty `.temp` scaffold is prepared before timing so first scaffold creation is
+not confused with logical overwrite metadata.
+
+The bounded path establishes admission/cancellation and real named-frame IO
+overlap, but this measurement does not establish a latency win. Tiny jobs-1/jobs-2
+results change direction and indicate scheduler noise; 64-KiB copies cost roughly
+0.3--0.4 ms more, and the two-large-named jobs-2 median costs 6.7 ms more in this
+run. A worthwhile bounded follow-up is a same-source single-factor comparison
+of the existing per-chunk Tokio file writes with one joined `spawn_blocking`
+closure using `std::fs`, the same `Arc<str>` and configured chunks, checking
+cancellation between chunks. The pinned Tokio 1.54.1 source's
+`src/fs/mod.rs` performance section explicitly recommends batching file operations
+into fewer blocking-pool submissions ([upstream documentation](https://docs.rs/tokio/1.54.1/tokio/fs/index.html#tuning-your-file-io)).
+Any such change must still join physical IO before readiness, cancellation or
+cleanup; this acceptance run made no production change.
+
+Reproduction uses `.temp/build-literal-pair-v4.sh` then, as WSL root,
+`.temp/measure-literal-pair-v4.sh 15`; the latter invokes the maintained runner
+with `MSYNC_PERF_ONLY_LITERAL=1`. Exact sources are under project
+`.temp/perf-v4/literal-{before-181221e,after-6631f28}`, and disposable raw output
+is `.temp/perf-v4/results/latency-literal-paired-native-15.txt`.
+
+### Joined blocking-worker experiment
+
+A bounded follow-up changed only `src/execution/materialize.rs` in an otherwise
+identical `6631f28` archive. One `spawn_blocking` closure owns the existing
+`Arc<str>`, performs an exclusive ordinary-file open, writes the same configured
+chunks and flushes. It checks the owner token between synchronous writes and
+awaits the complete worker before returning readiness or cancellation. The
+captured `TraceContext` is attached explicitly inside the closure, so real
+post-open/write-start and post-flush/write-complete events remain attributable
+to the correct task. No scheduler, publication, source provenance or admission
+contract changed; the existing copy lease still spans capture completion.
+
+The candidate source file SHA-256 is
+`6982432b9633bf4ffea38112bd0de263c25f4ca26f29457bb6c600cd080fcacf`;
+the release binary is
+`662b5a048683fb52918690c33a8192ecabebbadab9cb4a995e7383e6ff106ace`.
+The baseline remains the `6631f28` binary above. The same native-ext4 alias,
+15 paired samples, warmups, CPU affinity and byte/metadata checks were used.
+
+| Literal journey | Jobs | Tokio p50 ms | Worker p50 ms | Tokio p95 ms | Worker p95 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 4 B | 1 | 3.968 | 4.165 | 4.370 | 4.488 |
+| 4 B | 2 | 3.864 | 3.920 | 5.289 | 5.719 |
+| 64 KiB | 1 | 4.067 | 4.303 | 5.941 | 5.840 |
+| 64 KiB | 2 | 4.482 | 5.527 | 6.641 | 6.902 |
+| 1 MiB | 1 | 13.863 | 13.287 | 15.573 | 14.736 |
+| 1 MiB | 2 | 13.360 | 13.591 | 14.488 | 14.104 |
+| Two named 4.5-MiB writes | 1 | 100.126 | 99.706 | 106.141 | 102.444 |
+| Two named 4.5-MiB writes | 2 | 101.492 | 101.695 | 139.369 | 107.637 |
+
+The paired within-round median differences for the two large named writes are
+-1.860 ms with jobs 1 (worker faster in 9/15 pairs) and -0.589 ms with jobs 2
+(8/15 pairs). For 64-KiB jobs 2, the median paired difference is +0.779 ms
+(worker faster in 5/15 pairs). Thus reducing blocking-pool submissions does not
+establish a robust end-to-end latency win in this sample, and the large-tail
+difference must not be advertised as a generally lower p95. The small-case cost
+and near-neutral large medians need an explicit adoption decision rather than
+assuming fewer IO submissions imply a faster command.
+
+Windows checks passed all five named execution cases, three materialization
+units and strict Clippy. Actual WSL checks passed the same five named cases,
+three units, and the existing real-native cancellation/origin-restoration and
+stop/session-reuse controls. The faster writes expose a test-fixture confound:
+using project-prefixed cwd paths, one real 4.5-MiB write finished in 1.64 ms,
+before the next open could pass DrvFS ancestor metadata checks. The named test
+now accepts optional `MSYNC_NAMED_FIXTURE_ROOT`; the private project-owned tmpfs
+was also bound at `/tmp`, and only these file-only tests used its native alias.
+The actual post-open/post-flush overlap assertion then passed. No production
+delays, fake queue-overlap events or weaker scheduler proof were introduced.
+
+The unchanged original matrix also passed three-round functional controls:
+exact copies, persistent REPL writes, independent EOF publication and logical
+parent timestamp winner. Both binaries retained two artifacts / 131,072 bytes
+in the REPL control and one / 65,536 bytes for the unrelated-cwd capture control.
+These extra controls are not the source of the 15-sample latency table.
+Reproduce with `.temp/build-literal-worker-v4.sh` and, as WSL root,
+`.temp/measure-literal-worker-v4.sh`. Sources are retained under
+`.temp/perf-v4/literal-worker-6631f28`; the exact single-file diff is
+`.temp/perf-v4/literal-worker-only-difference.patch`. Disposable raw results are
+`.temp/perf-v4/results/latency-literal-worker-native-15.txt` and
+`.temp/perf-v4/results/latency-literal-worker-old-controls.txt`.
+
+### Final worker decision: retain the accepted bounded Tokio implementation
+
+One final, deliberately limited confirmation reused the identical immutable
+production binaries. The independent harness added the optional exact-name
+`MSYNC_PERF_LITERAL_CASE` filter; unknown names fail rather than silently run no
+cases. It was compiled with `rustc -O --edition=2024`, without rebuilding either
+production executable. Native ext4, device 2096 / filesystem magic `ef53`, UID
+1000, CPU 0, two warmups, alternating execution order and all previous exact
+byte/type/0640/file-time/parent-time checks were retained. The final small-case
+control swaps the executable arguments: this swaps both their baseline/candidate
+labels and the A/B fixture directories, not merely their report labels.
+
+| Confirmation | Pairs | Tokio p50 / p95 ms | Worker p50 / p95 ms | Median paired worker minus Tokio ms | Worker faster |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 64 KiB, jobs 2 | 61 | 4.049 / 5.642 | 3.888 / 5.383 | -0.203 | 34/61 |
+| Two named 4.5-MiB writes, jobs 2 | 31 | 108.965 / 129.151 | 106.697 / 115.864 | -1.447 | 16/31 |
+| 64 KiB, jobs 2, labels and fixtures swapped | 31 | 3.709 / 5.284 | 4.108 / 5.453 | +0.052 | 13/31 |
+
+Every measured and warmup invocation passed its correctness controls. These
+results do not establish a stable user-visible improvement: the small-case
+direction changes after the label/fixture swap, and the large-case worker wins
+only 16 of 31 within-round comparisons. Its apparent tail reduction includes an
+isolated large baseline outlier; it does not justify a general p95 claim.
+The decision is therefore **not to adopt the joined blocking-worker production
+change**. The accepted bounded Tokio path already supplies real admission,
+joined cancellation and named-frame concurrency. Fewer pool submissions alone
+are not enough reason to replace it. This closes the experiment; no further
+confirmation matrix is planned. The useful literal benchmark and optional
+native fixture alias remain independently valuable acceptance tools.
+
+Reproduce the limited controls as root with
+`.temp/confirm-literal-worker-v4.sh`. Disposable raw outputs are
+`.temp/perf-v4/results/latency-worker-confirm-64k-61.txt`,
+`.temp/perf-v4/results/latency-worker-confirm-named-31.txt` and
+`.temp/perf-v4/results/latency-worker-confirm-64k-swapped-31.txt`. The source
+harness SHA-256 is `461838188167187e75a9acb0193062f869267a89547ed10585cabcddee10e2da`;
+the standalone harness executable is
+`eff4061f7d34008e91e1a8ea647821aa1a5582b9f64396fd771fbaf3c6ff4a72`.
+The production binary hashes remain those recorded in the initial worker
+experiment. Removing disposable raw files does not erase this decision, setup
+or measurements.
