@@ -5,6 +5,32 @@ signed-driver journeys have **not** been run on the development host; no driver,
 service or Sandboxie configuration was installed or changed there. The ephemeral
 Windows Actions gate must prove native support before release acceptance.
 
+## Cancellation can follow an ordinary native exit receipt
+
+[Run 40639857501](https://github.com/kleedaisuki/msync/actions/runs/40639857501)
+passed both ordinary platform jobs but exposed a worker cancellation race in the
+actual signed-driver view gate. Parent cancellation quiesces the payload tree
+independently of control-channel backpressure. The worker's native `wait` can
+therefore finish before its control reader processes `CANCEL`, producing a real
+non-cancelled exit receipt. The old reader then dropped its export oneshot on
+cancel; awaiting that dropped sender produced `channel closed` and a spurious
+worker failure. Tokio explicitly documents that sender-drop is a
+[receive error](https://docs.rs/tokio/latest/tokio/sync/oneshot/struct.Sender.html),
+not a cancellation command.
+
+The control result now distinguishes Export, Release, Cancel and a typed IO
+failure. Early cancellation retains the cancelled exit/COMPLETE protocol. A
+genuine late Cancel after a physical exit sends the existing no-export RELEASE
+receipt; it never authorizes tree export or fabricates process output. Broken
+control transport and invalid frames remain failures. Parent cancellation also
+joins the terminal output result, not merely the first EXIT, so a later real
+protocol/IO failure cannot disappear behind an earlier physical receipt.
+
+Driver-free duplex regressions force both receipt/control orders, preserve
+native error codes and dropped-sender errors, and exercise cancellation queued
+behind a closed payload stdin. These tests do not replace the actual native
+Windows cancellation gate, which must be rerun on the current source.
+
 ## Native cleanup includes the service-owned registry hive
 
 [Run 40533733086](https://github.com/kleedaisuki/msync/actions/runs/40533733086)

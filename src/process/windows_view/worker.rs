@@ -113,40 +113,14 @@ async fn run(args: &[OsString]) -> io::Result<()> {
     ));
     let cancel = CancellationToken::new();
     let read_cancel = cancel.clone();
-    let mut stdin = process.take_stdin();
+    let stdin = process.take_stdin();
     let (control, exported) = oneshot::channel();
     tokio::spawn(async move {
-        loop {
-            let next = wire::receive(&mut source).await;
-            match next {
-                Ok((wire::STDIN, bytes)) => {
-                    if let Some(writer) = &mut stdin
-                        && writer.write_all(&bytes).await.is_err()
-                    {
-                        stdin = None;
-                    }
-                }
-                Ok((wire::CLOSE_STDIN, bytes)) if bytes.is_empty() => {
-                    stdin.take();
-                }
-                Ok((wire::EXPORT, bytes)) if bytes.is_empty() => {
-                    let _ = control.send(true);
-                    return;
-                }
-                Ok((wire::RELEASE, bytes)) if bytes.is_empty() => {
-                    let _ = control.send(false);
-                    return;
-                }
-                Ok((wire::CANCEL, bytes)) if bytes.is_empty() => {
-                    read_cancel.cancel();
-                    return;
-                }
-                _ => {
-                    read_cancel.cancel();
-                    return;
-                }
-            }
+        let command = read_control(source, stdin).await;
+        if !matches!(command, Ok(Control::Export | Control::Release)) {
+            read_cancel.cancel();
         }
+        let _ = control.send(command);
     });
     let result = tokio::select! {
         result = process.wait() => result,
@@ -156,13 +130,8 @@ async fn run(args: &[OsString]) -> io::Result<()> {
         let exit = result.map_err(io::Error::other)?;
         out.await.map_err(io::Error::other)??;
         err.await.map_err(io::Error::other)??;
-        wire::send(&mut *sink.lock().await, wire::EXIT, &encode_exit(&exit)).await?;
-        if exit.cancelled {
-            wire::send(&mut *sink.lock().await, wire::COMPLETE, &[]).await?;
+        if !finish_payload(&mut *sink.lock().await, &exit, exported).await? {
             return Ok(());
-        }
-        if !exported.await.map_err(io::Error::other)? {
-            return wire::send(&mut *sink.lock().await, wire::RELEASE, &[]).await;
         }
         let mut store = SnapshotStore::new(&config.scratch_root).map_err(io::Error::other)?;
         for root in roots {
@@ -183,6 +152,72 @@ async fn run(args: &[OsString]) -> io::Result<()> {
         let _ = send_failure(&mut *sink.lock().await, failure).await;
     }
     result
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Control {
+    Export,
+    Release,
+    Cancel,
+}
+
+async fn read_control(
+    mut source: impl tokio::io::AsyncRead + Unpin,
+    mut stdin: Option<impl tokio::io::AsyncWrite + Unpin>,
+) -> io::Result<Control> {
+    loop {
+        let (kind, bytes) = wire::receive(&mut source).await?;
+        match kind {
+            wire::STDIN => {
+                if let Some(writer) = &mut stdin
+                    && writer.write_all(&bytes).await.is_err()
+                {
+                    stdin = None;
+                }
+            }
+            wire::CLOSE_STDIN if bytes.is_empty() => {
+                stdin.take();
+            }
+            wire::EXPORT if bytes.is_empty() => return Ok(Control::Export),
+            wire::RELEASE if bytes.is_empty() => return Ok(Control::Release),
+            wire::CANCEL if bytes.is_empty() => return Ok(Control::Cancel),
+            _ => return Err(wire::invalid("unexpected worker control frame")),
+        }
+    }
+}
+
+async fn receive_control(
+    command: &mut oneshot::Receiver<io::Result<Control>>,
+) -> io::Result<Control> {
+    command
+        .await
+        .map_err(|cause| io::Error::new(io::ErrorKind::BrokenPipe, cause))?
+}
+
+async fn finish_payload(
+    sink: &mut (impl tokio::io::AsyncWrite + Unpin),
+    exit: &ExitInfo,
+    mut command: oneshot::Receiver<io::Result<Control>>,
+) -> io::Result<bool> {
+    if exit.cancelled && receive_control(&mut command).await? != Control::Cancel {
+        return Err(wire::invalid(
+            "cancelled payload has no cancellation command",
+        ));
+    }
+    wire::send(sink, wire::EXIT, &encode_exit(exit)).await?;
+    if exit.cancelled {
+        wire::send(sink, wire::COMPLETE, &[]).await?;
+        return Ok(false);
+    }
+    match receive_control(&mut command).await? {
+        Control::Export => Ok(true),
+        // Parent-side quiescence can make native exit win the cancellation
+        // race. The later command still discards this view, never exports it.
+        Control::Release | Control::Cancel => {
+            wire::send(sink, wire::RELEASE, &[]).await?;
+            Ok(false)
+        }
+    }
 }
 
 async fn initialize(
@@ -527,6 +562,123 @@ fn error_kind(kind: io::ErrorKind) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn exit(cancelled: bool) -> ExitInfo {
+        ExitInfo {
+            pid: 42,
+            exit_code: if cancelled { 1 } else { 0 },
+            success: !cancelled,
+            cancelled,
+            stdout_bytes: 0,
+            stderr_bytes: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn cancel_after_native_exit_is_an_explicit_discard_not_channel_failure() {
+        let (mut sink, mut source) = tokio::io::duplex(4096);
+        let (control, command) = oneshot::channel();
+        let task =
+            tokio::spawn(async move { finish_payload(&mut sink, &exit(false), command).await });
+        let (kind, body) = wire::receive(&mut source).await.unwrap();
+        assert_eq!(kind, wire::EXIT);
+        assert_eq!(decode_exit(&body).unwrap(), exit(false));
+        // Deliberately wait for the physical receipt before delivering CANCEL.
+        // This is the parent quiescence/control-reader ordering that failed CI.
+        control.send(Ok(Control::Cancel)).unwrap();
+        assert_eq!(
+            wire::receive(&mut source).await.unwrap(),
+            (wire::RELEASE, Vec::new())
+        );
+        assert!(!task.await.unwrap().unwrap());
+        assert_eq!(
+            wire::receive(&mut source).await.unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[tokio::test]
+    async fn early_cancel_keeps_its_native_exit_and_complete_receipts() {
+        let (mut sink, mut source) = tokio::io::duplex(4096);
+        let (control, command) = oneshot::channel();
+        control.send(Ok(Control::Cancel)).unwrap();
+        assert!(
+            !finish_payload(&mut sink, &exit(true), command)
+                .await
+                .unwrap()
+        );
+        let (kind, body) = wire::receive(&mut source).await.unwrap();
+        assert_eq!(kind, wire::EXIT);
+        assert_eq!(decode_exit(&body).unwrap(), exit(true));
+        assert_eq!(
+            wire::receive(&mut source).await.unwrap(),
+            (wire::COMPLETE, Vec::new())
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_control_errors_are_not_relabelled_as_cancellation() {
+        for cancelled in [false, true] {
+            let (mut sink, mut source) = tokio::io::duplex(4096);
+            let (control, command) = oneshot::channel();
+            control.send(Err(io::Error::from_raw_os_error(5))).unwrap();
+            let failure = finish_payload(&mut sink, &exit(cancelled), command)
+                .await
+                .unwrap_err();
+            assert_eq!(failure.raw_os_error(), Some(5));
+            if !cancelled {
+                assert_eq!(wire::receive(&mut source).await.unwrap().0, wire::EXIT);
+            }
+        }
+        let (mut sink, mut source) = tokio::io::duplex(4096);
+        let (control, command) = oneshot::channel();
+        drop(control);
+        assert_eq!(
+            finish_payload(&mut sink, &exit(false), command)
+                .await
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::BrokenPipe
+        );
+        assert_eq!(wire::receive(&mut source).await.unwrap().0, wire::EXIT);
+    }
+
+    #[tokio::test]
+    async fn only_export_control_authorizes_a_managed_tree_export() {
+        for action in [Control::Export, Control::Release] {
+            let (mut sink, mut source) = tokio::io::duplex(4096);
+            let (control, command) = oneshot::channel();
+            control.send(Ok(action)).unwrap();
+            assert_eq!(
+                finish_payload(&mut sink, &exit(false), command)
+                    .await
+                    .unwrap(),
+                action == Control::Export
+            );
+            assert_eq!(wire::receive(&mut source).await.unwrap().0, wire::EXIT);
+            if action == Control::Release {
+                assert_eq!(
+                    wire::receive(&mut source).await.unwrap(),
+                    (wire::RELEASE, Vec::new())
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn control_reader_retains_cancel_after_a_closed_payload_stdin() {
+        let (mut sink, source) = tokio::io::duplex(4096);
+        let (stdin, reader) = tokio::io::duplex(1);
+        drop(reader);
+        wire::send(&mut sink, wire::STDIN, b"late input")
+            .await
+            .unwrap();
+        wire::send(&mut sink, wire::CANCEL, &[]).await.unwrap();
+        assert_eq!(
+            read_control(source, Some(stdin)).await.unwrap(),
+            Control::Cancel
+        );
+    }
 
     #[test]
     fn scratch_is_a_disjoint_drive_child_not_a_managed_cwd_descendant() {

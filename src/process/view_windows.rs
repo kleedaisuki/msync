@@ -619,12 +619,25 @@ impl RunningView {
             exit.success = false;
             exit
         });
+        let completed = receive_watch(&mut self.done, &self.prepared.owned.path)
+            .await
+            .and_then(|roots| {
+                if roots.is_empty() {
+                    Ok(())
+                } else {
+                    Err(ViewError::new(
+                        "discard cancelled view",
+                        &self.prepared.owned.path,
+                        wire::invalid("cancelled worker exported managed roots"),
+                    ))
+                }
+            });
         self.worker
             .wait()
             .await
             .map_err(|cause| ViewError::new("join worker", &self.prepared.owned.path, cause))?;
         self.release()?;
-        result
+        result.and_then(|exit| completed.map(|()| exit))
     }
 
     /// Join/discard a cancelled view without dropping its owning seal future.
