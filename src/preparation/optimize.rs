@@ -1,12 +1,12 @@
 //! Epoch-local typed counterpart of the mature regular-file fixed point.
 //! Literal values stay literals; they are never encoded as synthetic endpoints.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use crate::compiler::{CopyOp, Program as Copies};
 use crate::endpoint::{Backend, Location};
-use crate::hir::effects::OperationFacts;
+use crate::hir::effects::{EndpointKey, EndpointRole, OperationFacts};
 use crate::hir::{
     self, Input, Instruction, InstructionId, InstructionKind, Output, ReadPort, Region,
 };
@@ -53,13 +53,16 @@ pub enum RewriteKind {
     RedundantWrite {
         same_as: InstructionId,
     },
+    CoalesceCreation {
+        overwritten_by: InstructionId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rewrite {
     pub instruction: InstructionId,
-    /// The full observation-free epoch checked by this rewrite.
-    pub epoch: Vec<InstructionId>,
+    /// The full observation-free epoch, shared immutably by its rewrite records.
+    pub epoch: Arc<[InstructionId]>,
     pub kind: RewriteKind,
 }
 
@@ -67,6 +70,7 @@ pub(super) fn run(
     original: &hir::Program,
     facts: &BTreeMap<InstructionId, OperationFacts>,
     resources: &HashMap<Location, Resource>,
+    unstable: &BTreeSet<EndpointKey>,
     use_legacy: bool,
 ) -> (hir::Program, Vec<Rewrite>) {
     let mut output = original.clone();
@@ -75,6 +79,7 @@ pub(super) fn run(
         &mut output.body,
         facts,
         resources,
+        unstable,
         use_legacy,
         &mut rewrites,
     );
@@ -85,6 +90,7 @@ fn region(
     region: &mut Region,
     facts: &BTreeMap<InstructionId, OperationFacts>,
     resources: &HashMap<Location, Resource>,
+    unstable: &BTreeSet<EndpointKey>,
     use_legacy: bool,
     records: &mut Vec<Rewrite>,
 ) {
@@ -100,11 +106,12 @@ fn region(
             &mut output,
             resources,
             facts,
+            unstable,
             use_legacy,
             records,
         );
         if let InstructionKind::Transaction { body, .. } = &mut node.kind {
-            self::region(body, facts, resources, use_legacy, records);
+            self::region(body, facts, resources, unstable, use_legacy, records);
         }
         output.push(node);
     }
@@ -113,6 +120,7 @@ fn region(
         &mut output,
         resources,
         facts,
+        unstable,
         use_legacy,
         records,
     );
@@ -163,6 +171,7 @@ fn flush(
     output: &mut Vec<Instruction>,
     resources: &HashMap<Location, Resource>,
     facts: &BTreeMap<InstructionId, OperationFacts>,
+    unstable: &BTreeSet<EndpointKey>,
     use_legacy: bool,
     records: &mut Vec<Rewrite>,
 ) {
@@ -170,14 +179,34 @@ fn flush(
         return;
     }
     let original = std::mem::take(epoch);
-    let ids = original.iter().map(|node| node.id).collect::<Vec<_>>();
+    let ids = original.iter().map(|node| node.id).collect::<Arc<[_]>>();
+    let permissions = permissions(&original, facts, resources, unstable);
+    let mut current_facts = original
+        .iter()
+        .map(|node| (node.id, facts[&node.id]))
+        .collect();
     let mut nodes = original.iter().cloned().map(Some).collect::<Vec<_>>();
     let mut trace = Vec::new();
     loop {
         let forwarded = forward(&mut nodes, resources, &ids, &mut trace);
-        let redundant = remove_redundant(&mut nodes, resources, &ids, &mut trace);
-        let removed = eliminate(&mut nodes, resources, facts, &ids, &mut trace);
-        if !forwarded && !redundant && !removed {
+        let redundant = remove_redundant(&mut nodes, resources, &permissions, &ids, &mut trace);
+        let coalesced = coalesce_creation(
+            &mut nodes,
+            resources,
+            &mut current_facts,
+            &permissions,
+            &ids,
+            &mut trace,
+        );
+        let removed = eliminate(
+            &mut nodes,
+            resources,
+            &current_facts,
+            &permissions,
+            &ids,
+            &mut trace,
+        );
+        if !forwarded && !redundant && !coalesced && !removed {
             break;
         }
     }
@@ -209,7 +238,7 @@ fn flush(
 fn forward(
     nodes: &mut [Option<Instruction>],
     resources: &HashMap<Location, Resource>,
-    epoch: &[InstructionId],
+    epoch: &Arc<[InstructionId]>,
     records: &mut Vec<Rewrite>,
 ) -> bool {
     let mut changed = false;
@@ -260,7 +289,7 @@ fn forward(
         }
         records.push(Rewrite {
             instruction: node.id,
-            epoch: epoch.to_vec(),
+            epoch: epoch.clone(),
             kind: RewriteKind::Forward {
                 producer: producer_node.id,
                 from: Box::new(value(source(node))),
@@ -281,7 +310,8 @@ fn forward(
 fn remove_redundant(
     nodes: &mut [Option<Instruction>],
     resources: &HashMap<Location, Resource>,
-    epoch: &[InstructionId],
+    permissions: &BTreeMap<InstructionId, Permission>,
+    epoch: &Arc<[InstructionId]>,
     records: &mut Vec<Rewrite>,
 ) -> bool {
     let mut changed = false;
@@ -304,6 +334,9 @@ fn remove_redundant(
             continue;
         };
         let previous = nodes[producer].as_ref().expect("retained write");
+        if !permissions[&node.id].overwrite || permissions[&previous.id].result != Some(true) {
+            continue;
+        }
         let Input::File {
             location: prior, ..
         } = source(previous)
@@ -326,7 +359,7 @@ fn remove_redundant(
         }
         records.push(Rewrite {
             instruction: node.id,
-            epoch: epoch.to_vec(),
+            epoch: epoch.clone(),
             kind: RewriteKind::RedundantWrite {
                 same_as: previous.id,
             },
@@ -341,7 +374,8 @@ fn eliminate(
     nodes: &mut [Option<Instruction>],
     resources: &HashMap<Location, Resource>,
     facts: &BTreeMap<InstructionId, OperationFacts>,
-    epoch: &[InstructionId],
+    permissions: &BTreeMap<InstructionId, Permission>,
+    epoch: &Arc<[InstructionId]>,
     records: &mut Vec<Rewrite>,
 ) -> bool {
     let mut changed = false;
@@ -350,6 +384,9 @@ fn eliminate(
         // Creation stamps its containing namespace. Keep that event until the
         // IR can carry its metadata provenance separately from payload copying.
         if facts[&node.id].destination == FileClass::Missing {
+            continue;
+        }
+        if !permissions[&node.id].overwrite || permissions[&node.id].result != Some(true) {
             continue;
         }
         let target = &resources[destination(node)];
@@ -375,7 +412,7 @@ fn eliminate(
         if let Some(overwritten_by) = overwritten_by {
             records.push(Rewrite {
                 instruction: node.id,
-                epoch: epoch.to_vec(),
+                epoch: epoch.clone(),
                 kind: RewriteKind::DeadWrite { overwritten_by },
             });
             nodes[index] = None;
@@ -383,6 +420,143 @@ fn eliminate(
         }
     }
     changed
+}
+
+#[derive(Clone, Copy)]
+struct Permission {
+    overwrite: bool,
+    result: Option<bool>,
+}
+
+fn permissions(
+    nodes: &[Instruction],
+    facts: &BTreeMap<InstructionId, OperationFacts>,
+    resources: &HashMap<Location, Resource>,
+    unstable: &BTreeSet<EndpointKey>,
+) -> BTreeMap<InstructionId, Permission> {
+    let mut values = BTreeMap::new();
+    let mut output = BTreeMap::new();
+    for node in nodes {
+        let destination = &resources[destination(node)];
+        let observed = |role, resource: &Resource| {
+            (!unstable.contains(&EndpointKey {
+                instruction: node.id,
+                role,
+            }))
+            .then(|| resource.writable_file())
+            .flatten()
+        };
+        let previous = values
+            .get(destination.key())
+            .copied()
+            .unwrap_or_else(|| observed(EndpointRole::Destination, destination));
+        let missing = facts[&node.id].destination == FileClass::Missing;
+        let result = match source(node) {
+            Input::File { location, .. } => {
+                let source = &resources[location];
+                values
+                    .get(source.key())
+                    .copied()
+                    .unwrap_or_else(|| observed(EndpointRole::Source, source))
+            }
+            Input::Literal(_) => {
+                if missing {
+                    None
+                } else {
+                    previous
+                }
+            }
+            Input::Port { .. } => unreachable!("file/literal epoch"),
+        };
+        output.insert(
+            node.id,
+            Permission {
+                overwrite: missing || previous == Some(true),
+                result,
+            },
+        );
+        values.insert(destination.key().clone(), result);
+    }
+    output
+}
+
+fn coalesce_creation(
+    nodes: &mut [Option<Instruction>],
+    resources: &HashMap<Location, Resource>,
+    facts: &mut BTreeMap<InstructionId, OperationFacts>,
+    permissions: &BTreeMap<InstructionId, Permission>,
+    epoch: &Arc<[InstructionId]>,
+    records: &mut Vec<Rewrite>,
+) -> bool {
+    let mut changed = false;
+    for index in 0..nodes.len().saturating_sub(1) {
+        let (Some(first), Some(last)) = (&nodes[index], &nodes[index + 1]) else {
+            continue;
+        };
+        if facts[&first.id].destination != FileClass::Missing
+            || !matches!(source(first), Input::File { .. })
+            || !matches!(source(last), Input::File { .. })
+            || permissions[&first.id].result != Some(true)
+            || !permissions[&last.id].overwrite
+            || !resources[destination(first)].same_path(&resources[destination(last)])
+        {
+            continue;
+        }
+        // Adjacent complete file values have no intervening observer or
+        // namespace ticket. Keep the final source site and the insertion effect.
+        let final_id = last.id;
+        records.push(Rewrite {
+            instruction: first.id,
+            epoch: epoch.clone(),
+            kind: RewriteKind::CoalesceCreation {
+                overwritten_by: final_id,
+            },
+        });
+        facts
+            .get_mut(&final_id)
+            .expect("eligible final assignment")
+            .destination = FileClass::Missing;
+        nodes[index] = None;
+        changed = true;
+    }
+    changed
+}
+
+pub(super) fn refined_context(
+    original: &crate::hir::graph::PlanningContext,
+    rewrites: &[Rewrite],
+) -> crate::hir::graph::PlanningContext {
+    let mut context = original.clone();
+    for rewrite in rewrites {
+        let RewriteKind::CoalesceCreation { overwritten_by } = rewrite.kind else {
+            continue;
+        };
+        context
+            .operation_facts
+            .get_mut(&overwritten_by)
+            .expect("replayed creation has a typed final assignment")
+            .destination = FileClass::Missing;
+        if let Some(frontier) = context
+            .existing_parent_frontiers
+            .get(&rewrite.instruction)
+            .cloned()
+        {
+            context
+                .existing_parent_frontiers
+                .insert(overwritten_by, frontier);
+        }
+        let first = EndpointKey {
+            instruction: rewrite.instruction,
+            role: EndpointRole::Destination,
+        };
+        if !context.host_unstable.contains(&first) {
+            context.host_unstable.remove(&EndpointKey {
+                instruction: overwritten_by,
+                role: EndpointRole::Destination,
+            });
+        }
+    }
+    context
 }
 
 fn legacy(

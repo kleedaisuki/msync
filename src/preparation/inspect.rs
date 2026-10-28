@@ -33,15 +33,21 @@ pub(super) struct Observations {
     pub(super) classes: HashMap<Location, FileClass>,
     pub(super) verified: HashSet<Location>,
     pub(super) host_unstable: BTreeSet<EndpointKey>,
+    pub(super) independent_endpoints: HashSet<(Location, Location)>,
+    pub(super) canonical_remote: HashMap<Location, Location>,
+    live: bool,
+    wsl_files: HashMap<Location, Option<(Location, FileClass)>>,
+    native_filesystems: HashMap<Location, bool>,
     remote: HashMap<Backend, Vec<Location>>,
     sites: HashMap<Location, Site>,
 }
 
 impl Observations {
-    pub(super) fn new(initial: State, host_unstable: BTreeSet<EndpointKey>) -> Self {
+    pub(super) fn new(initial: State, host_unstable: BTreeSet<EndpointKey>, live: bool) -> Self {
         Self {
             host: initial,
             host_unstable,
+            live,
             ..Self::default()
         }
     }
@@ -98,6 +104,13 @@ impl Observations {
             captured.backend,
             Backend::Local | Backend::Ssh { .. } | Backend::Wsl
         );
+        if source
+            && captured.backend == Backend::Wsl
+            && self.live
+            && !self.host.host_is_stable(&captured)
+        {
+            self.refine_wsl(&captured);
+        }
         let deferred = filesystem
             && (endpoint.is_some_and(|key| self.host_unstable.contains(&key))
                 || !self.host.host_is_stable(&captured));
@@ -177,6 +190,18 @@ impl Observations {
     }
 
     pub(super) fn complete(&mut self, live: bool) -> Result<(), Vec<Diagnostic>> {
+        let native = self
+            .sites
+            .keys()
+            .filter(|location| location.backend == Backend::Local)
+            .cloned()
+            .collect::<Vec<_>>();
+        let wsl = self.canonical_remote.keys().cloned().collect::<Vec<_>>();
+        for remote in wsl {
+            for local in &native {
+                self.prove_pair(local, &remote);
+            }
+        }
         let mut groups = std::mem::take(&mut self.remote)
             .into_iter()
             .collect::<Vec<_>>();
@@ -218,6 +243,48 @@ impl Observations {
             }
         }
         Ok(())
+    }
+
+    fn refine_wsl(&mut self, location: &Location) {
+        let Some(writes) = self.host.separation_candidates(location) else {
+            return;
+        };
+        if !writes.iter().all(|write| {
+            *self
+                .native_filesystems
+                .entry(write.clone())
+                .or_insert_with(|| runtime::native_windows_filesystem(write))
+        }) {
+            return;
+        }
+        let observation = self
+            .wsl_files
+            .entry(location.clone())
+            .or_insert_with(|| runtime::wsl_native_file(location))
+            .clone();
+        let Some((canonical, kind)) = observation else {
+            return;
+        };
+        self.canonical_remote.insert(location.clone(), canonical);
+        for write in writes {
+            self.prove_pair(&write, location);
+        }
+        self.host.extend_independent(&self.independent_endpoints);
+        if self.host.host_is_stable(location) {
+            self.classes.insert(location.clone(), kind);
+        }
+    }
+
+    fn prove_pair(&mut self, native: &Location, wsl: &Location) {
+        for local in std::iter::once(native.clone()).chain(parents(native)) {
+            let native = *self
+                .native_filesystems
+                .entry(local.clone())
+                .or_insert_with(|| runtime::native_windows_filesystem(&local));
+            if native {
+                self.independent_endpoints.insert((local, wsl.clone()));
+            }
+        }
     }
 }
 

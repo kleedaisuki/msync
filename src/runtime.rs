@@ -14,6 +14,9 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_util::sync::CancellationToken;
 
+mod namespace;
+pub(crate) use namespace::{native_windows_filesystem, wsl_native_file};
+
 #[derive(Clone, Debug, Default)]
 pub struct ExecutionOptions {
     pub dry_run: bool,

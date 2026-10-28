@@ -11,7 +11,7 @@ mod optimize;
 mod state;
 mod types;
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
@@ -87,7 +87,6 @@ impl PreparedProgram {
     /// No filesystem or network operation is performed by verification.
     pub fn verify(&self) -> Result<(), Vec<Report>> {
         if !Arc::ptr_eq(&self.original, &self.witness.original)
-            || self.context != self.witness.original_context
             || self.facts != self.context.operation_facts
         {
             return Err(vec![Report::new(
@@ -103,9 +102,13 @@ impl PreparedProgram {
                 &self.witness.resources,
             ),
             &self.witness.resources,
+            &self.witness.original_context.host_unstable,
             false,
         );
-        if !same_program(&program, &self.program) || rewrites != self.rewrites {
+        if !same_program(&program, &self.program)
+            || rewrites != self.rewrites
+            || self.context != optimize::refined_context(&self.witness.original_context, &rewrites)
+        {
             return Err(vec![Report::new(
                 "rewrite certificate does not match the inspected program",
                 Span::default(),
@@ -164,10 +167,11 @@ pub fn prepare_with_context_detailed(
     mut context: PlanningContext,
 ) -> Result<PreparedProgram, Vec<Diagnostic>> {
     let mut resolved = program.clone();
-    let initial = State::initial(&context);
-    let mut observations = Observations::new(initial.clone(), context.host_unstable.clone());
+    let mut initial = State::initial(&context);
+    let mut observations = Observations::new(initial.clone(), context.host_unstable.clone(), live);
     resolve_region(&mut resolved.body, &mut observations, &context)?;
     observations.complete(live)?;
+    initial.extend_independent(&observations.independent_endpoints);
     context.host_unstable = observations.host_unstable.clone();
     let mut state = initial.clone();
     let mut interpreter = Types {
@@ -181,10 +185,12 @@ pub fn prepare_with_context_detailed(
     if !interpreter.errors.is_empty() {
         return Err(interpreter.errors);
     }
-    let resources = resources(&resolved, &observations.verified);
+    let resources = resources(&resolved, &observations);
     let facts = rewrite_facts(&context, &resolved, &resources);
-    let (optimized, rewrites) = optimize::run(&resolved, &facts, &resources, true);
+    let (optimized, rewrites) =
+        optimize::run(&resolved, &facts, &resources, &context.host_unstable, true);
     let original_context = context.clone();
+    context = optimize::refined_context(&context, &rewrites);
     let graph = graph::build_with_context(&optimized, &context);
     if !graph.issues.is_empty() {
         return Err(graph
@@ -251,7 +257,9 @@ fn rewrite_facts(
     let mut facts = context
         .operation_facts
         .iter()
-        .filter(|(id, _)| !context.pinned_inputs.contains_key(id))
+        .filter(|(id, _)| {
+            !context.pinned_inputs.contains_key(id) && !context.namespace_merges.contains_key(id)
+        })
         .map(|(id, facts)| (*id, *facts))
         .collect();
     retain(&program.body, &mut facts, resources);
@@ -393,10 +401,16 @@ fn absolute(path: &Path) -> std::io::Result<PathBuf> {
     Ok(clean)
 }
 
-fn resources(program: &hir::Program, verified: &HashSet<Location>) -> HashMap<Location, Resource> {
-    fn capture(location: &Location, verified: &HashSet<Location>) -> Option<Resource> {
-        if verified.contains(location) {
-            Some(crate::plan::snapshot_resource(location, AccessScope::Exact))
+fn resources(program: &hir::Program, observations: &Observations) -> HashMap<Location, Resource> {
+    fn capture(
+        location: &Location,
+        observations: &Observations,
+        cache: &mut crate::plan::ResourceSnapshots,
+    ) -> Option<Resource> {
+        if let Some(canonical) = observations.canonical_remote.get(location) {
+            Some(cache.capture(location, canonical, AccessScope::Exact))
+        } else if observations.verified.contains(location) {
+            Some(cache.capture(location, location, AccessScope::Exact))
         } else {
             crate::plan::logical_remote_resource(location, AccessScope::Exact)
         }
@@ -404,7 +418,8 @@ fn resources(program: &hir::Program, verified: &HashSet<Location>) -> HashMap<Lo
 
     fn walk(
         region: &Region,
-        verified: &HashSet<Location>,
+        observations: &Observations,
+        cache: &mut crate::plan::ResourceSnapshots,
         output: &mut HashMap<Location, Resource>,
     ) {
         for node in &region.instructions {
@@ -414,22 +429,34 @@ fn resources(program: &hir::Program, verified: &HashSet<Location>) -> HashMap<Lo
                     destination,
                 } => {
                     if let Input::File { location, .. } = source
-                        && let Some(resource) = capture(location, verified)
+                        && !output.contains_key(location)
+                        && let Some(resource) = capture(location, observations, cache)
                     {
                         output.entry(location.clone()).or_insert(resource);
                     }
                     if let Output::File { location, .. } = destination
-                        && let Some(resource) = capture(location, verified)
+                        && !output.contains_key(location)
+                        && let Some(resource) = capture(location, observations, cache)
                     {
                         output.entry(location.clone()).or_insert(resource);
                     }
                 }
-                InstructionKind::Transaction { body, .. } => walk(body, verified, output),
+                InstructionKind::Transaction { body, .. } => {
+                    walk(body, observations, cache, output)
+                }
                 _ => {}
             }
         }
     }
     let mut output = HashMap::new();
-    walk(&program.body, verified, &mut output);
+    let mut cache = crate::plan::ResourceSnapshots::default();
+    walk(&program.body, observations, &mut cache, &mut output);
+    for (native, wsl) in &observations.independent_endpoints {
+        if let Some(other) = output.get(wsl).cloned()
+            && let Some(resource) = output.get_mut(native)
+        {
+            resource.prove_disjoint(&other);
+        }
+    }
     output
 }

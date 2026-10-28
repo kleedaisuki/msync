@@ -76,7 +76,7 @@ fn overwritten_existing_regular_assignments_collapse_without_creating_a_new_name
 }
 
 #[test]
-fn differing_source_endpoints_do_not_prevent_dead_store_proof_with_explicit_type_evidence() {
+fn cross_endpoint_regular_type_evidence_does_not_prove_native_wsl_alias_separation() {
     let root = workspace();
     fs::write(root.path().join("one"), "first").unwrap();
     fs::write(root.path().join("output"), "existing").unwrap();
@@ -95,11 +95,11 @@ fn differing_source_endpoints_do_not_prevent_dead_store_proof_with_explicit_type
         );
     }
     let prepared = preparation::prepare_with_context(&program, false, context).unwrap();
-    assert_eq!(prepared.program.body.instructions.len(), 1);
+    assert_eq!(prepared.program.body.instructions.len(), 2);
     let InstructionKind::Transfer {
         source: Input::File { location, .. },
         ..
-    } = &prepared.program.body.instructions[0].kind
+    } = &prepared.program.body.instructions[1].kind
     else {
         panic!()
     };
@@ -797,7 +797,7 @@ fn redundant_later_copy_keeps_the_first_creation_and_source_metadata() {
 }
 
 #[test]
-fn a_missing_destination_creation_is_not_deleted_when_the_later_source_version_differs() {
+fn adjacent_missing_destination_creation_is_coalesced_into_the_final_file_value() {
     let root = workspace();
     fs::write(root.path().join("one"), "one").unwrap();
     fs::write(root.path().join("two"), "two").unwrap();
@@ -806,8 +806,11 @@ fn a_missing_destination_creation_is_not_deleted_when_the_later_source_version_d
         true,
     )
     .unwrap();
-    assert_eq!(prepared.program.body.instructions.len(), 2);
-    assert!(prepared.rewrites.is_empty());
+    assert_eq!(prepared.program.body.instructions.len(), 1);
+    assert!(matches!(
+        prepared.rewrites[0].kind,
+        RewriteKind::CoalesceCreation { .. }
+    ));
 }
 
 #[test]

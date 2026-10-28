@@ -842,3 +842,36 @@ stdin must return constructive connection/`/wait`/`/stop` advice before effects,
 not hang the command loop. A separate future dead-epoch proof could eliminate
 unobserved pure managed writes, but this control mechanism never silently drops
 observable IO in order to reach the rollback.
+
+### Native Windows / WSL namespace separation
+
+A regular-file kind is not an alias-separation proof. After a native assignment,
+WSL input metadata is normally deferred because native and WSL names may denote
+the same projected object. Preparation can discharge only a specific managed
+write/input pair with actual filesystem evidence: the Windows metadata handle
+must belong to a local disk and resolve to an actual `HarddiskVolume` device,
+with NTFS/ReFS reported by
+[GetVolumeInformationByHandleW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getvolumeinformationbyhandlew).
+Mapped/UNC redirectors, reparse ancestors and unresolved parent traversal prove
+nothing. The WSL source must resolve without symlink traversal to a native
+ext-family filesystem (`statfs` magic `0xef53`), not DrvFs, overlay or FUSE.
+[statfs](https://man7.org/linux/man-pages/man2/statfs.2.html) observes the resolved
+mounted filesystem, so a bind mount cannot gain this proof merely by looking
+like a `/home` or `/tmp` pathname.
+
+The preparation witness retains concrete native/WSL location pairs and the
+observed canonical WSL path. Tilde and absolute names therefore use the same
+resource key without changing the original operand/provenance. Only managed
+assignment invalidations and their own type postconditions can use the pair;
+opaque effects and retained native imports remain conservative. The HIR's general
+native/WSL hazard relation is not weakened. Offline preparation launches no
+helper, ordinary WSL-only inspection keeps its original batch, and a successful
+namespace probe supplies its file kind without a duplicate stat invocation.
+
+Actual Windows/WSL acceptance uses owned native-home data: both existing and
+initially missing NTFS targets produce one optimized assignment and exact WSL
+bytes. The default CLI also plans one operation and executes the original
+`config_file := ~/...; ...; $wsl::config_file -> des/...` form. A real `/mnt`
+projection remains two ordered nodes, and an opaque program does not manufacture
+regular-file or separation facts. The explicit environment-dependent target is
+`wsl_plan_proof_v4`; ordinary CI must not count its ignored cases as WSL passes.

@@ -33,15 +33,16 @@ or pre-change executable and compare actual outputs, metadata relations and
 cleanup state alongside timing. Do not trade away named undo or fixed-version
 input proofs for a faster number.
 
-The current preparer retains an initial missing-target creator to preserve its
-namespace effect. Closing the one-payload-copy case may require factoring a
-file value from its namespace contribution rather than deleting both. Preserve
+The initial preparer retained a missing-target creator to preserve its namespace
+effect. The adjacent-only certified rule below closes the common one-payload
+case; general interleavings still need the namespace contribution rather than
+blindly deleting it. Preserve
 the original namespace ticket independently of the later byte producer: in
 `src1 -> target; "b" -> sibling; src2 -> target`, simply moving the first
 insertion's metadata effect to the last instruction changes the parent receipt
 winner. An intervening directory/value observer must still prevent erasing a
-needed first value. This is an acceptance requirement and an IR design question,
-not a claimed implemented optimization or permission to weaken metadata rules.
+needed first value. Those wider cases remain an IR design question, not permission
+to weaken metadata rules or extend the adjacent-only proof.
 
 ## Concrete lifetime observation to investigate
 
@@ -191,7 +192,73 @@ taskset -c 0 "$BASELINE_DRIVER"
 Use the corresponding candidate rlib with the same flags for the other driver.
 The normal candidate smoke remains `cargo bench --locked --bench store_v4`;
 `cargo test --bench store_v4` deliberately prints a debug timing skip instead.
+## Planner: certified creation fusion and compact proof storage
 
+### Contract and permission correction
+
+The first implementation retains the later instruction ID and operand source
+site when fusing **adjacent** complete file assignments to the same initially
+missing target. There is no intervening instruction, namespace receipt or value
+observer. Moving that insertion across its own overwritten value therefore does
+not change its order relative to another namespace participant. The surviving
+destination kind is derived as `Missing`, its parent frontier comes from the
+creator, and a host-instability marker caused only by that removed creation is
+removed. Certificate verification replays these changes from the original owned
+program, original context and captured resource premises; it does not stat the
+host again. The rule is not extended across sibling writes, reads, checkpoints,
+programs, selectors or stream effects.
+
+A permission precondition is observable even when a later file assignment
+replaces all final metadata. Copying a read-only file first can make a later
+copy fail. Existing DSE and redundant-write removal could incorrectly turn that
+failure into success. The planner now captures the local file's writable flag
+with its existing resource observation and propagates permission values through
+each file-only epoch. A discarded assignment must have an established overwrite
+permission and a writable result; unknown permission is not proof. This also
+keeps literal inheritance and deferred/remote metadata conservative. A known
+writable local creator can still be fused into a filesystem-separated, type-proven WSL source,
+without pretending the final source has a local reader capability.
+
+This applies the resource/effect distinction in
+[MLIR's side-effect rationale](https://mlir.llvm.org/docs/Rationale/SideEffectsAndSpeculation/)
+and the overwrite/observation discipline of
+[LLVM's MemorySSA-backed DSE](https://llvm.org/docs/doxygen/DeadStoreElimination_8cpp_source.html)
+to filesystem metadata and write preconditions, rather than equating byte
+liveness with the whole assignment effect.
+
+### Representation and development API
+
+The unreleased v0.4 `Rewrite.epoch` is an `Arc<[InstructionId]>`, shared by all
+records of that observation-free epoch. `CommutationProof` left/right effects
+likewise use shared immutable `Arc<Effects>` values, created at most once per
+node per graph. These are value-checked certificates, not pointer-identity
+proofs: mutating a cloned epoch or footprint is rejected by replay. All pair
+proofs and their exact effects remain present. The retained legacy v0.3 parser,
+compiler and planner APIs are unchanged.
+
+### Measurement boundary and initial probe
+
+`benches/planner_v4.rs` measures public structured compilation, metadata
+preparation (including its built-in replay), and a separate pure verification.
+It records median/p90 milliseconds, allocation count, additional peak/retained
+Rust heap, node/edge/commutation/rewrite counts. Files and source construction
+are outside timing. Inputs are existing-target independent copies, existing
+file forwarding chains, existing-target overwrite chains, and missing-target
+overwrite chains. Baseline is the immutable `5cafd34` archive; the same harness
+links baseline and candidate release libraries built with the same toolchain.
+
+The first three-sample exploratory probe used an ext4 bind of the distribution's
+`/tmp` into the project fixture path. At N=100 independent assignments it retained
+4,950 commutation pairs, allocated 967,034 times, peaked at 37,309,228 additional
+Rust bytes and retained 18,487,728 bytes. Preparation was 124.93 ms and separate
+verification 24.26 ms. These initial pathname-prefixed timings must not all be
+attributed to algorithms: ancestor inspection can still visit DrvFs parents of a
+project path, despite the final data filesystem being ext4. The paired acceptance
+run therefore uses the same owned fixture's native `/tmp/<unique-name>` alias
+for `CompileContext`; the harness verifies that alias has the same device/inode
+as the directory created/removed through the project bind. Native-alias and
+project-prefix results are separate cells. No candidate speedup is claimed from
+this initial probe.
 ## Refresh: byte-verified reuse of unchanged ordinary file roots (2026-10-28)
 
 The latency probe exposed a different cost from candidate cloning: a quiescent
@@ -245,7 +312,16 @@ strongly than these sub-millisecond differences: the candidate retains initial
 needed immutable values rather than newly abandoned refresh copies.
 Reproduction uses `benches/latency_v4.rs` and `benches/latency_v4_linux.sh`; raw
 matched-run output is disposable `.temp/perf-v4/results/latency-paired-native-before-sparse.txt`.
-A longer 100-round growth control remains a separate follow-up measurement.
+The additional REPL-only control passed with 100 measured rounds plus two warm
+rounds per variant (102 assignments). Baseline retained 204 files / 13,369,344
+bytes; the preserved candidate still retained only 2 files / 131,072 bytes.
+Alternating baseline/candidate p50/p95 was 1.867141/3.092892 ms versus
+1.231073/1.515107 ms. Source, destination and artifact descriptors again reported
+device 2096 and magic `0xef53` under the private native-ext4 bind. This confirms
+the avoided-copy growth mechanism for this stable-content workflow, not a
+general history-GC guarantee. Raw control: `.temp/perf-v4/results/latency-store-repl100.txt`.
+Set `MSYNC_PERF_ONLY_REPL=1 MSYNC_PERF_REPL_ROUNDS=100` for this bounded control
+without repeating the CLI-startup cases 100 times.
 
 Focused Windows Manager acceptance passed all 46 cases in one run after the implementation,
 including atomic failed refresh and sparse coverage. Two new tests cover 100
@@ -364,3 +440,85 @@ bash benches/latency_v4_linux.sh BASELINE CANDIDATE 15 project moesegfault
 `MSYNC_PERF_REPL_ROUNDS=100` changes only the recorded persistent-session count.
 `MSYNC_PERF_PROFILE_DIR` requests untimed real CLI trace controls instead of the
 latency matrix. Trace files are intentionally outside the temporary fixture.
+
+### Matched native-alias results (2026-10-28)
+
+Environment: x86_64 WSL2 Linux `6.18.33.2-microsoft-standard-WSL2`, Rust
+`1.97.1 (8bab26f4f)`, LLVM 22.1.6, one CPU-affine process (`taskset -c 0`),
+UID 1000 for all measurements. Source fixtures reside on `/dev/sdd[/tmp]` ext4.
+The drivers use the same inode-checked native alias and fixed-width unique root
+names. Input creation is outside timing; source/metadata caches are warm, with
+no global cache eviction, output copy or fsync in this component probe. Each
+cell has one untimed warmup and seven timed samples; baseline/candidate order
+alternates by case/size cell. A separate untimed preparation measures Rust
+allocations and peak/retained heap (not process RSS or kernel cache memory).
+
+The candidate release snapshot also contains Store COW/refresh changes, but
+these compiler/preparation/verification workloads do not invoke Store or runtime
+execution. Thus the independent-copy heap change is attributable to planner
+representation/analysis, not a transaction I/O throughput result. The candidate
+also includes the permission correction and creation fusion above; overwrite
+latency is therefore not an isolated Arc-only comparison.
+
+| Independent existing-target copies | Preparation median ms, base -> candidate | Verify median ms | Peak Rust bytes | Retained Rust bytes |
+| --- | ---: | ---: | ---: | ---: |
+| 10 | 0.989 -> 0.774 | 0.126 -> 0.086 | 389,752 -> 159,688 | 184,672 -> 69,600 |
+| 50 | 18.033 -> 9.289 | 5.119 -> 0.879 | 7,844,928 -> 889,360 | 3,883,496 -> 405,512 |
+| 100 | 76.015 -> 36.855 | 26.112 -> 3.712 | 30,533,724 -> 2,051,132 | 15,190,128 -> 948,432 |
+| 200 | 198.594 -> 106.820 | 70.345 -> 10.124 | 120,404,408 -> 5,148,120 | 60,047,860 -> 2,418,916 |
+
+All 45/1,225/4,950/19,900 commutation pairs remain present. At N=200, peak heap
+falls 95.7%, retained heap 96.0%, and pure verification median 85.6%. Allocation
+count falls from 1,941,918 to 755,464. This is not a claim of linear-time graph
+construction: the number of explicit pair records and pair checks is still
+quadratic. Sharing removes deep copies of immutable footprints, not the proof.
+
+Forward-chain N=200 preparation fell 171.495 -> 72.479 ms, verification
+77.413 -> 13.326 ms, peak heap 121,422,712 -> 5,124,168 bytes. Overwrite controls
+show the cost tradeoff: existing-target N=10 preparation rose 0.432 -> 0.480 ms,
+and N=200 53.479 -> 58.483 ms, while retained heap fell 736,728 -> 418,352 bytes.
+The permission guard is required for correctness and this regression is not
+hidden. Missing-target overwrite N=200 retains one rather than two payload
+instructions (199 rather than 198 rewrite records), with preparation
+46.913 -> 46.080 ms and peak heap 1,855,829 -> 1,544,376 bytes. The actual runtime
+control additionally verifies one assigned file, final bytes, permissions and
+source-mtime correlation. Neither that count nor these metadata timings is a
+claim that snapshot storage performs only one physical disk write.
+
+Compilation is a negative control rather than an advertised win: the frontend
+was not intentionally optimized and its sub-millisecond results vary in sign
+(for example independent N=100 0.239 -> 0.442 ms; N=50 0.206 -> 0.128 ms).
+The durable conclusions are the deterministic proof storage reduction, unchanged
+certificate information and measured preparation/verification benefit, not an
+across-the-board startup or parser speedup.
+
+Reproduction uses the maintained harness and private-mount runner:
+
+```sh
+# Build both release libraries with the same toolchain. Point these at their
+# immutable saved rlibs and matching Cargo release dependency directory.
+rustc --edition=2024 -O -C debuginfo=0 -C codegen-units=1 benches/planner_v4.rs \
+  --extern msync="$BASELINE_RLIB" -L dependency="$RELEASE_DEPS" -o "$BASELINE_DRIVER"
+rustc --edition=2024 -O -C debuginfo=0 -C codegen-units=1 benches/planner_v4.rs \
+  --extern msync="$CANDIDATE_RLIB" -L dependency="$RELEASE_DEPS" -o "$CANDIDATE_DRIVER"
+MSYNC_PERF_USER="$USER" sudo --preserve-env=MSYNC_PERF_USER \
+  unshare --mount --fork bash benches/planner_v4_linux.sh "$BASELINE_DRIVER" "$CANDIDATE_DRIVER"
+# Optional filters: MSYNC_V4_PLANNER_CASE=independent,
+# MSYNC_V4_PLANNER_SIZES=10,100, MSYNC_V4_PLANNER_SAMPLES=7.
+```
+
+The accepted baseline is `5cafd34`; saved rlib SHA-256 is
+`bcfcdc90ba935d69daa52fccfb00bccbfa562a4c297d90c8e4265c5f8d161ac7`, and the
+candidate rlib is
+`e156590c7c59ce0361a764435212d34f0e35e4ae2ab74424587be1bee44e8861`.
+Their same-source drivers are respectively
+`429dee4bd9557c6e93e645729238da1d38eb8843eca09dd75ae7aacea40cc10c` and
+`1a9c301a271f3419cdc3f759205aab6a9e894cea1ad3796858bb17c76e956045`.
+Disposable raw output is `.temp/perf-v4/planner-paired-native.txt`; those archived
+paths are not dependencies of normal tests or the maintained Cargo benchmark.
+
+Correctness gates so far: Windows preparation 39/39, independent optimization
+controls 6/6, HIR graph 68/68 and effect-sharing/tamper control 1/1; strict library,
+binary, new-test and benchmark Clippy. Linux source-level integration and actual
+cross-WSL namespace proofs remain separate gates rather than inferred from this
+performance experiment.

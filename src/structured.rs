@@ -597,6 +597,12 @@ fn print_plan(plan: &PreparedProgram, color: Color) -> CliResult {
             msync::preparation::RewriteKind::RedundantWrite { same_as } => {
                 format!("eliminated; same stable file value as {}", same_as.0)
             }
+            msync::preparation::RewriteKind::CoalesceCreation { overwritten_by } => {
+                format!(
+                    "coalesced creation into adjacent file assignment {}",
+                    overwritten_by.0
+                )
+            }
         };
         print_text(&format!(
             "  optimized: {} {reason}\n",

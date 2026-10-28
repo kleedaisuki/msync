@@ -484,3 +484,38 @@ program, then replays its exit code into three sibling files. On WSL UID 1000
 with private project-local tmpfs it passed, and the original failing large-stderr
 case passed ten consecutive exact runs. These are correctness repetitions, not
 performance measurements.
+
+## Creation-fusion fixed-point review (2026-10-28)
+
+Scope: the uncommitted permission guards, `CoalesceCreation`, shared rewrite
+epochs and context replay after `f389c9a`. This review traced rule composition
+and the actual regression bodies without launching another build or changing
+production code. No substantive defect was established in the current rules.
+
+The critical composition is `a -> t; b -> t; literal -> sibling; c -> t` when
+`t` is initially missing. Creation fusion updates a persistent `current_facts`
+map inside the fixed-point loop, and later dead-store elimination reads that map,
+not the original destination classes. Thus surviving `b -> t` remains a creator
+and cannot be deleted across the sibling's namespace contribution. Adjacency is
+tested on original vector slots, including removed-node holes, rather than on a
+flattened survivor list. Repeated adjacent fusion propagates `Missing`, the
+creator's parent frontier and the valid destination host-stability premise to
+the final retained instruction while preserving its ID and source span.
+
+Permission reasoning propagates complete-file results and literal inheritance
+within the eligible epoch. Removing an assignment requires both an established
+overwrite permission and a writable result; a read-only producer therefore
+cannot disappear merely because later file bytes would overwrite it. Unknown
+remote/deferred permissions remain conservative. The WSL namespace observation
+retains `Backend::Wsl`; it does not turn native-domain separation into a local
+writable-flag proof or imply metadata correspondence for an imported remote file.
+
+Verification rebuilds the rewrite sequence from the original owned program,
+original context and captured resource premises, then independently derives the
+refined context. Shared `Arc<[InstructionId]>` epochs retain value-based replay
+and tamper checks; pointer sharing is not a substitute for those checks. The
+planner owner added the missing fuse-then-sibling-then-DSE and repeated-fusion
+regressions and reported the focused Windows optimization target passing 8/8.
+These complement the existing source-site, permission-failure, metadata and
+single-assignment runtime controls. Actual cross-WSL namespace evidence and
+performance acceptance remain separate scopes, not inferred by this review.
