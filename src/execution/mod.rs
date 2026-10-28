@@ -18,6 +18,7 @@
 //! Pre-existing user scratch data remains part of the source. Windows enrollment requires the manager's supported
 //! ordinal-insensitive domain policy and rejects case-sensitive NTFS ancestors.
 
+mod assignment;
 mod domain;
 mod endpoint;
 mod error;

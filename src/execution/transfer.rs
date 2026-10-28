@@ -3,7 +3,9 @@ use std::ffi::OsString;
 #[cfg(unix)]
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::{self, Write};
+#[cfg(unix)]
+use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
@@ -19,10 +21,10 @@ use super::Engine;
 use super::domain::{self, Source, Transfer};
 use super::error::{ExecutionError, Result};
 
-struct Selection {
-    snapshot: Snapshot,
-    basename: Option<OsString>,
-    source: Option<PathBuf>,
+pub(super) struct Selection {
+    pub snapshot: Snapshot,
+    pub basename: Option<OsString>,
+    pub source: Option<PathBuf>,
 }
 
 impl Engine {
@@ -240,50 +242,14 @@ impl Engine {
         pattern: Option<&str>,
         span: Span,
     ) -> Result<Vec<Selection>> {
-        let Some(pattern) = pattern else {
-            return Ok(vec![source]);
-        };
-        if !source.snapshot.is_directory() {
-            return Err(ExecutionError::new(
-                "a selector source must be a directory",
-                span,
-            ));
-        }
-        let regex = Regex::new(&format!("\\A(?:{pattern})\\z"))
-            .map_err(|cause| ExecutionError::caused("invalid selector regex", span, cause))?;
-        let mut selections = Vec::new();
-        for name in source
-            .snapshot
-            .entries()
-            .keys()
-            .filter(|path| path.components().count() == 1)
-        {
-            self.options.check(span)?;
-            let text = name
-                .to_str()
-                .ok_or_else(|| ExecutionError::new("selector entry is not UTF-8", span))?;
-            if !regex.is_match(text) {
-                continue;
-            }
-            let entries = source
-                .snapshot
-                .entries()
-                .iter()
-                .filter_map(|(path, entry)| {
-                    path.strip_prefix(name)
-                        .ok()
-                        .map(|relative| (relative.to_owned(), entry.clone()))
-                })
-                .collect();
-            selections.push(Selection {
-                snapshot: self.snapshot(entries, span)?,
-                basename: name.file_name().map(OsString::from),
-                source: source.source.as_ref().map(|path| path.join(name)),
-            });
-        }
-        Ok(selections)
+        select_snapshot(
+            source,
+            pattern,
+            span,
+            || self.options.check(span),
+            |entries| self.snapshot(entries, span),
+        )
     }
-
     fn assignment(
         &self,
         source: &Snapshot,
@@ -292,81 +258,15 @@ impl Engine {
         literal: bool,
         span: Span,
     ) -> Result<Snapshot> {
-        match mode {
-            DestinationMode::ReplaceTree => {
-                if !source.is_directory() {
-                    return Err(ExecutionError::new(
-                        "explicit '/.' replacement requires a directory source",
-                        span,
-                    ));
-                }
-                if !destination.is_missing() && !destination.is_directory() {
-                    return Err(ExecutionError::new(
-                        "explicit '/.' replacement requires a directory destination or an absent path",
-                        span,
-                    ));
-                }
-                Ok(source.clone())
-            }
-            DestinationMode::Container => {
-                if destination.is_missing() {
-                    return Ok(source.clone());
-                }
-                if !source.is_directory() || !destination.is_directory() {
-                    return Err(ExecutionError::new("destination entry already exists in the container", span)
-                        .help("Container insertion never overwrites files; choose an exact target for replacement or '/.' for a complete directory replacement."));
-                }
-                let mut entries = destination.entries().clone();
-                for (path, entry) in source.entries() {
-                    match entries.get(path) {
-                        Some(Entry::Directory { .. }) if matches!(entry, Entry::Directory { .. }) => {}
-                        Some(_) => return Err(ExecutionError::new(format!("container collision at {}", path.display()), span)
-                            .help("No selected entry has been published. Rename the source or choose an explicit replacement target.")),
-                        None => { entries.insert(path.clone(), entry.clone()); }
-                    }
-                }
-                self.snapshot(entries, span)
-            }
-            DestinationMode::Exact => {
-                if destination.is_directory() {
-                    return Err(ExecutionError::new("the exact destination is an existing directory", span)
-                        .help("Append '/' for container insertion, or '/.' to explicitly replace the directory."));
-                }
-                if source.is_directory() && !destination.is_missing() {
-                    return Err(ExecutionError::new(
-                        "a directory source cannot replace an existing ordinary file",
-                        span,
-                    ));
-                }
-                if let Some(Entry::File { metadata, .. }) = destination.entries().get(Path::new(""))
-                {
-                    if metadata.permissions.readonly() {
-                        return Err(ExecutionError::caused(
-                            "the existing file is read-only",
-                            span,
-                            io::Error::new(
-                                io::ErrorKind::PermissionDenied,
-                                "immutable publication must not bypass the target's write protection",
-                            ),
-                        ));
-                    }
-                    if literal {
-                        let mut entries = source.entries().clone();
-                        if let Some(Entry::File {
-                            metadata: source_metadata,
-                            ..
-                        }) = entries.get_mut(Path::new(""))
-                        {
-                            source_metadata.permissions = metadata.permissions.clone();
-                        }
-                        return self.snapshot(entries, span);
-                    }
-                }
-                Ok(source.clone())
-            }
-        }
+        super::assignment::assign(
+            source,
+            super::assignment::Target::snapshot(destination),
+            mode,
+            literal,
+            span,
+            |entries| self.snapshot(entries, span),
+        )
     }
-
     fn read(&mut self, transaction: TransactionId, path: &Path, span: Span) -> Result<Snapshot> {
         self.manager
             .read_snapshot(transaction, path)
@@ -544,7 +444,7 @@ fn staged_event(trace: &SpanGuard, selection: &Selection, target: &Path) {
     );
 }
 
-fn relation(source: &Selection, destination: &Path, span: Span) -> Result<()> {
+pub(super) fn relation(source: &Selection, destination: &Path, span: Span) -> Result<()> {
     let Some(path) = &source.source else {
         return Ok(());
     };
@@ -578,4 +478,55 @@ fn relation(source: &Selection, destination: &Path, span: Span) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+pub(super) fn select_snapshot(
+    source: Selection,
+    pattern: Option<&str>,
+    span: Span,
+    check: impl Fn() -> Result<()>,
+    build: impl Fn(BTreeMap<PathBuf, Entry>) -> Result<Snapshot>,
+) -> Result<Vec<Selection>> {
+    let Some(pattern) = pattern else {
+        return Ok(vec![source]);
+    };
+    if !source.snapshot.is_directory() {
+        return Err(ExecutionError::new(
+            "a selector source must be a directory",
+            span,
+        ));
+    }
+    let regex = Regex::new(&format!("\\A(?:{pattern})\\z"))
+        .map_err(|cause| ExecutionError::caused("invalid selector regex", span, cause))?;
+    let mut selections = Vec::new();
+    for name in source
+        .snapshot
+        .entries()
+        .keys()
+        .filter(|path| path.components().count() == 1)
+    {
+        check()?;
+        let text = name
+            .to_str()
+            .ok_or_else(|| ExecutionError::new("selector entry is not UTF-8", span))?;
+        if !regex.is_match(text) {
+            continue;
+        }
+        let entries = source
+            .snapshot
+            .entries()
+            .iter()
+            .filter_map(|(path, entry)| {
+                path.strip_prefix(name)
+                    .ok()
+                    .map(|relative| (relative.to_owned(), entry.clone()))
+            })
+            .collect();
+        selections.push(Selection {
+            snapshot: build(entries)?,
+            basename: name.file_name().map(OsString::from),
+            source: source.source.as_ref().map(|path| path.join(name)),
+        });
+    }
+    Ok(selections)
 }
