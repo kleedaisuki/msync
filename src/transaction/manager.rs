@@ -353,6 +353,10 @@ impl Manager {
         if !self.active.is_empty() {
             return Err(ManagerError::EnrollmentClosed);
         }
+        self.enroll_namespace_inner(path)
+    }
+
+    fn enroll_namespace_inner(&mut self, path: &Path) -> Result<()> {
         let path = normalize(path)?;
         if let Ok((root, relative)) = self.locate(&path) {
             if relative.as_os_str().is_empty() {

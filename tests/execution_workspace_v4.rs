@@ -76,7 +76,7 @@ fn private_files(path: &Path) -> (usize, u64) {
 }
 
 #[tokio::test]
-async fn missing_file_enrolls_payload_and_parent_metadata_not_unrelated_children() {
+async fn ordinary_missing_file_retires_payload_without_capturing_unrelated_children() {
     let workspace = workspace();
     let cwd = workspace.path().join("work");
     fs::create_dir(&cwd).unwrap();
@@ -87,7 +87,7 @@ async fn missing_file_enrolls_payload_and_parent_metadata_not_unrelated_children
     let mut compiler = Session::new();
     run_live(&mut runtime, &mut compiler, &cwd, "input -> output\n").await;
     assert_eq!(fs::read(cwd.join("output")).unwrap(), payload);
-    assert_eq!(private_files(&cwd.join(".temp")), (1, 65536));
+    assert_eq!(private_files(&cwd.join(".temp")), (0, 0));
     assert_eq!(
         fs::read(cwd.join("unrelated")).unwrap(),
         vec![b'X'; 1024 * 1024]
@@ -219,7 +219,7 @@ async fn sparse_sibling_parents_promote_before_enrolling_their_common_parent() {
     let mut compiler = Session::new();
     run_live(&mut runtime, &mut compiler, &first, "seed -> copy\n").await;
     run_live(&mut runtime, &mut compiler, &second, "seed -> copy\n").await;
-    assert_eq!(private_files(&scratch), (2, 11));
+    assert_eq!(private_files(&scratch), (0, 0));
     run_live(
         &mut runtime,
         &mut compiler,
@@ -367,7 +367,33 @@ async fn sparse_root_upgrade_preserves_an_active_immutable_reader_of_a_known_fil
 #[test]
 #[ignore = "native child fixture, launched only by the sparse-to-complete view test"]
 fn sparse_view_child_fixture() {
+    use std::io::Read;
     assert_eq!(fs::read("seed").unwrap(), b"seed");
+    let private_check = std::env::args().any(|argument| argument == "private-check");
+    if private_check {
+        let mut path = String::new();
+        std::io::stdin().read_to_string(&mut path).unwrap();
+        let private = Path::new(path.trim_end_matches(['\r', '\n']));
+        for result in [
+            fs::read(private.join("backing-probe")).map(|_| ()),
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(private.join("child-private-write"))
+                .map(|_| ()),
+        ] {
+            let error = result.expect_err("the current invocation backing was accessible");
+            assert!(
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::PermissionDenied
+                        | std::io::ErrorKind::NotFound
+                        | std::io::ErrorKind::ReadOnlyFilesystem
+                ),
+                "{error}"
+            );
+        }
+    }
     for root in
         std::env::args().filter_map(|argument| argument.strip_prefix("root:").map(str::to_owned))
     {
@@ -378,10 +404,12 @@ fn sparse_view_child_fixture() {
             fs::read(root.join("extra")).unwrap(),
             b"previously unobserved"
         );
-        assert!(
-            !root.join(".temp").exists(),
-            "runtime backing leaked into the native view"
-        );
+        if private_check {
+            assert_eq!(
+                fs::read(root.join(".temp/user-visible")).unwrap(),
+                b"user data stays visible"
+            );
+        }
     }
     fs::write("native-file", b"private native write").unwrap();
 }
@@ -448,16 +476,62 @@ async fn sparse_parents_in_other_directories_upgrade_before_a_new_native_view() 
     .await;
     assert_eq!(
         private_files(&a1.join(".temp")),
-        (2, 14),
-        "both parents must initially remain sparse"
+        (0, 0),
+        "ordinary statements must not retain payloads or prime a managed view"
     );
+    for directory in [&a1, &a2] {
+        fs::create_dir_all(directory.join(".temp")).unwrap();
+        fs::write(
+            directory.join(".temp/user-visible"),
+            b"user data stays visible",
+        )
+        .unwrap();
+    }
     let executable = std::env::current_exe()
         .unwrap()
         .to_string_lossy()
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
-    run_live(&mut runtime, &mut compiler, &b,
-        &format!("child => $local::\"{executable}\"(\"--exact\", \"sparse_view_child_fixture\", \"--ignored\", \"--nocapture\", \"--skip\", \"root:{}\", \"--skip\", \"root:{}\")\nchild::exit_code -> code\n", quoted(&a1), quoted(&a2))).await;
+    let context = CompileContext {
+        pwd: b.clone(),
+        source_file: None,
+    };
+    let launch = pipeline::compile(&mut compiler,
+        &format!("child => $local::\"{executable}\"(\"--exact\", \"sparse_view_child_fixture\", \"--ignored\", \"--nocapture\", \"--skip\", \"root:{}\", \"--skip\", \"root:{}\", \"--skip\", \"private-check\")\n", quoted(&a1), quoted(&a2)), &context, &[]).unwrap();
+    runtime.submit(&launch.program).await.unwrap();
+    let private = fs::read_dir(a1.join(".temp"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("execute-")
+        })
+        .expect("the active native owner has an invocation outside its managed root");
+    fs::write(private.join("backing-probe"), b"private runtime payload").unwrap();
+    let feed = pipeline::compile(
+        &mut compiler,
+        &format!(
+            "\"{}\\n\" -> child::stdin\nchild::stderr -> child-errors\nchild::exit_code -> code\n",
+            quoted(&private)
+        ),
+        &context,
+        &runtime.live_processes(),
+    )
+    .unwrap();
+    runtime.execute(&feed.program).await.unwrap();
+    assert_eq!(
+        fs::read(private.join("backing-probe")).unwrap(),
+        b"private runtime payload"
+    );
+    assert!(!private.join("child-private-write").exists());
+    assert_eq!(
+        fs::read(a1.join(".temp/user-visible")).unwrap(),
+        b"user data stays visible"
+    );
     for directory in [&a1, &a2] {
         assert_eq!(fs::read(directory.join("output")).unwrap(), b"managed");
         assert_eq!(
@@ -466,10 +540,15 @@ async fn sparse_parents_in_other_directories_upgrade_before_a_new_native_view() 
         );
     }
     assert_eq!(
+        fs::read(b.join("code")).unwrap(),
+        b"0\n",
+        "{}",
+        fs::read_to_string(b.join("child-errors")).unwrap()
+    );
+    assert_eq!(
         fs::read(b.join("native-file")).unwrap(),
         b"private native write"
     );
-    assert_eq!(fs::read(b.join("code")).unwrap(), b"0\n");
     runtime.shutdown().await.unwrap();
 }
 
@@ -538,7 +617,7 @@ async fn physical_parent_namespace_preserves_an_unobserved_fifo_above_sparse_chi
     let mut compiler = Session::new();
     run_live(&mut runtime, &mut compiler, &first, "seed -> copy\n").await;
     run_live(&mut runtime, &mut compiler, &second, "seed -> copy\n").await;
-    assert_eq!(private_files(&scratch), (2, 11));
+    assert_eq!(private_files(&scratch), (0, 0));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let context = CompileContext {
@@ -607,7 +686,7 @@ async fn finite_missing_file_preserves_unobserved_fifo_and_socket_siblings() {
     let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
     run_live(&mut runtime, &mut Session::new(), &cwd, "input -> output\n").await;
     assert_eq!(fs::read(cwd.join("output")).unwrap(), b"finite");
-    assert_eq!(private_files(&cwd.join(".temp")), (1, 6));
+    assert_eq!(private_files(&cwd.join(".temp")), (0, 0));
     let pipe_after = fs::symlink_metadata(cwd.join("fifo")).unwrap();
     let socket_after = fs::symlink_metadata(cwd.join("socket")).unwrap();
     assert!(pipe_after.file_type().is_fifo() && socket_after.file_type().is_socket());

@@ -114,6 +114,14 @@ impl Namespaces {
         })
     }
 
+    pub(super) fn observes_metadata_import(&self, id: TransactionId, key: &ResourceKey) -> bool {
+        self.accesses.get(&id).is_some_and(|accesses| {
+            accesses
+                .iter()
+                .any(|access| access.key == *key || access.tree && access.key.tree().contains(key))
+        })
+    }
+
     pub(super) fn has_pending(&self) -> bool {
         self.epochs.values().any(|epoch| !epoch.pending.is_empty())
     }

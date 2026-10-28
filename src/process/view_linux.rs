@@ -7,8 +7,10 @@
 //! External TCP/IP is isolated by a network namespace. No native-launch fallback
 //! exists when bubblewrap or the required namespaces are unavailable.
 //!
-//! This first adapter accepts existing, nonoverlapping directory roots and keeps
-//! scratch outside them. It does not discover additional managed roots from IO.
+//! Complete logical roots are nonoverlapping directories. Owned backing is
+//! excluded by their snapshots or fenced separately when outside those roots;
+//! selecting a smaller managed domain never grants access to runtime storage.
+//! This adapter does not discover additional managed roots from IO.
 //! The owned worker execs the target without changing its argv or PID. Kernel
 //! SCM_CREDENTIALS translates that sender's PID into the parent namespace; the
 //! worker's CLOEXEC control connection distinguishes exec failure from success.
@@ -132,6 +134,7 @@ pub struct ProgramSpec {
 pub struct Provider {
     executable: PathBuf,
     worker: Option<PathBuf>,
+    invocation: Option<InvocationRoot>,
 }
 
 impl Provider {
@@ -139,6 +142,7 @@ impl Provider {
         cached_probe(&CAPABILITY, probe).map(|executable| Self {
             executable,
             worker: None,
+            invocation: None,
         })
     }
 
@@ -164,6 +168,13 @@ impl Provider {
         Ok(self)
     }
 
+    /// Protect owned runtime backing independently of the selected logical roots.
+    /// Preparation validates that its scratch directory belongs to this proof.
+    pub fn with_invocation(mut self, invocation: InvocationRoot) -> Self {
+        self.invocation = Some(invocation);
+        self
+    }
+
     pub fn prepare(
         &self,
         store: &SnapshotStore,
@@ -177,7 +188,7 @@ impl Provider {
             ));
         }
         validate_roots(scratch, &roots)?;
-        let invocation = roots
+        let inferred = roots
             .iter()
             .map(|root| root.snapshot.invocation_for_path(scratch))
             .collect::<Result<Vec<_>, _>>()
@@ -185,6 +196,35 @@ impl Provider {
             .into_iter()
             .flatten()
             .next();
+        let invocation = self.invocation.clone().or(inferred);
+        if let Some(invocation) = &invocation {
+            let contained = invocation
+                .contains_private(scratch)
+                .map_err(|failure| ViewError::filesystem("verify private backing", failure))?;
+            if !contained {
+                return Err(ViewError::invalid(
+                    scratch,
+                    "scratch is outside the supplied owned invocation",
+                ));
+            }
+            if invocation
+                .contains_private(self.worker.as_ref().expect("worker is configured"))
+                .map_err(|failure| ViewError::filesystem("verify worker isolation", failure))?
+            {
+                return Err(ViewError::invalid(
+                    scratch,
+                    "the worker executable must be outside private runtime backing",
+                ));
+            }
+        }
+        let private_mask = invocation
+            .as_ref()
+            .filter(|invocation| {
+                !roots
+                    .iter()
+                    .any(|root| invocation.path().starts_with(&root.logical))
+            })
+            .map(|invocation| invocation.path().to_owned());
         let workspace = Workspace::create(scratch, invocation)?;
         let mut mounts = Vec::with_capacity(roots.len());
         for (index, root) in roots.into_iter().enumerate() {
@@ -209,6 +249,7 @@ impl Provider {
             workspace: Arc::new(workspace),
             mounts,
             effects,
+            private_mask,
             cohort: Arc::new(Mutex::new(Cohort::default())),
         })
     }
@@ -227,6 +268,7 @@ pub struct PreparedView {
     workspace: Arc<Workspace>,
     mounts: Vec<Mount>,
     effects: ProcessEffects,
+    private_mask: Option<PathBuf>,
     cohort: Arc<Mutex<Cohort>>,
 }
 
@@ -263,6 +305,11 @@ impl PreparedView {
         status: File,
         control: UnixStream,
     ) -> Result<Command, ViewError> {
+        if let Some(invocation) = &self.workspace.invocation {
+            invocation
+                .verify()
+                .map_err(|failure| ViewError::filesystem("verify private backing", failure))?;
+        }
         validate_program(spec, &self.mounts)?;
         let mut command = base_command(&self.provider.executable);
         for mount in &self.mounts {
@@ -271,6 +318,16 @@ impl PreparedView {
                 .arg("--bind")
                 .arg(&mount.private)
                 .arg(&mount.logical);
+        }
+        if let Some(path) = &self.private_mask {
+            // Root overlays already hide their excluded invocation. An omitted
+            // root instead needs an exact inaccessible, read-only mount; hiding
+            // every .temp directory would also hide ordinary user data.
+            command
+                .args(["--perms", "000", "--tmpfs"])
+                .arg(path)
+                .arg("--remount-ro")
+                .arg(path);
         }
         command.arg("--chdir").arg(&spec.cwd);
         command
@@ -1192,7 +1249,7 @@ fn resource_effects(mounts: &[Mount], identity: &Path) -> Result<ProcessEffects,
 struct Workspace {
     path: PathBuf,
     identity: Handle,
-    _invocation: Option<InvocationRoot>,
+    invocation: Option<InvocationRoot>,
 }
 
 impl Workspace {
@@ -1212,7 +1269,7 @@ impl Workspace {
                     return Ok(Self {
                         path,
                         identity,
-                        _invocation: invocation,
+                        invocation,
                     });
                 }
                 Err(cause) if cause.kind() == io::ErrorKind::AlreadyExists => continue,

@@ -1,4 +1,9 @@
 //! Extend finite coverage without changing any active owner's statement snapshot.
+//!
+//! Lazy ordinary execution need not have registered a Manager namespace first.
+//! New ancestor metadata is an exact-node observation, not a replacement of its
+//! already-versioned descendants. Data imports still use subtree obligations;
+//! both preserve actual write, namespace and complete owner-inventory fences.
 use super::{ManagedEntry, Manager, Result, invalid, normalize};
 use crate::endpoint::Backend;
 use crate::hir::TransactionId;
@@ -42,8 +47,8 @@ impl Manager {
         self.verify_finite_import(&path)?;
         self.enroll_entry_inner(&path)
     }
-    /// Upgrade existing namespace metadata to complete finite coverage without
-    /// refreshing any already-versioned branch or rebasing an old reader.
+    /// Import complete finite coverage without refreshing already-versioned
+    /// branches. A lazy runtime may have no prior namespace registration.
     pub(crate) fn enroll_disjoint_root(
         &mut self,
         path: &Path,
@@ -51,19 +56,25 @@ impl Manager {
     ) -> Result<()> {
         self.verify_import_inventory(path, owners)?;
         let path = normalize(path)?;
-        let (root, relative) = self.locate(&path)?;
-        let mut domain = self.domain.clone();
-        let key = domain.key(root, &relative)?;
-        if self.require_coverage(root, &key, &path).is_ok() {
-            return Ok(());
-        }
-        if !relative.as_os_str().is_empty() {
+        if path.file_name().is_none() {
             return Err(invalid(
                 &path,
-                "complete active enrollment requires an existing namespace root",
+                "a filesystem root cannot be a publication root",
             ));
         }
-        self.verify_import_directory(&path, &key)?;
+        let mut domain = self.domain.clone();
+        let key = domain.physical_key(&path)?;
+        if let Ok((root, relative)) = self.locate(&path) {
+            if self.require_coverage(root, &key, &path).is_ok() {
+                return Ok(());
+            }
+            if !relative.as_os_str().is_empty() {
+                return Err(invalid(
+                    &path,
+                    "complete active enrollment requires a namespace root or a new domain",
+                ));
+            }
+        }
         for effects in owners.values() {
             for access in &effects.accesses {
                 let namespace_observer = matches!(&access.resource,
@@ -78,6 +89,7 @@ impl Manager {
                         &access.resource,
                         access.kind,
                         &key,
+                        true,
                     )?
                 {
                     return Err(invalid(
@@ -89,30 +101,57 @@ impl Manager {
         }
         let mut frontier = Vec::new();
         self.import_frontier(&path, &mut domain, &mut frontier)?;
-        for (path, key) in frontier {
-            self.verify_import_scope(&path, &key, &mut domain, owners)?;
-            self.verify_finite_import(&path)?;
+        for (path, key, tree) in frontier {
+            if tree {
+                self.verify_import_scope(&path, &key, &mut domain, owners)?;
+                self.verify_finite_import(&path)?;
+            } else {
+                self.verify_metadata_import(&path, &key, &mut domain, owners)?;
+            }
         }
         self.enroll_inner(&path)
+    }
+
+    /// Register only a previously unobserved directory node. Descendant read
+    /// pins do not observe it; pending writes and explicit namespace reads do.
+    pub(crate) fn enroll_disjoint_namespace(
+        &mut self,
+        path: &Path,
+        owners: &BTreeMap<TransactionId, Effects>,
+    ) -> Result<()> {
+        self.verify_import_inventory(path, owners)?;
+        let path = normalize(path)?;
+        let mut domain = self.domain.clone();
+        let key = domain.physical_key(&path)?;
+        if !self.domain.known(&key) {
+            self.verify_metadata_import(&path, &key, &mut domain, owners)?;
+        }
+        self.enroll_namespace_inner(&path)
     }
 
     fn import_frontier(
         &self,
         path: &Path,
         domain: &mut super::Domain,
-        frontier: &mut Vec<(std::path::PathBuf, ResourceKey)>,
+        frontier: &mut Vec<(std::path::PathBuf, ResourceKey, bool)>,
     ) -> Result<()> {
         let key = domain.physical_key(path)?;
         if self.domain.complete(&key) {
             return Ok(());
         }
-        if !self.domain.known(&key) {
-            // An unseen ancestor is itself a new visibility obligation, even if
-            // a previously enrolled complete leaf exists below it.
-            frontier.push((path.to_owned(), key));
+        let known = self.domain.known(&key);
+        let descendants = self.domain.keys.iter().any(|old| key.tree().contains(old));
+        if !known && !descendants {
+            frontier.push((path.to_owned(), key, true));
             return Ok(());
         }
-        self.verify_import_directory(path, &key)?;
+        if known {
+            self.verify_import_directory(path, &key)?;
+        } else {
+            // An unobserved ancestor contributes its own directory metadata,
+            // not a fictitious replacement of already complete descendants.
+            frontier.push((path.to_owned(), key, false));
+        }
         let mut children = std::fs::read_dir(path)
             .map_err(|cause| super::ManagerError::Io {
                 action: "inspect import frontier",
@@ -162,6 +201,7 @@ impl Manager {
         domain: &mut super::Domain,
         owners: &BTreeMap<TransactionId, Effects>,
     ) -> Result<()> {
+        self.fence_namespace(key, true)?;
         for (id, effects) in owners {
             let dirty = self.pending_roots.get(id).is_some_and(|writes| {
                 writes
@@ -173,7 +213,7 @@ impl Manager {
             let mut intersects = effects.unknown_external;
             for access in &effects.accesses {
                 intersects |=
-                    self.import_access_overlaps(domain, &access.resource, access.kind, key)?;
+                    self.import_access_overlaps(domain, &access.resource, access.kind, key, true)?;
             }
             if intersects
                 || dirty
@@ -183,6 +223,41 @@ impl Manager {
                 return Err(invalid(
                     path,
                     "active owner observes or may modify this coverage; no new payload was captured",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn verify_metadata_import(
+        &self,
+        path: &Path,
+        key: &ResourceKey,
+        domain: &mut super::Domain,
+        owners: &BTreeMap<TransactionId, Effects>,
+    ) -> Result<()> {
+        self.fence_namespace(key, false)?;
+        for (id, effects) in owners {
+            let dirty = self.pending_roots.get(id).is_some_and(|writes| {
+                writes
+                    .data
+                    .iter()
+                    .chain(&writes.metadata)
+                    .any(|old| old.tree().contains(key) || key.tree().contains(old))
+            });
+            let mut intersects = false;
+            for access in &effects.accesses {
+                intersects |=
+                    self.import_access_overlaps(domain, &access.resource, access.kind, key, false)?;
+            }
+            if intersects
+                || dirty
+                || self.namespaces.observes_metadata_import(*id, key)
+                || !self.store.permits_metadata_import(*id, key)
+            {
+                return Err(invalid(
+                    path,
+                    "active owner observes or may modify this directory metadata",
                 ));
             }
         }
@@ -257,6 +332,7 @@ impl Manager {
         resource: &Resource,
         kind: AccessKind,
         target: &ResourceKey,
+        target_tree: bool,
     ) -> Result<bool> {
         let (location, parent_kind_read) = match resource {
             Resource::File(file) | Resource::StreamPath(file) => (&file.location, false),
@@ -284,7 +360,15 @@ impl Manager {
         if parent_kind_read && other.tree().contains(target) && other != *target {
             return Ok(false);
         }
-        Ok(other.tree().contains(target) || target.tree().contains(&other))
+        if target_tree {
+            return Ok(other.tree().contains(target) || target.tree().contains(&other));
+        }
+        let resource_tree = matches!(resource,
+            Resource::File(file) | Resource::StreamPath(file) if file.scope == Scope::Tree);
+        Ok(other == *target
+            || resource_tree && other.tree().contains(target)
+            || kind != AccessKind::Read
+                && (other.tree().contains(target) || target.tree().contains(&other)))
     }
 }
 #[cfg(test)]
@@ -303,6 +387,17 @@ mod tests {
         std::path::PathBuf,
         std::path::PathBuf,
     ) {
+        fixture_with_namespace(true)
+    }
+
+    fn fixture_with_namespace(
+        namespace: bool,
+    ) -> (
+        tempfile::TempDir,
+        Manager,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
         fs::create_dir_all(&base).unwrap();
         let root = tempfile::tempdir_in(base).unwrap();
@@ -316,8 +411,10 @@ mod tests {
         fs::write(a.join("tree/child"), b"do not capture this tree").unwrap();
         fs::write(b.join("target"), b"old").unwrap();
         let mut manager = Manager::new(&root.path().join("scratch")).unwrap();
-        manager.enroll_namespace(&a).unwrap();
-        manager.enroll_entry(&a.join("first")).unwrap();
+        if namespace {
+            manager.enroll_namespace(&a).unwrap();
+            manager.enroll_entry(&a.join("first")).unwrap();
+        }
         manager.enroll(&b.join("target")).unwrap();
         (root, manager, a, b)
     }
@@ -332,6 +429,153 @@ mod tests {
                 scope,
             )),
             kind,
+        }
+    }
+
+    #[test]
+    fn fresh_payload_and_namespace_import_do_not_rebase_an_active_statement() {
+        let (_root, mut manager, a, b) = fixture_with_namespace(false);
+        let owner = TransactionId(9200);
+        manager.begin(owner, Isolation::ReadCommitted).unwrap();
+        let held = manager.read_snapshot(owner, &b.join("target")).unwrap();
+        let owners = BTreeMap::from([(
+            owner,
+            Effects {
+                accesses: vec![file(&b.join("target"), Scope::Exact, AccessKind::Write)],
+                unknown_external: false,
+            },
+        )]);
+        assert!(matches!(
+            manager.enroll(&a.join("second")),
+            Err(ManagerError::EnrollmentClosed)
+        ));
+        assert!(matches!(
+            manager.enroll_namespace(&a),
+            Err(ManagerError::EnrollmentClosed)
+        ));
+        manager
+            .enroll_disjoint_root(&a.join("second"), &owners)
+            .unwrap();
+        manager.enroll_disjoint_namespace(&a, &owners).unwrap();
+        assert!(
+            manager
+                .read_snapshot(owner, &a.join("second"))
+                .unwrap()
+                .is_missing()
+        );
+        assert!(manager.read_entry(owner, &a).unwrap().is_none());
+        manager.start_statement(owner).unwrap();
+        assert!(manager.read_entry(owner, &a).unwrap().is_some());
+        let current = manager.read_snapshot(owner, &a.join("second")).unwrap();
+        let Entry::File { artifact, .. } = &current.entries()[Path::new("")] else {
+            panic!("not a file")
+        };
+        assert_eq!(fs::read(artifact.path()).unwrap(), b"second");
+        assert!(held.entries().contains_key(Path::new("")));
+        manager.finish(owner).unwrap();
+    }
+
+    #[test]
+    fn fresh_ancestor_import_preserves_a_known_pinned_child() {
+        let (_root, mut manager, a, _) = fixture_with_namespace(false);
+        manager.enroll(&a.join("first")).unwrap();
+        let owner = TransactionId(9201);
+        manager.begin(owner, Isolation::ReadCommitted).unwrap();
+        let pinned = manager.read_snapshot(owner, &a.join("first")).unwrap();
+        let owners = BTreeMap::from([(
+            owner,
+            Effects {
+                accesses: vec![file(&a.join("first"), Scope::Exact, AccessKind::Read)],
+                unknown_external: false,
+            },
+        )]);
+        fs::write(a.join("first"), b"external edit").unwrap();
+        manager.enroll_disjoint_root(&a, &owners).unwrap();
+        let Entry::File { artifact, .. } = &pinned.entries()[Path::new("")] else {
+            panic!("not a file")
+        };
+        assert_eq!(fs::read(artifact.path()).unwrap(), b"first");
+        manager.start_statement(owner).unwrap();
+        let current = manager.read_snapshot(owner, &a).unwrap();
+        let Entry::File { artifact, .. } = &current.entries()[Path::new("first")] else {
+            panic!("not a file")
+        };
+        assert_eq!(fs::read(artifact.path()).unwrap(), b"first");
+        assert!(current.entries().contains_key(Path::new("second")));
+        assert!(current.entries().contains_key(Path::new("tree/child")));
+        manager.finish(owner).unwrap();
+    }
+
+    #[test]
+    fn fresh_metadata_import_requires_actual_read_and_owner_fences() {
+        for mode in 0..8 {
+            let (_root, mut manager, a, _) = fixture_with_namespace(false);
+            let owner = TransactionId(9202);
+            if mode == 7 {
+                manager.enroll(&a.join("first")).unwrap();
+            }
+            manager
+                .begin(
+                    owner,
+                    if mode == 6 {
+                        Isolation::RepeatableRead
+                    } else {
+                        Isolation::ReadCommitted
+                    },
+                )
+                .unwrap();
+            let mut owners = BTreeMap::from([(owner, Effects::default())]);
+            match mode {
+                0 => {
+                    owners.clear();
+                }
+                1 => {
+                    owners.get_mut(&owner).unwrap().unknown_external = true;
+                }
+                2 => {
+                    owners.get_mut(&owner).unwrap().accesses.push(file(
+                        &a,
+                        Scope::Tree,
+                        AccessKind::Read,
+                    ));
+                }
+                3 => {
+                    owners.get_mut(&owner).unwrap().accesses.push(Access {
+                        resource: Resource::DirectoryMetadata(FileResource::new(
+                            Location {
+                                backend: Backend::Local,
+                                path: a.to_string_lossy().into_owned(),
+                            },
+                            Scope::Exact,
+                        )),
+                        kind: AccessKind::Read,
+                    });
+                }
+                4 => {
+                    let key = manager.domain.physical_key(&a).unwrap();
+                    manager.store.read(owner, &key).unwrap();
+                    // RC observations live in the Manager namespace ledger;
+                    // Store's read-validation set is serializable-only.
+                    manager.record_namespace_read(owner, 0, key, false).unwrap();
+                }
+                5 => {
+                    let key = manager.domain.physical_key(&a).unwrap();
+                    manager.store.delete(owner, key).unwrap();
+                }
+                7 => {
+                    let key = manager.domain.physical_key(&a.join("first")).unwrap();
+                    manager.store.delete(owner, key).unwrap();
+                }
+                _ => {}
+            }
+            let epoch = manager.epoch();
+            assert!(
+                manager.enroll_disjoint_namespace(&a, &owners).is_err(),
+                "mode {mode}"
+            );
+            assert_eq!(manager.epoch(), epoch);
+            manager.rollback_pending(owner).unwrap();
+            manager.finish(owner).unwrap();
         }
     }
 

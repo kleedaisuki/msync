@@ -21,7 +21,7 @@ use std::time::Duration;
 use msync::hir::ReadPort;
 use msync::process::ProcessConfig;
 use msync::process::view_linux::{ManagedRoot, ProgramSpec, Provider};
-use msync::transaction::filesystem::{Entry, Snapshot, SnapshotStore};
+use msync::transaction::filesystem::{Entry, InvocationRoot, Snapshot, SnapshotStore};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 fn workspace() -> tempfile::TempDir {
@@ -448,6 +448,18 @@ fn view_child_fixture() {
         .find_map(|arg| arg.strip_prefix("mode:"))
         .unwrap();
     match mode {
+        "private-fence" => {
+            let argument = |name: &str| args.iter().find_map(|arg| arg.strip_prefix(name)).unwrap();
+            let private = Path::new(argument("private:"));
+            let user = Path::new(argument("user:"));
+            assert!(fs::read(private).is_err(), "private backing was readable");
+            assert!(
+                fs::write(private, "forbidden").is_err(),
+                "private backing was writable"
+            );
+            assert_eq!(fs::read(user).unwrap(), b"ordinary user scratch data");
+            fs::write("native-write", b"private managed write").unwrap();
+        }
         "mutate" => {
             assert_eq!(
                 fs::read_to_string("keep").unwrap(),
@@ -511,4 +523,78 @@ fn view_child_fixture() {
         }
         other => panic!("unexpected fixture mode {other}"),
     }
+}
+
+#[tokio::test]
+#[ignore = "requires bubblewrap and usable unprivileged user/mount/PID/network namespaces"]
+async fn explicit_invocation_is_inaccessible_outside_the_managed_roots() {
+    let workspace = workspace();
+    let logical = workspace.path().join("managed");
+    let user_scratch = workspace.path().join("unmanaged/.temp");
+    fs::create_dir_all(&logical).unwrap();
+    fs::create_dir_all(&user_scratch).unwrap();
+    let user_file = user_scratch.join("user-file");
+    fs::write(&user_file, b"ordinary user scratch data").unwrap();
+    let invocation = InvocationRoot::create(&user_scratch).unwrap();
+    let secret = invocation.path().join("private-payload");
+    fs::write(&secret, b"never expose manager data").unwrap();
+    let scratch = invocation.path().join("views");
+    let spools = invocation.path().join("spools");
+    fs::create_dir(&scratch).unwrap();
+    fs::create_dir(&spools).unwrap();
+    let mut store = SnapshotStore::new_in(&invocation.path().join("assets"), &invocation).unwrap();
+    let outside = workspace.path().join("unowned-scratch");
+    fs::create_dir(&outside).unwrap();
+    let rejected = provider()
+        .with_invocation(invocation.clone())
+        .prepare(
+            &store,
+            &outside,
+            vec![ManagedRoot {
+                logical: logical.clone(),
+                snapshot: store.capture(&logical).unwrap(),
+            }],
+        )
+        .err()
+        .expect("a different scratch directory is not covered by this proof");
+    assert!(rejected.cause.to_string().contains("outside"), "{rejected}");
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+    let prepared = provider()
+        .with_invocation(invocation.clone())
+        .prepare(
+            &store,
+            &scratch,
+            vec![ManagedRoot {
+                logical: logical.clone(),
+                snapshot: store.capture(&logical).unwrap(),
+            }],
+        )
+        .unwrap();
+    let mut program = spec("private-fence", &logical, None);
+    program.arguments.extend([
+        "--skip".into(),
+        format!("private:{}", secret.display()).into(),
+        "--skip".into(),
+        format!("user:{}", user_file.display()).into(),
+    ]);
+    let running = prepared
+        .launch(&program, ProcessConfig::new(&spools))
+        .unwrap();
+    let sealed = tokio::time::timeout(Duration::from_secs(15), running.seal(&store))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(sealed.exit.success, "{:?}", sealed.exit);
+    assert_eq!(
+        snapshot_text(&sealed.roots[0].snapshot, "native-write").as_deref(),
+        Some("private managed write")
+    );
+    assert!(!logical.join("native-write").exists());
+    assert_eq!(fs::read(&secret).unwrap(), b"never expose manager data");
+    assert_eq!(fs::read(&user_file).unwrap(), b"ordinary user scratch data");
+    drop(sealed);
+    store.cleanup().unwrap();
+    drop(store);
+    invocation.cleanup().unwrap();
+    assert_eq!(fs::read(user_file).unwrap(), b"ordinary user scratch data");
 }

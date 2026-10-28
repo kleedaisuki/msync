@@ -66,6 +66,7 @@ foreach ($path in $Paths) {
         }
         '^src/execution/' {
             $rust = $true
+            Add-Targets @('preparation_v4', 'planner_optimization_v4', 'planner_proof_sharing_v4', 'hir_plan_v4')
             Add-Targets @('execution_v4', 'ordinary_execution_v4', 'runtime_guards_v4', 'named_execution_v4', 'execution_workspace_v4', 'transaction_manager_v4', 'review_metadata_v4', 'program_execution_v4', 'macro_native_v4', 'physical_execution_v4', 'endpoint_execution_v4', 'cli_structured_v4', 'runtime_task_telemetry_v4', 'structured_telemetry_v4', 'repl_jobs')
             break
         }

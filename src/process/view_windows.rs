@@ -4,6 +4,8 @@
 //! through logical paths; no physical Sandboxie drive/tombstone layout is assumed.
 //! Planning must not call runtime `prepare`, which creates private view data.
 //! This is a managed-filesystem boundary, not universal undo for external services.
+//! Owned invocation backing is denied independently of the logical root set;
+//! frozen-root seeding and export use the authenticated pipe, not that backing.
 
 #[path = "windows_view/hive.rs"]
 mod hive;
@@ -101,18 +103,27 @@ pub struct ProgramSpec {
 pub struct Provider {
     api: Arc<native::Api>,
     worker: Option<PathBuf>,
+    invocation: Option<InvocationRoot>,
 }
 
 impl Provider {
     pub fn from_installation(root: impl AsRef<Path>) -> Result<Self, ViewError> {
         native::Api::from_installation(root.as_ref())
-            .map(|api| Self { api, worker: None })
+            .map(|api| Self {
+                api,
+                worker: None,
+                invocation: None,
+            })
             .map_err(|cause| ViewError::new("capability probe", root.as_ref(), cause))
     }
 
     pub fn probe() -> Result<Self, ViewError> {
         native::Api::detect()
-            .map(|api| Self { api, worker: None })
+            .map(|api| Self {
+                api,
+                worker: None,
+                invocation: None,
+            })
             .map_err(|cause| ViewError::new("capability probe", Path::new("SbieDll.dll"), cause))
     }
 
@@ -131,6 +142,13 @@ impl Provider {
         Ok(self)
     }
 
+    /// Protect owned runtime backing independently of the selected logical roots.
+    /// Preparation validates that its scratch directory belongs to this proof.
+    pub fn with_invocation(mut self, invocation: InvocationRoot) -> Self {
+        self.invocation = Some(invocation);
+        self
+    }
+
     /// Supply every manager-enrolled root visible to this program, not an argv-
     /// derived subset. An omitted mutable host read cannot prove independence.
     pub fn prepare(
@@ -144,7 +162,38 @@ impl Provider {
             .map_err(|cause| ViewError::new("validate scratch", scratch, cause))?;
         let roots = validate_roots(&scratch, &worker, roots)
             .map_err(|cause| ViewError::new("validate roots", &scratch, cause))?;
-        let owned = OwnedBox::create(self.api.clone(), &scratch, &roots)?;
+        let inferred = roots
+            .iter()
+            .map(|root| root.snapshot.invocation_for_path(&scratch))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|cause| {
+                ViewError::new("verify private backing", &scratch, io::Error::other(cause))
+            })?
+            .into_iter()
+            .flatten()
+            .next();
+        let invocation = self.invocation.clone().or(inferred);
+        if let Some(invocation) = &invocation {
+            if !invocation.contains_private(&scratch).map_err(|cause| {
+                ViewError::new("verify private backing", &scratch, io::Error::other(cause))
+            })? {
+                return Err(ViewError::new(
+                    "verify private backing",
+                    &scratch,
+                    wire::invalid("scratch is outside the supplied owned invocation"),
+                ));
+            }
+            if invocation.contains_private(&worker).map_err(|cause| {
+                ViewError::new("verify worker isolation", &worker, io::Error::other(cause))
+            })? {
+                return Err(ViewError::new(
+                    "verify worker isolation",
+                    &worker,
+                    wire::invalid("the worker executable must be outside private runtime backing"),
+                ));
+            }
+        }
+        let owned = OwnedBox::create(self.api.clone(), &scratch, &roots, invocation)?;
         let effects = effects(&roots, &owned.name)
             .map_err(|cause| ViewError::new("certify footprint", &scratch, cause))?;
         Ok(PreparedView {
@@ -294,10 +343,27 @@ impl PreparedView {
             self.owned.nonce.clone(),
             std::process::id().to_string(),
         ];
+        let worker_cwd = self
+            .worker
+            .ancestors()
+            .skip(1)
+            .find(|parent| {
+                !self
+                    .roots
+                    .iter()
+                    .any(|root| parent.starts_with(&root.logical))
+            })
+            .ok_or_else(|| {
+                ViewError::new(
+                    "validate worker cwd",
+                    &self.worker,
+                    wire::invalid("worker needs an existing directory outside managed roots"),
+                )
+            })?;
         let worker = self
             .owned
             .api
-            .launch(&self.owned.name, &self.worker, &args, &self.owned.path)
+            .launch(&self.owned.name, &self.worker, &args, worker_cwd)
             .map_err(|cause| ViewError::new("launch boxed worker", &self.worker, cause))?;
         self.owned.workers.lock().unwrap().insert(worker.pid);
         tokio::time::timeout(std::time::Duration::from_secs(30), server.connect())
@@ -892,6 +958,7 @@ impl OwnedBox {
         api: Arc<native::Api>,
         scratch: &Path,
         roots: &[ManagedRoot],
+        invocation: Option<InvocationRoot>,
     ) -> Result<Self, ViewError> {
         let nonce = native::nonce()
             .map_err(|cause| ViewError::new("create session nonce", scratch, cause))?;
@@ -900,16 +967,6 @@ impl OwnedBox {
         fs::create_dir(&path).map_err(|cause| ViewError::new("create owned box", &path, cause))?;
         let identity = Handle::from_path(&path)
             .map_err(|cause| ViewError::new("identify owned box", &path, cause))?;
-        let invocation = roots
-            .iter()
-            .map(|root| root.snapshot.invocation_for_path(scratch))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|cause| {
-                ViewError::new("verify private backing", scratch, io::Error::other(cause))
-            })?
-            .into_iter()
-            .flatten()
-            .next();
         let owned = Self {
             api,
             name,
@@ -964,6 +1021,9 @@ impl OwnedBox {
             Path::new(r"\Device\Afd*").as_os_str(),
             true,
         )?;
+        if let Some(invocation) = &owned.invocation {
+            owned.set_directory("ClosedFilePath", invocation.path(), true)?;
+        }
         for root in roots {
             owned.set_directory("WriteFilePath", &root.logical, true)?;
         }
@@ -987,6 +1047,16 @@ impl OwnedBox {
         }
         for root in roots {
             self.require_directory("WriteFilePath", &root.logical)?;
+        }
+        if let Some(invocation) = &self.invocation {
+            invocation.verify().map_err(|cause| {
+                ViewError::new(
+                    "verify private backing",
+                    invocation.path(),
+                    io::Error::other(cause),
+                )
+            })?;
+            self.require_directory("ClosedFilePath", invocation.path())?;
         }
         self.require("Enabled", std::ffi::OsStr::new("y"))?;
         self.require_directory("FileRootPath", &self.path.join("sandbox"))?;

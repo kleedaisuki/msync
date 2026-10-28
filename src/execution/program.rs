@@ -10,7 +10,7 @@ use crate::endpoint::{Backend, Location};
 use crate::hir::{Argument, ProcessId, ReadPort};
 use crate::process::{ExitInfo, ProcessConfig, SpoolReader};
 use crate::syntax::Span;
-use crate::transaction::filesystem::{Snapshot, SnapshotStore};
+use crate::transaction::filesystem::{InvocationRoot, Snapshot, SnapshotStore};
 
 use super::domain;
 use super::error::{ExecutionError, Result};
@@ -58,6 +58,7 @@ pub(super) struct Launch<'a> {
     pub cwd: &'a Path,
     pub worker: &'a Path,
     pub scratch: &'a Path,
+    pub invocation: &'a InvocationRoot,
     pub config: ProcessConfig,
     pub lease: super::scheduler::Lease,
 }
@@ -120,6 +121,7 @@ impl Program {
                         cause,
                     )
                 })?;
+            let provider = provider.with_invocation(launch.invocation.clone());
             let managed = roots
                 .iter()
                 .map(|(logical, snapshot)| view::ManagedRoot {

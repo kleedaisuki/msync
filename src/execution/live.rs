@@ -1126,9 +1126,7 @@ impl RuntimeSession {
                     None => engine.manager.enroll_entry(child),
                 },
                 None => match &active_enrollment {
-                    Some(owners) if sparse_roots.contains(root) => {
-                        engine.manager.enroll_disjoint_root(root, owners)
-                    }
+                    Some(owners) => engine.manager.enroll_disjoint_root(root, owners),
                     _ => engine.manager.enroll(root),
                 },
             };
@@ -1155,7 +1153,11 @@ impl RuntimeSession {
             {
                 continue;
             }
-            engine.manager.enroll_namespace(parent).map_err(|cause| {
+            let enrolled = match &active_enrollment {
+                Some(owners) => engine.manager.enroll_disjoint_namespace(parent, owners),
+                None => engine.manager.enroll_namespace(parent),
+            };
+            enrolled.map_err(|cause| {
                 ExecutionError::caused(
                     "cannot enroll destination namespace metadata",
                     site(parent),
@@ -2418,6 +2420,7 @@ impl RuntimeSession {
         let launched = task
             .run(Program::launch(
                 program::Launch {
+                    invocation: &engine.invocation,
                     id,
                     transaction,
                     span,

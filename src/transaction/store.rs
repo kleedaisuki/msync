@@ -309,22 +309,32 @@ impl<V: Clone> Store<V> {
     }
 
     pub(super) fn permits_disjoint_import(&self, id: TransactionId, key: &ResourceKey) -> bool {
+        self.permits_import(id, key, true)
+    }
+
+    /// Importing one directory node does not replace its known descendants.
+    /// Pending writes remain fenced in both directions, independent of scope.
+    pub(super) fn permits_metadata_import(&self, id: TransactionId, key: &ResourceKey) -> bool {
+        self.permits_import(id, key, false)
+    }
+
+    fn permits_import(&self, id: TransactionId, key: &ResourceKey, tree: bool) -> bool {
         let Ok(transaction) = self.active(id) else {
             return false;
         };
         let overlaps =
-            |other: &ResourceKey| key.tree().contains(other) || other.tree().contains(key);
+            |other: &ResourceKey| other.tree().contains(key) || key.tree().contains(other);
         transaction.isolation == Isolation::ReadCommitted
             && !transaction.pending.keys().any(overlaps)
             && !transaction.write_bases.keys().any(overlaps)
             && !transaction
                 .reads
                 .keys()
-                .any(|other| key.tree().contains(other))
+                .any(|other| other == key || tree && key.tree().contains(other))
             && !transaction
                 .predicates
                 .keys()
-                .any(|prefix| prefix.contains(key) || key.tree().contains(&prefix.root))
+                .any(|prefix| prefix.contains(key) || tree && key.tree().contains(&prefix.root))
     }
 
     pub(super) fn active_read_committed(&self, id: TransactionId) -> bool {
