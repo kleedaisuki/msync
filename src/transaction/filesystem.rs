@@ -306,6 +306,96 @@ impl SnapshotStore {
         Ok(snapshot)
     }
 
+    /// Observe an ordinary host file without allocating a duplicate artifact
+    /// when its complete bytes still match an immutable managed version.
+    pub(crate) fn reuse_file(
+        &self,
+        source: &Path,
+        previous: &Entry,
+        invocation: Option<&InvocationRoot>,
+    ) -> Result<Option<Snapshot>> {
+        self.ensure_open()?;
+        let Entry::File { artifact, .. } = previous else {
+            return Ok(None);
+        };
+        let source = absolute(source)?;
+        if let Some(invocation) = invocation {
+            invocation.verify()?;
+            if invocation.contains(&source)? {
+                return Err(invalid(
+                    "observe logical file",
+                    &source,
+                    "invocation-private data is not a logical source",
+                ));
+            }
+        }
+        if overlaps_store(&source, &self.owner)? {
+            return Err(invalid(
+                "observe logical file",
+                &source,
+                "snapshot source and artifact store must be disjoint",
+            ));
+        }
+        let Some(metadata) = safe_metadata(&source)? else {
+            return Ok(None);
+        };
+        if !metadata.is_file() || metadata.len() != artifact.len() {
+            return Ok(None);
+        }
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(
+                windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT,
+            );
+        }
+        let mut file = options
+            .open(&source)
+            .map_err(|cause| error("open observed host file", &source, cause))?;
+        let metadata = file
+            .metadata()
+            .map_err(|cause| error("inspect observed host file", &source, cause))?;
+        require_file(&metadata, &source)?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes()
+                & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+                != 0
+            {
+                return Err(invalid(
+                    "observe logical file",
+                    &source,
+                    "reparse files cannot be reused as managed versions",
+                ));
+            }
+        }
+        let mut old = fs::File::open(artifact.path())
+            .map_err(|cause| error("open immutable comparison file", artifact.path(), cause))?;
+        if !equal_file_bytes(&mut file, &mut old)
+            .map_err(|cause| error("compare observed host bytes", &source, cause))?
+        {
+            return Ok(None);
+        }
+        let metadata = NodeMetadata::capture(&metadata)
+            .map_err(|cause| error("observe file metadata", &source, cause))?;
+        self.from_entries(BTreeMap::from([(
+            PathBuf::new(),
+            Entry::File {
+                artifact: artifact.clone(),
+                metadata,
+            },
+        )]))
+        .map(Some)
+    }
+
     /// Capture a logical source while omitting only this exclusively owned
     /// invocation. User `.temp` data and other runs remain ordinary entries.
     pub fn capture_in(&self, source: &Path, invocation: &InvocationRoot) -> Result<Snapshot> {
@@ -848,6 +938,28 @@ fn create_owned_directory(parent: &Path, prefix: &str) -> Result<PathBuf> {
             "unique journal allocation exhausted",
         ),
     ))
+}
+
+fn equal_file_bytes(left: &mut fs::File, right: &mut fs::File) -> io::Result<bool> {
+    use std::io::Read;
+    let mut a = [0; 64 * 1024];
+    let mut b = [0; 64 * 1024];
+    loop {
+        let count = left.read(&mut a)?;
+        if count == 0 {
+            return Ok(right.read(&mut b)? == 0);
+        }
+        if let Err(cause) = right.read_exact(&mut b[..count]) {
+            return if cause.kind() == io::ErrorKind::UnexpectedEof {
+                Ok(false)
+            } else {
+                Err(cause)
+            };
+        }
+        if a[..count] != b[..count] {
+            return Ok(false);
+        }
+    }
 }
 
 fn copy_new(source: &Path, target: &Path) -> Result<()> {

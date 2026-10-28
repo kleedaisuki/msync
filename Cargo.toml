@@ -44,3 +44,7 @@ harness = false
 [[bench]]
 name = "store_v4"
 harness = false
+
+[[bench]]
+name = "latency_v4"
+harness = false

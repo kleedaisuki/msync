@@ -1555,6 +1555,134 @@ fn root_origin_undo_preserves_a_parent_enrolled_after_the_original_write() {
 }
 
 #[test]
+fn unchanged_file_refresh_reuses_artifacts_and_fresh_metadata() {
+    use msync::transaction::filesystem::NodeMetadata;
+    use std::time::{Duration, UNIX_EPOCH};
+    let workspace = workspace();
+    let path = workspace.path().join("source");
+    fs::write(&path, vec![b'a'; 64 * 1024]).unwrap();
+    let original_permissions = fs::metadata(&path).unwrap().permissions();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&path).unwrap();
+    let count = || {
+        fs::read_dir(manager.artifact_root())
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("file-")
+            })
+            .count()
+    };
+    let initial = count();
+    let epoch = manager.epoch();
+    for _ in 0..100 {
+        assert_eq!(manager.refresh_host().unwrap(), epoch);
+    }
+    assert_eq!(
+        fs::read_dir(manager.artifact_root())
+            .unwrap()
+            .filter(|entry| entry
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("file-"))
+            .count(),
+        initial
+    );
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_readonly(true);
+    let changed = NodeMetadata::new(permissions, UNIX_EPOCH + Duration::from_secs(978307200));
+    changed.apply(&path).unwrap();
+    assert!(manager.refresh_host().unwrap() > epoch);
+    let reader = TransactionId(2910);
+    manager.begin(reader, Isolation::Serializable).unwrap();
+    let snapshot = manager.read_snapshot(reader, &path).unwrap();
+    let metadata = snapshot.entries().get(Path::new("")).unwrap().metadata();
+    assert_eq!(
+        metadata.modified,
+        fs::metadata(&path).unwrap().modified().unwrap()
+    );
+    assert!(metadata.permissions.readonly());
+    manager.finish(reader).unwrap();
+    drop(snapshot);
+    assert_eq!(
+        fs::read_dir(manager.artifact_root())
+            .unwrap()
+            .filter(|entry| entry
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("file-"))
+            .count(),
+        initial
+    );
+    fs::set_permissions(&path, original_permissions).unwrap();
+}
+
+#[test]
+fn file_refresh_compares_the_tail_beyond_a_single_buffer() {
+    use msync::transaction::filesystem::NodeMetadata;
+    let workspace = workspace();
+    let path = workspace.path().join("source");
+    let mut bytes = vec![b'a'; 128 * 1024 + 1];
+    fs::write(&path, &bytes).unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&path).unwrap();
+    let metadata = NodeMetadata::capture(&fs::metadata(&path).unwrap()).unwrap();
+    *bytes.last_mut().unwrap() = b'z';
+    fs::write(&path, &bytes).unwrap();
+    metadata.apply(&path).unwrap();
+    let epoch = manager.epoch();
+    assert!(manager.refresh_host().unwrap() > epoch);
+    let reader = TransactionId(2913);
+    manager.begin(reader, Isolation::Serializable).unwrap();
+    let snapshot = manager.read_snapshot(reader, &path).unwrap();
+    let Entry::File { artifact, .. } = &snapshot.entries()[Path::new("")] else {
+        panic!("not a file")
+    };
+    assert_eq!(fs::read(artifact.path()).unwrap(), bytes);
+    manager.finish(reader).unwrap();
+}
+
+#[test]
+fn file_root_refresh_detects_same_stat_edits_and_preserves_foreign_history() {
+    use msync::transaction::filesystem::NodeMetadata;
+    let workspace = workspace();
+    let path = workspace.path().join("source");
+    fs::write(&path, "initial").unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&path).unwrap();
+    let managed = payload(&manager, workspace.path(), "payload", "managed");
+    let saved = TransactionId(2911);
+    manager.begin(saved, Isolation::Serializable).unwrap();
+    manager.replace_snapshot(saved, &path, &managed).unwrap();
+    manager.finish(saved).unwrap();
+    let metadata = NodeMetadata::capture(&fs::metadata(&path).unwrap()).unwrap();
+    fs::write(&path, "foreign").unwrap();
+    metadata.apply(&path).unwrap();
+    manager.refresh_host().unwrap();
+    let reader = TransactionId(2912);
+    manager.begin(reader, Isolation::Serializable).unwrap();
+    assert_eq!(
+        text(&manager.read_snapshot(reader, &path).unwrap()).as_deref(),
+        Some("foreign")
+    );
+    manager.finish(reader).unwrap();
+    assert_eq!(text(&managed).as_deref(), Some("managed"));
+    assert!(matches!(
+        manager.rollback_origin(saved),
+        Err(ManagerError::Store(_))
+    ));
+    assert_eq!(fs::read_to_string(&path).unwrap(), "foreign");
+}
+
+#[test]
 fn foreign_refresh_observes_same_stat_bytes_and_protects_named_origins() {
     use msync::transaction::filesystem::NodeMetadata;
     let workspace = workspace();

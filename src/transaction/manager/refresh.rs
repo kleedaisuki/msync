@@ -54,7 +54,19 @@ impl Manager {
         let mut observed = BTreeMap::<ResourceKey, Option<ManagedEntry>>::new();
         for scope in &scopes {
             let path = self.key_path(&self.store, scope)?;
-            let snapshot = self.capture_host(&path)?;
+            let previous = self.store.committed(scope);
+            let reused = previous
+                .as_ref()
+                .map(|old| {
+                    self.snapshots
+                        .reuse_file(&path, &old.entry, self.invocation.as_ref())
+                })
+                .transpose()?
+                .flatten();
+            let snapshot = match reused {
+                Some(snapshot) => snapshot,
+                None => self.capture_host(&path)?,
+            };
             validate_snapshot_case_policy(&path, &snapshot)?;
             validate_names(snapshot.entries())?;
             for key in self

@@ -191,3 +191,176 @@ taskset -c 0 "$BASELINE_DRIVER"
 Use the corresponding candidate rlib with the same flags for the other driver.
 The normal candidate smoke remains `cargo bench --locked --bench store_v4`;
 `cargo test --bench store_v4` deliberately prints a debug timing skip instead.
+
+## Refresh: byte-verified reuse of unchanged ordinary file roots (2026-10-28)
+
+The latency probe exposed a different cost from candidate cloning: a quiescent
+REPL refresh captured source and destination into fresh artifact files, compared
+those copies with immutable values, and retained the unused copied files until
+shutdown. Repeating the same 64-KiB assignment therefore created two full payload
+copies per round, even when host bytes and attributes were unchanged.
+
+For a completely enrolled ordinary-file root, refresh now opens and compares the
+complete host bytes against the previous immutable artifact **before** allocating
+an artifact. Equality reuses that artifact but captures fresh permissions and
+mtime. Metadata-only changes still publish a foreign version. Changed bytes,
+absence or a changed node kind keep the established capture/import path. Complete
+directory roots deliberately retain their existing recursive capture behavior;
+this is not a directory-wide cache or a general artifact garbage collector.
+
+The file comparison retains normal source/store disjointness, exact invocation
+ownership, no-follow/type checks and native IO errors. It reads through the full
+file: size and mtime can reject a candidate but cannot prove equality. An opened
+file becoming a non-file is rejected before byte reads; immutable artifacts are
+never hardlinked to live host files or chmod'ed for reuse. All roots are still
+observed before a candidate Store swap, and foreign authorship/origin conflict
+checks are unchanged. There is no implicit-history deletion or promise of
+bounded storage when contents genuinely change.
+
+### Actual persistent-REPL acceptance
+
+The latency owner's matched native-WSL run used baseline commit `5cafd34` and the
+preserved candidate binary SHA-256
+`72fc28abcf8656f0e88a386ef50dd71ca6019b230c778c2137be31021e3b0d61`.
+The latter includes COW Store and the concurrent planner work; this single-
+assignment workload does not exercise adjacent-write fusion. Sparse-destination
+changes were not present in that binary. Both variants used the same existing-
+target, 64-KiB stable-copy REPL workflow, two warm rounds plus 32 measured rounds,
+and CPU affinity 0. Open binary/source/destination/artifact descriptors reported
+native ext4 device 2096 and filesystem magic `0xef53`. The binary was outside the
+managed cwd to avoid an unrelated payload-enrollment confound. No global cache
+flush or storage-durability guarantee is implied.
+
+| 34 total rounds | Baseline | COW + byte-verified reuse candidate |
+| --- | ---: | ---: |
+| Retained private artifact files | 68 | 2 |
+| Retained private payload bytes | 4,456,448 | 131,072 |
+| Command latency p50 (ms) | 1.1820 | 1.0127 |
+| Command latency p95 (ms) | 1.8436 | 1.3991 |
+
+The executable round-trip and file-content/metadata controls passed for both.
+This is one controlled 32-sample latency distribution, not a p99 service promise
+or a claim that every script improves. Artifact counts expose the mechanism more
+strongly than these sub-millisecond differences: the candidate retains initial
+needed immutable values rather than newly abandoned refresh copies.
+Reproduction uses `benches/latency_v4.rs` and `benches/latency_v4_linux.sh`; raw
+matched-run output is disposable `.temp/perf-v4/results/latency-paired-native-before-sparse.txt`.
+A longer 100-round growth control remains a separate follow-up measurement.
+
+Focused Windows Manager acceptance passed all 46 cases in one run after the implementation,
+including atomic failed refresh and sparse coverage. Two new tests cover 100
+unchanged observations with zero additional artifacts and fresh readonly/mtime
+metadata, and same-size/same-mtime foreign edits that preserve the old immutable
+snapshot and prevent named-origin undo. An additional focused tail test passed
+with only the last byte of a 128-KiB+1 file changed while metadata was restored,
+proving that comparison cannot stop at one buffer. Strict changed-target Clippy
+passed on the final source. These checks are independent of the end-to-end latency samples.
+## Latency: real CLI/REPL workloads and pathname controls
+
+### Method and provenance
+
+`benches/latency_v4.rs` is a standalone release probe; it launches actual CLI
+children and drives persistent REPL stdin/stdout. It is not a parser-only timer
+or a correctness-suite runtime. Baseline `5cafd34` was built from the immutable
+project-local archive with Rust 1.97.1's normal release profile. Its preserved
+Linux executable has SHA-256
+`8f098280c4578b226951c94b2ce64768a66f1f2af7c0fc2b1f0543d4f0db6cec`.
+The first combined candidate (`72fc28ab...`, preserved executable SHA-256
+`72fc28abcf8656f0e88a386ef50dd71ca6019b230c778c2137be31021e3b0d61`)
+contains Store structural sharing, unchanged-file refresh reuse, planner work and
+functional stream integration. This is a combined application comparison, not
+an attribution of every end-to-end change to Store alone. The one-assignment
+cases do not activate overwrite-chain planner fusion.
+
+The Linux runner creates a private root mount namespace, binds the distribution's
+existing `/tmp` into project `.temp/perf-v4/ext4`, then drops to UID 1000 before
+running the probe pinned to CPU 0. Fixtures are created and cleaned only through
+that project mount. The `native` pathname control addresses the same owned
+fixtures through `/tmp/<unique-name>`; `project` keeps the project-prefixed
+pathname. The distinction matters because ancestor checks of a project-prefixed
+path may still visit DrvFs, even when its final data filesystem is ext4.
+`findmnt` reports `/dev/sdd[/tmp] ext4`. Opened binary/source/destination/artifact
+file descriptors are inspected through `/proc/<probe-pid>/fd` with `stat -f -L`:
+all measured native cells reported device 2096 and magic `ef53` (GNU stat names
+this filesystem family `ext2/ext3`). Thus data and loader location are verified,
+not inferred from a spelling. The WSL launcher and release build are outside
+all samples; no global cache flush, persistent mount or SSH change is made.
+
+CLI samples include child creation, stdin, operation, output handling and exit.
+Each executable receives two warmups per case, followed by 15 recorded samples
+in alternating AB/BA order. Source contents and image pages are warm; these are
+fresh-process startup measurements, not storage-cold measurements. Each source
+has 65,536 deterministic bytes and every copy is checked. REPL samples time one
+assignment plus a `/pwd` output barrier in a persistent process; output is checked
+after the barrier. Its first two assignments are warmups and 32 are recorded.
+Reported p50/p95 use `floor((n - 1) * p)` order statistics, not confidence
+intervals or universal tail bounds.
+
+The independent-flow case admits two TCP-to-missing-file jobs, holds the first
+peer open, then closes only the second peer's write half. No stdin command is
+sent between that EOF and first observing the complete fast file. A 1 ms polling
+observer therefore reports EOF-to-*observable-file*, not an exact internal
+commit timestamp. Only after file visibility does the probe send `/pwd` and time
+its acknowledgement; the main thread cannot answer that barrier during its
+synchronous publication. It then closes the slow peer and verifies final bytes
+and preservation of the later logical namespace receipt's parent mtime. Nine
+recorded samples follow one warmup. This tests progress without a keystroke and
+head-of-line blocking as well as latency.
+
+### Matched native-alias comparison before sparse enrollment
+
+| Journey | Baseline p50 ms | Combined candidate p50 ms | Baseline p95 ms | Candidate p95 ms |
+| --- | ---: | ---: | ---: | ---: |
+| `--version` | 0.623 | 0.638 | 0.887 | 0.742 |
+| `check`, one copy | 0.731 | 0.721 | 1.375 | 1.093 |
+| Offline `plan`, one copy | 0.931 | 0.861 | 1.044 | 1.589 |
+| Run, initially missing 64-KiB target | 5.044 | 4.915 | 5.799 | 7.495 |
+| Run, existing 64-KiB target | 5.098 | 4.817 | 7.720 | 7.374 |
+| Existing target, unrelated 1,000 files + 8-MiB ballast in cwd | 5.338 | 4.980 | 7.674 | 6.568 |
+| Missing target, the same unrelated cwd contents | 80.921 | 79.581 | 83.093 | 82.082 |
+| Persistent REPL overwrite + `/pwd` | 1.182 | 1.013 | 1.844 | 1.399 |
+| Second flow EOF to observable file | 1.084 | 1.089 | 1.130 | 1.112 |
+| Second flow EOF to REPL acknowledgement | 1.158 | 1.141 | 1.467 | 1.199 |
+
+The warm REPL retained 68 private artifact files / 4,456,448 bytes at the end of
+34 assignments on the baseline, versus 2 files / 131,072 bytes on the combined
+candidate. This is evidence of successful unchanged-file reuse for this specific
+stable-byte, stable-metadata workload, not general history compaction or bounded
+storage for arbitrarily changing values. It does not erase named origins or
+foreign-conflict history. Raw samples are disposable
+`.temp/perf-v4/results/latency-paired-native-before-sparse.txt`.
+
+The important remaining workload effect is missing-target enrollment: unrelated
+cwd contents cost about 76 ms beyond the small case, whereas the existing-target
+control is nearly unchanged. Inspection confirms `destination_envelope` captures
+the entire existing parent for a missing leaf. This motivates explicit payload
+coverage versus namespace-metadata coverage, not a new I/O engine or UI timer.
+The next experiment will use the existing sparse namespace/complete-child
+Manager operations for a proven stable finite exact destination while preserving
+full opaque-program and directory coverage.
+
+### A rejected interpretation
+
+An initial pilot placed the staged native executable *inside* the measured cwd.
+It observed roughly 22 ms for a missing 64-KiB target and 14 ms for EOF-to-REPL
+acknowledgement. Those are not the clean small-workload baseline: the missing
+parent capture also enrolled the unrelated multi-megabyte executable. Moving
+the executable into a sibling `bin` and making unrelated data explicit removes
+the apparent 14 ms acknowledgement delay. The corrected independent-flow result
+is about 1.16 ms, already near the 1 ms observation granularity. These controls
+do **not** justify changing the REPL's 20 ms service policy or attributing the
+pilot to an event-wakeup defect. The old pilot files remain as diagnostic data,
+not acceptance speedups.
+
+Reproduce after compiling the std-only probe outside the timed region:
+
+```sh
+rustc --edition=2024 -O benches/latency_v4.rs -o target/perf-probe/latency-v4
+# Inside WSL as root; the runner self-unshares mounts and measures as UID 1000.
+bash benches/latency_v4_linux.sh BASELINE CANDIDATE 15 native moesegfault
+bash benches/latency_v4_linux.sh BASELINE CANDIDATE 15 project moesegfault
+```
+
+`MSYNC_PERF_REPL_ROUNDS=100` changes only the recorded persistent-session count.
+`MSYNC_PERF_PROFILE_DIR` requests untimed real CLI trace controls instead of the
+latency matrix. Trace files are intentionally outside the temporary fixture.
