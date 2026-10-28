@@ -1,14 +1,17 @@
-//! Sequential filesystem reference semantics for the structured language.
+//! Reference and live execution of the structured language.
 //!
-//! This interpreter is an execution oracle for the effect scheduler, not a
-//! replacement for the bounded asynchronous scheduler. Syntax, expansion and
-//! graph compilation remain pure. Only this Execute entry point captures bytes.
-//! Every implicit transfer has its own transaction; an error in a named region
-//! restores that region's origin, including earlier checkpoints. Already finished
-//! preceding top-level statements are not rolled back.
+//! `execute` is the sequential filesystem oracle; `RuntimeSession` is the
+//! integrated bounded file/program/stream engine. Syntax, expansion and graph
+//! compilation remain pure; execution is the data-producing stage. The reference
+//! interpreter gives each file statement an atomic transaction. Live connected
+//! jobs retain their actual owner, and independent named bodies share a frontier.
+//! Named checkpoints retain reversible origins. Failure cancellation restores
+//! still-active scopes, including earlier checkpoints, not already finished
+//! named histories or an unrelated earlier background owner.
 //!
-//! Program/stream mediation and remote transactional resources remain separate
-//! integration obligations and are capability-rejected before execution starts.
+//! The reference entry point rejects program/stream mediation before effects;
+//! the live engine uses verified native providers. Remote transactional peers
+//! remain capability-rejected rather than masquerading as distributed commits.
 //! Finite remote sources are imported at their atomic top-level transfer, not
 //! pre-downloaded before earlier statements can publish. Sources that contain the
 //! configured scratch domain omit only the identity-checked current invocation.
@@ -20,6 +23,7 @@ mod endpoint;
 mod error;
 pub(crate) mod events;
 pub mod live;
+mod materialize;
 mod native;
 mod physical;
 mod program;

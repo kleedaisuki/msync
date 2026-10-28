@@ -666,7 +666,7 @@ reported all 47 Manager filesystem tests passing; no duplicate reviewer build.
 
 ## Cooperative named-frame review (2026-10-28)
 
-### P1: boundary settlement can regress live submission owner bindings
+### Resolved P1: boundary settlement regressed live submission owner bindings
 
 Source review of `execution/frontier.rs::finish_named_frame` found that
 `activate(&work, None)` assigns the retained boundary's older `work.plan` to
@@ -681,12 +681,32 @@ foreign owner and requires `NodeEvent::Committed` instead of
 This is a self-dependency caused by plan-version rollback, not valid strict
 cross-owner visibility.
 
-Keep the authoritative latest submission binding plan while settling a retained
-boundary. Its exact `WorkNode.plan` must still govern its own boundary gates,
-but activation for that purpose must not discard later siblings' bindings.
-An actual regression should use disjoint existing targets: named A writes a
-small literal; named B writes a large literal then copies that target to a
-second existing target. The reviewer reported this source-traced finding to
-the runtime owner and integrator without launching a duplicate build. Existing
-three positive named-frontier journeys do not include this intra-B dependency
-after an earlier sibling completes; runtime reproduction remains requested.
+The owner repaired boundary settlement to set only `active_work` and its origin,
+preserving the authoritative latest submission binding plan. Exact retained
+`WorkNode.plan` still governs boundary gates. Only `activate_selected(Selected)`
+advances the latest plan; its private selection type prevents a retained
+boundary WorkNode from entering that path. Independent source recheck confirms
+the state-ownership distinction is now explicit.
+
+The deterministic unit
+`settling_an_old_boundary_preserves_new_sibling_owner_bindings` constructs an
+old A-bound plan and a newer B-bound plan, settles A with its old witness, and
+asserts pointer identity of the latest plan plus B's exact LogicalComplete
+(not Committed) dependency. The actual CLI regression
+`finishing_a_fast_scope_does_not_unbind_another_scopes_pending_producer` writes
+disjoint existing targets with small A / large B and checks B's dependent copy
+has the exact payload. The owner reported the boundary unit and all four actual
+named-target journeys passing. The reviewer checked source/test bodies without
+duplicating the build; the finding is resolved.
+
+### Checkpoint stdin closure: concrete epoch path reviewed
+
+The integrator raised the path where a process before `commit` retains unused
+stdin because a later-epoch transfer to that stdin is still pending. Current
+`close_frame_inputs(frame, controller)` considers only pending instructions
+before the controller, not future-epoch inputs. In addition, graph construction
+rejects a live process port crossing checkpoint epochs, and
+`future_stdin_cannot_be_hoisted_across_a_checkpoint_to_complete_its_process`
+checks that concrete launch/commit/future-stdin input is rejected before runtime
+resources are created. This is a planner rejection test, not an actual native
+process success claim. No remaining source-level cycle was found on this path.

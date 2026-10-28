@@ -24,6 +24,7 @@ pub(super) enum Source {
         basename: Option<OsString>,
     },
     Literal(std::sync::Arc<str>),
+    MaterializedLiteral(Snapshot),
     Captured {
         snapshot: Snapshot,
         basename: Option<OsString>,

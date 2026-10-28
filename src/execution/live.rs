@@ -34,10 +34,14 @@ use super::events::{
     self, Bindings, CancelReason, CohortKey, Event, ExternalWork, GateState, Ledger, NodeEvent,
     NodeKey, Outcome, OwnerKey, Phase, ProcessEvent, PublicationOrder, SubmissionPlan, Visibility,
 };
+use super::materialize;
 use super::physical;
 use super::program::{self, Program, Reader, Writer};
 use super::scheduler::{Admission, Availability, Demand, Lease};
 use super::{Engine, ExecutionReport, Options};
+
+#[path = "frontier.rs"]
+mod frontier;
 
 #[derive(Clone)]
 struct WorkNode {
@@ -46,6 +50,7 @@ struct WorkNode {
     order: PublicationOrder,
     transaction: TransactionId,
     physical: Option<physical::Spec>,
+    materialization: Option<materialize::Kind>,
 }
 
 struct NamespaceSlot {
@@ -97,6 +102,7 @@ struct FlowResult {
     span: Span,
     output: Option<(PathBuf, PathBuf, DestinationMode)>,
     basename: Option<OsString>,
+    capture_lease: Option<Lease>,
 }
 
 struct Flow {
@@ -628,7 +634,11 @@ impl RuntimeSession {
         self.cancel.cancel();
         let mut failure =
             ExecutionError::new("active program execution was cancelled", Span::default());
-        let ids = self.implicit.iter().copied().collect::<Vec<_>>();
+        let mut ids = self.implicit.clone();
+        if let Some(engine) = &self.engine {
+            ids.extend(engine.manager.active_transaction_ids());
+        }
+        let ids = ids.into_iter().collect::<Vec<_>>();
         let mut joined = true;
         for id in ids {
             let reserved = self
@@ -827,6 +837,9 @@ impl RuntimeSession {
     }
 
     fn demand(&self, node: &Instruction, work: &WorkNode) -> Demand {
+        if work.materialization.is_some() {
+            return Demand::COPY;
+        }
         if matches!(node.kind, InstructionKind::Spawn { .. }) {
             return Demand::PROGRAM;
         }
@@ -1641,6 +1654,22 @@ impl RuntimeSession {
                 .rebind(context, graph, bindings)
                 .map_err(Self::binding_error)?;
         }
+        let materialization = match (&node.kind, &physical) {
+            (
+                InstructionKind::Transfer {
+                    source: Input::Literal(_),
+                    destination: Output::File { location, .. },
+                },
+                None,
+            ) if matches!(
+                location.backend,
+                Backend::Local | Backend::Env | Backend::Path
+            ) =>
+            {
+                Some(materialize::Kind::Literal)
+            }
+            _ => None,
+        };
         Ok((
             WorkNode {
                 plan,
@@ -1648,6 +1677,7 @@ impl RuntimeSession {
                 order: self.orders[&node.id],
                 transaction,
                 physical,
+                materialization,
             },
             candidate.map(|(_, candidate)| candidate),
         ))
@@ -2037,160 +2067,6 @@ impl RuntimeSession {
         Ok(())
     }
 
-    async fn region(
-        &mut self,
-        region: &Region,
-        current: Option<TransactionId>,
-        program: &hir::Program,
-    ) -> Result<()> {
-        let mut pending = region.instructions.iter().collect::<Vec<_>>();
-        while !pending.is_empty() {
-            let available = self.admission.available();
-            if self.cancel.is_cancelled() {
-                return Err(ExecutionError::cancelled(
-                    "execution cancelled",
-                    pending[0].span,
-                ));
-            }
-            let mut selected = None;
-            let mut capacity_blocked = None;
-            let mut owner_blocked = None;
-            for (index, instruction) in pending.iter().enumerate() {
-                if !self.ports_available(instruction) {
-                    continue;
-                }
-                let (mut work, candidate) = self.prepare_work(instruction, current)?;
-                // Observe failed gates before considering capacity; a busy
-                // resource must not obscure the original producer failure.
-                let start_ready = self.gate(&work, Phase::Start)?;
-                let pin_input = self.may_pin_input(instruction, &work)?;
-                if !start_ready && !pin_input {
-                    self.discard_candidate(work.key, candidate, instruction.span)?;
-                    continue;
-                }
-                let demand = self.demand(instruction, &work);
-                match self.admission.availability(demand) {
-                    Availability::Ready => {}
-                    Availability::Impossible => {
-                        self.admission.feasible(demand, instruction.span)?
-                    }
-                    Availability::Busy => {
-                        let site = (instruction.span, work.plan.origin(instruction.id).cloned());
-                        capacity_blocked.get_or_insert_with(|| site.clone());
-                        if self.owner_capacity_blocked(instruction, &work, demand) {
-                            owner_blocked.get_or_insert(site);
-                        }
-                        self.discard_candidate(work.key, candidate, instruction.span)?;
-                        continue;
-                    }
-                }
-                let reserved = if demand.streams > 0 {
-                    self.reserve_flows(instruction.id, instruction.span)?
-                } else {
-                    Vec::new()
-                };
-                if pin_input {
-                    self.plan = Some(work.plan.clone());
-                    self.active_work = Some(work.clone());
-                    let InstructionKind::Transfer { source, .. } = &instruction.kind else {
-                        unreachable!()
-                    };
-                    let reader = self
-                        .reader(instruction.id, source, work.transaction, instruction.span)
-                        .await?;
-                    self.prepared_readers.insert(work.key, reader);
-                    work.plan = self.refresh_plan(Bindings::default())?;
-                }
-                if self.gate(&work, Phase::Start)? {
-                    selected = Some((index, work, candidate));
-                    break;
-                }
-                for member in reserved {
-                    self.flow_reservations.remove(&member);
-                }
-                self.discard_candidate(work.key, candidate, instruction.span)?;
-            }
-            let Some((index, work, candidate)) = selected else {
-                let before = self.progress;
-                self.reap_physical().await?;
-                // A task can release its lease before its owner can import or
-                // commit. Capacity progress is not a logical-completion event.
-                if before != self.progress || available != self.admission.available() {
-                    continue;
-                }
-                if !self.complete_submission && current.is_none() {
-                    self.rejected_before_start = true;
-                    if let Some((span, origin)) = capacity_blocked {
-                        return Err(ExecutionError::new("concurrent resource capacity is occupied; no blocked operation started", span)
-                            .help("Use /wait to finish an existing finite job, /stop to release an open producer, or increase the concurrent resource limits before retrying.").with_origin(origin.as_ref()));
-                    }
-                    let fifo = pending.iter().any(|node| {
-                        self.native_fifo_pins
-                            .keys()
-                            .any(|key| key.instruction == node.id)
-                    });
-                    let help = if fifo {
-                        "If the FIFO peer is another msync statement, /stop the pending half and submit both sides together with /load or one macro call. /wait alone cannot create its missing peer. Otherwise connect the external FIFO reader/writer before retrying."
-                    } else {
-                        "Connect the required stdin, finish its producer with /wait, or cancel the conflicting job with /stop before retrying."
-                    };
-                    return Err(ExecutionError::new("this submission is waiting for an owned resource producer; no blocked operation started", pending[0].span).help(help));
-                }
-                for program in self
-                    .programs
-                    .values_mut()
-                    .filter(|program| program.is_running())
-                {
-                    let has_pending_input = pending.iter().any(|node| matches!(node.kind, InstructionKind::Transfer { destination: Output::Stdin(process), .. } if process == program.id));
-                    if !has_pending_input {
-                        program.close_unused_stdin();
-                    }
-                }
-                if let Some((span, origin)) = owner_blocked {
-                    return Err(ExecutionError::new("a live program owner retains the capacity needed by its pending input", span)
-                        .help("Connect program input before opening a dependent output drain, or increase --max-streams/--memory-limit. Waiting cannot admit this input while its own owner retains those resources.").with_origin(origin.as_ref()));
-                }
-                if self.flows.is_empty() && self.live_processes().is_empty() {
-                    return Err(ExecutionError::new(
-                        "the executable event graph has no producer for its remaining prerequisites",
-                        pending[0].span,
-                    ));
-                }
-                self.wait_event().await?;
-                continue;
-            };
-            let instruction = pending.remove(index);
-            let origin = work.plan.origin(instruction.id).cloned();
-            self.plan = Some(work.plan.clone());
-            self.remember_plan(work.plan.clone());
-            self.node_transactions.insert(work.key, work.transaction);
-            self.candidate = candidate;
-            self.active_work = Some(work.clone());
-            self.instruction(instruction, current, program)
-                .await
-                .map_err(|error| error.with_origin(origin.as_ref()))?;
-            let deferred = matches!(instruction.kind, InstructionKind::Spawn { .. })
-                || self.flows.iter().any(|flow| flow.work.key == work.key)
-                || self
-                    .deferred
-                    .iter()
-                    .any(|assignment| assignment.work.key == work.key);
-            if !deferred {
-                self.event(Event::Node(work.key, NodeEvent::ServiceReady))?;
-                self.logical_complete(&work)?;
-                if current.is_none()
-                    || matches!(
-                        instruction.kind,
-                        InstructionKind::Commit { .. } | InstructionKind::Transaction { .. }
-                    )
-                {
-                    self.owner_committed(work.transaction)?;
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn discard_candidate(
         &mut self,
         key: NodeKey,
@@ -2279,48 +2155,10 @@ impl RuntimeSession {
                     self.transfer(node.id, source, destination, current, node.span)
                         .await
                 }
-                InstructionKind::Transaction { transaction, body } => {
-                    let isolation = program
-                        .transactions
-                        .iter()
-                        .find(|info| info.id == *transaction)
-                        .ok_or_else(|| {
-                            ExecutionError::new("transaction metadata is missing", node.span)
-                        })?
-                        .isolation;
-                    let work = self.work()?;
-                    let id = work.transaction;
-                    self.engine_mut()?
-                        .manager
-                        .begin(id, isolation)
-                        .map_err(|cause| {
-                            ExecutionError::caused("cannot begin transaction", node.span, cause)
-                        })?;
-                    self.engine_mut()?.named.insert(*transaction, id);
-                    let mut bindings = Bindings::default();
-                    let owner = self.owner_key(id)?;
-                    for child in &body.instructions {
-                        bindings.nodes.insert(child.id, owner.clone());
-                        if let InstructionKind::Spawn { process, .. } = &child.kind {
-                            bindings.processes.insert(*process, owner.clone());
-                        }
-                    }
-                    self.refresh_plan(bindings)?;
-                    let result = self.region(body, Some(id), program).await;
-                    let result = match result {
-                        Ok(()) => self
-                            .settle_region(&work)
-                            .await
-                            .and_then(|()| self.engine_mut()?.finish(id, node.span)),
-                        error => error,
-                    };
-                    if let Err(mut failure) = result {
-                        self.cancel_transaction(id, &mut failure).await;
-                        self.engine_mut()?.abort(id, &mut failure);
-                        return Err(failure);
-                    }
-                    Ok(())
-                }
+                InstructionKind::Transaction { .. } => Err(ExecutionError::new(
+                    "named transactions must be admitted by the region frontier",
+                    node.span,
+                )),
                 InstructionKind::Commit { transaction } => {
                     let id = self
                         .engine_mut()?
@@ -2650,6 +2488,16 @@ impl RuntimeSession {
         if let Some(spec) = endpoint::inspect(source, destination, span)? {
             return self.remote_transfer(source, spec, current, span).await;
         }
+        if let (Input::Literal(text), Output::File { location, mode }) = (source, destination) {
+            return self.literal_transfer(
+                instruction,
+                text.clone(),
+                location,
+                *mode,
+                current,
+                span,
+            );
+        }
         match (source, destination) {
             (_, Output::Stdin(process)) => {
                 let transaction = self
@@ -2782,6 +2630,7 @@ impl RuntimeSession {
                     .programs
                     .values()
                     .any(|program| program.transaction == transaction && program.is_running())
+                    && self.is_ready(transaction)
                 {
                     self.quiesce(transaction).await?;
                     // A replayed scalar is a complete atomic statement, not a
@@ -2819,9 +2668,6 @@ impl RuntimeSession {
                     self.event(Event::Node(work.key, NodeEvent::ServiceReady))?;
                     return self.publish_namespace(&work, &snapshot, &source, span);
                 }
-                if let Some(id) = current {
-                    self.quiesce(id).await?;
-                }
                 let transaction = self.transaction(current, span)?;
                 let operation = self.fresh_instruction()?;
                 self.engine_mut()?
@@ -2850,6 +2696,79 @@ impl RuntimeSession {
                 Ok(())
             }
         }
+    }
+
+    fn literal_transfer(
+        &mut self,
+        instruction: InstructionId,
+        text: Arc<str>,
+        location: &Location,
+        mode: DestinationMode,
+        current: Option<TransactionId>,
+        span: Span,
+    ) -> Result<()> {
+        let lease = self.admission.copy(span)?;
+        let work = self.work()?;
+        let transaction = if current.is_none() && self.namespaces.contains_key(&work.key) {
+            self.implicit.insert(work.transaction);
+            work.transaction
+        } else {
+            self.transaction(current, span)?
+        };
+        let operation = self.fresh_instruction()?;
+        let path = self
+            .engine_mut()?
+            .imports
+            .join(format!("literal-{}", operation.0));
+        let target = self.output_path(instruction, location, span)?;
+        let literal = materialize::Literal {
+            path,
+            text,
+            buffer: self.options.limits.buffer_bytes,
+            cancel: self.owner_token(transaction),
+            span,
+            instruction,
+            transaction,
+        };
+        let task = lease.task("literal.materialize");
+        let ready = Arc::new(AtomicBool::new(false));
+        let notice = TerminalNotice {
+            sender: self.terminal_tx.clone(),
+            event: Terminal::Flow(work.key),
+            ready: ready.clone(),
+        };
+        let flow_work = work.clone();
+        let managed = Some(target.clone());
+        let handle = tokio::spawn(task.run(async move {
+            let _notice = notice;
+            let path = literal.run().await?;
+            Ok(FlowResult {
+                work,
+                origin: None,
+                instruction: operation,
+                transaction,
+                span,
+                output: Some((path, target, mode)),
+                basename: None,
+                capture_lease: Some(lease),
+            })
+        }));
+        self.flows.push(Flow {
+            work: flow_work,
+            ready,
+            origin: self.active_origin.clone(),
+            transaction,
+            handle,
+            managed,
+        });
+        self.event(Event::Node(self.work()?.key, NodeEvent::Admitted))?;
+        Ok(())
+    }
+
+    fn has_materializations(&self) -> bool {
+        let submission = self.plan.as_ref().map(|plan| plan.id());
+        self.outstanding_work()
+            .any(|work| work.materialization.is_some() && Some(work.key.submission) == submission)
     }
 
     async fn remote_transfer(
@@ -2900,6 +2819,7 @@ impl RuntimeSession {
             }
             Source::Literal(text) => (self.capture_bytes(text.as_bytes(), span).await?, None),
             Source::Captured { snapshot, basename } => (snapshot, basename),
+            Source::MaterializedLiteral(snapshot) => (snapshot, None),
         };
         if snapshot.is_missing() {
             return Err(ExecutionError::new(
@@ -3059,6 +2979,7 @@ impl RuntimeSession {
                 span,
                 output,
                 basename,
+                capture_lease: None,
             })
         }));
         self.flows.push(Flow {
@@ -3113,6 +3034,7 @@ impl RuntimeSession {
                 span,
                 output: None,
                 basename: None,
+                capture_lease: None,
             })
         }));
         self.flows.push(Flow {
@@ -3403,6 +3325,7 @@ impl RuntimeSession {
                 span,
                 output,
                 basename: None,
+                capture_lease: None,
             })
         }));
         self.flows.push(Flow {
@@ -3523,7 +3446,7 @@ impl RuntimeSession {
                     .insert(key);
             }
         }
-        for flow in completed {
+        for mut flow in completed {
             self.event(Event::Node(flow.work.key, NodeEvent::ServiceReady))?;
             if let Some((path, target, mode)) = flow.output {
                 let snapshot = self.engine_mut()?.assets.capture(&path).map_err(|cause| {
@@ -3534,6 +3457,7 @@ impl RuntimeSession {
                     )
                     .with_origin(flow.origin.as_ref())
                 })?;
+                drop(flow.capture_lease.take());
                 self.deferred.push(Deferred {
                     work: flow.work,
                     origin: flow.origin.clone(),
@@ -3566,9 +3490,13 @@ impl RuntimeSession {
                 continue;
             }
             if self.namespaces.contains_key(&assignment.work.key) {
-                let source = Source::Captured {
-                    snapshot: assignment.source.clone(),
-                    basename: assignment.basename.clone(),
+                let source = if assignment.work.materialization.is_some() {
+                    Source::MaterializedLiteral(assignment.source.clone())
+                } else {
+                    Source::Captured {
+                        snapshot: assignment.source.clone(),
+                        basename: assignment.basename.clone(),
+                    }
                 };
                 self.publish_namespace(
                     &assignment.work,
@@ -3589,9 +3517,13 @@ impl RuntimeSession {
                     )
                 })?;
             let transfer = Transfer {
-                source: Source::Captured {
-                    snapshot: assignment.source,
-                    basename: assignment.basename,
+                source: if assignment.work.materialization.is_some() {
+                    Source::MaterializedLiteral(assignment.source)
+                } else {
+                    Source::Captured {
+                        snapshot: assignment.source,
+                        basename: assignment.basename,
+                    }
                 },
                 destination: self.selected_path(
                     transaction,
@@ -3622,26 +3554,6 @@ impl RuntimeSession {
                     work.plan
                         .origin(work.key.instruction)
                         .map_or(Span::default(), |origin| origin.site.span),
-                ));
-            }
-            self.wait_event().await?;
-        }
-    }
-
-    async fn settle_region(&mut self, work: &WorkNode) -> Result<()> {
-        loop {
-            self.quiesce(work.transaction).await?;
-            if self.gate(work, Phase::RegionCommit)? {
-                return Ok(());
-            }
-            self.reap_physical().await?;
-            if self.gate(work, Phase::RegionCommit)? {
-                return Ok(());
-            }
-            if !self.has_work() {
-                return Err(ExecutionError::new(
-                    "transaction commit has an incomplete child with no remaining producer",
-                    Span::default(),
                 ));
             }
             self.wait_event().await?;

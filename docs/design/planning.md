@@ -619,6 +619,70 @@ late completion subscription/cancellation; and a REPL operation blocked by an
 unconnected stdin that returns advice without starting any new effects. Actual
 native cohort tests remain required; a spawn-only gate does not close this work.
 
+### Named regions share the execution frontier
+
+The live runtime uses root/named `Frame` continuations rather than recursively
+awaiting an entire named body. A frame owns pending instruction references and
+its immutable transaction-boundary `WorkNode`; it does not own another Manager
+or reinterpret the lexical environment. A named frame is created only after
+the wrapper's real Start gate succeeds and the Manager transaction begins. Its
+whole body is owner-bound before any child retains a plan. The wrapper emits
+LogicalComplete/Committed only after its children, owner IO and RegionCommit
+obligations settle. Conflicting or unknown summaries still fence later wrappers.
+
+Ready frames are visited cooperatively. Commit/closing frames wait for their
+owned IO readiness instead of suspending the outer frontier on one child.
+Untaken stdin is closed only when that frame has no pending producer in the
+current checkpoint prefix; a future epoch must not be hoisted to complete it,
+and another frame's current input must not be lost. Explicit checkpoints retain the
+named origin, and local reset remains the existing owner/epoch cancellation
+protocol. A submission failure joins/discards its still-active newly begun named
+scopes and restores their origins; already finished scopes and older background
+owners are not silently rewound. The Manager's active-ID inventory also keeps
+explicit stop/shutdown able to recover an interrupted frontier future.
+
+Literal-to-ordinary-file materialization is one finite job path for both named
+and top-level statements. It retains the immutable `Arc<str>`, writes configured
+chunks into an exclusively owned private file, and retains one jobs permit and
+one buffer through main-thread immutable snapshot capture. It does not give a
+worker mutable Manager access. `Source::MaterializedLiteral` preserves literal
+permission/basename semantics instead of pretending that a private temporary is
+an ordinary copy source. Top-level submission completion drains its own finite
+materializations before returning a REPL prompt; existing external/program flows
+retain their explicit background lifetimes and source-owned pending effects.
+
+Actual `literal.capture` write-start events occur after opening the private file,
+and write-complete events follow its flush. They are not queue/admission events.
+Tokio documents that [`File` writes can remain pending until flush](https://docs.rs/tokio/latest/tokio/fs/struct.File.html);
+cancellation therefore joins the issued bounded write before returning. The
+control/IO split follows the useful production distinction in
+[DuckDB's asynchronous execution design](https://duckdb.org/2026/07/31/asynchronous-io),
+without importing its execution framework or adding a per-region actor layer.
+
+Snapshot capture and physical transaction publication still belong to the
+single Manager/control owner. Existing native programs receive the complete
+managed resource view; different argv or cwd spellings do not establish
+disjoint native write footprints. This change neither narrows those grants nor
+adds remote transactional peers. Genuine overlap is demonstrated for proven
+disjoint literal materializations, not asserted for arbitrary named programs.
+
+`named_execution_v4` checks actual write-interval overlap and exact final bytes,
+permissions and origin modification times: Serializable/jobs=2, a jobs=1 serial
+negative control, and ReadCommitted existing-file siblings in the same parent.
+Checkpoints, pending rollback and both named origin undos are exercised. Named
+sibling creations retain the existing strict parent gate rather than acquiring
+an unsupported namespace-merge premise. An actual REPL literal/read pair checks
+that finite completion is not made invisible behind an early prompt. Windows
+and WSL pass the five focused named journeys. The positive IO workload is 4.5 MiB
+per large literal so it discriminates real overlap from control-plane dispatch
+overhead; arbitrarily short IO is not promised to overlap. A deterministic unit
+also completes an older A boundary after B has been bound and verifies that B's
+dependent read still awaits its own LogicalComplete, not foreign Committed.
+Boundary gate witnesses never replace the current submission binding plan.
+The actual Linux program lifecycle gate passes all fourteen cases on the same
+uninstrumented implementation. These correctness intervals are not performance
+benchmarks, and Windows native-provider acceptance remains a separate CI gate.
+
 ### Bounded namespace receipt algebra
 
 An idle stream and a ready sibling file must not be ordered merely because both

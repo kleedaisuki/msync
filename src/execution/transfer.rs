@@ -112,7 +112,10 @@ impl Engine {
     ) -> Result<()> {
         self.options.check(transfer.span)?;
         trace.event("copy.source", &[("phase", "snapshot")], &[]);
-        let literal = matches!(transfer.source, Source::Literal(_));
+        let literal = matches!(
+            transfer.source,
+            Source::Literal(_) | Source::MaterializedLiteral(_)
+        );
         let source = self.source(instruction, transfer, transaction)?;
         let selections = self.select(source, transfer.pattern.as_deref(), transfer.span)?;
         if transfer.pattern.is_some() && transfer.mode != DestinationMode::Container {
@@ -173,6 +176,7 @@ impl Engine {
         transaction: TransactionId,
     ) -> Result<Selection> {
         let (snapshot, basename, source) = match &transfer.source {
+            Source::MaterializedLiteral(snapshot) => (snapshot.clone(), None, None),
             Source::Captured { snapshot, basename } => (snapshot.clone(), basename.clone(), None),
             Source::Local(path) => (
                 self.read(transaction, path, transfer.span)?,
@@ -486,7 +490,7 @@ fn source_metadata(trace: &mut SpanGuard, source: &Source) {
             trace.attribute_lazy("source.path", || location.path.clone());
             trace.attribute_lazy("source.endpoint", || location.backend.to_string());
         }
-        Source::Literal(_) => {
+        Source::Literal(_) | Source::MaterializedLiteral(_) => {
             trace.attribute("source.backend", "literal");
             trace.attribute("source.kind", "utf8-literal");
             trace.attribute("source.path", "<literal>");

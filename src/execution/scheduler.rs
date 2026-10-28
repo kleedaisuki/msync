@@ -26,6 +26,11 @@ pub(super) struct Demand {
 }
 
 impl Demand {
+    pub const COPY: Self = Self {
+        programs: 1,
+        streams: 0,
+        buffers: 1,
+    };
     pub const PROGRAM: Self = Self {
         programs: 1,
         streams: 0,
@@ -159,6 +164,10 @@ impl Admission {
 
     pub fn program(&self, span: Span) -> Result<Lease> {
         self.acquire(&self.programs, 6, span, "program")
+    }
+
+    pub fn copy(&self, span: Span) -> Result<Lease> {
+        self.acquire(&self.programs, 1, span, "finite materialization")
     }
 
     pub fn flow(&self, span: Span) -> Result<Lease> {

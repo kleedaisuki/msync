@@ -31,6 +31,7 @@ fn bind_capture_fixture(runtime: &mut RuntimeSession, compilation: &pipeline::Co
         order: orders[&instruction],
         transaction: TransactionId(0),
         physical: None,
+        materialization: None,
         plan: plan.clone(),
     });
     runtime.plan = Some(plan);
