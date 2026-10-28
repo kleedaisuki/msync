@@ -1,12 +1,17 @@
-# v0.4 performance acceptance plan
+# v0.4 performance acceptance record
 
-Status: active on independently verified, committed components, following the
-user's explicit parallel-performance authorization on 2026-10-28. Baseline
-`5cafd34` is retained separately; transaction-store, planner and end-to-end latency
-investigations have distinct owners. FIFO and capacity/publication corrections
-continue independently and are not silently included in that baseline. Current
-functional integration and final release acceptance remain separate gates.
-Correctness test runtimes are not latency measurements.
+Status: the bounded performance round is complete, following the user's explicit
+parallel-performance authorization on 2026-10-28. Independently verified Store,
+planner and execution components were measured separately against frozen
+references, including `5cafd34`. Adopted changes cover structural sharing,
+byte-verified capture reuse, proof/State sharing and sparse finite enrollment.
+The final joined-worker experiment was rejected, not relabeled as a speedup.
+The tables below retain each exact source, workload, filesystem and comparison
+scope. They do not promise universal platform or workload gains. The selected
+`0.4.0` source separately passed the complete integration matrix and installed
+artifact acceptance in [validation.md](validation.md#final-v040-delivery).
+Correctness test runtimes are not latency measurements. Earlier questions below
+are the investigation history, not a new open-ended optimization worklist.
 
 Reuse the workload and filesystem distinctions in
 [performance.md](performance.md), [performance-planner-v3.md](performance-planner-v3.md),

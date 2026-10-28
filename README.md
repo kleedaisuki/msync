@@ -4,7 +4,7 @@ A typed synchronization DSL in Rust: source-mapped diagnostics, an optimizing de
 
 ## v0.4 grammar
 
-The development branch uses syntax **0.4 by default**. This is an intentional
+The CLI uses syntax **0.4 by default**. This is an intentional
 breaking language update: a quoted value is UTF-8 data, not a filename chosen by
 its position or by whether a file happens to exist. `/` composes typed paths;
 `::` selects an item in a namespace. Spaces around the operator are insignificant.
@@ -57,12 +57,12 @@ explicitly available bubblewrap/user namespaces; the Windows provider requires
 an explicitly installed signed Sandboxie backend. Missing capabilities do not
 silently become unisolated execution. No driver is automatically installed on a
 user's machine. See the [runtime/verification checkpoint](docs/design/architecture-v4.md)
-for integration boundaries and native-gate evidence. The named-frontier revision
-[`6631f28`](https://github.com/kleedaisuki/msync/actions/runs/40658354002) passed
-the applicable ordinary Windows/Linux and actual native-provider gates.
+for integration boundaries and native-gate evidence. The selected **0.4.0** revision
+[`345d455`](https://github.com/kleedaisuki/msync/actions/runs/40665582429) passed
+the complete Windows/Linux all-target, strict lint, doctest and actual native-provider gates.
 [Component and native-ext4 latency measurements](docs/design/performance-v4.md)
-are recorded separately. Final release-matrix and selected executable/version
-verification remain pending; this checkpoint is not a completed v0.4 delivery.
+are recorded separately. The selected Windows release and installed executable
+passed the actual CLI/terminal journeys; see the [delivery record](docs/design/validation.md#final-v040-delivery).
 
 ```text
 remote => $wsl

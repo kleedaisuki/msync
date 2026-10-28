@@ -2,14 +2,14 @@
 
 ## Current v0.4 requirement audit (2026-10-28)
 
-This is a source/test/gate mapping, not a declaration that the current working
-tree is accepted. The historical checkpoints below retain their original scope.
-The latest audit inspected committed `6631f28`, current test bodies and execution
-paths, and the actual job/step results of its cloud run without rerunning broad
-suites. The final literal-worker experiment was rejected after paired and
+This is the source/test/gate mapping for the selected `0.4.0` implementation.
+The historical checkpoints below retain their original scope. The independent
+audit inspected committed `6631f28`, test bodies and execution paths; the final
+`345d455` matrix then accepted the selected source with additional contract tests
+and the versioned manifest. The final literal-worker experiment was rejected after paired and
 swapped-fixture measurements; production retains the accepted bounded Tokio
-implementation. The package is now `0.4.0`; its final release matrix and selected
-artifact verification are recorded separately below when completed.
+implementation. The final release matrix and selected artifact verification are
+recorded in [Final v0.4.0 delivery](#final-v040-delivery).
 
 | User requirement | Authoritative implementation and acceptance gate | Assessment / boundary |
 | --- | --- | --- |
@@ -51,7 +51,7 @@ artifact verification are recorded separately below when completed.
    actual program execution, four-mode native macros, physical consumer closure,
    REPL provenance and native workspace sections; its unchanged standalone
    process-view section and doctests were **skipped**, not additional passes.
-   The latest run is scoped integration evidence, not a final all-target release
+   That run is scoped integration evidence, not a final all-target release
    matrix. Final acceptance must cover the selected delivery revision.
 2. **Single-input new opaque program plus external FIFO remains a documented
    capability boundary.** The supplied A1 example uses an ordinary prompt file;
@@ -74,19 +74,16 @@ artifact verification are recorded separately below when completed.
    overlap concerns admitted independent IO, not simultaneous unsynchronized
    version-store mutation. A second negative test keeps future stdin from being
    hoisted across a checkpoint merely to let its earlier process complete.
-4. **Delivery remains open.** Component, sparse-enrollment and named-frame latency
+4. **The bounded performance and delivery gates are closed.** Component, sparse-enrollment and named-frame latency
    evidence is substantive. The last single-file worker experiment was rejected:
    swapping executable labels and fixture directories reversed the small-case
    direction, while the large case won only 16/31 paired comparisons. A smaller
    number of Tokio pool submissions alone is not proof of lower user-visible
-   latency. The selected production source must receive the
-   final versioned Windows/Linux all-target/doctest/native release matrix.
-   The package is `0.4.0`, and no current v0.4 installed executable/version/hash
-   verification is established here. Version/install verification belongs to
-   eventual delivery. The user's push authorization does not itself authorize
-   creating a release or tag; obtain an explicit request before those actions.
-   Keep the stable installed binary until a selected replacement build passes
-   the applicable checks and installation is authorized.
+   latency. The selected `345d455` production source passed the final versioned
+   Windows/Linux all-target/doctest/native matrix. The selected Windows release
+   and installed `D:\SystemScripts\msync.exe` report `0.4.0`, have identical hashes,
+   and passed the actual CLI/terminal acceptance described below. No hosted
+   release or Git tag was created; those are separate user-authorized actions.
 
 This note retains successive verification checkpoints; older counts and
 limitations describe their recorded revision, not the current branch.
@@ -97,6 +94,68 @@ language reference. Independent CLI tests live in `tests/cli.rs`; they invoke th
 built binary, with each journey isolated beneath repository-local `.temp/`.
 Tests set environment variables on child processes only, so parallel tests do not
 race over process-wide environment or working directory.
+
+## Final v0.4.0 delivery
+
+The selected source is `345d455dcbf2e7d3d47fc25e10e3a4caf91f78d0`.
+[Actions run 40665582429](https://github.com/kleedaisuki/msync/actions/runs/40665582429)
+completed successfully with `FULL: true`, not the incremental selector's narrow
+test list. Both OS jobs passed rustfmt, strict all-target Clippy, all-target tests
+and the README doctest. The ordinary suite reported **700 Windows** and **671
+Linux** passing tests; 54/42 environment-dependent cases were explicitly ignored
+in those default runs, not counted as passes. Separate actual native sections
+then exercised the selected providers:
+
+| Actual native gate | Windows | Linux |
+| --- | ---: | ---: |
+| Process-resource views | 4 passed | 6 passed |
+| Transactional programs and checkpoint/origin lifecycle | 14 passed | 14 passed |
+| Whole-program macro argument, all four isolation modes | 1 passed | 1 passed |
+| Shared workspace/native mutation | 4 passed | 4 passed |
+| Physical-stream consumer closure | No separate native gate | 2 passed |
+| REPL source/proof ownership across native inputs | No separate native gate | 2 passed |
+
+These counts exclude isolated child-fixture helpers from the explicit native
+runs. The signed Windows backend was installed only on its disposable Actions
+runner. No Sandboxie driver or SSH configuration was installed/modified on the
+user's host. The existing isolated WSL SSH fixture additionally passed the two
+focused upload/download/overwrite and recursive-directory/conflict journeys on
+the final source, in 38.79 and 36.84 seconds. These are correctness durations,
+not performance measurements. The fixture verifies existing client/server SSH
+and account-file fingerprints and physical daemon shutdown.
+
+`cargo build --locked --release --bin msync` produced the selected Windows/MSVC
+artifact. Both `target/release/msync.exe` and installed
+`D:\SystemScripts\msync.exe` report `msync 0.4.0` and have SHA-256:
+
+```text
+190b8c5cba8e563a9cf0e352b77df851795685a96f3a13c9b097c4cd16c4194d
+```
+
+The executable was replaced atomically after the final matrix passed. The old
+`0.3.1` image is preserved as
+`target/delivery/msync-0.3.1-windows-x86_64.exe`, verified against its previously
+recorded SHA-256 `22cdb4a0ceafce1f12936e052e6a47725efc72146f10c3d364d3b3912e331777`.
+No source, cache, secret or binary artifact is added to Git by this record.
+
+The same three selected test executables were run first against the release
+image and then against the installed path, using the established test-only
+`MSYNC_TEST_EXE` override. Each acceptance passed **six structured CLI**, **14 UX**
+and **eight Windows terminal-target tests** (the latter includes its isolated
+ConPTY host helper). Two optional WSL Bash cases remained explicitly ignored.
+The journeys prove real before-Enter syntax styling, help/color policy, Unicode
+editing, persistent macros/named undo, exact quote/path behavior, pure check/plan,
+explicit directory replacement, in-place formatting, token diagnostics, native
+PowerShell return and Ctrl-C/physical-flow cleanup. This is installed-artifact
+acceptance, not a claim that every native provider exists on this host.
+
+The requirement table above, exact final cloud steps, measured optimization
+record and installed-artifact journeys close the requested bounded v0.4 scope.
+Documented capability limits remain explicit: opaque native effects are
+conservative; no distributed remote commit, external-service undo, universal
+metadata/crash guarantee or bounded lifetime-history collection is promised.
+Removing disposable `.temp` logs does not remove these procedures, counts,
+source identity, measurements or artifact hashes.
 
 ## Verified journeys
 

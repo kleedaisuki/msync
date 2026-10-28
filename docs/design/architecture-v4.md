@@ -2,7 +2,7 @@
 
 ## Current integration checkpoint (2026-10-28)
 
-The development CLI defaults to structured v0.4. Typed lexical macros,
+The CLI defaults to structured v0.4. Typed lexical macros,
 transactions/checkpoints/origin undo, real native process views, persistent
 program ports, physical flows and submission-owned Start/Publish/RegionCommit
 gates are integrated. The earlier dated foundation tables below retain their
@@ -41,8 +41,13 @@ finite enrollment have focused measurements in
 aliases and descriptor filesystem checks rather than confusing DrvFS ancestor
 cost with Linux storage performance. A joined blocking literal-worker candidate
 was rejected after its bounded paired confirmation did not establish a robust
-user-visible win. Final release-matrix and selected artifact/version acceptance
-remain open; no debug correctness runtime is a latency benchmark.
+user-visible win. The selected `0.4.0` revision
+[`345d455`](https://github.com/kleedaisuki/msync/actions/runs/40665582429) passed
+the final complete Windows/Linux all-target, strict lint, doctest and actual
+native-provider matrix. Its Windows release and installed executable passed
+the actual CLI/terminal journeys, with matching version and SHA-256 recorded
+in [the delivery audit](validation.md#final-v040-delivery). No debug correctness
+runtime is a latency benchmark.
 The single-input opaque-program/external-FIFO bootstrap boundary described at
 the end of this note is still an explicit capability limitation, not implemented
 support inferred from the split-input native fixture.
