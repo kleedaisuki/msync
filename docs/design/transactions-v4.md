@@ -629,3 +629,35 @@ transaction view. They made no persistent host mounts or configuration changes.
 Sandboxie/WinFsp commands/services and conventional installation paths were absent
 on the Windows host. A Windows adapter therefore needs deliberate provisioning;
 it must not be treated as an already verified local capability.
+
+## Selected-version path traversal (2026-10-28)
+
+After a native import, the transaction can contain `node/x` while the unpublished
+host `node` is still an ordinary file. Host canonicalization is therefore not a
+valid way to resolve that transaction's endpoint. `Manager::resolve_path` walks
+the raw components against immutable entries in the selected transaction, after
+the runtime's producer gate. It validates every traversed directory before
+eliminating `..`; `missing/..`, `file/..`, and traversal outside the enrolled root
+are errors. Missing ordinary components can name future destination parents;
+resolution alone does not promise a final source exists.
+
+Failed resolution installs neither candidate name-index entries nor read
+observations. Successful resolution keeps the native resource key distinct from
+the selected version's visible spelling: a pending case-only name change on
+Windows must not be rewritten to an older host spelling or the first key spelling.
+Ordinary managed reads/replacements use enrolled logical coverage rather than
+requiring the older host subtree to have the same shape. The exact invocation
+exclusion is retained when assembling managed snapshots without re-capturing
+their host paths. The public external snapshot constructor retains its checks.
+
+These rules do not remove native safety checks. Invocation identity/aliases and
+Windows case-policy changes are checked through reachable host guard ancestors,
+without interpreting a stale host file as the selected version's directory kind.
+Unmanaged captures and enrollment still use the strict native-path policy.
+
+The Windows Manager target passes 43 cases, including pending file-to-directory
+replacement, raw parent traversal, read/write before host publication, exact
+invocation exclusion, checkpoint/origin undo, pending case-only names, existing
+case aliases, and changed case-sensitive-directory policy. Strict changed-target
+Clippy passes. Actual program-driven import gates and the Unix adapter remain
+separate integration gates; these counts do not claim their completion.

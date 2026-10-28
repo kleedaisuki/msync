@@ -187,6 +187,17 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// The manager checks canonical logical names, not the possibly older host
+    /// tree, before retaining the exact invocation excluded by its enrolled view.
+    pub(crate) fn retain_invocation_exclusion(
+        &mut self,
+        invocation: &InvocationRoot,
+    ) -> Result<()> {
+        invocation.verify()?;
+        self.exclusions.push(invocation.clone());
+        Ok(())
+    }
+
     pub fn entries(&self) -> &BTreeMap<PathBuf, Entry> {
         &self.entries
     }

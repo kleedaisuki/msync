@@ -31,6 +31,99 @@ fn payload(manager: &Manager, workspace: &Path, name: &str, bytes: &str) -> Snap
 }
 
 #[test]
+fn selected_view_paths_follow_pending_directories_without_probing_old_host_ancestors() {
+    use msync::transaction::filesystem::InvocationRoot;
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("node"), b"original file").unwrap();
+    let invocation = InvocationRoot::create(&root.join(".temp")).unwrap();
+    let mut manager = Manager::new_in(&invocation.path().join("versions"), &invocation).unwrap();
+    manager.enroll(&root).unwrap();
+    let replacement = workspace.path().join("replacement");
+    fs::create_dir(&replacement).unwrap();
+    fs::write(replacement.join("x"), b"pending bytes").unwrap();
+    let directory = manager.capture(&replacement).unwrap();
+    let changed = payload(&manager, workspace.path(), "new", "new bytes");
+    let id = TransactionId(290);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    assert!(
+        manager
+            .resolve_path(id, &root.join("node/../node/x"))
+            .is_err()
+    );
+    manager
+        .replace_snapshot(id, &root.join("node"), &directory)
+        .unwrap();
+    let resolved = manager
+        .resolve_path(id, &root.join("node/../node/x"))
+        .unwrap();
+    assert_eq!(
+        text(&manager.read_snapshot(id, &resolved).unwrap()).as_deref(),
+        Some("pending bytes")
+    );
+    let target = manager
+        .resolve_path(id, &root.join("node/../node/new"))
+        .unwrap();
+    manager.replace_snapshot(id, &target, &changed).unwrap();
+    assert_eq!(
+        text(&manager.read_snapshot(id, &target).unwrap()).as_deref(),
+        Some("new bytes")
+    );
+    assert_eq!(fs::read(root.join("node")).unwrap(), b"original file");
+    let full = manager.read_snapshot(id, &root).unwrap();
+    assert!(full.excludes_invocation(&invocation).unwrap());
+    assert!(manager.resolve_path(id, invocation.path()).is_err());
+    assert!(
+        manager
+            .resolve_path(id, &invocation.path().join("../foreign"))
+            .is_err()
+    );
+    drop(full);
+    manager.finish(id).unwrap();
+    assert_eq!(fs::read(root.join("node/new")).unwrap(), b"new bytes");
+    manager.rollback_origin(id).unwrap();
+    assert_eq!(fs::read(root.join("node")).unwrap(), b"original file");
+}
+
+#[test]
+fn selected_view_parent_traversal_rejects_missing_and_file_components() {
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(root.join("directory")).unwrap();
+    fs::write(root.join("file"), b"file").unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let id = TransactionId(291);
+    manager.begin(id, Isolation::RepeatableRead).unwrap();
+    for suffix in [
+        "missing/../file",
+        "file/../file",
+        "file/child",
+        "directory/../../root/file",
+    ] {
+        assert!(
+            manager.resolve_path(id, &root.join(suffix)).is_err(),
+            "accepted {suffix}"
+        );
+    }
+    let missing = manager
+        .resolve_path(id, &root.join("new/parents/file"))
+        .unwrap();
+    assert!(manager.read_snapshot(id, &missing).unwrap().is_missing());
+    let existing = manager
+        .resolve_path(id, &root.join("directory/../file"))
+        .unwrap();
+    assert_eq!(
+        text(&manager.read_snapshot(id, &existing).unwrap()).as_deref(),
+        Some("file")
+    );
+    assert!(manager.resolve_path(id, Path::new("relative")).is_err());
+    manager.finish(id).unwrap();
+}
+
+#[test]
 fn child_publication_preserves_read_root_and_unrelated_open_hardlinked_siblings() {
     use same_file::Handle;
     use std::io::Read;
@@ -869,6 +962,48 @@ fn case_colliding_manifest_is_rejected_before_staging_or_publishing_any_entries(
     manager.finish(TransactionId(0)).unwrap();
     assert_eq!(fs::read_to_string(root.join("keep")).unwrap(), "old");
     assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn selected_view_names_follow_pending_case_changes_not_the_old_host_spelling() {
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    let replacement = workspace.path().join("replacement");
+    fs::create_dir(&root).unwrap();
+    fs::create_dir(&replacement).unwrap();
+    fs::write(root.join("OriginalName"), b"origin").unwrap();
+    fs::write(replacement.join("originalname"), b"pending").unwrap();
+    let mut manager = Manager::new(&workspace.path().join("scratch")).unwrap();
+    manager.enroll(&root).unwrap();
+    let tree = manager.capture(&replacement).unwrap();
+    let changed = payload(&manager, workspace.path(), "new", "changed");
+    let id = TransactionId(292);
+    manager.begin(id, Isolation::Serializable).unwrap();
+    manager.replace_snapshot(id, &root, &tree).unwrap();
+    let path = manager
+        .resolve_path(id, &root.join("ORIGINALNAME"))
+        .unwrap();
+    assert_eq!(path.file_name().unwrap(), "originalname");
+    manager
+        .replace_snapshot(id, &root.join("ORIGINALNAME"), &changed)
+        .unwrap();
+    manager.finish(id).unwrap();
+    let names = fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(names, [std::ffi::OsString::from("originalname")]);
+    manager.rollback_origin(id).unwrap();
+    assert_eq!(
+        fs::read_dir(&root)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .file_name(),
+        "OriginalName"
+    );
 }
 
 #[cfg(windows)]

@@ -31,6 +31,7 @@ type Result<T> = std::result::Result<T, ManagerError>;
 mod delta;
 mod enrollment;
 mod namespace;
+mod paths;
 mod receipt;
 mod refresh;
 mod scaffold;
@@ -578,7 +579,8 @@ impl Manager {
         } else {
             Vec::new()
         };
-        let snapshot = self.assemble(values, key.components().len(), path)?;
+        let logical = join(&self.domain.roots[root].path, &relative);
+        let snapshot = self.assemble(values, key.components().len(), &logical)?;
         self.domain = domain;
         self.store = candidate;
         self.record_namespace_read(id, root, key, true)?;
@@ -610,6 +612,7 @@ impl Manager {
         self.require_coverage(root, &key, path)?;
         let mut candidate = self.store.clone();
         let mut writes = self.pending_roots.get(&id).cloned().unwrap_or_default();
+        let relative = paths::selected_relative(&mut domain, &mut candidate, id, root, &relative)?;
         let previous_kind = candidate
             .read(id, &key)?
             .map(|value| matches!(value.entry, Entry::Directory { .. }));
@@ -845,6 +848,14 @@ impl Manager {
     }
 
     fn locate(&self, path: &Path) -> Result<(usize, PathBuf)> {
+        if path.is_absolute()
+            && !path.components().any(|part| part == Component::ParentDir)
+            && let Some(location) = self.enrolled_location(path)
+        {
+            self.check_managed_path(path)?;
+            paths::validate_case_ancestors(path)?;
+            return Ok(location);
+        }
         let path = normalize(path)?;
         if let Some(invocation) = &self.invocation
             && invocation.contains_private(&path)?
@@ -854,20 +865,23 @@ impl Manager {
                 "owned invocation data is not a user resource",
             ));
         }
+        self.enrolled_location(&path).ok_or_else(|| {
+            invalid(
+                &path,
+                "resource is outside the enrolled domain; enroll its root before begin",
+            )
+        })
+    }
+
+    fn enrolled_location(&self, path: &Path) -> Option<(usize, PathBuf)> {
         self.domain
             .roots
             .iter()
             .enumerate()
             .filter_map(|(index, root)| {
-                relative_to(&path, &root.path).map(|relative| (index, relative))
+                relative_to(path, &root.path).map(|relative| (index, relative))
             })
             .min_by_key(|(index, _)| self.domain.roots[*index].path.components().count())
-            .ok_or_else(|| {
-                invalid(
-                    &path,
-                    "resource is outside the enrolled domain; enroll its root before begin",
-                )
-            })
     }
 
     fn require_coverage(&self, root: usize, key: &ResourceKey, path: &Path) -> Result<()> {
@@ -916,12 +930,22 @@ impl Manager {
             }
             entries.insert(relative, value.entry);
         }
-        Ok(match &self.invocation {
-            Some(invocation) => self
-                .snapshots
-                .from_entries_in(entries, logical, invocation)?,
-            None => self.snapshots.from_entries(entries)?,
-        })
+        let mut snapshot = self.snapshots.from_entries(entries)?;
+        if let Some(invocation) = &self.invocation
+            && relative_to(invocation.path(), logical).is_some()
+        {
+            invocation.verify()?;
+            for suffix in snapshot.entries().keys() {
+                if relative_to(&join(logical, suffix), invocation.path()).is_some() {
+                    return Err(invalid(
+                        logical,
+                        "logical view contains invocation-private data",
+                    ));
+                }
+            }
+            snapshot.retain_invocation_exclusion(invocation)?;
+        }
+        Ok(snapshot)
     }
 
     fn committed_snapshot(
