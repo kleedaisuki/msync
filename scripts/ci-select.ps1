@@ -51,12 +51,12 @@ foreach ($path in $Paths) {
         }
         '^src/(language/|compiler/structured\.rs|hir[/.]|pipeline\.rs|source\.rs)' {
             $rust = $true
-            Add-Targets @('language_v4', 'join_v4', 'version_v4', 'source_v4', 'lowering_v4', 'hir_plan_v4', 'pipeline_v4', 'submission_v4', 'review_foundation_v4', 'execution_v4', 'preparation_v4', 'cli_structured_v4', 'macro_native_v4')
+            Add-Targets @('language_v4', 'join_v4', 'version_v4', 'source_v4', 'lowering_v4', 'hir_plan_v4', 'planner_optimization_v4', 'planner_proof_sharing_v4', 'pipeline_v4', 'submission_v4', 'review_foundation_v4', 'execution_v4', 'preparation_v4', 'cli_structured_v4', 'macro_native_v4')
             break
         }
         '^src/preparation[/.]' {
             $rust = $true
-            Add-Targets @('preparation_v4', 'source_v4', 'hir_plan_v4', 'pipeline_v4', 'cli_structured_v4', 'program_execution_v4', 'macro_native_v4')
+            Add-Targets @('preparation_v4', 'source_v4', 'hir_plan_v4', 'planner_optimization_v4', 'planner_proof_sharing_v4', 'pipeline_v4', 'cli_structured_v4', 'program_execution_v4', 'macro_native_v4')
             break
         }
         '^src/transaction/' {

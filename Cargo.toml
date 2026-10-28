@@ -48,3 +48,7 @@ harness = false
 [[bench]]
 name = "latency_v4"
 harness = false
+
+[[bench]]
+name = "planner_v4"
+harness = false

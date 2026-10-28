@@ -6,6 +6,7 @@
 //! children remain a separate graph: their parent's completion is atomic.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 pub use super::effects::VersionReadProof;
 use super::effects::{
@@ -65,9 +66,9 @@ pub struct Dependency {
 pub struct CommutationProof {
     pub left: InstructionId,
     pub right: InstructionId,
-    /// These are the exact checked footprints, including selector/tree reads.
-    pub left_effects: Effects,
-    pub right_effects: Effects,
+    /// Exact value-checked footprints, shared across proofs of the same node.
+    pub left_effects: Arc<Effects>,
+    pub right_effects: Arc<Effects>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1153,6 +1154,7 @@ fn build_region(
     );
     let mut dependencies = BTreeMap::new();
     let mut publications = BTreeMap::new();
+    let mut proof_effects = vec![None::<Arc<Effects>>; graph.nodes.len()];
     for (right, after) in region.instructions.iter().enumerate() {
         for (left, before) in region.instructions[..right].iter().enumerate() {
             if discarded_at
@@ -1198,11 +1200,17 @@ fn build_region(
             let staged = staged_output(after, context);
             let producer = staged.filter(|process| spawn(before) == Some(*process));
             if reasons.is_empty() && producer.is_none() {
+                let left_effects = proof_effects[left]
+                    .get_or_insert_with(|| Arc::new(graph.nodes[left].effects.clone()))
+                    .clone();
+                let right_effects = proof_effects[right]
+                    .get_or_insert_with(|| Arc::new(graph.nodes[right].effects.clone()))
+                    .clone();
                 graph.commutations.push(CommutationProof {
                     left: before.id,
                     right: after.id,
-                    left_effects: graph.nodes[left].effects.clone(),
-                    right_effects: graph.nodes[right].effects.clone(),
+                    left_effects,
+                    right_effects,
                 });
             }
             if let Some(process) = producer {
