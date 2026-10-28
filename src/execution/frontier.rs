@@ -108,6 +108,7 @@ impl RuntimeSession {
                     continue;
                 }
                 let origin = work.plan.origin(node.id).cloned();
+                self.observe_instruction(node);
                 self.instruction(node, owner, program)
                     .await
                     .map_err(|error| error.with_origin(origin.as_ref()))?;

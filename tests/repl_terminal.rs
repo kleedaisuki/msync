@@ -60,7 +60,7 @@ fn native_terminal_plan_and_limits_separate_paths_dependencies_and_resource_unit
     let mut repl = terminal(directory.path(), "never");
     let plan = repl.submit("/plan flow.msync");
     for expected in [
-        "Metadata preview only",
+        "Static IR preview",
         "from:",
         "to:",
         "source.txt",
@@ -378,6 +378,82 @@ fn terminal_ctrl_c_joins_an_open_flow_preserves_target_and_physically_closes_the
             .count(),
         0,
         "shutdown must release the owned invocation, not merely its stream stage"
+    );
+}
+
+#[test]
+fn waiting_for_real_io_reports_its_phase_and_joins_the_observer_before_the_prompt() {
+    let directory = workspace();
+    let target = directory.path().join("progress-target.txt");
+    fs::write(&target, b"old published bytes").unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let bytes = b"the source withholds EOF until progress is visible";
+    let (opened, connected) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let source = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut socket = loop {
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "progress source never connected");
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        socket.set_nonblocking(false).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        socket.write_all(bytes).unwrap();
+        opened.send(()).unwrap();
+        released.recv_timeout(Duration::from_secs(15)).unwrap();
+        socket.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut reverse = [0_u8; 1];
+        assert_eq!(socket.read(&mut reverse).unwrap(), 0);
+    });
+    let mut repl = terminal(directory.path(), "always");
+    repl.submit(&format!("wire => tcp://{address}"));
+    assert!(
+        pty::visible(&repl.submit("wire::/ -> $pwd::pwd/progress-target.txt"))
+            .contains("running in background")
+    );
+    connected.recv_timeout(Duration::from_secs(5)).unwrap();
+    repl.mark();
+    repl.send("/wait\r");
+    let pending = repl.until("working: wait for IO");
+    assert!(!pty::visible(&pending).contains("job 1: completed"));
+    assert_eq!(fs::read(&target).unwrap(), b"old published bytes");
+    release.send(()).unwrap();
+    let completed = repl.until_followed_by("job 1: completed", "msync>");
+    source.join().unwrap();
+    assert_eq!(fs::read(&target).unwrap(), bytes);
+    let marker = completed.find("working:").unwrap();
+    // ConPTY reduces a full-line clear at column zero to its equivalent EL0.
+    let cleared = ["\u{1b}[2K", "\u{1b}[0K", "\u{1b}[K"]
+        .iter()
+        .filter_map(|sequence| completed[marker..].find(sequence))
+        .min()
+        .unwrap_or_else(|| panic!("progress clear was not retained: {completed:?}"))
+        + marker;
+    let published = completed.find("job 1").unwrap();
+    assert!(
+        cleared < published,
+        "progress must clear before completion output"
+    );
+    repl.prompt();
+    let after = repl.submit("/bindings");
+    assert!(pty::visible(&after).contains("wire"));
+    assert!(!pty::visible(&after).contains("working:"));
+    repl.exit();
+    assert!(
+        fs::read_dir(directory.path().join(".temp"))
+            .unwrap()
+            .next()
+            .is_none()
     );
 }
 

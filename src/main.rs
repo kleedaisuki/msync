@@ -1,5 +1,6 @@
 mod editor;
 mod presentation;
+mod progress;
 mod repl;
 mod shell;
 mod structured;
@@ -24,8 +25,8 @@ const HELP: &str = "msync — a compiled file synchronization DSL
 USAGE
   msync [run] FILE [--dry-run]     Execute a script ('-' reads stdin)
   msync check FILE                Parse and compile without changing files
-  msync plan FILE                 Show the optimized dependency graph (metadata only)
-  msync compile FILE              Alias for plan (never copies file data)
+  msync plan FILE                 Show typed IR and conservative dependency graph
+  msync compile FILE              Compile to IR; no filesystem or remote probes
   msync fmt FILE                  Format the script file in place
   msync repl [--dry-run]          Start a persistent interactive session
 
@@ -45,7 +46,7 @@ OPTIONS
 
 EXAMPLES
   msync check sync.msync          Check syntax and bindings before copying
-  msync plan sync.msync           Inspect paths, types and optimized dependencies
+  msync plan sync.msync           Inspect static IR and runtime proof obligations
   msync run sync.msync --dry-run  Preview without transfers or remote probes
   msync fmt sync.msync --check    Check script formatting without rewriting
 

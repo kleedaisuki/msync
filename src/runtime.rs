@@ -1182,6 +1182,16 @@ pub(crate) fn remote_command(backend: &Backend, script: &str, args: &[&str]) -> 
     run(&mut remote_command_builder(backend, script, args)?)
 }
 
+pub(crate) fn remote_command_with_cancel(
+    backend: &Backend,
+    script: &str,
+    args: &[&str],
+    buffer: usize,
+    cancel: &CancellationToken,
+) -> Result<Output> {
+    remote_command_cancellable(backend, script, args, &CopyContext::new(buffer, cancel))
+}
+
 fn remote_command_cancellable(
     backend: &Backend,
     script: &str,
@@ -1487,7 +1497,7 @@ fn validate_staging_basename(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_remote_names(listing: &[u8]) -> Result<()> {
+pub(crate) fn validate_remote_names(listing: &[u8]) -> Result<()> {
     let listing =
         std::str::from_utf8(listing).map_err(|_| "remote source contains non-UTF-8 names")?;
     let mut fields = listing.split_terminator('\0');

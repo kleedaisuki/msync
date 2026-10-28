@@ -6,7 +6,6 @@ use msync::compiler::structured::Session;
 use msync::execution::{Options as ExecutionOptions, RuntimeSession};
 use msync::hir::{Argument, Input, InstructionKind, Output, Region};
 use msync::pipeline::{self, Compilation};
-use msync::preparation::PreparedProgram;
 use msync::source::LocatedReport;
 use std::collections::BTreeSet;
 
@@ -25,6 +24,7 @@ pub(super) struct State {
     next_job: u64,
     notices: Vec<String>,
     errors: Vec<CliError>,
+    progress_enabled: bool,
 }
 
 impl State {
@@ -177,32 +177,12 @@ impl State {
                 presentation::paint("ok", "1;32", options.color.stdout())
             ));
         }
-        if compiled.program.body.instructions.is_empty() && command == "run" && !dry_run {
+        if matches!(command, "compile" | "plan") || dry_run {
+            print_plan(&compiled, options.color)?;
             self.compiler = candidate;
             return Ok(());
         }
-        let prepared = {
-            let mut trace = msync::telemetry::span("prepare");
-            let result = msync::preparation::prepare_with_context_detailed(
-                &compiled.program,
-                !dry_run,
-                planning,
-            )
-            .map_err(|reports| {
-                located(
-                    reports
-                        .into_iter()
-                        .map(|report| compiled.preparation_report(report))
-                        .collect(),
-                    options.color,
-                    "prepare",
-                )
-            });
-            trace.finish_result(&result);
-            result?
-        };
-        if matches!(command, "compile" | "plan") || dry_run {
-            print_plan(&prepared, options.color)?;
+        if compiled.program.body.instructions.is_empty() && command == "run" && !dry_run {
             self.compiler = candidate;
             return Ok(());
         }
@@ -218,20 +198,29 @@ impl State {
             return initialized;
         }
         self.compiler = candidate;
+        let reporter = if options.trace.as_deref() == Some("-") {
+            None
+        } else {
+            crate::progress::Reporter::start(options.color).map_err(|cause| {
+                Issue::new("cannot start execution progress").field("cause", cause.to_string())
+            })?
+        };
+        let started = std::time::Instant::now();
         let runtime = self
             .runtime
             .as_mut()
             .expect("initialized execution session");
         let previous = runtime.work_ids();
         runtime.set_origins(compiled.origins.clone());
+        runtime.set_progress(reporter.as_ref().map(crate::progress::Reporter::handle));
         let cancel = runtime.cancellation();
         let executor = self.executor.as_ref().expect("initialized async runtime");
         let outcome = executor.block_on(contextual(execution_context.clone(), async {
             let operation = async {
                 if incremental {
-                    runtime.submit_prepared(&prepared).await
+                    runtime.submit(&compiled.program).await
                 } else {
-                    runtime.execute_prepared(&prepared).await
+                    runtime.execute(&compiled.program).await
                 }
             };
             tokio::pin!(operation);
@@ -244,6 +233,12 @@ impl State {
                 }
             }
         }));
+        runtime.set_progress(None);
+        if let Some(reporter) = reporter {
+            reporter.finish().map_err(|cause| {
+                Issue::new("cannot finish execution progress").field("cause", cause.to_string())
+            })?;
+        }
         execution.finish_result(&outcome);
         let mut report = outcome.map_err(|error| {
             msync::telemetry::with_context(execution_context.as_ref(), || {
@@ -297,12 +292,19 @@ impl State {
             }
             print_status(
                 &format!(
-                    "done: {} assignment(s), {} file(s), {} bytes; {} checkpoint(s), {} rollback(s){}",
+                    "done: {} assignment(s), {} file(s), {} bytes{}; {:.1} ms{}",
                     report.assignments,
                     report.assigned_files,
                     report.assigned_bytes,
-                    report.checkpoints,
-                    report.rollbacks,
+                    if report.checkpoints != 0 || report.rollbacks != 0 {
+                        format!(
+                            "; {} checkpoint(s), {} rollback(s)",
+                            report.checkpoints, report.rollbacks
+                        )
+                    } else {
+                        String::new()
+                    },
+                    started.elapsed().as_secs_f64() * 1000.0,
                     if self.active() {
                         "; program jobs remain active; use /wait or /stop"
                     } else {
@@ -339,6 +341,7 @@ impl State {
             })?;
         self.runtime = Some(runtime);
         self.executor = Some(executor);
+        self.progress_enabled = options.trace.as_deref() != Some("-");
         Ok(())
     }
 
@@ -350,9 +353,17 @@ impl State {
                 color,
             );
         }
+        let reporter = if self.progress_enabled {
+            crate::progress::Reporter::start(color).map_err(|cause| {
+                Issue::new("cannot start execution progress").field("cause", cause.to_string())
+            })?
+        } else {
+            None
+        };
         let (Some(runtime), Some(executor)) = (&mut self.runtime, &self.executor) else {
             return print_status("jobs: no active jobs", color);
         };
+        runtime.set_progress(reporter.as_ref().map(crate::progress::Reporter::handle));
         let cancel = runtime.cancellation();
         let result = dispatch_located(
             executor,
@@ -375,6 +386,12 @@ impl State {
                 }
             },
         );
+        runtime.set_progress(None);
+        if let Some(reporter) = reporter {
+            reporter.finish().map_err(|cause| {
+                Issue::new("cannot finish execution progress").field("cause", cause.to_string())
+            })?;
+        }
         if result.is_err() {
             let _ = executor.block_on(runtime.cancel_active());
         }
@@ -574,52 +591,26 @@ fn execution_error(
     }
 }
 
-fn print_plan(plan: &PreparedProgram, color: Color) -> CliResult {
+fn print_plan(plan: &Compilation, color: Color) -> CliResult {
     print_status(
-        "Metadata preview only — Plan (compile); no file payloads or user programs executed",
+        "Static IR preview — expanded types and logical dependency graph; no endpoint inspection or helper processes",
         color,
     )?;
-    print_region(&plan.program.body, 0, color, plan)?;
-    for edge in &plan.graph.dependencies {
-        print_text(&format!(
-            "  needs: {} -> {} ({:?})\n",
-            edge.before.0, edge.after.0, edge.wait
-        ))?;
-    }
-    for rewrite in &plan.rewrites {
-        let reason = match &rewrite.kind {
-            msync::preparation::RewriteKind::Forward { producer, .. } => {
-                format!("read forwarded from {}", producer.0)
-            }
-            msync::preparation::RewriteKind::DeadWrite { overwritten_by } => {
-                format!("eliminated; overwritten by {}", overwritten_by.0)
-            }
-            msync::preparation::RewriteKind::RedundantWrite { same_as } => {
-                format!("eliminated; same stable file value as {}", same_as.0)
-            }
-            msync::preparation::RewriteKind::CoalesceCreation { overwritten_by } => {
-                format!(
-                    "coalesced creation into adjacent file assignment {}",
-                    overwritten_by.0
-                )
-            }
-        };
-        print_text(&format!(
-            "  optimized: {} {reason}\n",
-            rewrite.instruction.0
-        ))?;
-    }
-    if !plan.is_execution_ready() {
-        print_status(
-            "Runtime refinement required: types, stream cohorts or verified process-resource views",
-            color,
-        )?;
-    }
-    Ok(())
+    print_region(&plan.program.body, &plan.graph, 0, color, plan)?;
+    print_status(
+        "Runtime obligations: resolve endpoints, inspect current file kinds/identities, validate publication and resource capacity; then refine scheduling before effects",
+        color,
+    )
 }
 
-fn print_region(region: &Region, depth: usize, color: Color, plan: &PreparedProgram) -> CliResult {
-    for node in &region.instructions {
+fn print_region(
+    region: &Region,
+    graph: &msync::hir::graph::PlanGraph,
+    depth: usize,
+    color: Color,
+    plan: &Compilation,
+) -> CliResult {
+    for (node, graph_node) in region.instructions.iter().zip(&graph.nodes) {
         let prefix = format!("{}{:04} ", "  ".repeat(depth), node.id.0);
         let text = match &node.kind {
             InstructionKind::Transfer {
@@ -637,14 +628,14 @@ fn print_region(region: &Region, depth: usize, color: Color, plan: &PreparedProg
                         msync::highlight::highlight(&presentation::escape(&text), color.stdout())
                     ))?;
                 }
-                if let Some(kinds) = plan.facts.get(&node.id) {
-                    print_text(&format!(
-                        "{}  type: {:?} -> {:?}\n",
-                        "  ".repeat(depth),
-                        kinds.source,
-                        kinds.destination
-                    ))?;
-                }
+                print_text(&format!(
+                    "{}  type: {} -> {}; file kinds: unknown until runtime\n",
+                    "  ".repeat(depth),
+                    input_type(source),
+                    output_type(destination),
+                ))?;
+                print_origin(node.id, depth, plan)?;
+                print_effects(&graph_node.effects, depth)?;
                 continue;
             }
             InstructionKind::Spawn {
@@ -677,7 +668,17 @@ fn print_region(region: &Region, depth: usize, color: Color, plan: &PreparedProg
                     "{prefix}transaction {}\n",
                     presentation::escape(&name)
                 ))?;
-                print_region(body, depth + 1, color, plan)?;
+                print_origin(node.id, depth, plan)?;
+                print_region(
+                    body,
+                    graph_node
+                        .children
+                        .as_deref()
+                        .expect("transaction owns its child graph"),
+                    depth + 1,
+                    color,
+                    plan,
+                )?;
                 continue;
             }
             InstructionKind::Commit { transaction } => format!("commit {}", transaction.0),
@@ -689,8 +690,80 @@ fn print_region(region: &Region, depth: usize, color: Color, plan: &PreparedProg
             "{prefix}{}\n",
             msync::highlight::highlight(&presentation::escape(&text), color.stdout())
         ))?;
+        print_origin(node.id, depth, plan)?;
+        print_effects(&graph_node.effects, depth)?;
+    }
+    for edge in &graph.dependencies {
+        print_text(&format!(
+            "{}needs: {} -> {} ({:?})\n",
+            "  ".repeat(depth + 1),
+            edge.before.0,
+            edge.after.0,
+            edge.wait
+        ))?;
     }
     Ok(())
+}
+
+fn print_origin(id: msync::hir::InstructionId, depth: usize, plan: &Compilation) -> CliResult {
+    let Some(origin) = plan.origins.get(&id) else {
+        return Ok(());
+    };
+    for (label, site) in [("source", &origin.site), ("definition", &origin.definition)] {
+        if label == "definition" && origin.site == origin.definition {
+            continue;
+        }
+        print_text(&format!(
+            "{}  {label}: {} bytes {}..{}\n",
+            "  ".repeat(depth),
+            presentation::escape(&site.source.name),
+            site.span.start,
+            site.span.end
+        ))?;
+    }
+    Ok(())
+}
+
+fn print_effects(effects: &msync::hir::effects::Effects, depth: usize) -> CliResult {
+    use msync::hir::effects::AccessKind;
+
+    let count = |kind| {
+        effects
+            .accesses
+            .iter()
+            .filter(|access| access.kind == kind)
+            .count()
+    };
+    print_text(&format!(
+        "{}  effects: {} read, {} write, {} consume; external: {}\n",
+        "  ".repeat(depth),
+        count(AccessKind::Read),
+        count(AccessKind::Write),
+        count(AccessKind::Consume),
+        if effects.unknown_external {
+            "unknown"
+        } else {
+            "none"
+        },
+    ))
+}
+
+fn input_type(input: &Input) -> &'static str {
+    match input {
+        Input::File { .. } => "path",
+        Input::Literal(_) => "UTF-8 literal",
+        Input::Port { port, .. } => match port {
+            msync::hir::ReadPort::Stdout | msync::hir::ReadPort::Stderr => "program byte stream",
+            _ => "program scalar",
+        },
+    }
+}
+
+fn output_type(output: &Output) -> &'static str {
+    match output {
+        Output::File { .. } => "path",
+        Output::Stdin(_) => "program stdin",
+    }
 }
 
 fn input_text(input: &Input) -> String {

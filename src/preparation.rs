@@ -77,12 +77,17 @@ pub struct PreparedProgram {
 
 #[derive(Clone, Debug)]
 struct Witness {
+    semantic: Arc<hir::Program>,
     original: Arc<hir::Program>,
     original_context: PlanningContext,
     resources: HashMap<Location, Resource>,
 }
 
 impl PreparedProgram {
+    pub(crate) fn semantic_program(&self) -> &hir::Program {
+        &self.witness.semantic
+    }
+
     /// Replay rewrites and graph obligations using captured metadata proofs.
     /// No filesystem or network operation is performed by verification.
     pub fn verify(&self) -> Result<(), Vec<Report>> {
@@ -164,27 +169,13 @@ pub fn prepare_detailed(
 pub fn prepare_with_context_detailed(
     program: &hir::Program,
     live: bool,
-    mut context: PlanningContext,
+    context: PlanningContext,
 ) -> Result<PreparedProgram, Vec<Diagnostic>> {
-    let mut resolved = program.clone();
-    let mut initial = State::initial(&context);
-    let mut observations = Observations::new(initial.clone(), context.host_unstable.clone(), live);
-    resolve_region(&mut resolved.body, &mut observations, &context)?;
-    observations.complete(live)?;
-    initial.extend_independent(&observations.independent_endpoints);
-    context.host_unstable = observations.host_unstable.clone();
-    let mut state = initial.clone();
-    let mut interpreter = Types {
-        observations: &observations,
-        context: &mut context,
-        histories: BTreeMap::new(),
-        errors: Vec::new(),
-        live,
-    };
-    interpreter.region(&resolved.body, &mut state, None);
-    if !interpreter.errors.is_empty() {
-        return Err(interpreter.errors);
-    }
+    let Observation {
+        resolved,
+        mut context,
+        observations,
+    } = observe_program(program, live, context)?;
     let resources = resources(&resolved, &observations);
     let facts = rewrite_facts(&context, &resolved, &resources);
     let (optimized, rewrites) =
@@ -205,6 +196,7 @@ pub fn prepare_with_context_detailed(
     }
     let original = Arc::new(resolved);
     let witness = Witness {
+        semantic: Arc::new(program.clone()),
         original: original.clone(),
         original_context,
         resources,
@@ -225,6 +217,51 @@ pub fn prepare_with_context_detailed(
             .collect::<Vec<_>>()
     })?;
     Ok(result)
+}
+
+struct Observation {
+    resolved: hir::Program,
+    context: PlanningContext,
+    observations: Observations,
+}
+
+pub(crate) fn observe_runtime(
+    program: &hir::Program,
+    context: PlanningContext,
+) -> Result<(Arc<hir::Program>, PlanningContext), Vec<Diagnostic>> {
+    let observed = observe_program(program, true, context)?;
+    Ok((Arc::new(observed.resolved), observed.context))
+}
+
+fn observe_program(
+    program: &hir::Program,
+    live: bool,
+    mut context: PlanningContext,
+) -> Result<Observation, Vec<Diagnostic>> {
+    let mut resolved = program.clone();
+    let mut initial = State::initial(&context);
+    let mut observations = Observations::new(initial.clone(), context.host_unstable.clone(), live);
+    resolve_region(&mut resolved.body, &mut observations, &context)?;
+    observations.complete(live)?;
+    initial.extend_independent(&observations.independent_endpoints);
+    context.host_unstable = observations.host_unstable.clone();
+    let mut state = initial.clone();
+    let mut interpreter = Types {
+        observations: &observations,
+        context: &mut context,
+        histories: BTreeMap::new(),
+        errors: Vec::new(),
+        live,
+    };
+    interpreter.region(&resolved.body, &mut state, None);
+    if !interpreter.errors.is_empty() {
+        return Err(interpreter.errors);
+    }
+    Ok(Observation {
+        resolved,
+        context,
+        observations,
+    })
 }
 
 fn rewrite_facts(

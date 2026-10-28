@@ -329,21 +329,29 @@ fn quit_cancels_open_background_stream_instead_of_waiting_for_eof() {
 }
 
 #[test]
-fn failed_plan_preparation_does_not_commit_bindings() {
+fn runtime_assignment_failure_preserves_successfully_compiled_bindings() {
     let directory = workspace();
     fs::write(directory.path().join("input.txt"), "payload").unwrap();
     fs::create_dir(directory.path().join("out")).unwrap();
     fs::write(
         directory.path().join("failed.msync"),
-        "leaked := $pwd::pwd/configs\n$pwd::pwd/input.txt -> $pwd::pwd/out\n",
+        "retained := \"compiled binding\"\n$pwd::pwd/input.txt -> $pwd::pwd/out\n",
     )
     .unwrap();
     let mut repl = Repl::start(directory.path());
-    repl.send("/load failed.msync\n/bindings\n/quit\n");
+    repl.send("/load failed.msync\n/bindings\nretained -> recovered.txt\n/quit\n");
     let (status, errors) = repl.finish();
     assert!(status.success());
     assert!(errors.contains("existing directory"), "{errors}");
-    assert!(!repl.output.contains("leaked"), "{}", repl.output);
+    assert!(repl.output.contains("retained"), "{}", repl.output);
+    assert_eq!(
+        fs::read_to_string(directory.path().join("recovered.txt")).unwrap(),
+        "compiled binding"
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("input.txt")).unwrap(),
+        "payload"
+    );
     assert_eq!(
         fs::read_dir(directory.path().join("out")).unwrap().count(),
         0
@@ -587,7 +595,7 @@ fn check_and_plan_borrow_live_program_context_without_consuming_its_ports() {
     assert!(status.success(), "{errors}");
     assert!(errors.is_empty(), "{errors}");
     assert!(!repl.output.contains("transient :="), "{}", repl.output);
-    assert!(repl.output.contains("Metadata preview only"));
+    assert!(repl.output.contains("Static IR preview"));
     assert!(!directory.path().join("preview.txt").exists());
     assert_eq!(
         fs::read(directory.path().join("actual.txt")).unwrap(),

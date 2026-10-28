@@ -43,6 +43,9 @@ use super::{Engine, ExecutionReport, Options};
 #[path = "frontier.rs"]
 mod frontier;
 
+#[path = "ordinary_runtime.rs"]
+mod ordinary_runtime;
+
 #[derive(Clone)]
 struct WorkNode {
     plan: Arc<SubmissionPlan>,
@@ -136,11 +139,14 @@ struct PinnedInput {
 /// requests cancellation; unconfirmed private journals are deliberately retained.
 pub struct RuntimeSession {
     origins: crate::source::Origins,
+    observer: Option<super::progress::Progress>,
     pending_origins: crate::source::Origins,
     active_origin: Option<crate::source::InstructionOrigin>,
     options: Options,
     worker: Option<PathBuf>,
     engine: Option<Engine>,
+    ordinary_task: Option<JoinHandle<Result<ordinary_runtime::Completed>>>,
+    ordinary_report: ExecutionReport,
     programs: BTreeMap<ProcessId, Program>,
     flows: Vec<Flow>,
     deferred: Vec<Deferred>,
@@ -164,7 +170,6 @@ pub struct RuntimeSession {
     namespaces: BTreeMap<NodeKey, NamespaceSlot>,
     closed_owners: BTreeSet<TransactionId>,
     complete_submission: bool,
-    pending_planning: Option<crate::hir::graph::PlanningContext>,
     planning: crate::hir::graph::PlanningContext,
     native_fifo_pins: BTreeMap<hir::effects::EndpointKey, crate::streams::FifoIdentity>,
     flow_reservations: BTreeMap<InstructionId, Lease>,
@@ -204,11 +209,14 @@ impl RuntimeSession {
         let (terminal_tx, terminal_rx) = mpsc::channel(capacity);
         Ok(Self {
             origins: crate::source::Origins::default(),
+            observer: None,
             pending_origins: crate::source::Origins::default(),
             active_origin: None,
             options: options.clone(),
             worker: None,
             engine: None,
+            ordinary_task: None,
+            ordinary_report: ExecutionReport::default(),
             programs: BTreeMap::new(),
             flows: Vec::new(),
             deferred: Vec::new(),
@@ -232,7 +240,6 @@ impl RuntimeSession {
             namespaces: BTreeMap::new(),
             closed_owners: BTreeSet::new(),
             complete_submission: false,
-            pending_planning: None,
             planning: crate::hir::graph::PlanningContext::default(),
             native_fifo_pins: BTreeMap::new(),
             flow_reservations: BTreeMap::new(),
@@ -249,6 +256,10 @@ impl RuntimeSession {
     /// their captured origins even when instruction IDs are reused later.
     pub fn set_origins(&mut self, origins: crate::source::Origins) {
         self.pending_origins = origins;
+    }
+
+    pub fn set_progress(&mut self, progress: Option<super::progress::Progress>) {
+        self.observer = progress;
     }
 
     pub fn set_worker(&mut self, path: impl AsRef<Path>) -> Result<()> {
@@ -277,7 +288,8 @@ impl RuntimeSession {
     }
 
     pub fn has_work(&self) -> bool {
-        !self.live_processes().is_empty()
+        self.ordinary_task.is_some()
+            || !self.live_processes().is_empty()
             || !self.flows.is_empty()
             || !self.deferred.is_empty()
             || !self.implicit.is_empty()
@@ -291,20 +303,33 @@ impl RuntimeSession {
 
     /// Drain completed session progress without attributing it to a later input.
     pub fn take_report(&mut self) -> ExecutionReport {
-        self.engine
+        let mut report = self
+            .engine
             .as_mut()
             .map(|engine| std::mem::take(&mut engine.report))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        ordinary_runtime::merge(&mut report, std::mem::take(&mut self.ordinary_report));
+        report
     }
 
     /// Publish only already-finished physical cohorts without waiting for a live
     /// producer. Interactive callers can then refresh lifecycle/status displays.
     pub async fn poll_ready(&mut self) -> Result<()> {
+        if self
+            .ordinary_task
+            .as_ref()
+            .is_some_and(|task| task.is_finished())
+        {
+            self.settle_ordinary(false).await?;
+        }
         self.reap_physical().await
     }
 
     pub fn has_ready_work(&self) -> bool {
-        !self.terminal_rx.is_empty()
+        self.ordinary_task
+            .as_ref()
+            .is_some_and(|task| task.is_finished())
+            || !self.terminal_rx.is_empty()
             || self.programs.values().any(|program| {
                 program.exit_signal.is_cancelled()
                     && self
@@ -415,8 +440,10 @@ impl RuntimeSession {
         program: &crate::preparation::PreparedProgram,
     ) -> Result<ExecutionReport> {
         verify_prepared(program)?;
-        self.pending_planning = Some(program.context.clone());
-        self.execute(&program.program).await
+        // A checked certificate describes an old observation, not today's host.
+        // Re-enter the interpreter from original IR; never execute erased nodes
+        // on the strength of metadata retained by a previous compile/plan call.
+        self.execute(program.semantic_program()).await
     }
 
     pub async fn submit_prepared(
@@ -424,8 +451,7 @@ impl RuntimeSession {
         program: &crate::preparation::PreparedProgram,
     ) -> Result<ExecutionReport> {
         verify_prepared(program)?;
-        self.pending_planning = Some(program.context.clone());
-        self.submit(&program.program).await
+        self.submit(program.semantic_program()).await
     }
 
     /// Execute a complete document and join its implicit program cohorts. REPL
@@ -445,17 +471,46 @@ impl RuntimeSession {
         program: &hir::Program,
         complete: bool,
     ) -> Result<ExecutionReport> {
+        if self.ordinary_task.is_some() {
+            return Err(ExecutionError::new(
+                "the previous ordinary assignment worker is still owned by this session",
+                Span::default(),
+            )
+            .help("Wait for it or cancel and join it before submitting another program."));
+        }
         self.reap_physical().await?;
         self.origins = std::mem::take(&mut self.pending_origins);
         self.active_origin = None;
-        let supplied_plan = self.pending_planning.take();
-        self.planning = supplied_plan.clone().unwrap_or_default();
+        self.planning = Default::default();
         self.rejected_before_start = false;
         let prior_work = self.implicit.clone();
         let prior_flows = self.flows.len();
         if program.body.instructions.is_empty() {
             return Ok(ExecutionReport::default());
         }
+        let mut ordinary_report = ExecutionReport::default();
+        let remainder;
+        let program =
+            if self.engine.is_none() && !self.has_work() && super::ordinary::supports(program) {
+                let result = match self.run_ordinary(program).await {
+                    Ok(result) => result,
+                    Err(error) => {
+                        // The physical worker has joined and settled its journal;
+                        // an old cancelled child must not poison the next REPL input.
+                        self.cancel = self.options.cancel.child_token();
+                        return Err(error);
+                    }
+                };
+                ordinary_report = result.report;
+                if result.remaining.body.instructions.is_empty() {
+                    self.cancel = self.options.cancel.child_token();
+                    return Ok(ordinary_report);
+                }
+                remainder = result.remaining;
+                &remainder
+            } else {
+                program
+            };
         self.preflight_resources(program)?;
         if !self.has_work()
             && let Some(engine) = &mut self.engine
@@ -468,27 +523,8 @@ impl RuntimeSession {
         }
         self.pins.clear();
         self.latest_processes.clear();
-        if supplied_plan.is_none() {
-            self.planning =
-                crate::preparation::prepare_with_context(program, true, self.planning_context())
-                    .map_err(|reports| {
-                        let mut reports = reports.into_iter();
-                        let report = reports
-                            .next()
-                            .expect("preparation failures contain a diagnostic");
-                        let mut error = ExecutionError::new(
-                            report.diagnostic.message.clone(),
-                            report.diagnostic.span,
-                        );
-                        error.report = Box::new(report);
-                        error
-                            .report
-                            .help
-                            .extend(reports.map(|report| report.diagnostic.message));
-                        error
-                    })?
-                    .context;
-        }
+        let runtime_ir = self.prepare_runtime(program)?;
+        let program = runtime_ir.as_ref();
         self.preflight(program)?;
         let rendezvous = physical::rendezvous(program, &self.planning)?;
         self.planning.physical_rendezvous = rendezvous.proofs;
@@ -500,6 +536,7 @@ impl RuntimeSession {
         self.preflight_fifo_resources(program)?;
         self.preflight_flow_resources(&program.body)?;
         let domain = live_domain(program, &self.options, &self.planning)?;
+        self.observe(super::progress::Event::new(super::progress::Phase::Stage));
         self.enroll_physical_namespaces(program)?;
         self.enroll(&domain)?;
         self.planning.namespace_merges.clear();
@@ -613,10 +650,14 @@ impl RuntimeSession {
         if self.live_processes().is_empty() && self.flows.is_empty() && self.implicit.is_empty() {
             self.cancel = self.options.cancel.child_token();
         }
-        Ok(std::mem::take(&mut self.engine_mut()?.report))
+        let mut report = std::mem::take(&mut self.engine_mut()?.report);
+        ordinary_runtime::merge(&mut report, ordinary_report);
+        Ok(report)
     }
 
     pub async fn wait(&mut self) -> Result<()> {
+        self.observe_phase(super::progress::Phase::Wait);
+        self.settle_ordinary(false).await?;
         for program in self.programs.values_mut() {
             program.close_unused_stdin();
         }
@@ -632,6 +673,7 @@ impl RuntimeSession {
 
     pub async fn cancel_active(&mut self) -> Result<()> {
         self.cancel.cancel();
+        self.settle_ordinary(true).await?;
         let mut failure =
             ExecutionError::new("active program execution was cancelled", Span::default());
         let mut ids = self.implicit.clone();
@@ -1384,6 +1426,7 @@ impl RuntimeSession {
     }
 
     async fn wait_event(&mut self) -> Result<()> {
+        self.observe_phase(super::progress::Phase::Wait);
         let mut changed = self.ledger.subscribe();
         tokio::select! {
             () = self.cancel.cancelled() => Err(ExecutionError::cancelled("execution cancelled while waiting for a resource event", Span::default())),
@@ -1736,18 +1779,16 @@ impl RuntimeSession {
             }
             _ => crate::plan::FileClass::Unknown,
         };
-        self.planning
-            .operation_facts
-            .entry(node.id)
-            .or_insert_with(|| {
-                physical.map_or(
-                    crate::hir::effects::OperationFacts {
-                        source: source_class,
-                        destination: destination_class,
-                    },
-                    |spec| spec.kinds.into(),
-                )
-            });
+        self.planning.operation_facts.insert(
+            node.id,
+            physical.map_or(
+                crate::hir::effects::OperationFacts {
+                    source: source_class,
+                    destination: destination_class,
+                },
+                |spec| spec.kinds.into(),
+            ),
+        );
         Ok(())
     }
 
@@ -2169,6 +2210,7 @@ impl RuntimeSession {
                     let report = self.engine_mut()?.manager.checkpoint(id).map_err(|cause| {
                         ExecutionError::caused("checkpoint failed", node.span, cause)
                     })?;
+                    self.engine_mut()?.report.checkpoints += 1;
                     self.engine_mut()?.committed(report);
                     self.owner_committed(id)?;
                     Ok(())

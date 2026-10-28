@@ -46,3 +46,10 @@ if (Test-Path -LiteralPath 'tests/named_execution_v4.rs') {
     }
 }
 Write-Output 'CI selection: 15 discriminating cases passed; named-frontier coverage checked when its target is present'
+if (Test-Path -LiteralPath 'tests/runtime_guards_v4.rs') {
+    foreach ($path in @('src/execution/ordinary.rs', 'src/transaction/store.rs', 'src/hir/graph.rs', 'src/preparation.rs')) {
+        $ordinary = Select-Changes @($path)
+        Assert (-not $ordinary.full -and $ordinary.targets -contains 'ordinary_execution_v4' -and $ordinary.targets -contains 'runtime_guards_v4') "Statement ownership and runtime guards must be selected for $path"
+    }
+    Write-Output 'Ordinary ownership and runtime guard coverage passed'
+}

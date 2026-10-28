@@ -15,17 +15,25 @@ fn workspace() -> tempfile::TempDir {
 }
 
 fn invoke(root: &Path, arguments: &[&str], source: &str) -> Output {
+    invoke_command(command(root, arguments), source)
+}
+
+fn command(root: &Path, arguments: &[&str]) -> Command {
     let executable =
         std::env::var_os("MSYNC_TEST_EXE").unwrap_or_else(|| env!("CARGO_BIN_EXE_msync").into());
-    let mut process = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .args(arguments)
         .current_dir(root)
         .env("NO_COLOR", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::piped());
+    command
+}
+
+fn invoke_command(mut command: Command, source: &str) -> Output {
+    let mut process = command.spawn().unwrap();
     process
         .stdin
         .take()
@@ -33,6 +41,104 @@ fn invoke(root: &Path, arguments: &[&str], source: &str) -> Output {
         .write_all(source.as_bytes())
         .unwrap();
     process.wait_with_output().unwrap()
+}
+
+#[test]
+fn static_macro_compilation_never_inspects_endpoints_or_starts_remote_helpers() {
+    let root = workspace();
+    let helpers = root.path().join("unusable-helpers");
+    fs::create_dir(&helpers).unwrap();
+    let executable =
+        std::env::var_os("MSYNC_TEST_EXE").unwrap_or_else(|| env!("CARGO_BIN_EXE_msync").into());
+    for helper in ["wsl", "ssh", "curl"] {
+        let name = if cfg!(windows) {
+            format!("{helper}.exe")
+        } else {
+            helper.to_owned()
+        };
+        // The msync CLI rejects transport-helper argv. An accidental helper
+        // invocation must fail compilation rather than reach a real endpoint.
+        fs::copy(&executable, helpers.join(name)).unwrap();
+    }
+    let source = "macro copy_codex_config(codex, des):\n\tcodex/config.toml -> des/config.toml\n\tcodex/agents -> des/agents/.\n\ncodex := ~/.codex\n\ncopy_codex_config($local::codex, $pwd::local)\ncopy_codex_config($wsl::codex, $pwd::wsl)\n";
+    for arguments in [
+        vec!["check", "-"],
+        vec!["compile", "-"],
+        vec!["plan", "-"],
+        vec!["run", "-", "--dry-run"],
+    ] {
+        let mut arguments = arguments;
+        arguments.extend(["--trace", "static.jsonl"]);
+        let mut invocation = command(root.path(), &arguments);
+        invocation.env("PATH", &helpers);
+        let output = invoke_command(invocation, source);
+        success(&output);
+        let trace = fs::read_to_string(root.path().join("static.jsonl")).unwrap();
+        for forbidden in ["prepare", "execute"] {
+            assert!(
+                !trace.contains(&format!("\"name\":\"{forbidden}\"")),
+                "static command entered {forbidden}: {trace}"
+            );
+        }
+        if arguments[0] != "check" {
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert_eq!(text.matches(" transfer\n").count(), 4, "{text}");
+            for expected in [
+                "Static IR preview",
+                "effects:",
+                "definition:",
+                "Runtime obligations:",
+                "file kinds: unknown until runtime",
+            ] {
+                assert!(text.contains(expected), "missing {expected}: {text}");
+            }
+        }
+        assert!(!root.path().join(".temp").exists());
+        assert!(!root.path().join("local").exists());
+        assert!(!root.path().join("wsl").exists());
+    }
+}
+
+#[test]
+fn static_ir_does_not_change_when_endpoint_file_kinds_change() {
+    let root = workspace();
+    let source = "source -> target\n\"data\" -> another\n";
+    fs::write(root.path().join("source"), "before").unwrap();
+    fs::write(root.path().join("target"), "keep").unwrap();
+    let before = invoke(root.path(), &["compile", "-"], source);
+    success(&before);
+    fs::remove_file(root.path().join("source")).unwrap();
+    fs::remove_file(root.path().join("target")).unwrap();
+    fs::create_dir(root.path().join("source")).unwrap();
+    fs::create_dir(root.path().join("target")).unwrap();
+    let after = invoke(root.path(), &["compile", "-"], source);
+    success(&after);
+    assert_eq!(before.stdout, after.stdout);
+    assert!(!root.path().join(".temp").exists());
+    assert!(!root.path().join("another").exists());
+}
+
+#[test]
+fn static_compile_keeps_program_path_lookup_and_native_capabilities_unresolved() {
+    let root = workspace();
+    let source = "tool => $path::msync_static_compile_nonexistent_executable(\"exact argv\")\ntool::stdout -> captured\ntool::meta -> metadata\n";
+    let mut invocation = command(root.path(), &["compile", "-"]);
+    invocation.env("PATH", root.path());
+    let output = invoke_command(invocation, source);
+    success(&output);
+    let text = String::from_utf8(output.stdout).unwrap();
+    for expected in [
+        "msync_static_compile_nonexistent_executable",
+        "program byte stream",
+        "program scalar",
+        "external: unknown",
+        "Runtime obligations:",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+    assert!(!root.path().join(".temp").exists());
+    assert!(!root.path().join("captured").exists());
+    assert!(!root.path().join("metadata").exists());
 }
 
 fn success(output: &Output) {
@@ -126,6 +232,40 @@ fn actual_repl_retains_macros_and_named_origins_across_separate_submissions() {
             .next()
             .is_none()
     );
+}
+
+#[test]
+fn repl_keeps_compiled_bindings_after_io_failure_but_discards_frontend_error_candidates() {
+    let root = workspace();
+    fs::write(
+        root.path().join("runtime-failure.msync"),
+        "keep := \"compiled value\"\nmissing.txt -> ignored.txt\n",
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("frontend-failure.msync"),
+        "poison := \"must not survive\"\nunknown::source -> discarded.txt\n",
+    )
+    .unwrap();
+    let source = "/load runtime-failure.msync\nkeep -> recovered.txt\n/load frontend-failure.msync\npoison -> rejected.txt\nkeep -> after.txt\n/bindings\n/quit\n";
+    let output = invoke(root.path(), &["repl"], source);
+    assert!(output.status.success());
+    let errors = String::from_utf8_lossy(&output.stderr);
+    assert!(errors.contains("runtime-failure.msync"), "{errors}");
+    assert!(errors.contains("frontend-failure.msync"), "{errors}");
+    assert!(errors.contains("unknown"), "{errors}");
+    for name in ["recovered.txt", "after.txt"] {
+        assert_eq!(
+            fs::read_to_string(root.path().join(name)).unwrap(),
+            "compiled value"
+        );
+    }
+    for name in ["ignored.txt", "discarded.txt", "rejected.txt"] {
+        assert!(!root.path().join(name).exists());
+    }
+    let bindings = String::from_utf8_lossy(&output.stdout);
+    assert!(bindings.contains("keep :="), "{bindings}");
+    assert!(!bindings.contains("poison :="), "{bindings}");
 }
 
 #[test]

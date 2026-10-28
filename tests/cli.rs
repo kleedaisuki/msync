@@ -502,7 +502,7 @@ fn directory_target_without_trailing_slash_is_rejected_without_mutation() {
         "the destination type error belongs on its operand: {diagnostic}"
     );
     assert!(
-        diagnostic.contains("append") && diagnostic.contains('/'),
+        diagnostic.to_lowercase().contains("append") && diagnostic.contains('/'),
         "show the actionable container-mode fix: {diagnostic}"
     );
     assert!(!directory.path().join("destination/new.txt").exists());
@@ -513,20 +513,20 @@ fn directory_target_without_trailing_slash_is_rejected_without_mutation() {
 }
 
 #[test]
-fn live_plan_eliminates_dead_file_write_before_bounded_execution() {
+fn legacy_live_plan_eliminates_dead_file_write_before_bounded_execution() {
     let directory = workspace();
     fs::write(directory.path().join("first.txt"), "first source").unwrap();
     fs::write(directory.path().join("last.txt"), "last source").unwrap();
     fs::write(directory.path().join("target.txt"), "original target").unwrap();
     let script = "first.txt -> target.txt\nlast.txt -> target.txt\n";
-    let planned = invoke(directory.path(), &["plan", "-"], script);
+    let planned = invoke(directory.path(), &["--syntax", "0.3", "plan", "-"], script);
     assert_success(&planned);
     assert!(
-        stdout(&planned).matches("transfer\n").count() == 1,
+        stdout(&planned).matches("0000 copy ").count() == 1,
         "{}",
         stdout(&planned)
     );
-    assert!(stdout(&planned).contains("eliminated; overwritten by 1"));
+    assert!(stdout(&planned).contains("removed #0: overwritten by #1 before any read"));
     assert_eq!(
         fs::read_to_string(directory.path().join("target.txt")).unwrap(),
         "original target",
@@ -535,6 +535,8 @@ fn live_plan_eliminates_dead_file_write_before_bounded_execution() {
     let executed = invoke(
         directory.path(),
         &[
+            "--syntax",
+            "0.3",
             "run",
             "-",
             "--jobs",
@@ -770,7 +772,7 @@ fn trace_file_survives_exit_and_connects_all_pipeline_phases_without_payload_cap
         .find(|line| string_field(line, "name") == "copy")
         .unwrap();
     assert!(
-        copy.contains("\"publication.policy\":\"namespace-receipt\""),
+        copy.contains("\"publication.policy\":\"statement-journal\""),
         "{copy}"
     );
     assert!(copy.contains("\"phase\":\"committed\""), "{copy}");
@@ -779,10 +781,20 @@ fn trace_file_survives_exit_and_connects_all_pipeline_phases_without_payload_cap
         "{copy}"
     );
     assert!(copy.contains("\"files.assigned\":1"), "{copy}");
+    assert!(copy.contains("\"bytes.assigned\":15"), "{copy}");
     assert!(
         !copy.contains("\"bytes.committed\""),
-        "the transaction publisher owns committed-byte metrics: {copy}"
+        "ordinary assignment metrics must not masquerade as transaction commits: {copy}"
     );
+    for forbidden in ["prepare", "transaction.publish"] {
+        assert!(
+            !trace.contains(&format!("\"name\":\"{forbidden}\"")),
+            "ordinary assignment unexpectedly entered {forbidden}: {trace}"
+        );
+    }
+    for phase in ["ordinary.acquire", "ordinary.stage", "ordinary.publish"] {
+        assert!(trace.contains(&format!("\"name\":\"{phase}\"")), "{trace}");
+    }
     assert!(!trace.contains("private payload"));
     assert!(!trace.contains("MSYNC_TEST_TELEMETRY_SECRET"));
     assert!(!trace.contains("sensitive env value must not leak"));

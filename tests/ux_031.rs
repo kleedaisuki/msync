@@ -161,12 +161,10 @@ fn missing_dsl_source_explains_the_resolved_alias_path_not_only_the_alias_spelli
         "# unrelated intervening context\n".repeat(8)
     );
     fs::write(directory.path().join("alias-source.msync"), script).unwrap();
-    for mode in ["plan", "run"] {
-        let output = invoke(
-            directory.path(),
-            &[mode, "alias-source.msync", "--color", "never"],
-            "",
-        );
+    for prefix in [&["run"][..], &["--syntax", "0.3", "plan"][..]] {
+        let mut arguments = prefix.to_vec();
+        arguments.extend(["alias-source.msync", "--color", "never"]);
+        let output = invoke(directory.path(), &arguments, "");
         assert!(!output.status.success());
         let error = text(&output.stderr);
         assert!(

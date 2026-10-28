@@ -26,10 +26,13 @@ pub(crate) mod events;
 pub mod live;
 mod materialize;
 mod native;
+mod ordinary;
 mod physical;
 mod program;
+pub mod progress;
 mod scheduler;
 mod transfer;
+mod wsl_source;
 
 pub use live::RuntimeSession;
 
@@ -321,6 +324,7 @@ impl Engine {
                 let committed = self.manager.checkpoint(id).map_err(|cause| {
                     ExecutionError::caused("checkpoint publication failed", node.span, cause)
                 })?;
+                self.report.checkpoints += 1;
                 self.committed(committed);
                 Ok(())
             }
@@ -391,12 +395,14 @@ impl Engine {
             .manager
             .finish(id)
             .map_err(|cause| ExecutionError::caused("atomic publication failed", span, cause))?;
+        if self.named.values().any(|named| *named == id) {
+            self.report.checkpoints += 1;
+        }
         self.committed(committed);
         Ok(())
     }
 
     fn committed(&mut self, committed: CommitReport) {
-        self.report.checkpoints += 1;
         self.report.published_roots += committed.published_roots;
         self.report
             .cleanup

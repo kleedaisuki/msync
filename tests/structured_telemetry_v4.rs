@@ -105,12 +105,33 @@ impl Trace {
     fn span(&self, name: &str) -> &str {
         self.text
             .lines()
-            .find(|line| field(line, "kind") == "span" && field(line, "name") == name)
+            .find(|line| {
+                field(line, "kind") == "span"
+                    && field(line, "name") == name
+                    && (name != "copy" || line.contains("\"copy.kind\":\"ordinary-assignment\""))
+            })
             .unwrap_or_else(|| panic!("missing actual {name} span: {}", self.text))
     }
 
     fn status(&self, name: &str, expected: &str) {
         assert_eq!(field(self.span(name), "status"), expected, "{}", self.text);
+    }
+
+    fn absent(&self, name: &str) {
+        assert!(
+            !self.text.lines().any(|line| field(line, "name") == name),
+            "unexpected {name} phase: {}",
+            self.text
+        );
+    }
+
+    fn statement_journal(&self) {
+        self.absent("prepare");
+        self.absent("transaction.publish");
+        assert_eq!(
+            field(self.span("copy"), "publication.policy"),
+            "statement-journal"
+        );
     }
 
     fn rooted(&self) {
@@ -216,12 +237,19 @@ fn structured_macro_literal_trace_has_real_phase_ownership_without_logging_sourc
     );
     let trace = Trace::load(root.path());
     trace.rooted();
-    for phase in ["parse", "compile", "prepare", "execute"] {
+    for phase in ["parse", "compile", "execute"] {
         trace.status(phase, "ok");
         trace.descendant(phase, "submission");
     }
     trace.descendant("submission", "session");
     trace.descendant("copy", "execute");
+    trace.statement_journal();
+    for phase in ["ordinary.acquire", "ordinary.stage", "ordinary.publish"] {
+        trace.status(phase, "ok");
+        trace.descendant(phase, "copy");
+    }
+    assert_eq!(number(trace.span("copy"), "files.assigned"), 1);
+    assert_eq!(number(trace.span("copy"), "bytes.assigned"), payload.len());
     trace.no_payload("trace-private-literal-payload-");
 }
 
@@ -255,7 +283,7 @@ fn structured_frontend_failure_records_raw_diagnostic_offsets_and_error_ancestor
 }
 
 #[test]
-fn structured_preparation_failure_is_located_and_never_looks_like_execution_success() {
+fn runtime_source_validation_failure_is_located_and_never_looks_like_execution_success() {
     let root = workspace();
     let source = "missing -> target\n";
     let output = invoke(root.path(), "run", source);
@@ -266,22 +294,19 @@ fn structured_preparation_failure_is_located_and_never_looks_like_execution_succ
     for phase in ["parse", "compile"] {
         trace.status(phase, "ok");
     }
-    for phase in ["prepare", "submission", "session"] {
+    for phase in ["execute", "submission", "session"] {
         trace.status(phase, "error");
     }
     let diagnostic = trace
         .text
         .lines()
-        .find(|line| field(line, "name") == "diagnostic" && field(line, "phase") == "prepare")
+        .find(|line| field(line, "name") == "diagnostic" && field(line, "phase") == "execute")
         .unwrap();
     assert_eq!(number(diagnostic, "span.start"), 0);
     assert_eq!(number(diagnostic, "span.end"), "missing".len());
-    assert!(
-        !trace
-            .text
-            .lines()
-            .any(|line| field(line, "name") == "execute")
-    );
+    trace.absent("prepare");
+    trace.absent("ordinary.publish");
+    trace.absent("transaction.publish");
 }
 
 #[test]
@@ -344,13 +369,18 @@ fn an_actual_http_reset_fails_execution_preserves_old_target_and_records_causal_
     );
     let trace = Trace::load(root.path());
     trace.rooted();
-    for phase in ["parse", "compile", "prepare"] {
+    for phase in ["parse", "compile"] {
         trace.status(phase, "ok");
     }
     for phase in ["execute", "submission", "session"] {
         trace.status(phase, "error");
     }
     trace.descendant("execute", "submission");
+    trace.statement_journal();
+    trace.status("copy", "error");
+    trace.status("ordinary.acquire", "error");
+    trace.absent("ordinary.stage");
+    trace.absent("ordinary.publish");
     assert!(
         trace
             .text
