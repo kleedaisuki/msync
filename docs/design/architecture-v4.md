@@ -16,8 +16,14 @@ The proof-sharing revision exposed a Windows cancellation/output-channel race
 in its native gate. Explicit worker control outcomes and terminal-result joining
 repair that race; the integrated compiler/worker checkpoint
 [`5d4d99d`](https://github.com/kleedaisuki/msync/actions/runs/40642774605)
-passed both ordinary OS jobs and actual native gates. This does not certify
-subsequent uncommitted sparse enrollment or named-body concurrency work.
+passed both ordinary OS jobs and actual native gates. Sparse finite enrollment
+and its disjoint active-owner import frontier subsequently passed both ordinary
+OS jobs and actual native program/macro/workspace gates at
+[`a3d3508`](https://github.com/kleedaisuki/msync/actions/runs/40648300741).
+The hierarchical namespace/outer-FIFO compatibility follow-up passed the same
+ordinary and actual-native gates at
+[`181221e`](https://github.com/kleedaisuki/msync/actions/runs/40651887259).
+Named-body concurrency remains separate unfinished work.
 
 Following the user's parallel-performance authorization, committed components
 are being measured and optimized independently. Store candidate sharing,

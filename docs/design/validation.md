@@ -31,7 +31,14 @@ broad suites. `Cargo.toml` still declares `0.4.0-dev`.
    native view/program/macro/workspace journeys selected by the shared runtime
    changes. This includes Windows control-pipe cancellation handling, the strict
    test-module placement fix and State-cache optimization. It does not certify
-   the current uncommitted sparse/enrollment work or pending named-body overlap.
+   later work by itself. Sparse enrollment and its actual held-TCP, nested-source,
+   cross-cwd native-view and metadata controls subsequently passed both ordinary
+   OS jobs and the actual native gates at
+   [a3d3508](https://github.com/kleedaisuki/msync/actions/runs/40648300741).
+   Hierarchical sparse/outer-FIFO normalization and fresh scratch-ancestor
+   metadata subsequently passed
+   [181221e](https://github.com/kleedaisuki/msync/actions/runs/40651887259).
+   Pending named-body overlap and final performance acceptance remain separate.
    Final acceptance must repeat the applicable ordinary and native gates at the
    selected integration revision, with meaningful changed-area tests.
 2. **Single-input new opaque program plus external FIFO remains a documented
@@ -43,17 +50,19 @@ broad suites. `Cargo.toml` still declares `0.4.0-dev`.
    snapshot/IO effects. It does block an unqualified claim that every stream and
    newly spawned program compose in one input. It is an implementation/bootstrap
    proof limitation, not evidence that a readonly mount prevents FIFO byte IO.
-3. **Named-region parallelism is not generally exploited.** The runtime awaits
-   `region(body, Some(id), ...)` before returning to its outer frontier. Serial
-   execution preserves result equivalence but does not deliver the user's
-   emphasized proven-disjoint A/B overlap and asynchronous/parallel optimization
-   capability. This remains open work with a required real named-body overlap
-   gate. Disjoint physical-flow tests or a graph with disjoint effects do not
-   establish that capability; do not label it optional merely because serial
-   implementation is easier.
+3. **Named-region overlap remains under integration.** The committed checkpoint
+   still awaits each named body recursively. The uncommitted continuation-frame
+   implementation has actual bounded literal-write overlap, one-job serialization
+   controls, same-parent metadata controls and named origin/checkpoint journeys.
+   Independent review found a stale boundary-plan activation that can discard a
+   later sibling's owner bindings, incorrectly requiring its own commit before
+   a dependent child. That owner/phase issue and the actual native lifecycle
+   acceptance must close before these prototype results count as delivery.
+   Serial correctness or disjoint physical-flow tests alone do not establish
+   the user's emphasized proven-independent A/B overlap capability.
 4. **Delivery remains open.** Performance evidence is substantive but current
-   uncommitted lifetime/enrollment changes need their own acceptance. The package
-   remains `0.4.0-dev`, and no current v0.4 installed executable/version/hash
+   named-frontier changes and final latency measurements need their own acceptance.
+   The package remains `0.4.0-dev`, and no current v0.4 installed executable/version/hash
    verification is established here. Version/install verification belongs to
    eventual delivery. The user's push authorization does not itself authorize
    creating a release or tag; obtain an explicit request before those actions.

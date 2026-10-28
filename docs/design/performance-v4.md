@@ -588,3 +588,93 @@ permission/mtime correlations, readonly failures, sibling namespace ordering,
 restoration and certificate replay. Strict Windows Clippy for the library,
 binary, these three integration targets and planner benchmark is clean. These
 are correctness checks, not extra timing samples.
+
+## Enrollment: avoid unrelated payload capture for a new finite file
+
+### Model and verified scope
+
+Stable local ordinary-file/literal assignments to an exact missing leaf with an
+existing parent now distinguish complete payload coverage from directory
+namespace metadata. The leaf is an explicitly complete absent subtree; the
+parent supplies identity, kind, permissions and mtime without asserting that all
+its children were captured. Existing Manager namespace/entry operations retain
+unknown siblings rather than silently ignoring their names or excluding every
+`.temp`. Complete directory reads/replacement, unknown/deferred envelopes and
+opaque native views keep their complete coverage requirements. The measured
+rule is local file/literal destination enrollment, not a claim that remote import
+adapters were replaced by local immutable-reader leases.
+
+Complete descriptors and metadata-only parents are tracked separately. Later
+complete reads can upgrade a sparse parent while preserving known immutable
+heads. Before any new native program view, all retained sparse parents are
+upgraded, including those from earlier working directories; a native view is
+never silently narrowed to the latest cwd. New scratch creation does not become
+logical user metadata: namespace capture uses the authenticated invocation's
+original parent timestamp.
+
+Lazy coverage must not reject an unrelated operation merely because an older
+read-committed flow is active. Runtime supplies every actual active implicit
+owner's retained effects, qualified by original submission/node identity;
+missing, named, native or unknown owners do not receive this capability.
+Manager additionally checks its real observations, pending writes/predicates and
+native parent state. Complete upgrades check only genuinely unknown import
+frontiers while retaining known heads and metadata. New values receive real
+current foreign epochs, not backdated repeatable-read visibility. Public generic
+enrollment retains its old strong lifecycle guard.
+
+The focused Linux UID-1000 private-tmpfs gate passed 15 ordinary workspace cases
+and four actual native cases. It covers one 64-KiB artifact despite an unrelated
+1-MiB cwd file; exact origin parent mtime and unknown siblings; untouched FIFO and
+socket inode generations; direct then nested reads/later literal writes while an
+existing-file flow in another directory remains open; and a 4-MiB known immutable
+file held on a tiny TCP receiver while unknown nested data is enrolled. Native
+controls upgrade the current cwd and two earlier sparse parents before a new
+view in a different cwd; the child reads known and previously unobserved files
+under both parents and sees no runtime backing directory. These are functional
+gates, not timing samples. The original `a1/../a2` cross-root selected-view path
+example was separately checked against accepted `5cafd34` and the candidate:
+both reject the same pre-existing managed-root traversal boundary. The native
+cross-cwd fixture uses explicit absolute qualifiers to isolate view-upgrade
+behavior, not to hide a new sparse-enrollment regression.
+
+### Single-factor native ext4 comparison
+
+Both release variants come from commit `f0b5030`, with the same Store, refresh,
+State cache and functional scheduler code. The before archive changes exactly
+one decision: it disables stable finite sparse-destination selection; the after
+archive is unmodified. Sources are preserved under project
+`.temp/perf-v4/sparse-{before,after}-f0b5030`; the sole source diff is recorded in
+`.temp/perf-v4/sparse-pair-only-difference.patch`. No unregistered scheduler WIP
+is part of either executable.
+
+- Before executable SHA-256: `e98773c93834a741973a62a9519088b87a4867b5d4a92f398be6fc68109f934e`.
+- After executable SHA-256: `86633ef9fcbf5a8c68127bcfe2e68ef0f063a692dcf2df5b411f730a6b8f1e2d`.
+
+The maintained latency harness and native `/tmp` alias procedure above were used:
+Rust 1.97.1 normal release, WSL kernel 6.18.33.2, UID 1000, CPU 0, two warmups and
+15 alternating paired fresh-process samples, warm source/loader caches. Opened
+binary/source/destination/artifact descriptors all reported device 2096 and
+filesystem magic `ef53`; `findmnt` identifies `/dev/sdd[/tmp]` as ext4. No WSL
+launcher, build, fixture generation, post-sample validation or fixture cleanup
+is charged to a copy sample. The child process's own private runtime shutdown
+is included. The executable is in a sibling `bin`, not part of the measured cwd.
+
+| Journey | Before p50 ms | After p50 ms | Before p95 ms | After p95 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Missing 64-KiB target, small cwd | 3.192 | 3.168 | 5.028 | 3.818 |
+| Existing 64-KiB target, small cwd | 3.170 | 2.976 | 3.796 | 3.360 |
+| Existing target, unrelated 1,000 files + 8-MiB ballast | 2.951 | 2.917 | 3.224 | 3.465 |
+| Missing target, the same unrelated cwd | 74.063 | 3.621 | 95.853 | 6.506 |
+
+An untimed first-copy capture control, before shutting down the persistent
+runtime, observed **1,002 artifact files / 8,582,144 bytes before**, versus
+**one artifact / 65,536 bytes after**. Both copies produced all 65,536 expected
+bytes. This explains the material roughly **20.45x** p50 improvement in the
+unrelated-cwd missing-file case: work is no longer proportional to unrelated
+parent payload. Tiny/existing cases are controls, not blanket speedup claims;
+small differences there are within this desktop sample's scheduling variation.
+Both variants already contain unchanged-file refresh reuse, so the separate
+34-assignment REPL control retains the same two artifacts / 131,072 bytes on
+both sides. Independent-flow bytes, EOF-only publication, namespace winner and
+input-barrier checks also passed. Raw paired samples are disposable
+`.temp/perf-v4/results/latency-sparse-paired-native.txt`.

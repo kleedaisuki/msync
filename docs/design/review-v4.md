@@ -519,3 +519,174 @@ regressions and reported the focused Windows optimization target passing 8/8.
 These complement the existing source-site, permission-failure, metadata and
 single-assignment runtime controls. Actual cross-WSL namespace evidence and
 performance acceptance remain separate scopes, not inferred by this review.
+
+## Sparse coverage and active enrollment review (2026-10-28)
+
+Scope: the uncommitted `Domain::namespace_roots`, persistent live enrollment and
+private active-owner import after `8ae851b`. Metadata-only parent coverage is not
+complete child payload coverage. Review found one concrete compatibility gap and
+examined the related cross-cwd native-view gap identified by the root integrator.
+
+### Nested source while unrelated work is active
+
+Let directory A initially contain `a1` and `nested/a2`. Execute `a1 -> new1`,
+then hold a TCP transfer to an existing file in disjoint directory B. Now submit
+`nested/a2 -> new2` in A. The old missing-target envelope had already enrolled A
+completely, so this copy needed no new coverage and could make progress. The
+sparse candidate initially kept only A metadata plus direct payload entries.
+`normalize_coverage` promotes the nested source's request to complete A, but the
+live enroller's direct-child projection has no first component when the request
+equals the sparse parent. It therefore called public `Manager::enroll(A)` and
+hit its active-transaction guard despite B being unrelated. The existing
+direct-child `a2` concurrency regression did not exercise this path.
+
+This was sent to both owners. A correction must distinguish a finite unobserved
+subtree from an explicit complete-parent request, or safely upgrade the whole
+existing sparse root under the actual disjoint-owner proof. It must not label
+only selected children as complete directory coverage. For the minimal case,
+`nested` is wholly unobserved; previously known `a1` and `new1` are outside it.
+An explicit `.` directory source genuinely needs A's complete view, including
+its previously unobserved siblings, and cannot use a subset-only workaround.
+
+### Native view after changing cwd
+
+After a sparse finite copy in A, a later program submission with cwd B cannot
+merely add B's directory root: retained source/destination file roots from A still
+belong to the global managed view. The root integrator found that the native
+adapter rejected those file roots, whereas the former complete A envelope worked.
+Promote every retained sparse namespace needed by the native view, not just the
+new cwd or the first parent. A useful control first creates independent sparse
+parents A1 and A2, then launches a B-cwd child that reads absolute known and
+previously unobserved files from both. Omitting old roots to make launch succeed
+would expose live host versions rather than the selected transactional view.
+
+### Active import safety conditions checked
+
+The private import's complete active-owner inventory, actual retained effects,
+pending data/metadata writes, namespace observations and Store read/predicate
+fences are appropriate obligations. Only implicit read-committed owners qualify;
+named/native or unproved owners remain on the public lifecycle guard. Native
+name-index comparison supplies overlap evidence, rather than portable case or
+verbatim-string guesses. Parent kind/permissions/mtime must match the committed
+view after normalizing only the authenticated invocation's own metadata effect.
+No existing head or active statement is backdated. A complete upgrade must reuse
+already-versioned branches and seed only genuinely unobserved values at current
+epochs, preserving named before-images and unknown siblings on origin undo.
+The correction now checks the actual import delta: already-complete branches are
+not refreshed, while unobserved frontier prefixes remain subject to every old
+owner's effects, reads, predicates and pending-write fences. An unseen ancestor
+is a new visibility obligation even when an older known leaf exists below it;
+seeding it must not hide that leaf from an old statement. This supports a known
+immutable `a1` TCP reader while importing unrelated nested entries without
+waiving arbitrary reads or backdating any version. Native submission promotes
+all retained sparse parents into the global complete view, not only its cwd.
+
+The integration owners reported seven active-import units plus the existing
+Manager controls, and actual WSL acceptance of 15 ordinary workspace cases and
+four native cases, including the held `a1` sink, nested source, later literal,
+and two-parent/cwd-B view. The authoritative sparse integration run
+[40648300741](https://github.com/kleedaisuki/msync/actions/runs/40648300741)
+at `a3d3508` passed all four jobs: changes, ordinary Windows, ordinary Ubuntu,
+and the provisioned native Windows gate. These results close the specific
+reported regressions above; this review did not launch a duplicate build.
+
+The raw `../a2` first-batch fixture failed identically against accepted baseline
+`5cafd34` and the candidate with selected-view root escape. The integrator saved
+that comparison in `.temp/perf-v4/relative-compat-results.txt`; it is a preexisting
+root-capability boundary, not a sparse regression. The absolute-path fixture
+isolates the actual multi-parent native-view upgrade and does not claim to fix
+that relative-path boundary.
+
+### Hierarchical namespace compatibility: resolved with actual red/green
+
+Source inspection after the accepted gate identified another coverage topology:
+prime sparse A1 and A2 with missing sibling copies, then create a missing literal
+file in their common parent W. This registers sparse W above the older sparse
+children. Hold a TCP-to-existing-file job in unrelated B outside W, then request
+`A1/nested/input -> A1/new`. The current live enroller projects the complete A1
+request through sparse W into its direct child A1, while the private entry import
+rejects that child's already-known metadata/descendants. The root-upgrade method
+also requires an empty relative path under the selected sparse root. The old
+third literal's complete W envelope required no new coverage for this copy.
+
+The integrator accepted this source-traced compatibility concern and requested
+one actual Runtime regression. The added
+`execution_workspace_v4::sparse_sibling_parents_promote_before_enrolling_their_common_parent`
+first checks two private payload files / eleven bytes, then adds W's literal,
+holds a real TCP reader writing an existing B file outside W, and requires the
+nested A1 copy to publish before peer EOF. It also checks both prior copies,
+the unobserved A2 sibling, W's literal, and B's old/new bytes across EOF. This
+reviewer formatted the test without duplicate builds. The integrator's archived
+`f0b5030` baseline run (session 76274) failed with the predicted InvalidPath:
+`active enrollment requires a previously unobserved direct child`. The corrected
+Runtime hierarchy test passed on Windows, independently of the earlier sparse
+gate.
+
+The revised correction is a Runtime coverage invariant: retained sparse
+namespace parents form an antichain, with the outer namespace containing
+complete children. Complete-promote the nested descendant parents, not the
+outer ancestor: full capture of W would reject an unrelated FIFO in W which
+the prior metadata-only physical-output path preserves. The union of retained
+and requested parents determines promotions in either arrival order, including
+nested parents collected in one submission. `enroll_at` applies the same policy
+to finite and physical-output enrollment. Preserve known immutable heads and
+the existing active-owner delta proof; private fresh-entry guards stay strict.
+Set canonicalization alone cannot establish complete coverage.
+
+The additional Unix Runtime regression
+`physical_parent_namespace_preserves_an_unobserved_fifo_above_sparse_children`
+primes the two sparse child snapshots, then requires an actual TCP-to-missing-W
+file transfer to connect and publish despite an unrelated FIFO directly in W.
+It checks both prior copies, unknown child siblings, and the FIFO's unchanged
+device/inode after shutdown. The integrator ran it along with the finite
+hierarchy regression under the revised descendant-completion policy.
+The integrator also changed `normalize_coverage` to complete the first child
+tree containing a nested payload rather than the outer namespace, aligning
+same-submission finite inputs with the retained-namespace rule. Source review
+finds this addresses the earlier outer-envelope concern without weakening
+source completeness: the chosen child is captured fully, and unrelated outer
+children are outside that capability. The new Unix Runtime regression
+`same_batch_nested_finite_sources_do_not_capture_the_outer_fifo_namespace`
+uses one input with a nested A1 source, missing targets in A1 and W, and an
+unrelated FIFO directly in W. It requires both outputs and the outer sibling
+to survive, with the FIFO device/inode unchanged after shutdown. The reviewer
+formatted this case without a duplicate build. Final actual WSL session 28844
+passed all 18 ordinary workspace tests and all four native controls, including
+the physical W/FIFO and same-batch nested-source/FIFO cases. Windows passed all
+seven Domain units and the hierarchy regression. These results close the
+hierarchical coverage findings for the exercised finite, physical, active-job
+and same-submission paths under the revised policy.
+
+The store owner separately fixed fresh ancestor metadata to retain identity-
+checked InvocationRoot logical timestamps. The reported actual Manager test
+`sparse_ancestor_promotion_keeps_logical_scratch_metadata_and_known_heads`
+reproduced the timestamp loss before repair and passed afterward, preserving
+known heads despite host edits and excluding the owned invocation. The owner
+reported all 47 Manager filesystem tests passing; no duplicate reviewer build.
+
+## Cooperative named-frame review (2026-10-28)
+
+### P1: boundary settlement can regress live submission owner bindings
+
+Source review of `execution/frontier.rs::finish_named_frame` found that
+`activate(&work, None)` assigns the retained boundary's older `work.plan` to
+`self.plan`. A's boundary is created before sibling B begins, so that retained
+plan has A's child owner bindings but none of B's. Suppose A's small literal
+finishes while B's larger literal is active, and B still has a dependent copy
+of its literal target pending. Finishing A restores the pre-B plan. Preparing
+B's next child adds only that child's binding, not its preceding literal's.
+`SubmissionPlan::event(Wait::Completion)` then treats that predecessor as a
+foreign owner and requires `NodeEvent::Committed` instead of
+`NodeEvent::LogicalComplete`. B cannot commit until its own pending child runs.
+This is a self-dependency caused by plan-version rollback, not valid strict
+cross-owner visibility.
+
+Keep the authoritative latest submission binding plan while settling a retained
+boundary. Its exact `WorkNode.plan` must still govern its own boundary gates,
+but activation for that purpose must not discard later siblings' bindings.
+An actual regression should use disjoint existing targets: named A writes a
+small literal; named B writes a large literal then copies that target to a
+second existing target. The reviewer reported this source-traced finding to
+the runtime owner and integrator without launching a duplicate build. Existing
+three positive named-frontier journeys do not include this intra-B dependency
+after an earlier sibling completes; runtime reproduction remains requested.
