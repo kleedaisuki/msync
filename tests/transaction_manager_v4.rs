@@ -2192,6 +2192,69 @@ fn namespace_failed_compensation_retains_recovery_without_selecting_its_receipt(
 }
 
 #[test]
+fn sparse_ancestor_promotion_keeps_logical_scratch_metadata_and_known_heads() {
+    use msync::transaction::filesystem::{InvocationRoot, NodeMetadata};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let workspace = workspace();
+    let root = workspace.path().join("root");
+    let a1 = root.join("a1");
+    let a2 = root.join("a2");
+    fs::create_dir_all(&a1).unwrap();
+    fs::create_dir(&a2).unwrap();
+    fs::write(a1.join("file"), b"first immutable").unwrap();
+    fs::write(a2.join("file"), b"second immutable").unwrap();
+    let original = UNIX_EPOCH + Duration::from_secs(946_684_800);
+    NodeMetadata::new(fs::metadata(&root).unwrap().permissions(), original)
+        .apply(&root)
+        .unwrap();
+    let invocation = InvocationRoot::create(&root.join(".temp")).unwrap();
+    let mut manager = Manager::new_in(&invocation.path().join("versions"), &invocation).unwrap();
+    for parent in [&a1, &a2] {
+        manager.enroll_namespace(parent).unwrap();
+        manager.enroll_entry(&parent.join("file")).unwrap();
+    }
+    let reader = TransactionId(294);
+    manager.begin(reader, Isolation::ReadCommitted).unwrap();
+    let known = manager.read_snapshot(reader, &a1.join("file")).unwrap();
+    manager.finish(reader).unwrap();
+    let Entry::File {
+        artifact: before, ..
+    } = &known.entries()[Path::new("")]
+    else {
+        panic!("known file")
+    };
+    fs::write(a1.join("file"), b"changed outside").unwrap();
+
+    manager.enroll(&root).unwrap();
+    let reader = TransactionId(295);
+    manager.begin(reader, Isolation::ReadCommitted).unwrap();
+    let complete = manager.read_snapshot(reader, &root).unwrap();
+    assert_eq!(
+        complete.entries()[Path::new("")].metadata().modified,
+        original
+    );
+    assert!(complete.excludes_invocation(&invocation).unwrap());
+    assert!(!complete.entries().contains_key(Path::new(".temp")));
+    let Entry::File {
+        artifact: after, ..
+    } = &complete.entries()[Path::new("a1/file")]
+    else {
+        panic!("retained first file")
+    };
+    assert_eq!(before.path(), after.path());
+    assert_eq!(fs::read(after.path()).unwrap(), b"first immutable");
+    let Entry::File { artifact, .. } = &complete.entries()[Path::new("a2/file")] else {
+        panic!("retained second file")
+    };
+    assert_eq!(fs::read(artifact.path()).unwrap(), b"second immutable");
+    manager.finish(reader).unwrap();
+    drop((known, complete));
+    manager.shutdown().unwrap();
+    invocation.cleanup().unwrap();
+}
+
+#[test]
 fn owned_scaffold_publication_and_origin_undo_keep_backing_identity_and_exact_metadata() {
     use msync::transaction::filesystem::{InvocationRoot, NodeMetadata};
     use std::time::{Duration, UNIX_EPOCH};

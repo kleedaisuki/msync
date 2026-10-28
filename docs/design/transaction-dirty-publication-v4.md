@@ -344,3 +344,35 @@ independent path strings. The native cases also verify sparse roots in another
 cwd are upgraded before a new program view, without changing parent metadata or
 snapshotting unrelated FIFO/socket siblings. Correctness runtimes are not
 performance measurements.
+
+When a newly enrolled complete ancestor contains older sparse roots,
+`capture_extension` retains their immutable heads and directory metadata. Only
+fresh ancestor metadata is captured from the host. That fresh metadata applies
+the same identity-checked `InvocationRoot::logical_metadata` normalization as a
+normal capture: creating the invocation's scratch hierarchy must not become the
+user-visible ancestor mtime. Existing committed metadata is never normalized
+again. The real Manager regression
+`sparse_ancestor_promotion_keeps_logical_scratch_metadata_and_known_heads`
+reproduced the raw-mtime defect before the fix, then verified precise original
+ancestor time, retained artifact identity despite changed host bytes, and owned
+invocation exclusion. All 47 Manager filesystem tests pass on Windows.
+## Sparse topology is an antichain, not nested partial payload
+
+Retained and newly requested metadata-only parents are normalized together.
+When one contains another, the nested child is completed with the established
+extension capture and the outer parent remains metadata-only. This invariant
+holds for either arrival order and within one submission. Finite and physical
+output enrollment now share the same path. Merely filtering a set would not
+supply payload coverage, while completing the outer parent would incorrectly
+capture unrelated FIFO/socket siblings. A nested finite source similarly needs
+its containing direct child, not every payload under the outer namespace.
+
+The real sibling-parent/outer-parent/held-TCP regression fails on archived
+`f0b5030` with `active enrollment requires one previously unobserved direct
+child`, then passes with the normalized representation. Pure domain controls
+cover both arrival orders and nested same-batch roots. Actual WSL validation
+passed 18 ordinary workspace journeys and four native journeys, including a
+physical output beside an outer FIFO and nested finite sources in one input;
+FIFO inode identity and all ordinary bytes remain intact. Windows domain
+controls and the held-TCP hierarchy regression pass as well. These observations
+are separate from the frozen flat-workload latency comparison at `f0b5030`.

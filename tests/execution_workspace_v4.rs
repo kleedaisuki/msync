@@ -198,6 +198,104 @@ async fn sparse_files_extend_while_an_existing_file_flow_in_another_directory_is
 }
 
 #[tokio::test]
+async fn sparse_sibling_parents_promote_before_enrolling_their_common_parent() {
+    use tokio::io::AsyncWriteExt;
+
+    let workspace = workspace();
+    let common = workspace.path().join("work");
+    let first = common.join("a1");
+    let second = common.join("a2");
+    let other = workspace.path().join("other");
+    fs::create_dir_all(first.join("nested")).unwrap();
+    fs::create_dir(&second).unwrap();
+    fs::create_dir(&other).unwrap();
+    fs::write(first.join("seed"), b"first").unwrap();
+    fs::write(second.join("seed"), b"second").unwrap();
+    fs::write(first.join("nested/input"), b"nested payload").unwrap();
+    fs::write(second.join("unobserved"), b"untouched sibling").unwrap();
+    fs::write(other.join("existing"), b"old").unwrap();
+    let scratch = workspace.path().join("state");
+    let mut runtime = RuntimeSession::new(&Options::new(scratch.clone())).unwrap();
+    let mut compiler = Session::new();
+    run_live(&mut runtime, &mut compiler, &first, "seed -> copy\n").await;
+    run_live(&mut runtime, &mut compiler, &second, "seed -> copy\n").await;
+    assert_eq!(private_files(&scratch), (2, 11));
+    run_live(
+        &mut runtime,
+        &mut compiler,
+        &common,
+        "\"parent payload\" -> parent-file\n",
+    )
+    .await;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let context = CompileContext {
+        pwd: other.clone(),
+        source_file: None,
+    };
+    let stream = pipeline::compile(
+        &mut compiler,
+        &format!(
+            "wire => tcp://{}\nwire::/ -> existing\n",
+            listener.local_addr().unwrap()
+        ),
+        &context,
+        &[],
+    )
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), runtime.submit(&stream.program))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut peer = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .unwrap()
+        .unwrap()
+        .0;
+    assert!(!runtime.work_ids().is_empty());
+
+    let context = CompileContext {
+        pwd: first.clone(),
+        source_file: None,
+    };
+    let copy = pipeline::compile(
+        &mut compiler,
+        "nested/input -> nested-copy\n",
+        &context,
+        &[],
+    )
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), runtime.submit(&copy.program))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fs::read(first.join("nested-copy")).unwrap(),
+        b"nested payload"
+    );
+    assert_eq!(
+        fs::read(common.join("parent-file")).unwrap(),
+        b"parent payload"
+    );
+    assert_eq!(fs::read(first.join("copy")).unwrap(), b"first");
+    assert_eq!(fs::read(second.join("copy")).unwrap(), b"second");
+    assert_eq!(
+        fs::read(second.join("unobserved")).unwrap(),
+        b"untouched sibling"
+    );
+    assert_eq!(fs::read(other.join("existing")).unwrap(), b"old");
+    assert!(!runtime.work_ids().is_empty());
+    peer.write_all(b"new").await.unwrap();
+    peer.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), runtime.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read(other.join("existing")).unwrap(), b"new");
+    runtime.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn sparse_root_upgrade_preserves_an_active_immutable_reader_of_a_known_file() {
     use tokio::io::AsyncReadExt;
     let workspace = workspace();
@@ -373,6 +471,122 @@ async fn sparse_parents_in_other_directories_upgrade_before_a_new_native_view() 
     );
     assert_eq!(fs::read(b.join("code")).unwrap(), b"0\n");
     runtime.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn same_batch_nested_finite_sources_do_not_capture_the_outer_fifo_namespace() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+    let workspace = workspace();
+    let common = workspace.path().join("work");
+    let child = common.join("a1");
+    fs::create_dir_all(child.join("nested")).unwrap();
+    fs::write(child.join("nested/input"), b"nested payload").unwrap();
+    fs::write(common.join("unobserved"), b"unrelated outer sibling").unwrap();
+    let fifo_path = common.join("fifo");
+    let fifo = std::ffi::CString::new(fifo_path.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let before = fs::symlink_metadata(&fifo_path).unwrap();
+    let mut runtime = RuntimeSession::new(&Options::new(workspace.path().join("state"))).unwrap();
+    run_live(
+        &mut runtime,
+        &mut Session::new(),
+        &common,
+        "a1/nested/input -> a1/copy\n\"parent payload\" -> parent-file\n",
+    )
+    .await;
+    assert_eq!(fs::read(child.join("copy")).unwrap(), b"nested payload");
+    assert_eq!(
+        fs::read(common.join("parent-file")).unwrap(),
+        b"parent payload"
+    );
+    assert_eq!(
+        fs::read(common.join("unobserved")).unwrap(),
+        b"unrelated outer sibling"
+    );
+    runtime.shutdown().await.unwrap();
+    let after = fs::symlink_metadata(&fifo_path).unwrap();
+    assert!(after.file_type().is_fifo());
+    assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn physical_parent_namespace_preserves_an_unobserved_fifo_above_sparse_children() {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    use tokio::io::AsyncWriteExt;
+
+    let workspace = workspace();
+    let common = workspace.path().join("work");
+    let first = common.join("a1");
+    let second = common.join("a2");
+    fs::create_dir_all(&first).unwrap();
+    fs::create_dir(&second).unwrap();
+    fs::write(first.join("seed"), b"first").unwrap();
+    fs::write(second.join("seed"), b"second").unwrap();
+    fs::write(first.join("unobserved"), b"retained first sibling").unwrap();
+    fs::write(second.join("unobserved"), b"retained second sibling").unwrap();
+    let fifo_path = common.join("fifo");
+    let fifo = std::ffi::CString::new(fifo_path.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    let before = fs::symlink_metadata(&fifo_path).unwrap();
+    let scratch = workspace.path().join("state");
+    let mut runtime = RuntimeSession::new(&Options::new(scratch.clone())).unwrap();
+    let mut compiler = Session::new();
+    run_live(&mut runtime, &mut compiler, &first, "seed -> copy\n").await;
+    run_live(&mut runtime, &mut compiler, &second, "seed -> copy\n").await;
+    assert_eq!(private_files(&scratch), (2, 11));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let context = CompileContext {
+        pwd: common.clone(),
+        source_file: None,
+    };
+    let stream = pipeline::compile(
+        &mut compiler,
+        &format!(
+            "wire => tcp://{}\nwire::/ -> new\n",
+            listener.local_addr().unwrap()
+        ),
+        &context,
+        &[],
+    )
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), runtime.submit(&stream.program))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut peer = tokio::time::timeout(Duration::from_secs(5), listener.accept())
+        .await
+        .unwrap()
+        .unwrap()
+        .0;
+    assert!(!runtime.work_ids().is_empty());
+    assert!(!common.join("new").exists());
+    peer.write_all(b"physical payload").await.unwrap();
+    peer.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), runtime.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read(common.join("new")).unwrap(), b"physical payload");
+    assert_eq!(fs::read(first.join("copy")).unwrap(), b"first");
+    assert_eq!(fs::read(second.join("copy")).unwrap(), b"second");
+    assert_eq!(
+        fs::read(first.join("unobserved")).unwrap(),
+        b"retained first sibling"
+    );
+    assert_eq!(
+        fs::read(second.join("unobserved")).unwrap(),
+        b"retained second sibling"
+    );
+    runtime.shutdown().await.unwrap();
+    let after = fs::symlink_metadata(&fifo_path).unwrap();
+    assert!(after.file_type().is_fifo());
+    assert_eq!((after.dev(), after.ino()), (before.dev(), before.ino()));
 }
 
 #[cfg(unix)]

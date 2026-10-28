@@ -163,3 +163,62 @@ fn deferred_enrollment_refuses_links_before_the_unknown_suffix() {
     std::os::unix::fs::symlink(&real, &link).unwrap();
     assert!(deferred_envelope(&link.join("future/child"), Span::default()).is_err());
 }
+
+#[test]
+fn namespace_promotions_cover_both_arrival_orders_and_nested_batches() {
+    let root = PathBuf::from("namespace-root");
+    let child = root.join("a");
+    let sibling = root.join("b");
+    let unrelated = PathBuf::from("unrelated-root");
+    let cases = [
+        (
+            BTreeSet::from([root.clone()]),
+            BTreeSet::from([child.clone()]),
+        ),
+        (
+            BTreeSet::from([child.clone()]),
+            BTreeSet::from([root.clone()]),
+        ),
+        (
+            BTreeSet::new(),
+            BTreeSet::from([root.clone(), child.clone()]),
+        ),
+    ];
+    for (retained, requested) in cases {
+        let domain = Domain {
+            namespace_roots: requested,
+            ..Domain::default()
+        };
+        assert_eq!(
+            domain.namespace_promotions(&retained),
+            BTreeSet::from([child.clone()])
+        );
+    }
+    let domain = Domain {
+        namespace_roots: BTreeSet::from([child.clone(), sibling, unrelated]),
+        ..Domain::default()
+    };
+    assert!(
+        domain
+            .namespace_promotions(&BTreeSet::from([child]))
+            .is_empty()
+    );
+}
+
+#[test]
+fn nested_payload_requires_its_child_tree_not_the_outer_namespace() {
+    let root = PathBuf::from("namespace-root");
+    let child = root.join("child");
+    let output = root.join("output");
+    let mut domain = Domain {
+        roots: vec![child.join("input"), output.clone()],
+        namespace_roots: BTreeSet::from([root.clone(), child.clone()]),
+        ..Domain::default()
+    };
+    domain.normalize_coverage();
+    assert_eq!(
+        domain.roots.into_iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([child, output])
+    );
+    assert_eq!(domain.namespace_roots, BTreeSet::from([root]));
+}

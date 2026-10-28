@@ -102,11 +102,15 @@ impl Manager {
             ));
         }
         if let std::collections::btree_map::Entry::Vacant(slot) = entries.entry(relative) {
-            let metadata = NodeMetadata::capture(&metadata).map_err(|cause| ManagerError::Io {
-                action: "capture read-domain extension metadata",
-                path: path.clone(),
-                cause,
-            })?;
+            let mut metadata =
+                NodeMetadata::capture(&metadata).map_err(|cause| ManagerError::Io {
+                    action: "capture read-domain extension metadata",
+                    path: path.clone(),
+                    cause,
+                })?;
+            if let Some(invocation) = &self.invocation {
+                invocation.logical_metadata(&path, &mut metadata)?;
+            }
             slot.insert(Entry::Directory { metadata });
         }
         let children = fs::read_dir(&path).map_err(|cause| ManagerError::Io {

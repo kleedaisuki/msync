@@ -157,6 +157,25 @@ impl Domain {
             .map_or(Span::default(), |transfer| transfer.span)
     }
 
+    pub(super) fn namespace_promotions(&self, retained: &BTreeSet<PathBuf>) -> BTreeSet<PathBuf> {
+        let parents = retained
+            .union(&self.namespace_roots)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        // A sparse namespace can contain complete children, not sparse children.
+        // Complete nested requests without capturing unrelated outer streams.
+        parents
+            .iter()
+            .filter(|child| {
+                parents.iter().any(|parent| {
+                    relative_to(child, parent)
+                        .is_some_and(|relative| !relative.as_os_str().is_empty())
+                })
+            })
+            .cloned()
+            .collect()
+    }
+
     pub fn resolve(program: &Program, options: &Options) -> Result<Self> {
         Self::resolve_deferred(program, options, &BTreeSet::new())
     }
@@ -185,18 +204,14 @@ impl Domain {
     }
 
     pub(super) fn normalize_coverage(&mut self) {
-        // Nested sparse namespaces are not a capability of the Manager yet.
-        // Preserve complete envelopes when another read needs that structure.
         let promoted = self
             .namespace_roots
             .iter()
-            .filter(|parent| {
-                self.roots.iter().any(|root| {
-                    relative_to(root, parent)
-                        .is_some_and(|relative| relative.components().count() > 1)
-                })
+            .flat_map(|parent| {
+                self.roots
+                    .iter()
+                    .filter_map(move |root| nested_child(parent, root))
             })
-            .cloned()
             .collect::<Vec<_>>();
         self.roots.extend(promoted);
         self.roots.sort_by_key(|root| root.components().count());
@@ -308,6 +323,14 @@ impl Domain {
         }
         Ok(())
     }
+}
+
+fn nested_child(parent: &Path, root: &Path) -> Option<PathBuf> {
+    let relative = relative_to(root, parent)?;
+    let mut parts = relative.components();
+    let first = parts.next()?;
+    parts.next()?;
+    Some(parent.join(first))
 }
 
 pub(super) fn imported(

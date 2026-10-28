@@ -1030,6 +1030,10 @@ impl RuntimeSession {
     }
 
     fn enroll(&mut self, domain: &Domain) -> Result<()> {
+        self.enroll_at(domain, |root| domain.site(root))
+    }
+
+    fn enroll_at(&mut self, domain: &Domain, site: impl Fn(&Path) -> Span) -> Result<()> {
         if self.engine.is_none() {
             self.sparse_roots.clear();
             if domain.namespace_roots.is_empty() {
@@ -1042,6 +1046,7 @@ impl RuntimeSession {
         let sparse_roots = self.sparse_roots.clone();
         let engine = self.engine_mut()?;
         let mut required = domain.roots.clone();
+        required.extend(domain.namespace_promotions(&sparse_roots));
         if domain.native_view {
             required.extend(sparse_roots.iter().cloned());
         }
@@ -1075,7 +1080,7 @@ impl RuntimeSession {
             enrolled.map_err(|cause| {
                 ExecutionError::caused(
                     "cannot extend the persistent resource domain",
-                    domain.site(root),
+                    site(root),
                     cause,
                 )
             })?;
@@ -1098,7 +1103,7 @@ impl RuntimeSession {
             engine.manager.enroll_namespace(parent).map_err(|cause| {
                 ExecutionError::caused(
                     "cannot enroll destination namespace metadata",
-                    domain.site(parent),
+                    site(parent),
                     cause,
                 )
             })?;
@@ -1119,6 +1124,11 @@ impl RuntimeSession {
                         .any(|root| domain::relative_to(parent, root).is_some())
                 })
                 .cloned(),
+        );
+        debug_assert!(
+            Domain::default()
+                .namespace_promotions(&self.sparse_roots)
+                .is_empty()
         );
         Ok(())
     }
@@ -1188,26 +1198,26 @@ impl RuntimeSession {
             self.sparse_roots.clear();
             self.engine = Some(Engine::new(&Domain::default(), &self.options)?);
         }
-        self.sparse_roots
-            .extend(entries.iter().map(|(parent, _, _)| parent.clone()));
-        let engine = self.engine_mut()?;
-        for (parent, target, span) in entries {
-            engine
-                .manager
-                .enroll_namespace(&parent)
-                .and_then(|()| engine.manager.enroll_entry(&target))
-                .map_err(|cause| {
-                    ExecutionError::caused("cannot enroll physical output namespace", span, cause)
-                })?;
-            if !engine
-                .roots
+        let domain = Domain {
+            roots: entries
                 .iter()
-                .any(|root| domain::relative_to(&target, root).is_some())
-            {
-                engine.roots.push(target);
-            }
-        }
-        Ok(())
+                .map(|(_, target, _)| target.clone())
+                .collect(),
+            namespace_roots: entries
+                .iter()
+                .map(|(parent, _, _)| parent.clone())
+                .collect(),
+            ..Domain::default()
+        };
+        self.enroll_at(&domain, |root| {
+            entries
+                .iter()
+                .find(|(parent, _, _)| {
+                    domain::relative_to(root, parent).is_some()
+                        || domain::relative_to(parent, root).is_some()
+                })
+                .map_or(Span::default(), |(_, _, span)| *span)
+        })
     }
 
     fn fresh_instruction(&mut self) -> Result<InstructionId> {
