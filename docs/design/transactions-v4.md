@@ -1,11 +1,16 @@
 # Transaction and process-resource mediation for v0.4
 
-Status: implementation design and evidence, not a claim that v0.4 is implemented.
-The supplied v0.4 example is the language requirement. This note separates the
-database model, filesystem publication, and child-process mediation because none
-of those three mechanisms can replace the others.
+This note preserves the transaction design rationale, primary references and
+dated implementation evidence. The supplied v0.4 example is the language
+requirement. Current integration and acceptance are summarized in
+[architecture-v4.md](architecture-v4.md#current-integration-checkpoint-2026-10-28)
+and the [requirement audit](validation.md#current-v04-requirement-audit-2026-10-28).
+The historical foundation gaps below describe the old per-file executor, not
+the integrated `transaction::Manager` and `execution::RuntimeSession`.
+Database visibility, filesystem publication and native child-process mediation
+remain separate mechanisms; none can replace the other two.
 
-## Existing foundation and the gap
+## Original per-file foundation and the gap
 
 `src/io/mod.rs::StagedFile`, `src/runtime.rs::copy_file`, and the stream executor
 already stage individual native files before atomic pathname publication.
@@ -13,7 +18,7 @@ already stage individual native files before atomic pathname publication.
 observable operations; `Resource::overlaps` includes tree prefixes and aliases.
 The scheduler admits bounded co-start cohorts. Reuse these mechanisms.
 
-They do **not** currently provide a multi-file transaction, retained old versions,
+Those original mechanisms alone do **not** provide a multi-file transaction, retained old versions,
 snapshot reads, savepoints, or rollback of a program's direct filesystem writes.
 `docs/design/runtime.md` explicitly documents the existing per-leaf rather than
 whole-tree guarantee. A transaction wrapper around the old executor would keep

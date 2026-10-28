@@ -4,8 +4,12 @@
 
 This is a source/test/gate mapping, not a declaration that the current working
 tree is accepted. The historical checkpoints below retain their original scope.
-This audit inspected current test bodies and execution paths without rerunning
-broad suites. `Cargo.toml` still declares `0.4.0-dev`.
+The latest audit inspected committed `6631f28`, current test bodies and execution
+paths, and the actual job/step results of its cloud run without rerunning broad
+suites. The final literal-worker experiment was rejected after paired and
+swapped-fixture measurements; production retains the accepted bounded Tokio
+implementation. The package is now `0.4.0`; its final release matrix and selected
+artifact verification are recorded separately below when completed.
 
 | User requirement | Authoritative implementation and acceptance gate | Assessment / boundary |
 | --- | --- | --- |
@@ -17,14 +21,15 @@ broad suites. `Cargo.toml` still declares `0.4.0-dev`.
 | Exact argv and stdin/stdout/stderr/pid/exit_code/meta | `process_v4::exact_argv_boundaries_are_not_shell_parsed_and_spools_are_removed`; lowering port/direction tests; native `program_execution_v4::{large_stderr_and_stdin_co_start_and_nonzero_exit_remains_replayable_data,replayed_scalars_finish_each_implicit_statement_before_staging_its_sibling}` | Nonzero status is replayable data; large stderr cannot block stdin/stdout completion. Scalar sibling publication is an atomic-statement boundary, not merely deferred staging. |
 | Genuine mediation of relevant external-program filesystem IO | `process_view_linux_v4` actual namespace/bubblewrap cases; `process_view_windows_v4` actual signed-driver cases; native workspace file-to-directory/raw-`..`/undo case | Original logical paths and descendant writes are mediated by real providers. No unisolated fallback or private-cwd-only claim. Unsupported managed snapshot node kinds and external-service rollback are capability boundaries, not simulated transactions. |
 | Plan -> Execute, replayable optimization proofs and fixed-point semantics | `preparation::PreparedProgram::verify`; `hir_plan_v4` schedule/property and cohort cases; `planner_optimization_v4` creation fusion, readonly, namespace-order, alias and metadata controls; `planner_proof_sharing_v4` tamper rejection | Adjacent safe missing-target writes can fuse to one assignment while retaining the surviving source site and creation facts. Type alone does not prove alias separation or writability. Shared proof storage does not delete proof obligations. |
-| Bounded asynchronous work and logically valid reordering | `physical_execution_v4::{independent_tcp_inputs_queue_at_the_concurrent_capacity_limit,interactive_capacity_refusal_preserves_the_old_flow_and_can_be_retried,fifo_waves_preserve_order_and_reject_half_cohort_resource_budgets,fifo_cohort_waits_for_all_external_prerequisites_before_reserving_slots}`; event-ledger owner/phase tests | Independent finite batch work queues at occupied capacity; inseparable overflow still refuses before effects. All-phase Start/Publish/RegionCommit, typed cancellation and native identity are distinct. This is not a claim of general parallel execution of named transaction bodies. |
-| Persistent REPL, owned diagnostics, background endpoint lifetime | `repl_jobs`, `repl_terminal`, `source_v4`, `runtime_task_telemetry_v4`; cross-input native program tests; physical EOF/stop/independent-flow tests | Programs, macros, bindings, origins and error sources survive inputs. One flow's EOF does not cancel an unrelated flow; expected cancellation and real cleanup failure have different outcomes. |
+| Bounded asynchronous work and logically valid reordering | `physical_execution_v4::{independent_tcp_inputs_queue_at_the_concurrent_capacity_limit,interactive_capacity_refusal_preserves_the_old_flow_and_can_be_retried,fifo_waves_preserve_order_and_reject_half_cohort_resource_budgets,fifo_cohort_waits_for_all_external_prerequisites_before_reserving_slots}`; `named_execution_v4::{disjoint_named_literal_jobs_overlap_and_keep_checkpoint_and_origin_semantics,named_sibling_creations_keep_the_existing_strict_parent_gate}`; `execution/frontier.rs` owner-binding regression | Independent finite work queues at occupied capacity; inseparable overflow refuses before effects. Named continuations actually overlap two checked independent literal writes with two jobs and serialize with one; strict parent-creation hazards remain. Actual post-open/post-flush intervals, bytes, checkpoint and origin metadata are checked. Opaque programs still retain conservative effects; this is not arbitrary native-program parallelism. |
+| Ordinary files, directories and physical streams; exact-directory refusal and explicit container/replacement intent | `execution_v4::{exact_directory_rejection_and_empty_selection_never_create_a_destination,container_merge_retains_existing_names_and_does_not_overwrite_nested_files,typed_macro_copies_a_real_tree_into_explicit_replacement_without_nesting}`; `physical_execution_v4` real TCP, FIFO and Unix-socket cases | Existing exact directories are rejected, trailing `/` retains container semantics, and `/.` explicitly replaces the tree. Non-directory byte sources can feed physical endpoints; directory-to-socket rejection precedes connection. EOF ends only that flow. These are not snapshot copies of live FIFO/socket inodes. |
+| Persistent REPL, owned token diagnostics, script formatting and highlighted help | `cli_structured_v4::{actual_repl_retains_macros_and_named_origins_across_separate_submissions,structured_format_edits_the_script_and_stdout_preview_remains_machine_text,a_quoted_readonly_destination_has_a_token_diagnostic_and_never_writes}`; `language_v4::diagnostics_point_at_precise_utf8_tokens_and_collect_independent_errors`; `source_v4`, `ux_031`, `repl_terminal`, `runtime_task_telemetry_v4`; cross-input native program and physical EOF/stop tests | Programs, macros, bindings, origins and owned definition/call-argument sources survive inputs. Actual terminal journeys distinguish syntax/help ANSI from plain piped text. Formatting edits a named script unless an explicit preview/check is selected. Exact UTF-8 token spans and constructive repairs are checked. One flow's EOF does not cancel an unrelated flow; expected cancellation and real cleanup failure differ. |
 | Engineering/research basis and crate organization | `architecture-v4.md`, `transactions-v4.md`, `planning.md`, `windows-resource-view-v4.md`; `language`, `compiler/structured`, `hir`, `preparation`, `execution`, `transaction` module boundaries | Parser/expansion, metadata preparation/proofs, scheduling, version store and native adapters have separate ownership. Primary references and counterexamples are recorded in those focused notes; adding a multi-crate workspace is not itself a required result. |
 | Post-integration component, asynchronous and millisecond performance work | `performance-v4.md`; release `planner_v4`, `store_v4`, `latency_v4` harnesses; saved baseline `5cafd34` and identified candidate binaries/rlibs | Actual native-ext4 baseline/candidate methods, compiler allocations and Store candidate costs are recorded. Limits, filesystem aliases, cache/loader scope and retained-history caveats remain part of the result. Correctness-test durations are not benchmark cells. |
 
 ### Remaining gates and scope decisions
 
-1. **The committed optimization checkpoint is accepted; later work is not.**
+1. **Committed named-frontier integration is accepted at `6631f28`.**
    [Run 40642774605](https://github.com/kleedaisuki/msync/actions/runs/40642774605)
    at `5d4d99d` completed successfully: both ordinary OS jobs and the actual
    signed Windows provider gate passed. The Ubuntu job also runs the explicit
@@ -38,9 +43,16 @@ broad suites. `Cargo.toml` still declares `0.4.0-dev`.
    Hierarchical sparse/outer-FIFO normalization and fresh scratch-ancestor
    metadata subsequently passed
    [181221e](https://github.com/kleedaisuki/msync/actions/runs/40651887259).
-   Pending named-body overlap and final performance acceptance remain separate.
-   Final acceptance must repeat the applicable ordinary and native gates at the
-   selected integration revision, with meaningful changed-area tests.
+   [Run 40658354002](https://github.com/kleedaisuki/msync/actions/runs/40658354002)
+   then accepted the committed continuation frames and bounded literal jobs at
+   exact head `6631f28205a58440d22f97f9f6138b14ff671c7e`. Both ordinary jobs
+   passed their selected-area strict lint/tests, including `named_execution_v4`.
+   The signed Windows job passed all four actual native sections. Ubuntu passed
+   actual program execution, four-mode native macros, physical consumer closure,
+   REPL provenance and native workspace sections; its unchanged standalone
+   process-view section and doctests were **skipped**, not additional passes.
+   The latest run is scoped integration evidence, not a final all-target release
+   matrix. Final acceptance must cover the selected delivery revision.
 2. **Single-input new opaque program plus external FIFO remains a documented
    capability boundary.** The supplied A1 example uses an ordinary prompt file;
    its requested lifecycle is covered. Declaring the program first, then
@@ -50,19 +62,26 @@ broad suites. `Cargo.toml` still declares `0.4.0-dev`.
    snapshot/IO effects. It does block an unqualified claim that every stream and
    newly spawned program compose in one input. It is an implementation/bootstrap
    proof limitation, not evidence that a readonly mount prevents FIFO byte IO.
-3. **Named-region overlap remains under integration.** The committed checkpoint
-   still awaits each named body recursively. The uncommitted continuation-frame
-   implementation has actual bounded literal-write overlap, one-job serialization
-   controls, same-parent metadata controls and named origin/checkpoint journeys.
-   Independent review found a stale boundary-plan activation that can discard a
-   later sibling's owner bindings, incorrectly requiring its own commit before
-   a dependent child. That owner/phase issue and the actual native lifecycle
-   acceptance must close before these prototype results count as delivery.
-   Serial correctness or disjoint physical-flow tests alone do not establish
-   the user's emphasized proven-independent A/B overlap capability.
-4. **Delivery remains open.** Performance evidence is substantive but current
-   named-frontier changes and final latency measurements need their own acceptance.
-   The package remains `0.4.0-dev`, and no current v0.4 installed executable/version/hash
+3. **The named-region integration defect is closed, not waived.**
+   `execution/frontier.rs` preserves the latest authoritative submission plan
+   while settling an older boundary. Its deterministic regression checks that
+   a later sibling retains its owner bindings and waits for its own producer's
+   `LogicalComplete`, not its own enclosing transaction's `Committed` event.
+   `named_execution_v4::finishing_a_fast_scope_does_not_unbind_another_scopes_pending_producer`
+   exercises the corresponding actual fast-A/large-B/dependent-file journey.
+   The cloud native lifecycle sections above also passed after this repair.
+   Capture/publication and Manager mutation remain serialized; the delivered
+   overlap concerns admitted independent IO, not simultaneous unsynchronized
+   version-store mutation. A second negative test keeps future stdin from being
+   hoisted across a checkpoint merely to let its earlier process complete.
+4. **Delivery remains open.** Component, sparse-enrollment and named-frame latency
+   evidence is substantive. The last single-file worker experiment was rejected:
+   swapping executable labels and fixture directories reversed the small-case
+   direction, while the large case won only 16/31 paired comparisons. A smaller
+   number of Tokio pool submissions alone is not proof of lower user-visible
+   latency. The selected production source must receive the
+   final versioned Windows/Linux all-target/doctest/native release matrix.
+   The package is `0.4.0`, and no current v0.4 installed executable/version/hash
    verification is established here. Version/install verification belongs to
    eventual delivery. The user's push authorization does not itself authorize
    creating a release or tag; obtain an explicit request before those actions.

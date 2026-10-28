@@ -23,22 +23,37 @@ OS jobs and actual native program/macro/workspace gates at
 The hierarchical namespace/outer-FIFO compatibility follow-up passed the same
 ordinary and actual-native gates at
 [`181221e`](https://github.com/kleedaisuki/msync/actions/runs/40651887259).
-Named-body concurrency remains separate unfinished work.
+The named continuation frontier and its owner-binding repair then passed the
+applicable ordinary Windows/Linux and actual native gates at
+[`6631f28`](https://github.com/kleedaisuki/msync/actions/runs/40658354002).
+Independent named literal writes have actual bounded IO-interval overlap, with
+jobs=1 serialization, checkpoint/local reset/origin undo and metadata controls.
+This does not claim arbitrary opaque programs have disjoint effects: native
+program grants stay conservative, while snapshot capture and physical
+publication remain serialized under the Manager owner. The executable contract
+and focused evidence are in [the named-frontier section](planning.md#named-regions-share-the-execution-frontier).
 
 Following the user's parallel-performance authorization, committed components
-are being measured and optimized independently. Store candidate sharing,
-byte-verified artifact reuse and immutable graph-proof sharing have focused
-measurements in [performance-v4.md](performance-v4.md). Final performance/release
-acceptance remains open; no debug correctness runtime is a latency benchmark.
+have been measured and optimized independently. Store candidate sharing,
+byte-verified artifact reuse, immutable graph-proof/State sharing and sparse
+finite enrollment have focused measurements in
+[performance-v4.md](performance-v4.md). Native-ext4 measurements use native path
+aliases and descriptor filesystem checks rather than confusing DrvFS ancestor
+cost with Linux storage performance. A joined blocking literal-worker candidate
+was rejected after its bounded paired confirmation did not establish a robust
+user-visible win. Final release-matrix and selected artifact/version acceptance
+remain open; no debug correctness runtime is a latency benchmark.
 The single-input opaque-program/external-FIFO bootstrap boundary described at
 the end of this note is still an explicit capability limitation, not implemented
 support inferred from the split-input native fixture.
 
 ## Original design and historical evidence
 
-Status: implementation-facing design, not a claim that the features below are
-already implemented. This note integrates the supplied v0.4 example with the
-existing v0.3.1 public contracts. See [implementation.md](implementation.md),
+The following design rationale and dated checkpoints retain the development
+sequence; phrases such as "proposed", "not yet" and their test counts describe
+those historical stages, not the current integration status above. This note
+integrates the supplied v0.4 example with the existing v0.3.1 public contracts.
+See [implementation.md](implementation.md),
 [planning.md](planning.md), and [planner-proof.md](planner-proof.md) for the
 current system; transaction mediation research belongs in its focused note.
 

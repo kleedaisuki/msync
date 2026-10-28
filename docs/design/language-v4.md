@@ -1,9 +1,13 @@
 # v0.4 language frontend: typed blocks, calls and lexical expansion
 
-Status: frontend implementation and runtime integration contract, not a claim
-that all runtime paths below already execute. The user-supplied v0.4 example is the semantic target. This note owns
-frontend rules; transaction enforcement and effect scheduling belong in the
-companion architecture and transaction notes.
+This note owns the structured frontend contract and its original implementation
+rationale. The user-supplied v0.4 example is the semantic target. Current runtime
+integration, native gates and remaining delivery checks are summarized in
+[architecture-v4.md](architecture-v4.md#current-integration-checkpoint-2026-10-28)
+and [validation.md](validation.md#current-v04-requirement-audit-2026-10-28).
+Historical implementation-gap descriptions below are not the current runtime
+status; transaction enforcement and effect scheduling belong in their focused
+companion notes.
 
 ## Decisions that unblock implementation
 
