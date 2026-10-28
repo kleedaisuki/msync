@@ -5,6 +5,44 @@ signed-driver journeys have **not** been run on the development host; no driver,
 service or Sandboxie configuration was installed or changed there. The ephemeral
 Windows Actions gate must prove native support before release acceptance.
 
+## Native cleanup includes the service-owned registry hive
+
+[Run 40533733086](https://github.com/kleedaisuki/msync/actions/runs/40533733086)
+passed all four native resource-view journeys and all nine production program
+journeys. The expanded user-scratch gate in
+[run 40542243926](https://github.com/kleedaisuki/msync/actions/runs/40542243926)
+again passed those 4 + 9 journeys, then failed private-box deletion with Windows
+sharing violation 32. Native process exit alone was not a complete box-storage
+quiescence protocol.
+
+The pinned driver's
+[`Key_UnmountHive`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/drv/key.c)
+marks the last user's hive pending and queues `SVC_UNMOUNT_HIVE`. The service's
+[`DriverAssist::UnmountHive`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/svc/DriverAssist.cpp)
+separately waits for process termination and an empty box before `NtUnloadKey`
+releases the hive file. A signaled process handle therefore does not prove that
+the service has released `RegHive`. `SbieDll_Unmount` is not a substitute: its
+implementation in
+[`support.c`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/dll/support.c)
+requests ImDisk container unmounting, not this registry completion boundary.
+
+After joining every worker, cleanup now obtains the exact registry-root path
+from `SbieApi_QueryBoxPath`, registers a parent-name OS notification, and checks
+whether that particular hive remains. Registration precedes each absence query;
+an unrelated sibling event does not establish completion. No handle is retained
+to the target hive itself, because that would obstruct unloading. A bounded
+deadline reports the actual registry root and preserved native cause and retains
+the owned box on failure. Only after this boundary does existing owned-path
+identity validation, owned-section removal and physical deletion proceed. No
+sleep, repeated deletion attempt, service restart, or global configuration change
+is involved.
+
+Five driver-free focused regressions cover a deletion before the query,
+unrelated notifications, a real timeout, native-root validation, and a real OS
+notification for an independently created private HKCU child. These establish
+the wait protocol, not the native service's successful unload; the expanded
+signed-driver workspace journey still requires a new provisioned gate.
+
 ## First provisioned-driver result and path-policy correction
 
 [Actions run 40498380133](https://github.com/kleedaisuki/msync/actions/runs/40498380133)

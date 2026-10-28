@@ -5,6 +5,8 @@
 //! Planning must not call runtime `prepare`, which creates private view data.
 //! This is a managed-filesystem boundary, not universal undo for external services.
 
+#[path = "windows_view/hive.rs"]
+mod hive;
 #[path = "windows_view/native.rs"]
 mod native;
 #[path = "windows_view/trees.rs"]
@@ -1064,6 +1066,9 @@ impl OwnedBox {
             self.api
                 .quiesce_except(&self.name, None)
                 .map_err(|cause| ViewError::new("quiesce cleanup", &self.path, cause))?;
+            self.api
+                .wait_hive_unmounted(&self.name)
+                .map_err(|cause| ViewError::new("join registry hive", &self.path, cause))?;
         }
         let identity = Handle::from_path(&self.path)
             .map_err(|cause| ViewError::new("identify cleanup", &self.path, cause))?;

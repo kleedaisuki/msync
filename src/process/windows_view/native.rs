@@ -292,6 +292,31 @@ impl Api {
         path_from_native(text)
     }
 
+    pub fn wait_hive_unmounted(&self, name: &str) -> io::Result<()> {
+        let mut name = wide(OsStr::new(name))?;
+        name.resize(40, 0);
+        let mut root = vec![0u16; 32767];
+        let mut bytes = (root.len() * 2) as u32;
+        status(unsafe {
+            (self.box_path)(
+                name.as_ptr(),
+                null_mut(),
+                root.as_mut_ptr(),
+                null_mut(),
+                null_mut(),
+                &mut bytes,
+                null_mut(),
+            )
+        })?;
+        let end = root
+            .iter()
+            .position(|unit| *unit == 0)
+            .ok_or_else(|| io::Error::other("Sandboxie returned an unterminated registry root"))?;
+        let root = String::from_utf16(&root[..end])
+            .map_err(|cause| io::Error::new(io::ErrorKind::InvalidData, cause))?;
+        super::hive::wait_unmounted(&root, std::time::Duration::from_secs(10))
+    }
+
     /// Inspect the actual open handle, not the DLL's virtualized DOS spelling.
     pub fn require_boxed_directory(
         &self,
