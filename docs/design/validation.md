@@ -1,5 +1,65 @@
 # End-to-end verification
 
+## Current v0.4 requirement audit (2026-10-28)
+
+This is a source/test/gate mapping, not a declaration that the current working
+tree is accepted. The historical checkpoints below retain their original scope.
+This audit inspected current test bodies and execution paths without rerunning
+broad suites. `Cargo.toml` still declares `0.4.0-dev`.
+
+| User requirement | Authoritative implementation and acceptance gate | Assessment / boundary |
+| --- | --- | --- |
+| Typed lexical macros, declaration-time `global`, no textual substitution or nested macros | `compiler/structured.rs`; `lowering_v4::{user_macro_expands_typed_remote_sources_and_contextual_destination_items,macro_global_uses_definition_snapshot_and_locals_do_not_leak,namespace_arguments_and_stream_arguments_retain_types,manually_constructed_nested_macro_ast_is_rejected_even_if_not_called}`; actual `macro_native_v4::whole_program_macro_arguments_execute_and_undo_in_each_isolation_mode` | Implemented path/namespace/port/program values; the native fixture checks whole-program formals, captured global destination, exact bytes and undo. Pure expansion tests alone do not establish native IO. |
+| Python-like blocks, UTF-8 literals, structural `/` and contextual `::` | `language_v4::{parses_the_requested_program_without_losing_types,canonical_format_is_idempotent_and_preserves_nested_regions,diagnoses_ambiguous_indentation_and_nested_macros}`; `join_v4`; `cli_structured_v4` | Default grammar deliberately treats quotes as data; explicit joins/qualification construct paths. Formatting is in-place script formatting, not execution or implicit stdout redirection. |
+| Shared transaction lexical environment and forbidden foreign rollback inside a block | `lowering_v4::{a_transaction_does_not_create_a_macro_lexical_scope,other_transaction_rollback_is_forbidden_inside_a_transaction}`; runtime owner/control checks | Implemented separately from resource lifetime. Resource rewind does not undo compile-time bindings. |
+| Four isolation modes, default serializable | `language_v4::supports_all_isolations_and_the_default`; `transaction_store_v4` dirty-read, statement-refresh, repeatable snapshot, write-skew, absence and phantom cases; disk `transaction_manager_v4::visibility_reads_are_immutable_even_while_other_transactions_stage_and_publish`; native four-mode macro loop | Actual version semantics exist, not merely accepted names. The native loop proves the program lifecycle under each mode, not an experiment distinguishing all concurrent native visibility outcomes. |
+| Checkpoint commit, local pending rewind, retained named origin and foreign-history-safe undo | `transaction_store_v4::{checkpoint_and_full_rollback_have_distinct_scopes_and_preserve_unrelated_writes,origin_rollback_never_erases_an_intervening_foreign_publication}`; disk Manager checkpoint/origin cases; native `program_execution_v4::{the_requested_checkpoint_and_program_port_lifecycle_runs_end_to_end,checkpoint_rollback_cancels_pending_native_io_and_starts_a_fresh_epoch}` | Covers the supplied A1/B2 lifecycle, including direct child writes. Commit does not destroy origin history; rollback joins/discards the current native epoch before reset. |
+| Exact argv and stdin/stdout/stderr/pid/exit_code/meta | `process_v4::exact_argv_boundaries_are_not_shell_parsed_and_spools_are_removed`; lowering port/direction tests; native `program_execution_v4::{large_stderr_and_stdin_co_start_and_nonzero_exit_remains_replayable_data,replayed_scalars_finish_each_implicit_statement_before_staging_its_sibling}` | Nonzero status is replayable data; large stderr cannot block stdin/stdout completion. Scalar sibling publication is an atomic-statement boundary, not merely deferred staging. |
+| Genuine mediation of relevant external-program filesystem IO | `process_view_linux_v4` actual namespace/bubblewrap cases; `process_view_windows_v4` actual signed-driver cases; native workspace file-to-directory/raw-`..`/undo case | Original logical paths and descendant writes are mediated by real providers. No unisolated fallback or private-cwd-only claim. Unsupported managed snapshot node kinds and external-service rollback are capability boundaries, not simulated transactions. |
+| Plan -> Execute, replayable optimization proofs and fixed-point semantics | `preparation::PreparedProgram::verify`; `hir_plan_v4` schedule/property and cohort cases; `planner_optimization_v4` creation fusion, readonly, namespace-order, alias and metadata controls; `planner_proof_sharing_v4` tamper rejection | Adjacent safe missing-target writes can fuse to one assignment while retaining the surviving source site and creation facts. Type alone does not prove alias separation or writability. Shared proof storage does not delete proof obligations. |
+| Bounded asynchronous work and logically valid reordering | `physical_execution_v4::{independent_tcp_inputs_queue_at_the_concurrent_capacity_limit,interactive_capacity_refusal_preserves_the_old_flow_and_can_be_retried,fifo_waves_preserve_order_and_reject_half_cohort_resource_budgets,fifo_cohort_waits_for_all_external_prerequisites_before_reserving_slots}`; event-ledger owner/phase tests | Independent finite batch work queues at occupied capacity; inseparable overflow still refuses before effects. All-phase Start/Publish/RegionCommit, typed cancellation and native identity are distinct. This is not a claim of general parallel execution of named transaction bodies. |
+| Persistent REPL, owned diagnostics, background endpoint lifetime | `repl_jobs`, `repl_terminal`, `source_v4`, `runtime_task_telemetry_v4`; cross-input native program tests; physical EOF/stop/independent-flow tests | Programs, macros, bindings, origins and error sources survive inputs. One flow's EOF does not cancel an unrelated flow; expected cancellation and real cleanup failure have different outcomes. |
+| Engineering/research basis and crate organization | `architecture-v4.md`, `transactions-v4.md`, `planning.md`, `windows-resource-view-v4.md`; `language`, `compiler/structured`, `hir`, `preparation`, `execution`, `transaction` module boundaries | Parser/expansion, metadata preparation/proofs, scheduling, version store and native adapters have separate ownership. Primary references and counterexamples are recorded in those focused notes; adding a multi-crate workspace is not itself a required result. |
+| Post-integration component, asynchronous and millisecond performance work | `performance-v4.md`; release `planner_v4`, `store_v4`, `latency_v4` harnesses; saved baseline `5cafd34` and identified candidate binaries/rlibs | Actual native-ext4 baseline/candidate methods, compiler allocations and Store candidate costs are recorded. Limits, filesystem aliases, cache/loader scope and retained-history caveats remain part of the result. Correctness-test durations are not benchmark cells. |
+
+### Remaining gates and scope decisions
+
+1. **The committed optimization checkpoint is accepted; later work is not.**
+   [Run 40642774605](https://github.com/kleedaisuki/msync/actions/runs/40642774605)
+   at `5d4d99d` completed successfully: both ordinary OS jobs and the actual
+   signed Windows provider gate passed. The Ubuntu job also runs the explicit
+   native view/program/macro/workspace journeys selected by the shared runtime
+   changes. This includes Windows control-pipe cancellation handling, the strict
+   test-module placement fix and State-cache optimization. It does not certify
+   the current uncommitted sparse/enrollment work or pending named-body overlap.
+   Final acceptance must repeat the applicable ordinary and native gates at the
+   selected integration revision, with meaningful changed-area tests.
+2. **Single-input new opaque program plus external FIFO remains a documented
+   capability boundary.** The supplied A1 example uses an ordinary prompt file;
+   its requested lifecycle is covered. Declaring the program first, then
+   submitting both FIFO halves together, is an actually tested alternative.
+   Therefore this additional combination need not independently block a bounded
+   v0.4 release, provided the limitation is visible and fails before unsupported
+   snapshot/IO effects. It does block an unqualified claim that every stream and
+   newly spawned program compose in one input. It is an implementation/bootstrap
+   proof limitation, not evidence that a readonly mount prevents FIFO byte IO.
+3. **Named-region parallelism is not generally exploited.** The runtime awaits
+   `region(body, Some(id), ...)` before returning to its outer frontier. Serial
+   execution preserves result equivalence but does not deliver the user's
+   emphasized proven-disjoint A/B overlap and asynchronous/parallel optimization
+   capability. This remains open work with a required real named-body overlap
+   gate. Disjoint physical-flow tests or a graph with disjoint effects do not
+   establish that capability; do not label it optional merely because serial
+   implementation is easier.
+4. **Delivery remains open.** Performance evidence is substantive but current
+   uncommitted lifetime/enrollment changes need their own acceptance. The package
+   remains `0.4.0-dev`, and no current v0.4 installed executable/version/hash
+   verification is established here. Version/install verification belongs to
+   eventual delivery. The user's push authorization does not itself authorize
+   creating a release or tag; obtain an explicit request before those actions.
+   Keep the stable installed binary until a selected replacement build passes
+   the applicable checks and installation is authorized.
+
 This note retains successive verification checkpoints; older counts and
 limitations describe their recorded revision, not the current branch.
 The v0.4 semantic contract is in [language-v4.md](language-v4.md), with current

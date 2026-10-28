@@ -12,9 +12,12 @@ The complete Windows/Linux compatibility matrix and actual native gates passed
 at [`1121571`](https://github.com/kleedaisuki/msync/actions/runs/40636799976), then
 again with byte-verified file refresh at
 [`0b51616`](https://github.com/kleedaisuki/msync/actions/runs/40638558941).
-The later proof-sharing revision passed both ordinary matrices but exposed a
-Windows cancellation/output-channel race in its native gate; that has a separate
-provider repair in progress, not a reason to suppress the native check.
+The proof-sharing revision exposed a Windows cancellation/output-channel race
+in its native gate. Explicit worker control outcomes and terminal-result joining
+repair that race; the integrated compiler/worker checkpoint
+[`5d4d99d`](https://github.com/kleedaisuki/msync/actions/runs/40642774605)
+passed both ordinary OS jobs and actual native gates. This does not certify
+subsequent uncommitted sparse enrollment or named-body concurrency work.
 
 Following the user's parallel-performance authorization, committed components
 are being measured and optimized independently. Store candidate sharing,
