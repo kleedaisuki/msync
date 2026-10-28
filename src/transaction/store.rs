@@ -266,12 +266,17 @@ pub struct Retention {
 /// `V` must denote an immutable version: the default is shared bytes, while a
 /// filesystem adapter can use an owned artifact reference or tree manifest without
 /// loading payloads into memory. Cloning a value must preserve that version.
+/// Candidates share immutable tables through `Arc`. Accordingly, sending or
+/// sharing a `Store<V>` between threads requires `V: Send + Sync`; a thread-local
+/// store can still use other cloneable values. This is the v0.4 API contract,
+/// not an auto-trait compatibility claim for the earlier development prototype.
 #[derive(Clone, Debug)]
 pub struct Store<V = Value> {
     epoch: Epoch,
     revision: u64,
-    versions: BTreeMap<ResourceKey, Vec<Version<V>>>,
-    transactions: BTreeMap<TransactionId, Transaction<V>>,
+    // Atomic adapter candidates share immutable tables; only a touched chain detaches.
+    versions: Arc<BTreeMap<ResourceKey, Arc<Vec<Version<V>>>>>,
+    transactions: Arc<BTreeMap<TransactionId, Arc<Transaction<V>>>>,
 }
 
 impl<V> Default for Store<V> {
@@ -279,8 +284,8 @@ impl<V> Default for Store<V> {
         Self {
             epoch: Epoch::default(),
             revision: 0,
-            versions: BTreeMap::new(),
-            transactions: BTreeMap::new(),
+            versions: Arc::new(BTreeMap::new()),
+            transactions: Arc::new(BTreeMap::new()),
         }
     }
 }
@@ -300,7 +305,7 @@ impl<V: Clone> Store<V> {
     }
 
     pub fn transaction(&self, id: TransactionId) -> Option<&Transaction<V>> {
-        self.transactions.get(&id)
+        self.transactions.get(&id).map(Arc::as_ref)
     }
 
     /// Install an adapter-observed initial value or an external publication.
@@ -324,10 +329,9 @@ impl<V: Clone> Store<V> {
         writer: TransactionId,
         value: V,
     ) -> Result<(), StoreError> {
-        let head = self
-            .versions
+        let head = Arc::make_mut(&mut self.versions)
             .get_mut(key)
-            .and_then(|versions| versions.last_mut())
+            .and_then(|versions| Arc::make_mut(versions).last_mut())
             .filter(|head| {
                 head.epoch > published && head.writer == Some(writer) && head.value.is_some()
             })
@@ -344,9 +348,9 @@ impl<V: Clone> Store<V> {
         if self.transactions.contains_key(&id) {
             return Err(StoreError::DuplicateTransaction(id));
         }
-        self.transactions.insert(
+        Arc::make_mut(&mut self.transactions).insert(
             id,
-            Transaction {
+            Arc::new(Transaction {
                 id,
                 isolation,
                 state: TransactionState::Active,
@@ -357,7 +361,7 @@ impl<V: Clone> Store<V> {
                 reads: BTreeMap::new(),
                 predicates: BTreeMap::new(),
                 origin: BTreeMap::new(),
-            },
+            }),
         );
         Ok(())
     }
@@ -367,7 +371,7 @@ impl<V: Clone> Store<V> {
     pub fn start_statement(&mut self, id: TransactionId) -> Result<Epoch, StoreError> {
         self.active(id)?;
         let epoch = self.epoch;
-        self.transactions.get_mut(&id).unwrap().statement = epoch;
+        self.transaction_mut(id).statement = epoch;
         Ok(epoch)
     }
 
@@ -384,9 +388,7 @@ impl<V: Clone> Store<V> {
             version.and_then(|version| version.value.clone())
         };
         if transaction.isolation == Isolation::Serializable {
-            self.transactions
-                .get_mut(&id)
-                .unwrap()
+            self.transaction_mut(id)
                 .reads
                 .entry(key.clone())
                 .or_insert(observed);
@@ -441,9 +443,7 @@ impl<V: Clone> Store<V> {
             }
         }
         if serializable {
-            self.transactions
-                .get_mut(&id)
-                .unwrap()
+            self.transaction_mut(id)
                 .predicates
                 .entry(prefix.clone())
                 .or_insert(epoch);
@@ -457,7 +457,7 @@ impl<V: Clone> Store<V> {
         let transaction = self.active(id)?;
         self.validate(transaction)?;
         if transaction.pending.is_empty() {
-            self.transactions.get_mut(&id).unwrap().clear_segment();
+            self.transaction_mut(id).clear_segment();
             return Ok(self.epoch);
         }
         let (epoch, revision) = self.next_publication()?;
@@ -472,7 +472,7 @@ impl<V: Clone> Store<V> {
                 (key.clone(), value)
             })
             .collect::<Vec<_>>();
-        let transaction = self.transactions.get_mut(&id).unwrap();
+        let transaction = self.transaction_mut(id);
         transaction.origin.extend(origin);
         let pending = std::mem::take(&mut transaction.pending);
         transaction.clear_segment();
@@ -487,14 +487,14 @@ impl<V: Clone> Store<V> {
     /// Discard only changes and observations since the latest successful checkpoint.
     pub fn rollback_pending(&mut self, id: TransactionId) -> Result<(), StoreError> {
         self.active(id)?;
-        self.transactions.get_mut(&id).unwrap().clear_segment();
+        self.transaction_mut(id).clear_segment();
         Ok(())
     }
 
     /// The implicit commit at a transaction block's end. Its origin remains named.
     pub fn finish(&mut self, id: TransactionId) -> Result<Epoch, StoreError> {
         let epoch = self.checkpoint(id)?;
-        self.transactions.get_mut(&id).unwrap().state = TransactionState::Finished;
+        self.transaction_mut(id).state = TransactionState::Finished;
         Ok(epoch)
     }
 
@@ -530,7 +530,7 @@ impl<V: Clone> Store<V> {
             }
         }
         if transaction.origin.is_empty() {
-            let transaction = self.transactions.get_mut(&id).unwrap();
+            let transaction = self.transaction_mut(id);
             transaction.clear_segment();
             transaction.state = TransactionState::RolledBack;
             return Ok(self.epoch);
@@ -540,7 +540,7 @@ impl<V: Clone> Store<V> {
         for (key, value) in origin {
             self.append(key, value, Some(id), epoch, revision);
         }
-        let transaction = self.transactions.get_mut(&id).unwrap();
+        let transaction = self.transaction_mut(id);
         transaction.clear_segment();
         transaction.state = TransactionState::RolledBack;
         self.epoch = epoch;
@@ -559,13 +559,13 @@ impl<V: Clone> Store<V> {
         if transaction.state == TransactionState::Active {
             return Err(StoreError::ActiveTransaction(id));
         }
-        self.transactions.remove(&id);
+        Arc::make_mut(&mut self.transactions).remove(&id);
         Ok(())
     }
 
     pub fn retention(&self) -> Retention {
         Retention {
-            versions: self.versions.values().map(Vec::len).sum(),
+            versions: self.versions.values().map(|chain| chain.len()).sum(),
             transactions: self.transactions.len(),
             origin_resources: self
                 .transactions
@@ -591,7 +591,15 @@ impl<V: Clone> Store<V> {
                 state: transaction.state,
             });
         }
-        Ok(transaction)
+        Ok(transaction.as_ref())
+    }
+
+    fn transaction_mut(&mut self, id: TransactionId) -> &mut Transaction<V> {
+        Arc::make_mut(
+            Arc::make_mut(&mut self.transactions)
+                .get_mut(&id)
+                .expect("transaction was validated"),
+        )
     }
 
     fn stage(
@@ -608,7 +616,7 @@ impl<V: Clone> Store<V> {
             .revision
             .checked_add(1)
             .ok_or(StoreError::CounterOverflow)?;
-        let transaction = self.transactions.get_mut(&id).unwrap();
+        let transaction = self.transaction_mut(id);
         transaction.write_bases.entry(key.clone()).or_insert(base);
         transaction
             .pending
@@ -734,7 +742,7 @@ impl<V: Clone> Store<V> {
         epoch: Epoch,
         revision: u64,
     ) {
-        self.versions.entry(key).or_default().push(Version {
+        Arc::make_mut(Arc::make_mut(&mut self.versions).entry(key).or_default()).push(Version {
             epoch,
             revision,
             writer,
@@ -743,6 +751,69 @@ impl<V: Clone> Store<V> {
     }
 }
 
+#[cfg(test)]
+mod sharing_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn production_byte_and_filesystem_stores_remain_send_and_sync() {
+        fn check<T: Send + Sync>() {}
+        check::<Store<Value>>();
+        check::<crate::transaction::manager::Manager>();
+    }
+    #[derive(Debug)]
+    struct Counted(Arc<AtomicUsize>);
+    impl Clone for Counted {
+        fn clone(&self) -> Self {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Self(self.0.clone())
+        }
+    }
+    #[test]
+    fn a_read_candidate_does_not_clone_historical_values() {
+        let clones = Arc::new(AtomicUsize::new(0));
+        let mut published = Store::new();
+        let key = ResourceKey::new("test", "/file").unwrap();
+        for _ in 0..100 {
+            published
+                .seed(key.clone(), Some(Counted(clones.clone())))
+                .unwrap();
+        }
+        let reader = TransactionId(900);
+        published.begin(reader, Isolation::Serializable).unwrap();
+        let mut candidate = published.clone();
+        assert_eq!(clones.load(Ordering::Relaxed), 0);
+        assert!(candidate.read(reader, &key).unwrap().is_some());
+        assert_eq!(clones.load(Ordering::Relaxed), 1);
+        assert!(published.transaction(reader).unwrap().reads.is_empty());
+        assert_eq!(candidate.transaction(reader).unwrap().reads.len(), 1);
+        assert_eq!(published.retention(), candidate.retention());
+    }
+    #[test]
+    fn candidate_pending_values_and_publications_do_not_mutate_the_baseline() {
+        let key = ResourceKey::new("test", "/file").unwrap();
+        let mut published = Store::new();
+        published.seed(key.clone(), Some("origin")).unwrap();
+        let writer = TransactionId(901);
+        published.begin(writer, Isolation::Serializable).unwrap();
+        published.write(writer, key.clone(), "first").unwrap();
+        let mut candidate = published.clone();
+        candidate.write(writer, key.clone(), "second").unwrap();
+        candidate.finish(writer).unwrap();
+        assert_eq!(published.read(writer, &key).unwrap(), Some("first"));
+        assert_eq!(published.committed(&key), Some("origin"));
+        assert_eq!(candidate.committed(&key), Some("second"));
+        candidate.rollback_origin(writer).unwrap();
+        assert_eq!(candidate.committed(&key), Some("origin"));
+        assert_eq!(
+            published.transaction(writer).unwrap().state(),
+            TransactionState::Active
+        );
+        published.finish(writer).unwrap();
+        assert_eq!(published.committed(&key), Some("first"));
+    }
+}
 #[cfg(test)]
 mod receipt_binding_tests {
     use super::*;
