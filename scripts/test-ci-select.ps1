@@ -37,4 +37,12 @@ $source = Select-Changes @('src/source.rs', 'src/language/version.rs')
 Assert (-not $source.full -and $source.targets -contains 'source_v4' -and $source.targets -contains 'join_v4' -and $source.targets -contains 'version_v4' -and $source.targets -contains 'macro_native_v4' -and $source.targets -contains 'planner_proof_sharing_v4') 'Source and grammar changes need token provenance, explicit joins, native macros and value-checked proof coverage'
 $prepare = Select-Changes @('src/preparation.rs')
 Assert (-not $prepare.full -and $prepare.targets -contains 'preparation_v4' -and $prepare.targets -contains 'planner_proof_sharing_v4' -and $prepare.targets -contains 'cli_structured_v4') 'Preparation must check its certificate, immutable sharing and actual CLI handoff'
-Write-Output 'CI selection: 14 discriminating cases passed'
+$finite = Select-Changes @('src/execution/materialize.rs')
+Assert (-not $finite.full -and $finite.targets -contains 'execution_workspace_v4' -and $finite.targets -contains 'structured_telemetry_v4') 'Private finite IO must retain actual workspace and trace journeys'
+if (Test-Path -LiteralPath 'tests/named_execution_v4.rs') {
+    foreach ($path in @('src/execution/live.rs', 'src/transaction/store.rs', 'src/hir/graph.rs', 'src/preparation/state.rs')) {
+        $named = Select-Changes @($path)
+        Assert (-not $named.full -and $named.targets -contains 'named_execution_v4') "Named-frontier contracts must be selected for $path"
+    }
+}
+Write-Output 'CI selection: 15 discriminating cases passed; named-frontier coverage checked when its target is present'
