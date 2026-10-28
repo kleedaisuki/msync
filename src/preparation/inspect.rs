@@ -317,7 +317,20 @@ pub(super) fn resolve_region(
             InstructionKind::Transfer {
                 destination: Output::File { location, .. },
                 ..
-            } => observations.host.defer_write(location.clone()),
+            } => {
+                let target = EndpointKey {
+                    instruction: node.id,
+                    role: EndpointRole::Destination,
+                };
+                // Writing a proved physical stream changes bytes, not its file
+                // kind or namespace. A stale stream observation under a pending
+                // native replacement is not such a proof.
+                if observations.classes.get(location) != Some(&FileClass::Stream)
+                    || observations.host_unstable.contains(&target)
+                {
+                    observations.host.defer_write(location.clone());
+                }
+            }
             InstructionKind::Spawn { process, .. } => {
                 if let Some(effects) = context.process_effects.get(process) {
                     observations.host.invalidate_writes(effects.footprint());

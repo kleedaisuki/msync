@@ -1194,6 +1194,73 @@ fn certificates_replay_after_sources_disappear_and_reject_modified_payloads_or_p
 
 #[cfg(unix)]
 #[test]
+fn fifo_byte_writes_preserve_the_following_readers_physical_stream_kind() {
+    use std::os::unix::ffi::OsStrExt;
+    let root = workspace();
+    fs::create_dir(root.path().join("pipes")).unwrap();
+    fs::create_dir(root.path().join("outputs")).unwrap();
+    fs::write(root.path().join("input"), b"bounded physical input").unwrap();
+    let name =
+        std::ffi::CString::new(root.path().join("pipes/wire").as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let prepared = preparation::prepare(
+        &compile(
+            root.path(),
+            "input -> pipes/wire\npipes/wire -> outputs/result\n",
+        ),
+        true,
+    )
+    .unwrap();
+    let nodes = transfers(&prepared.program.body);
+    assert_eq!(nodes.len(), 2);
+    assert_eq!(prepared.facts[&nodes[0].id].destination, FileClass::Stream);
+    assert_eq!(prepared.facts[&nodes[1].id].source, FileClass::Stream);
+    assert!(prepared.context.host_unstable.is_empty());
+    assert!(
+        !prepared.is_execution_ready(),
+        "physical co-start still requires runtime ownership/identity refinement"
+    );
+    prepared.verify().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn pending_fifo_byte_writes_preserve_later_submission_type_inspection() {
+    use std::os::unix::ffi::OsStrExt;
+    let root = workspace();
+    let fifo = root.path().join("wire");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let first = preparation::prepare(&compile(root.path(), "\"bytes\" -> wire\n"), true).unwrap();
+    let second = preparation::prepare_with_context(
+        &compile(root.path(), "wire -> output\n"),
+        true,
+        PlanningContext {
+            pending_effects: vec![first.graph.nodes[0].effects.clone()],
+            ..PlanningContext::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        second.facts.values().next().unwrap().source,
+        FileClass::Stream
+    );
+    assert!(second.context.host_unstable.is_empty());
+    assert!(
+        first.graph.nodes[0]
+            .effects
+            .accesses
+            .iter()
+            .any(|access| matches!(
+                access.resource,
+                msync::hir::effects::Resource::StreamPath(_)
+            ))
+    );
+    second.verify().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn fifo_inspection_never_opens_a_connection_or_claims_a_completion_only_stream_plan() {
     use std::os::unix::ffi::OsStrExt;
     let root = workspace();

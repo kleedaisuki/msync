@@ -252,6 +252,15 @@ Explicit cancellation stays cancelled; typed failures retain their causal event
 and are not rewritten as cancellation merely because sibling cleanup starts.
 No payload bytes are added to telemetry.
 
+Task completion is classified once from its result. Explicit owner-cancellation
+branches attach a private typed marker through the existing execution-error
+cause; an error message, an absent native cause or a subsequently cancelled token
+does not establish that outcome. Expected cancellation emits no `execution.task`
+error event and is not passed through a later error-completion setter. Actual IO
+failures retain their error status and causal event, even during owner cleanup.
+The owner marker also cannot hide retained journals, recovery failures or failed
+compensation: those results remain failures and must not become a successful stop.
+
 `tests/runtime_task_telemetry_v4.rs` invokes the real CLI against native TCP peers:
 successful EOF publication, `/stop` of an idle source, and refused connection.
 It checks execute→schedule→task→io.flow ownership, real reservation metrics,

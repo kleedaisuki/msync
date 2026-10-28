@@ -241,6 +241,7 @@ async fn closing_one_flow_does_not_stop_an_independent_flow() {
 #[cfg(unix)]
 #[tokio::test]
 async fn fifo_writer_and_reader_co_start_without_waiting_for_each_other() {
+    use std::os::unix::fs::MetadataExt;
     let root = workspace();
     let work = root.path().join("work");
     fs::create_dir(&work).unwrap();
@@ -254,6 +255,7 @@ async fn fifo_writer_and_reader_co_start_without_waiting_for_each_other() {
             .unwrap()
             .success()
     );
+    let fifo_before = fs::symlink_metadata(work.join("pipes/wire")).unwrap();
     let mut compiler = Session::new();
     let mut runtime = runtime(root.path());
     let program = compile(
@@ -269,6 +271,9 @@ async fn fifo_writer_and_reader_co_start_without_waiting_for_each_other() {
         fs::read(work.join("outputs/result")).unwrap(),
         b"fifo chain"
     );
+    let fifo_after = fs::symlink_metadata(work.join("pipes/wire")).unwrap();
+    assert!(fifo_after.file_type().is_fifo());
+    assert_eq!(fifo_before.ino(), fifo_after.ino());
     runtime.shutdown().await.unwrap();
 }
 
@@ -314,6 +319,257 @@ async fn physical_to_physical_stream_closes_when_idle_destination_disconnects() 
             ))
     );
     runtime.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn fifo_waves_preserve_order_and_reject_half_cohort_resource_budgets() {
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    fs::create_dir(work.join("pipes")).unwrap();
+    fs::create_dir(work.join("outputs")).unwrap();
+    fs::write(work.join("one"), b"first wave").unwrap();
+    fs::write(work.join("two"), b"second wave").unwrap();
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(work.join("pipes/wire"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut compiler = Session::new();
+    let first = compile(
+        &mut compiler,
+        &work,
+        "one -> pipes/wire\npipes/wire -> outputs/first\n",
+    );
+    for low_memory in [false, true] {
+        let scratch = root.path().join(if low_memory {
+            "memory-scratch"
+        } else {
+            "stream-scratch"
+        });
+        let mut options = Options::new(&scratch);
+        if low_memory {
+            options.limits.memory_bytes = options.limits.buffer_bytes * 3;
+        } else {
+            options.limits.max_streams = 1;
+        }
+        let mut limited = RuntimeSession::new(&options).unwrap();
+        let failure = limited.execute(&first).await.unwrap_err();
+        assert!(
+            failure.to_string().contains("must co-start 2 flows"),
+            "{failure}"
+        );
+        assert!(
+            !scratch.exists(),
+            "insufficient cohort capacity must precede payload capture"
+        );
+        assert!(!work.join("outputs/first").exists());
+        limited.shutdown().await.unwrap();
+    }
+    let waves = compile(
+        &mut compiler,
+        &work,
+        "one -> pipes/wire\npipes/wire -> outputs/first\ntwo -> pipes/wire\npipes/wire -> outputs/second\n",
+    );
+    let mut session = runtime(root.path());
+    tokio::time::timeout(Duration::from_secs(5), session.execute(&waves))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read(work.join("outputs/first")).unwrap(), b"first wave");
+    assert_eq!(
+        fs::read(work.join("outputs/second")).unwrap(),
+        b"second wave"
+    );
+    session.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_three_flow_fifo_chain_reserves_the_whole_connected_cohort() {
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    fs::create_dir(work.join("pipes")).unwrap();
+    fs::create_dir(work.join("outputs")).unwrap();
+    let bytes = b"bounded three-flow FIFO chain\n".repeat(32 * 1024);
+    fs::write(work.join("input"), &bytes).unwrap();
+    for name in ["a", "b"] {
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(work.join("pipes").join(name))
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let program = compile(
+        &mut Session::new(),
+        &work,
+        "input -> pipes/a\npipes/a -> pipes/b\npipes/b -> outputs/result\n",
+    );
+    let mut options = Options::new(root.path().join("limited-scratch"));
+    options.limits.max_streams = 2;
+    let mut limited = RuntimeSession::new(&options).unwrap();
+    let failure = limited.execute(&program).await.unwrap_err();
+    assert!(
+        failure.to_string().contains("must co-start 3 flows"),
+        "{failure}"
+    );
+    assert!(!options.scratch_root.exists());
+    limited.shutdown().await.unwrap();
+    let mut session = runtime(root.path());
+    tokio::time::timeout(Duration::from_secs(5), session.execute(&program))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read(work.join("outputs/result")).unwrap(), bytes);
+    session.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn hard_linked_fifo_aliases_preserve_wave_boundaries() {
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    fs::create_dir(work.join("pipes")).unwrap();
+    fs::create_dir(work.join("outputs")).unwrap();
+    let one = b"first FIFO wave\n".repeat(32 * 1024);
+    let two = b"second FIFO wave\n".repeat(32 * 1024);
+    fs::write(work.join("one"), &one).unwrap();
+    fs::write(work.join("two"), &two).unwrap();
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(work.join("pipes/a"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    for alias in ["b", "c", "d"] {
+        fs::hard_link(work.join("pipes/a"), work.join("pipes").join(alias)).unwrap();
+    }
+    let program = compile(
+        &mut Session::new(),
+        &work,
+        "one -> pipes/a\npipes/b -> outputs/first\ntwo -> pipes/c\npipes/d -> outputs/second\n",
+    );
+    let mut session = runtime(root.path());
+    tokio::time::timeout(Duration::from_secs(5), session.execute(&program))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read(work.join("outputs/first")).unwrap(), one);
+    assert_eq!(fs::read(work.join("outputs/second")).unwrap(), two);
+    session.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_later_fifo_peer_gets_a_constructive_single_submission_hint_and_can_recover() {
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    fs::write(work.join("input"), b"complete FIFO bytes").unwrap();
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(work.join("wire"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut compiler = Session::new();
+    let mut session = runtime(root.path());
+    session
+        .submit(&compile(&mut compiler, &work, "input -> wire\n"))
+        .await
+        .unwrap();
+    let rejected = tokio::time::timeout(
+        Duration::from_secs(2),
+        session.submit(&compile(&mut compiler, &work, "wire -> output\n")),
+    )
+    .await
+    .unwrap()
+    .unwrap_err();
+    assert!(
+        rejected
+            .report
+            .help
+            .iter()
+            .any(|help| help.contains("/load")
+                && help.contains("macro")
+                && help.contains("/wait alone")),
+        "{rejected:?}"
+    );
+    assert!(!work.join("output").exists());
+    session.cancel_active().await.unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        session.execute(&compile(
+            &mut compiler,
+            &work,
+            "input -> wire\nwire -> output\n",
+        )),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        fs::read(work.join("output")).unwrap(),
+        b"complete FIFO bytes"
+    );
+    session.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn fifo_cohort_waits_for_all_external_prerequisites_before_reserving_slots() {
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    fs::create_dir(work.join("pipes")).unwrap();
+    fs::create_dir(work.join("outputs")).unwrap();
+    fs::write(work.join("outputs/result"), b"original target").unwrap();
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(work.join("pipes/wire"))
+            .status()
+            .unwrap()
+            .success()
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let program = compile(
+        &mut Session::new(),
+        &work,
+        &format!(
+            "incoming => tcp://{}\n\"later FIFO value\" -> pipes/wire\nincoming::/ -> outputs/result\npipes/wire -> outputs/result\n",
+            listener.local_addr().unwrap(),
+        ),
+    );
+    let mut options = Options::new(root.path().join("scratch"));
+    options.limits.max_streams = 2;
+    let mut session = RuntimeSession::new(&options).unwrap();
+    let running = tokio::spawn(async move {
+        let result = session.execute(&program).await;
+        (session, result)
+    });
+    let mut sender = accept(&listener).await;
+    sender.write_all(b"earlier TCP value").await.unwrap();
+    sender.shutdown().await.unwrap();
+    drop(sender);
+    let (mut session, result) = tokio::time::timeout(Duration::from_secs(5), running)
+        .await
+        .unwrap()
+        .unwrap();
+    result.unwrap();
+    assert_eq!(
+        fs::read(work.join("outputs/result")).unwrap(),
+        b"later FIFO value"
+    );
+    session.shutdown().await.unwrap();
 }
 
 #[cfg(unix)]
@@ -367,6 +623,48 @@ async fn live_fifo_and_target_in_same_directory_publish_without_snapshotting_fif
         b"same-directory flow"
     );
     runtime.shutdown().await.unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+#[ignore = "requires a provisioned native process-resource backend"]
+async fn a_reader_first_fifo_pipeline_can_feed_a_native_program_stdin() {
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    let fifo = root.path().join("wire");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let mut compiler = Session::new();
+    let mut session = runtime(root.path());
+    session.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();
+    session
+        .submit(&compile(&mut compiler, &work, "child => $path::cat()\n"))
+        .await
+        .unwrap();
+    let program = compile(
+        &mut compiler,
+        &work,
+        &format!(
+            "$local::\"{}\" -> child::stdin\n\"reader-first bytes\" -> $local::\"{}\"\nchild::stdout -> output\n",
+            fifo.display(),
+            fifo.display(),
+        ),
+    );
+    tokio::time::timeout(Duration::from_secs(10), session.execute(&program))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fs::read(work.join("output")).unwrap(),
+        b"reader-first bytes"
+    );
+    session.shutdown().await.unwrap();
 }
 
 #[cfg(target_os = "linux")]
@@ -528,8 +826,24 @@ async fn unix_socket_sink_rejects_directory_source_before_connecting() {
         .await
         .unwrap_err();
     assert!(
-        error.to_string().contains("non-directory endpoints"),
+        error
+            .report
+            .diagnostic
+            .message
+            .contains("directory cannot be written to a pipe or socket"),
         "{error}"
+    );
+    assert!(
+        error
+            .report
+            .help
+            .iter()
+            .any(|help| help.contains("serialize") && help.contains("stdout")),
+        "{error:?}"
+    );
+    assert!(
+        !root.path().join("scratch").exists(),
+        "directory rejection must precede workspace creation"
     );
     assert!(
         tokio::time::timeout(Duration::from_millis(50), listener.accept())

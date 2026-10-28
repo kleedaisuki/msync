@@ -245,7 +245,7 @@ impl Program {
         };
         tokio::select! {
             biased;
-            () = cancel.cancelled() => Err(ExecutionError::new("execution cancelled while joining program cohort", self.span)),
+            () = cancel.cancelled() => Err(ExecutionError::cancelled("execution cancelled while joining program cohort", self.span)),
             joined = running.join() => joined.map_err(|cause| ExecutionError::caused("cannot join shared program cohort", self.span, cause)),
         }
     }
@@ -316,7 +316,7 @@ impl Program {
             ExecutionError::new("program status has no retained native receipt", self.span)
         })?;
         tokio::select! {
-            () = cancel.cancelled() => Err(ExecutionError::new("program status observation was cancelled", self.span)),
+            () = cancel.cancelled() => Err(ExecutionError::cancelled("program status observation was cancelled", self.span)),
             result = running.scalar(port) => result.map_err(|cause| ExecutionError::caused("cannot observe native program status", self.span, cause)),
         }
     }

@@ -149,6 +149,7 @@ fn stopping_an_idle_flow_reports_task_cancellation_instead_of_success() {
     let trace = fs::read_to_string(root.path().join("trace.jsonl")).unwrap();
     hierarchy(&trace);
     assert_eq!(field(span(&trace, "task"), "status"), "cancelled");
+    assert!(!trace.contains("\"phase\":\"execution.task\""), "{trace}");
 }
 
 #[test]
@@ -179,4 +180,9 @@ fn failed_native_connection_reports_task_failure_and_typed_io_cause() {
     assert_eq!(field(span(&trace, "task"), "status"), "error");
     assert!(trace.contains("ConnectionRefused"), "{trace}");
     assert!(trace.contains("\"error.raw_os_error\""), "{trace}");
+    assert_eq!(
+        trace.matches("\"phase\":\"execution.task\"").count(),
+        1,
+        "{trace}"
+    );
 }

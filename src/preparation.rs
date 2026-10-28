@@ -354,7 +354,7 @@ fn validate(
             Err(source_error(Report::new(
                 "a directory cannot be written to a pipe or socket",
                 node.span,
-            )))
+            ).help("Select an ordinary file, or explicitly serialize the directory with a program before connecting its stdout.")))
         }
         _ => Ok(()),
     }

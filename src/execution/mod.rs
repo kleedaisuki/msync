@@ -63,7 +63,7 @@ impl Options {
 
     fn check(&self, span: Span) -> Result<()> {
         if self.cancel.is_cancelled() {
-            return Err(ExecutionError::new(
+            return Err(ExecutionError::cancelled(
                 "execution cancelled before publication",
                 span,
             ));

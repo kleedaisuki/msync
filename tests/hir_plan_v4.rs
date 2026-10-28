@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use msync::compiler::{Backend, Location};
 use msync::hir::effects::{
-    Access, AccessKind, Effects, FileResource, NamespaceMergeEpoch, NamespaceMergeProof,
-    OperationFacts, Resource, Scope,
+    Access, AccessKind, Effects, EndpointKey, EndpointRole, FifoEndpointProof, FifoRendezvousProof,
+    FileResource, NamespaceMergeEpoch, NamespaceMergeProof, OperationFacts, Resource, Scope,
 };
 use msync::hir::graph::{self, Reason, Wait};
 use msync::hir::{
@@ -117,6 +117,389 @@ fn finite_context(program: &Program) -> graph::PlanningContext {
     let mut context = graph::PlanningContext::default();
     observe(&program.body, &mut context);
     context
+}
+
+fn fifo_pair(writer: usize, reader: usize) -> FifoRendezvousProof {
+    let endpoint = |instruction, role| {
+        FifoEndpointProof::verified_fifo(
+            EndpointKey {
+                instruction: InstructionId(instruction),
+                role,
+            },
+            location("/managed/fifo"),
+            "native-fifo-fixture",
+            "device-1:inode-42",
+        )
+        .unwrap()
+    };
+    FifoRendezvousProof::connect(
+        endpoint(writer, EndpointRole::Destination),
+        endpoint(reader, EndpointRole::Source),
+    )
+    .unwrap()
+}
+
+#[test]
+fn native_fifo_identity_preserves_alias_wave_and_unpaired_consumer_order() {
+    let endpoint = |instruction, role, path| {
+        FifoEndpointProof::verified_fifo(
+            EndpointKey {
+                instruction: InstructionId(instruction),
+                role,
+            },
+            location(path),
+            "native-fifo-fixture",
+            "same-device-and-inode",
+        )
+        .unwrap()
+    };
+    let ir = program(vec![
+        literal(0, "/pipes/a"),
+        copy(1, "/pipes/b", "/first"),
+        literal(2, "/pipes/c"),
+        copy(3, "/pipes/d", "/second"),
+    ]);
+    let mut context = finite_context(&ir);
+    for writer in [0, 2] {
+        context
+            .operation_facts
+            .get_mut(&InstructionId(writer))
+            .unwrap()
+            .destination = FileClass::Stream;
+    }
+    for reader in [1, 3] {
+        context
+            .operation_facts
+            .get_mut(&InstructionId(reader))
+            .unwrap()
+            .source = FileClass::Stream;
+    }
+    context.physical_rendezvous = vec![
+        FifoRendezvousProof::connect(
+            endpoint(0, EndpointRole::Destination, "/pipes/a"),
+            endpoint(1, EndpointRole::Source, "/pipes/b"),
+        )
+        .unwrap(),
+        FifoRendezvousProof::connect(
+            endpoint(2, EndpointRole::Destination, "/pipes/c"),
+            endpoint(3, EndpointRole::Source, "/pipes/d"),
+        )
+        .unwrap(),
+    ];
+    let planned = graph::build_with_context(&ir, &context);
+    assert!(planned.issues.is_empty(), "{:?}", planned.issues);
+    for (before, after, wait) in [
+        (0, 1, Wait::Admitted),
+        (2, 3, Wait::Admitted),
+        (0, 2, Wait::Completion),
+        (1, 2, Wait::Completion),
+        (1, 3, Wait::Completion),
+    ] {
+        assert!(
+            planned
+                .dependencies
+                .iter()
+                .any(|edge| edge.before == InstructionId(before)
+                    && edge.after == InstructionId(after)
+                    && edge.wait == wait),
+            "missing {before}->{after} {wait:?}"
+        );
+    }
+    assert!(planned.verify_with_context(&ir, &context).is_ok());
+
+    let readers = program(vec![
+        copy(0, "/pipes/a", "/first"),
+        copy(1, "/pipes/b", "/second"),
+    ]);
+    let mut context = finite_context(&readers);
+    for (id, path) in [(0, "/pipes/a"), (1, "/pipes/b")] {
+        context
+            .operation_facts
+            .get_mut(&InstructionId(id))
+            .unwrap()
+            .source = FileClass::Stream;
+        let proof = endpoint(id, EndpointRole::Source, path);
+        context.physical_fifos.insert(proof.key(), proof);
+    }
+    let planned = graph::build_with_context(&readers, &context);
+    assert!(
+        planned
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(0)
+                && edge.after == InstructionId(1)
+                && edge.wait == Wait::Completion)
+    );
+    assert!(planned.commutations.is_empty());
+    assert!(planned.verify_with_context(&readers, &context).is_ok());
+}
+
+#[test]
+fn native_fifo_opposite_endpoints_rendezvous_after_admission_not_eof() {
+    for reversed in [false, true] {
+        let mut instructions = vec![
+            literal(0, "/managed/fifo"),
+            copy(1, "/managed/fifo", "/managed/output"),
+        ];
+        if reversed {
+            instructions.reverse();
+        }
+        let ir = program(instructions);
+        let mut context = finite_context(&ir);
+        context
+            .operation_facts
+            .get_mut(&InstructionId(0))
+            .unwrap()
+            .destination = FileClass::Stream;
+        context
+            .operation_facts
+            .get_mut(&InstructionId(1))
+            .unwrap()
+            .source = FileClass::Stream;
+        let strict = graph::build_with_context(&ir, &context);
+        assert!(
+            strict
+                .dependencies
+                .iter()
+                .any(|edge| edge.wait == Wait::Completion)
+        );
+        context.physical_rendezvous.push(fifo_pair(0, 1));
+        let rendezvous = graph::build_with_context(&ir, &context);
+        assert!(rendezvous.issues.is_empty(), "{:?}", rendezvous.issues);
+        assert_eq!(rendezvous.dependencies.len(), 1);
+        assert_eq!(rendezvous.dependencies[0].wait, Wait::Admitted);
+        assert_eq!(rendezvous.physical_rendezvous, context.physical_rendezvous);
+        assert!(rendezvous.verify_with_context(&ir, &context).is_ok());
+        let mut tampered = rendezvous.clone();
+        tampered.physical_rendezvous.clear();
+        assert!(tampered.verify_with_context(&ir, &context).is_err());
+    }
+}
+
+#[test]
+fn fifo_rendezvous_does_not_waive_other_file_hazards_or_same_side_consumers() {
+    let ir = program(vec![
+        copy(0, "/managed/value", "/managed/fifo"),
+        copy(1, "/managed/fifo", "/managed/value"),
+        copy(2, "/managed/fifo", "/else/output"),
+    ]);
+    let mut context = finite_context(&ir);
+    context
+        .operation_facts
+        .get_mut(&InstructionId(0))
+        .unwrap()
+        .destination = FileClass::Stream;
+    for id in [1, 2] {
+        context
+            .operation_facts
+            .get_mut(&InstructionId(id))
+            .unwrap()
+            .source = FileClass::Stream;
+    }
+    context.physical_rendezvous.push(fifo_pair(0, 1));
+    let planned = graph::build_with_context(&ir, &context);
+    assert!(
+        planned
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(0)
+                && edge.after == InstructionId(1)
+                && edge.wait == Wait::Admitted)
+    );
+    assert!(
+        planned
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(0)
+                && edge.after == InstructionId(1)
+                && edge.wait == Wait::Completion)
+    );
+    assert!(
+        planned
+            .dependencies
+            .iter()
+            .any(|edge| edge.before == InstructionId(1)
+                && edge.after == InstructionId(2)
+                && edge.wait == Wait::Completion)
+    );
+}
+
+#[test]
+fn fifo_rendezvous_rejects_stale_kinds_unstable_endpoints_and_mismatched_native_identity() {
+    let ir = program(vec![
+        literal(0, "/managed/fifo"),
+        copy(1, "/managed/fifo", "/managed/output"),
+    ]);
+    let mut context = finite_context(&ir);
+    context.physical_rendezvous.push(fifo_pair(0, 1));
+    assert!(!graph::build_with_context(&ir, &context).issues.is_empty());
+    context
+        .operation_facts
+        .get_mut(&InstructionId(0))
+        .unwrap()
+        .destination = FileClass::Stream;
+    context
+        .operation_facts
+        .get_mut(&InstructionId(1))
+        .unwrap()
+        .source = FileClass::Stream;
+    context.host_unstable.insert(EndpointKey {
+        instruction: InstructionId(0),
+        role: EndpointRole::Destination,
+    });
+    assert!(!graph::build_with_context(&ir, &context).issues.is_empty());
+    let writer = fifo_pair(0, 1).writer().clone();
+    let reader = FifoEndpointProof::verified_fifo(
+        EndpointKey {
+            instruction: InstructionId(1),
+            role: EndpointRole::Source,
+        },
+        location("/managed/fifo"),
+        "native-fifo-fixture",
+        "different-inode",
+    )
+    .unwrap();
+    assert!(FifoRendezvousProof::connect(writer.clone(), reader).is_err());
+    assert!(FifoRendezvousProof::connect(writer.clone(), writer).is_err());
+}
+
+#[test]
+fn repeated_fifo_waves_keep_same_side_order_and_reject_contracted_completion_cycles() {
+    for readers_first in [false, true] {
+        let mut instructions = vec![
+            literal(0, "/managed/fifo"),
+            copy(1, "/managed/fifo", "/a"),
+            literal(2, "/managed/fifo"),
+            copy(3, "/managed/fifo", "/b"),
+        ];
+        if readers_first {
+            instructions.swap(0, 1);
+            instructions.swap(1, 3);
+        }
+        let ir = program(instructions);
+        let mut context = finite_context(&ir);
+        for id in [0, 2] {
+            context
+                .operation_facts
+                .get_mut(&InstructionId(id))
+                .unwrap()
+                .destination = FileClass::Stream;
+        }
+        for id in [1, 3] {
+            context
+                .operation_facts
+                .get_mut(&InstructionId(id))
+                .unwrap()
+                .source = FileClass::Stream;
+        }
+        context.physical_rendezvous = vec![fifo_pair(0, 1), fifo_pair(2, 3)];
+        let planned = graph::build_with_context(&ir, &context);
+        if readers_first {
+            assert!(
+                planned
+                    .issues
+                    .iter()
+                    .any(|issue| issue.message.contains("completion-dependency cycle")),
+                "{:?}",
+                planned.issues
+            );
+        } else {
+            assert!(planned.issues.is_empty(), "{:?}", planned.issues);
+            assert!(
+                planned
+                    .dependencies
+                    .iter()
+                    .any(|edge| edge.before == InstructionId(0)
+                        && edge.after == InstructionId(2)
+                        && edge.wait == Wait::Completion)
+            );
+            assert!(
+                planned
+                    .dependencies
+                    .iter()
+                    .any(|edge| edge.before == InstructionId(1)
+                        && edge.after == InstructionId(3)
+                        && edge.wait == Wait::Completion)
+            );
+        }
+    }
+}
+
+#[test]
+fn fifo_group_rejects_transitive_file_hazard_before_io_starts() {
+    let ir = program(vec![
+        copy(0, "/managed/a", "/managed/fifo"),
+        copy(1, "/managed/b", "/managed/a"),
+        copy(2, "/managed/fifo", "/managed/b"),
+    ]);
+    let mut context = finite_context(&ir);
+    context
+        .operation_facts
+        .get_mut(&InstructionId(0))
+        .unwrap()
+        .destination = FileClass::Stream;
+    context
+        .operation_facts
+        .get_mut(&InstructionId(2))
+        .unwrap()
+        .source = FileClass::Stream;
+    context.physical_rendezvous.push(fifo_pair(0, 2));
+    let planned = graph::build_with_context(&ir, &context);
+    assert!(
+        planned
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("completion-dependency cycle")),
+        "{:?}",
+        planned.issues
+    );
+    assert!(planned.verify_with_context(&ir, &context).is_err());
+}
+
+#[test]
+fn a_closed_native_fifo_cycle_is_rejected_without_an_independent_source() {
+    let ir = program(vec![
+        copy(0, "/managed/a", "/managed/b"),
+        copy(1, "/managed/b", "/managed/a"),
+    ]);
+    let mut context = finite_context(&ir);
+    for facts in context.operation_facts.values_mut() {
+        facts.source = FileClass::Stream;
+        facts.destination = FileClass::Stream;
+    }
+    let endpoint = |instruction, role, path, identity| {
+        FifoEndpointProof::verified_fifo(
+            EndpointKey {
+                instruction: InstructionId(instruction),
+                role,
+            },
+            location(path),
+            "native-fifo-fixture",
+            identity,
+        )
+        .unwrap()
+    };
+    context.physical_rendezvous = vec![
+        FifoRendezvousProof::connect(
+            endpoint(0, EndpointRole::Destination, "/managed/b", "fifo-b"),
+            endpoint(1, EndpointRole::Source, "/managed/b", "fifo-b"),
+        )
+        .unwrap(),
+        FifoRendezvousProof::connect(
+            endpoint(1, EndpointRole::Destination, "/managed/a", "fifo-a"),
+            endpoint(0, EndpointRole::Source, "/managed/a", "fifo-a"),
+        )
+        .unwrap(),
+    ];
+    let planned = graph::build_with_context(&ir, &context);
+    assert!(
+        planned
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains("closed FIFO cycle")),
+        "{:?}",
+        planned.issues
+    );
 }
 
 #[test]

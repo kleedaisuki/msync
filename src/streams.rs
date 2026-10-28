@@ -22,6 +22,110 @@ pub use crate::io::{FlowEnd as StreamEnd, FlowReport as StreamReport};
 type Reader = Box<dyn AsyncRead + Unpin + Send>;
 type Writer = Box<dyn AsyncWrite + Unpin + Send>;
 
+#[derive(Clone, Debug)]
+pub(crate) struct FifoIdentity {
+    device: u64,
+    inode: u64,
+    // A metadata-only native handle pins this inode generation without opening
+    // a FIFO reader/writer. Keep it until the actual IO descriptor is verified.
+    _lease: Option<Arc<fs::File>>,
+}
+
+impl PartialEq for FifoIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.device == other.device && self.inode == other.inode
+    }
+}
+
+impl Eq for FifoIdentity {}
+
+impl FifoIdentity {
+    pub(crate) fn require_generation_pin(&self) -> io::Result<()> {
+        if self._lease.is_some() {
+            return Ok(());
+        }
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the native backend cannot retain a metadata-only FIFO generation lease",
+        ))
+    }
+
+    pub(crate) fn native_id(&self) -> String {
+        format!("dev={}:ino={}", self.device, self.inode)
+    }
+
+    #[cfg(unix)]
+    fn verify(&self, file: &fs::File) -> io::Result<()> {
+        self.verify_metadata(&file.metadata()?)
+    }
+
+    #[cfg(unix)]
+    fn verify_metadata(&self, metadata: &fs::Metadata) -> io::Result<()> {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        if !metadata.file_type().is_fifo()
+            || metadata.dev() != self.device
+            || metadata.ino() != self.inode
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "FIFO identity changed before opening: expected {}; actual dev={} ino={} fifo={}",
+                    self.native_id(),
+                    metadata.dev(),
+                    metadata.ino(),
+                    metadata.file_type().is_fifo()
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn fifo_identity(path: &Path) -> io::Result<Option<FifoIdentity>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_fifo() {
+            return Ok(None);
+        }
+        #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
+        let (metadata, lease) = {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mode = libc::O_PATH;
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(mode | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(path)?;
+            (file.metadata()?, Some(Arc::new(file)))
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "android", target_os = "freebsd")))]
+        let lease = None;
+        Ok(metadata.file_type().is_fifo().then_some(FifoIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            _lease: lease,
+        }))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FifoPins {
+    pub source: Option<FifoIdentity>,
+    pub destination: Option<FifoIdentity>,
+}
+
+impl FifoPins {
+    pub(crate) fn any(&self) -> bool {
+        self.source.is_some() || self.destination.is_some()
+    }
+}
+
 struct Opened<T> {
     io: T,
     process: Option<RemoteProcess>,
@@ -60,7 +164,7 @@ enum Endpoint {
     #[cfg(windows)]
     NamedPipe(PathBuf),
     #[cfg(unix)]
-    Fifo(PathBuf),
+    Fifo(PathBuf, FifoIdentity),
     #[cfg(unix)]
     Socket(PathBuf),
 }
@@ -81,11 +185,28 @@ pub async fn transfer_with_context(
     cancel: CancellationToken,
     context: Option<crate::telemetry::TraceContext>,
 ) -> Result<StreamReport, RuntimeError> {
+    transfer_with_fifo_pins(
+        operation,
+        buffer_bytes,
+        cancel,
+        context,
+        FifoPins::default(),
+    )
+    .await
+}
+
+pub(crate) async fn transfer_with_fifo_pins(
+    operation: &CopyOp,
+    buffer_bytes: usize,
+    cancel: CancellationToken,
+    context: Option<crate::telemetry::TraceContext>,
+    pins: FifoPins,
+) -> Result<StreamReport, RuntimeError> {
     let mut trace = crate::telemetry::linked_span("io.flow", context.as_ref());
     trace.expect_completion();
     trace.attribute_lazy("source", || operation.source.to_string());
     trace.attribute_lazy("destination", || operation.destination.to_string());
-    let result = transfer_inner(operation, buffer_bytes, &cancel, trace.context()).await;
+    let result = transfer_inner(operation, buffer_bytes, &cancel, trace.context(), pins).await;
     if let Ok(report) = &result {
         trace.metric("bytes", report.bytes);
         if report.end == StreamEnd::Cancelled {
@@ -110,6 +231,7 @@ pub(crate) async fn transfer_from_reader<R>(
     buffer_bytes: usize,
     cancel: CancellationToken,
     span: crate::syntax::Span,
+    fifo: Option<FifoIdentity>,
 ) -> Result<StreamReport, RuntimeError>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -120,7 +242,7 @@ where
         if buffer_bytes == 0 {
             return Err("stream buffer size must be greater than zero".into());
         }
-        let destination = endpoint(destination, false)?;
+        let destination = endpoint_pinned(destination, false, fifo)?;
         let destination = tokio::select! {
             biased;
             () = child.cancelled() => return Ok(report(0, StreamEnd::Cancelled)),
@@ -149,6 +271,7 @@ pub(crate) async fn transfer_to_writer<W>(
     cancel: CancellationToken,
     span: crate::syntax::Span,
     consumer_closed: CancellationToken,
+    fifo: Option<FifoIdentity>,
 ) -> Result<StreamReport, RuntimeError>
 where
     W: AsyncWrite + Unpin + Send + 'static,
@@ -159,7 +282,7 @@ where
         if buffer_bytes == 0 {
             return Err("stream buffer size must be greater than zero".into());
         }
-        let source = endpoint(source, true)?;
+        let source = endpoint_pinned(source, true, fifo)?;
         let source = tokio::select! {
             biased;
             () = child.cancelled() => return Ok(report(0, StreamEnd::Cancelled)),
@@ -195,6 +318,7 @@ async fn transfer_inner(
     buffer_bytes: usize,
     cancel: &CancellationToken,
     context: Option<crate::telemetry::TraceContext>,
+    pins: FifoPins,
 ) -> Result<StreamReport, String> {
     if buffer_bytes == 0 {
         return Err("stream buffer size must be greater than zero".into());
@@ -202,9 +326,9 @@ async fn transfer_inner(
     if operation.pattern.is_some() {
         return Err("a stream transfer cannot contain a directory selector".into());
     }
-    let source = endpoint(&operation.source, true)?;
+    let source = endpoint_pinned(&operation.source, true, pins.source)?;
     let (destination_location, no_clobber) = destination_location(operation)?;
-    let destination = endpoint(&destination_location, false)?;
+    let destination = endpoint_pinned(&destination_location, false, pins.destination)?;
     if let (Endpoint::File(source), Endpoint::File(destination)) = (&source, &destination)
         && destination.exists()
         && same_file::is_same_file(source, destination).map_err(|error| error.to_string())?
@@ -338,7 +462,13 @@ fn source_basename(source: &Location) -> Result<String, String> {
         .ok_or_else(|| "a stream without a basename needs an exact destination filename".into())
 }
 
-fn endpoint(location: &Location, source: bool) -> Result<Endpoint, String> {
+fn endpoint_pinned(
+    location: &Location,
+    source: bool,
+    fifo: Option<FifoIdentity>,
+) -> Result<Endpoint, String> {
+    #[cfg(not(unix))]
+    let _ = fifo;
     if let Backend::Tcp { host, port } = &location.backend {
         return Ok(Endpoint::Tcp(host.clone(), *port));
     }
@@ -373,7 +503,19 @@ fn endpoint(location: &Location, source: bool) -> Result<Endpoint, String> {
     if let Some(metadata) = &metadata {
         use std::os::unix::fs::FileTypeExt;
         if metadata.file_type().is_fifo() {
-            return Ok(Endpoint::Fifo(path));
+            let observed = fifo_identity(&path)
+                .map_err(|cause| cause.to_string())?
+                .ok_or("FIFO kind changed during endpoint inspection")?;
+            if fifo.is_some_and(|expected| expected != observed) {
+                return Err(format!(
+                    "FIFO identity changed after planning at {}",
+                    path.display()
+                ));
+            }
+            return Ok(Endpoint::Fifo(path, observed));
+        }
+        if fifo.is_some() {
+            return Err(format!("planned FIFO was replaced at {}", path.display()));
         }
         if metadata.file_type().is_socket() {
             return Ok(Endpoint::Socket(path));
@@ -467,7 +609,7 @@ async fn open_native_reader(endpoint: Endpoint, buffer_bytes: usize) -> io::Resu
         #[cfg(windows)]
         Endpoint::NamedPipe(path) => Ok(Box::new(open_named_pipe(&path, true).await?)),
         #[cfg(unix)]
-        Endpoint::Fifo(path) => Ok(Box::new(Fifo::reader(&path)?)),
+        Endpoint::Fifo(path, identity) => Ok(Box::new(Fifo::reader(&path, &identity)?)),
         #[cfg(unix)]
         Endpoint::Socket(path) => {
             let stream = tokio::net::UnixStream::connect(path).await?;
@@ -543,9 +685,9 @@ async fn open_writer(
         });
     }
     #[cfg(unix)]
-    if let Endpoint::Fifo(path) = endpoint {
+    if let Endpoint::Fifo(path, identity) = endpoint {
         loop {
-            match Fifo::writer(&path) {
+            match Fifo::writer(&path, &identity) {
                 Ok(writer) => {
                     let watch = writer.0.get_ref().try_clone()?;
                     return Ok(Opened {
@@ -625,8 +767,8 @@ async fn open_native_writer(
         #[cfg(windows)]
         Endpoint::NamedPipe(path) => Ok(Box::new(open_named_pipe(&path, false).await?)),
         #[cfg(unix)]
-        Endpoint::Fifo(path) => loop {
-            match Fifo::writer(&path) {
+        Endpoint::Fifo(path, identity) => loop {
+            match Fifo::writer(&path, &identity) {
                 Ok(writer) => return Ok(Box::new(writer)),
                 Err(error) if error.raw_os_error() == Some(libc::ENXIO) => {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -1789,12 +1931,13 @@ struct Fifo(tokio::io::unix::AsyncFd<std::fs::File>);
 
 #[cfg(unix)]
 impl Fifo {
-    fn reader(path: &Path) -> io::Result<Self> {
+    fn reader(path: &Path, identity: &FifoIdentity) -> io::Result<Self> {
         use std::os::unix::fs::OpenOptionsExt;
         let file = fs::OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW)
             .open(path)?;
+        identity.verify(&file)?;
         // SAFETY: This module exclusively owns File and never exposes or replaces
         // its descriptor; it stays open and stable until AsyncFd drops it.
         Ok(Self(
@@ -1802,16 +1945,108 @@ impl Fifo {
         ))
     }
 
-    fn writer(path: &Path) -> io::Result<Self> {
+    fn writer(path: &Path, identity: &FifoIdentity) -> io::Result<Self> {
         use std::os::unix::fs::OpenOptionsExt;
+        // A missing reader yields ENXIO, so validate the pathname on every
+        // rendezvous attempt too: replacing it must not cause an endless retry
+        // against another unopened FIFO. The held descriptor is checked again.
+        identity.verify_metadata(&fs::symlink_metadata(path)?)?;
         let file = fs::OpenOptions::new()
             .write(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW)
             .open(path)?;
+        identity.verify(&file)?;
         // SAFETY: The owned File's stable descriptor never escapes this module.
         Ok(Self(
             unsafe { tokio::io::unix::AsyncFd::register(file) }.map_err(io::Error::from)?,
         ))
+    }
+}
+
+#[cfg(all(test, unix))]
+mod fifo_identity_tests {
+    use super::*;
+    use std::os::unix::ffi::OsStrExt;
+
+    fn fifo(path: &Path) {
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    }
+
+    fn workspace() -> tempfile::TempDir {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&root).unwrap();
+        tempfile::tempdir_in(root).unwrap()
+    }
+
+    #[test]
+    fn replaced_fifo_is_rejected_by_opened_descriptor_before_reading() {
+        let root = workspace();
+        let path = root.path().join("wire");
+        fifo(&path);
+        let identity = fifo_identity(&path).unwrap().unwrap();
+        fs::rename(&path, root.path().join("old-generation")).unwrap();
+        fifo(&path);
+        let error = match Fifo::reader(&path, &identity) {
+            Ok(_) => panic!("a different FIFO inode cannot satisfy the retained proof"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("FIFO identity changed"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn metadata_lease_pins_an_unlinked_inode_without_connecting_a_fifo_reader() {
+        use std::os::unix::fs::MetadataExt;
+        let root = workspace();
+        let path = root.path().join("wire");
+        fifo(&path);
+        let identity = fifo_identity(&path).unwrap().unwrap();
+        identity.require_generation_pin().unwrap();
+        let failure = match Fifo::writer(&path, &identity) {
+            Ok(_) => panic!("a metadata lease must not act as a FIFO reader"),
+            Err(failure) => failure,
+        };
+        assert_eq!(failure.raw_os_error(), Some(libc::ENXIO));
+        fs::remove_file(&path).unwrap();
+        let pinned = identity._lease.as_ref().unwrap().metadata().unwrap();
+        assert_eq!(pinned.nlink(), 0);
+        assert_eq!(pinned.ino(), identity.inode);
+        fifo(&path);
+        assert_ne!(fifo_identity(&path).unwrap().unwrap(), identity);
+    }
+
+    #[test]
+    fn inode_numbers_without_a_retained_lease_are_not_a_generation_capability() {
+        let identity = FifoIdentity {
+            device: 1,
+            inode: 42,
+            _lease: None,
+        };
+        assert_eq!(
+            identity.require_generation_pin().unwrap_err().kind(),
+            io::ErrorKind::Unsupported
+        );
+    }
+
+    #[test]
+    fn replaced_writer_without_a_reader_is_not_retried_as_the_original_fifo() {
+        let root = workspace();
+        let path = root.path().join("wire");
+        fifo(&path);
+        let identity = fifo_identity(&path).unwrap().unwrap();
+        fs::rename(&path, root.path().join("old-generation")).unwrap();
+        fifo(&path);
+        let error = match Fifo::writer(&path, &identity) {
+            Ok(_) => panic!("a different FIFO inode cannot satisfy the retained proof"),
+            Err(error) => error,
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, b"do not change").unwrap();
+        assert!(Fifo::writer(&path, &identity).is_err());
+        assert_eq!(fs::read(path).unwrap(), b"do not change");
     }
 }
 

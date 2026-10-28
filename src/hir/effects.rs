@@ -11,6 +11,8 @@ use crate::plan::{FileClass, OperationKinds};
 
 mod namespace;
 pub use namespace::{NamespaceMergeEpoch, NamespaceMergeProof};
+mod rendezvous;
+pub use rendezvous::{FifoEndpointProof, FifoRendezvousProof};
 
 /// Physical endpoint stability is independent of its logical file class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -302,6 +304,13 @@ impl From<ReadPort> for Port {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Resource {
     File(FileResource),
+    /// Bytes addressed by a mutable stream pathname, not a filesystem mutation.
+    StreamPath(FileResource),
+    /// A verified mutable byte channel, separate from its replaceable pathnames.
+    StreamIdentity {
+        provider: String,
+        identity: String,
+    },
     /// Canonical native child identity for one certified file insertion.
     NamespaceEntry(NamespaceMergeProof),
     /// Parent membership/mtime delta committed by the Manager receipt algebra.
@@ -344,6 +353,16 @@ impl Resource {
             return file_metadata_overlap(file, metadata);
         }
         match (self, other) {
+            (
+                Self::StreamIdentity {
+                    provider: lp,
+                    identity: li,
+                },
+                Self::StreamIdentity {
+                    provider: rp,
+                    identity: ri,
+                },
+            ) => lp == rp && li == ri,
             (Self::SnapshotFile(left), Self::SnapshotFile(right)) => {
                 left.provider == right.provider
                     && left.version_id == right.version_id
@@ -368,7 +387,7 @@ impl Resource {
 
     fn file(&self) -> Option<&FileResource> {
         match self {
-            Self::File(file) => Some(file),
+            Self::File(file) | Self::StreamPath(file) => Some(file),
             Self::NamespaceEntry(proof) => Some(proof.target_resource()),
             _ => None,
         }
@@ -549,13 +568,18 @@ fn transfer(
         (Input::File { location, pattern }, None) => {
             let class = file_class(location, facts.source);
             let http = matches!(location.backend, Backend::Http { .. });
-            let scope = if class == FileClass::Regular && pattern.is_none() {
-                Scope::Exact
-            } else {
-                Scope::Tree
-            };
+            let scope =
+                if matches!(class, FileClass::Regular | FileClass::Stream) && pattern.is_none() {
+                    Scope::Exact
+                } else {
+                    Scope::Tree
+                };
             effects.accesses.push(Access {
-                resource: Resource::File(FileResource::new(location.clone(), scope)),
+                resource: if class == FileClass::Stream {
+                    Resource::StreamPath(FileResource::new(location.clone(), scope))
+                } else {
+                    Resource::File(FileResource::new(location.clone(), scope))
+                },
                 kind: if !http && matches!(class, FileClass::Regular | FileClass::Directory) {
                     AccessKind::Read
                 } else {
@@ -633,7 +657,11 @@ fn transfer(
                 return effects;
             }
             effects.accesses.push(Access {
-                resource: Resource::File(resource.clone()),
+                resource: if destination_class == FileClass::Stream {
+                    Resource::StreamPath(resource.clone())
+                } else {
+                    Resource::File(resource.clone())
+                },
                 kind: AccessKind::Write,
             });
             add_namespace_writes(

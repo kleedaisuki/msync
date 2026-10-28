@@ -366,7 +366,7 @@ async fn command_output(
             let _ = child.wait().await;
             out.abort(); err.abort();
             let _ = out.await; let _ = err.await;
-            return Err(ExecutionError::new("remote publication cancelled", span));
+            return Err(ExecutionError::cancelled("remote publication cancelled", span));
         },
     };
     let stdout = out

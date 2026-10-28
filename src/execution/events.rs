@@ -561,6 +561,32 @@ impl SubmissionPlan {
                     .push(event);
             }
         }
+        for group in crate::hir::graph::physical_groups(&graph.physical_rendezvous) {
+            if !group
+                .iter()
+                .all(|member| gates.contains_key(&(*member, Phase::Start)))
+            {
+                continue;
+            }
+            // Reserve the group only after every member's external gate is
+            // ready. Copy bound events, not Wait edges: another member's owner
+            // must not reinterpret a foreign commit as private completion.
+            let prerequisites = group
+                .iter()
+                .flat_map(|member| &gates[&(*member, Phase::Start)])
+                .filter(|event| {
+                    !matches!(event, Event::Node(key, NodeEvent::Admitted)
+                    if key.submission == self.id && group.contains(&key.instruction))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            for member in group {
+                gates
+                    .get_mut(&(member, Phase::Start))
+                    .unwrap()
+                    .extend(prerequisites.clone());
+            }
+        }
         for events in gates.values_mut() {
             events.sort();
             events.dedup();
@@ -1077,6 +1103,115 @@ mod tests {
 
     fn owner(name: &str) -> OwnerKey {
         OwnerKey::new(name).unwrap()
+    }
+
+    #[test]
+    fn fifo_group_reservation_preserves_every_members_bound_external_visibility() {
+        use crate::hir::effects::{
+            EndpointKey, EndpointRole, FifoEndpointProof, FifoRendezvousProof,
+        };
+        let program = Arc::new(hir::Program {
+            body: Region {
+                instructions: vec![
+                    instruction(0, Input::Literal("earlier".into()), file("/target")),
+                    instruction(1, Input::Literal("later".into()), file("/fifo")),
+                    instruction(
+                        2,
+                        Input::File {
+                            location: local("/fifo"),
+                            pattern: None,
+                        },
+                        file("/target"),
+                    ),
+                ],
+            },
+            transactions: Vec::new(),
+        });
+        let mut context = PlanningContext::default();
+        for (id, source, destination) in [
+            (0, FileClass::Regular, FileClass::Regular),
+            (1, FileClass::Regular, FileClass::Stream),
+            (2, FileClass::Stream, FileClass::Regular),
+        ] {
+            context.operation_facts.insert(
+                InstructionId(id),
+                OperationFacts {
+                    source,
+                    destination,
+                },
+            );
+        }
+        let endpoint = |id, role| {
+            FifoEndpointProof::verified_fifo(
+                EndpointKey {
+                    instruction: InstructionId(id),
+                    role,
+                },
+                local("/fifo"),
+                "test-fifo",
+                "inode-42",
+            )
+            .unwrap()
+        };
+        context.physical_rendezvous.push(
+            FifoRendezvousProof::connect(
+                endpoint(1, EndpointRole::Destination),
+                endpoint(2, EndpointRole::Source),
+            )
+            .unwrap(),
+        );
+        let graph = graph::build_with_context(&program, &context);
+        let plan = SubmissionPlan::bind(
+            SubmissionId(0),
+            program,
+            Origins::default(),
+            context,
+            graph,
+            Bindings {
+                nodes: [
+                    (InstructionId(0), owner("A")),
+                    (InstructionId(1), owner("A")),
+                    (InstructionId(2), owner("B")),
+                ]
+                .into(),
+                ..Bindings::default()
+            },
+        )
+        .unwrap();
+        let mut ledger = Ledger::default();
+        let producer = plan.node_key(InstructionId(0)).unwrap();
+        ledger
+            .record(
+                Event::Node(producer, NodeEvent::LogicalComplete),
+                Outcome::Succeeded,
+            )
+            .unwrap();
+        let GateState::Pending(events) =
+            ledger.gate(&plan, InstructionId(1), Phase::Start).unwrap()
+        else {
+            panic!(
+                "one ready member cannot reserve capacity before its peer's external producer commits"
+            )
+        };
+        assert!(events.contains(&Event::Node(producer, NodeEvent::Committed)));
+        ledger
+            .record(
+                Event::Node(producer, NodeEvent::Committed),
+                Outcome::Succeeded,
+            )
+            .unwrap();
+        assert!(matches!(
+            ledger.gate(&plan, InstructionId(1), Phase::Start).unwrap(),
+            GateState::Ready
+        ));
+        let writer = plan.node_key(InstructionId(1)).unwrap();
+        ledger
+            .record(Event::Node(writer, NodeEvent::Admitted), Outcome::Succeeded)
+            .unwrap();
+        assert!(matches!(
+            ledger.gate(&plan, InstructionId(2), Phase::Start).unwrap(),
+            GateState::Ready
+        ));
     }
 
     fn fixture(id: SubmissionId, consumer: OwnerKey) -> Arc<SubmissionPlan> {

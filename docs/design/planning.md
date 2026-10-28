@@ -48,6 +48,51 @@ to encode this condition. Runtime/domain uses the marker to enroll an envelope,
 then resolves/revalidates only after the actual producer start/publication gate.
 An unrelated unknown file's scoped write does not defer independent bad paths.
 
+A verified physical-stream destination is not a future filesystem namespace
+replacement. Writing bytes to a FIFO/socket therefore preserves the next
+reader's observed `Stream` kind and does not add `host_unstable`; otherwise a
+file-to-FIFO-to-file chain would enroll the FIFO's parent as ordinary snapshot
+data before its co-start protocol could run. This rule applies only while that
+destination observation is stable. A cached stream type under an earlier native
+replacement still requires the normal deferred endpoint gate. Physical stream
+ownership and co-start refinement remain mandatory in either case.
+
+The structured executor discharges FIFO rendezvous with explicit
+`physical_rendezvous` premises: opposite source/destination `EndpointKey`s,
+exact local FIFO paths, and a native provider/inode identity. The pure graph
+checks stable `Stream` facts, same-region membership and exclusive endpoint
+ownership. Only the matched FIFO Write/Consume conflict waits for `Admitted`;
+unrelated file/namespace hazards and same-direction consumers remain ordered.
+Repeated waves have separate groups. Contracted completion cycles, internal
+completion hazards and closed FIFO-only cycles are rejected before IO.
+
+Execution preparation retains metadata-only inode leases (`O_PATH` on Linux),
+not FIFO read/write connections. These prevent inode-number reuse without
+satisfying a reader/writer rendezvous. Current-submission endpoint leases are
+owned by the runtime; admitted flows retain their own clones through descriptor
+opening. Admission revalidates the pathname, and descriptor `fstat` validates the
+same retained inode before byte IO. Writer retries also check the path, so
+replacing a FIFO with another unopened FIFO cannot cause a stale ENXIO loop.
+Ordinary compiler check/format entry points do not acquire these execution leases.
+
+Connected groups reserve every stream slot and two configured buffers per flow
+before the first endpoint opens. Static insufficient capacity is rejected before
+payload capture; dynamic partial reservations are dropped on failure. Remaining
+reservations are released when the owning submission exits or is cancelled.
+Metadata leases are released on shutdown. The transport retains its relay,
+close watcher, cancellation and file-sink publication policy; FIFOs never become
+immutable filesystem snapshot entries.
+
+Focused acceptance on WSL Ubuntu with fixtures on a private project-local tmpfs:
+the full physical endpoint target passed 14 cases (one explicitly native-process
+case ignored), including two-end FIFO co-start, repeated waves and a three-flow
+chain, stream/memory capacity refusal before capture, sockets and EOF/stop.
+Graph replay/hazard tests passed 67/67; the FIFO type-stability regression passed
+1/1; real inode replacement/metadata-lease tests passed 3/3. The same library and
+three integration targets passed strict Clippy. Reproduction is the disposable
+`.temp/check-fifo-preparation-v4.sh`; these are correctness results, not latency
+benchmarks or a replacement for provisioned native-child gates.
+
 Inspection uses the same pending-write predicate before probing a leaf or its
 ancestors. A currently non-directory ancestor or denied host lookup must not
 preempt a native import that may replace it. Deferred paths retain their raw
@@ -653,6 +698,81 @@ The metadata and observation preconditions matter as much as distinct names:
 motivates checking the chosen merge and application invariants together rather
 than calling every set insertion coordination-free. We do not import a general
 CRDT runtime or weaken the four named-transaction isolation levels.
+
+### Physical FIFO rendezvous is admission, not file publication
+
+A FIFO writer cannot wait for its reader's EOF (or conversely) before opening:
+[Linux FIFO semantics](https://www.man7.org/linux/man-pages/man7/fifo.7.html)
+require both sides for progress. A generic consuming-file hazard therefore
+needs a narrow physical protocol refinement, not a blanket independence claim.
+
+`FifoEndpointProof` binds an exact local source/destination operand to an actual
+provider/inode observation. `FifoRendezvousProof` connects opposite endpoints of
+that same native FIFO. Preparation/graph replay checks the original instruction,
+stream kind, stable host premise and same region. The provider must retain and
+revalidate the identity at actual open. Only the corresponding exact
+`Write`/`Consume` hazard becomes `Admitted`; other byte/namespace hazards,
+same-side consuming readers and opaque program effects remain strict. The proof
+is retained in `PlanningContext` and `PlanGraph`; cloning a pure certificate is
+not an OS capability, and no old submission is silently assigned a new proof.
+
+All observed FIFO operands, including unpaired ones, additionally access a
+`StreamIdentity(provider, inode-generation)` resource. Original pathname hazards
+remain: unlink/replacement and opaque filesystem effects are not channel bytes.
+The identity resource prevents distinct hard-link names from being declared
+independent channels or allowing competing readers to split successive waves.
+Only the certified opposite-endpoint pair changes its identity hazard to
+admission; same-side and cross-wave accesses still require completion.
+
+`StreamPath` keeps byte-channel pathname overlap separate from a `File` mutation.
+It still conflicts with replacing that path or an ancestor tree, but writing
+stream bytes does not invalidate the filesystem kind in this or a later input.
+Opaque/native file writes remain genuine type-invalidating effects. Positive
+FIFO generation certificates require a held metadata-only native lease:
+Linux/Android/FreeBSD use `O_PATH`; an inode number without a lease is not that
+capability. The unverified macOS `O_EVTONLY` reader-open path is not used.
+Legacy external-peer byte IO remains separate from this structured certificate.
+
+Self-contained FIFO rendezvous currently joins statements within one submission.
+When a later REPL input conflicts with an already admitted half, it is rejected
+before opening its endpoint with a `/stop` then `/load` or single-macro hint.
+`/wait` alone cannot manufacture a missing peer. This does not restrict external
+FIFO peers or the existing program-port connections across REPL inputs.
+
+Focused acceptance on WSL UID 1000 with project `.temp` privately mounted tmpfs:
+41 preparation cases, 68 graph cases, 21 event-ledger cases, four FIFO identity
+cases, 17 ordinary physical journeys and two actual native-program journeys all
+passed. The latter include reader-first FIFO input to an already retained `cat`
+space and closure of an idle physical input after native child exit. The cat
+declaration is a prior input so its actual mediated footprint is established;
+this does not claim that a new opaque Spawn followed by an unclassified external
+FIFO in the same input can bypass the conservative deferred-domain policy.
+Hard-linked FIFO waves, all-member external prerequisites, insufficient group
+capacity, inode replacement, cross-input refusal/recovery and existing Unix
+socket behavior are explicit controls. Strict library/graph/preparation/physical
+Clippy passed. These are correctness gates, not performance measurements.
+
+Before reserving a connected co-start group's slots, every member's external
+Start prerequisites must hold. The event binder unions already-bound external
+events across members, excluding only internal `Admitted` facts. It does not
+retarget a `Completion` edge: doing so would reinterpret the original target's
+foreign `Committed` prerequisite as another member's owner-local completion.
+Thus a ready FIFO writer cannot occupy the reader's slots while an earlier TCP
+producer still needs those slots to publish the reader's other dependency.
+
+Each source/destination endpoint has one paired owner; repeated FIFO waves keep
+their ordinary same-side completion order. Contracting each connected co-start
+group must leave an acyclic completion graph, and a group cannot contain its own
+completion hazard. The directed channel graph also rejects closed cycles with
+no independent source. Thus ordered writer/reader waves remain supported, while
+two reads followed by two writes cannot slip through pairwise certificates and
+deadlock after admission. Admission remains
+distinct from EOF, logical assignment, import and commit. This separation is
+consistent with the safety discipline of
+[verified dataflow progress tracking](https://matthias-brun.ch/assets/publications/progress_tracking_itp2021.pdf):
+progress information must reflect actual outstanding work rather than confusing
+an activated operator with a completed computation. We use that distinction,
+not Timely's distributed timestamp protocol.
 
 ### Local rollback is an epoch reset, not a seal
 

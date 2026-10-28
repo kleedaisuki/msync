@@ -36,7 +36,7 @@ use super::events::{
 };
 use super::physical;
 use super::program::{self, Program, Reader, Writer};
-use super::scheduler::Admission;
+use super::scheduler::{Admission, Lease};
 use super::{Engine, ExecutionReport, Options};
 
 #[derive(Clone)]
@@ -160,6 +160,8 @@ pub struct RuntimeSession {
     complete_submission: bool,
     pending_planning: Option<crate::hir::graph::PlanningContext>,
     planning: crate::hir::graph::PlanningContext,
+    native_fifo_pins: BTreeMap<hir::effects::EndpointKey, crate::streams::FifoIdentity>,
+    fifo_admission: BTreeMap<InstructionId, Lease>,
     rejected_before_start: bool,
     sparse_roots: BTreeSet<PathBuf>,
     admission: Admission,
@@ -226,6 +228,8 @@ impl RuntimeSession {
             complete_submission: false,
             pending_planning: None,
             planning: crate::hir::graph::PlanningContext::default(),
+            native_fifo_pins: BTreeMap::new(),
+            fifo_admission: BTreeMap::new(),
             rejected_before_start: false,
             sparse_roots: BTreeSet::new(),
             admission: Admission::new(&options.limits)?,
@@ -343,6 +347,8 @@ impl RuntimeSession {
     pub fn refinement_context(&self) -> crate::hir::graph::PlanningContext {
         let mut context = self.planning_context();
         context.host_unstable = self.planning.host_unstable.clone();
+        context.physical_rendezvous = self.planning.physical_rendezvous.clone();
+        context.physical_fifos = self.planning.physical_fifos.clone();
         let latest_cohorts = self
             .latest_processes
             .iter()
@@ -478,6 +484,14 @@ impl RuntimeSession {
                     .context;
         }
         self.preflight(program)?;
+        let rendezvous = physical::rendezvous(program, &self.planning)?;
+        self.planning.physical_rendezvous = rendezvous.proofs;
+        self.planning.physical_fifos = rendezvous.observations;
+        self.native_fifo_pins = rendezvous.pins;
+        if !complete {
+            self.preflight_fifo_input(program)?;
+        }
+        self.preflight_fifo_resources(program)?;
         let domain = live_domain(program, &self.options, &self.planning)?;
         self.enroll_physical_namespaces(program)?;
         self.enroll(&domain)?;
@@ -518,6 +532,7 @@ impl RuntimeSession {
         self.remember_plan(self.plan.as_ref().expect("submission bound").clone());
         self.collect_plans();
         let result = self.region(&program.body, None, program).await;
+        self.fifo_admission.clear();
         let result = match result {
             Ok(()) if complete => self.wait().await,
             other => other,
@@ -627,6 +642,7 @@ impl RuntimeSession {
         }
         self.owner_tokens.clear();
         self.prepared_readers.clear();
+        self.fifo_admission.clear();
         self.cancel = self.options.cancel.child_token();
         if !joined
             || failure.cause.is_some()
@@ -642,6 +658,7 @@ impl RuntimeSession {
         self.cancel_active().await?;
         self.programs.clear();
         self.pins.clear();
+        self.native_fifo_pins.clear();
         if let Some(mut engine) = self.engine.take() {
             engine.close();
             if let Some(issue) = engine
@@ -688,6 +705,81 @@ impl RuntimeSession {
         Ok(())
     }
 
+    fn preflight_fifo_resources(&self, program: &hir::Program) -> Result<()> {
+        let limits = &self.options.limits;
+        for group in hir::graph::physical_groups(&self.planning.physical_rendezvous) {
+            if group.len() <= limits.max_streams
+                && group.len() <= limits.memory_bytes / limits.buffer_bytes / 2
+            {
+                continue;
+            }
+            let span = program
+                .body
+                .instructions
+                .iter()
+                .find(|node| group.contains(&node.id))
+                .map_or(Span::default(), |node| node.span);
+            return Err(ExecutionError::new(format!("this FIFO cohort must co-start {} flows with two buffers each", group.len()), span)
+                .help("No payloads were captured and no flow started. Increase --max-streams/--memory-limit, reduce --buffer-size, or separate independent channels."));
+        }
+        Ok(())
+    }
+
+    fn preflight_fifo_input(&self, program: &hir::Program) -> Result<()> {
+        for (key, endpoint) in &self.planning.physical_fifos {
+            let resource = hir::effects::Resource::StreamIdentity {
+                provider: endpoint.provider().into(),
+                identity: endpoint.identity().into(),
+            };
+            let busy = self.outstanding_work().any(|work| {
+                work.plan
+                    .effects(work.key.instruction)
+                    .is_ok_and(|effects| {
+                        effects
+                            .accesses
+                            .iter()
+                            .any(|access| access.resource.may_overlap(&resource))
+                    })
+            });
+            if !busy {
+                continue;
+            }
+            let span = program
+                .body
+                .instructions
+                .iter()
+                .find(|node| node.id == key.instruction)
+                .map_or(Span::default(), |node| node.span);
+            return Err(ExecutionError::new("this FIFO is still owned by an earlier input; no new endpoint was opened", span)
+                .help("If the FIFO peer is another msync statement, /stop the pending half and submit both sides together with /load or one macro call. /wait alone cannot create its missing peer. Otherwise connect the external FIFO reader/writer and wait for the previous flow to finish.")
+                .with_operand(self.origins.get(&key.instruction), key.role == hir::effects::EndpointRole::Destination));
+        }
+        Ok(())
+    }
+
+    fn flow_lease(&mut self, instruction: InstructionId, span: Span) -> Result<Lease> {
+        if let Some(lease) = self.fifo_admission.remove(&instruction) {
+            return Ok(lease);
+        }
+        let group = hir::graph::physical_groups(&self.work()?.plan.context().physical_rendezvous)
+            .into_iter()
+            .find(|group| group.contains(&instruction));
+        let Some(group) = group else {
+            return self.admission.flow(span);
+        };
+        // Reserve the entire connected cohort before its first endpoint can
+        // open. Failure drops partial reservations, never half-starts a pipe.
+        let leases = group
+            .into_iter()
+            .map(|member| self.admission.flow(span).map(|lease| (member, lease)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        self.fifo_admission.extend(leases);
+        Ok(self
+            .fifo_admission
+            .remove(&instruction)
+            .expect("cohort contains its admitted member"))
+    }
+
     fn preflight(&self, program: &hir::Program) -> Result<()> {
         fn walk(
             session: &RuntimeSession,
@@ -702,7 +794,12 @@ impl RuntimeSession {
                 } = &node.kind
                 {
                     let unstable = transfer_unstable(&session.planning, node.id);
-                    let physical = unstable && known_physical(source, destination)
+                    let physical = unstable
+                        && known_physical(
+                            source,
+                            destination,
+                            session.planning.operation_facts.get(&node.id),
+                        )
                         || !unstable
                             && (physical::inspect(source, destination, node.span)?.is_some()
                                 || match (source, destination) {
@@ -860,6 +957,11 @@ impl RuntimeSession {
                     .find(|sparse| domain::relative_to(root, sparse).is_some())
                 {
                     let mut entries = BTreeSet::new();
+                    if let Some(relative) = domain::relative_to(root, sparse)
+                        && let Some(first) = relative.components().next()
+                    {
+                        entries.insert(sparse.join(first));
+                    }
                     for transfer in domain.transfers.values() {
                         let paths =
                             std::iter::once(&transfer.destination).chain(match &transfer.source {
@@ -1105,7 +1207,7 @@ impl RuntimeSession {
     async fn wait_event(&mut self) -> Result<()> {
         let mut changed = self.ledger.subscribe();
         tokio::select! {
-            () = self.cancel.cancelled() => Err(ExecutionError::new("execution cancelled while waiting for a resource event", Span::default())),
+            () = self.cancel.cancelled() => Err(ExecutionError::cancelled("execution cancelled while waiting for a resource event", Span::default())),
             terminal = self.terminal_rx.recv() => match terminal {
                 Some(event) => self.terminal(event),
                 None => Err(ExecutionError::new("execution event channel closed with pending work", Span::default())),
@@ -1299,13 +1401,33 @@ impl RuntimeSession {
         };
         let unstable = self.host_unstable(node.id, hir::effects::EndpointRole::Source)
             || self.host_unstable(node.id, hir::effects::EndpointRole::Destination);
-        let physical = match &node.kind {
+        if let InstructionKind::Transfer {
+            source,
+            destination,
+        } = &node.kind
+        {
+            physical::verify_fifo_inputs(
+                node.id,
+                source,
+                destination,
+                &self.native_fifo_pins,
+                node.span,
+            )?;
+        }
+        let mut physical = match &node.kind {
             InstructionKind::Transfer {
                 source,
                 destination,
             } if !unstable => physical::inspect(source, destination, node.span)?,
             _ => None,
         };
+        if let Some(spec) = &mut physical {
+            spec.bind_rendezvous(
+                node.id,
+                &self.planning.physical_rendezvous,
+                &self.native_fifo_pins,
+            )?;
+        }
         self.observe_node(node, physical.as_ref())?;
         if current.is_none() && !unstable {
             self.reserve_namespace(key, node, physical.as_ref())?;
@@ -1758,7 +1880,10 @@ impl RuntimeSession {
         let mut pending = region.instructions.iter().collect::<Vec<_>>();
         while !pending.is_empty() {
             if self.cancel.is_cancelled() {
-                return Err(ExecutionError::new("execution cancelled", pending[0].span));
+                return Err(ExecutionError::cancelled(
+                    "execution cancelled",
+                    pending[0].span,
+                ));
             }
             let mut selected = None;
             for (index, instruction) in pending.iter().enumerate() {
@@ -1801,8 +1926,17 @@ impl RuntimeSession {
                 }
                 if !self.complete_submission && current.is_none() {
                     self.rejected_before_start = true;
-                    return Err(ExecutionError::new("this submission is waiting for an owned resource producer; no blocked operation started", pending[0].span)
-                        .help("Connect the required stdin, finish its producer with /wait, or cancel the conflicting job with /stop before retrying."));
+                    let fifo = pending.iter().any(|node| {
+                        self.native_fifo_pins
+                            .keys()
+                            .any(|key| key.instruction == node.id)
+                    });
+                    let help = if fifo {
+                        "If the FIFO peer is another msync statement, /stop the pending half and submit both sides together with /load or one macro call. /wait alone cannot create its missing peer. Otherwise connect the external FIFO reader/writer before retrying."
+                    } else {
+                        "Connect the required stdin, finish its producer with /wait, or cancel the conflicting job with /stop before retrying."
+                    };
+                    return Err(ExecutionError::new("this submission is waiting for an owned resource producer; no blocked operation started", pending[0].span).help(help));
                 }
                 for program in self
                     .programs
@@ -1833,18 +1967,12 @@ impl RuntimeSession {
             self.instruction(instruction, current, program)
                 .await
                 .map_err(|error| error.with_origin(origin.as_ref()))?;
-            let deferred = match &instruction.kind {
-                InstructionKind::Spawn { .. } => true,
-                InstructionKind::Transfer {
-                    source,
-                    destination,
-                } => {
-                    matches!(source, Input::Port { .. })
-                        || matches!(destination, Output::Stdin(_))
-                        || work.physical.is_some()
-                }
-                _ => false,
-            };
+            let deferred = matches!(instruction.kind, InstructionKind::Spawn { .. })
+                || self.flows.iter().any(|flow| flow.work.key == work.key)
+                || self
+                    .deferred
+                    .iter()
+                    .any(|assignment| assignment.work.key == work.key);
             if !deferred {
                 self.event(Event::Node(work.key, NodeEvent::ServiceReady))?;
                 self.logical_complete(&work)?;
@@ -2135,7 +2263,7 @@ impl RuntimeSession {
                 id
             }
         };
-        let task = lease.task("program.launch", self.owner_token(transaction));
+        let task = lease.task("program.launch");
         let worker = self.worker.clone().expect("preflight worker");
         let buffer_bytes = self.options.limits.buffer_bytes;
         let origin = self.active_origin.clone();
@@ -2283,7 +2411,12 @@ impl RuntimeSession {
         }
         let physical = match self.work()?.physical {
             Some(spec) => Some(spec),
-            None if known_physical(source, destination) => {
+            None if known_physical(
+                source,
+                destination,
+                self.planning.operation_facts.get(&instruction),
+            ) =>
+            {
                 physical::inspect(source, destination, span)?
             }
             None => None,
@@ -2677,11 +2810,11 @@ impl RuntimeSession {
         });
         let capture = output.as_ref().map(|(path, _, _)| path.clone());
         let basename = spec.basename.clone();
-        let lease = self.admission.flow(span)?;
+        let lease = self.flow_lease(instruction, span)?;
         let buffer = self.options.limits.buffer_bytes;
         let cancel = self.owner_token(transaction);
         let managed = output.as_ref().map(|(_, target, _)| target.clone());
-        let task = lease.task("physical.transfer", cancel.clone());
+        let task = lease.task("physical.transfer");
         let work = self.work()?;
         let flow_work = work.clone();
         let ready = Arc::new(AtomicBool::new(false));
@@ -2712,6 +2845,7 @@ impl RuntimeSession {
             handle,
             managed,
         });
+        self.event(Event::Node(self.work()?.key, NodeEvent::Admitted))?;
         Ok(())
     }
 
@@ -2724,10 +2858,17 @@ impl RuntimeSession {
         span: Span,
         consumer_closed: CancellationToken,
     ) -> Result<()> {
-        let lease = self.admission.flow(span)?;
+        let lease = self.flow_lease(instruction, span)?;
+        let fifo = self
+            .native_fifo_pins
+            .get(&hir::effects::EndpointKey {
+                instruction,
+                role: hir::effects::EndpointRole::Source,
+            })
+            .cloned();
         let buffer = self.options.limits.buffer_bytes;
         let cancel = self.owner_token(transaction);
-        let task = lease.task("physical.input", cancel.clone());
+        let task = lease.task("physical.input");
         let work = self.work()?;
         let flow_work = work.clone();
         let ready = Arc::new(AtomicBool::new(false));
@@ -2739,7 +2880,7 @@ impl RuntimeSession {
         let handle = tokio::spawn(task.run(async move {
             let _notice = notice;
             let _lease = lease;
-            physical::to_writer(source, sink, buffer, cancel, span, consumer_closed).await?;
+            physical::to_writer(source, sink, buffer, cancel, span, consumer_closed, fifo).await?;
             Ok(FlowResult {
                 work,
                 origin: None,
@@ -2761,6 +2902,7 @@ impl RuntimeSession {
             handle,
             managed: None,
         });
+        self.event(Event::Node(self.work()?.key, NodeEvent::Admitted))?;
         Ok(())
     }
 
@@ -2995,7 +3137,7 @@ impl RuntimeSession {
         let size = self.options.limits.buffer_bytes;
         let cancel = self.owner_token(transaction);
         let managed = output.as_ref().map(|(_, target, _)| target.clone());
-        let task = lease.task("program.port", cancel.clone());
+        let task = lease.task("program.port");
         let origin = self.active_origin.clone();
         let work = self.work()?;
         let flow_work = work.clone();
@@ -3010,11 +3152,11 @@ impl RuntimeSession {
             let _lease = lease;
             let mut bytes = vec![0; size];
             loop {
-                let count = tokio::select! { () = cancel.cancelled() => return Err(ExecutionError::new("program flow cancelled", span)), read = source.read(&mut bytes) => read.map_err(|cause| ExecutionError::caused("cannot read program flow", span, cause).with_operand(origin.as_ref(), false))? };
+                let count = tokio::select! { () = cancel.cancelled() => return Err(ExecutionError::cancelled("program flow cancelled", span)), read = source.read(&mut bytes) => read.map_err(|cause| ExecutionError::caused("cannot read program flow", span, cause).with_operand(origin.as_ref(), false))? };
                 if count == 0 {
                     break;
                 }
-                tokio::select! { () = cancel.cancelled() => return Err(ExecutionError::new("program flow cancelled", span)), written = destination.write_all(&bytes[..count]) => written.map_err(|cause| ExecutionError::caused("cannot write program flow", span, cause).with_operand(origin.as_ref(), true))? };
+                tokio::select! { () = cancel.cancelled() => return Err(ExecutionError::cancelled("program flow cancelled", span)), written = destination.write_all(&bytes[..count]) => written.map_err(|cause| ExecutionError::caused("cannot write program flow", span, cause).with_operand(origin.as_ref(), true))? };
             }
             destination.shutdown().await.map_err(|cause| {
                 ExecutionError::caused("cannot close program flow", span, cause).with_operand(origin.as_ref(), true)
@@ -3062,7 +3204,7 @@ impl RuntimeSession {
                     let origin = flow.origin.clone();
                     self.flows.push(flow);
                     self.flows.extend(selected);
-                    return Err(ExecutionError::new("execution cancelled while draining program IO", Span::default()).with_origin(origin.as_ref()));
+                    return Err(ExecutionError::cancelled("execution cancelled while draining program IO", Span::default()).with_origin(origin.as_ref()));
                 },
                 joined = &mut flow.handle => joined
                     .map_err(|cause| ExecutionError::caused("program flow worker failed", Span::default(), cause))
@@ -3361,11 +3503,7 @@ impl RuntimeSession {
                             ),
                         );
                     }
-                    Ok(Err(error))
-                        if error.cause.is_some()
-                            || !error.recovery.is_empty()
-                            || !error.compensation.is_empty() =>
-                    {
+                    Ok(Err(error)) if !error.is_cancelled() => {
                         joined = false;
                         Self::retain_cleanup_failure(failure, error);
                     }
@@ -3475,9 +3613,15 @@ fn transfer_unstable(context: &crate::hir::graph::PlanningContext, id: Instructi
         || endpoint_unstable(context, id, EndpointRole::Destination)
 }
 
-fn known_physical(source: &Input, destination: &Output) -> bool {
-    transfer_locations(source, destination)
-        .any(|(location, _)| matches!(location.backend, Backend::Tcp { .. }))
+fn known_physical(
+    source: &Input,
+    destination: &Output,
+    facts: Option<&hir::effects::OperationFacts>,
+) -> bool {
+    transfer_locations(source, destination).any(|(location, source)| {
+        matches!(location.backend, Backend::Tcp { .. })
+            || facts.is_some_and(|facts| if source { facts.source } else { facts.destination } == crate::plan::FileClass::Stream)
+    })
 }
 
 fn transfer_locations<'a>(
@@ -3554,8 +3698,23 @@ fn live_domain(
                     }
                     continue;
                 }
-                if unstable && known_physical(source, destination) {
+                if unstable
+                    && known_physical(source, destination, context.operation_facts.get(&node.id))
+                {
                     for (location, source) in transfer_locations(source, destination) {
+                        let facts = context
+                            .operation_facts
+                            .get(&node.id)
+                            .copied()
+                            .unwrap_or_default();
+                        if if source {
+                            facts.source
+                        } else {
+                            facts.destination
+                        } == crate::plan::FileClass::Stream
+                        {
+                            continue;
+                        }
                         if let Some(path) = crate::runtime::local_path(location, source)
                             .map_err(|message| ExecutionError::new(message, node.span))?
                         {

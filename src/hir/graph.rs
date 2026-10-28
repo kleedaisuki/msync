@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub use super::effects::VersionReadProof;
 use super::effects::{
-    self, Conflict, Effects, EndpointKey, NamespaceMergeProof, OperationFacts, Port, Resource,
+    self, Conflict, Effects, EndpointKey, FifoEndpointProof, FifoRendezvousProof,
+    NamespaceMergeProof, OperationFacts, Port, Resource,
 };
 use crate::compiler::Location;
 use crate::hir::{
@@ -242,6 +243,9 @@ pub struct PlanningContext {
     pub pinned_inputs: BTreeMap<InstructionId, VersionReadProof>,
     pub cohort_views: Vec<CohortViewProof>,
     pub namespace_merges: BTreeMap<InstructionId, NamespaceMergeProof>,
+    /// Actual native FIFO endpoint observations retained by this submission.
+    pub physical_rendezvous: Vec<FifoRendezvousProof>,
+    pub physical_fifos: BTreeMap<EndpointKey, FifoEndpointProof>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -332,6 +336,8 @@ pub struct PlanGraph {
     pub shared_cohorts: Vec<SharedCohort>,
     pub cohort_refinements: Vec<CohortRefinement>,
     pub namespace_merges: BTreeMap<InstructionId, NamespaceMergeProof>,
+    pub physical_rendezvous: Vec<FifoRendezvousProof>,
+    pub physical_fifos: BTreeMap<EndpointKey, FifoEndpointProof>,
     /// Includes descendant regions' reset cuts, keyed by globally unique HIR IDs.
     /// A retained submission can resolve a child controller without replacing
     /// its original whole-program proof/source owner.
@@ -421,6 +427,8 @@ pub fn build_with_context(program: &Program, context: &PlanningContext) -> PlanG
     let mut issues = Vec::new();
     let mut effective = context.clone();
     effective.namespace_merges = validate_namespace_merges(program, context, &mut issues);
+    effective.physical_rendezvous = validate_physical_rendezvous(program, context, &mut issues);
+    effective.physical_fifos = validate_fifo_endpoints(program, context, &mut issues);
     let context = &effective;
     collect(
         &program.body,
@@ -504,6 +512,125 @@ fn validate_namespace_merges(
         }
     }
     valid
+}
+
+fn validate_physical_rendezvous(
+    program: &Program,
+    context: &PlanningContext,
+    issues: &mut Vec<Issue>,
+) -> Vec<FifoRendezvousProof> {
+    fn find<'a>(
+        region: &'a Region,
+        id: InstructionId,
+        path: &[InstructionId],
+    ) -> Option<(&'a Instruction, Vec<InstructionId>)> {
+        for instruction in &region.instructions {
+            if instruction.id == id {
+                return Some((instruction, path.to_vec()));
+            }
+            if let InstructionKind::Transaction { body, .. } = &instruction.kind {
+                let mut child = path.to_vec();
+                child.push(instruction.id);
+                if let Some(found) = find(body, id, &child) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+    let mut valid = Vec::new();
+    let mut endpoints = BTreeSet::new();
+    for proof in &context.physical_rendezvous {
+        let writer = proof.writer().key();
+        let reader = proof.reader().key();
+        let pair = find(&program.body, writer.instruction, &[]).zip(find(
+            &program.body,
+            reader.instruction,
+            &[],
+        ));
+        let supports = pair.is_some_and(|((write, write_region), (read, read_region))| {
+            write_region == read_region
+                && !context.host_unstable.contains(&writer)
+                && !context.host_unstable.contains(&reader)
+                && proof.supports(
+                    write,
+                    context
+                        .operation_facts
+                        .get(&write.id)
+                        .copied()
+                        .unwrap_or_default(),
+                    read,
+                    context
+                        .operation_facts
+                        .get(&read.id)
+                        .copied()
+                        .unwrap_or_default(),
+                )
+        });
+        let unique = !endpoints.contains(&writer) && !endpoints.contains(&reader);
+        if supports && unique {
+            endpoints.insert(writer);
+            endpoints.insert(reader);
+            valid.push(proof.clone());
+        } else {
+            issues.push(Issue { instructions: vec![writer.instruction, reader.instruction], message: "FIFO rendezvous certificate must cover distinct opposite local stream endpoints in one region with a stable native identity and exclusive endpoint ownership".into() });
+        }
+    }
+    valid
+}
+
+fn validate_fifo_endpoints(
+    program: &Program,
+    context: &PlanningContext,
+    issues: &mut Vec<Issue>,
+) -> BTreeMap<EndpointKey, FifoEndpointProof> {
+    fn find(region: &Region, id: InstructionId) -> Option<&Instruction> {
+        region.instructions.iter().find_map(|node| {
+            if node.id == id {
+                return Some(node);
+            }
+            if let InstructionKind::Transaction { body, .. } = &node.kind {
+                return find(body, id);
+            }
+            None
+        })
+    }
+    let mut observations = context.physical_fifos.clone();
+    for proof in &context.physical_rendezvous {
+        for endpoint in [proof.writer(), proof.reader()] {
+            if let Some(old) = observations.insert(endpoint.key(), endpoint.clone())
+                && old != *endpoint
+            {
+                issues.push(Issue {
+                    instructions: vec![endpoint.key().instruction],
+                    message: "conflicting native FIFO endpoint observations".into(),
+                });
+            }
+        }
+    }
+    observations.retain(|key, proof| {
+        let valid = *key == proof.key()
+            && !context.host_unstable.contains(key)
+            && find(&program.body, key.instruction).is_some_and(|node| {
+                proof.supports(
+                    node,
+                    context
+                        .operation_facts
+                        .get(&node.id)
+                        .copied()
+                        .unwrap_or_default(),
+                )
+            });
+        if !valid {
+            issues.push(Issue {
+                instructions: vec![key.instruction],
+                message: "native FIFO observation must cover its actual stable stream operand"
+                    .into(),
+            });
+        }
+        valid
+    });
+    observations
 }
 
 fn collect_port_owners(
@@ -849,6 +976,8 @@ fn build_region(
         pinned_inputs: context.pinned_inputs.clone(),
         cohort_views: context.cohort_views.clone(),
         namespace_merges: context.namespace_merges.clone(),
+        physical_rendezvous: context.physical_rendezvous.clone(),
+        physical_fifos: context.physical_fifos.clone(),
         ..PlanGraph::default()
     };
     for instruction in &region.instructions {
@@ -1039,6 +1168,7 @@ fn build_region(
                 after,
                 &graph.nodes[left].effects,
                 &graph.nodes[right].effects,
+                context,
             );
             if discarded_at
                 .get(&before.id)
@@ -1117,7 +1247,136 @@ fn build_region(
         })
         .collect();
     connect_ports(region, context, &mut graph);
+    validate_rendezvous_groups(&mut graph);
     graph
+}
+
+/// Connected physical co-start members for bounded admission. Callers must
+/// validate the containing graph/certificates before treating these as groups.
+pub(crate) fn physical_groups(proofs: &[FifoRendezvousProof]) -> Vec<Vec<InstructionId>> {
+    fn owner(
+        owners: &BTreeMap<InstructionId, InstructionId>,
+        mut node: InstructionId,
+    ) -> InstructionId {
+        while owners[&node] != node {
+            node = owners[&node];
+        }
+        node
+    }
+    let mut owners = BTreeMap::new();
+    for proof in proofs {
+        let writer = proof.writer().key().instruction;
+        let reader = proof.reader().key().instruction;
+        owners.entry(writer).or_insert(writer);
+        owners.entry(reader).or_insert(reader);
+        let writer = owner(&owners, writer);
+        let reader = owner(&owners, reader);
+        owners.insert(reader, writer);
+    }
+    let mut groups = BTreeMap::<_, Vec<_>>::new();
+    for node in owners.keys() {
+        groups.entry(owner(&owners, *node)).or_default().push(*node);
+    }
+    groups.into_values().collect()
+}
+
+fn validate_rendezvous_groups(graph: &mut PlanGraph) {
+    let mut owners = graph
+        .nodes
+        .iter()
+        .map(|node| (node.instruction, node.instruction))
+        .collect::<BTreeMap<_, _>>();
+    let mut connected = false;
+    for group in physical_groups(&graph.physical_rendezvous) {
+        let first = group[0];
+        if !owners.contains_key(&first) {
+            continue;
+        }
+        for node in group {
+            owners.insert(node, first);
+        }
+        connected = true;
+    }
+    if !connected {
+        return;
+    }
+    let connections = graph
+        .physical_rendezvous
+        .iter()
+        .filter_map(|proof| {
+            let writer = proof.writer().key().instruction;
+            let reader = proof.reader().key().instruction;
+            (owners.contains_key(&writer) && owners.contains_key(&reader))
+                .then_some((writer, reader))
+        })
+        .collect::<BTreeSet<_>>();
+    let closed = cyclic_nodes(owners.keys().copied().collect(), connections);
+    if !closed.is_empty() {
+        graph.issues.push(Issue { instructions: closed, message: "a closed FIFO cycle has no independent source/sink; break the cycle or use distinct channels".into() });
+    }
+    let collapsed = owners;
+    let groups = collapsed.values().copied().collect::<BTreeSet<_>>();
+    let mut edges = BTreeSet::new();
+    for edge in graph
+        .dependencies
+        .iter()
+        .chain(&graph.publication_dependencies)
+    {
+        if matches!(edge.wait, Wait::Admitted | Wait::ProcessStarted(_)) {
+            continue;
+        }
+        let before = collapsed[&edge.before];
+        let after = collapsed[&edge.after];
+        if before == after {
+            graph.issues.push(Issue { instructions: vec![edge.before, edge.after], message: "a FIFO rendezvous group depends on its own completion; stage the conflicting file resource or separate the channels".into() });
+        } else {
+            edges.insert((before, after));
+        }
+    }
+    let blocked = cyclic_nodes(groups, edges);
+    if !blocked.is_empty() {
+        graph.issues.push(Issue {
+            instructions: collapsed.iter().filter_map(|(node, group)| blocked.contains(group).then_some(*node)).collect(),
+            message: "FIFO co-start groups form a completion-dependency cycle; separate the channels or stage the conflicting dependency".into(),
+        });
+    }
+}
+
+fn cyclic_nodes(
+    groups: BTreeSet<InstructionId>,
+    edges: BTreeSet<(InstructionId, InstructionId)>,
+) -> Vec<InstructionId> {
+    let mut incoming = groups
+        .iter()
+        .map(|group| (*group, 0_usize))
+        .collect::<BTreeMap<_, _>>();
+    let mut followers = BTreeMap::<_, Vec<_>>::new();
+    for (before, after) in edges {
+        *incoming.get_mut(&after).unwrap() += 1;
+        followers.entry(before).or_default().push(after);
+    }
+    let mut ready = incoming
+        .iter()
+        .filter_map(|(group, count)| (*count == 0).then_some(*group))
+        .collect::<Vec<_>>();
+    let mut completed = 0;
+    while let Some(group) = ready.pop() {
+        completed += 1;
+        for next in followers.get(&group).into_iter().flatten() {
+            let count = incoming.get_mut(next).unwrap();
+            *count -= 1;
+            if *count == 0 {
+                ready.push(*next);
+            }
+        }
+    }
+    if completed == groups.len() {
+        return Vec::new();
+    }
+    incoming
+        .into_iter()
+        .filter_map(|(node, count)| (count > 0).then_some(node))
+        .collect()
 }
 
 fn local_epoch_resets(region: &Region, context: &PlanningContext) -> Vec<EpochReset> {
@@ -1304,7 +1563,7 @@ fn footprint(
 }
 
 fn summarize(instruction: &Instruction, context: &PlanningContext) -> Effects {
-    match &instruction.kind {
+    let mut summary = match &instruction.kind {
         InstructionKind::Spawn { process, .. } => context
             .process_effects
             .get(process)
@@ -1328,7 +1587,26 @@ fn summarize(instruction: &Instruction, context: &PlanningContext) -> Effects {
             context.pinned_inputs.get(&instruction.id),
             context.namespace_merges.get(&instruction.id),
         ),
+    };
+    for (key, proof) in &context.physical_fifos {
+        if key.instruction != instruction.id {
+            continue;
+        }
+        summary.accesses.push(effects::Access {
+            resource: Resource::StreamIdentity {
+                provider: proof.provider().into(),
+                identity: proof.identity().into(),
+            },
+            kind: match key.role {
+                effects::EndpointRole::Source => effects::AccessKind::Consume,
+                effects::EndpointRole::Destination => effects::AccessKind::Write,
+                effects::EndpointRole::Executable => {
+                    unreachable!("FIFO observation validated before summarizing")
+                }
+            },
+        });
     }
+    summary
 }
 
 fn refine(instruction: &Instruction, context: &PlanningContext, refinements: &mut Vec<Refinement>) {
@@ -1461,6 +1739,7 @@ fn ordering(
     after: &Instruction,
     left: &Effects,
     right: &Effects,
+    context: &PlanningContext,
 ) -> Vec<(Wait, Reason)> {
     let mut reasons = Vec::new();
     if cut(before) || cut(after) {
@@ -1501,11 +1780,18 @@ fn ordering(
     if (left.unknown_external || right.unknown_external) && port_connection.is_none() {
         reasons.push((completion(before), Reason::UnknownExternalEffects));
     }
-    reasons.extend(
-        left.conflicts(right)
-            .into_iter()
-            .map(|conflict| (completion(before), Reason::Hazard(Box::new(conflict)))),
-    );
+    reasons.extend(left.conflicts(right).into_iter().map(|conflict| {
+        let wait = if context
+            .physical_rendezvous
+            .iter()
+            .any(|proof| proof.matches_conflict(before, after, &conflict))
+        {
+            Wait::Admitted
+        } else {
+            completion(before)
+        };
+        (wait, Reason::Hazard(Box::new(conflict)))
+    }));
     reasons
 }
 

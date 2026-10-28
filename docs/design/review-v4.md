@@ -298,3 +298,155 @@ subscribing for a new event. A later owner's publication in the same pass can
 therefore unblock an earlier owner without requiring another external wakeup.
 Only newly recorded ledger outcomes advance the progress counter, so rereading
 persistent exited states does not create an unbounded fixed-point spin.
+
+## FIFO rendezvous follow-up review (2026-10-28)
+
+Scope: the uncommitted native FIFO refinement after `26b83a7`. This review traced
+the graph, retained native identities, flow admission, and stream open paths; it
+did not run an additional build. The following concrete defects were sent to the
+integration owner and are not considered closed merely by a proposed correction.
+
+1. **Whole-cohort capacity needs whole-cohort prerequisites.** `flow_lease` reserves
+   every connected member's slots when the first member starts. Consider writer
+   node 0 and reader node 2 sharing a FIFO while TCP node 1 must finish publishing
+   the reader's output file first. If node 0 can reserve both stream slots before
+   node 1 starts, it waits for its reader while the prerequisite cannot acquire
+   capacity. The existing
+   `fifo_cohort_waits_for_all_external_prerequisites_before_reserving_slots`
+   journey is the discriminating regression. The binding layer must require the
+   union of all external Start events before any member reserves capacity, while
+   preserving each event's already-bound owner visibility. Reinterpreting a
+   dependency under a different target owner or weakening it to admission would
+   be unsound.
+2. **Physical FIFO aliases require physical channel ordering.** Pair construction
+   groups endpoints by retained device/inode, but pathname-only ordinary effects
+   cannot serialize separate waves through hardlink aliases. For one FIFO with
+   names `a`, `b`, `c`, and `d`, `one -> a; b -> out1; two -> c; d -> out2` can
+   otherwise appear as two independent groups. Concurrent readers then split or
+   interleave both payloads instead of preserving the logical wave order. This
+   differs from managed regular-file writes, which replace path bindings. The
+   integration owner's correction should attach the retained physical stream
+   identity to every observed FIFO access, including unpaired endpoints. Only
+   the certified opposite pair can turn its corresponding Write/Consume hazard
+   into admission; same-side and cross-wave channel hazards remain completion
+   dependencies. A pure alias graph regression and a real hardlinked-FIFO wave
+   journey should verify this distinction.
+
+The opened FIFO descriptor is checked against the retained native inode before
+payload IO, and writer retries revalidate the pathname before waiting on a new
+reader. Linux metadata-only leases pin unlinked inode generations without acting
+as FIFO readers. These are appropriate ownership mechanisms; a pure certificate
+alone is not such a lease. Normal EOF must remain different from failure or stop.
+
+Cross-submission FIFO joining is not established by the current same-region HIR
+proof. Older flows retain a distinct `NodeKey` and plan, and the external witness
+currently requires committed completion for a conflicting new endpoint. A safe
+extension can bind a private old-NodeKey/new-endpoint rendezvous from both actual
+native leases and unique pair ownership, weakening only the exact opposite FIFO
+hazard to old admission. All other effects retain their old bound visibility.
+Peer failure before opening also needs scoped counterpart cancellation; successful
+writer completion must instead permit the reader to drain buffered bytes to EOF.
+This is an explicit integration boundary, not evidence that cross-input FIFO
+joining already works or a reason to waive old-flow dependencies.
+
+The release scope keeps the current conservative cross-input conflict contract:
+FIFO jobs can wait for external physical peers, but two msync flows that must
+self-rendezvous belong in one submission (for example, one macro call or a
+`/load` script). Program ports retain their already-supported cross-input
+connections. A user who has submitted only one self-FIFO endpoint should first
+stop that pending job, then submit both endpoints together; `/wait` cannot create
+the missing peer. This guidance must accompany a blocked REPL operation rather
+than suggesting that waiting alone necessarily makes progress. A future
+cross-input implementation would need the retained native leases, unique
+NodeKey-qualified pair registry and scoped peer-failure handling above; it is
+not part of the current same-batch proof.
+
+### Platform capability must include a real generation pin
+
+A device/inode observation without a retained non-payload native handle does not
+prove generation identity after unlink and inode reuse. Targets whose
+`FifoIdentity` has no such lease must not mint the positive rendezvous proof;
+their existing external-peer FIFO transport can remain conservative.
+
+The initially proposed macOS `O_EVTONLY` lease is not established as such a
+primitive. Inspection of Apple's current
+[`fifo_open`](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/miscfs/fifofs/fifo_vnops.c)
+shows reader accounting and forced read mode without an event-only bypass;
+[`open1`](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/vfs/vfs_syscalls.c)
+still passes that mode through normal vnode open. Combined with the proposed
+read-open without nonblocking mode, this can obstruct preparation or act as a
+real FIFO reader. This is a source-derived inference, not a macOS experiment.
+Until a non-reader handle is established, omit that lease path and reject the
+positive self-rendezvous capability there rather than making a speculative
+cross-platform guarantee. Linux `O_PATH` remains separately verified by the
+actual inode-pinning/no-reader fixture.
+
+### Source recheck after correction
+
+The current event binder now unions each physical group's already-bound external
+Start events, excluding only the group's own admission facts. The alias repair
+adds `StreamIdentity { provider, identity }` effects for all observed endpoints,
+not only paired ones, and retains separate `StreamPath` hazards. Physical-byte
+writes no longer invalidate filesystem shape merely because they use a pathname.
+The structured provider requires a retained generation lease, and the speculative
+macOS event-only open has been removed. These are coherent source-level fixes
+for the three concerns above. The integration owner's exact external-prerequisite,
+hardlink-wave and platform-pin regressions remain the acceptance evidence; this
+review did not run an additional build or infer their results from the code.
+
+One further concrete admission hole was found when tracing FIFO input into a
+program: `physical_input` spawned and retained its flow without recording
+`NodeAdmitted`, unlike `physical_transfer` and the ordinary program-port flow.
+With the FIFO outside the program's managed cwd, the reader-first sequence
+`fifo -> program::stdin; literal -> fifo` can therefore strand the writer on a
+missing admission event while its peer waits for a kernel writer. The correction
+must record admission after the real task/flow is owned, not mark completion or
+weaken the rendezvous dependency. A writer-first test does not exercise this
+direction. This was sent to the integration owner for a native stdin regression.
+
+The integration owner subsequently reported a clean terminal WSL run covering
+all 17 ordinary physical cases, both actual native physical cases (including the
+reader-first FIFO-to-program stdin direction), 68 graph cases, four FIFO identity
+cases, 21 ledger cases and the two focused stream-kind preparation cases. Strict
+changed-target Clippy passed, with no production changes after that build. This
+closes the reproduced FIFO findings for that tested Linux/provider scope. The
+review itself added no duplicate build and does not infer untested-platform or
+cross-submission FIFO support from those results.
+
+## Independent-flow capacity audit (2026-10-28)
+
+After the FIFO corrections closed, a separate requested probe tested transient
+capacity rather than inseparable co-start feasibility. The actual development
+CLI ran this batch against two real localhost TCP listeners, writing into
+different existing output directories:
+
+```text
+left => tcp://127.0.0.1:<port-a>
+right => tcp://127.0.0.1:<port-b>
+left::/ -> out1/result
+right::/ -> out2/result
+```
+
+The first server deliberately sends `one` and EOF after 150 ms; the second sends
+`two` and EOF on connection. No future human input or shared byte channel is
+required. With `--max-streams 1`, the CLI exits with failure at 82 ms, before the
+first EOF, and never connects to the second listener. It reports that a ready
+"program stream cohort" exceeds the limit and incorrectly advises that serial
+waiting on a connected pipe would deadlock. The same journey with limit 2 exits
+successfully at 205 ms, and both output files contain their exact expected bytes.
+These are correctness-control runtimes, not performance acceptance measurements.
+Disposable scripts and fixture paths are retained under `.temp/review-admission-*`.
+
+`execution::scheduler::Admission::acquire` turns a failed `try_acquire_owned` into
+an immediate execution error. The region loop has already selected a Start-ready
+node and does not distinguish temporary occupancy by independent work from a
+permanently infeasible co-start component. This is a functional bounded-scheduling
+gap: the configured concurrent ceiling should allow this batch to serialize,
+not cap its total number of independent operations. Keep static inseparable
+cohort overflow as an early refusal; when an actual running producer can free
+capacity, batch execution should retain the node, pump ready/completing work and
+retry admission without starting that node's effects. REPL admission may still
+refuse constructively when progress depends on future human input or an absent
+external peer. Any queueing correction must preserve atomic whole-cohort
+reservation and must not hide a genuinely impossible process/flow component
+behind an infinite resource wait.

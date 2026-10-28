@@ -50,6 +50,13 @@ impl State {
                 .iter()
                 .filter(|access| {
                     matches!(access.kind, AccessKind::Write | AccessKind::NamespaceMerge)
+                        && matches!(
+                            access.resource,
+                            Resource::File(_)
+                                | Resource::DirectoryMetadata(_)
+                                | Resource::NamespaceEntry(_)
+                                | Resource::NamespaceChange(_)
+                        )
                 })
                 .map(|access| access.resource.clone()),
         );

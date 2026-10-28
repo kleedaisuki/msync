@@ -4,7 +4,6 @@ use std::future::{Future, poll_fn};
 use std::sync::Arc;
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tokio_util::sync::CancellationToken;
 
 use crate::scheduler::ResourceLimits;
 use crate::syntax::Span;
@@ -25,17 +24,16 @@ pub(super) struct Lease {
 }
 
 impl Lease {
-    pub fn task(&self, role: &'static str, cancel: CancellationToken) -> TaskTrace {
+    pub fn task(&self, role: &'static str) -> TaskTrace {
         let mut span = crate::telemetry::linked_span("task", self.context.as_ref());
         span.expect_completion();
         span.attribute("operation", role);
-        TaskTrace { span, cancel }
+        TaskTrace { span }
     }
 }
 
 pub(super) struct TaskTrace {
     span: crate::telemetry::LinkedSpan,
-    cancel: CancellationToken,
 }
 
 impl TaskTrace {
@@ -48,20 +46,21 @@ impl TaskTrace {
             crate::telemetry::with_context(context.as_ref(), || future.as_mut().poll(cx))
         })
         .await;
+        let cancelled = result
+            .as_ref()
+            .err()
+            .is_some_and(ExecutionError::is_cancelled);
         if let Err(cause) = &result
+            && !cancelled
             && let Some(context) = &context
         {
             context.record_error("execution.task", cause);
         }
-        if self.cancel.is_cancelled()
-            && result
-                .as_ref()
-                .err()
-                .is_none_or(|error| error.cause.is_none())
-        {
+        if cancelled {
             self.span.cancelled();
+        } else {
+            self.span.finish_result(&result);
         }
-        self.span.finish_result(&result);
         result
     }
 }
