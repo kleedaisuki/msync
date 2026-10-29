@@ -363,3 +363,35 @@ ordering, remote special files fail before payload open, file creation across
 blocks remains fresh, and local FIFO/socket co-admission is unchanged. Then
 compare a newly frozen v0.5 image against this v0.5 baseline on the exact macro;
 the historical comparison above cannot attribute a later optimization's gain.
+
+## Directional-barrier pre-observation baseline control
+
+After the directional-barrier semantic changes, the coordinator froze a new
+pre-optimization image rather than attributing changed semantics to the earlier
+performance hypothesis:
+`target/performance-v5/baselines/msync-v05-before-observation-ba42e88c35a6c9dafdd985879be94d5894167f924fe896250b2b3cf74497d907.exe`.
+Its adjacent provenance identifies the exact clean source and build flags. A
+single local/mixed functional control with `compile,plan,run` and
+`-RequirePureStatic` passed; the native-ext4 guard, NTFS destination, exact copied
+bytes/counts, stale-child removal and unchanged executable hashes all passed.
+
+The control observed local run 356.2 ms, mixed run 3944.9 ms and six mixed-run
+WSL helpers. The coordinator was concurrently performing correctness validation;
+these single values establish successful baseline execution, **not a performance
+comparison or a regression estimate**. Raw evidence is retained in
+`target/performance-v5/control-before-observation.log` and
+`target/performance-v5/control-before-observation-raw/`. No production optimization
+was implemented while full-source CI remained pending.
+
+The proposed bounded policy keeps the public `prepare(..., live)` contract
+unchanged. An explicit internal `LocalOnly` versus `LocalAndRemote` observation
+policy selects whether remote helper probes are admitted. Runtime block
+preparation selects local-only observation; native metadata, parent frontiers,
+named-pipe lexical classification and retained FIFO generation proofs remain.
+Remote endpoints stay `Unknown` until acquisition, which must retain conservative
+alias edges and prove finite/type/selected-source conditions before effects.
+Validation must cover an unreachable SSH endpoint without starting a helper,
+local/WSL conservative alias dependencies, unchanged public live inspection,
+native FIFO/named-pipe journeys, WSL native-ext4 imports and mounted-Windows alias
+rejection. Directional barrier motion must not turn unknown aliases into an
+independence proof or reuse stale observations across an external effect.
