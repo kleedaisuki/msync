@@ -427,6 +427,55 @@ async fn drain(mut reader: impl tokio::io::AsyncRead + Unpin) -> std::io::Result
 }
 
 const RECOVERY: &str = r#"
+restore_mode() (
+    record=$1; target=$2
+    [ -e "$record" ] || return 0
+    [ ! -L "$record" ] && [ ! -L "$target" ] && [ -d "$target" ] || { echo 'invalid directory mode recovery record' >&2; return 1; }
+    identity=${record%-mode}-id
+    [ -f "$identity" ] && [ "$(stat -c '%d:%i' -- "$target")" = "$(cat "$identity")" ] || { echo 'directory mode target identity changed; journal retained' >&2; return 1; }
+    saved=$(cat "$record")
+    case $saved in ''|*[!0-7]*|?????*) echo 'invalid recorded directory mode' >&2; return 1;; esac
+    [ "$(stat -c %a -- "$target")" != "$saved" ] || return 0
+    chmod "$saved" -- "$target"
+)
+admit_directory() (
+    target=$1; identity=${2:-}
+    [ ! -L "$target" ] || { echo 'refusing symbolic link during directory admission' >&2; return 1; }
+    if [ -d "$target" ]; then
+        if [ -n "$identity" ]; then
+            [ -f "$identity" ] && [ "$(stat -c '%d:%i' -- "$target")" = "$(cat "$identity")" ] || { echo 'directory admission identity changed; journal retained' >&2; return 1; }
+        fi
+        [ -w "$target" ] || chmod u+w -- "$target"
+    fi
+)
+move_private() (
+    source=$1; target=$2; saved=
+    if [ "$(dirname -- "$source")" != "$(dirname -- "$target")" ] && [ -d "$source" ] && [ ! -L "$source" ]; then
+        if [ ! -w "$source" ]; then
+            saved=$(stat -c %a -- "$source")
+            admit_directory "$source" || return 1
+        fi
+    fi
+    if mv -T -- "$source" "$target"; then
+        [ -z "$saved" ] || chmod "$saved" -- "$target"
+    else
+        result=$?
+        [ -z "$saved" ] || chmod "$saved" -- "$source" || return 1
+        return "$result"
+    fi
+)
+# Call only on owned private paths or an identity-proven installed new root.
+# Regular files may retain external hard-link aliases: unlink, never chmod them.
+remove_owned_tree() (
+    target=$1
+    [ ! -L "$target" ] || { echo 'refusing symbolic-link cleanup root' >&2; return 1; }
+    if [ -d "$target" ]; then
+        find "$target" -type d -exec sh -c '
+            [ -r "$1" ] && [ -w "$1" ] && [ -x "$1" ] || exec chmod u+rwx -- "$1"
+        ' sh {} \; || return 1
+    fi
+    rm -rf -- "$target"
+)
 recover_journal() (
     j=$1
     [ -f "$j/intent" ] || return 0
@@ -437,23 +486,38 @@ recover_journal() (
     if [ ! -e "$j/COMMITTED" ]; then
         expected=$(cat "$j/after-id")
         if [ -e "$j/before" ]; then
+            [ ! -L "$j/before" ] || { echo 'remote before-image became symbolic link; journal retained' >&2; return 1; }
+            if [ -d "$j/before" ] && [ -f "$j/before-id" ]; then
+                [ "$(stat -c '%d:%i' -- "$j/before")" = "$(cat "$j/before-id")" ] || { echo 'remote before-image identity changed; journal retained' >&2; return 1; }
+            fi
             if [ -e "$r" ]; then
                 current=$(stat -c '%d:%i' -- "$r")
                 if [ -f "$j/before-id" ] && [ "$current" = "$(cat "$j/before-id")" ]; then
-                    rm -rf -- "$j/before"
+                    restore_mode "$j/before-mode" "$r" || return 1
+                    remove_owned_tree "$j/before" || return 1
                     sync -f -- "$(dirname -- "$j")"
                     return 0
                 fi
                 [ "$current" = "$expected" ] || { echo 'remote recovery target changed; journal retained' >&2; return 1; }
-                rm -rf -- "$r"
+                remove_owned_tree "$r" || return 1
             fi
-            mv -T -- "$j/before" "$r"
+            admit_directory "$j/before" "$j/before-id" || return 1
+            mv -T -- "$j/before" "$r" || return 1
+            restore_mode "$j/before-mode" "$r" || return 1
+        elif [ -e "$j/had-before" ]; then
+            [ -e "$r" ] && [ -f "$j/before-id" ] && [ "$(stat -c '%d:%i' -- "$r")" = "$(cat "$j/before-id")" ] || { echo 'remote before-image is missing; journal retained' >&2; return 1; }
+            restore_mode "$j/before-mode" "$r" || return 1
         elif [ ! -e "$j/had-before" ] && [ -e "$r" ]; then
             [ "$(stat -c '%d:%i' -- "$r")" = "$expected" ] || { echo 'remote recovery target changed; journal retained' >&2; return 1; }
-            rm -rf -- "$r"
+            remove_owned_tree "$r" || return 1
         fi
     fi
     sync -f -- "$(dirname -- "$j")"
+)
+retire_intent() (
+    j=$1
+    rm -f -- "$j/intent" || return 1
+    sync -f -- "$j"
 )
 "#;
 
@@ -512,9 +576,14 @@ while [ "$p" != / ]; do
     [ ! -L "$p" ] || fail "refusing symbolic link: $p"
     p=$(dirname -- "$p")
 done
-for tree in "$j/payload" "$r"; do
-    [ ! -e "$tree" ] || [ -z "$(find "$tree" ! -type f ! -type d -print -quit)" ] || fail "unsupported entry in tree: $tree"
-done
+[ -z "$(find "$j/payload" ! -type f ! -type d -print -quit)" ] || fail 'unsupported entry in source payload'
+if [ -e "$r" ]; then
+    if [ "$mode" = container ]; then
+        [ -z "$(find "$r" ! -type f ! -type d ! -type l -print -quit)" ] || fail 'unsupported entry in destination tree'
+    else
+        [ -z "$(find "$r" ! -type f ! -type d -print -quit)" ] || fail 'unsupported entry in destination tree'
+    fi
+fi
 [ "$mode" != exact ] || [ ! -d "$d" ] || fail 'destination is an existing directory; append / or /.'
 [ "$mode" != exact ] || [ ! -d "$j/payload" ] || [ ! -e "$d" ] || fail 'a directory source cannot replace an existing ordinary file'
 [ "$mode" != replace ] || [ -d "$j/payload" ] || fail 'directory replacement requires a directory source'
@@ -531,6 +600,7 @@ if [ "$mode" = container ]; then
     mkdir -p -- "$next"
     check() (
         a=$1; b=$2
+        [ ! -L "$a" ] && [ ! -L "$b" ] || fail "refusing symbolic link in container merge: $b"
         if [ -d "$a" ]; then
             [ ! -e "$b" ] || [ -d "$b" ] || fail "directory collides with file: $b"
             for x in "$a"/* "$a"/.[!.]* "$a"/..?*; do
@@ -539,28 +609,43 @@ if [ "$mode" = container ]; then
             done
         else [ ! -e "$b" ] || fail "container file already exists: $b"; fi
     )
+    copy_merge() (
+        a=$1; b=$2
+        [ ! -L "$a" ] && [ ! -L "$b" ] || fail "refusing symbolic link in container merge: $b"
+        if [ -d "$a" ] && [ -d "$b" ]; then
+            for x in "$a"/* "$a"/.[!.]* "$a"/..?*; do
+                [ -e "$x" ] || continue
+                copy_merge "$x" "$b/$(basename -- "$x")"
+            done
+        else
+            [ ! -e "$b" ] || fail "container entry already exists: $b"
+            cp -a --reflink=auto -- "$a" "$b"
+        fi
+    )
     for name do
         a=$j/payload; [ "$selection" != selected ] || a=$a/$name
         check "$a" "$next/$name"
     done
     for name do
         a=$j/payload; [ "$selection" != selected ] || a=$a/$name
-        if [ -d "$a" ] && [ -d "$next/$name" ]; then cp -a --reflink=auto -- "$a/." "$next/$name/"; else mv -T -- "$a" "$next/$name"; fi
+        copy_merge "$a" "$next/$name"
     done
 else
-    if [ "$r" = "$d" ]; then mv -T -- "$j/payload" "$j/next"
+    if [ "$r" = "$d" ]; then move_private "$j/payload" "$j/next"
     else
         mkdir "$j/next"
         next=$j/next/${d#"$r"/}
         mkdir -p -- "$(dirname -- "$next")"
-        mv -T -- "$j/payload" "$next"
+        move_private "$j/payload" "$next"
     fi
 fi
 [ ! -e "$j/ABORT" ] || fail 'publication cancelled'
 stat -c '%d:%i' -- "$j/next" > "$j/after-id"
+[ ! -d "$j/next" ] || stat -c %a -- "$j/next" > "$j/after-mode"
 if [ -e "$r" ]; then
     : > "$j/had-before"
     stat -c '%d:%i' -- "$r" > "$j/before-id"
+    [ ! -d "$r" ] || stat -c %a -- "$r" > "$j/before-mode"
 fi
 printf '%s\n' "$r" > "$j/intent"
 # The intent, complete staged payload and before-image decision reach the same
@@ -569,10 +654,15 @@ sync -f -- "$j"
 if [ -f "$r" ] && [ -f "$j/next" ]; then
     cp -a --reflink=auto -- "$r" "$j/before"
     sync -f -- "$j"
-elif [ -e "$r" ]; then mv -T -- "$r" "$j/before"; fi
+elif [ -e "$r" ]; then
+    admit_directory "$r" "$j/before-id"
+    mv -T -- "$r" "$j/before"
+fi
 # Keep the before-image until the independent receipt query joins this lock.
 : > "$j/published"
+admit_directory "$j/next" "$j/after-id"
 mv -T -- "$j/next" "$r"
+restore_mode "$j/after-mode" "$r"
 sync -f -- "$j"
 : > "$j/COMMITTED"
 sync -f -- "$j"
@@ -593,7 +683,8 @@ else
     recover_journal "$j"
     printf 'ABORTED\n'
 fi
-rm -rf -- "$j"
+retire_intent "$j"
+remove_owned_tree "$j"
 "#;
 
 const RECOVER: &str = r#"
@@ -610,7 +701,7 @@ if [ ! -f "$j/intent" ]; then
     # can advance this upload to publication. Any surviving uploader can only
     # write this private journal, never the user destination.
     p=$(dirname -- "$j")
-    rm -rf -- "$j"
+    remove_owned_tree "$j"
     sync -f -- "$p"
     printf 'UNCHANGED\n'
     exit 0
@@ -618,6 +709,193 @@ fi
 recover_journal "$j"
 if [ -e "$j/COMMITTED" ]; then printf 'COMMITTED\n'; else printf 'ABORTED\n'; fi
 p=$(dirname -- "$j")
-rm -rf -- "$j"
+retire_intent "$j"
+remove_owned_tree "$j"
 sync -f -- "$p"
 "#;
+
+#[cfg(all(test, target_os = "linux"))]
+mod journal_tests {
+    use std::fs;
+    use std::io::Write;
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
+    use super::{ALLOCATE, PUBLISH, RECOVER, RECOVERY, SETTLE};
+
+    const FIXTURE: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/remote_journal_fixture.sh"
+    ));
+    const KILL: &str = r#"printf '%s\n' "$MSYNC_HELPER_PGID" > "$MSYNC_TEST_KILL_MARKER"; /bin/kill -KILL -- "-$MSYNC_HELPER_PGID""#;
+
+    fn replace_once(source: &str, anchor: &str, replacement: &str) -> String {
+        assert_eq!(
+            source.matches(anchor).count(),
+            1,
+            "ambiguous fault cut: {anchor}"
+        );
+        source.replacen(anchor, replacement, 1)
+    }
+
+    fn prepare(library: &Path) {
+        fs::create_dir(library).unwrap();
+        for (name, body) in [
+            ("RECOVERY", RECOVERY),
+            ("ALLOCATE", ALLOCATE),
+            ("PUBLISH", PUBLISH),
+            ("SETTLE", SETTLE),
+            ("RECOVER", RECOVER),
+        ] {
+            fs::write(library.join(format!("{name}.sh")), body).unwrap();
+        }
+        let old = r#"admit_directory "$r" "$j/before-id""#;
+        let backup = r#"mv -T -- "$r" "$j/before""#;
+        let next = r#"admit_directory "$j/next" "$j/after-id""#;
+        let install = r#"mv -T -- "$j/next" "$r""#;
+        let restore = r#"restore_mode "$j/after-mode" "$r""#;
+        let commit = r#": > "$j/COMMITTED""#;
+        let synced = format!("{commit}\nsync -f -- \"$j\"");
+        let cases = [
+            ("normal", "", false, "new"),
+            ("before-old-admit", old, true, "old"),
+            ("after-old-admit", old, false, "old"),
+            ("after-before-rename", backup, false, "old"),
+            ("after-next-admit", next, false, "old"),
+            ("after-install", install, false, "old"),
+            ("after-restore", restore, false, "old"),
+            ("before-commit", commit, true, "old"),
+            ("after-commit", commit, false, "new"),
+            ("after-commit-sync", synced.as_str(), false, "new"),
+        ];
+        let mut plan = String::new();
+        for (name, anchor, before, state) in cases {
+            let body = if anchor.is_empty() {
+                PUBLISH.to_owned()
+            } else {
+                let cut = if before {
+                    format!("{KILL}; {anchor}")
+                } else {
+                    format!("{anchor}; {KILL}")
+                };
+                replace_once(PUBLISH, anchor, &cut)
+            };
+            fs::write(library.join(format!("PUBLISH-{name}.sh")), body).unwrap();
+            let exit = if anchor.is_empty() { 0 } else { 137 };
+            plan.push_str(&format!("{name} {state} {exit}\n"));
+        }
+        fs::write(library.join("plan.txt"), plan).unwrap();
+        let anchor = r#"mv -T -- "$j/before" "$r" || return 1"#;
+        fs::write(
+            library.join("RECOVERY-restore-crash.sh"),
+            replace_once(RECOVERY, anchor, &format!("{anchor}; {KILL}")),
+        )
+        .unwrap();
+        let anchor = r#"    rm -rf -- "$target""#;
+        let prefix = r#"    if [ "$target" = "$j" ]; then
+        [ ! -e "$j/intent" ] || { echo 'GC began before durable intent retirement' >&2; exit 1; }
+        victim=$j/before/nested/data
+        [ -f "$victim" ] || victim=$j/next/nested/data
+        [ -f "$victim" ] || { echo 'no private payload for partial GC cut' >&2; exit 1; }
+        rm -f -- "$j/COMMITTED"
+        rm -f -- "$victim"
+        printf 'legal partial GC prefix removed COMMITTED and %s\n' "$victim"
+"#;
+        let cut = format!("{prefix}        {KILL}\n    fi\n{anchor}");
+        fs::write(
+            library.join("RECOVERY-gc-crash.sh"),
+            replace_once(RECOVERY, anchor, &cut),
+        )
+        .unwrap();
+    }
+
+    fn can_drop_capabilities() -> bool {
+        Command::new("timeout")
+            .args([
+                "--kill-after=1s",
+                "5s",
+                "setpriv",
+                "--bounding-set=-all",
+                "--inh-caps=-all",
+                "--ambient-caps=-all",
+                "--no-new-privs",
+                "sh",
+                "-c",
+                r#"[ "$(awk '/^CapEff:/ {print $2}' /proc/self/status)" = 0000000000000000 ]"#,
+            ])
+            .output()
+            .is_ok_and(|output| output.status.success())
+    }
+
+    #[test]
+    fn readonly_modes_and_partial_gc_remain_crash_atomic() {
+        let process_status = fs::read_to_string("/proc/self/status").unwrap();
+        let capability = |name: &str| {
+            process_status
+                .lines()
+                .find_map(|line| line.strip_prefix(name))
+                .expect("Linux exposes process capability masks")
+                .trim()
+        };
+        // SAFETY: geteuid has no preconditions and does not change process state.
+        let root_actor = unsafe { libc::geteuid() } == 0;
+        let drop_capabilities = capability("CapEff:") != "0000000000000000"
+            || (root_actor && capability("CapBnd:") != "0000000000000000");
+        if drop_capabilities && !can_drop_capabilities() {
+            let _ = writeln!(
+                std::io::stderr(),
+                "SKIP remote journal DAC fixture: cannot drop nonzero effective capabilities with setpriv; no mode/recovery claim was tested"
+            );
+            return;
+        }
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&base).unwrap();
+        let owned = tempfile::Builder::new()
+            .prefix("remote-journal-v5-")
+            .tempdir_in(base)
+            .unwrap();
+        let library = owned.path().join("helpers");
+        prepare(&library);
+        let fixture = owned.path().join("fixture.sh");
+        fs::write(&fixture, FIXTURE.replace("\r\n", "\n")).unwrap();
+        let stdout = owned.path().join("stdout.log");
+        let stderr = owned.path().join("stderr.log");
+        let mut command = Command::new("timeout");
+        command.args(["--kill-after=2s", "90s"]);
+        if drop_capabilities {
+            command.args([
+                "setpriv",
+                "--bounding-set=-all",
+                "--inh-caps=-all",
+                "--ambient-caps=-all",
+                "--no-new-privs",
+            ]);
+        }
+        command
+            .arg("sh")
+            .arg(&fixture)
+            .arg(&library)
+            .arg(owned.path().join("data"))
+            .arg(owned.path().join("logs"))
+            .stdout(Stdio::from(fs::File::create(&stdout).unwrap()))
+            .stderr(Stdio::from(fs::File::create(&stderr).unwrap()));
+        let status = command
+            .status()
+            .expect("the Linux journal fixture requires GNU timeout");
+        let output = fs::read_to_string(stdout).unwrap();
+        let errors = fs::read_to_string(stderr).unwrap();
+        if !status.success() {
+            let retained = owned.keep();
+            panic!(
+                "journal fixture failed ({status}); evidence retained at {}\n{output}\n{errors}",
+                retained.display()
+            );
+        }
+        let journeys = output
+            .lines()
+            .filter(|line| line.starts_with("PASS ") && !line.starts_with("PASS all "))
+            .count();
+        assert_eq!(journeys, 16, "{output}\n{errors}");
+        assert!(output.contains("capeff=0000000000000000"), "{output}");
+    }
+}
