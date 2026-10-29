@@ -2,10 +2,7 @@
 
 ## Status and workload
 
-This is the performance workstream for the breaking v0.5 model. Correctness
-integration is still in progress. The first frozen release baseline is measured
-below; **no production performance optimization is accepted yet.** Do not
-substitute historical measurements for a new executable hash.
+This is the performance workstream for the breaking v0.5 model. The final section records an accepted, measured local-only block-observation optimization, including its small measured local-command trade-off. Earlier sections remain chronological evidence, not final measurements. Final release CI/installation acceptance is separate; do not substitute historical measurements for the selected executable hash.
 
 The main workload is the user's macro invoked twice: local `config.toml` and
 `agents/.`, then the same two operations with a WSL source. The maintained
@@ -395,3 +392,104 @@ local/WSL conservative alias dependencies, unchanged public live inspection,
 native FIFO/named-pipe journeys, WSL native-ext4 imports and mounted-Windows alias
 rejection. Directional barrier motion must not turn unknown aliases into an
 independence proof or reuse stale observations across an external effect.
+
+## Accepted optimization: acquisition-owned remote facts
+
+### Controlled source and artifacts
+
+Acquired remote source-root receipts, metadata and recovery cleanup were repaired
+**before both causal arms**. They are not part of the performance treatment.
+Both releases use source HEAD `8cef15ca9d329ebdbcce6ad53fdf6c940438bff6`, Rust
+1.99.0, `cargo build --locked --release --bin msync`, two jobs and no incremental
+compilation:
+
+| Arm | Frozen image SHA-256 |
+| --- | --- |
+| Remote lookahead before | `755a5d6ffe7080e694f91643aeb39ecfcf6149e35b8d6e16462e36c517350e1a` |
+| Local-only block observation after | `677de91009c7322a753ba02df5a131c7c0703c8bcca8a5f518f79606690967db` |
+
+The images and adjacent source/provenance manifests are managed artifacts under
+`target/performance-v5/baselines/`. Comparing every manifest entry found exactly
+two differing files: `src/preparation.rs` and its tests in
+`tests/block_specialization_v5.rs`. Production treatment is the 29-line explicit
+observation-policy change; public `prepare(..., true)` behavior is unchanged.
+Later test-only SSH executable selection and all-local proof-equality regressions
+are not hidden input differences between these measured images.
+
+Every local Cargo, WSL/SSH adapter and validation process was terminal before
+measurement; no source, document, Git or compiler work ran concurrently. Existing
+destinations used five alternating pairs of `compile,plan,run`; missing ones used
+five pairs of `run`. Both arms used identical owned macro data, resource defaults
+and tracing. The runner enforced native WSL **ext4 magic `ef53`**, **D: NTFS**,
+stale-child removal and exact bytes. All **40 run invocations** passed: 28
+files/126,082 bytes local and 28 files/126,083 bytes mixed. Static commands stayed
+pure with zero transport/runtime/publication spans. Start/end image hashes matched.
+
+### End-to-end results and mechanism
+
+| Destination / workload | Before mean ms | After mean ms | Before p50 ms | After p50 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Existing / mixed | 3347.54 | 2877.74 | 3447.85 | 2824.12 |
+| Missing / mixed | 3451.10 | 2964.96 | 3508.31 | 3061.80 |
+| Existing / local initial five pairs | 357.02 | 380.79 | 358.50 | 365.39 |
+| Missing / local | 444.01 | 442.94 | 440.10 | 437.15 |
+
+Mixed mean command time fell **14.0% existing** and **14.1% missing**. Mixed p50
+fell 18.1% and 12.7%. These are observed results, not guaranteed percentages.
+Existing mixed paired deltas (after minus before, ms) were
+`-476.61, +129.80, -2077.77, +414.92, -339.34`; missing deltas were
+`-124.83, -747.37, -837.91, -765.93, +45.35`. Private config capture still varies
+substantially. Five pairs do not characterize tail latency.
+
+Every mixed before run launched **six WSL helpers**, every after run **four**;
+both retained exactly two guarded private acquisitions. Mean nested transport
+totals fell 398.4 ms existing and 418.1 ms missing. Nested spans overlap and
+cannot be added as independent command-wall costs. Static compile/plan medians
+stayed roughly 25–32 ms, zero helpers in both arms. No IO-engine replacement,
+ring mechanism or weakened durability was introduced.
+
+### Investigated local control and accepted trade-off
+
+Initial existing-local mean increased 6.66%, so it was **not dismissed as noise**.
+A quiet eleven-pair local-existing extension used the same images and validation:
+
+- Mean 343.866 to 346.742 ms: **+0.84%**.
+- p50 338.712 to 344.194 ms: **+1.62%**.
+- Paired deltas: `+4.83, +37.99, +56.29, -135.35, -24.50, +38.90,
+  +5.48, +14.33, +19.87, +8.13, +5.66` ms; median **+8.13 ms**,
+  **nine of eleven positive**.
+- Mean internal `execute` span was 312.33 to 312.10 ms; classification 0.85 to
+  0.82 ms and acquisition 97.03 to 95.19 ms. These do not demonstrate an IO
+  execution slowdown, but do not erase the whole-command observation.
+
+The initial 6.66% mean increase was not reproduced. **No zero-regression claim is
+made.** The coordinator accepted the small measured local-command trade-off for
+the substantially larger observed benefit on the user's dominant mixed macro and
+the fixed two-helper reduction. Deferring remote proofs can retain alias hazard
+edges that a fresh filesystem-separation proof could remove, potentially losing
+parallelism in other graphs; deferral is not universally faster.
+
+Native local metadata, existing-parent frontiers, named-pipe lexical handling and
+retained FIFO generation proofs remain. Remote endpoints stay `Unknown`;
+acquisition establishes finite/type/root/alias facts before effects. Candidate
+gates included Windows/Linux suites plus real SSH streams, WSL-native imports
+and mounted-Windows alias rejection. An additional all-local regression compares
+facts, complete planning context, complete graph and serialized original/optimized
+programs between block-local and public live preparation. The coordinator owns
+its final compilation/execution gate; adding its source is not a passing result.
+
+### Reproduction and retained evidence
+
+```powershell
+./benches/macro_latency_v4.ps1 -Executable BEFORE_755A5D -Candidate AFTER_677DE9 -Samples 5 -Commands compile,plan,run -DestinationState existing -RequirePureStatic
+./benches/macro_latency_v4.ps1 -Executable BEFORE_755A5D -Candidate AFTER_677DE9 -Samples 5 -Commands run -DestinationState missing -RequirePureStatic
+./benches/macro_latency_v4.ps1 -Executable BEFORE_755A5D -Candidate AFTER_677DE9 -Samples 11 -Endpoint local -Commands run -DestinationState existing -RequirePureStatic
+```
+
+Under `target/performance-v5/`: `causal-source-delta.json`,
+`causal-{existing,missing}-pairs.log`, their `-raw/` directories,
+`causal-{existing,missing}-deltas.json`, `causal-all-deltas.json`,
+`causal-comparison-summary.json`, `causal-local-existing-extension.log`, its raw
+trace directory and paired-delta/phase JSON. Raw directories retain generated
+scripts and every invocation's trace JSONL. Earlier `23f73b1a` and `ba42e88c`
+images/results are historical only, not this optimization's causal control arm.

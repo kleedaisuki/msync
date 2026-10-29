@@ -156,17 +156,40 @@ pub fn prepare_detailed(
     prepare_with_context_detailed(program, live, PlanningContext::default())
 }
 
+#[derive(Clone, Copy)]
+enum ObservationPolicy {
+    LocalOnly,
+    LocalAndRemote,
+}
+
 /// Context-aware preparation with structural diagnostic sites.
 pub fn prepare_with_context_detailed(
     program: &hir::Program,
     live: bool,
     context: PlanningContext,
 ) -> Result<PreparedProgram, Vec<Diagnostic>> {
+    let policy = if live {
+        ObservationPolicy::LocalAndRemote
+    } else {
+        ObservationPolicy::LocalOnly
+    };
+    prepare_observing(program, policy, context)
+}
+
+fn prepare_observing(
+    program: &hir::Program,
+    policy: ObservationPolicy,
+    context: PlanningContext,
+) -> Result<PreparedProgram, Vec<Diagnostic>> {
     let Observation {
         resolved,
         mut context,
         observations,
-    } = observe_program(program, live, context)?;
+    } = observe_program(
+        program,
+        matches!(policy, ObservationPolicy::LocalAndRemote),
+        context,
+    )?;
     let resources = resources(&resolved, &observations);
     let facts = rewrite_facts(&context, &resolved, &resources);
     let (optimized, rewrites) =
@@ -254,7 +277,9 @@ pub fn prepare_block(
             instructions: block.instructions.to_vec(),
         },
     };
-    prepare_with_context_detailed(&program, true, context)
+    // Acquisition establishes remote facts before effects. Keep unknown aliases
+    // conservative here instead of duplicating its transport probes.
+    prepare_observing(&program, ObservationPolicy::LocalOnly, context)
 }
 
 fn observe_program(

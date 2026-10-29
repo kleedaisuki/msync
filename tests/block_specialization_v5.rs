@@ -270,3 +270,125 @@ fn running_and_exited_process_ids_keep_current_block_observations_fresh() {
     std::fs::remove_file(source).unwrap();
     assert!(preparation::resolve_instruction(&operation, &exited_context).is_err());
 }
+
+#[test]
+fn block_observation_retains_local_facts_without_probing_an_unreachable_ssh_source() {
+    let root = workspace();
+    let source = root.path().join("source");
+    std::fs::write(&source, b"current local payload").unwrap();
+    let remote = Location {
+        backend: Backend::Ssh {
+            host: "127.0.0.1".into(),
+            user: None,
+            port: Some(1),
+        },
+        path: "/must-not-be-probed/source".into(),
+    };
+    let program = Program {
+        body: Region {
+            instructions: vec![
+                transfer(0, file(&source), &root.path().join("local-result")),
+                transfer(
+                    1,
+                    Input::File {
+                        location: remote.clone(),
+                        pattern: None,
+                    },
+                    &root.path().join("remote-result"),
+                ),
+            ],
+        },
+    };
+    let block = program.blocks().next().unwrap();
+    let prepared = preparation::prepare_block(&block, PlanningContext::default()).unwrap();
+    assert_eq!(
+        prepared.facts[&InstructionId(0)].source,
+        msync::plan::FileClass::Regular
+    );
+    assert_eq!(
+        prepared.facts[&InstructionId(1)].source,
+        msync::plan::FileClass::Unknown
+    );
+    assert_eq!(prepared.context.existing_parent_frontiers.len(), 2);
+    assert!(!root.path().join("local-result").exists());
+    assert!(!root.path().join("remote-result").exists());
+    prepared.verify().unwrap();
+}
+
+#[test]
+fn block_observation_keeps_unknown_wsl_alias_ordering_instead_of_guessing_separation() {
+    let root = workspace();
+    let local = root.path().join("possibly-mounted-source");
+    let program = Program {
+        body: Region {
+            instructions: vec![
+                transfer(0, Input::Literal("new bytes".into()), &local),
+                transfer(
+                    1,
+                    Input::File {
+                        location: Location {
+                            backend: Backend::Wsl,
+                            path: "/not-probed/possibly-mounted-source".into(),
+                        },
+                        pattern: None,
+                    },
+                    &root.path().join("result"),
+                ),
+            ],
+        },
+    };
+    let block = program.blocks().next().unwrap();
+    let prepared = preparation::prepare_block(&block, PlanningContext::default()).unwrap();
+    assert_eq!(
+        prepared.facts[&InstructionId(1)].source,
+        msync::plan::FileClass::Unknown
+    );
+    assert!(prepared.graph.dependencies.iter().any(|dependency| {
+        dependency.before == InstructionId(0) && dependency.after == InstructionId(1)
+    }));
+    assert_eq!(prepared.original.body.instructions.len(), 2);
+    assert!(!local.exists());
+    prepared.verify().unwrap();
+}
+
+#[test]
+fn local_only_block_observation_preserves_all_local_live_preparation_proofs() {
+    let root = workspace();
+    let source = root.path().join("source");
+    let middle = root.path().join("middle");
+    std::fs::write(&source, b"local facts must remain unchanged").unwrap();
+    let program = Program {
+        body: Region {
+            instructions: vec![
+                transfer(0, file(&source), &middle),
+                transfer(
+                    1,
+                    Input::Literal("independent".into()),
+                    &root.path().join("sibling"),
+                ),
+                transfer(2, file(&middle), &root.path().join("dependent")),
+            ],
+        },
+    };
+    let block = program.blocks().next().unwrap();
+    let local = preparation::prepare_block(&block, PlanningContext::default()).unwrap();
+    let live = preparation::prepare(&program, true).unwrap();
+    assert!(!local.facts.is_empty());
+    assert!(!local.context.existing_parent_frontiers.is_empty());
+    assert_eq!(local.facts, live.facts);
+    assert_eq!(local.context, live.context);
+    assert_eq!(local.graph, live.graph);
+    assert_eq!(
+        serde_json::to_value(&local.original).unwrap(),
+        serde_json::to_value(&live.original).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&local.program).unwrap(),
+        serde_json::to_value(&live.program).unwrap()
+    );
+    local.verify().unwrap();
+    live.verify().unwrap();
+    assert!(!middle.exists());
+    assert!(!root.path().join("sibling").exists());
+    assert!(!root.path().join("dependent").exists());
+}
