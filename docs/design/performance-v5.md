@@ -3,9 +3,9 @@
 ## Status and workload
 
 This is the performance workstream for the breaking v0.5 model. Correctness
-integration is still in progress. **No v0.5 release measurement or production
-optimization is accepted here yet.** Do not substitute historical measurements
-for a new executable hash.
+integration is still in progress. The first frozen release baseline is measured
+below; **no production performance optimization is accepted yet.** Do not
+substitute historical measurements for a new executable hash.
 
 The main workload is the user's macro invoked twice: local `config.toml` and
 `agents/.`, then the same two operations with a WSL source. The maintained
@@ -130,8 +130,8 @@ instead of silently omitting them from validation.
 - [SQLite atomic commit](https://www.sqlite.org/atomiccommit.html): persistence ordering is part of the recovery protocol. Removing flushes is a contract change, not a free latency improvement.
 - [Linux filesystem persistence background](https://www.kernel.org/doc/mirror/ols2009.pdf): an atomic namespace replacement alone does not establish durable namespace state. Preserve the selected storage contract while measuring its cost.
 
-Actual v0.5 measurements, accepted optimization and verification belong below
-when the release and comparison gates have executed; they are currently pending.
+The first actual v0.5 baseline and its comparison are recorded below. An accepted
+production optimization and its causal before/after comparison remain pending.
 
 ## Candidate: one namespace operation as the statement decision
 
@@ -211,7 +211,7 @@ one decision, or the no-effects fallback uses the recoverable protocol. A test
 running only as namespace root must not mask this permission boundary. No measurement or
 implementation acceptance is implied by this design note.
 
-## Release-freeze handoff (prepared, not executed)
+## Release-freeze procedure (first baseline executed below)
 
 Run the following only after the coordinator releases the correctness gate and
 serial Cargo slot. The managed `target` directory is an artifact location, not a
@@ -292,3 +292,74 @@ Keep desired metadata private until the single decision, consume the prepared
 receipt into a committed receipt, and retain identity-verified Stage cleanup.
 Never call generic compensation after a committed result or treat a subsequent
 cleanup/flush failure as permission to retry the statement.
+
+## Frozen pre-optimization v0.5 measurement
+
+The coordinator authorized baseline measurement after the local correctness gate;
+full-source remote CI was still running, so no production optimization was
+implemented during these measurements. Frozen image:
+`target/performance-v5/baselines/msync-v05-before-23f73b1a4a537c3ee012a646581d50edde2ea5c0e0406e40507224aaf346b9bd.exe`.
+SHA-256 is the complete filename suffix. Adjacent provenance records source HEAD
+`73402e4` and a complete source-file manifest; both image hashes remained
+unchanged across the runner. Release build took 72 seconds with the flags above.
+
+The functional control passed for both local and mixed endpoints. The timed
+Windows fixture was **NTFS on D:**; the WSL source was independently copied to
+an owned `/tmp/msync-macro-latency.*` directory and required `stat -f` magic
+`ef53` before any measured invocation. This is not a benchmark of Linux reads
+from `/mnt/d`. Build source and the initial untimed fixture seed may use DrvFS.
+Every mixed run verified exactly **28 files, 126,083 bytes**, including removal
+of the old agents child; local runs verified 126,082 bytes. Static commands had
+zero runtime/preparation/transport/publication spans on the new image.
+
+Five alternating pairs against historical v0.4.0 SHA `190b8c5c...4194d`:
+
+| Case | Historical p50 ms | v0.5 baseline p50 ms | Interpretation |
+| --- | ---: | ---: | --- |
+| Local compile | 30.252 | 21.777 | Complete command, not compiler-only time |
+| Local plan | 27.603 | 26.228 | Small difference at this sample size |
+| Local run | 374.046 | 280.658 | All five paired deltas favor v0.5 |
+| Mixed compile | 267.856 | 23.380 | Remote probes removed from static phase |
+| Mixed plan | 310.448 | 27.126 | Remote probes removed from static phase |
+| Mixed run | 3187.960 | 3327.802 | **No speedup:** p50 is 4.39% slower |
+
+Mixed-run paired deltas (new minus old, ms) were `+494.00, -173.68, +23.38,
+-17.90, +139.84`. This is noisy and not evidence that a precise 4.39% regression
+will persist, but it decisively prevents claiming a measured end-to-end run win.
+Five samples are not a tail-latency characterization.
+
+The new image used exactly **six WSL helpers** in every mixed run; historical
+v0.4 used sixteen. Mixed static commands used zero rather than two. Of the six
+new runtime helpers, two are parented directly under `execute`, before private
+acquisition, and four under the two `ordinary.wsl.acquire` spans. The two extra
+probes together cost 210.7–315.2 ms per run. Source inspection identifies these
+as `Observations::refine_wsl` calls; `inspect_remote_batch` count is zero and
+therefore would miss them. Mean nested phase totals were acquisition 2446.6 ms,
+staging 197.3 ms and publication 58.6 ms; these are not additive independent
+wall times. The per-source config capture still varies around 1.6–2.2 seconds,
+so removing two probes cannot explain or eliminate the whole mixed-run delay.
+
+Artifacts, retained under managed `target/performance-v5`:
+
+- `control-before.log`, `control-raw/`
+- `historical-pairs.log`, `historical-raw/`
+- `historical-paired-deltas.json`
+- `baseline-helper-breakdown.json`
+
+### First measured optimization hypothesis
+
+Prefer removing redundant remote lookahead before the native single-root
+publication optimization: two measured probes cost substantially more than the
+entire current publication phase, while acquisition already performs the exact
+finite/type/alias guards before effects. Keep local observation and actual
+native FIFO generation proofs. The existing preparation `live=false` path still
+calls local metadata inspection and establishes local existing-parent frontiers;
+it only suppresses proactive WSL refinement/remote metadata helpers and keeps
+those endpoints `Unknown`. This is a concrete bounded policy, not disabling all
+runtime observation or caching previous-block filesystem truth.
+
+Before adoption, tests must show remote/local aliases retain conservative source
+ordering, remote special files fail before payload open, file creation across
+blocks remains fresh, and local FIFO/socket co-admission is unchanged. Then
+compare a newly frozen v0.5 image against this v0.5 baseline on the exact macro;
+the historical comparison above cannot attribute a later optimization's gain.
