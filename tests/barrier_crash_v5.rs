@@ -160,7 +160,7 @@ fn empty_and_declarations_only_submissions_recover_before_returning() {
             crash(
                 root.path(),
                 &target,
-                "await \"previous statement\" -> preserved\nsource -> target\n",
+                "\"previous statement\" -> preserved\nawait\nsource -> target\n",
                 "after-install",
             );
             let invocation = if object {
@@ -230,7 +230,7 @@ fn a_crashed_file_statement_recovers_without_undoing_a_completed_statement() {
             crash(
                 root.path(),
                 &target,
-                "await \"previous statement\" -> preserved\nsource -> target\n",
+                "\"previous statement\" -> preserved\nawait\nsource -> target\n",
                 stage,
             );
             recover(root.path());
@@ -266,7 +266,7 @@ fn a_crashed_tree_statement_recovers_a_whole_tree_including_removals() {
             crash(
                 root.path(),
                 &target,
-                "await \"previous statement\" -> preserved\nsource -> target/.\n",
+                "\"previous statement\" -> preserved\nawait\nsource -> target/.\n",
                 stage,
             );
             recover(root.path());

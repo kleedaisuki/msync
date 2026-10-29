@@ -535,3 +535,33 @@ supports both manual `full=true` and the workflow-file change's automatic full
 push gate; the next actual run must be checked for `FULL: true`, not inferred
 from successful focused tests. Measured optimization and installed-artifact
 acceptance remain later gates.
+
+## First explicitly full remote gate and causal crash-fixture repair
+
+Run `40853534196` tested `c2f2ec951b91fdf3ad6c3833764fae23f202d73d` with
+**actual `full:true` selection**, verified in its completed changes-job log
+`.temp/barrier-ci-c2f2ec9-changes.log`. Windows completed full formatting,
+all-target Clippy/tests, and doc testing successfully in 4m46s: 77 result groups,
+788 passed, zero failed, 52 ignored. The zero-case doc result is included, not
+additional behavior evidence. Linux stopped after 179 passed/one failed/three
+ignored: the crash fixture still used a soft directional fence to assume an
+independent earlier write had completed before deliberately killing the process.
+The failure was a missing `preserved` fixture file, not a mixed recovered target.
+Both full job logs and terminal job API data are retained under
+`.temp/barrier-ci-c2f2ec9*`; Linux did not complete its full matrix.
+
+The three crash scripts now establish that premise with a real standalone
+`await` join between the prior publication and the statement being crashed.
+All twenty restart journeys retain their original whole-old/whole-new and
+previous-completed-statement assertions. Fresh Windows verification passed all
+three tests/twenty journeys in 9.12s (`barrier-crash-causal-join-windows.log`).
+Fresh native Linux verification, session 35177 exit 0, built in 6.34s and passed
+the same three tests/twenty journeys in 7.75s, plus the unchanged library's 140
+tests. It again proved tmpfs endpoints, zero effective capabilities, and DAC
+enforcement. The Linux production CLI hash remains
+`7a7155cfa23ec087571dc73170c1d34b38d6e42d53f2f4ee0f981291242d7806`;
+only the crash-test image changed, to
+`a453677d6e87353442a38912374ced3c1464ded43f939438e4755bb5d56ecfe2`.
+Artifacts are `.temp/barrier-wsl-crash-causal*`. A new complete remote gate at the
+fixture-fix commit remains required; the previous full Linux failure is not
+reclassified as a successful full run.
