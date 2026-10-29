@@ -177,11 +177,14 @@ impl SshFixture {
     fn run_with_config(&self, source: &str, config: &Path) -> Output {
         let source = format!("remote => ssh://root@127.0.0.1:{}\n{source}", self.port);
         self.command(
-            Command::new(env!("CARGO_BIN_EXE_msync"))
-                .current_dir(self.workspace())
-                .env("MSYNC_SSH_CONFIG", config)
-                .args(["run", "-", "--trace"])
-                .arg(self.root.path().join("trace.jsonl")),
+            Command::new(
+                std::env::var_os("MSYNC_TEST_EXE")
+                    .unwrap_or_else(|| env!("CARGO_BIN_EXE_msync").into()),
+            )
+            .current_dir(self.workspace())
+            .env("MSYNC_SSH_CONFIG", config)
+            .args(["run", "-", "--trace"])
+            .arg(self.root.path().join("trace.jsonl")),
             Some(&source),
         )
     }
