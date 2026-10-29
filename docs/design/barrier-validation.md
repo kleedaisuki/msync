@@ -1,5 +1,40 @@
 # Barrier execution validation (v0.5)
 
+## Final acceptance — 2026-10-29
+
+Production source `97c8e8b32d15fcc55b5b245cf2676c0cf6635df2` passed the
+explicit complete matrix in [run 40888509441](https://github.com/kleedaisuki/msync/actions/runs/40888509441):
+**Windows 803 passed, Linux 825 passed, zero failed**. Both jobs ran formatting,
+strict all-target Clippy, all-target tests and the documentation gate. The
+documentation gate contained zero executable examples; debug benchmark skips
+are not performance measurements. Earlier failed and scoped generations below
+remain historical evidence, not the current acceptance status.
+
+The final release and installed executable have identical SHA-256
+`677DE91009C7322A753BA02DF5A131C7C0703C8BCCA8A5F518F79606690967DB`.
+The measured artifact was installed as `D:\SystemScripts\msync.exe` with native
+atomic replacement; the prior 0.4.0 executable was retained as a versioned backup
+and its original `190B8C5C…4194D` hash verified. Direct installed-path tests passed:
+colored help, in-place formatting/check, source execution, exported-object
+execution after removing its original source file, native async/output/await,
+persistent REPL bindings and `/help` / `/?` / `/limits` / `/quit`, and a precise
+execution-phase directory diagnostic.
+
+The actual installed-path user macro also passed on owned native WSL ext4
+(`/dev/sdd`, magic `ef53`) to NTFS: 28 files, 126,083 bytes, exact contents and
+stale-tree removal, zero static helpers and four runtime WSL helpers. This is
+not a benchmark of Linux reads through `/mnt/d`. The accepted causal release
+comparison, identical-correctness source manifests, five alternating pairs per
+destination state, eleven-pair local control and explicit small local trade-off
+are recorded in [performance-v5.md](performance-v5.md).
+
+Final artifact evidence is retained under managed `target/performance-v5/`;
+disposable invocation logs are `.temp/final-install-result.json`,
+`.temp/installed-smoke-b5c28f9e2ddb44bf929888337568c6b3/result.json` and
+`.temp/barrier-ci-97c8e8b-full-*`. These results do not enlarge the stated
+same-scratch recovery, supported portable-metadata or normal-cancellation
+contracts into universal power-loss, ACL-identity or detached-descendant promises.
+
 ## Contract and acceptance scope
 
 This replaces the transaction-era acceptance model. The authoritative requested

@@ -475,8 +475,11 @@ acquisition establishes finite/type/root/alias facts before effects. Candidate
 gates included Windows/Linux suites plus real SSH streams, WSL-native imports
 and mounted-Windows alias rejection. An additional all-local regression compares
 facts, complete planning context, complete graph and serialized original/optimized
-programs between block-local and public live preparation. The coordinator owns
-its final compilation/execution gate; adding its source is not a passing result.
+programs between block-local and public live preparation. That regression passed
+locally and in both complete platform CI jobs for `97c8e8b`; the final matrix
+passed 803 Windows and 825 Linux tests with no failures. The installed 0.5.0
+executable has the same accepted `677de910` release hash and passed the exact
+native-ext4-to-NTFS user-macro control with four WSL helpers.
 
 ### Reproduction and retained evidence
 

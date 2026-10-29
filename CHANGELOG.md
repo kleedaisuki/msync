@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.5.0 — unreleased
+## 0.5.0 — 2026-10-29
 
 ### Breaking execution model
 
@@ -47,8 +47,17 @@
 - `--spool-limit` bounds each program's combined stdout/stderr spool. Exhausting
   it reports an output failure while continuing to drain the child naturally.
 
+### Measured runtime optimization
+
+- Defer remote lookahead to actual acquisition while retaining local metadata,
+  native channel proofs and conservative unknown-alias dependencies. The supplied
+  mixed macro uses four WSL helpers instead of six; five alternating pairs for
+  both existing and missing targets improved mean runtime by approximately 14%.
+  A separate local control retained a small positive complete-command cost
+  (+0.84% mean, +1.62% p50); no zero-regression or tail-latency guarantee is claimed.
+
 Implementation contracts and acceptance evidence are maintained in
 [barrier execution](docs/design/barrier-execution.md),
 [statement atomicity](docs/design/statement-atomicity.md), and
-[validation](docs/design/barrier-validation.md). This unreleased entry is not a
-claim that final cross-platform, performance, or installation gates have passed.
+[validation](docs/design/barrier-validation.md). Complete Windows/Linux CI,
+the paired release measurements, and the installed executable journey passed.
