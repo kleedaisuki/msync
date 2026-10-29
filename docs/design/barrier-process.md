@@ -45,3 +45,56 @@ Focused acceptance journeys live in `tests/process_v4.rs`: exact argv, late
 output, retained output after observer drop, quota error drainage, explicit
 destructive tree stop, and natural descendant output closure. Source changes
 have not yet passed the serialized integration build; record results separately.
+
+## Bounded native test fixtures
+
+The Windows full CI run for `1a8405e` exhausted its job timeout while the
+deferred-exit scalar unit test remained active. This does **not** establish a
+lost watch notification: the raw-status and completion observers inspect the
+retained value before awaiting changes, and source review found no notification
+race in that protocol. The old test did have an infinite PowerShell filesystem
+gate, a single scalar timeout, and unbounded physical-drain and late-replay
+waits. A panic before releasing that gate could unwind the temporary directory
+and remove the very marker the child awaited.
+
+Tokio's Windows subprocess implementation uses `Blocking<ArcFile>` for child
+stdio. Thus a test timeout is not itself a bound on runtime destruction: started
+blocking pipe reads can outlive aborted async wrappers while the child remains
+alive. Libtest captures panic output until the test finishes, so an absent panic
+line in the job log cannot identify which phase stalled. See the upstream
+[Windows subprocess implementation](https://docs.rs/tokio/1.54.1/src/tokio/process/windows.rs.html)
+and [blocking-task lifetime](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html).
+
+A standalone supervised Windows probe of the old exact PowerShell command,
+with redirected stdin deliberately left open, exited naturally with status 7 in
+all five trials (213–293 ms). No forced stop or stdin close was needed. That
+rejects an unconditional "PowerShell waits for stdin" explanation; it does not
+identify the failed CI phase. Probe data is in
+`.temp/deferred-powershell-probe-results.json`.
+
+The repaired test uses an exact ignored child test in the same Rust executable,
+not a shell startup dependency. It acknowledges startup, waits for the actual
+independent file marker and exits 7; a monotonic twenty-second self-deadline
+provides a bounded failure exit 124 even if the parent unwinds or removes its
+fixture. A release-marker guard also opens the gate during unwinding. Parent
+timeouts separately identify startup, raw exit observation, full physical drain
+and late scalar replay. The original pending-scalar/independent-marker assertion
+is retained, with assertions delayed until after normal child draining where
+possible. This is test-supervision repair, not permission to kill production
+children on ordinary cancellation. New-image execution and the remote Windows
+CI rerun are separate acceptance evidence, not implied by this source diagnosis.
+
+The rebuilt Windows library image was inspected with `--list` to confirm the
+new child fixture was actually compiled. The deferred-scalar test then passed
+twenty exact sequential invocations (30–88 ms per complete test process). The
+entire library also passed with the default parallel harness, matching the CI
+execution mode: **139 passed, zero failed, seven ignored**, 0.80 seconds. This
+included the new import-receipt/owned-scratch tests in the shared image. CLI
+SHA-256 was
+`5408D067A9547B50E5C7F93204F0E3CC22A74856461548A9BCD962EB56B640A8`,
+with both CLI and library hashes unchanged throughout the gate. Logs:
+`.temp/deferred-final-repeat-*.log`, `.temp/deferred-final-repeats.json`,
+`.temp/import-receipt-final-full-lib-parallel.log` and
+`.temp/import-receipt-final-lib-results.json`. This local execution resolves the
+bounded-fixture regression gate; the remote Windows full-source job remains the
+distinct release acceptance gate.

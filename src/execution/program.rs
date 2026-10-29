@@ -524,15 +524,23 @@ mod tests {
         use tokio::io::AsyncReadExt;
 
         let workspace = scratch();
-        let (executable, arguments) = if cfg!(windows) {
-            (
-                Location { backend: Backend::Path, path: "powershell.exe".into() },
-                ["-NoProfile", "-NonInteractive", "-Command", "while (!(Test-Path -LiteralPath 'release-marker')) { Start-Sleep -Milliseconds 10 }; exit 7"]
-                    .into_iter().map(|text| Argument::Text(text.into())).collect(),
-            )
-        } else {
-            shell("while [ ! -f release-marker ]; do sleep 0.01; done; exit 7")
+        let release = ReleaseMarker(workspace.path().join("release-marker"));
+        let executable = Location {
+            backend: Backend::Local,
+            path: std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
         };
+        let arguments = [
+            "--exact",
+            "execution::program::tests::deferred_exit_child",
+            "--ignored",
+            "--nocapture",
+        ]
+        .into_iter()
+        .map(|text| Argument::Text(text.into()))
+        .collect::<Vec<_>>();
         let mut program = Program::launch(Launch {
             span: Span::default(),
             origin: None,
@@ -549,22 +557,68 @@ mod tests {
             scalar.read_to_end(&mut bytes).await.unwrap();
             bytes
         });
-        tokio::task::yield_now().await;
-        assert!(!read.is_finished());
-        std::fs::write(workspace.path().join("release-marker"), b"continue").unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !workspace.path().join("child-ready").is_file() {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("native fixture did not acknowledge startup before the scalar phase");
+        let pending_before_marker = !read.is_finished();
+        release.open();
         let bytes = tokio::time::timeout(std::time::Duration::from_secs(10), read)
             .await
-            .expect("scalar observation must not stop the marker write")
+            .expect("exit-code subscription did not settle after releasing the child")
             .unwrap();
-        assert_eq!(bytes, b"7\n");
-        assert_eq!(program.wait().await.unwrap().exit_code, 7);
-        let mut replay = Vec::new();
-        program
-            .scalar_reader(ReadPort::ExitCode)
-            .unwrap()
-            .read_to_end(&mut replay)
+        let exit = tokio::time::timeout(std::time::Duration::from_secs(10), program.wait())
             .await
+            .expect("root exit was observed, but physical stdout/stderr drains did not settle")
             .unwrap();
+        assert!(
+            pending_before_marker,
+            "the child must remain gated while its scalar is pending"
+        );
+        assert!(workspace.path().join("release-marker").is_file());
+        assert_eq!(bytes, b"7\n");
+        assert_eq!(exit.exit_code, 7);
+        let mut replay = Vec::new();
+        let mut scalar = program.scalar_reader(ReadPort::ExitCode).unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            scalar.read_to_end(&mut replay),
+        )
+        .await
+        .expect("a late exit-code subscription lost the retained result")
+        .unwrap();
         assert_eq!(replay, bytes);
+    }
+
+    struct ReleaseMarker(PathBuf);
+
+    impl ReleaseMarker {
+        fn open(&self) {
+            std::fs::write(&self.0, b"continue").unwrap();
+        }
+    }
+
+    impl Drop for ReleaseMarker {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, b"continue");
+        }
+    }
+
+    #[test]
+    #[ignore = "bounded native child fixture; invoked only by the deferred-scalar journey"]
+    fn deferred_exit_child() {
+        std::fs::write("child-ready", b"ready").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !Path::new("release-marker").is_file() {
+            if std::time::Instant::now() >= deadline {
+                eprintln!("deferred-scalar fixture reached its own release deadline");
+                std::process::exit(124);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        std::process::exit(7);
     }
 }
