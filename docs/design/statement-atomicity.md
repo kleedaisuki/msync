@@ -31,6 +31,30 @@ unrelated siblings retain their identity, bytes, permissions and modification
 time. Incidental parent-directory timestamps are not part of the rollback promise
 under concurrent namespace activity.
 
+## Access proofs and private cleanup
+
+The kernel namespace operation is a stronger access proof than the source's
+owner-write bit. `filesystem::move_new` first attempts native no-replace rename.
+Success requires no permission probing or chmod. Only a Unix `EACCES` for a
+directory lacking owner-write admits the existing temporary owner-write/restore
+protocol; `EEXIST`, `EXDEV` and `EPERM` do not trigger it. Groups and ACLs can
+already authorize the original operation, even when the actor cannot chmod an
+inode owned by somebody else. The saved before-mode intent remains necessary
+for a crash during the narrow fallback's admission window.
+
+Permission normalization during owned-directory garbage collection is
+preparatory, not the cleanup operation itself. If chmod is denied, cleanup still
+attempts the real directory enumeration, recursive unlink and removal; their
+actual errors propagate. This permits a non-owner with sufficient group/ACL
+access to finish collection without falsely requiring ownership. Other chmod
+errors still fail, and regular-file modes are never changed during cleanup:
+their inode may have surviving hard-link aliases outside the journal. None of
+these private-publication/cleanup operations chmod the original copied source.
+
+The actual non-root mode-`0570` replacement, mode-`0550` refusal, read-only
+directory reparenting, interrupted recovery and partial-GC checks are recorded
+in [storage-crash-validation.md](storage-crash-validation.md).
+
 ## Implementation ownership
 
 | Component | Responsibility |

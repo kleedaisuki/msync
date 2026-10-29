@@ -1058,8 +1058,13 @@ fn copy_new(source: &Path, target: &Path) -> Result<()> {
     Ok(())
 }
 
-fn move_new(source: &Path, target: &Path) -> io::Result<()> {
+pub(crate) fn move_new(source: &Path, target: &Path) -> io::Result<()> {
+    // Groups and ACLs can admit the rename even when owner-write is absent.
+    let result = crate::io::publish_file(source, target, true);
     #[cfg(unix)]
+    if result
+        .as_ref()
+        .is_err_and(|cause| cause.raw_os_error() == Some(libc::EACCES))
     {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
         let metadata = fs::symlink_metadata(source)?;
@@ -1088,7 +1093,6 @@ fn move_new(source: &Path, target: &Path) -> io::Result<()> {
             return moved;
         }
     }
-    let result = crate::io::publish_file(source, target, true);
     #[cfg(windows)]
     if result.as_ref().is_err_and(|error| {
         error.raw_os_error() == Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32)
@@ -1401,8 +1405,12 @@ fn remove_owned_entry(path: &Path) -> Result<()> {
         #[allow(clippy::permissions_set_readonly_false)]
         permissions.set_readonly(false);
     }
-    fs::set_permissions(path, permissions)
-        .map_err(|cause| error("prepare owned cleanup permissions", path, cause))?;
+    // Group or ACL access can already admit cleanup without chmod authority.
+    if let Err(cause) = fs::set_permissions(path, permissions)
+        && cause.kind() != io::ErrorKind::PermissionDenied
+    {
+        return Err(error("prepare owned cleanup permissions", path, cause));
+    }
     for entry in children(path)? {
         remove_owned_entry(&entry.path())?;
     }
@@ -1548,5 +1556,105 @@ mod windows_tests {
             fs::read_to_string(target.join("held")).unwrap(),
             "requires quiescence"
         );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_move_tests {
+    use std::ffi::CString;
+    use std::io::Read;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    use super::*;
+
+    fn workspace() -> tempfile::TempDir {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&root).unwrap();
+        tempfile::tempdir_in(root).unwrap()
+    }
+
+    fn watch(path: &Path) -> fs::File {
+        // SAFETY: flags are valid and the returned descriptor is checked below.
+        let descriptor = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        assert!(descriptor >= 0, "{}", io::Error::last_os_error());
+        // SAFETY: the successful call created one descriptor owned by this test.
+        let file = unsafe { fs::File::from_raw_fd(descriptor) };
+        let path = CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: the descriptor and NUL-terminated path remain valid for this call.
+        let registered = unsafe {
+            libc::inotify_add_watch(
+                file.as_raw_fd(),
+                path.as_ptr(),
+                libc::IN_ATTRIB | libc::IN_MOVE_SELF,
+            )
+        };
+        assert!(registered >= 0, "{}", io::Error::last_os_error());
+        file
+    }
+
+    fn masks(mut watch: fs::File) -> Vec<u32> {
+        let mut result = Vec::new();
+        let mut bytes = [0u8; 4096];
+        loop {
+            let count = match watch.read(&mut bytes) {
+                Ok(0) => break,
+                Ok(count) => count,
+                Err(cause) if cause.kind() == io::ErrorKind::WouldBlock => break,
+                Err(cause) => panic!("cannot read directory observations: {cause}"),
+            };
+            let mut offset = 0;
+            while offset < count {
+                result.push(u32::from_ne_bytes(
+                    bytes[offset + 4..offset + 8].try_into().unwrap(),
+                ));
+                let names = u32::from_ne_bytes(bytes[offset + 12..offset + 16].try_into().unwrap())
+                    as usize;
+                offset += std::mem::size_of::<libc::inotify_event>() + names;
+            }
+        }
+        result
+    }
+
+    #[test]
+    fn native_readonly_directory_rename_does_not_change_permissions() {
+        let root = workspace();
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o500)).unwrap();
+        let observed = watch(&source);
+        move_new(&source, &target).unwrap();
+        let events = masks(observed);
+        assert!(events.iter().any(|mask| mask & libc::IN_MOVE_SELF != 0));
+        assert!(events.iter().all(|mask| mask & libc::IN_ATTRIB == 0));
+        assert_eq!(
+            fs::metadata(target).unwrap().permissions().mode() & 0o777,
+            0o500
+        );
+    }
+
+    #[test]
+    fn no_replace_collision_does_not_admit_directory_writes() {
+        let root = workspace();
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o500)).unwrap();
+        fs::write(&target, b"untouched").unwrap();
+        let observed = watch(&source);
+        let failure = move_new(&source, &target).unwrap_err();
+        assert_eq!(failure.kind(), io::ErrorKind::AlreadyExists);
+        assert!(
+            masks(observed)
+                .iter()
+                .all(|mask| mask & libc::IN_ATTRIB == 0)
+        );
+        assert_eq!(
+            fs::metadata(source).unwrap().permissions().mode() & 0o777,
+            0o500
+        );
+        assert_eq!(fs::read(target).unwrap(), b"untouched");
     }
 }

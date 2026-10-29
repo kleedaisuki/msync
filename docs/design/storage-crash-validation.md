@@ -210,3 +210,81 @@ Evidence is `.temp/barrier-full-gen7-0-results.json` and
 unchanged during both runs. The isolated Linux gate must separately establish
 that canonical manifest paths repair the Unix EISDIR failures; a Windows pass
 does not stand in for that result.
+
+### Final source-acquisition and kernel-access acceptance
+
+The subsequent correctness snapshot repaired acquisition provenance, portable
+metadata, directory-mode recovery and intent retirement before GC. Its Windows
+CLI SHA256 was
+`3EBDB3DC26AE8D354EA5332EFE5EA274ACE6ADCDD3C03B4B6BADAABA72D67BD7`.
+All seven actual native-ext4 WSL publication journeys passed, including the new
+WSL-to-WSL `source/.` transfer through the generic material/import path. That
+journey verifies the acquired basename `source`, binary nested file bytes,
+empty directories, preservation of an existing container sibling, and root,
+nested-directory, empty-directory and file modification times. All three actual
+DrvFS projection alias/exclusion journeys also passed. These are functional
+checks, not a filesystem throughput benchmark. Evidence and image hashes are in
+`.temp/acquisition-final-wsl-results.json`.
+
+The isolated Linux native-filesystem gate separately passed both new inotify
+tests: successful same-parent read-only rename and no-replace collision generate
+no `IN_ATTRIB` permission mutation. The Linux gate also reran ordinary selectors,
+the user configuration macro, canonical manifest-node spelling and read-only
+directory crash recovery. Evidence is `.temp/acquisition-final-linux-tests.log`;
+the two tests are under `filesystem::linux_move_tests`. This closes the earlier
+Unix-only verification gap instead of extrapolating from Windows path handling.
+
+An additional actual Rust CLI journey ran as physical UID/GID 1000 with
+`CapEff=0` on WSL-native ext4, outside the user-namespace functional fixture:
+
+- The selected old directory belonged to UID 0/GID 1000 with mode `0570`.
+  Its writable parent belonged to UID 1000. Effective group rights admitted the
+  replacement even though the actor could not chmod the old directory.
+- Replacement produced the complete new read-only mode-`0500` tree, preserved
+  binary data, modification times and the empty directory, and emitted no
+  cleanup warning or retained publication journal.
+- An external hard link to the old regular file retained its old bytes and
+  mode `0400`. The separately copied read-only source remained unchanged.
+- The mode-`0550` non-owner negative returned a real permission error within the
+  bounded invocation. Its target inode, owner, group, mode, modification time and
+  bytes remained unchanged; it did not retry indefinitely or leave a journal.
+
+Only controlled fixture creation and final fixture disposal ran as WSL root;
+the actual CLI ran without capabilities. Setup, both cases and cleanup passed,
+and no SSH configuration or user file was modified. Linux ELF SHA256 remained
+`B6438172F9CB74C21BAE811C0BF4E1D1383C814CD0E2F1A9CA17FACC5CFB0416`.
+Evidence is `.temp/local-group-cli-probe-result.json` and its referenced log.
+
+### Actual remote read-only mode and partial-GC crash protocol
+
+The final endpoint helper source SHA256 was
+`38E6C02D35D087FF7B2DFA294FB5A7EDFD36453701057A2B37C7A4DB54EA8FA3`.
+Its extracted publication/recovery helpers passed 16 real native-ext4 journeys
+as UID 1000 with `CapEff=0`:
+
+| Journeys | Expected result after fresh recovery |
+| --- | --- |
+| Normal replacement | Complete new tree, directories `0500`, regular file `0400` |
+| Seven pre-decision publisher cuts | Complete old tree and original modes |
+| Two post-decision publisher cuts | Complete new tree and original modes |
+| Recovery cut after restoring the old name but before its mode | Next recovery restores the old `0500` mode; repeated recovery is idempotent |
+| Missing destination parents | Private read-only payload promotion succeeds without changing the original source |
+| Committed partial-GC cut through `RECOVER` | The complete new tree and its inode remain installed |
+| Committed partial-GC cut through `SETTLE` | The complete new tree and its inode remain installed |
+| Aborted partial-GC cut | The already-settled old `0500` tree remains installed |
+| Foreign target identity | Recovery refuses without chmod or overwrite |
+
+Fault injection replaced a unique helper instruction with an abrupt `SIGKILL`
+of the helper's isolated process group, not a normal exit that would run its
+rollback trap. Group identity was checked before execution. The GC variants
+performed a legal destructive prefix *inside the live helper*: after durable
+intent retirement they deleted `COMMITTED` and one before-image/staged payload
+file, then died. This tests interrupted GC itself rather than deleting records
+after a publisher had already stopped. Recovery never reinterpreted that partial
+private tree as an uncommitted before-image. Every successful recovery was
+repeated; source and surviving regular-file hard-link modes remained unchanged.
+
+Evidence is `.temp/remote-readonly-gate-retirement-final-result.json`,
+`.temp/remote-readonly-gate-retirement-final.log`, and the exact base/derived
+helper hashes in `.temp/remote-readonly-gate-results-final/helper-hashes.sha256`.
+These demonstrate process-crash recovery, not sudden-power-loss behavior.
