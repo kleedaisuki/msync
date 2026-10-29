@@ -1,16 +1,20 @@
 #![doc = include_str!("../README.md")]
 
 pub mod compiler;
+pub mod context;
 pub mod endpoint;
 pub mod execution;
+pub mod filesystem;
 pub mod highlight;
 pub mod hir;
 pub mod io;
 pub mod language;
+pub mod object;
 pub mod pipeline;
 pub mod plan;
 pub mod preparation;
 pub mod process;
+pub mod relocatable;
 pub mod runtime;
 pub mod scheduler;
 pub mod source;
@@ -18,4 +22,3 @@ pub mod streams;
 pub mod suggest;
 pub mod syntax;
 pub mod telemetry;
-pub mod transaction;

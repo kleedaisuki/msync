@@ -87,8 +87,17 @@ impl LocatedReport {
     }
 
     pub fn render(&self, color: bool) -> String {
-        let mut output =
-            syntax::render_report_named(&self.source.text, &self.report, &self.source.name, color);
+        self.render_with_title("error:", color)
+    }
+
+    pub fn render_with_title(&self, title: &str, color: bool) -> String {
+        let mut output = syntax::render_report_named_with_title(
+            &self.source.text,
+            &self.report,
+            &self.source.name,
+            title,
+            color,
+        );
         let mut grouped = BTreeMap::<SourceId, (Arc<Source>, Vec<Label>)>::new();
         for label in &self.related {
             grouped

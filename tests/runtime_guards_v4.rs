@@ -52,7 +52,7 @@ async fn ordinary_owner_cancellation_does_not_poison_the_next_repl_submission() 
     assert!(runtime.submit(&cancelled).await.is_err());
     assert!(!root.path().join("target").exists());
     let next = program(root.path(), "\"next\" -> target\n");
-    assert_eq!(runtime.submit(&next).await.unwrap().checkpoints, 0);
+    assert_eq!(runtime.submit(&next).await.unwrap().assignments, 1);
     assert_eq!(
         fs::read_to_string(root.path().join("target")).unwrap(),
         "next"
@@ -100,42 +100,6 @@ async fn stale_missing_target_proof_cannot_replace_a_newly_created_directory() {
     assert_eq!(
         fs::read_to_string(root.path().join("target/keep")).unwrap(),
         "keep"
-    );
-    runtime.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn ordinary_publication_does_not_disable_later_named_history_fences() {
-    let root = workspace();
-    let mut runtime = RuntimeSession::new(&Options::new(root.path().join(".temp"))).unwrap();
-    let initial = program(root.path(), "\"plain\" -> target\n");
-    assert_eq!(runtime.execute(&initial).await.unwrap().checkpoints, 0);
-    let mut compiler = Session::new();
-    let context = CompileContext {
-        pwd: root.path().to_owned(),
-        source_file: None,
-    };
-    let named = compiler
-        .compile(
-            &msync::language::parse("transaction A:\n    \"named\" -> target\n").unwrap(),
-            &context,
-        )
-        .unwrap();
-    assert_eq!(runtime.execute(&named).await.unwrap().checkpoints, 1);
-    let foreign = compiler
-        .compile(
-            &msync::language::parse("\"foreign\" -> target\n").unwrap(),
-            &context,
-        )
-        .unwrap();
-    assert_eq!(runtime.execute(&foreign).await.unwrap().checkpoints, 0);
-    let undo = compiler
-        .compile(&msync::language::parse("rollback A\n").unwrap(), &context)
-        .unwrap();
-    assert!(runtime.execute(&undo).await.is_err());
-    assert_eq!(
-        fs::read_to_string(root.path().join("target")).unwrap(),
-        "foreign"
     );
     runtime.shutdown().await.unwrap();
 }

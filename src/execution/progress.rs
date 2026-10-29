@@ -12,6 +12,7 @@ use crate::hir::InstructionId;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
     Inspect,
+    Launch,
     Acquire,
     Stage,
     Publish,
@@ -24,6 +25,7 @@ impl Phase {
     pub fn label(self) -> &'static str {
         match self {
             Self::Inspect => "inspect endpoints",
+            Self::Launch => "launch program",
             Self::Acquire => "acquire source",
             Self::Stage => "stage assignment",
             Self::Publish => "publish assignment",

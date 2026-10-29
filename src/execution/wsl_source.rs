@@ -4,9 +4,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::endpoint::{Backend, Location};
+use crate::filesystem::InvocationRoot;
 use crate::language::DestinationMode;
 use crate::syntax::Span;
-use crate::transaction::filesystem::InvocationRoot;
 
 use super::Options;
 use super::error::{ExecutionError, Result};
@@ -16,7 +16,7 @@ pub(super) struct Request<'a> {
     pub stage: &'a Path,
     pub logical_target: &'a Path,
     pub mode: DestinationMode,
-    pub selector: bool,
+    pub pattern: Option<&'a str>,
     pub invocation: &'a InvocationRoot,
 }
 
@@ -41,7 +41,7 @@ pub(super) fn acquire(request: Request<'_>, options: &Options, span: Span) -> Re
     trace.attribute("publication.policy", "private-import");
     trace.attribute(
         "destination.mode",
-        match (request.selector, request.mode) {
+        match (request.pattern.is_some(), request.mode) {
             (true, _) => "selected",
             (_, DestinationMode::Exact) => "exact",
             (_, DestinationMode::Container) => "container",
@@ -52,6 +52,51 @@ pub(super) fn acquire(request: Request<'_>, options: &Options, span: Span) -> Re
     trace.finish_result(&result);
     result
 }
+
+/// Resolve an unproven WSL projection through the guest, not a `/mnt/X` guess.
+/// The ordinary owner then uses the same local identity and private-view rules
+/// as a native source instead of erasing aliases behind an imported copy.
+pub(super) fn projected_source(
+    source: &Location,
+    options: &Options,
+    span: Span,
+) -> Result<PathBuf> {
+    let output = command(PROJECTED_SOURCE, &[&source.path], options, span)?;
+    let path = output
+        .strip_suffix(&[0])
+        .ok_or_else(|| ExecutionError::new("WSL projection receipt is incomplete", span))?;
+    let path = std::str::from_utf8(path)
+        .map_err(|cause| ExecutionError::caused("WSL projection is not UTF-8", span, cause))?;
+    #[cfg(windows)]
+    {
+        super::domain::normalize(Path::new(path), span)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Err(ExecutionError::new(
+            "this WSL projection requires a Windows filesystem view",
+            span,
+        )
+        .help("Use the local namespace inside WSL, or run the Windows msync executable."))
+    }
+}
+
+const PROJECTED_SOURCE: &str = r#"
+set -eu
+p=$1
+case $p in '~') p=$HOME;; '~/'*) p=$HOME/${p#\~/};; esac
+case $p in /*) ;; *) p=$PWD/$p;; esac
+a=$p
+while [ "$a" != / ]; do
+    [ ! -L "$a" ] || { echo "source traverses a symbolic link: $a" >&2; exit 1; }
+    a=${a%/*}; [ -n "$a" ] || a=/
+done
+p=$(realpath -e -- "$p")
+[ -f "$p" ] || [ -d "$p" ] || { echo 'projected source must be a finite file or directory' >&2; exit 1; }
+w=$(wslpath -a -w "$p")
+printf '%s\0' "$w"
+"#;
 
 fn acquire_inner(request: Request<'_>, options: &Options, span: Span) -> Result<Acquisition> {
     if request.source.backend != Backend::Wsl {
@@ -80,6 +125,9 @@ fn acquire_inner(request: Request<'_>, options: &Options, span: Span) -> Result<
     let native_target = crate::runtime::native_windows_filesystem(&destination);
     if !native_target {
         return Ok(Acquisition::Fallback);
+    }
+    if let Some(pattern) = request.pattern {
+        return acquire_selected(&request, pattern, options, span);
     }
     let stage = request.stage.to_string_lossy();
     let preflight = command(PREFLIGHT, &[&request.source.path, &stage], options, span)?;
@@ -119,6 +167,156 @@ fn acquire_inner(request: Request<'_>, options: &Options, span: Span) -> Result<
         basename: basename.into(),
     })
 }
+
+fn selected_names(bytes: &[u8], pattern: &str, span: Span) -> Result<Vec<String>> {
+    let regex = regex::Regex::new(&format!("\\A(?:{pattern})\\z"))
+        .map_err(|cause| ExecutionError::caused("invalid selector regex", span, cause))?;
+    if !bytes.ends_with(&[0]) {
+        return Err(ExecutionError::new("incomplete WSL selector listing", span));
+    }
+    Ok(bytes[..bytes.len() - 1]
+        .split(|byte| *byte == 0)
+        .filter_map(|name| std::str::from_utf8(name).ok())
+        .filter(|name| !name.is_empty() && regex.is_match(name))
+        .map(str::to_owned)
+        .collect())
+}
+
+fn acquire_selected(
+    request: &Request<'_>,
+    pattern: &str,
+    options: &Options,
+    span: Span,
+) -> Result<Acquisition> {
+    let listing = command(SELECT_LIST, &[&request.source.path], options, span)?;
+    if listing == b"fallback\0" {
+        return Ok(Acquisition::Fallback);
+    }
+    let chosen = selected_names(&listing, pattern, span)?;
+    let mut validation = Vec::new();
+    for name in &chosen {
+        validation.extend_from_slice(name.as_bytes());
+        validation.push(0);
+        validation.extend_from_slice(name.as_bytes());
+        validation.push(0);
+    }
+    crate::runtime::validate_remote_names(&validation)
+        .map_err(|message| ExecutionError::new(message, span))?;
+    let stage = request.stage.to_string_lossy();
+    let mut args = vec![request.source.path.as_str(), stage.as_ref()];
+    args.extend(chosen.iter().map(String::as_str));
+    let script = format!("{SELECT_COMMON}\n{SELECT_PREFLIGHT}");
+    let preflight = command(&script, &args, options, span)?;
+    if preflight == b"fallback\0" {
+        return Ok(Acquisition::Fallback);
+    }
+    let before = receipt(&preflight, "ready", span)?;
+    crate::runtime::validate_remote_names(&names(before.manifest, span)?)
+        .map_err(|message| ExecutionError::new(message, span))?;
+    let mut args = vec![before.source, stage.as_ref(), before.fingerprint];
+    args.extend(chosen.iter().map(String::as_str));
+    let script = format!("{SELECT_COMMON}\n{SELECT_CAPTURE}");
+    let captured = command(&script, &args, options, span)?;
+    let after = receipt(&captured, "captured", span)?;
+    if before.kind != after.kind
+        || before.source != after.source
+        || before.fingerprint != after.fingerprint
+        || before.manifest != after.manifest
+    {
+        return Err(changed(span));
+    }
+    let basename = before
+        .source
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| ExecutionError::new("WSL source has no basename", span))?;
+    Ok(Acquisition::Captured {
+        basename: basename.into(),
+    })
+}
+
+// Name discovery is shallow: unselected entries must never be traversed,
+// validated as payload, or transmitted across the WSL filesystem boundary.
+const SELECT_LIST: &str = r#"
+set -eu
+p=$1
+case $p in '~') p=$HOME;; '~/'*) p=$HOME/${p#\~/};; esac
+case $p in /*) ;; *) p=$PWD/$p;; esac
+a=$p
+while [ "$a" != / ]; do [ ! -L "$a" ] || { echo 'selector traverses a symbolic link' >&2; exit 1; }; a=${a%/*}; [ -n "$a" ] || a=/; done
+[ -d "$p" ] || { echo 'selector source must be a directory' >&2; exit 1; }
+[ "$(stat -f -c %t -- "$p")" = ef53 ] || { printf 'fallback\0'; exit 0; }
+find "$p" -mindepth 1 -maxdepth 1 -printf '%f\0'
+printf '\0'
+"#;
+
+const SELECT_COMMON: &str = r#"
+set -eu
+fail() { echo "$*" >&2; exit 1; }
+parents() { p=$1; while [ "$p" != / ]; do [ ! -L "$p" ] || fail "refusing symbolic link: $p"; p=${p%/*}; [ -n "$p" ] || p=/; done; }
+s=$1
+case $s in '~') s=$HOME;; '~/'*) s=$HOME/${s#\~/};; esac
+case $s in /*) ;; *) s=$PWD/$s;; esac
+parents "$s"
+[ -d "$s" ] || fail 'selector source must be a directory'
+s=$(realpath -e -- "$s")
+[ "$(stat -f -c %t -- "$s")" = ef53 ] || { printf 'fallback\0'; exit 0; }
+d=$(wslpath -a -u "$2"); parents "$d"
+m=$d.manifest
+manifest() {
+    # The selector container basename is never materialized across the boundary.
+    find "$s" -maxdepth 0 -printf '%P\0selector-root\0%D:%i:%m:%s:%T@:%C@\0'
+    for n do
+        f=$(printf '%s' "$n" | sed 's/\\/\\\\/g;s/%/%%/g')
+        find "$s/$n" -maxdepth 0 -printf "$f\000%f\000%D:%i:%m:%s:%T@:%C@\000"
+        if [ -d "$s/$n" ]; then
+            find "$s/$n" -mindepth 1 -printf "$f/%P\000%f\000%D:%i:%m:%s:%T@:%C@\000"
+        fi
+    done
+}
+validate() {
+    dev=$(stat -c %d -- "$s")
+    for n do
+        case $n in ''|.|..|*/*) fail 'invalid selected basename';; esac
+        [ -e "$s/$n" ] || [ -L "$s/$n" ] || fail 'selected source disappeared'
+        [ "$(find "$s/$n" -xdev -printf '%D\n' | sort -u)" = "$dev" ] || { printf 'fallback\0'; exit 0; }
+        [ -z "$(find "$s/$n" -type l -print -quit)" ] || fail 'selected source contains symbolic links'
+        [ -z "$(find "$s/$n" ! -type f ! -type d -print -quit)" ] || fail 'selected source contains special files'
+    done
+}
+"#;
+
+const SELECT_PREFLIGHT: &str = r#"
+shift 2
+validate "$@"
+[ ! -e "$d" ] || fail 'private import path already exists'
+umask 077
+set -C
+: > "$m"
+set +C
+manifest "$@" > "$m"
+h=$(sha256sum -- "$m"); h=${h%% *}
+printf 'ready\0directory\0%s\0%s\0' "$s" "$h"
+cat -- "$m"
+"#;
+
+const SELECT_CAPTURE: &str = r#"
+h=$3
+shift 3
+validate "$@"
+[ ! -e "$d" ] || fail 'private import path already exists'
+actual=$(sha256sum -- "$m"); actual=${actual%% *}
+[ "$actual" = "$h" ] || fail 'private source manifest changed'
+manifest "$@" | cmp -s - "$m" || fail 'selected source changed before private acquisition'
+mkdir -- "$d"
+for n do cp -a -- "$s/$n" "$d/$n"; done
+chmod --reference="$s" -- "$d"
+touch -r "$s" -- "$d"
+manifest "$@" | cmp -s - "$m" || fail 'selected source changed during private acquisition'
+printf 'captured\0directory\0%s\0%s\0' "$s" "$h"
+cat -- "$m"
+"#;
 
 fn manifest_path(stage: &Path) -> PathBuf {
     let mut path = stage.as_os_str().to_owned();
@@ -264,6 +462,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn selector_names_are_anchored_and_do_not_admit_unselected_payload() {
+        let names = selected_names(
+            b"keep.txt\0not-keep.txt\0picked\0secret\0\0",
+            "keep\\.txt|picked",
+            Span::default(),
+        )
+        .unwrap();
+        assert_eq!(names, ["keep.txt", "picked"]);
+        assert_eq!(
+            selected_names(b"\xff\0keep.txt\0", ".*", Span::default()).unwrap(),
+            ["keep.txt"]
+        );
+        assert!(selected_names(b"keep.txt", ".*", Span::default()).is_err());
+        assert!(selected_names(b"\0", "[", Span::default()).is_err());
+    }
+
+    #[test]
     fn proof_triples_preserve_utf8_names_for_the_shared_validator() {
         let manifest = "\0agents\0proof-root\0nested/可莉 file.toml\0可莉 file.toml\0proof-file\0";
         let listing = names(manifest.as_bytes(), Span::default()).unwrap();
@@ -346,7 +561,7 @@ mod wsl_tests {
                 stage: &invocation.path().join("imports").join(name),
                 logical_target: target,
                 mode: DestinationMode::Exact,
-                selector: false,
+                pattern: None,
                 invocation,
             },
             options,
@@ -453,6 +668,83 @@ printf bad > "$1/CON"
             .is_cancelled()
         );
         assert!(!invocation.path().join("imports/cancelled").exists());
+        invocation.cleanup().unwrap();
+    }
+
+    #[test]
+    #[ignore = "explicit real WSL ext4 sparse selector acquisition journey"]
+    fn real_wsl_selector_never_acquires_unselected_special_or_secret_payload() {
+        let temporary = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&temporary).unwrap();
+        let root = tempfile::tempdir_in(temporary).unwrap();
+        let options = Options::new(root.path().join("scratch"));
+        let invocation = InvocationRoot::create(&options.scratch_root).unwrap();
+        fs::create_dir(invocation.path().join("imports")).unwrap();
+        let remote = Remote(
+            String::from_utf8(run("mktemp -d /tmp/msync-acquire-v4.XXXXXXXXXX", &[]))
+                .unwrap()
+                .trim()
+                .into(),
+        );
+        run(
+            r#"set -eu
+mkdir -p "$1/source/picked/nested" "$1/source/secret"
+printf chosen > "$1/source/keep.txt"
+printf tree > "$1/source/picked/nested/file"
+printf hidden > "$1/source/secret/data"
+chmod 000 "$1/source/secret"
+mkfifo "$1/source/unselected-fifo"
+ln -s /missing "$1/source/unselected-link"
+"#,
+            &[&remote.0],
+        );
+        let source = Location {
+            backend: Backend::Wsl,
+            path: format!("{}/source", remote.0),
+        };
+        let target = root.path().join("target");
+        for (name, pattern) in [("chosen", "keep\\.txt|picked"), ("empty", "absent")] {
+            let stage = invocation.path().join("imports").join(name);
+            let result = acquire(
+                Request {
+                    source: &source,
+                    stage: &stage,
+                    logical_target: &target,
+                    mode: DestinationMode::Container,
+                    pattern: Some(pattern),
+                    invocation: &invocation,
+                },
+                &options,
+                Span::default(),
+            )
+            .unwrap();
+            assert!(matches!(result, Acquisition::Captured { .. }));
+            if name == "chosen" {
+                assert_eq!(fs::read(stage.join("keep.txt")).unwrap(), b"chosen");
+                assert_eq!(fs::read(stage.join("picked/nested/file")).unwrap(), b"tree");
+                assert_eq!(fs::read_dir(&stage).unwrap().count(), 2);
+            } else {
+                assert_eq!(fs::read_dir(&stage).unwrap().count(), 0);
+            }
+        }
+        let stage = invocation.path().join("imports/rejected");
+        assert!(
+            acquire(
+                Request {
+                    source: &source,
+                    stage: &stage,
+                    logical_target: &target,
+                    mode: DestinationMode::Container,
+                    pattern: Some("unselected-fifo"),
+                    invocation: &invocation
+                },
+                &options,
+                Span::default()
+            )
+            .is_err()
+        );
+        assert!(!stage.exists());
+        assert!(!target.exists());
         invocation.cleanup().unwrap();
     }
 

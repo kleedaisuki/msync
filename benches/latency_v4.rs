@@ -544,22 +544,20 @@ fn literal_processes(executables: &[Executable], count: usize) -> Result<()> {
     let old_time = UNIX_EPOCH + Duration::from_secs(978307200);
     let selected = std::env::var("MSYNC_PERF_LITERAL_CASE").ok();
     let mut matched = false;
-    for (case, size, named) in [
+    for (case, size, paired) in [
         ("literal-4b", 4, false),
         ("literal-64k", 64 * 1024, false),
         ("literal-1m", 1024 * 1024, false),
-        ("literal-named-two-4_5m", 9 * 1024 * 512, true),
+        ("literal-disjoint-two-4_5m", 9 * 1024 * 512, true),
     ] {
         let left = "A".repeat(size);
         let right = "B".repeat(size);
-        let source = if named {
-            format!(
-                "transaction A:\n    \"{left}\" -> a/target.bin\ntransaction B:\n    \"{right}\" -> b/target.bin\n"
-            )
+        let source = if paired {
+            format!("\"{left}\" -> a/target.bin\n\"{right}\" -> b/target.bin\n")
         } else {
             format!("\"{left}\" -> target.bin\n")
         };
-        let outputs = if named {
+        let outputs = if paired {
             vec![
                 ("a/target.bin", left.as_bytes()),
                 ("b/target.bin", right.as_bytes()),

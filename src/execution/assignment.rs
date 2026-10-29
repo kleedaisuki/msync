@@ -1,12 +1,12 @@
-//! Assignment policy shared by statement journals and retained transactions.
+//! Exact, container and whole-tree assignment policies for finite statements.
 
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::filesystem::{Entry, NodeMetadata, Snapshot};
 use crate::language::DestinationMode;
 use crate::syntax::Span;
-use crate::transaction::filesystem::{Entry, NodeMetadata, Snapshot};
 
 use super::error::{ExecutionError, Result};
 
@@ -14,16 +14,6 @@ pub(super) enum Target<'a> {
     Missing,
     File(&'a NodeMetadata),
     Directory(Option<&'a Snapshot>),
-}
-
-impl<'a> Target<'a> {
-    pub fn snapshot(snapshot: &'a Snapshot) -> Self {
-        match snapshot.entries().get(Path::new("")) {
-            None => Self::Missing,
-            Some(Entry::File { metadata, .. }) => Self::File(metadata),
-            Some(Entry::Directory { .. }) => Self::Directory(Some(snapshot)),
-        }
-    }
 }
 
 pub(super) fn assign(

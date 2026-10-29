@@ -27,6 +27,7 @@ pub const COMMANDS: &[&str] = &[
     "/jobs",
     "/wait",
     "/stop",
+    "/kill",
 ];
 
 pub const BUILTINS: &[&str] = &[
@@ -271,19 +272,17 @@ fn word_tokens(source: &str, start: usize, end: usize, first: bool, tokens: &mut
 }
 
 fn control_word(source: &str, word: &str, first: bool, end: usize) -> bool {
-    if source.trim_start().starts_with("transaction ")
-        && matches!(
-            word,
-            "read" | "uncommitted" | "committed" | "repeatable" | "serializable"
-        )
-    {
+    let prefix = &source[..end - word.len()];
+    let scheduling = matches!(word, "async" | "await")
+        && prefix
+            .split_whitespace()
+            .all(|word| matches!(word, "async" | "await"));
+    if scheduling {
         return true;
     }
     first
-        && (matches!(
-            word,
-            "macro" | "transaction" | "commit" | "rollback" | "global"
-        ) || (COMMANDS.contains(&word) && !operator_at(source[end..].trim_start(), 0)))
+        && (matches!(word, "macro" | "global")
+            || (COMMANDS.contains(&word) && !operator_at(source[end..].trim_start(), 0)))
 }
 
 pub fn highlight(source: &str, color: bool) -> String {
@@ -333,8 +332,8 @@ mod tests {
             ("macro copy(.src, des):", "macro", TokenKind::Command),
             ("macro copy(.src, des):", "copy", TokenKind::Binding),
             (
-                "transaction A(read committed):",
-                "committed",
+                "async await program => $path::bash(\"ls\")",
+                "await",
                 TokenKind::Command,
             ),
             ("copy($wsl::src, \"字节\")", "copy", TokenKind::Binding),
@@ -343,7 +342,7 @@ mod tests {
                 "bash",
                 TokenKind::Binding,
             ),
-            ("    rollback A", "rollback", TokenKind::Command),
+            ("    await A", "await", TokenKind::Command),
         ] {
             assert!(
                 token_spans(source).iter().any(|token| {
@@ -363,7 +362,13 @@ mod tests {
             .map(|token| &source[token.span.start..token.span.end])
             .collect::<Vec<_>>();
         assert_eq!(selectors, ["<[a-z]+>"]);
-        for source in ["copy(", "macro copy(.codex,", "transaction A(", ")", ","] {
+        for source in [
+            "copy(",
+            "macro copy(.codex,",
+            "async await P => f(",
+            ")",
+            ",",
+        ] {
             let mut end = 0;
             for token in token_spans(source) {
                 assert_eq!(token.span.start, end);

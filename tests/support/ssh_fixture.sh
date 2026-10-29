@@ -36,13 +36,12 @@ install_binary() {
 }
 for path in /bin/bash /bin/sh /bin/cat /bin/cp /bin/chmod /bin/mkdir /bin/rm /bin/mv /bin/ln \
     /usr/bin/find /usr/bin/realpath /usr/bin/dirname /usr/bin/basename /usr/bin/mktemp /usr/bin/stat \
-    /usr/bin/flock; do
+    /usr/bin/flock /usr/bin/sync /usr/bin/mkfifo; do
     install_binary "$path"
 done
 if [ "$python" = 1 ]; then
     mkdir -p "$jail/proc"
     mount -t proc -o nosuid,nodev,noexec proc "$jail/proc"
-    install_binary /usr/bin/mkfifo
     install_binary /usr/bin/python3
     stdlib=$(/usr/bin/python3 -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')
     mkdir -p "$jail$stdlib"

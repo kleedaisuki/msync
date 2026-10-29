@@ -1,7 +1,7 @@
 //! Structured, indentation-sensitive language frontend.
 //!
 //! The original `syntax::Script` API remains the flat v0.3 compatibility API.
-//! This frontend retains literal/path distinctions and nested control regions.
+//! This frontend retains literal/path distinctions and explicit scheduling barriers.
 
 mod parser;
 mod submission;
@@ -58,13 +58,17 @@ pub enum StatementKind {
     },
     Call(Expr),
     Global(Vec<Name>),
-    Transaction {
-        name: Name,
-        isolation: Isolation,
-        body: Block,
+    /// Explicit scheduling prefixes; the compiler supplies the default join for
+    /// unprefixed program bindings, rather than guessing from executable syntax.
+    Scheduled {
+        asynchronous: bool,
+        awaited: bool,
+        statement: Box<Statement>,
     },
-    Commit,
-    Rollback(Option<Name>),
+    /// A start boundary with no payload statement.
+    Async,
+    /// Join one named process, or all currently pending processes when unnamed.
+    Await(Option<Name>),
     Comment(String),
 }
 
@@ -72,26 +76,6 @@ pub enum StatementKind {
 pub enum BindingOp {
     Space,
     Value,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum Isolation {
-    ReadUncommitted,
-    ReadCommitted,
-    RepeatableRead,
-    #[default]
-    Serializable,
-}
-
-impl Isolation {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ReadUncommitted => "read uncommitted",
-            Self::ReadCommitted => "read committed",
-            Self::RepeatableRead => "repeatable read",
-            Self::Serializable => "serializable",
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,7 +110,10 @@ pub struct PathExpr {
     pub mode: DestinationMode,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum DestinationMode {
     #[default]
     Exact,

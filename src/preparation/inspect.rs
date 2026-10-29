@@ -96,6 +96,17 @@ impl Observations {
             *location = captured;
             return Ok(());
         }
+        if cfg!(windows)
+            && captured.backend == Backend::Local
+            && crate::streams::is_named_pipe_path(&captured.path)
+        {
+            // The named-pipe namespace has no filesystem parents. Opening it
+            // even to obtain identity would admit a real client connection.
+            *location = captured;
+            self.classes.insert(location.clone(), FileClass::Stream);
+            self.sites.entry(location.clone()).or_insert(site);
+            return Ok(());
+        }
         let endpoint = site.role.map(|role| EndpointKey {
             instruction: site.instruction,
             role,
@@ -193,7 +204,10 @@ impl Observations {
         let native = self
             .sites
             .keys()
-            .filter(|location| location.backend == Backend::Local)
+            .filter(|location| {
+                location.backend == Backend::Local
+                    && self.classes.get(*location) != Some(&FileClass::Stream)
+            })
             .cloned()
             .collect::<Vec<_>>();
         let wsl = self.canonical_remote.keys().cloned().collect::<Vec<_>>();
@@ -317,7 +331,7 @@ fn native_spelling(path: &std::path::Path) -> String {
 pub(super) fn resolve_region(
     region: &mut Region,
     observations: &mut Observations,
-    context: &PlanningContext,
+    _context: &PlanningContext,
 ) -> Result<(), Vec<Diagnostic>> {
     let mut errors = Vec::new();
     for node in &mut region.instructions {
@@ -368,12 +382,6 @@ pub(super) fn resolve_region(
                     Ok(())
                 })
             }
-            InstructionKind::Transaction { body, .. } => {
-                if let Err(child) = resolve_region(body, observations, context) {
-                    errors.extend(child);
-                }
-                Ok(())
-            }
             _ => Ok(()),
         };
         if let Err(error) = result {
@@ -398,13 +406,7 @@ pub(super) fn resolve_region(
                     observations.host.defer_write(location.clone());
                 }
             }
-            InstructionKind::Spawn { process, .. } => {
-                if let Some(effects) = context.process_effects.get(process) {
-                    observations.host.invalidate_writes(effects.footprint());
-                } else {
-                    observations.host.unknown();
-                }
-            }
+            InstructionKind::Spawn { .. } => observations.host.unknown(),
             _ => {}
         }
     }

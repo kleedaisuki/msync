@@ -1,9 +1,63 @@
-# Windows resource-view bridge
+# Historical v0.4 Windows resource-view bridge
+
+> Historical implementation record, superseded by the v0.5 barrier-based
+> runtime. External programs now use asynchronous native process execution in
+> the actual environment, without a transactional resource-view provider.
+> Sandboxie, bubblewrap, and a host driver are **not current prerequisites**.
+> The provider protocols, gates, and installation discussions below document
+> the removed model; they are not release instructions or current guarantees.
+> See [barrier execution](barrier-execution.md),
+> [runtime ownership](barrier-runtime.md), and
+> [statement atomicity](statement-atomicity.md) for the replacement contract.
 
 Status: implementation exists and local protocol/capability gates pass. The
 signed-driver journeys have **not** been run on the development host; no driver,
 service or Sandboxie configuration was installed or changed there. The ephemeral
 Windows Actions gate must prove native support before release acceptance.
+
+## Private backing is independent of the selected logical roots
+
+The ordinary statement owner retires its payloads without creating a Manager.
+A later native program can therefore have logical root B while the runtime's
+owned invocation is physically under A/.temp. Inferring invocation ownership
+only from B's immutable snapshot loses that proof: the read-only host fallback
+would still expose the current Manager's assets, imports and output spools.
+Read-only exposure is not isolation of unpublished data.
+
+Both providers now accept `with_invocation(InvocationRoot)` independently of
+`ManagedRoot`. Preparation verifies that scratch is inside that exact owned
+directory; an unrelated scratch path is rejected before creating a view or box.
+`Program::launch` supplies the runtime's actual proof. The view retains it until
+physical payload/cohort joins and cleanup, and launch revalidates the identity.
+No old ordinary payloads or MVCC domain enrollment are retained for this purpose.
+
+On Windows the owned box adds and verifies an exact `ClosedFilePath` directory
+rule for the invocation. Sandboxie's [blocked-access contract](https://sandboxie-plus.com/sandboxie/resourceaccesssettings/)
+denies reading as well as writing. Frozen-root seeding and export already travel
+through the authenticated pipe; they do not need the boxed worker to read parent
+backing files. The worker starts from an existing executable ancestor outside
+the managed logical roots, rather than the now-blocked owned box path. The
+payload's specified cwd and argv remain unchanged. Rules do not exempt the worker
+by executable name, which would also exempt a payload using that same binary.
+
+The Linux provider applies an inaccessible read-only tmpfs mount to the exact
+invocation only when its path is outside all managed-root overlays. Existing
+snapshot exclusions already hide an invocation inside a managed root; mounting
+another path there would incorrectly recreate logical scratch scaffolding.
+No blanket `.temp` rule is used, and ordinary user files remain visible.
+
+The new actual provider journey on each OS uses an omitted-root invocation with
+a known private payload and a neighboring user scratch sentinel. The child must
+fail to read or write the former, still read the latter, and publish its managed
+write only into the sealed snapshot. A wrong scratch proof must leave no new
+private view. Actual WSL Linux validation passed all seven provider journeys and
+all four native workspace journeys in a private project tmpfs/user/mount/network
+namespace (caller UID 1000, loopback enabled). One workspace assertion initially
+omitted Linux's legitimate `ReadOnlyFilesystem` write-refusal code; after fixing
+that assertion and surfacing child stderr, only that failing case was rerun and
+passed. These are correctness checks, not ext4 performance measurements. The new
+Windows rule still requires its actual signed-driver cloud gate; Linux success
+does not establish Windows driver behavior.
 
 ## Cancellation can follow an ordinary native exit receipt
 

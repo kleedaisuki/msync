@@ -1,5 +1,9 @@
 # Read domains and dirty publication in v0.4
 
+> Historical transaction implementation, removed in v0.5. Reusable filesystem
+> publication primitives now serve [statement atomicity](statement-atomicity.md),
+> not user-visible transaction scopes or retained undo histories.
+
 The transaction manager reads immutable versions from enrolled domains, but its
 physical write set is separate. Enrollment of a directory does not authorize
 replacing that directory for every child assignment. Doing so would rewrite

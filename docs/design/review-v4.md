@@ -710,3 +710,163 @@ rejects a live process port crossing checkpoint epochs, and
 checks that concrete launch/commit/future-stdin input is rejected before runtime
 resources are created. This is a planner rejection test, not an actual native
 process success claim. No remaining source-level cycle was found on this path.
+
+## Ordinary statement-owner and late-binding review (2026-10-28)
+
+Scope: the follow-up to the user's four-assignment local/WSL macro workload.
+The reviewer inspected the current ordinary owner, retained-runtime integration,
+shared assignment/selection policy, semantic-IR fallback and guarded WSL import.
+This is a source/lifetime review, not a new full-suite or performance claim.
+The measured workflow and architectural rationale belong in
+[performance-v4.md](performance-v4.md) and
+[late-bound-execution.md](late-bound-execution.md).
+
+### Resolved: ordinary cancellation poisoned the next submission
+
+The initial `submit_inner` ordinary branch propagated `run_ordinary(...).await?`
+before reaching the managed runtime's cancellation-reset path. A user Ctrl-C
+therefore left the session's child token cancelled after the physical worker
+had joined. Subsequent ordinary REPL submissions immediately failed despite
+there being no remaining owner to stop.
+
+The branch now resets its child token after both joined success and joined
+failure. The public regression
+`ordinary_owner_cancellation_does_not_poison_the_next_repl_submission` cancels
+the real session token, verifies the first target remains absent, then submits
+and verifies a new literal using the same runtime. The reviewer rechecked the
+source and test body; the integrator reported this focused target passing.
+
+### Resolved: a resolved preparer input is not original semantic IR
+
+`PreparedProgram::original` intentionally describes the preparer's resolved,
+pre-rewrite input. It can already contain a physical PATH/environment result or
+a lexically normalized path. Re-entering that field after an observation expires
+does not restore obligations erased during resolution. In particular, a prepared
+`step/../source` could become plain `source`; replacing `step` with an ordinary
+file would then escape the required non-directory traversal failure.
+
+The private witness now also retains the untouched semantic input.
+`execute_prepared` and `submit_prepared` re-enter `semantic_program()` and perform
+fresh interpretation, preserving the public resolved-input/certificate contract.
+`fallback_retains_raw_traversal_obligations_erased_by_old_path_resolution` changes
+the actual ancestor after preparation and requires failure without a target.
+The stale missing-target and removed-source regressions independently retain
+the original operations instead of executing an old erased-node plan.
+
+### Resolved: dropping a waiter must not detach physical publication
+
+A local `spawn_blocking(...).await` handle was insufficient ownership: dropping
+the execution future detached the worker while `RuntimeSession::has_work` still
+reported idle. A second submission or shutdown could then race a physical copy
+and publication not retained by the session.
+
+The session now retains `ordinary_task`; waiting borrows the stored handle rather
+than taking it before suspension. `has_work`, readiness polling, wait, stop and
+shutdown account for that owner, and a dropped execution waiter requests owner
+cancellation. A new submission refuses to proceed until the previous worker is
+settled. The deterministic
+`dropped_waiter_retains_the_real_worker_until_stop_joins_it` regression holds an
+actual ordinary-submission worker behind an explicit barrier, drops its waiter,
+proves stop remains pending until release, then verifies cancelled publication
+and successful session reuse. This is a physical-owner lifetime test, not a
+large-file timing assumption.
+
+### Resolved: ordinary captures must retire at statement completion
+
+Keeping one `SnapshotStore` for an entire ordinary script retained its physical
+artifact files even after individual snapshots dropped. Repeated large writes
+could thus accumulate the total historical copied volume despite there being no
+named origin to retain. Ordinary completion now closes its statement storage
+after publication receipts settle; the next statement creates fresh lazy storage.
+`each_completed_statement_retires_its_captured_payload_before_the_next` requires
+no retained store and an empty owned scratch scaffold after each real assignment.
+This does not weaken or purport to implement collection of named MVCC history.
+
+### Guarded WSL acquisition and remaining acceptance scope
+
+The bulk-import path proves a native ext4 source tree with no crossed-device
+children and an actual native NTFS/ReFS logical destination. Unknown/projected
+filesystems deopt to the managed suffix rather than guessing that two path
+spellings are disjoint. Source names pass the existing Windows validator before
+bulk copy, and a NUL-delimited device/inode/mode/size/mtime/ctime manifest is
+checked before and after acquisition. Only invocation-owned import paths are
+written; final logical publication remains with the statement journal.
+
+The reviewer found no additional concrete data-loss defect in the shared
+assignment policy or whole-selection publication/compensation sequence. The
+retained named-manager path remains necessary when live native views or named
+history require mediation; ordinary file work must not silently erase a foreign
+publication before a later named undo. The existing new history-fence regression
+checks that interaction. The integrator owns actual platform gates and the final
+workflow comparison. Pre-cancellation alone is not evidence of in-flight guest
+process termination; any stronger WSL cancellation/join claim needs its actual
+process-lifetime control, not an inference from a launcher exit.
+
+### Native backing must remain private without prior managed-root enrollment
+
+The ordinary-to-native transition exposed a separate provider assumption.
+Previously an ordinary copy primed Manager roots and its snapshots retained the
+current invocation exclusion. After ordinary statements correctly retire their
+payloads, a native program first launched from directory B may have only B as a
+managed root while its configured scratch is under previously used directory A1.
+Inferring the invocation exclusively from B's snapshots produces no proof.
+
+This is not only the visibility of an empty `.temp` scaffold. The new Manager's
+current `execute-*` directory under A1 contains live assets, imports, output
+spools and provider backing. Linux's read-only host-root bind exposes those paths
+unless a logical-root overlay happens to cover A1. The Windows provider likewise
+previously had no exact engine-invocation denial rule outside its selected roots.
+Read-only exposure does not make private payloads into valid logical inputs.
+
+The repair carries the owned `InvocationRoot` explicitly from the runtime's
+internal `Program::Launch` to `Provider::with_invocation`, independently of the
+managed resource list. The old `prepare` entry points remain available; preparation
+verifies scratch containment, and the provider keeps the proof alive through
+physical join/cleanup. There is no eager capture of A1/A2 or generic `.temp` filter.
+
+For Linux, an invocation outside logical overlays receives an exact mode-000,
+read-only tmpfs mask after root binds. If an overlay already excludes that
+invocation, adding another mount would unnecessarily invent directories in the
+logical view, so the extra mask is omitted. The existing root validation first
+requires the relevant snapshot exclusion whenever managed roots overlap scratch.
+For Windows, the provider configures and re-verifies the exact invocation's
+`ClosedFilePath` using the existing identity-based directory-rule validation.
+The trusted boxed worker starts from its executable's public parent rather than
+inside the newly denied provider directory; seed and IO data already travel
+through its authenticated pipe protocol.
+
+`InvocationRoot::cleanup` deliberately leaves configured scratch scaffolding
+available to callers. Therefore an old `!A1/.temp.exists()` assertion cannot by
+itself distinguish this valid empty directory from an exposed live invocation.
+The meaningful native regression must retain the cross-cwd read/write lifecycle,
+verify ordinary user `.temp` entries stay visible, and attempt access to a known
+current host-private file while that invocation is live. Its denial must come
+from the real provider, not from removing the fixture or hiding every directory
+whose basename happens to be `.temp`. Final native execution evidence belongs
+to the integrator's platform gate, not this bounded source inspection.
+
+### Guarded overwrite-run specialization review
+
+The ordinary interpreter now recognizes a pure adjacent-overwrite candidate
+without deleting its semantic instructions during compilation. Runtime
+specialization requires a replayed certificate with exactly one survivor and
+`N - 1` distinct `DeadWrite`/`CoalesceCreation` removals; forwarding and redundant
+write certificates are not accepted by this kernel. It pins the surviving file
+value, guards all discarded file sources plus destination/parent state, checks
+again after pinning and staging, and consumes the entire original run only after
+successful publication. A deoptimized window resumes its original prefix and
+does not retry every remaining suffix quadratically. The final guard closure
+owns its descriptor leases and is consumed before Windows journal finalization.
+
+Review found one additional obligation: storing only normalized guard paths loses
+raw traversal checks. For `step/../first -> target; last -> target`, replacing
+the initially-directory `step` with an ordinary file after source acquisition
+does not alter the normalized `first` inode. A guard that validates only that
+inode can incorrectly authorize the rewrite even though original pending IO
+would fail traversal. Destination operands have the same issue. Guard validation
+must retain the raw location/role and re-resolve it against the captured resource
+before authorizing publication, not merely compare the already-cleaned path.
+The deterministic post-acquisition hook can exercise this without a timing race.
+This correction and the selected scoped platform gate must be checked before
+recording this specialization as accepted; no broader hostile-host race defense
+is inferred from it.

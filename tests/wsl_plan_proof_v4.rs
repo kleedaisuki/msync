@@ -135,9 +135,10 @@ async fn actual_wsl_namespace_evidence_fuses_existing_and_missing_native_targets
             .lines()
             .filter(|line| line.ends_with(" transfer"))
             .count(),
-        1,
+        2,
         "{preview}"
     );
+    assert!(preview.contains("Static IR"), "{preview}");
     assert!(!cwd.join("cli-out").exists());
     let output = invoke("run");
     assert!(

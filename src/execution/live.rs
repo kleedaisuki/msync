@@ -1,191 +1,226 @@
-//! Stateful execution of structured file, program and byte-flow regions.
-//!
-//! Native IO ownership stays with one session. Connected ports are extracted
-//! before awaiting completion, so a wait can never hold the lock needed by its
-//! own stdin producer. Checkpoints join real processes and drain every flow.
+//! The interpreter owns current-block specialization, children, and byte flows.
 
+use super::blocks::BlockSchedule;
+use super::error::{ExecutionError, Result};
+use super::{ExecutionReport, Options, merge};
+use super::{flow, ordinary, program};
+use crate::hir::graph::{self, PlanningContext};
+use crate::hir::{
+    self, Input, Instruction, InstructionId, InstructionKind, Output, ProcessId, ReadPort,
+};
+use crate::syntax::Span;
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::OsString;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
-
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::endpoint::{Backend, Location};
-use crate::hir::{
-    self, Input, Instruction, InstructionId, InstructionKind, Output, ProcessId, ReadPort, Region,
-    RollbackScope, TransactionId,
-};
-use crate::language::{DestinationMode, Isolation};
-use crate::process::ProcessConfig;
-use crate::syntax::Span;
-use crate::transaction::filesystem::{Entry, Snapshot};
-use crate::transaction::manager::{NamespaceMergePermit, NamespacePublicationOrder};
-
-use super::domain::{self, Domain, Source, Transfer};
-use super::endpoint;
-use super::error::{ExecutionError, Result};
-use super::events::{
-    self, Bindings, CancelReason, CohortKey, Event, ExternalWork, GateState, Ledger, NodeEvent,
-    NodeKey, Outcome, OwnerKey, Phase, ProcessEvent, PublicationOrder, SubmissionPlan, Visibility,
-};
-use super::materialize;
-use super::physical;
-use super::program::{self, Program, Reader, Writer};
-use super::scheduler::{Admission, Availability, Demand, Lease};
-use super::{Engine, ExecutionReport, Options};
-
-#[path = "frontier.rs"]
-mod frontier;
-
-#[path = "ordinary_runtime.rs"]
-mod ordinary_runtime;
-
-#[derive(Clone)]
-struct WorkNode {
-    plan: Arc<SubmissionPlan>,
-    key: NodeKey,
-    order: PublicationOrder,
-    transaction: TransactionId,
-    physical: Option<physical::Spec>,
-    materialization: Option<materialize::Kind>,
-}
-
-struct NamespaceSlot {
-    permit: NamespaceMergePermit,
-    target: PathBuf,
-}
-
-#[derive(Clone, Debug)]
-enum Terminal {
-    Flow(NodeKey),
-    Process(ProcessId),
-}
-
-struct TerminalNotice {
-    sender: mpsc::Sender<Terminal>,
-    event: Terminal,
-    ready: Arc<AtomicBool>,
-}
-
-#[derive(Debug)]
-struct SharedFailure(Arc<ExecutionError>);
-
-impl std::fmt::Display for SharedFailure {
-    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(output)
-    }
-}
-
-impl std::error::Error for SharedFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.0.as_ref())
-    }
-}
-
-impl Drop for TerminalNotice {
-    fn drop(&mut self) {
-        // Wakeups may coalesce; owned handles and the persistent ledger remain
-        // the truth of success/failure even when the bounded channel is full.
-        self.ready.store(true, Ordering::Release);
-        let _ = self.sender.try_send(self.event.clone());
-    }
-}
-
-struct FlowResult {
-    work: WorkNode,
-    origin: Option<crate::source::InstructionOrigin>,
+struct ActiveFlow {
     instruction: InstructionId,
-    transaction: TransactionId,
-    span: Span,
-    output: Option<(PathBuf, PathBuf, DestinationMode)>,
-    basename: Option<OsString>,
-    capture_lease: Option<Lease>,
+    submission: u64,
+    task: flow::Flow,
+    processes: BTreeSet<ProcessId>,
+    destination: Option<crate::endpoint::Location>,
+    origin: Option<crate::source::InstructionOrigin>,
+    _lease: super::scheduler::Lease,
+    pins: crate::streams::FifoPins,
+    cancel: CancellationToken,
+    program_output: bool,
+    source_label: Option<String>,
+    destination_label: Option<String>,
 }
 
-struct Flow {
-    work: WorkNode,
-    ready: Arc<AtomicBool>,
-    origin: Option<crate::source::InstructionOrigin>,
-    transaction: TransactionId,
-    handle: JoinHandle<Result<FlowResult>>,
-    managed: Option<PathBuf>,
-}
-
-struct Deferred {
-    work: WorkNode,
-    origin: Option<crate::source::InstructionOrigin>,
+struct Acquisition {
     instruction: InstructionId,
-    transaction: TransactionId,
-    source: Snapshot,
-    target: PathBuf,
-    mode: DestinationMode,
+    submission: u64,
     span: Span,
-    basename: Option<OsString>,
+    origin: Option<crate::source::InstructionOrigin>,
+    worker: tokio::task::JoinHandle<(Result<flow::Source>, super::scheduler::Lease)>,
 }
 
-struct PinnedInput {
-    proof: crate::hir::graph::VersionReadProof,
-    _snapshot: Snapshot,
+struct FiniteResult {
+    instructions: Vec<InstructionId>,
+    result: Result<FiniteOutcome>,
+    original: Instruction,
+}
+enum FiniteOutcome {
+    Statement(ordinary::Attempt),
+    Fold(ordinary::FoldAttempt),
+}
+#[cfg(test)]
+#[derive(Default)]
+struct GateState {
+    entered: bool,
+    released: bool,
+}
+#[cfg(test)]
+#[derive(Clone, Default)]
+struct WorkerGate {
+    state: std::sync::Arc<(std::sync::Mutex<GateState>, std::sync::Condvar)>,
+    handle: std::sync::Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,
+}
+#[cfg(test)]
+impl WorkerGate {
+    fn wait(&self) {
+        let (state, changed) = &*self.state;
+        let mut state = state.lock().unwrap();
+        state.entered = true;
+        changed.notify_all();
+        drop(changed.wait_while(state, |state| !state.released).unwrap());
+    }
+    fn release(&self) {
+        let (state, changed) = &*self.state;
+        state.lock().unwrap().released = true;
+        changed.notify_all();
+    }
+    fn entered(&self) -> bool {
+        self.state.0.lock().unwrap().entered
+    }
+    fn finished(&self) -> bool {
+        self.handle
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(tokio::task::AbortHandle::is_finished)
+    }
+}
+struct Retiring {
+    finite: JoinSet<FiniteResult>,
+    acquisition: Option<Acquisition>,
+    flows: Vec<ActiveFlow>,
+    programs: BTreeMap<ProcessId, program::Program>,
+    invocation: Option<crate::filesystem::InvocationRoot>,
+    registration: Option<crate::filesystem::recovery::Registration>,
+    context: Option<crate::telemetry::TraceContext>,
+    _leases: Vec<super::scheduler::Lease>,
+}
+impl Retiring {
+    async fn run(mut self) {
+        if let Some(mut acquisition) = self.acquisition.take() {
+            let result = (&mut acquisition.worker).await;
+            match result {
+                Ok((Err(error), _lease)) => self.error(&error),
+                Err(error) => self.error(&error),
+                _ => {}
+            }
+        }
+        while let Some(result) = self.finite.join_next().await {
+            match result {
+                Err(error) => self.error(&error),
+                Ok(FiniteResult {
+                    result: Err(error), ..
+                }) => self.error(&error),
+                Ok(FiniteResult {
+                    result:
+                        Ok(
+                            FiniteOutcome::Statement(ordinary::Attempt::Completed(report))
+                            | FiniteOutcome::Fold(ordinary::FoldAttempt::Completed(report)),
+                        ),
+                    ..
+                }) => {
+                    for issue in report.cleanup {
+                        self.error(issue.cause.as_ref());
+                    }
+                }
+                _ => {}
+            }
+        }
+        for program in self.programs.values_mut() {
+            if let Err(error) = program.wait().await
+                && let Some(context) = &self.context
+            {
+                context.record_error("runtime.drop.program", &error);
+            }
+        }
+        for flow in &mut self.flows {
+            if let Err(error) = flow.task.join().await
+                && let Some(context) = &self.context
+            {
+                context.record_error("runtime.drop.flow", &error);
+            }
+        }
+        self.programs.clear();
+        self.flows.clear();
+        if let Some(invocation) = self.invocation.take()
+            && let Err(error) = invocation.cleanup()
+        {
+            self.error(&error);
+            return;
+        }
+        if let Some(registration) = self.registration.take()
+            && let Err(error) = registration.finish()
+        {
+            self.error(&error);
+        }
+    }
+    fn error(&self, error: &(dyn std::error::Error + 'static)) {
+        if let Some(context) = &self.context {
+            context.record_error("runtime.drop.cleanup", error);
+        }
+    }
 }
 
-/// One lexical runtime counterpart. Finished named origins survive submissions;
-/// `shutdown` joins, rolls back and cleans private resources. Dropping only
-/// requests cancellation; unconfirmed private journals are deliberately retained.
+/// No snapshots or history are retained across completed statements.
 pub struct RuntimeSession {
+    options: Options,
+    cancel: CancellationToken,
     origins: crate::source::Origins,
     observer: Option<super::progress::Progress>,
-    pending_origins: crate::source::Origins,
-    active_origin: Option<crate::source::InstructionOrigin>,
-    options: Options,
-    worker: Option<PathBuf>,
-    engine: Option<Engine>,
-    ordinary_task: Option<JoinHandle<Result<ordinary_runtime::Completed>>>,
-    ordinary_report: ExecutionReport,
-    programs: BTreeMap<ProcessId, Program>,
-    flows: Vec<Flow>,
-    deferred: Vec<Deferred>,
-    pins: BTreeMap<InstructionId, PinnedInput>,
-    latest_processes: BTreeSet<ProcessId>,
-    ledger: Ledger,
-    progress: u64,
-    plan: Option<Arc<SubmissionPlan>>,
-    retained_plans: BTreeMap<events::SubmissionId, Vec<Weak<SubmissionPlan>>>,
-    active_work: Option<WorkNode>,
-    candidate: Option<program::SharedView>,
-    orders: BTreeMap<InstructionId, PublicationOrder>,
-    node_transactions: BTreeMap<NodeKey, TransactionId>,
-    process_nodes: BTreeMap<ProcessId, NodeKey>,
-    process_cohorts: BTreeMap<ProcessId, CohortKey>,
-    pending_nodes: BTreeMap<TransactionId, BTreeSet<NodeKey>>,
-    owner_tokens: BTreeMap<TransactionId, CancellationToken>,
-    terminal_tx: mpsc::Sender<Terminal>,
-    terminal_rx: mpsc::Receiver<Terminal>,
-    prepared_readers: BTreeMap<NodeKey, Reader>,
-    namespaces: BTreeMap<NodeKey, NamespaceSlot>,
-    closed_owners: BTreeSet<TransactionId>,
-    complete_submission: bool,
-    planning: crate::hir::graph::PlanningContext,
-    native_fifo_pins: BTreeMap<hir::effects::EndpointKey, crate::streams::FifoIdentity>,
-    flow_reservations: BTreeMap<InstructionId, Lease>,
-    rejected_before_start: bool,
-    sparse_roots: BTreeSet<PathBuf>,
-    admission: Admission,
-    next_instruction: usize,
-    implicit: BTreeSet<TransactionId>,
-    cancel: CancellationToken,
+    programs: BTreeMap<ProcessId, program::Program>,
+    flows: Vec<ActiveFlow>,
+    finite: JoinSet<FiniteResult>,
+    acquisition: Option<Acquisition>,
+    report: ExecutionReport,
+    initialized: bool,
+    admission: super::scheduler::Admission,
+    program_leases: BTreeMap<ProcessId, super::scheduler::Lease>,
+    fifo: Option<super::fifo::FifoState>,
+    rendezvous: BTreeSet<(InstructionId, InstructionId)>,
+    flow_reservations: BTreeMap<InstructionId, super::scheduler::Lease>,
+    reserved_groups: BTreeSet<Vec<InstructionId>>,
+    submission: u64,
+    batch_mode: bool,
+    stage_registration: Option<crate::filesystem::recovery::Registration>,
+    executor: Option<tokio::runtime::Handle>,
+    #[cfg(test)]
+    worker_gate: Option<WorkerGate>,
+    #[cfg(test)]
+    acquisition_gate: Option<WorkerGate>,
 }
-
 impl Drop for RuntimeSession {
     fn drop(&mut self) {
-        // Keep owning tasks alive long enough to close endpoint-specific peers.
-        // Aborting their JoinHandles would bypass that asynchronous cleanup.
         self.cancel.cancel();
+        if self.finite.is_empty()
+            && self.acquisition.is_none()
+            && self.flows.is_empty()
+            && self
+                .programs
+                .values()
+                .all(|program| program.receipt().is_some())
+        {
+            self.programs.clear();
+            if let Err(error) = self.close_invocation()
+                && let Some(context) = crate::telemetry::context()
+            {
+                context.record_error("runtime.drop.cleanup", &error);
+            }
+            return;
+        }
+        if let Some(executor) = self.executor.as_ref() {
+            let retiring = Retiring {
+                finite: std::mem::take(&mut self.finite),
+                acquisition: self.acquisition.take(),
+                flows: std::mem::take(&mut self.flows),
+                programs: std::mem::take(&mut self.programs),
+                invocation: self.options.shared_invocation.take(),
+                registration: self.stage_registration.take(),
+                context: crate::telemetry::context(),
+                _leases: std::mem::take(&mut self.program_leases)
+                    .into_values()
+                    .chain(std::mem::take(&mut self.flow_reservations).into_values())
+                    .collect(),
+            };
+            executor.spawn(retiring.run());
+        }
     }
 }
 
@@ -201,3888 +236,1668 @@ impl RuntimeSession {
                 Span::default(),
             ));
         }
-        let capacity = options
-            .limits
-            .max_streams
-            .saturating_add(options.limits.jobs)
-            .clamp(1, 1024);
-        let (terminal_tx, terminal_rx) = mpsc::channel(capacity);
         Ok(Self {
-            origins: crate::source::Origins::default(),
-            observer: None,
-            pending_origins: crate::source::Origins::default(),
-            active_origin: None,
             options: options.clone(),
-            worker: None,
-            engine: None,
-            ordinary_task: None,
-            ordinary_report: ExecutionReport::default(),
+            cancel: options.cancel.child_token(),
+            origins: Default::default(),
+            observer: None,
             programs: BTreeMap::new(),
             flows: Vec::new(),
-            deferred: Vec::new(),
-            pins: BTreeMap::new(),
-            latest_processes: BTreeSet::new(),
-            ledger: Ledger::default(),
-            progress: 0,
-            plan: None,
-            retained_plans: BTreeMap::new(),
-            active_work: None,
-            candidate: None,
-            orders: BTreeMap::new(),
-            node_transactions: BTreeMap::new(),
-            process_nodes: BTreeMap::new(),
-            process_cohorts: BTreeMap::new(),
-            pending_nodes: BTreeMap::new(),
-            owner_tokens: BTreeMap::new(),
-            terminal_tx,
-            terminal_rx,
-            prepared_readers: BTreeMap::new(),
-            namespaces: BTreeMap::new(),
-            closed_owners: BTreeSet::new(),
-            complete_submission: false,
-            planning: crate::hir::graph::PlanningContext::default(),
-            native_fifo_pins: BTreeMap::new(),
+            finite: JoinSet::new(),
+            acquisition: None,
+            report: Default::default(),
+            initialized: false,
+            admission: super::scheduler::Admission::new(&options.limits)?,
+            program_leases: BTreeMap::new(),
+            fifo: None,
+            rendezvous: BTreeSet::new(),
             flow_reservations: BTreeMap::new(),
-            rejected_before_start: false,
-            sparse_roots: BTreeSet::new(),
-            admission: Admission::new(&options.limits)?,
-            next_instruction: 0,
-            implicit: BTreeSet::new(),
-            cancel: options.cancel.child_token(),
+            reserved_groups: BTreeSet::new(),
+            submission: 0,
+            batch_mode: false,
+            stage_registration: None,
+            executor: tokio::runtime::Handle::try_current().ok(),
+            #[cfg(test)]
+            worker_gate: None,
+            #[cfg(test)]
+            acquisition_gate: None,
         })
     }
-
-    /// Register source ownership for the next submission. Existing jobs retain
-    /// their captured origins even when instruction IDs are reused later.
     pub fn set_origins(&mut self, origins: crate::source::Origins) {
-        self.pending_origins = origins;
+        self.origins = origins;
     }
-
     pub fn set_progress(&mut self, progress: Option<super::progress::Progress>) {
         self.observer = progress;
     }
-
-    pub fn set_worker(&mut self, path: impl AsRef<Path>) -> Result<()> {
-        if !path.as_ref().is_absolute() {
-            return Err(ExecutionError::new(
-                "the internal program worker must be an absolute executable path",
-                Span::default(),
-            ));
-        }
-        self.worker = Some(path.as_ref().to_owned());
-        Ok(())
-    }
-
-    /// Clone this before moving the session into a background submission. A
-    /// completed submission installs a fresh child token, not a poisoned session.
     pub fn cancellation(&self) -> CancellationToken {
         self.cancel.clone()
     }
-
+    /// Inspect only the identity-verified runtime backing, without cleanup authority.
+    pub fn private_root(&self) -> Result<Option<&Path>> {
+        let Some(invocation) = self.options.shared_invocation.as_ref() else {
+            return Ok(None);
+        };
+        invocation.verify().map_err(|cause| {
+            ExecutionError::caused(
+                "runtime-private resource identity changed",
+                Span::default(),
+                cause,
+            )
+        })?;
+        Ok(Some(invocation.path()))
+    }
+    pub fn private_stage_record(&self) -> Result<Option<&Path>> {
+        self.private_root()?;
+        Ok(self
+            .stage_registration
+            .as_ref()
+            .map(|registration| registration.path()))
+    }
     pub fn live_processes(&self) -> Vec<ProcessId> {
+        self.programs.keys().copied().collect()
+    }
+    pub fn has_work(&self) -> bool {
+        !self.finite.is_empty()
+            || self.acquisition.is_some()
+            || !self.flows.is_empty()
+            || self.programs.values().any(|p| p.receipt().is_none())
+    }
+    pub fn work_ids(&self) -> BTreeSet<super::WorkId> {
         self.programs
-            .values()
-            .filter(|program| program.is_running())
-            .map(|program| program.id)
+            .iter()
+            .filter_map(|(id, p)| p.receipt().is_none().then_some(super::WorkId::Program(*id)))
+            .chain(self.flows.iter().map(|flow| super::WorkId::Flow {
+                submission: flow.submission,
+                instruction: flow.instruction,
+            }))
+            .chain(
+                self.acquisition
+                    .iter()
+                    .map(|acquisition| super::WorkId::Flow {
+                        submission: acquisition.submission,
+                        instruction: acquisition.instruction,
+                    }),
+            )
             .collect()
     }
-
-    pub fn has_work(&self) -> bool {
-        self.ordinary_task.is_some()
-            || !self.live_processes().is_empty()
-            || !self.flows.is_empty()
-            || !self.deferred.is_empty()
-            || !self.implicit.is_empty()
-    }
-
-    /// Pending publication cohorts, shared by connected submissions. These are
-    /// runtime ownership identities, not a count of submitted source statements.
-    pub fn work_ids(&self) -> BTreeSet<TransactionId> {
-        self.implicit.clone()
-    }
-
-    /// Drain completed session progress without attributing it to a later input.
     pub fn take_report(&mut self) -> ExecutionReport {
-        let mut report = self
-            .engine
-            .as_mut()
-            .map(|engine| std::mem::take(&mut engine.report))
-            .unwrap_or_default();
-        ordinary_runtime::merge(&mut report, std::mem::take(&mut self.ordinary_report));
-        report
+        std::mem::take(&mut self.report)
     }
-
-    /// Publish only already-finished physical cohorts without waiting for a live
-    /// producer. Interactive callers can then refresh lifecycle/status displays.
-    pub async fn poll_ready(&mut self) -> Result<()> {
-        if self
-            .ordinary_task
-            .as_ref()
-            .is_some_and(|task| task.is_finished())
-        {
-            self.settle_ordinary(false).await?;
-        }
-        self.reap_physical().await
-    }
-
     pub fn has_ready_work(&self) -> bool {
-        self.ordinary_task
-            .as_ref()
-            .is_some_and(|task| task.is_finished())
-            || !self.terminal_rx.is_empty()
-            || self.programs.values().any(|program| {
-                program.exit_signal.is_cancelled()
-                    && self
-                        .ledger
-                        .outcome(&Event::Process(program.id, ProcessEvent::Exited))
-                        .is_none()
-            })
-            || self.implicit.iter().any(|id| self.is_ready(*id))
-    }
-
-    fn is_ready(&self, transaction: TransactionId) -> bool {
-        self.flows
-            .iter()
-            .filter(|flow| flow.transaction == transaction)
-            .all(|flow| flow.ready.load(Ordering::Acquire) || flow.handle.is_finished())
-            && self
+        self.flows.iter().any(|f| f.task.is_finished())
+            || self
                 .programs
                 .values()
-                .filter(|program| program.transaction == transaction && program.is_running())
-                .all(|program| program.exit_signal.is_cancelled())
-    }
-
-    /// Only resource-view providers produce these premises; names/argv alone
-    /// never turn an opaque child into a pure operation.
-    pub fn planning_context(&self) -> crate::hir::graph::PlanningContext {
-        let mut context = crate::hir::graph::PlanningContext {
-            live_processes: self.live_processes(),
-            process_effects: self
-                .programs
-                .values()
-                .filter(|program| program.is_running())
-                .map(|program| (program.id, program.effects.clone()))
-                .collect(),
-            ..crate::hir::graph::PlanningContext::default()
-        };
-        context.pending_effects = self
-            .outstanding_work()
-            .filter_map(|work| work.plan.effects(work.key.instruction).ok().cloned())
-            .collect();
-        self.attach_cohorts(&mut context);
-        context
-    }
-
-    /// These proofs describe the latest executing submission only. Their
-    /// retained immutable leases must not be reused for a later input's IDs.
-    pub fn refinement_context(&self) -> crate::hir::graph::PlanningContext {
-        let mut context = self.planning_context();
-        context.host_unstable = self.planning.host_unstable.clone();
-        context.physical_rendezvous = self.planning.physical_rendezvous.clone();
-        context.physical_fifos = self.planning.physical_fifos.clone();
-        let latest_cohorts = self
-            .latest_processes
-            .iter()
-            .filter_map(|id| self.programs.get(id))
-            .map(|program| program.cohort)
-            .collect::<BTreeSet<_>>();
-        for program in self
-            .programs
-            .values()
-            .filter(|program| latest_cohorts.contains(&program.cohort))
-        {
-            context
-                .process_effects
-                .insert(program.id, program.effects.clone());
-        }
-        context.pinned_inputs = self
-            .pins
-            .iter()
-            .map(|(id, pinned)| (*id, pinned.proof.clone()))
-            .collect();
-        self.attach_cohorts(&mut context);
-        context
-    }
-
-    fn attach_cohorts(&self, context: &mut crate::hir::graph::PlanningContext) {
-        let mut groups =
-            BTreeMap::<ProcessId, Vec<(ProcessId, crate::hir::graph::ProcessEffects)>>::new();
-        for (id, effects) in &context.process_effects {
-            let cohort = self.programs[id].cohort;
-            groups
-                .entry(cohort)
-                .or_default()
-                .push((*id, effects.clone()));
-        }
-        context.cohort_views.clear();
-        for (cohort, members) in groups.into_iter().filter(|(_, members)| members.len() > 1) {
-            let program = &self.programs[&cohort];
-            let engine = self
-                .engine
+                .any(|p| p.receipt().is_none() && p.is_finished())
+            || !self.finite.is_empty()
+            || self
+                .acquisition
                 .as_ref()
-                .expect("live program owns its runtime engine");
-            let proof = crate::hir::graph::CohortViewProof::shared(
-                format!(
-                    "{}:txn-{}",
-                    engine.workspace.display(),
-                    program.transaction.0
-                ),
-                format!("{}:cohort-{}", program.effects.view_id(), cohort.0),
-                members,
-            )
-            .expect("native shared-view members retain one actual provider and view identity");
-            context.cohort_views.push(proof);
+                .is_some_and(|acquisition| acquisition.worker.is_finished())
+    }
+    pub fn planning_context(&self) -> PlanningContext {
+        PlanningContext {
+            live_processes: self.live_processes(),
+            ..Default::default()
         }
+    }
+    pub fn refinement_context(&self) -> PlanningContext {
+        self.planning_context()
     }
 
     pub async fn execute_prepared(
         &mut self,
-        program: &crate::preparation::PreparedProgram,
+        prepared: &crate::preparation::PreparedProgram,
     ) -> Result<ExecutionReport> {
-        verify_prepared(program)?;
-        // A checked certificate describes an old observation, not today's host.
-        // Re-enter the interpreter from original IR; never execute erased nodes
-        // on the strength of metadata retained by a previous compile/plan call.
-        self.execute(program.semantic_program()).await
+        verify(prepared)?;
+        self.execute(prepared.semantic_program()).await
     }
-
     pub async fn submit_prepared(
         &mut self,
-        program: &crate::preparation::PreparedProgram,
+        prepared: &crate::preparation::PreparedProgram,
     ) -> Result<ExecutionReport> {
-        verify_prepared(program)?;
-        self.submit(program.semantic_program()).await
+        verify(prepared)?;
+        self.submit(prepared.semantic_program()).await
     }
-
-    /// Execute a complete document and join its implicit program cohorts. REPL
-    /// incremental declarations use `submit` and explicit `wait` instead.
     pub async fn execute(&mut self, program: &hir::Program) -> Result<ExecutionReport> {
-        self.submit_inner(program, true).await
+        let initial = self.submit_mode(program, true).await?;
+        merge(&mut self.report, initial);
+        self.wait().await?;
+        Ok(self.take_report())
     }
-
-    /// Keep an unconnected program and its ports alive for subsequent inputs.
-    /// Named transaction regions still have an implicit commit at their end.
     pub async fn submit(&mut self, program: &hir::Program) -> Result<ExecutionReport> {
-        self.submit_inner(program, false).await
+        self.submit_mode(program, false).await
     }
-
-    async fn submit_inner(
+    async fn submit_mode(
         &mut self,
         program: &hir::Program,
-        complete: bool,
+        batch: bool,
     ) -> Result<ExecutionReport> {
-        if self.ordinary_task.is_some() {
-            return Err(ExecutionError::new(
-                "the previous ordinary assignment worker is still owned by this session",
-                Span::default(),
-            )
-            .help("Wait for it or cancel and join it before submitting another program."));
-        }
-        self.reap_physical().await?;
-        self.origins = std::mem::take(&mut self.pending_origins);
-        self.active_origin = None;
-        self.planning = Default::default();
-        self.rejected_before_start = false;
-        let prior_work = self.implicit.clone();
-        let prior_flows = self.flows.len();
-        if program.body.instructions.is_empty() {
-            return Ok(ExecutionReport::default());
-        }
-        let mut ordinary_report = ExecutionReport::default();
-        let remainder;
-        let program =
-            if self.engine.is_none() && !self.has_work() && super::ordinary::supports(program) {
-                let result = match self.run_ordinary(program).await {
-                    Ok(result) => result,
-                    Err(error) => {
-                        // The physical worker has joined and settled its journal;
-                        // an old cancelled child must not poison the next REPL input.
-                        self.cancel = self.options.cancel.child_token();
-                        return Err(error);
-                    }
-                };
-                ordinary_report = result.report;
-                if result.remaining.body.instructions.is_empty() {
-                    self.cancel = self.options.cancel.child_token();
-                    return Ok(ordinary_report);
-                }
-                remainder = result.remaining;
-                &remainder
-            } else {
-                program
-            };
-        self.preflight_resources(program)?;
-        if !self.has_work()
-            && let Some(engine) = &mut self.engine
-            && !engine.manager.has_active_transactions()
-        {
-            engine.manager.refresh_host().map_err(|cause| {
-                ExecutionError::caused("cannot refresh externally modified resources", Span::default(), cause)
-                    .help("Resolve foreign edits or pending cleanup before reusing the retained transaction history.")
-            })?;
-        }
-        self.pins.clear();
-        self.latest_processes.clear();
-        let runtime_ir = self.prepare_runtime(program)?;
-        let program = runtime_ir.as_ref();
-        self.preflight(program)?;
-        let rendezvous = physical::rendezvous(program, &self.planning)?;
-        self.planning.physical_rendezvous = rendezvous.proofs;
-        self.planning.physical_fifos = rendezvous.observations;
-        self.native_fifo_pins = rendezvous.pins;
-        if !complete {
-            self.preflight_fifo_input(program)?;
-        }
-        self.preflight_fifo_resources(program)?;
-        self.preflight_flow_resources(&program.body)?;
-        let domain = live_domain(program, &self.options, &self.planning)?;
-        self.observe(super::progress::Event::new(super::progress::Phase::Stage));
-        self.enroll_physical_namespaces(program)?;
-        self.enroll(&domain)?;
-        self.planning.namespace_merges.clear();
-        let id = self.ledger.next_submission().map_err(Self::binding_error)?;
-        self.orders = self
-            .ledger
-            .publication_orders(program)
-            .map_err(Self::binding_error)?;
-        self.complete_submission = complete;
-        self.active_work = None;
-        let mut context = self.refinement_context();
-        context.operation_facts = self.planning.operation_facts.clone();
-        context.existing_parent_frontiers = self.planning.existing_parent_frontiers.clone();
-        context.host_unstable = self.planning.host_unstable.clone();
-        context.namespace_merges.clear();
-        let graph = crate::hir::graph::build_with_context(program, &context);
-        let mut bindings = Bindings {
-            external: self.external_work(id)?,
-            ..Bindings::default()
-        };
-        for (process, program) in &self.programs {
-            bindings
-                .processes
-                .insert(*process, self.owner_key(program.transaction)?);
-        }
-        self.plan = Some(
-            SubmissionPlan::bind(
-                id,
-                Arc::new(program.clone()),
-                self.origins.clone(),
-                context,
-                graph,
-                bindings,
-            )
-            .map_err(Self::binding_error)?,
-        );
-        self.remember_plan(self.plan.as_ref().expect("submission bound").clone());
-        self.collect_plans();
-        let result = self.region(&program.body, None, program).await;
         self.flow_reservations.clear();
-        let result = match result {
-            Ok(()) if complete => self.wait().await,
-            other => other,
-        };
-        if let Err(mut failure) = result {
-            if self.rejected_before_start
-                && self.latest_processes.is_empty()
-                && self.flows.len() == prior_flows
-            {
-                let pending = self
-                    .implicit
-                    .difference(&prior_work)
-                    .copied()
-                    .collect::<Vec<_>>();
-                for id in pending {
-                    self.engine_mut()?.abort(id, &mut failure);
-                    self.implicit.remove(&id);
-                }
-                return Err(failure);
-            }
-            let mut affected = self
-                .implicit
-                .difference(&prior_work)
-                .copied()
-                .collect::<BTreeSet<_>>();
-            if let Some(id) = failure.transaction {
-                affected.insert(id);
-            }
-            if let Some(work) = &self.active_work {
-                affected.insert(work.transaction);
-            }
-            for process in &self.latest_processes {
-                affected.insert(self.programs[process].transaction);
-            }
-            if self.cancel.is_cancelled() {
-                affected.extend(self.implicit.iter().copied());
-            }
-            for id in affected {
-                if !self.implicit.contains(&id) {
-                    continue;
-                }
-                let namespace = self
-                    .namespaces
-                    .keys()
-                    .any(|key| self.node_transactions.get(key) == Some(&id));
-                self.cancel_transaction(id, &mut failure).await;
-                if !namespace && !self.closed_owners.remove(&id) {
-                    self.engine_mut()?.abort(id, &mut failure);
-                }
-                self.implicit.remove(&id);
-            }
-            let submission = self.plan.as_ref().map(|plan| plan.id());
-            let unstarted = self
-                .namespaces
-                .keys()
-                .filter(|key| Some(key.submission) == submission)
-                .copied()
-                .collect::<Vec<_>>();
-            for key in unstarted {
-                if let Err(error) = self.release_namespace(key) {
-                    failure.report.help.push(error.to_string());
-                }
-            }
-            self.prepared_readers
-                .retain(|key, _| Some(key.submission) != submission);
-            if !self.has_work() {
-                self.cancel = self.options.cancel.child_token();
-            }
-            return Err(failure);
-        }
-        if self.live_processes().is_empty() && self.flows.is_empty() && self.implicit.is_empty() {
+        self.reserved_groups.clear();
+        self.drain_acquisition().await?;
+        if let Err(error) = self.drain_finite().await {
             self.cancel = self.options.cancel.child_token();
+            return Err(error);
         }
-        let mut report = std::mem::take(&mut self.engine_mut()?.report);
-        ordinary_runtime::merge(&mut report, ordinary_report);
-        Ok(report)
-    }
-
-    pub async fn wait(&mut self) -> Result<()> {
-        self.observe_phase(super::progress::Phase::Wait);
-        self.settle_ordinary(false).await?;
-        for program in self.programs.values_mut() {
-            program.close_unused_stdin();
-        }
-        while !self.implicit.is_empty() {
-            self.reap_physical().await?;
-            if self.implicit.is_empty() {
-                break;
-            }
-            self.wait_event().await?;
-        }
-        Ok(())
-    }
-
-    pub async fn cancel_active(&mut self) -> Result<()> {
-        self.cancel.cancel();
-        self.settle_ordinary(true).await?;
-        let mut failure =
-            ExecutionError::new("active program execution was cancelled", Span::default());
-        let mut ids = self.implicit.clone();
-        if let Some(engine) = &self.engine {
-            ids.extend(engine.manager.active_transaction_ids());
-        }
-        let ids = ids.into_iter().collect::<Vec<_>>();
-        let mut joined = true;
-        for id in ids {
-            let reserved = self
-                .namespaces
-                .keys()
-                .any(|key| self.node_transactions.get(key) == Some(&id));
-            joined &= self.cancel_transaction(id, &mut failure).await;
-            if !reserved && !self.closed_owners.remove(&id) {
-                self.engine_mut()?.abort(id, &mut failure);
-            }
-            self.implicit.remove(&id);
-        }
-        self.owner_tokens.clear();
-        self.prepared_readers.clear();
-        self.flow_reservations.clear();
-        self.cancel = self.options.cancel.child_token();
-        if !joined
-            || failure.cause.is_some()
-            || !failure.recovery.is_empty()
-            || !failure.compensation.is_empty()
-        {
-            return Err(failure);
-        }
-        Ok(())
-    }
-
-    pub async fn shutdown(&mut self) -> Result<()> {
-        self.cancel_active().await?;
-        self.programs.clear();
-        self.pins.clear();
-        self.native_fifo_pins.clear();
-        if let Some(mut engine) = self.engine.take() {
-            engine.close();
-            if let Some(issue) = engine
-                .report
-                .cleanup
-                .into_iter()
-                .find(|issue| !issue.resolved)
-            {
-                let mut failure = ExecutionError::new(
-                    "runtime session cleanup remains incomplete",
-                    Span::default(),
-                );
-                failure.cause = Some(issue.cause);
-                failure.retained_paths = issue.retained_paths;
-                return Err(failure);
-            }
-        }
-        Ok(())
-    }
-
-    fn engine_mut(&mut self) -> Result<&mut Engine> {
-        self.engine.as_mut().ok_or_else(|| {
-            ExecutionError::new(
-                "runtime resource domain is not initialized",
-                Span::default(),
-            )
-        })
-    }
-
-    fn preflight_resources(&self, program: &hir::Program) -> Result<()> {
-        fn needs_program(region: &Region) -> bool {
-            region.instructions.iter().any(|node| match &node.kind {
-                InstructionKind::Spawn { .. } => true,
-                InstructionKind::Transaction { body, .. } => needs_program(body),
-                _ => false,
-            })
-        }
-        if needs_program(&program.body)
-            && self.options.limits.memory_bytes / self.options.limits.buffer_bytes < 6
-        {
-            return Err(ExecutionError::new("the payload budget cannot admit one program space", Span::default())
-                .help("One program reserves six configured buffers; increase --memory-limit or reduce --buffer-size before execution."));
-        }
-        Ok(())
-    }
-
-    fn preflight_fifo_resources(&self, program: &hir::Program) -> Result<()> {
-        for group in hir::graph::physical_groups(&self.planning.physical_rendezvous) {
-            let mut processes = BTreeSet::new();
-            fifo_consumers(&program.body, &group, &mut processes);
-            let processes = processes
-                .iter()
-                .filter(|process| self.programs.get(process).is_none_or(Program::is_running))
-                .count();
-            let demand = Demand::flows(group.len()).with_programs(processes);
-            if self.admission.availability(demand) != Availability::Impossible {
-                continue;
-            }
-            let span = program
-                .body
-                .instructions
-                .iter()
-                .find(|node| group.contains(&node.id))
-                .map_or(Span::default(), |node| node.span);
-            return Err(ExecutionError::new(format!("this FIFO cohort must co-start {} flows with two buffers each and retain {processes} native program spaces", group.len()), span)
-                .help("No payloads were captured and no flow started. Increase --jobs/--max-streams/--memory-limit, reduce --buffer-size, or separate independent channels."));
-        }
-        Ok(())
-    }
-
-    fn preflight_fifo_input(&self, program: &hir::Program) -> Result<()> {
-        for (key, endpoint) in &self.planning.physical_fifos {
-            let resource = hir::effects::Resource::StreamIdentity {
-                provider: endpoint.provider().into(),
-                identity: endpoint.identity().into(),
-            };
-            let busy = self.outstanding_work().any(|work| {
-                work.plan
-                    .effects(work.key.instruction)
-                    .is_ok_and(|effects| {
-                        effects
-                            .accesses
-                            .iter()
-                            .any(|access| access.resource.may_overlap(&resource))
-                    })
-            });
-            if !busy {
-                continue;
-            }
-            let span = program
-                .body
-                .instructions
-                .iter()
-                .find(|node| node.id == key.instruction)
-                .map_or(Span::default(), |node| node.span);
-            return Err(ExecutionError::new("this FIFO is still owned by an earlier input; no new endpoint was opened", span)
-                .help("If the FIFO peer is another msync statement, /stop the pending half and submit both sides together with /load or one macro call. /wait alone cannot create its missing peer. Otherwise connect the external FIFO reader/writer and wait for the previous flow to finish.")
-                .with_operand(self.origins.get(&key.instruction), key.role == hir::effects::EndpointRole::Destination));
-        }
-        Ok(())
-    }
-
-    fn preflight_flow_resources(&self, region: &Region) -> Result<()> {
-        for node in &region.instructions {
-            if let InstructionKind::Transaction { body, .. } = &node.kind {
-                self.preflight_flow_resources(body)?;
-            }
-            let facts = self.planning.operation_facts.get(&node.id);
-            let stream = facts.is_some_and(|facts| {
-                facts.source == crate::plan::FileClass::Stream
-                    || facts.destination == crate::plan::FileClass::Stream
-            });
-            if !stream && !port_flow(node) {
-                continue;
-            }
-            let programs = usize::from(matches!(
-                node.kind,
-                InstructionKind::Transfer {
-                    destination: Output::Stdin(_),
-                    ..
-                }
-            ));
-            self.admission
-                .feasible(Demand::flows(1).with_programs(programs), node.span)?;
-        }
-        Ok(())
-    }
-
-    fn flow_lease(&mut self, instruction: InstructionId, span: Span) -> Result<Lease> {
-        if let Some(lease) = self.flow_reservations.remove(&instruction) {
-            return Ok(lease);
-        }
-        self.reserve_flows(instruction, span)?;
-        Ok(self
-            .flow_reservations
-            .remove(&instruction)
-            .expect("reservation contains its admitted member"))
-    }
-
-    fn flow_group(&self, instruction: InstructionId) -> Vec<InstructionId> {
-        hir::graph::physical_groups(&self.planning.physical_rendezvous)
-            .into_iter()
-            .find(|group| group.contains(&instruction))
-            .unwrap_or_else(|| vec![instruction])
-    }
-
-    fn reserve_flows(
-        &mut self,
-        instruction: InstructionId,
-        span: Span,
-    ) -> Result<Vec<InstructionId>> {
-        if self.flow_reservations.contains_key(&instruction) {
-            return Ok(Vec::new());
-        }
-        let group = self.flow_group(instruction);
-        // Reserve the entire connected cohort before its first endpoint can
-        // open. Failure drops partial reservations, never half-starts a pipe.
-        let leases = group
-            .iter()
-            .copied()
-            .map(|member| self.admission.flow(span).map(|lease| (member, lease)))
-            .collect::<Result<BTreeMap<_, _>>>()?;
-        self.flow_reservations.extend(leases);
-        Ok(group)
-    }
-
-    fn demand(&self, node: &Instruction, work: &WorkNode) -> Demand {
-        if work.materialization.is_some() {
-            return Demand::COPY;
-        }
-        if matches!(node.kind, InstructionKind::Spawn { .. }) {
-            return Demand::PROGRAM;
-        }
-        if self.flow_reservations.contains_key(&node.id) {
-            return Demand::default();
-        }
-        let flow = work.physical.is_some() || port_flow(node);
-        if flow {
-            Demand::flows(self.flow_group(node.id).len())
-        } else {
-            Demand::default()
-        }
-    }
-
-    fn owner_capacity_blocked(&self, node: &Instruction, work: &WorkNode, demand: Demand) -> bool {
-        if !matches!(
-            node.kind,
-            InstructionKind::Transfer {
-                destination: Output::Stdin(_),
-                ..
-            }
-        ) {
-            return false;
-        }
-        let programs = self
-            .programs
-            .values()
-            .filter(|program| program.transaction == work.transaction && program.is_running())
-            .count();
-        let streams = self
-            .flows
-            .iter()
-            .filter(|flow| {
-                flow.transaction == work.transaction
-                    && !flow.ready.load(Ordering::Acquire)
-                    && !flow.handle.is_finished()
-            })
-            .count();
-        let retained =
-            Demand::flows(streams.saturating_add(demand.streams)).with_programs(programs);
-        self.admission.availability(retained) == Availability::Impossible
-    }
-
-    fn preflight(&self, program: &hir::Program) -> Result<()> {
-        fn walk(
-            session: &RuntimeSession,
-            region: &Region,
-            processes: &mut bool,
-            transactional: bool,
-        ) -> Result<()> {
-            for node in &region.instructions {
-                if let InstructionKind::Transfer {
-                    source,
-                    destination,
-                } = &node.kind
-                {
-                    let unstable = transfer_unstable(&session.planning, node.id);
-                    let physical = unstable
-                        && known_physical(
-                            source,
-                            destination,
-                            session.planning.operation_facts.get(&node.id),
-                        )
-                        || !unstable
-                            && (physical::inspect(source, destination, node.span)?.is_some()
-                                || match (source, destination) {
-                                    (Input::File { location, .. }, Output::Stdin(_)) => {
-                                        physical::source_stream(location, node.span)?.is_some()
-                                    }
-                                    _ => false,
-                                });
-                    if physical {
-                        if transactional {
-                            return Err(ExecutionError::new("a named transaction requires a transactional peer for external pipe/socket IO", node.span)
-                                .help("No effects started. Keep external streams at the top level, or use a peer supporting prepare/commit/abort."));
-                        }
-                        continue;
-                    }
-                    if endpoint::inspect(source, destination, node.span)?.is_some() {
-                        if transactional || matches!(source, Input::Port { .. }) {
-                            return Err(ExecutionError::new("remote publication needs a versioned participant inside a named transaction or program output cohort", node.span)
-                                .help("No effects started. Finite file/literal transfers are supported at the top level; remote program cohorts require a prepare/commit/abort participant."));
-                        }
-                        if !unstable {
-                            session.guard_finite(source, destination, node.span)?;
-                        }
-                        continue;
-                    }
-                    if !transactional
-                        && !unstable
-                        && matches!(destination, Output::File { .. })
-                        && !matches!(source, Input::Port { .. })
-                    {
-                        session.guard_finite(source, destination, node.span)?;
-                    }
-                }
-                match &node.kind {
-                    InstructionKind::Spawn {
-                        executable,
-                        arguments,
-                        ..
-                    } => {
-                        *processes = true;
-                        if !matches!(executable.backend, Backend::Local | Backend::Path | Backend::Env)
-                            || arguments.iter().any(|argument| matches!(argument, hir::Argument::Path(path) if !matches!(path.backend, Backend::Local | Backend::Path | Backend::Env))) {
-                            return Err(ExecutionError::new("this program needs a remote process-resource provider", node.span));
-                        }
-                    }
-                    InstructionKind::Transfer {
-                        source: Input::File { location, .. },
-                        ..
-                    } if matches!(location.backend, Backend::Tcp { .. }) => {
-                        return Err(ExecutionError::new(
-                            "physical sockets require the physical stream preparation adapter",
-                            node.span,
-                        ));
-                    }
-                    InstructionKind::Transfer {
-                        destination: Output::File { location, .. },
-                        ..
-                    } if !matches!(location.backend, Backend::Local | Backend::Env) => {
-                        return Err(ExecutionError::new(
-                            "this destination needs a transactional endpoint publication provider",
-                            node.span,
-                        ));
-                    }
-                    InstructionKind::Transaction { body, .. } => {
-                        walk(session, body, processes, true)?
-                    }
-                    _ => {}
-                }
-            }
-            Ok(())
-        }
-        let mut processes = false;
-        walk(self, &program.body, &mut processes, false)?;
-        if processes {
-            let worker = self.worker.as_ref().ok_or_else(|| {
-                ExecutionError::new(
-                    "configure the msync internal worker before launching a program",
-                    Span::default(),
-                )
-            })?;
-            #[cfg(target_os = "linux")]
-            let capability = crate::process::view_linux::Provider::probe()
-                .and_then(|provider| provider.with_worker(worker));
-            #[cfg(windows)]
-            let capability = crate::process::view_windows::Provider::probe()
-                .and_then(|provider| provider.with_worker(worker));
-            capability.map_err(|cause| {
-                ExecutionError::caused(
-                    "program resource-view capability is unavailable; no effects started",
-                    Span::default(),
-                    cause,
-                )
-            })?;
-        }
-        Ok(())
-    }
-
-    fn guard_finite(&self, source: &Input, destination: &Output, span: Span) -> Result<()> {
-        let mut paths = Vec::new();
-        if let Input::File { location, .. } = source
-            && matches!(
-                location.backend,
-                Backend::Local | Backend::Env | Backend::Path
-            )
-        {
-            paths.push(local(location, true, span)?);
-        }
-        if let Output::File { location, .. } = destination
-            && matches!(location.backend, Backend::Local | Backend::Env)
-        {
-            paths.push(local(location, false, span)?);
-        }
-        let overlap = |other: &Path| {
-            paths.iter().any(|path| {
-                domain::relative_to(path, other).is_some()
-                    || domain::relative_to(other, path).is_some()
-            })
-        };
-        let conflict = self
-            .flows
-            .iter()
-            .filter_map(|flow| flow.managed.as_deref())
-            .any(overlap)
-            || self
-                .deferred
-                .iter()
-                .any(|assignment| overlap(&assignment.target))
-            || self
-                .programs
-                .values()
-                .filter(|program| program.is_running())
-                .any(|program| program.baseline.iter().any(|(root, _)| overlap(root)));
-        if conflict {
-            return Err(ExecutionError::new("finite assignment overlaps an active resource cohort; no effects started", span)
-                .help("Finish the conflicting job with /wait, or /stop it before reading or replacing its managed resources. Independent paths can continue without waiting."));
-        }
-        Ok(())
-    }
-
-    fn enroll(&mut self, domain: &Domain) -> Result<()> {
-        self.enroll_at(domain, |root| domain.site(root))
-    }
-
-    fn enroll_at(&mut self, domain: &Domain, site: impl Fn(&Path) -> Span) -> Result<()> {
-        if self.engine.is_none() {
-            self.sparse_roots.clear();
-            if domain.namespace_roots.is_empty() {
-                self.engine = Some(Engine::new(domain, &self.options)?);
-                return Ok(());
-            }
-            self.engine = Some(Engine::new(&Domain::default(), &self.options)?);
-        }
-        let active_enrollment = self.active_enrollment();
-        let sparse_roots = self.sparse_roots.clone();
-        let engine = self.engine_mut()?;
-        let mut required = domain.roots.clone();
-        required.extend(domain.namespace_promotions(&sparse_roots));
-        if domain.native_view {
-            required.extend(sparse_roots.iter().cloned());
-        }
-        required.sort_by_key(|root| root.components().count());
-        for root in &required {
-            if engine
-                .roots
-                .iter()
-                .any(|old| domain::relative_to(root, old).is_some())
-            {
-                continue;
-            }
-            let covered_child = sparse_roots.iter().find_map(|parent| {
-                let relative = domain::relative_to(root, parent)?;
-                let first = relative.components().next()?;
-                Some(parent.join(first))
-            });
-            let complete = covered_child.as_ref().unwrap_or(root);
-            let enrolled = match &covered_child {
-                Some(child) => match &active_enrollment {
-                    Some(owners) => engine.manager.enroll_disjoint_entry(child, owners),
-                    None => engine.manager.enroll_entry(child),
-                },
-                None => match &active_enrollment {
-                    Some(owners) => engine.manager.enroll_disjoint_root(root, owners),
-                    _ => engine.manager.enroll(root),
-                },
-            };
-            enrolled.map_err(|cause| {
-                ExecutionError::caused(
-                    "cannot extend the persistent resource domain",
-                    site(root),
-                    cause,
-                )
-            })?;
-            engine
-                .roots
-                .retain(|old| domain::relative_to(old, complete).is_none());
-            engine.roots.push(complete.clone());
-        }
-        for parent in &domain.namespace_roots {
-            if sparse_roots.contains(parent) {
-                continue;
-            }
-            if engine
-                .roots
-                .iter()
-                .any(|root| domain::relative_to(parent, root).is_some())
-            {
-                continue;
-            }
-            let enrolled = match &active_enrollment {
-                Some(owners) => engine.manager.enroll_disjoint_namespace(parent, owners),
-                None => engine.manager.enroll_namespace(parent),
-            };
-            enrolled.map_err(|cause| {
-                ExecutionError::caused(
-                    "cannot enroll destination namespace metadata",
-                    site(parent),
-                    cause,
-                )
-            })?;
-        }
-        let complete = engine.roots.clone();
-        self.sparse_roots.retain(|parent| {
-            !complete
-                .iter()
-                .any(|root| domain::relative_to(parent, root).is_some())
-        });
-        self.sparse_roots.extend(
-            domain
-                .namespace_roots
-                .iter()
-                .filter(|parent| {
-                    !complete
-                        .iter()
-                        .any(|root| domain::relative_to(parent, root).is_some())
-                })
-                .cloned(),
-        );
-        debug_assert!(
-            Domain::default()
-                .namespace_promotions(&self.sparse_roots)
-                .is_empty()
-        );
-        Ok(())
-    }
-
-    fn active_enrollment(&self) -> Option<BTreeMap<TransactionId, hir::effects::Effects>> {
-        let active = self.engine.as_ref()?.manager.active_transaction_ids();
-        if active.is_empty() {
-            return None;
-        }
-        let mut owners = BTreeMap::new();
-        for id in active {
-            if !self.implicit.contains(&id)
-                || self
-                    .programs
-                    .values()
-                    .any(|program| program.transaction == id)
-            {
-                return None;
-            }
-            let mut effects = hir::effects::Effects::default();
-            let mut observed = false;
-            for work in self
-                .outstanding_work()
-                .filter(|work| work.transaction == id)
-            {
-                effects.append(work.plan.effects(work.key.instruction).ok()?.clone());
-                observed = true;
-            }
-            if !observed {
-                return None;
-            }
-            owners.insert(id, effects);
-        }
-        Some(owners)
-    }
-
-    fn enroll_physical_namespaces(&mut self, program: &hir::Program) -> Result<()> {
-        let mut entries = Vec::new();
-        for node in &program.body.instructions {
-            let InstructionKind::Transfer {
-                source,
-                destination,
-            } = &node.kind
-            else {
-                continue;
-            };
-            if transfer_unstable(&self.planning, node.id) {
-                continue;
-            }
-            let Some(spec) = physical::inspect(source, destination, node.span)? else {
-                continue;
-            };
-            let Some((target, _)) = spec.managed else {
-                continue;
-            };
-            let Some(parent) = target.parent() else {
-                continue;
-            };
-            if physical::has_live_children(parent)? {
-                entries.push((parent.to_owned(), target, node.span));
-            }
-        }
-        if entries.is_empty() {
-            return Ok(());
-        }
-        if self.engine.is_none() {
-            self.sparse_roots.clear();
-            self.engine = Some(Engine::new(&Domain::default(), &self.options)?);
-        }
-        let domain = Domain {
-            roots: entries
-                .iter()
-                .map(|(_, target, _)| target.clone())
-                .collect(),
-            namespace_roots: entries
-                .iter()
-                .map(|(parent, _, _)| parent.clone())
-                .collect(),
-            ..Domain::default()
-        };
-        self.enroll_at(&domain, |root| {
-            entries
-                .iter()
-                .find(|(parent, _, _)| {
-                    domain::relative_to(root, parent).is_some()
-                        || domain::relative_to(parent, root).is_some()
-                })
-                .map_or(Span::default(), |(_, _, span)| *span)
-        })
-    }
-
-    fn fresh_instruction(&mut self) -> Result<InstructionId> {
-        let id = InstructionId(self.next_instruction);
-        self.next_instruction = self.next_instruction.checked_add(1).ok_or_else(|| {
-            ExecutionError::new("runtime instruction identity exhausted", Span::default())
+        self.batch_mode = batch;
+        self.submission = self.submission.checked_add(1).ok_or_else(|| {
+            ExecutionError::new("runtime submission identity exhausted", Span::default())
         })?;
-        Ok(id)
-    }
-
-    fn binding_error(error: events::BindingError) -> ExecutionError {
-        ExecutionError::caused(
-            "cannot bind the executable event plan",
-            Span::default(),
-            error,
-        )
-    }
-
-    fn retain_cleanup_failure(failure: &mut ExecutionError, error: ExecutionError) {
-        failure
-            .report
-            .help
-            .push(format!("owned cleanup failed: {error}"));
-        failure
-            .retained_paths
-            .extend(error.retained_paths.iter().cloned());
-        if failure.cause.is_none() {
-            failure.cause = Some(Box::new(SharedFailure(Arc::new(error))));
-        }
-    }
-
-    fn owner_key(&self, transaction: TransactionId) -> Result<OwnerKey> {
-        let engine = self.engine.as_ref().ok_or_else(|| {
-            ExecutionError::new(
-                "an event owner requires an execution workspace",
-                Span::default(),
-            )
-        })?;
-        OwnerKey::new(format!(
-            "{}:txn-{}",
-            engine.workspace.display(),
-            transaction.0
-        ))
-        .map_err(Self::binding_error)
-    }
-
-    fn event(&mut self, event: Event) -> Result<()> {
-        let changed = self
-            .ledger
-            .record(event, Outcome::Succeeded)
-            .map_err(Self::binding_error)?;
-        if changed {
-            self.progress = self.progress.checked_add(1).ok_or_else(|| {
-                ExecutionError::new("runtime event progress identity exhausted", Span::default())
-            })?;
-        }
-        Ok(())
-    }
-
-    fn failure(&mut self, work: &WorkNode, error: ExecutionError) -> ExecutionError {
-        let cause = Arc::new(error);
-        self.ledger.fail_node(work.key, cause.clone());
-        let mut error = ExecutionError::caused(
-            "a bound resource operation failed",
-            cause.report.diagnostic.span,
-            SharedFailure(cause.clone()),
-        );
-        error.report = cause.report.clone();
-        error.origin = cause.origin.clone();
-        error.transaction = Some(work.transaction);
-        error.retained_paths = cause.retained_paths.clone();
-        error
-    }
-
-    fn gate(&mut self, work: &WorkNode, phase: Phase) -> Result<bool> {
-        match self
-            .ledger
-            .gate(&work.plan, work.key.instruction, phase)
-            .map_err(Self::binding_error)?
-        {
-            GateState::Ready => Ok(true),
-            GateState::Pending(_) => Ok(false),
-            GateState::Cancelled {
-                event,
-                reason,
-                cause,
-            } => {
-                self.ledger.cancel_node(work.key, reason, cause);
-                Err(ExecutionError::new(
-                    format!("a prerequisite was discarded: {reason:?}"),
-                    work.plan
-                        .origin(work.key.instruction)
-                        .map_or(Span::default(), |origin| origin.site.span),
-                )
-                .help(format!(
-                    "cancelled prerequisite: {event:?}; submit a new producer before retrying"
-                )))
+        self.initialize().await?;
+        let result = self.interpret(program).await;
+        if let Err(mut error) = result {
+            if error.context().category == super::DiagnosticCategory::Capability {
+                self.flow_reservations.clear();
+                return Err(error);
             }
-            GateState::Failed { event, cause } => {
-                let mut error = ExecutionError::caused(
-                    "a prerequisite resource operation failed",
-                    cause.report.diagnostic.span,
-                    SharedFailure(cause.clone()),
-                )
-                .with_origin(cause.origin.as_deref());
+            self.cancel.cancel();
+            if let Err(cleanup) = self.settle_all().await {
                 error
                     .report
                     .help
-                    .push(format!("failed prerequisite: {event:?}"));
-                Err(self.failure(work, error))
+                    .push(format!("while settling already-started work: {cleanup}"));
+                error.retained_paths.extend(cleanup.retained_paths);
             }
+            self.cancel = self.options.cancel.child_token();
+            return Err(error);
         }
-    }
-
-    fn terminal(&mut self, terminal: Terminal) -> Result<()> {
-        match terminal {
-            Terminal::Flow(key) => {
-                if let Some(flow) = self.flows.iter().find(|flow| flow.work.key == key) {
-                    debug_assert!(flow.ready.load(Ordering::Acquire));
-                }
-            }
-            Terminal::Process(process) => {
-                if self
-                    .programs
-                    .get(&process)
-                    .is_some_and(|program| program.exit_signal.is_cancelled())
-                {
-                    self.event(Event::Process(process, ProcessEvent::Exited))?;
-                }
-            }
+        if self.cancel.is_cancelled() {
+            self.settle_all().await?;
+            self.cancel = self.options.cancel.child_token();
         }
-        Ok(())
+        Ok(self.take_report())
     }
-
-    fn drain_terminals(&mut self) -> Result<()> {
-        while let Ok(event) = self.terminal_rx.try_recv() {
-            self.terminal(event)?;
-        }
-        // Notifications are bounded hints. A full channel must not hide an
-        // exited producer while its cohort peer still waits for its exit data.
-        let exited = self
-            .programs
-            .values()
-            .filter(|program| program.exit_signal.is_cancelled())
-            .map(|program| program.id)
-            .collect::<Vec<_>>();
-        for process in exited {
-            self.event(Event::Process(process, ProcessEvent::Exited))?;
-        }
-        Ok(())
-    }
-
-    async fn wait_event(&mut self) -> Result<()> {
-        self.observe_phase(super::progress::Phase::Wait);
-        let mut changed = self.ledger.subscribe();
-        tokio::select! {
-            () = self.cancel.cancelled() => Err(ExecutionError::cancelled("execution cancelled while waiting for a resource event", Span::default())),
-            terminal = self.terminal_rx.recv() => match terminal {
-                Some(event) => self.terminal(event),
-                None => Err(ExecutionError::new("execution event channel closed with pending work", Span::default())),
-            },
-            _ = changed.changed() => Ok(()),
-        }
-    }
-
-    fn work(&self) -> Result<WorkNode> {
-        self.active_work.clone().ok_or_else(|| {
-            ExecutionError::new(
-                "an executable operation has no bound submission owner",
-                Span::default(),
-            )
-        })
-    }
-
-    fn owner_token(&mut self, transaction: TransactionId) -> CancellationToken {
-        self.owner_tokens
-            .entry(transaction)
-            .or_insert_with(|| self.cancel.child_token())
-            .clone()
-    }
-
-    fn bound_plan(&self, additions: Bindings) -> Result<Arc<SubmissionPlan>> {
-        let previous = self
-            .plan
-            .as_ref()
-            .expect("an executing submission retains its plan");
-        let mut context = self.refinement_context();
-        context.operation_facts = self.planning.operation_facts.clone();
-        context.existing_parent_frontiers = self.planning.existing_parent_frontiers.clone();
-        context.namespace_merges = self.planning.namespace_merges.clone();
-        let graph = crate::hir::graph::build_with_context(previous.program(), &context);
-        let mut bindings = additions;
-        bindings.external.extend(self.external_work(previous.id())?);
-        for (id, program) in &self.programs {
-            bindings
-                .processes
-                .insert(*id, self.owner_key(program.transaction)?);
-        }
-        let plan = previous
-            .rebind(context, graph, bindings)
-            .map_err(Self::binding_error)?;
-        Ok(plan)
-    }
-
-    fn outstanding_work(&self) -> impl Iterator<Item = &WorkNode> {
-        self.flows
-            .iter()
-            .map(|flow| &flow.work)
-            .chain(self.deferred.iter().map(|assignment| &assignment.work))
-    }
-
-    fn external_work(&self, submission: events::SubmissionId) -> Result<Vec<ExternalWork>> {
-        let mut seen = BTreeSet::new();
-        self.outstanding_work()
-            .filter(|work| work.key.submission != submission && seen.insert(work.key))
-            .map(|work| {
-                let phase = if self
-                    .deferred
-                    .iter()
-                    .any(|assignment| assignment.work.key == work.key)
-                    || self
-                        .flows
-                        .iter()
-                        .any(|flow| flow.work.key == work.key && flow.managed.is_some())
-                {
-                    Phase::Publish
-                } else {
-                    Phase::Start
-                };
-                ExternalWork::new(
-                    work.plan.clone(),
-                    work.key,
-                    self.owner_key(work.transaction)?,
-                    work.plan
-                        .effects(work.key.instruction)
-                        .map_err(Self::binding_error)?
-                        .clone(),
-                    phase,
-                )
-                .map_err(Self::binding_error)
-            })
-            .collect()
-    }
-
-    fn refresh_plan(&mut self, additions: Bindings) -> Result<Arc<SubmissionPlan>> {
-        let plan = self.bound_plan(additions)?;
-        self.remember_plan(plan.clone());
-        self.plan = Some(plan.clone());
-        Ok(plan)
-    }
-
-    fn remember_plan(&mut self, plan: Arc<SubmissionPlan>) {
-        let versions = self.retained_plans.entry(plan.id()).or_default();
-        if !versions
-            .iter()
-            .any(|version| version.ptr_eq(&Arc::downgrade(&plan)))
-        {
-            versions.push(Arc::downgrade(&plan));
-        }
-    }
-
-    fn collect_plans(&mut self) {
-        let protected = self
-            .pending_nodes
-            .values()
-            .flatten()
-            .copied()
-            .chain(self.process_nodes.values().copied())
-            .chain(self.prepared_readers.keys().copied())
-            .chain(self.namespaces.keys().copied())
-            .map(|key| key.submission)
-            .collect::<BTreeSet<_>>();
-        let mut retired = Vec::new();
-        self.retained_plans.retain(|id, versions| {
-            versions.retain(|version| version.strong_count() > 0);
-            if versions.is_empty() && !protected.contains(id) {
-                retired.push(*id);
-                false
-            } else {
-                true
-            }
-        });
-        for id in retired {
-            self.ledger.retire_submission(id);
-            self.node_transactions.retain(|key, _| key.submission != id);
-        }
-    }
-
-    fn prepare_work(
-        &mut self,
-        node: &Instruction,
-        current: Option<TransactionId>,
-    ) -> Result<(WorkNode, Option<program::SharedView>)> {
-        let plan = self
-            .plan
-            .as_ref()
-            .expect("submission plan bound before execution");
-        let key = plan.node_key(node.id).map_err(Self::binding_error)?;
-        let shared_peer = if let InstructionKind::Spawn { process, .. } = &node.kind {
-            self.programs
-                .values()
-                .find(|peer| {
-                    self.shareable(peer)
-                        && hir::graph::same_native_epoch(
-                            plan.program(),
-                            plan.context(),
-                            peer.id,
-                            *process,
-                        )
-                })
-                .map(|peer| peer.id)
-        } else {
-            None
-        };
-        let transaction = if let Some(id) = self.node_transactions.get(&key) {
-            *id
-        } else {
-            match &node.kind {
-                InstructionKind::Transaction { .. } => self.engine_mut()?.allocate()?,
-                _ if current.is_some() => current.unwrap(),
-                InstructionKind::Spawn { .. } => shared_peer
-                    .map(|process| self.programs[&process].transaction)
-                    .map_or_else(|| self.engine_mut()?.allocate(), Ok)?,
-                InstructionKind::Transfer {
-                    destination: Output::Stdin(process),
-                    ..
-                } => {
-                    self.programs
-                        .get(process)
-                        .ok_or_else(|| {
-                            ExecutionError::new("program input has no live owner", node.span)
-                        })?
-                        .transaction
-                }
-                InstructionKind::Transfer {
-                    source: Input::Port { process, .. },
-                    ..
-                } => match self
-                    .programs
-                    .get(process)
-                    .map(|program| program.transaction)
-                {
-                    Some(id) if self.implicit.contains(&id) => id,
-                    _ => self.engine_mut()?.allocate()?,
-                },
-                _ => self.engine_mut()?.allocate()?,
-            }
-        };
-        let unstable = self.host_unstable(node.id, hir::effects::EndpointRole::Source)
-            || self.host_unstable(node.id, hir::effects::EndpointRole::Destination);
-        if let InstructionKind::Transfer {
-            source,
-            destination,
-        } = &node.kind
-        {
-            physical::verify_fifo_inputs(
-                node.id,
-                source,
-                destination,
-                &self.native_fifo_pins,
-                node.span,
-            )?;
-        }
-        let mut physical = match &node.kind {
-            InstructionKind::Transfer {
-                source,
-                destination,
-            } if !unstable => physical::inspect(source, destination, node.span)?,
-            _ => None,
-        };
-        if let Some(spec) = &mut physical {
-            spec.bind_rendezvous(
-                node.id,
-                &self.planning.physical_rendezvous,
-                &self.native_fifo_pins,
-            )?;
-        }
-        self.observe_node(node, physical.as_ref())?;
-        if current.is_none() && !unstable {
-            self.reserve_namespace(key, node, physical.as_ref())?;
-        }
-        let mut bindings = Bindings::default();
-        bindings.nodes.insert(node.id, self.owner_key(transaction)?);
-        let mut plan = self.bound_plan(bindings)?;
-        let candidate = if let InstructionKind::Spawn { process, .. } = &node.kind {
-            shared_peer
-                .and_then(|peer| self.programs.get(&peer))
-                .filter(|program| program.transaction == transaction)
-                .and_then(Program::fork_shared)
-                .map(|candidate| (*process, candidate))
-        } else {
-            None
-        };
-        if let Some((process, (cohort, prepared))) = &candidate {
-            let effects = prepared.effects().clone();
-            let mut context = plan.context().clone();
-            context.process_effects.insert(*process, effects.clone());
-            context
-                .cohort_views
-                .retain(|proof| proof.view_id() != effects.view_id());
-            let mut members = self
-                .programs
-                .values()
-                .filter(|program| program.is_running() && program.cohort == *cohort)
-                .map(|program| (program.id, program.effects.clone()))
-                .collect::<Vec<_>>();
-            members.push((*process, effects.clone()));
-            context.cohort_views.push(
-                crate::hir::graph::CohortViewProof::shared(
-                    self.owner_key(transaction)?.as_str(),
-                    format!("{}:cohort-{}", effects.view_id(), cohort.0),
-                    members,
-                )
-                .map_err(|message| ExecutionError::new(message, node.span))?,
-            );
-            let graph = crate::hir::graph::build_with_context(plan.program(), &context);
-            let mut bindings = Bindings::default();
-            bindings
-                .processes
-                .insert(*process, self.owner_key(transaction)?);
-            plan = plan
-                .rebind(context, graph, bindings)
-                .map_err(Self::binding_error)?;
-        }
-        let materialization = match (&node.kind, &physical) {
-            (
-                InstructionKind::Transfer {
-                    source: Input::Literal(_),
-                    destination: Output::File { location, .. },
-                },
-                None,
-            ) if matches!(
-                location.backend,
-                Backend::Local | Backend::Env | Backend::Path
-            ) =>
-            {
-                Some(materialize::Kind::Literal)
-            }
-            _ => None,
-        };
-        Ok((
-            WorkNode {
-                plan,
-                key,
-                order: self.orders[&node.id],
-                transaction,
-                physical,
-                materialization,
-            },
-            candidate.map(|(_, candidate)| candidate),
-        ))
-    }
-
-    fn observe_node(
-        &mut self,
-        node: &Instruction,
-        physical: Option<&physical::Spec>,
-    ) -> Result<()> {
-        let InstructionKind::Transfer {
-            source,
-            destination,
-        } = &node.kind
-        else {
+    async fn initialize(&mut self) -> Result<()> {
+        if self.initialized {
             return Ok(());
-        };
-        let classify = |path: &Path| match fs::symlink_metadata(path) {
-            Ok(meta) if meta.is_file() => crate::plan::FileClass::Regular,
-            Ok(meta) if meta.is_dir() => crate::plan::FileClass::Directory,
-            Ok(_) => crate::plan::FileClass::Stream,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                crate::plan::FileClass::Missing
-            }
-            Err(_) => crate::plan::FileClass::Unknown,
-        };
-        let source_class = match source {
-            _ if self.host_unstable(node.id, hir::effects::EndpointRole::Source) => self
-                .planning
-                .operation_facts
-                .get(&node.id)
-                .map_or(crate::plan::FileClass::Unknown, |facts| facts.source),
-            Input::File { location, .. }
-                if matches!(
-                    location.backend,
-                    Backend::Local | Backend::Env | Backend::Path
-                ) =>
-            {
-                classify(&local(location, true, node.span)?)
-            }
-            Input::File { location, .. } if matches!(location.backend, Backend::Tcp { .. }) => {
-                crate::plan::FileClass::Stream
-            }
-            _ => crate::plan::FileClass::Unknown,
-        };
-        let destination_class = match destination {
-            _ if self.host_unstable(node.id, hir::effects::EndpointRole::Destination) => self
-                .planning
-                .operation_facts
-                .get(&node.id)
-                .map_or(crate::plan::FileClass::Unknown, |facts| facts.destination),
-            Output::File { location, .. }
-                if matches!(location.backend, Backend::Local | Backend::Env) =>
-            {
-                classify(&local(location, false, node.span)?)
-            }
-            _ => crate::plan::FileClass::Unknown,
-        };
-        self.planning.operation_facts.insert(
-            node.id,
-            physical.map_or(
-                crate::hir::effects::OperationFacts {
-                    source: source_class,
-                    destination: destination_class,
-                },
-                |spec| spec.kinds.into(),
-            ),
-        );
-        Ok(())
-    }
-
-    fn host_unstable(&self, instruction: InstructionId, role: hir::effects::EndpointRole) -> bool {
-        self.planning
-            .host_unstable
-            .contains(&hir::effects::EndpointKey { instruction, role })
-    }
-
-    fn output_path(
-        &self,
-        instruction: InstructionId,
-        location: &Location,
-        span: Span,
-    ) -> Result<PathBuf> {
-        if self.host_unstable(instruction, hir::effects::EndpointRole::Destination) {
-            domain::deferred_local(location, false, span)
-        } else {
-            local(location, false, span)
         }
-    }
-
-    fn selected_path(
-        &mut self,
-        transaction: TransactionId,
-        raw: &Path,
-        span: Span,
-    ) -> Result<PathBuf> {
-        self.engine_mut()?
-            .manager
-            .resolve_path(transaction, raw)
+        self.executor = tokio::runtime::Handle::try_current().ok();
+        self.observe(
+            super::progress::Phase::Inspect,
+            None,
+            || Some("recover interrupted statements".into()),
+            || None,
+        );
+        let scratch = self.options.scratch_root.clone();
+        tokio::task::spawn_blocking(move || crate::filesystem::recovery::recover(&scratch))
+            .await
+            .map_err(|cause| {
+                ExecutionError::caused("statement recovery worker failed", Span::default(), cause)
+            })?
             .map_err(|cause| {
                 ExecutionError::caused(
-                    "cannot resolve the endpoint in its transaction view",
-                    span,
+                    "cannot recover an interrupted statement before execution",
+                    Span::default(),
                     cause,
                 )
-            })
+            })?;
+        super::endpoint::recover(&self.options).await?;
+        self.initialized = true;
+        Ok(())
     }
-
-    fn selected_source(
-        &mut self,
-        instruction: InstructionId,
-        source: &Input,
-        transaction: TransactionId,
-        span: Span,
-    ) -> Result<Source> {
-        if self.host_unstable(instruction, hir::effects::EndpointRole::Source)
-            && let Input::File { location, .. } = source
-            && matches!(
-                location.backend,
-                Backend::Local | Backend::Env | Backend::Path
-            )
-        {
-            let raw = domain::deferred_local(location, true, span)?;
-            return self
-                .selected_path(transaction, &raw, span)
-                .map(Source::Local);
-        }
-        file_source(source, span)
-    }
-
-    fn process_data(&self, process: ProcessId, port: ReadPort, span: Span) -> Result<()> {
-        if port == ReadPort::Pid {
-            return Ok(());
-        }
-        match self.ledger.outcome(&Event::Process(process, ProcessEvent::Imported)) {
-            Some(Outcome::Cancelled { reason, .. }) => Err(ExecutionError::new(
-                format!("program data belongs to a discarded epoch: {reason:?}"), span,
-            ).help("Launch a new program before consuming cancelled output or exit data; already committed receipts remain readable.")),
-            Some(Outcome::Failed(cause)) => Err(ExecutionError::caused(
-                "program data producer failed", span, SharedFailure(cause.clone()),
-            )),
-            _ => Ok(()),
-        }
-    }
-
-    fn shareable(&self, program: &Program) -> bool {
-        program.is_running()
-            && !self
-                .flows
+    async fn interpret(&mut self, program: &hir::Program) -> Result<()> {
+        for block in program.blocks() {
+            self.check(Span::default())?;
+            self.observe(
+                super::progress::Phase::Inspect,
+                None,
+                || {
+                    Some(format!(
+                        "basic block {} ({} instructions)",
+                        block.id.0,
+                        block.instructions.len()
+                    ))
+                },
+                || None,
+            );
+            // No future block is observed until this block's finite work settles.
+            let prepared =
+                crate::preparation::prepare_block(&block, self.observation_context()).ok();
+            let instructions = prepared
+                .as_ref()
+                .map(|p| p.original.body.instructions.as_slice())
+                .unwrap_or(block.instructions);
+            let mut context = prepared
+                .as_ref()
+                .map(|p| p.context.clone())
+                .unwrap_or_default();
+            context.live_processes = self.live_processes();
+            let contextual_block = hir::BasicBlock {
+                id: block.id,
+                instructions,
+            };
+            self.fifo = Some(super::fifo::FifoState::inspect(
+                contextual_block,
+                &mut context,
+            )?);
+            self.rendezvous = context
+                .physical_rendezvous
                 .iter()
-                .any(|flow| flow.transaction == program.transaction && flow.managed.is_some())
-            && !self
-                .deferred
+                .map(|proof| {
+                    (
+                        proof.writer().key().instruction,
+                        proof.reader().key().instruction,
+                    )
+                })
+                .collect();
+            self.reserved_groups.clear();
+            let graph = graph::build_block_with_context(contextual_block, &context);
+            let mut schedule = BlockSchedule::new(&graph).map_err(|cause| {
+                ExecutionError::caused(
+                    "invalid basic-block dependency graph",
+                    Span::default(),
+                    cause,
+                )
+            })?;
+            let nodes: BTreeMap<_, _> = block
+                .instructions
                 .iter()
-                .any(|assignment| assignment.transaction == program.transaction)
-    }
-
-    fn reserve_namespace(
-        &mut self,
-        key: NodeKey,
-        node: &Instruction,
-        physical: Option<&physical::Spec>,
-    ) -> Result<()> {
-        if self.namespaces.contains_key(&key) {
-            return Ok(());
+                .map(|node| (node.id, node))
+                .collect();
+            let positions: BTreeMap<_, _> = block
+                .instructions
+                .iter()
+                .enumerate()
+                .map(|(index, node)| (node.id, index))
+                .collect();
+            let mut deoptimized = BTreeSet::new();
+            while !schedule.is_finished() {
+                let mut ready = schedule.ready();
+                ready.sort_by_key(|id| !self.flow_reservations.contains_key(id));
+                let mut admitted = false;
+                for id in ready {
+                    if self.finite.len() >= self.copy_capacity() {
+                        break;
+                    }
+                    let node = nodes[&id];
+                    if !self.rendezvous_ready(node, &schedule) {
+                        continue;
+                    }
+                    let cohort_started = self.reserve_rendezvous(node)?;
+                    if !deoptimized.contains(&id)
+                        && !self.physical_flow(node)
+                        && let Some(run) =
+                            hir::rewrite::overwrite_run(&block.instructions[positions[&id]..])
+                    {
+                        let ids: Vec<_> = run.iter().map(|node| node.id).collect();
+                        if schedule.group_ready(&ids)
+                            && self.admission.copy_availability()
+                                == super::scheduler::Availability::Ready
+                        {
+                            for node in run {
+                                self.join_conflicting_flows(node).await?;
+                            }
+                            schedule.admit_group(&ids).map_err(schedule_error)?;
+                            self.start_fold(run.to_vec(), ids)?;
+                            admitted = true;
+                            continue;
+                        }
+                    }
+                    if matches!(
+                        node.kind,
+                        InstructionKind::Transfer {
+                            source: Input::File { .. } | Input::Literal(_),
+                            destination: Output::File { .. }
+                        }
+                    ) && !self.physical_flow(node)
+                        && self.admission.copy_availability()
+                            != super::scheduler::Availability::Ready
+                    {
+                        if !self.finite.is_empty() {
+                            break;
+                        }
+                        return Err(admission_error(
+                            self.admission
+                                .copy(node.span)
+                                .err()
+                                .expect("copy is unavailable"),
+                        ));
+                    }
+                    self.check(node.span)?;
+                    schedule.admit(id).map_err(schedule_error)?;
+                    admitted = true;
+                    match &node.kind {
+                        InstructionKind::Transfer { .. } if self.physical_flow(node) => {
+                            if self.start_flow(node).await? {
+                                schedule.captured_input(id).map_err(schedule_error)?;
+                            }
+                            if cohort_started {
+                                break;
+                            }
+                        }
+                        InstructionKind::Transfer { .. } => {
+                            self.join_conflicting_flows(node).await?;
+                            self.start_finite(node.clone(), vec![id])?;
+                        }
+                        InstructionKind::Spawn {
+                            process,
+                            executable,
+                            arguments,
+                            cwd,
+                        } => {
+                            self.admit_program(*process, node, executable, arguments, cwd)
+                                .await?;
+                            schedule.complete(id).map_err(schedule_error)?;
+                        }
+                        InstructionKind::Await { process } => {
+                            self.await_process(*process).await?;
+                            if process.is_none() {
+                                self.join_all_flows().await?;
+                            }
+                            schedule.complete(id).map_err(schedule_error)?;
+                        }
+                        InstructionKind::Barrier { .. } => {
+                            schedule.complete(id).map_err(schedule_error)?;
+                        }
+                    }
+                }
+                if !self.finite.is_empty() {
+                    self.finish_one(&mut schedule, &mut deoptimized).await?;
+                } else if schedule.all_admitted() {
+                    break;
+                } else if !admitted && !schedule.is_finished() {
+                    if let Some(index) = self.flows.iter().position(|flow| {
+                        flow.submission == self.submission && schedule.is_running(flow.instruction)
+                    }) {
+                        let id = self.flows[index].instruction;
+                        self.join_flow(index).await?;
+                        schedule.complete(id).map_err(schedule_error)?;
+                        continue;
+                    }
+                    return Err(ExecutionError::new(
+                        "basic-block scheduler has no ready work",
+                        Span::default(),
+                    ));
+                }
+            }
+            self.poll_ready().await?;
         }
+        Ok(())
+    }
+    fn copy_capacity(&self) -> usize {
+        self.options
+            .limits
+            .jobs
+            .min(self.options.limits.memory_bytes / self.options.limits.buffer_bytes)
+            .max(1)
+    }
+    fn physical_flow(&self, node: &Instruction) -> bool {
         let InstructionKind::Transfer {
             source,
-            destination:
-                Output::File {
-                    location,
-                    mode: DestinationMode::Exact,
-                },
+            destination,
+        } = &node.kind
+        else {
+            return false;
+        };
+        if matches!(source, Input::Port { .. }) || matches!(destination, Output::Stdin(_)) {
+            return true;
+        }
+        let pins = self
+            .fifo
+            .as_ref()
+            .map(|fifo| fifo.pins(node.id))
+            .unwrap_or_default();
+        if pins.source.is_some() || pins.destination.is_some() {
+            return true;
+        }
+        matches!(source, Input::File { location, .. } if flow::native_stream(location, true))
+            || matches!(destination, Output::File { location, .. } if flow::native_stream(location, false))
+    }
+    fn observation_context(&self) -> PlanningContext {
+        PlanningContext {
+            live_processes: self
+                .programs
+                .iter()
+                .filter_map(|(id, p)| p.is_running().then_some(*id))
+                .collect(),
+            ..Default::default()
+        }
+    }
+    fn check(&self, span: Span) -> Result<()> {
+        if self.cancel.is_cancelled() {
+            Err(ExecutionError::cancelled(
+                "execution cancelled; no later statement was started",
+                span,
+            ))
+        } else {
+            Ok(())
+        }
+    }
+    fn reserve_rendezvous(&mut self, node: &Instruction) -> Result<bool> {
+        let Some(group) = self
+            .fifo
+            .as_ref()
+            .and_then(|fifo| fifo.groups().iter().find(|group| group.contains(&node.id)))
+            .cloned()
+        else {
+            return Ok(false);
+        };
+        if self.reserved_groups.contains(&group) {
+            return Ok(false);
+        }
+        self.admission
+            .feasible(super::scheduler::Demand::flows(group.len()), node.span)
+            .map_err(|mut error| {
+                error.report.diagnostic.message = format!(
+                    "FIFO rendezvous must co-start {} flows: {}",
+                    group.len(),
+                    error.report.diagnostic.message
+                );
+                admission_error(error)
+            })?;
+        let mut leases = Vec::new();
+        for id in &group {
+            leases.push((
+                *id,
+                self.admission.flow(node.span).map_err(admission_error)?,
+            ));
+        }
+        self.flow_reservations.extend(leases);
+        self.reserved_groups.insert(group);
+        Ok(true)
+    }
+    fn rendezvous_ready(&self, node: &Instruction, schedule: &BlockSchedule) -> bool {
+        self.fifo
+            .as_ref()
+            .and_then(|fifo| fifo.groups().iter().find(|group| group.contains(&node.id)))
+            .is_none_or(|group| {
+                self.reserved_groups.contains(group) || schedule.coadmission_ready(group)
+            })
+    }
+    fn start_fold(&mut self, run: Vec<Instruction>, ids: Vec<InstructionId>) -> Result<()> {
+        self.ensure_invocation()?;
+        let lease = self.admission.copy(run[0].span).map_err(admission_error)?;
+        let mut options = self.options.clone();
+        options.cancel = self.cancel.clone();
+        let progress = self.observer.clone();
+        let origin = self
+            .origins
+            .get(&run.last().expect("nonempty group").id)
+            .cloned();
+        let original = run[0].clone();
+        let trace = crate::telemetry::context();
+        #[cfg(test)]
+        let gate = self.worker_gate.take();
+        #[cfg(test)]
+        let observed = gate.clone();
+        let handle = self.finite.spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                gate.wait();
+            }
+            crate::telemetry::with_context(trace.as_ref(), || {
+                let _lease = lease;
+                let mut owner = ordinary::Ordinary::new(&options);
+                owner.set_progress(progress);
+                owner.set_origin(origin.clone());
+                let mut result = owner
+                    .try_fold_run(&run)
+                    .map_err(|error| error.with_origin(origin.as_ref()));
+                let mut cleanup = owner.close();
+                if matches!(&result, Ok(ordinary::FoldAttempt::Deoptimized)) && !cleanup.is_empty()
+                {
+                    result = Err(cleanup_failure(std::mem::take(&mut cleanup), original.span));
+                }
+                match &mut result {
+                    Ok(ordinary::FoldAttempt::Completed(report)) => report.cleanup.extend(cleanup),
+                    Err(error) => {
+                        for issue in cleanup {
+                            error.retained_paths.extend(issue.retained_paths);
+                            error.report.help.push(format!("cleanup: {}", issue.cause));
+                        }
+                    }
+                    _ => {}
+                }
+                FiniteResult {
+                    instructions: ids,
+                    result: result.map(FiniteOutcome::Fold),
+                    original,
+                }
+            })
+        });
+        #[cfg(test)]
+        if let Some(gate) = observed {
+            *gate.handle.lock().unwrap() = Some(handle.clone());
+        }
+        drop(handle);
+        Ok(())
+    }
+    fn start_finite(&mut self, node: Instruction, ids: Vec<InstructionId>) -> Result<()> {
+        self.ensure_invocation()?;
+        let lease = self.admission.copy(node.span).map_err(admission_error)?;
+        let mut options = self.options.clone();
+        options.cancel = self.cancel.clone();
+        let progress = self.observer.clone();
+        let origin = self.origins.get(&node.id).cloned();
+        let trace = crate::telemetry::context();
+        if matches!(&node.kind,InstructionKind::Transfer {destination:Output::File {location,..},..} if matches!(location.backend,crate::endpoint::Backend::Wsl|crate::endpoint::Backend::Ssh{..}))
+        {
+            self.finite.spawn(async move {
+                let task = lease.task("finite-remote-publication");
+                let _lease = lease;
+                let result = task
+                    .run(super::endpoint::execute(&node, &options, origin.as_ref()))
+                    .await;
+                FiniteResult {
+                    instructions: ids,
+                    result: result.map(|report| {
+                        FiniteOutcome::Statement(
+                            report.map_or(
+                                ordinary::Attempt::Unsupported,
+                                ordinary::Attempt::Completed,
+                            ),
+                        )
+                    }),
+                    original: node,
+                }
+            });
+            return Ok(());
+        }
+        #[cfg(test)]
+        let gate = self.worker_gate.take();
+        #[cfg(test)]
+        let observed = gate.clone();
+        let handle = self.finite.spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                gate.wait();
+            }
+            crate::telemetry::with_context(trace.as_ref(), || {
+                let _lease = lease;
+                let mut owner = ordinary::Ordinary::new(&options);
+                owner.set_progress(progress);
+                owner.set_origin(origin.clone());
+                let mut result = owner
+                    .execute(&node)
+                    .map_err(|error| error.with_origin(origin.as_ref()));
+                let mut cleanup = owner.close();
+                if matches!(&result, Ok(ordinary::Attempt::Unsupported)) && !cleanup.is_empty() {
+                    result = Err(cleanup_failure(std::mem::take(&mut cleanup), node.span));
+                }
+                match &mut result {
+                    Ok(ordinary::Attempt::Completed(report)) => report.cleanup.extend(cleanup),
+                    Err(error) => {
+                        for issue in cleanup {
+                            error.retained_paths.extend(issue.retained_paths);
+                            error.report.help.push(format!("cleanup: {}", issue.cause));
+                        }
+                    }
+                    Ok(ordinary::Attempt::Unsupported) => {}
+                }
+                FiniteResult {
+                    instructions: ids,
+                    result: result.map(FiniteOutcome::Statement),
+                    original: node,
+                }
+            })
+        });
+        #[cfg(test)]
+        if let Some(gate) = observed {
+            *gate.handle.lock().unwrap() = Some(handle.clone());
+        }
+        drop(handle);
+        Ok(())
+    }
+    async fn finish_one(
+        &mut self,
+        schedule: &mut BlockSchedule,
+        deoptimized: &mut BTreeSet<InstructionId>,
+    ) -> Result<()> {
+        let finished = self
+            .finite
+            .join_next()
+            .await
+            .expect("a finite worker is retained")
+            .map_err(|cause| {
+                ExecutionError::caused("statement worker failed", Span::default(), cause)
+            })?;
+        match finished.result? {
+            FiniteOutcome::Statement(ordinary::Attempt::Completed(report))
+            | FiniteOutcome::Fold(ordinary::FoldAttempt::Completed(report)) => {
+                merge(&mut self.report, report)
+            }
+            FiniteOutcome::Statement(ordinary::Attempt::Unsupported) => {
+                if self.start_flow(&finished.original).await? {
+                    schedule
+                        .captured_input(finished.original.id)
+                        .map_err(schedule_error)?;
+                }
+                return Ok(());
+            }
+            FiniteOutcome::Fold(ordinary::FoldAttempt::Deoptimized) => {
+                schedule
+                    .retry_group(&finished.instructions)
+                    .map_err(schedule_error)?;
+                deoptimized.extend(finished.instructions);
+                return Ok(());
+            }
+        }
+        schedule
+            .complete_group(&finished.instructions)
+            .map_err(schedule_error)?;
+        Ok(())
+    }
+    async fn admit_program(
+        &mut self,
+        id: ProcessId,
+        node: &Instruction,
+        executable: &crate::endpoint::Location,
+        arguments: &[hir::Argument],
+        cwd: &Path,
+    ) -> Result<()> {
+        self.ensure_invocation()?;
+        if self.programs.contains_key(&id) {
+            return Err(ExecutionError::new(
+                "program identity is already instantiated",
+                node.span,
+            ));
+        }
+        let lease = self.admission.program(node.span).map_err(admission_error)?;
+        let mut config = crate::process::ProcessConfig::new(
+            self.options
+                .shared_invocation
+                .as_ref()
+                .expect("runtime invocation")
+                .path(),
+        );
+        config.buffer_bytes = self.options.limits.buffer_bytes;
+        config.max_output_bytes = self.options.max_output_bytes;
+        self.observe(
+            super::progress::Phase::Launch,
+            Some(node.id),
+            || Some(executable.to_string()),
+            || None,
+        );
+        let task = lease.task("external-program-launch");
+        let launched = task
+            .run(program::Program::launch(program::Launch {
+                span: node.span,
+                origin: self.origins.get(&node.id).cloned(),
+                executable,
+                arguments,
+                cwd,
+                config,
+            }))
+            .await
+            .map_err(|error| {
+                let context = super::DiagnosticContext {
+                    phase: super::DiagnosticPhase::Execute,
+                    category: super::DiagnosticCategory::Operation,
+                    location: super::DiagnosticLocation::Primary,
+                    action: "launch external program",
+                    backend: None,
+                    instruction: Some(node.id),
+                };
+                error.with_context(context)
+            })?;
+        self.programs.insert(id, launched);
+        self.program_leases.insert(id, lease);
+        Ok(())
+    }
+    async fn start_flow(&mut self, node: &Instruction) -> Result<bool> {
+        flow::validate_native_transfer(node)
+            .map_err(|error| error.with_operand(self.origins.get(&node.id), false))?;
+        self.ensure_invocation()?;
+        let InstructionKind::Transfer {
+            source,
+            destination,
+        } = &node.kind
+        else {
+            unreachable!()
+        };
+        self.join_conflicting_flows(node).await?;
+        let lease = match self.flow_reservations.remove(&node.id) {
+            Some(lease) => lease,
+            None => self.flow_lease(node.span).await?,
+        };
+        let source_label = self.observer.as_ref().map(|_| input_label(source));
+        let destination_label = self.observer.as_ref().map(|_| output_label(destination));
+        self.observe(
+            super::progress::Phase::Acquire,
+            Some(node.id),
+            || source_label.clone(),
+            || destination_label.clone(),
+        );
+        let mut processes = BTreeSet::new();
+        let (source, lease) = match source {
+            Input::File {
+                location,
+                pattern: None,
+            } => self.acquire_source(location, node, lease).await?,
+            Input::File {
+                pattern: Some(_), ..
+            } => {
+                return Err(ExecutionError::new(
+                    "a selector cannot read a physical byte stream",
+                    node.span,
+                ));
+            }
+            Input::Literal(text) => (flow::Source::Literal(text.clone()), lease),
+            Input::Port { process, port } => {
+                processes.insert(*process);
+                let p = self.programs.get_mut(process).ok_or_else(|| {
+                    ExecutionError::new("program has not been launched", node.span)
+                })?;
+                let source = if matches!(port, ReadPort::Stdout | ReadPort::Stderr) {
+                    flow::Source::Reader(p.take_reader(*port)?)
+                } else {
+                    flow::Source::Reader(p.scalar_reader(*port)?)
+                };
+                (source, lease)
+            }
+        };
+        let captured = matches!(&source, flow::Source::Captured(_));
+        let target = match destination {
+            Output::File { location, .. } => Some(resource_location(location, false, node.span)?),
+            _ => None,
+        };
+        let destination = match destination {
+            Output::File { location, mode } => flow::Destination::Endpoint {
+                location: location.clone(),
+                mode: *mode,
+            },
+            Output::Stdin(process) => {
+                processes.insert(*process);
+                let p = self.programs.get_mut(process).ok_or_else(|| {
+                    ExecutionError::new("program has not been launched", node.span)
+                })?;
+                let closed = p.exit_signal();
+                flow::Destination::Writer {
+                    writer: p.take_stdin()?,
+                    closed,
+                }
+            }
+        };
+        let pins = self
+            .fifo
+            .as_ref()
+            .map(|fifo| fifo.pins(node.id))
+            .unwrap_or_default();
+        let program_output = match &node.kind {
+            InstructionKind::Transfer {
+                source: Input::Port { .. },
+                destination: Output::File { location, .. },
+            } => drain_output(location, node.span)?,
+            _ => false,
+        };
+        let cancel = self.cancel.child_token();
+        let task = crate::telemetry::with_context(lease.context(), || {
+            flow::Flow::start_with_pins(
+                source,
+                destination,
+                self.options.limits.buffer_bytes,
+                cancel.clone(),
+                node.span,
+                pins.clone(),
+            )
+        })?;
+        self.flows.push(ActiveFlow {
+            instruction: node.id,
+            submission: self.submission,
+            task,
+            processes,
+            destination: target,
+            origin: self.origins.get(&node.id).cloned(),
+            _lease: lease,
+            pins,
+            cancel,
+            program_output,
+            source_label,
+            destination_label,
+        });
+        Ok(captured)
+    }
+    async fn acquire_source(
+        &mut self,
+        location: &crate::endpoint::Location,
+        node: &Instruction,
+        lease: super::scheduler::Lease,
+    ) -> Result<(flow::Source, super::scheduler::Lease)> {
+        let invocation = self
+            .options
+            .shared_invocation
+            .as_ref()
+            .expect("runtime invocation")
+            .clone();
+        let location = location.clone();
+        let span = node.span;
+        #[cfg(test)]
+        let gate = self.acquisition_gate.take();
+        #[cfg(test)]
+        let observed = gate.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            let source = crate::telemetry::with_context(lease.context(), || {
+                flow::Source::capture(location, invocation.path(), span)
+            });
+            #[cfg(test)]
+            if let Some(gate) = gate {
+                gate.wait();
+            }
+            // Started blocking work cannot be aborted. Its lease and backing
+            // must outlive a dropped submit future, not just its local await.
+            (source, lease)
+        });
+        #[cfg(test)]
+        if let Some(gate) = observed {
+            *gate.handle.lock().unwrap() = Some(worker.abort_handle());
+        }
+        self.acquisition = Some(Acquisition {
+            instruction: node.id,
+            submission: self.submission,
+            span,
+            origin: self.origins.get(&node.id).cloned(),
+            worker,
+        });
+        self.finish_acquisition().await
+    }
+    async fn finish_acquisition(&mut self) -> Result<(flow::Source, super::scheduler::Lease)> {
+        let result = (&mut self
+            .acquisition
+            .as_mut()
+            .expect("retained source acquisition")
+            .worker)
+            .await;
+        let acquisition = self.acquisition.take().expect("joined source acquisition");
+        let (source, lease) = result.map_err(|cause| {
+            ExecutionError::caused(
+                "flow-source acquisition worker failed",
+                acquisition.span,
+                cause,
+            )
+            .with_origin(acquisition.origin.as_ref())
+        })?;
+        source
+            .map(|source| (source, lease))
+            .map_err(|error| error.with_origin(acquisition.origin.as_ref()))
+    }
+    async fn drain_acquisition(&mut self) -> Result<()> {
+        if self.acquisition.is_some() {
+            // An abandoned submission has not admitted a destination yet.
+            // Join and retire its capture rather than replaying its instruction.
+            drop(self.finish_acquisition().await?);
+        }
+        Ok(())
+    }
+    async fn join_flow(&mut self, index: usize) -> Result<()> {
+        self.observe(
+            super::progress::Phase::Wait,
+            Some(self.flows[index].instruction),
+            || {
+                self.flows[index]
+                    .source_label
+                    .clone()
+                    .or_else(|| Some(format!("flow {}", self.flows[index].instruction.0)))
+            },
+            || self.flows[index].destination_label.clone(),
+        );
+        let active = &mut self.flows[index];
+        let requested = self.cancel.is_cancelled() || active.cancel.is_cancelled();
+        let result = active
+            .task
+            .join()
+            .await
+            .map_err(|error| error.with_origin(active.origin.as_ref()));
+        self.flows.remove(index);
+        let result = result?;
+        self.report.assignments += 1;
+        self.report.assigned_bytes = self.report.assigned_bytes.saturating_add(result.bytes);
+        if result.end == crate::io::FlowEnd::Cancelled && !requested {
+            return Err(ExecutionError::new(
+                "byte flow was cancelled",
+                Span::default(),
+            ));
+        }
+        Ok(())
+    }
+    async fn flow_lease(&mut self, span: Span) -> Result<super::scheduler::Lease> {
+        let demand = super::scheduler::Demand::flows(1);
+        self.admission
+            .feasible(demand, span)
+            .map_err(admission_error)?;
+        while self.admission.availability(demand) == super::scheduler::Availability::Busy {
+            let pending = self.flows.iter().position(|flow| flow.processes.is_empty());
+            if !self.batch_mode || pending.is_none() {
+                return Err(admission_error(ExecutionError::new("background flow capacity is occupied",span).help("Use /wait to drain existing work or /stop to stop streams and drain programs; alternatively increase --max-streams/--memory-limit or reduce --buffer-size.")));
+            }
+            self.join_flow(pending.expect("a queueable independent flow"))
+                .await?;
+        }
+        self.admission.flow(span).map_err(admission_error)
+    }
+    async fn join_all_flows(&mut self) -> Result<()> {
+        let mut failure = None;
+        while !self.flows.is_empty() {
+            record_failure(&mut failure, self.join_flow(0).await);
+        }
+        failure.map_or(Ok(()), Err)
+    }
+    async fn join_conflicting_flows(&mut self, node: &Instruction) -> Result<()> {
+        let InstructionKind::Transfer {
+            source,
+            destination,
         } = &node.kind
         else {
             return Ok(());
         };
-        let facts = self.planning.operation_facts[&node.id];
-        if location.backend != Backend::Local
-            || facts.destination != crate::plan::FileClass::Missing
-        {
-            return Ok(());
-        }
-        // Shape is not a local immutable-reader capability. Remote regular
-        // sources must first pass through the import adapter, not this lease.
-        let local_file = matches!(source,
-            Input::File { location, pattern: None }
-            if matches!(location.backend, Backend::Local | Backend::Env | Backend::Path)
-                && facts.source == crate::plan::FileClass::Regular
-        );
-        let captured_flow = physical.is_some_and(|spec| spec.managed.is_some());
-        let eligible = matches!(source, Input::Literal(_)) || local_file || captured_flow;
-        if !eligible || physical.is_some_and(|spec| spec.managed.is_none()) {
-            return Ok(());
-        }
-        let target = local(location, false, node.span)?;
-        let Some(parent) = Path::new(&location.path).parent() else {
-            return Ok(());
-        };
-        let permit = match self
-            .engine_mut()?
-            .manager
-            .certify_namespace_children(std::slice::from_ref(&target))
-        {
-            Ok(permit) => permit,
-            Err(_) => return Ok(()),
-        };
-        let epoch = crate::hir::effects::NamespaceMergeEpoch::verified(
-            permit.provider(),
-            permit.epoch_id().to_string(),
-            permit.parent_key().clone(),
-        )
-        .map_err(|message| ExecutionError::new(message, node.span))?;
-        let proof = crate::hir::effects::NamespaceMergeProof::insert_file(
-            epoch,
-            Location {
-                backend: Backend::Local,
-                path: parent.to_string_lossy().into_owned(),
+        let raw_locations = [
+            match source {
+                Input::File { location, .. } => Some(location),
+                _ => None,
             },
-            location.clone(),
-            permit
-                .child_key(&target)
-                .expect("minted permit contains its exact native child")
-                .clone(),
-            self.orders[&node.id].0,
-        )
-        .map_err(|message| ExecutionError::new(message, node.span))?;
-        self.planning.existing_parent_frontiers.insert(
-            node.id,
-            Location {
-                backend: Backend::Local,
-                path: parent.to_string_lossy().into_owned(),
+            match destination {
+                Output::File { location, .. } => Some(location),
+                _ => None,
             },
-        );
-        self.planning.namespace_merges.insert(node.id, proof);
-        self.namespaces
-            .insert(key, NamespaceSlot { permit, target });
+        ];
+        let locations = raw_locations
+            .into_iter()
+            .flatten()
+            .map(|location| resource_location(location, true, node.span))
+            .collect::<Result<Vec<_>>>()?;
+        let mut index = 0;
+        let current_pins = self
+            .fifo
+            .as_ref()
+            .map(|fifo| fifo.pins(node.id))
+            .unwrap_or_default();
+        while index < self.flows.len() {
+            if current_pins
+                .source
+                .as_ref()
+                .is_some_and(|pin| self.flows[index].pins.destination.as_ref() == Some(pin))
+            {
+                index += 1;
+                continue;
+            }
+            if self.flows[index].submission == self.submission
+                && self
+                    .rendezvous
+                    .contains(&(self.flows[index].instruction, node.id))
+            {
+                index += 1;
+                continue;
+            }
+            let overlaps = self.flows[index]
+                .destination
+                .as_ref()
+                .is_some_and(|target| locations.iter().any(|location| overlaps(target, location)));
+            if overlaps {
+                self.join_flow(index).await?;
+            } else {
+                index += 1;
+            }
+        }
         Ok(())
     }
-
-    fn release_namespace(&mut self, key: NodeKey) -> Result<()> {
-        if let Some(slot) = self.namespaces.remove(&key) {
-            self.engine_mut()?
-                .manager
-                .cancel_namespace_child(&slot.permit, &slot.target)
+    async fn await_process(&mut self, id: Option<ProcessId>) -> Result<()> {
+        let ids: Vec<_> = id.map(|id| vec![id]).unwrap_or_else(|| {
+            self.programs
+                .iter()
+                .filter_map(|(id, program)| program.receipt().is_none().then_some(*id))
+                .collect()
+        });
+        let selected: BTreeSet<_> = id
+            .map(|id| BTreeSet::from([id]))
+            .unwrap_or_else(|| self.programs.keys().copied().collect());
+        for id in &ids {
+            self.programs
+                .get_mut(id)
+                .ok_or_else(|| {
+                    ExecutionError::new(
+                        "await refers to a program not launched in this session",
+                        Span::default(),
+                    )
+                })?
+                .close_unused_stdin();
+        }
+        // Flow tasks run independently while native children are being joined.
+        let mut failure = None;
+        for id in ids {
+            self.observe(
+                super::progress::Phase::Wait,
+                None,
+                || {
+                    Some(format!(
+                        "program {} (PID {}): natural exit and output drain",
+                        id.0, self.programs[&id].pid
+                    ))
+                },
+                || None,
+            );
+            record_failure(
+                &mut failure,
+                self.programs
+                    .get_mut(&id)
+                    .expect("validated program")
+                    .wait()
+                    .await,
+            );
+            self.program_leases.remove(&id);
+        }
+        let mut index = 0;
+        while index < self.flows.len() {
+            if self.flows[index]
+                .processes
+                .iter()
+                .any(|id| selected.contains(id))
+            {
+                record_failure(&mut failure, self.join_flow(index).await);
+            } else {
+                index += 1;
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    }
+    pub async fn poll_ready(&mut self) -> Result<()> {
+        if self
+            .acquisition
+            .as_ref()
+            .is_some_and(|acquisition| acquisition.worker.is_finished())
+        {
+            self.drain_acquisition().await?;
+        }
+        let mut index = 0;
+        while index < self.flows.len() {
+            if self.flows[index].task.is_finished() {
+                self.join_flow(index).await?;
+            } else {
+                index += 1;
+            }
+        }
+        for (id, program) in &mut self.programs {
+            if program.receipt().is_none() && program.is_finished() {
+                self.program_leases.remove(id);
+                program.wait().await?;
+            }
+        }
+        Ok(())
+    }
+    pub async fn wait(&mut self) -> Result<()> {
+        let result = self.settle_all().await;
+        if self.cancel.is_cancelled() {
+            self.cancel = self.options.cancel.child_token();
+        }
+        result
+    }
+    pub async fn cancel_active(&mut self) -> Result<()> {
+        self.cancel.cancel();
+        let result = self.settle_all().await;
+        self.cancel = self.options.cancel.child_token();
+        result
+    }
+    /// Explicitly destructive escape hatch; ordinary cancellation never uses it.
+    pub async fn force_stop_active(&mut self) -> Result<()> {
+        self.cancel.cancel();
+        let mut failure = None;
+        for program in self.programs.values_mut() {
+            record_failure(&mut failure, program.force_stop().await);
+        }
+        record_failure(&mut failure, self.settle_all().await);
+        self.program_leases.clear();
+        self.cancel = self.options.cancel.child_token();
+        failure.map_or(Ok(()), Err)
+    }
+    pub async fn shutdown(&mut self) -> Result<()> {
+        for flow in &self.flows {
+            if !flow.program_output {
+                flow.cancel.cancel();
+            }
+        }
+        let result = self.settle_all().await;
+        self.programs.clear();
+        self.fifo.take();
+        self.flow_reservations.clear();
+        if let Err(cleanup) = self.close_invocation() {
+            return match result {
+                Err(mut error) => {
+                    error.report.help.push(format!("cleanup: {cleanup}"));
+                    error.retained_paths.extend(cleanup.retained_paths);
+                    Err(error)
+                }
+                Ok(()) => Err(cleanup),
+            };
+        }
+        result
+    }
+    fn close_invocation(&mut self) -> Result<()> {
+        let Some(invocation) = self.options.shared_invocation.as_ref() else {
+            return Ok(());
+        };
+        invocation.cleanup().map_err(|cause| {
+            let mut error = ExecutionError::caused(
+                "cannot clean runtime-private resources",
+                Span::default(),
+                cause,
+            );
+            error.retained_paths.push(invocation.path().to_owned());
+            error.with_context(super::DiagnosticContext {
+                phase: super::DiagnosticPhase::Cleanup,
+                category: super::DiagnosticCategory::Cleanup,
+                location: super::DiagnosticLocation::None,
+                action: "retire runtime-private resources",
+                backend: None,
+                instruction: None,
+            })
+        })?;
+        self.options.shared_invocation.take();
+        if let Some(registration) = self.stage_registration.take() {
+            registration.finish().map_err(|cause| {
+                ExecutionError::caused(
+                    "cannot retire runtime recovery registration",
+                    Span::default(),
+                    cause,
+                )
+            })?;
+        }
+        Ok(())
+    }
+    fn ensure_invocation(&mut self) -> Result<()> {
+        if self.options.shared_invocation.is_none() {
+            let registry = crate::filesystem::recovery::Registry::new(&self.options.scratch_root)
+                .map_err(|cause| {
+                ExecutionError::caused(
+                    "cannot open runtime recovery registry",
+                    Span::default(),
+                    cause,
+                )
+            })?;
+            let lease = registry.enter().map_err(|cause| {
+                ExecutionError::caused(
+                    "cannot enter runtime recovery registry",
+                    Span::default(),
+                    cause,
+                )
+            })?;
+            let invocation = crate::filesystem::InvocationRoot::create(&self.options.scratch_root)
                 .map_err(|cause| {
                     ExecutionError::caused(
-                        "cannot release a reserved namespace child",
+                        "cannot allocate runtime-private resources",
                         Span::default(),
                         cause,
                     )
                 })?;
-            if self
-                .plan
-                .as_ref()
-                .is_some_and(|plan| plan.id() == key.submission)
-            {
-                self.planning.namespace_merges.remove(&key.instruction);
-            }
-        }
-        Ok(())
-    }
-
-    fn publish_namespace(
-        &mut self,
-        work: &WorkNode,
-        snapshot: &Snapshot,
-        source: &Source,
-        span: Span,
-    ) -> Result<()> {
-        let slot = self
-            .namespaces
-            .get(&work.key)
-            .expect("namespace publication retains its actual permit");
-        let (permit, target) = (slot.permit.clone(), slot.target.clone());
-        let mut trace = self.engine_mut()?.assignment_trace(
-            work.key.instruction,
-            source,
-            &target,
-            DestinationMode::Exact,
-            work.transaction,
-        );
-        trace.attribute("phase", "publication");
-        trace.attribute("publication.policy", "namespace-receipt");
-        let result = self.publish_namespace_inner(work, snapshot, span, permit, &target);
-        trace.finish_result(&result);
-        match &result {
-            Ok(()) => {
-                trace.attribute("phase", "committed");
-                trace.metric(
-                    "files.assigned",
-                    snapshot
-                        .entries()
-                        .values()
-                        .filter(|entry| matches!(entry, Entry::File { .. }))
-                        .count() as u64,
-                );
-                trace.metric(
-                    "bytes.assigned",
-                    snapshot
-                        .entries()
-                        .values()
-                        .filter_map(|entry| match entry {
-                            Entry::File { artifact, .. } => Some(artifact.len()),
-                            _ => None,
-                        })
-                        .sum(),
-                );
-            }
-            Err(failure) => {
-                trace.attribute("phase", "failed");
-                trace.record_error("copy.publish", failure);
-            }
-        }
-        result
-    }
-
-    fn publish_namespace_inner(
-        &mut self,
-        work: &WorkNode,
-        snapshot: &Snapshot,
-        span: Span,
-        permit: NamespaceMergePermit,
-        target: &Path,
-    ) -> Result<()> {
-        let receipt = self
-            .engine_mut()?
-            .manager
-            .publish_merged_file(
-                work.transaction,
-                &permit,
-                target,
-                snapshot,
-                NamespacePublicationOrder(work.order.0),
-            )
-            .map_err(|cause| {
-                ExecutionError::caused("cannot publish the reserved namespace child", span, cause)
-            })?;
-        self.namespaces.remove(&work.key);
-        let engine = self.engine_mut()?;
-        engine.report.assignments += 1;
-        for entry in snapshot.entries().values() {
-            if let Entry::File { artifact, .. } = entry {
-                engine.report.assigned_files += 1;
-                engine.report.assigned_bytes =
-                    engine.report.assigned_bytes.saturating_add(artifact.len());
-            }
-        }
-        engine.committed(receipt.report);
-        if self.implicit.contains(&work.transaction) {
-            self.closed_owners.insert(work.transaction);
-        }
-        self.logical_complete(work)?;
-        self.owner_committed(work.transaction)?;
-        Ok(())
-    }
-
-    fn logical_complete(&mut self, work: &WorkNode) -> Result<()> {
-        self.event(Event::Node(work.key, NodeEvent::LogicalComplete))?;
-        self.pending_nodes
-            .entry(work.transaction)
-            .or_default()
-            .insert(work.key);
-        Ok(())
-    }
-
-    fn owner_committed(&mut self, transaction: TransactionId) -> Result<()> {
-        for key in self.pending_nodes.remove(&transaction).unwrap_or_default() {
-            self.event(Event::Node(key, NodeEvent::Committed))?;
-        }
-        let processes = self
-            .programs
-            .values()
-            .filter(|program| program.transaction == transaction && program.is_sealed())
-            .map(|program| program.id)
-            .collect::<Vec<_>>();
-        for process in processes {
-            self.event(Event::Process(process, ProcessEvent::Committed))?;
-            if let Some(cohort) = self.process_cohorts.get(&process).cloned() {
-                self.event(Event::Cohort(cohort, Visibility::Committed))?;
-            }
-            self.process_nodes.remove(&process);
-        }
-        self.owner_tokens.remove(&transaction);
-        Ok(())
-    }
-
-    fn discard_candidate(
-        &mut self,
-        key: NodeKey,
-        candidate: Option<program::SharedView>,
-        span: Span,
-    ) -> Result<()> {
-        self.release_namespace(key)?;
-        if let Some((_, prepared)) = candidate {
-            prepared.discard().map_err(|cause| {
-                ExecutionError::caused(
-                    "cannot release an unadmitted shared-view lease",
-                    span,
-                    cause,
-                )
-            })?;
-        }
-        Ok(())
-    }
-
-    fn ports_available(&self, node: &Instruction) -> bool {
-        let InstructionKind::Transfer {
-            source,
-            destination,
-        } = &node.kind
-        else {
-            return true;
-        };
-        (!matches!(source, Input::Port { process, .. } if !self.programs.contains_key(process)))
-            && (!matches!(destination, Output::Stdin(process) if !self.programs.contains_key(process)))
-    }
-
-    fn may_pin_input(&self, node: &Instruction, work: &WorkNode) -> Result<bool> {
-        let InstructionKind::Transfer {
-            source:
-                Input::File {
-                    location,
-                    pattern: None,
-                },
-            destination: Output::Stdin(_),
-        } = &node.kind
-        else {
-            return Ok(false);
-        };
-        if self.prepared_readers.contains_key(&work.key)
-            || !self.host_unstable(node.id, hir::effects::EndpointRole::Source)
-                && physical::source_stream(location, node.span)?.is_some()
-        {
-            return Ok(false);
-        }
-        let pending = match self
-            .ledger
-            .gate(&work.plan, node.id, Phase::Start)
-            .map_err(Self::binding_error)?
-        {
-            GateState::Pending(pending) => pending,
-            GateState::Ready => Vec::new(),
-            GateState::Failed { .. } | GateState::Cancelled { .. } => return Ok(false),
-        };
-        let owner = self.owner_key(work.transaction)?;
-        Ok(pending.iter().all(|event| match event {
-            Event::Process(process, ProcessEvent::Imported) => {
-                self.programs.get(process).is_some_and(|program| {
-                    self.owner_key(program.transaction)
-                        .is_ok_and(|value| value == owner)
-                })
-            }
-            Event::Cohort(cohort, Visibility::Imported) => cohort.owner == owner,
-            _ => false,
-        }))
-    }
-
-    fn instruction<'a>(
-        &'a mut self,
-        node: &'a Instruction,
-        current: Option<TransactionId>,
-        program: &'a hir::Program,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(async move {
-            self.active_origin = self.origins.get(&node.id).cloned();
-            match &node.kind {
-                InstructionKind::Spawn { .. } => self.spawn(node, current, program).await,
-                InstructionKind::Transfer {
-                    source,
-                    destination,
-                } => {
-                    self.transfer(node.id, source, destination, current, node.span)
-                        .await
+            let registration = lease.register_stage(&self.options.scratch_root, invocation.path());
+            match registration {
+                Ok(registration) => {
+                    self.stage_registration = Some(registration);
+                    self.options.shared_invocation = Some(invocation);
                 }
-                InstructionKind::Transaction { .. } => Err(ExecutionError::new(
-                    "named transactions must be admitted by the region frontier",
-                    node.span,
-                )),
-                InstructionKind::Commit { transaction } => {
-                    let id = self
-                        .engine_mut()?
-                        .current(*transaction, current, node.span)?;
-                    self.quiesce(id).await?;
-                    let work = self.work()?;
-                    self.await_gate(&work, Phase::Publish).await?;
-                    let report = self.engine_mut()?.manager.checkpoint(id).map_err(|cause| {
-                        ExecutionError::caused("checkpoint failed", node.span, cause)
-                    })?;
-                    self.engine_mut()?.report.checkpoints += 1;
-                    self.engine_mut()?.committed(report);
-                    self.owner_committed(id)?;
-                    Ok(())
-                }
-                InstructionKind::Rollback { transaction, scope } => {
-                    let id = *self.engine_mut()?.named.get(transaction).ok_or_else(|| {
-                        ExecutionError::new(
-                            "rollback has no retained transaction origin",
-                            node.span,
-                        )
-                    })?;
-                    match scope {
-                        RollbackScope::Checkpoint => {
-                            if current != Some(id) {
-                                return Err(ExecutionError::new(
-                                    "rollback belongs to another transaction",
-                                    node.span,
-                                ));
-                            }
-                            let work = self.work()?;
-                            let frame = self
-                                .ledger
-                                .cancel_epoch(work.plan.clone(), node.id)
-                                .map_err(Self::binding_error)?;
-                            debug_assert_eq!(frame.plan().id(), work.key.submission);
-                            debug_assert_eq!(frame.controller(), work.key);
-                            let controlled = &frame.cut().processes;
-                            debug_assert!(
-                                self.programs
-                                    .values()
-                                    .filter(
-                                        |program| program.transaction == id && program.is_running()
-                                    )
-                                    .all(|program| controlled.contains(&program.id))
-                            );
-                            let mut failure = ExecutionError::new(
-                                "discarding the pending program epoch",
-                                node.span,
-                            );
-                            if !self.cancel_transaction(id, &mut failure).await {
-                                let cause = Arc::new(failure);
-                                self.ledger
-                                    .fail_reset(frame, cause.clone())
-                                    .map_err(Self::binding_error)?;
-                                return Err(ExecutionError::caused(
-                                    "cannot join the discarded epoch before checkpoint restore",
-                                    node.span,
-                                    SharedFailure(cause),
-                                ));
-                            }
-                            let restored = self.engine_mut()?.manager.rollback_pending(id);
-                            if let Err(cause) = restored {
-                                let cause = Arc::new(ExecutionError::caused(
-                                    "cannot restore checkpoint",
-                                    node.span,
-                                    cause,
-                                ));
-                                self.ledger
-                                    .fail_reset(frame, cause.clone())
-                                    .map_err(Self::binding_error)?;
-                                return Err(ExecutionError::caused(
-                                    "checkpoint restoration failed",
-                                    node.span,
-                                    SharedFailure(cause),
-                                ));
-                            }
-                            self.ledger
-                                .finish_reset(frame)
-                                .map_err(Self::binding_error)?;
-                        }
-                        RollbackScope::Begin => {
-                            if current.is_some() {
-                                return Err(ExecutionError::new(
-                                    "named rollback is not allowed inside a transaction",
-                                    node.span,
-                                ));
-                            }
-                            let report = self.engine_mut()?.manager.rollback_origin(id).map_err(
-                                |cause| {
-                                    ExecutionError::caused(
-                                        "cannot restore transaction origin",
-                                        node.span,
-                                        cause,
-                                    )
-                                },
-                            )?;
-                            self.engine_mut()?.committed(report);
-                        }
-                    }
-                    self.engine_mut()?.report.rollbacks += 1;
-                    Ok(())
-                }
-            }
-        })
-    }
-
-    async fn spawn(
-        &mut self,
-        node: &Instruction,
-        current: Option<TransactionId>,
-        hir: &hir::Program,
-    ) -> Result<()> {
-        let InstructionKind::Spawn {
-            process,
-            executable,
-            arguments,
-            cwd,
-        } = &node.kind
-        else {
-            unreachable!("spawn requires a launch instruction")
-        };
-        let id = *process;
-        let instruction = node.id;
-        let span = node.span;
-        // Connected opaque programs share one mutable native epoch, not two
-        // independent snapshots whose final deltas merely happen to merge.
-        let (shared, baseline, owner) = {
-            let shared = self.candidate.take();
-            let peer = shared.as_ref().and_then(|(cohort, _)| {
-                self.programs.values().find(|program| {
-                    program.is_running()
-                        && program.cohort == *cohort
-                        && current.is_none_or(|id| id == program.transaction)
-                })
-            });
-            (
-                shared,
-                peer.map(|program| program.baseline.clone()),
-                peer.map(|program| program.transaction),
-            )
-        };
-        if self.programs.contains_key(&id) {
-            return Err(ExecutionError::new(
-                "program identity is already owned by this runtime",
-                span,
-            ));
-        }
-        let lease = self.admission.program(span)?;
-        let transaction = match current {
-            Some(id) => id,
-            None if owner.is_some() => owner.unwrap(),
-            None => {
-                let id = self.work()?.transaction;
-                self.engine_mut()?
-                    .manager
-                    .begin(id, Isolation::Serializable)
-                    .map_err(|cause| {
-                        ExecutionError::caused("cannot begin program context", span, cause)
-                    })?;
-                self.implicit.insert(id);
-                id
-            }
-        };
-        let task = lease.task("program.launch");
-        let worker = self.worker.clone().expect("preflight worker");
-        let buffer_bytes = self.options.limits.buffer_bytes;
-        let origin = self.active_origin.clone();
-        let mut context = self.refinement_context();
-        context.operation_facts = self.planning.operation_facts.clone();
-        let peers = self
-            .programs
-            .values()
-            .filter(|program| program.is_running())
-            .map(|program| (program.id, program.cohort, program.effects.clone()))
-            .collect::<Vec<_>>();
-        context.existing_parent_frontiers = self.planning.existing_parent_frontiers.clone();
-        context.namespace_merges = self.planning.namespace_merges.clone();
-        let work = self.work()?;
-        let owner_key = self.owner_key(transaction)?;
-        let ledger = &self.ledger;
-        let mut admitted = None;
-        let mut rejected = false;
-        let engine = self
-            .engine
-            .as_mut()
-            .expect("a bound program has an execution engine");
-        let mut roots = baseline.unwrap_or_default();
-        if shared.is_none() {
-            for root in &engine.roots {
-                let snapshot =
-                    engine
-                        .manager
-                        .read_snapshot(transaction, root)
-                        .map_err(|cause| {
-                            ExecutionError::caused("cannot read the program epoch", span, cause)
-                        })?;
-                if !snapshot.is_directory() {
-                    return Err(ExecutionError::new(
-                        "program resource domains must be enrolled as directory roots",
-                        span,
-                    ));
-                }
-                roots.push((root.clone(), snapshot));
-            }
-        }
-        let scratch = engine.workspace.join("programs");
-        fs::create_dir_all(&scratch).map_err(|cause| {
-            ExecutionError::caused("cannot create program workspace", span, cause)
-        })?;
-        let mut config = ProcessConfig::new(engine.workspace.join("spools"));
-        fs::create_dir_all(&config.scratch_root)
-            .map_err(|cause| ExecutionError::caused("cannot create program spools", span, cause))?;
-        config.buffer_bytes = buffer_bytes;
-        let owner_identity = format!("{}:txn-{}", engine.workspace.display(), transaction.0);
-        let launched = task
-            .run(Program::launch(
-                program::Launch {
-                    invocation: &engine.invocation,
-                    id,
-                    transaction,
-                    span,
-                    executable,
-                    arguments,
-                    cwd,
-                    worker: &worker,
-                    scratch: &scratch,
-                    config,
-                    lease,
-                    origin,
-                },
-                &engine.assets,
-                roots,
-                shared,
-                |cohort, effects| {
-                    context.process_effects.insert(id, effects.clone());
-                    let mut members = peers
-                        .iter()
-                        .filter(|(_, peer_cohort, _)| *peer_cohort == cohort)
-                        .map(|(id, _, effects)| (*id, effects.clone()))
-                        .collect::<Vec<_>>();
-                    members.push((id, effects.clone()));
-                    if members.len() > 1 {
-                        context
-                            .cohort_views
-                            .retain(|proof| proof.view_id() != effects.view_id());
-                        let proof = crate::hir::graph::CohortViewProof::shared(
-                            owner_identity,
-                            format!("{}:cohort-{}", effects.view_id(), cohort.0),
-                            members,
-                        )
-                        .map_err(|message| ExecutionError::new(message, span))?;
-                        context.cohort_views.push(proof);
-                    }
-                    let graph = crate::hir::graph::build_with_context(hir, &context);
-                    let mut bindings = Bindings::default();
-                    bindings.processes.insert(id, owner_key);
-                    let bound = work.plan.rebind(context, graph, bindings).map_err(Self::binding_error)?;
-                    let result = match ledger.gate(&bound, instruction, Phase::Start).map_err(Self::binding_error)? {
-                        GateState::Ready => { admitted = Some(bound); Ok(()) },
-                        GateState::Pending(events) => Err(ExecutionError::new(format!("prepared program is waiting for {} resource events; no candidate payload started", events.len()), span)),
-                        GateState::Failed { cause, .. } => Err(ExecutionError::caused("prepared program has a failed prerequisite", span, SharedFailure(cause))),
-                        GateState::Cancelled { reason, .. } => Err(ExecutionError::new(format!("prepared program has a discarded prerequisite: {reason:?}"), span)),
-                    };
-                    rejected = result.is_err();
-                    result
-                },
-            ))
-            .await;
-        if rejected {
-            self.rejected_before_start = true;
-        }
-        let program = launched?;
-        self.plan = admitted;
-        self.programs.insert(id, program);
-        self.latest_processes.insert(id);
-        let mut work = self.work()?;
-        work.plan = self.refresh_plan(Bindings::default())?;
-        self.active_work = Some(work.clone());
-        self.process_nodes.insert(id, work.key);
-        let program = &self.programs[&id];
-        let cohort = CohortKey {
-            provider: program.effects.provider().into(),
-            view_id: program.effects.view_id().into(),
-            owner: self.owner_key(transaction)?,
-            epoch: format!("{}:cohort-{}", program.effects.view_id(), program.cohort.0).into(),
-        };
-        self.process_cohorts.insert(id, cohort);
-        self.event(Event::Process(id, ProcessEvent::Started))?;
-        self.event(Event::Node(work.key, NodeEvent::Admitted))?;
-        self.event(Event::Node(work.key, NodeEvent::ServiceReady))?;
-        let signal = self.programs[&id].exit_signal.clone();
-        let sender = self.terminal_tx.clone();
-        tokio::spawn(async move {
-            signal.cancelled().await;
-            let _ = sender.try_send(Terminal::Process(id));
-        });
-        Ok(())
-    }
-
-    async fn transfer(
-        &mut self,
-        instruction: InstructionId,
-        source: &Input,
-        destination: &Output,
-        current: Option<TransactionId>,
-        span: Span,
-    ) -> Result<()> {
-        if let Input::Port { process, port } = source {
-            self.process_data(*process, *port, span)?;
-        }
-        let physical = match self.work()?.physical {
-            Some(spec) => Some(spec),
-            None if known_physical(
-                source,
-                destination,
-                self.planning.operation_facts.get(&instruction),
-            ) =>
-            {
-                physical::inspect(source, destination, span)?
-            }
-            None => None,
-        };
-        if let Some(spec) = physical {
-            return self
-                .physical_transfer(instruction, source, spec, current)
-                .await;
-        }
-        if let Some(spec) = endpoint::inspect(source, destination, span)? {
-            return self.remote_transfer(source, spec, current, span).await;
-        }
-        if let (Input::Literal(text), Output::File { location, mode }) = (source, destination) {
-            return self.literal_transfer(
-                instruction,
-                text.clone(),
-                location,
-                *mode,
-                current,
-                span,
-            );
-        }
-        match (source, destination) {
-            (_, Output::Stdin(process)) => {
-                let transaction = self
-                    .programs
-                    .get(process)
-                    .ok_or_else(|| {
-                        ExecutionError::new("program stdin has no preceding launch", span)
-                    })?
-                    .transaction;
-                if current.is_some_and(|id| id != transaction) {
-                    return Err(ExecutionError::new(
-                        "a program stream cannot cross transaction contexts",
-                        span,
-                    ));
-                }
-                if let Input::File { location, .. } = source
-                    && !self.host_unstable(instruction, hir::effects::EndpointRole::Source)
-                    && let Some(endpoint) = physical::source_stream(location, span)?
-                {
-                    if current.is_some() {
-                        return Err(ExecutionError::new(
-                            "external stream input needs a transactional peer inside a named transaction",
-                            span,
-                        ));
-                    }
-                    let sink = self
-                        .programs
-                        .get_mut(process)
-                        .unwrap()
-                        .stdin
-                        .take()
-                        .ok_or_else(|| {
-                            ExecutionError::new("program stdin already has a producer", span)
-                        })?;
-                    let consumer_closed = self.programs.get(process).unwrap().exit_signal.clone();
-                    return self.physical_input(
-                        instruction,
-                        endpoint,
-                        sink,
-                        transaction,
-                        span,
-                        consumer_closed,
+                Err(cause) => {
+                    let mut error = ExecutionError::caused(
+                        "cannot register runtime-private resources before use",
+                        Span::default(),
+                        cause,
                     );
+                    if let Err(cleanup) = invocation.cleanup() {
+                        error.retained_paths.push(invocation.path().to_owned());
+                        error.report.help.push(format!("cleanup: {cleanup}"));
+                    }
+                    return Err(error);
                 }
-                let work = self.work()?;
-                let reader = match self.prepared_readers.remove(&work.key) {
-                    Some(reader) => reader,
-                    None => self.reader(instruction, source, transaction, span).await?,
-                };
-                let sink = self
-                    .programs
-                    .get_mut(process)
-                    .unwrap()
-                    .stdin
-                    .take()
-                    .ok_or_else(|| {
-                        ExecutionError::new("program stdin already has a producer", span)
-                    })?;
-                self.flow(reader, sink, transaction, None, span)
-            }
-            (
-                Input::Port {
-                    process,
-                    port: ReadPort::Stdout | ReadPort::Stderr,
-                },
-                Output::File { location, mode },
-            ) => {
-                let Input::Port { process: _, port } = source else {
-                    unreachable!()
-                };
-                let transaction = self.connection_transaction(*process, current, span)?;
-                let target = self.output_path(instruction, location, span)?;
-                let reader = self.programs.get_mut(process).unwrap().take_reader(*port)?;
-                let operation = self.fresh_instruction()?;
-                let path = self
-                    .engine_mut()?
-                    .imports
-                    .join(format!("program-output-{}", operation.0));
-                let mut file = tokio::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-                    .await
-                    .map_err(|cause| {
-                        ExecutionError::caused("cannot stage program output", span, cause)
-                    })?;
-                file.set_max_buf_size(self.options.limits.buffer_bytes);
-                self.flow(
-                    reader,
-                    Box::pin(file),
-                    transaction,
-                    Some((path, target, *mode)),
-                    span,
-                )
-            }
-            (Input::Port { process, port }, Output::File { location, mode }) => {
-                let owner = self
-                    .programs
-                    .get(process)
-                    .ok_or_else(|| {
-                        ExecutionError::new("program scalar has no preceding launch", span)
-                    })?
-                    .transaction;
-                let cancel = self.owner_token(owner);
-                let bytes = self
-                    .programs
-                    .get_mut(process)
-                    .unwrap()
-                    .read_scalar(*port, &cancel)
-                    .await?;
-                let snapshot = self.capture_bytes(&bytes, span).await?;
-                let target = self.output_path(instruction, location, span)?;
-                let transaction = self.connection_transaction(*process, current, span)?;
-                let instruction = self.fresh_instruction()?;
-                let work = self.work()?;
-                self.event(Event::Node(work.key, NodeEvent::Admitted))?;
-                self.event(Event::Node(work.key, NodeEvent::ServiceReady))?;
-                self.deferred.push(Deferred {
-                    work,
-                    origin: self.active_origin.clone(),
-                    instruction,
-                    transaction,
-                    source: snapshot,
-                    target,
-                    mode: *mode,
-                    span,
-                    basename: None,
-                });
-                if !self
-                    .programs
-                    .values()
-                    .any(|program| program.transaction == transaction && program.is_running())
-                    && self.is_ready(transaction)
-                {
-                    self.quiesce(transaction).await?;
-                    // A replayed scalar is a complete atomic statement, not a
-                    // pending version for the next sibling to snapshot around.
-                    self.finish_implicit(transaction)?;
-                }
-                Ok(())
-            }
-            (_, Output::File { location, mode }) => {
-                let work = self.work()?;
-                if self.namespaces.contains_key(&work.key) {
-                    let source = file_source(source, span)?;
-                    let snapshot = match &source {
-                        Source::Literal(bytes) => {
-                            self.capture_bytes(bytes.as_bytes(), span).await?
-                        }
-                        Source::Local(path) => self
-                            .engine_mut()?
-                            .manager
-                            .read_committed_file(path)
-                            .map_err(|cause| {
-                                ExecutionError::caused(
-                                    "cannot pin the committed namespace source",
-                                    span,
-                                    cause,
-                                )
-                            })?,
-                        _ => {
-                            return Err(ExecutionError::new(
-                                "namespace merging requires one prepared ordinary file or literal source",
-                                span,
-                            ));
-                        }
-                    };
-                    self.event(Event::Node(work.key, NodeEvent::ServiceReady))?;
-                    return self.publish_namespace(&work, &snapshot, &source, span);
-                }
-                let transaction = self.transaction(current, span)?;
-                let operation = self.fresh_instruction()?;
-                self.engine_mut()?
-                    .manager
-                    .start_statement(transaction)
-                    .map_err(|cause| {
-                        ExecutionError::caused("cannot begin statement view", span, cause)
-                    })?;
-                let raw = self.output_path(instruction, location, span)?;
-                let transfer = Transfer {
-                    source: self.selected_source(instruction, source, transaction, span)?,
-                    destination: self.selected_path(transaction, &raw, span)?,
-                    mode: *mode,
-                    pattern: match source {
-                        Input::File { pattern, .. } => pattern.clone(),
-                        _ => None,
-                    },
-                    span,
-                };
-                self.engine_mut()?
-                    .transfer(operation, &transfer, transaction)?;
-                if current.is_none() {
-                    self.engine_mut()?.finish(transaction, span)?;
-                    self.implicit.remove(&transaction);
-                }
-                Ok(())
             }
         }
+        Ok(())
     }
-
-    fn literal_transfer(
-        &mut self,
-        instruction: InstructionId,
-        text: Arc<str>,
-        location: &Location,
-        mode: DestinationMode,
-        current: Option<TransactionId>,
-        span: Span,
-    ) -> Result<()> {
-        let lease = self.admission.copy(span)?;
-        let work = self.work()?;
-        let transaction = if current.is_none() && self.namespaces.contains_key(&work.key) {
-            self.implicit.insert(work.transaction);
-            work.transaction
-        } else {
-            self.transaction(current, span)?
+    fn observe(
+        &self,
+        phase: super::progress::Phase,
+        instruction: Option<InstructionId>,
+        source: impl FnOnce() -> Option<String>,
+        destination: impl FnOnce() -> Option<String>,
+    ) {
+        let Some(observer) = self.observer.as_ref() else {
+            return;
         };
-        let operation = self.fresh_instruction()?;
-        let path = self
-            .engine_mut()?
-            .imports
-            .join(format!("literal-{}", operation.0));
-        let target = self.output_path(instruction, location, span)?;
-        let literal = materialize::Literal {
-            path,
-            text,
-            buffer: self.options.limits.buffer_bytes,
-            cancel: self.owner_token(transaction),
-            span,
+        observer.update(super::progress::Event {
+            phase,
             instruction,
-            transaction,
-        };
-        let task = lease.task("literal.materialize");
-        let ready = Arc::new(AtomicBool::new(false));
-        let notice = TerminalNotice {
-            sender: self.terminal_tx.clone(),
-            event: Terminal::Flow(work.key),
-            ready: ready.clone(),
-        };
-        let flow_work = work.clone();
-        let managed = Some(target.clone());
-        let handle = tokio::spawn(task.run(async move {
-            let _notice = notice;
-            let path = literal.run().await?;
-            Ok(FlowResult {
-                work,
-                origin: None,
-                instruction: operation,
-                transaction,
-                span,
-                output: Some((path, target, mode)),
-                basename: None,
-                capture_lease: Some(lease),
-            })
-        }));
-        self.flows.push(Flow {
-            work: flow_work,
-            ready,
-            origin: self.active_origin.clone(),
-            transaction,
-            handle,
-            managed,
+            source: source(),
+            destination: destination(),
+            ..Default::default()
         });
-        self.event(Event::Node(self.work()?.key, NodeEvent::Admitted))?;
-        Ok(())
     }
-
-    fn has_materializations(&self) -> bool {
-        let submission = self.plan.as_ref().map(|plan| plan.id());
-        self.outstanding_work()
-            .any(|work| work.materialization.is_some() && Some(work.key.submission) == submission)
+    async fn settle_all(&mut self) -> Result<()> {
+        let mut failure = None;
+        self.flow_reservations.clear();
+        self.reserved_groups.clear();
+        record_failure(&mut failure, self.drain_acquisition().await);
+        record_failure(&mut failure, self.drain_finite().await);
+        record_failure(&mut failure, self.await_process(None).await);
+        record_failure(&mut failure, self.join_all_flows().await);
+        failure.map_or(Ok(()), Err)
     }
-
-    async fn remote_transfer(
-        &mut self,
-        source: &Input,
-        spec: endpoint::Spec,
-        current: Option<TransactionId>,
-        span: Span,
-    ) -> Result<()> {
-        if current.is_some() || matches!(source, Input::Port { .. }) {
-            return Err(ExecutionError::new(
-                "remote endpoint publication requires a finite top-level source",
-                span,
-            ));
-        }
-        let transaction = self.transaction(None, span)?;
-        self.engine_mut()?
-            .manager
-            .start_statement(transaction)
-            .map_err(|cause| {
-                ExecutionError::caused("cannot begin remote source statement", span, cause)
-            })?;
-        let operation = self.fresh_instruction()?;
-        let (snapshot, basename) = match file_source(source, span)? {
-            Source::Local(path) => {
-                let snapshot = self
-                    .engine_mut()?
-                    .manager
-                    .read_snapshot(transaction, &path)
-                    .map_err(|cause| {
-                        ExecutionError::caused("cannot capture remote source version", span, cause)
-                    })?;
-                (snapshot, path.file_name().map(OsString::from))
-            }
-            Source::Remote { location, basename } => {
-                let engine = self.engine_mut()?;
-                (
-                    domain::imported(
-                        &location,
-                        span,
-                        &engine.imports,
-                        &engine.assets,
-                        &engine.options,
-                        operation,
-                    )?,
-                    basename,
-                )
-            }
-            Source::Literal(text) => (self.capture_bytes(text.as_bytes(), span).await?, None),
-            Source::Captured { snapshot, basename } => (snapshot, basename),
-            Source::MaterializedLiteral(snapshot) => (snapshot, None),
-        };
-        if snapshot.is_missing() {
-            return Err(ExecutionError::new(
-                "remote transfer source does not exist",
-                span,
-            ));
-        }
-        let materialized = if let Some(Entry::File { artifact, .. }) =
-            snapshot.entries().get(Path::new(""))
-        {
-            // The snapshot pins an immutable artifact through the remote join;
-            // copying it into another private file would add no isolation.
-            artifact.path().to_owned()
-        } else {
-            let path = self
-                .engine_mut()?
-                .imports
-                .join(format!("endpoint-source-{}", operation.0));
-            let mut publication = self
-                .engine_mut()?
-                .assets
-                .prepare(&snapshot, &path)
-                .map_err(|cause| {
-                    ExecutionError::caused("cannot prepare immutable remote source", span, cause)
-                })?;
-            publication.publish().map_err(|cause| {
-                ExecutionError::caused("cannot materialize immutable remote source", span, cause)
-            })?;
-            publication.finalize().map_err(|cause| {
-                ExecutionError::caused("cannot finalize immutable remote source", span, cause)
-            })?;
-            path
-        };
-        // Finish the read-only source transaction before publishing externally.
-        // No local private program view may remain live across this boundary.
-        self.engine_mut()?.finish(transaction, span)?;
-        self.implicit.remove(&transaction);
-        let report = spec
-            .run(
-                materialized,
-                basename,
-                self.options.limits.buffer_bytes,
-                self.options.cancel.clone(),
-            )
-            .await?;
-        let engine = self.engine_mut()?;
-        engine.report.assignments += 1;
-        engine.report.assigned_files += report.transfer.copied_files;
-        engine.report.assigned_bytes = engine
-            .report
-            .assigned_bytes
-            .saturating_add(report.transfer.transferred_bytes);
-        if let Some(issue) = report.cleanup {
-            engine.report.cleanup.push(issue);
-        }
-        Ok(())
-    }
-
-    async fn physical_transfer(
-        &mut self,
-        instruction: InstructionId,
-        input: &Input,
-        spec: physical::Spec,
-        current: Option<TransactionId>,
-    ) -> Result<()> {
-        if current.is_some() {
-            return Err(ExecutionError::new(
-                "external stream effects need a transactional peer inside a named transaction",
-                spec.span,
-            ));
-        }
-        let span = spec.span;
-        let transaction = match input {
-            Input::Port { process, .. } => self.connection_transaction(*process, None, span)?,
-            _ if spec.managed.is_some() => {
-                // The destination statement starts at EOF, not when an external
-                // peer connects. Independent streams must not pin an obsolete
-                // parent namespace while waiting for unrelated peers to close.
-                let id = self.work()?.transaction;
-                if !self.namespaces.contains_key(&self.work()?.key) {
-                    self.engine_mut()?
-                        .manager
-                        .begin(id, Isolation::ReadCommitted)
-                        .map_err(|cause| {
-                            ExecutionError::caused("cannot begin physical output", span, cause)
-                        })?;
-                }
-                self.implicit.insert(id);
-                id
-            }
-            _ => self.transaction(None, span)?,
-        };
-        let source = match input {
-            Input::Literal(text) => physical::Source::Literal(text.clone()),
-            Input::Port { .. } => {
-                physical::Source::Reader(self.reader(instruction, input, transaction, span).await?)
-            }
-            Input::File { .. } => {
-                let endpoint = spec
-                    .source
-                    .as_ref()
-                    .expect("file source has a resolved endpoint");
-                if spec.kinds.source == crate::plan::FileClass::Stream
-                    || endpoint.backend != Backend::Local
-                {
-                    physical::Source::Endpoint(endpoint.clone())
-                } else {
-                    let path = PathBuf::from(&endpoint.path);
-                    let manager = &mut self.engine_mut()?.manager;
-                    let snapshot = manager.read_committed_file(&path).map_err(|cause| {
-                        ExecutionError::caused(
-                            "cannot read immutable physical flow input",
-                            span,
-                            cause,
-                        )
-                    })?;
-                    physical::Source::Snapshot(snapshot)
-                }
-            }
-        };
-        let operation = self.fresh_instruction()?;
-        let output = spec.managed.as_ref().map(|(target, mode)| {
-            (
-                self.engine
-                    .as_ref()
-                    .expect("initialized engine")
-                    .imports
-                    .join(format!("physical-output-{}", operation.0)),
-                target.clone(),
-                *mode,
-            )
-        });
-        let capture = output.as_ref().map(|(path, _, _)| path.clone());
-        let basename = spec.basename.clone();
-        let lease = self.flow_lease(instruction, span)?;
-        let buffer = self.options.limits.buffer_bytes;
-        let cancel = self.owner_token(transaction);
-        let managed = output.as_ref().map(|(_, target, _)| target.clone());
-        let task = lease.task("physical.transfer");
-        let work = self.work()?;
-        let flow_work = work.clone();
-        let ready = Arc::new(AtomicBool::new(false));
-        let notice = TerminalNotice {
-            sender: self.terminal_tx.clone(),
-            event: Terminal::Flow(work.key),
-            ready: ready.clone(),
-        };
-        let handle = tokio::spawn(task.run(async move {
-            let _notice = notice;
-            let _lease = lease;
-            spec.run(source, capture, buffer, cancel).await?;
-            Ok(FlowResult {
-                work,
-                origin: None,
-                instruction: operation,
-                transaction,
-                span,
-                output,
-                basename,
-                capture_lease: None,
-            })
-        }));
-        self.flows.push(Flow {
-            work: flow_work,
-            ready,
-            origin: self.active_origin.clone(),
-            transaction,
-            handle,
-            managed,
-        });
-        self.event(Event::Node(self.work()?.key, NodeEvent::Admitted))?;
-        Ok(())
-    }
-
-    fn physical_input(
-        &mut self,
-        instruction: InstructionId,
-        source: Location,
-        sink: Writer,
-        transaction: TransactionId,
-        span: Span,
-        consumer_closed: CancellationToken,
-    ) -> Result<()> {
-        let lease = self.flow_lease(instruction, span)?;
-        let fifo = self
-            .native_fifo_pins
-            .get(&hir::effects::EndpointKey {
-                instruction,
-                role: hir::effects::EndpointRole::Source,
-            })
-            .cloned();
-        let buffer = self.options.limits.buffer_bytes;
-        let cancel = self.owner_token(transaction);
-        let task = lease.task("physical.input");
-        let work = self.work()?;
-        let flow_work = work.clone();
-        let ready = Arc::new(AtomicBool::new(false));
-        let notice = TerminalNotice {
-            sender: self.terminal_tx.clone(),
-            event: Terminal::Flow(work.key),
-            ready: ready.clone(),
-        };
-        let handle = tokio::spawn(task.run(async move {
-            let _notice = notice;
-            let _lease = lease;
-            physical::to_writer(source, sink, buffer, cancel, span, consumer_closed, fifo).await?;
-            Ok(FlowResult {
-                work,
-                origin: None,
-                instruction,
-                transaction,
-                span,
-                output: None,
-                basename: None,
-                capture_lease: None,
-            })
-        }));
-        self.flows.push(Flow {
-            work: flow_work,
-            ready,
-            origin: self
-                .active_origin
-                .as_ref()
-                .map(|origin| origin.for_operand(false)),
-            transaction,
-            handle,
-            managed: None,
-        });
-        self.event(Event::Node(self.work()?.key, NodeEvent::Admitted))?;
-        Ok(())
-    }
-
-    async fn reap_physical(&mut self) -> Result<()> {
-        loop {
-            let before = self.progress;
-            self.reap_ready().await?;
-            if before == self.progress {
-                return Ok(());
-            }
-        }
-    }
-
-    async fn reap_ready(&mut self) -> Result<()> {
-        self.drain_terminals()?;
-        let owners = self
-            .implicit
-            .iter()
-            .copied()
-            .chain(self.flows.iter().map(|flow| flow.transaction))
-            .chain(
-                self.deferred
-                    .iter()
-                    .map(|assignment| assignment.transaction),
-            )
-            .chain(
-                self.programs
-                    .values()
-                    .filter(|program| program.is_running())
-                    .map(|program| program.transaction),
-            )
-            .collect::<BTreeSet<_>>();
-        let ready = owners
-            .into_iter()
-            .filter(|id| self.is_ready(*id))
-            .collect::<Vec<_>>();
-        for transaction in ready {
-            self.quiesce(transaction).await.map_err(|mut error| {
-                error.transaction = Some(transaction);
-                error
-            })?;
-            if self
-                .deferred
-                .iter()
-                .any(|assignment| assignment.transaction == transaction)
-            {
-                continue;
-            }
-            self.finish_implicit(transaction)?;
-        }
-        Ok(())
-    }
-
-    fn finish_implicit(&mut self, transaction: TransactionId) -> Result<()> {
-        if !self.implicit.contains(&transaction)
-            || self
-                .deferred
-                .iter()
-                .any(|assignment| assignment.transaction == transaction)
-        {
-            return Ok(());
-        }
-        if !self.closed_owners.remove(&transaction) {
-            self.engine_mut()?
-                .finish(transaction, Span::default())
-                .map_err(|mut error| {
-                    error.transaction = Some(transaction);
-                    error
-                })?;
-        }
-        self.owner_committed(transaction)?;
-        self.implicit.remove(&transaction);
-        Ok(())
-    }
-
-    fn transaction(&mut self, current: Option<TransactionId>, span: Span) -> Result<TransactionId> {
-        if let Some(id) = current {
-            return Ok(id);
-        }
-        let id = self.work()?.transaction;
-        if self.implicit.contains(&id) {
-            return Ok(id);
-        }
-        self.engine_mut()?
-            .manager
-            .begin(id, Isolation::ReadCommitted)
-            .map_err(|cause| {
-                ExecutionError::caused("cannot begin atomic statement", span, cause)
-            })?;
-        self.implicit.insert(id);
-        Ok(id)
-    }
-
-    fn connection_transaction(
-        &mut self,
-        process: ProcessId,
-        current: Option<TransactionId>,
-        span: Span,
-    ) -> Result<TransactionId> {
-        let program = self
-            .programs
-            .get(&process)
-            .ok_or_else(|| ExecutionError::new("program member has no preceding launch", span))?;
-        if let Some(id) = current {
-            if program.is_running() && id != program.transaction {
-                return Err(ExecutionError::new(
-                    "a live program stream cannot cross transaction contexts",
-                    span,
-                ));
-            }
-            return Ok(id);
-        }
-        if self.implicit.contains(&program.transaction) {
-            return Ok(program.transaction);
-        }
-        self.transaction(None, span)
-    }
-
-    async fn reader(
-        &mut self,
-        instruction: InstructionId,
-        source: &Input,
-        transaction: TransactionId,
-        span: Span,
-    ) -> Result<Reader> {
-        if let Input::Port { process, port } = source {
-            self.process_data(*process, *port, span)?;
-        }
-        match source {
-            Input::Port {
-                process,
-                port: ReadPort::Stdout | ReadPort::Stderr,
-            } => {
-                let Input::Port { port, .. } = source else {
-                    unreachable!()
-                };
-                self.programs
-                    .get_mut(process)
-                    .ok_or_else(|| {
-                        ExecutionError::new("program stream has no preceding launch", span)
-                    })?
-                    .take_reader(*port)
-            }
-            Input::Port { process, port } => {
-                let owner = self
-                    .programs
-                    .get(process)
-                    .ok_or_else(|| {
-                        ExecutionError::new("program scalar has no preceding launch", span)
-                    })?
-                    .transaction;
-                let cancel = self.owner_token(owner);
-                let bytes = self
-                    .programs
-                    .get_mut(process)
-                    .unwrap()
-                    .read_scalar(*port, &cancel)
-                    .await?;
-                Ok(Box::pin(std::io::Cursor::new(bytes)))
-            }
-            Input::Literal(bytes) => Ok(Box::pin(std::io::Cursor::new(bytes.as_bytes().to_vec()))),
-            Input::File { location, pattern } => {
-                if pattern.is_some() {
-                    return Err(ExecutionError::new(
-                        "stdin needs one byte source, not a directory selector",
-                        span,
-                    ));
-                }
-                let path = if self.host_unstable(instruction, hir::effects::EndpointRole::Source) {
-                    let raw = domain::deferred_local(location, true, span)?;
-                    self.selected_path(transaction, &raw, span)?
-                } else {
-                    local(location, true, span)?
-                };
-                let snapshot = self
-                    .engine_mut()?
-                    .manager
-                    .read_snapshot(transaction, &path)
-                    .map_err(|cause| {
-                        ExecutionError::caused("cannot read program input version", span, cause)
-                    })?;
-                let Some(Entry::File { artifact, .. }) = snapshot.entries().get(Path::new(""))
-                else {
-                    return Err(ExecutionError::new(
-                        "program stdin requires a regular non-directory source",
-                        span,
-                    ));
-                };
-                let mut file = tokio::fs::File::open(artifact.path())
-                    .await
-                    .map_err(|cause| {
-                        ExecutionError::caused("cannot open immutable program input", span, cause)
-                    })?;
-                file.set_max_buf_size(self.options.limits.buffer_bytes);
-                let lease = self.fresh_instruction()?;
-                let engine = self.engine_mut()?;
-                let logical = if matches!(location.backend, Backend::Local) {
-                    location.clone()
-                } else {
-                    Location {
-                        backend: Backend::Local,
-                        path: path.to_string_lossy().into_owned(),
-                    }
-                };
-                let proof = crate::hir::graph::VersionReadProof::pinned_file(
-                    logical,
-                    "manager-immutable-snapshot",
-                    format!(
-                        "{}:txn-{}:epoch-{}:lease-{}",
-                        engine.workspace.display(),
-                        transaction.0,
-                        engine.manager.epoch().0,
-                        lease.0
-                    ),
-                )
-                .map_err(|message| ExecutionError::new(message, span))?;
-                self.pins.insert(
-                    instruction,
-                    PinnedInput {
-                        proof,
-                        _snapshot: snapshot.clone(),
-                    },
-                );
-                Ok(Box::pin(OwnedReader {
-                    file,
-                    _snapshot: snapshot,
-                }))
-            }
-        }
-    }
-
-    fn flow(
-        &mut self,
-        mut source: Reader,
-        mut destination: Writer,
-        transaction: TransactionId,
-        output: Option<(PathBuf, PathBuf, DestinationMode)>,
-        span: Span,
-    ) -> Result<()> {
-        let work = self.work()?;
-        let lease = self.flow_lease(work.key.instruction, span)?;
-        let instruction = self.fresh_instruction()?;
-        let size = self.options.limits.buffer_bytes;
-        let cancel = self.owner_token(transaction);
-        let managed = output.as_ref().map(|(_, target, _)| target.clone());
-        let task = lease.task("program.port");
-        let origin = self.active_origin.clone();
-        let flow_work = work.clone();
-        let ready = Arc::new(AtomicBool::new(false));
-        let notice = TerminalNotice {
-            sender: self.terminal_tx.clone(),
-            event: Terminal::Flow(work.key),
-            ready: ready.clone(),
-        };
-        let handle = tokio::spawn(task.run(async move {
-            let _notice = notice;
-            let _lease = lease;
-            let mut bytes = vec![0; size];
-            loop {
-                let count = tokio::select! { () = cancel.cancelled() => return Err(ExecutionError::cancelled("program flow cancelled", span)), read = source.read(&mut bytes) => read.map_err(|cause| ExecutionError::caused("cannot read program flow", span, cause).with_operand(origin.as_ref(), false))? };
-                if count == 0 {
-                    break;
-                }
-                tokio::select! { () = cancel.cancelled() => return Err(ExecutionError::cancelled("program flow cancelled", span)), written = destination.write_all(&bytes[..count]) => written.map_err(|cause| ExecutionError::caused("cannot write program flow", span, cause).with_operand(origin.as_ref(), true))? };
-            }
-            destination.shutdown().await.map_err(|cause| {
-                ExecutionError::caused("cannot close program flow", span, cause).with_operand(origin.as_ref(), true)
-            })?;
-            Ok(FlowResult {
-                work,
-                origin: None,
-                instruction,
-                transaction,
-                span,
-                output,
-                basename: None,
-                capture_lease: None,
-            })
-        }));
-        self.flows.push(Flow {
-            work: flow_work,
-            ready,
-            origin: self.active_origin.clone(),
-            transaction,
-            handle,
-            managed,
-        });
-        self.event(Event::Node(self.work()?.key, NodeEvent::Admitted))?;
-        Ok(())
-    }
-
-    async fn quiesce(&mut self, transaction: TransactionId) -> Result<()> {
-        let owner_cancel = self.owner_token(transaction);
-        for program in self
-            .programs
-            .values_mut()
-            .filter(|program| program.transaction == transaction)
-        {
-            program.close_unused_stdin();
-        }
-        let mut completed = Vec::new();
-        let (selected, remaining): (Vec<_>, Vec<_>) = std::mem::take(&mut self.flows)
-            .into_iter()
-            .partition(|flow| flow.transaction == transaction);
-        self.flows = remaining;
-        let mut selected = selected.into_iter();
-        while let Some(mut flow) = selected.next() {
-            let result = tokio::select! {
-                () = owner_cancel.cancelled() => {
-                    let origin = flow.origin.clone();
-                    self.flows.push(flow);
-                    self.flows.extend(selected);
-                    return Err(ExecutionError::cancelled("execution cancelled while draining program IO", Span::default()).with_origin(origin.as_ref()));
-                },
-                joined = &mut flow.handle => joined
-                    .map_err(|cause| ExecutionError::caused("program flow worker failed", Span::default(), cause))
-                    .and_then(|result| result),
-            };
+    async fn drain_finite(&mut self) -> Result<()> {
+        let mut failure = None;
+        while let Some(result) = self.finite.join_next().await {
             match result {
-                Ok(mut result) => {
-                    result.origin = flow.origin;
-                    completed.push(result);
-                }
-                Err(failure) => {
-                    self.flows.extend(selected);
-                    return Err(failure.with_origin(flow.origin.as_ref()));
-                }
-            }
-        }
-        let ids = self
-            .programs
-            .values()
-            .filter(|program| program.transaction == transaction && program.is_running())
-            .map(|program| program.id)
-            .collect::<Vec<_>>();
-        for id in &ids {
-            let program = self.programs.get_mut(id).unwrap();
-            program
-                .join(&owner_cancel)
-                .await
-                .map_err(|error| error.with_origin(program.origin.as_ref()))?;
-        }
-        let mut imported = BTreeSet::new();
-        for id in &ids {
-            let engine = self.engine.as_mut().expect("initialized engine");
-            let program = self.programs.get_mut(id).unwrap();
-            let cohort = program.cohort;
-            let origin = program.origin.clone();
-            let receipt = program
-                .seal(&engine.assets, &owner_cancel)
-                .await
-                .map_err(|error| error.with_origin(origin.as_ref()))?;
-            if let Some(receipt) = receipt
-                && imported.insert(cohort)
-            {
-                let roots = receipt.roots.clone();
-                for (path, snapshot) in roots {
-                    let before = program
-                        .baseline
-                        .iter()
-                        .find(|(logical, _)| logical == &path)
-                        .map(|(_, snapshot)| snapshot)
-                        .ok_or_else(|| {
-                            ExecutionError::new(
-                                "sealed program root has no initial version",
-                                program.span,
-                            )
-                            .with_origin(origin.as_ref())
-                        })?;
-                    engine
-                        .manager
-                        .stage_view_delta(transaction, &path, before, &snapshot)
-                        .map_err(|cause| {
-                            ExecutionError::caused(
-                                "cannot stage sealed program changes",
-                                program.span,
-                                cause,
-                            )
-                            .with_origin(origin.as_ref())
-                        })?;
-                }
-            }
-        }
-        for id in ids {
-            self.event(Event::Process(id, ProcessEvent::Exited))?;
-            self.event(Event::Process(id, ProcessEvent::Imported))?;
-            if let Some(cohort) = self.process_cohorts.get(&id).cloned() {
-                self.event(Event::Cohort(cohort, Visibility::Imported))?;
-            }
-            if let Some(key) = self.process_nodes.get(&id).copied() {
-                self.event(Event::Node(key, NodeEvent::LogicalComplete))?;
-                self.pending_nodes
-                    .entry(transaction)
-                    .or_default()
-                    .insert(key);
-            }
-        }
-        for mut flow in completed {
-            self.event(Event::Node(flow.work.key, NodeEvent::ServiceReady))?;
-            if let Some((path, target, mode)) = flow.output {
-                let snapshot = self.engine_mut()?.assets.capture(&path).map_err(|cause| {
-                    ExecutionError::caused(
-                        "cannot capture completed program output",
-                        flow.span,
+                Ok(FiniteResult {
+                    result:
+                        Ok(
+                            FiniteOutcome::Statement(ordinary::Attempt::Completed(report))
+                            | FiniteOutcome::Fold(ordinary::FoldAttempt::Completed(report)),
+                        ),
+                    ..
+                }) => merge(&mut self.report, report),
+                Ok(FiniteResult {
+                    result: Err(error), ..
+                }) => record_failure(&mut failure, Err::<(), _>(error)),
+                Err(cause) => record_failure(
+                    &mut failure,
+                    Err::<(), _>(ExecutionError::caused(
+                        "statement worker failed",
+                        Span::default(),
                         cause,
-                    )
-                    .with_origin(flow.origin.as_ref())
-                })?;
-                drop(flow.capture_lease.take());
-                self.deferred.push(Deferred {
-                    work: flow.work,
-                    origin: flow.origin.clone(),
-                    instruction: flow.instruction,
-                    transaction: flow.transaction,
-                    source: snapshot,
-                    target,
-                    mode,
-                    span: flow.span,
-                    basename: flow.basename,
-                });
-            } else {
-                self.logical_complete(&flow.work)?;
+                    )),
+                ),
+                _ => {}
             }
         }
-        let mut remaining = Vec::new();
-        let mut assignments = Vec::new();
-        for assignment in std::mem::take(&mut self.deferred) {
-            if assignment.transaction == transaction {
-                assignments.push(assignment);
-            } else {
-                remaining.push(assignment);
-            }
-        }
-        self.deferred = remaining;
-        assignments.sort_by_key(|assignment| assignment.work.order);
-        for assignment in assignments {
-            if !self.gate(&assignment.work, Phase::Publish)? {
-                self.deferred.push(assignment);
-                continue;
-            }
-            if self.namespaces.contains_key(&assignment.work.key) {
-                let source = if assignment.work.materialization.is_some() {
-                    Source::MaterializedLiteral(assignment.source.clone())
-                } else {
-                    Source::Captured {
-                        snapshot: assignment.source.clone(),
-                        basename: assignment.basename.clone(),
-                    }
-                };
-                self.publish_namespace(
-                    &assignment.work,
-                    &assignment.source,
-                    &source,
-                    assignment.span,
-                )?;
-                continue;
-            }
-            self.engine_mut()?
-                .manager
-                .start_statement(transaction)
-                .map_err(|cause| {
-                    ExecutionError::caused(
-                        "cannot start the gated assignment publication",
-                        assignment.span,
-                        cause,
-                    )
-                })?;
-            let transfer = Transfer {
-                source: if assignment.work.materialization.is_some() {
-                    Source::MaterializedLiteral(assignment.source)
-                } else {
-                    Source::Captured {
-                        snapshot: assignment.source,
-                        basename: assignment.basename,
-                    }
-                },
-                destination: self.selected_path(
-                    transaction,
-                    &assignment.target,
-                    assignment.span,
-                )?,
-                mode: assignment.mode,
-                pattern: None,
-                span: assignment.span,
-            };
-            self.engine_mut()?
-                .transfer(assignment.instruction, &transfer, transaction)
-                .map_err(|error| error.with_operand(assignment.origin.as_ref(), true))?;
-            self.logical_complete(&assignment.work)?;
-        }
-        Ok(())
-    }
-
-    async fn await_gate(&mut self, work: &WorkNode, phase: Phase) -> Result<()> {
-        loop {
-            self.reap_physical().await?;
-            if self.gate(work, phase)? {
-                return Ok(());
-            }
-            if !self.has_work() {
-                return Err(ExecutionError::new(
-                    "an execution prerequisite has no remaining producer",
-                    work.plan
-                        .origin(work.key.instruction)
-                        .map_or(Span::default(), |origin| origin.site.span),
-                ));
-            }
-            self.wait_event().await?;
-        }
-    }
-
-    async fn capture_bytes(&mut self, bytes: &[u8], span: Span) -> Result<Snapshot> {
-        let operation = self.fresh_instruction()?;
-        let path = self
-            .engine_mut()?
-            .imports
-            .join(format!("scalar-{}", operation.0));
-        tokio::fs::write(&path, bytes).await.map_err(|cause| {
-            ExecutionError::caused("cannot capture program scalar", span, cause)
-        })?;
-        self.engine_mut()?.assets.capture(&path).map_err(|cause| {
-            ExecutionError::caused("cannot capture program scalar version", span, cause)
-        })
-    }
-
-    async fn cancel_transaction(
-        &mut self,
-        transaction: TransactionId,
-        failure: &mut ExecutionError,
-    ) -> bool {
-        let mut joined = true;
-        let works = self
-            .flows
-            .iter()
-            .filter(|flow| flow.transaction == transaction)
-            .map(|flow| flow.work.clone())
-            .chain(
-                self.deferred
-                    .iter()
-                    .filter(|assignment| assignment.transaction == transaction)
-                    .map(|assignment| assignment.work.clone()),
-            )
-            .collect::<Vec<_>>();
-        for work in works {
-            self.ledger
-                .cancel_node(work.key, CancelReason::Stopped, None);
-        }
-        for key in self
-            .pending_nodes
-            .get(&transaction)
-            .into_iter()
-            .flatten()
-            .copied()
-            .collect::<Vec<_>>()
-        {
-            self.ledger.cancel_node(key, CancelReason::Stopped, None);
-        }
-        for process in self
-            .programs
-            .values()
-            .filter(|program| program.transaction == transaction)
-            .map(|program| program.id)
-            .collect::<Vec<_>>()
-        {
-            self.ledger
-                .cancel_process(process, CancelReason::Stopped, None);
-            if let Some(key) = self.process_nodes.get(&process).copied() {
-                self.ledger.cancel_node(key, CancelReason::Stopped, None);
-            }
-            if let Some(cohort) = self.process_cohorts.get(&process).cloned() {
-                self.ledger
-                    .cancel_cohort(cohort, CancelReason::Stopped, None);
-            }
-        }
-        self.owner_token(transaction).cancel();
-        for program in self
-            .programs
-            .values_mut()
-            .filter(|program| program.transaction == transaction)
-        {
-            if let Err(error) = program.cancel().await {
-                joined = false;
-                Self::retain_cleanup_failure(failure, error);
-            }
-        }
-        let mut remaining = Vec::new();
-        for flow in std::mem::take(&mut self.flows) {
-            if flow.transaction == transaction {
-                match flow.handle.await {
-                    Err(error) => {
-                        joined = false;
-                        Self::retain_cleanup_failure(
-                            failure,
-                            ExecutionError::caused(
-                                "owned flow did not join cleanly",
-                                Span::default(),
-                                error,
-                            ),
-                        );
-                    }
-                    Ok(Err(error)) if !error.is_cancelled() => {
-                        joined = false;
-                        Self::retain_cleanup_failure(failure, error);
-                    }
-                    _ => {}
-                }
-            } else {
-                remaining.push(flow);
-            }
-        }
-        self.flows = remaining;
-        self.deferred
-            .retain(|assignment| assignment.transaction != transaction);
-        let keys = self
-            .namespaces
-            .keys()
-            .filter(|key| self.node_transactions.get(key) == Some(&transaction))
-            .copied()
-            .collect::<Vec<_>>();
-        for key in keys {
-            if let Err(error) = self.release_namespace(key) {
-                joined = false;
-                Self::retain_cleanup_failure(failure, error);
-            }
-        }
-        self.pending_nodes.remove(&transaction);
-        self.owner_tokens.remove(&transaction);
-        joined
+        failure.map_or(Ok(()), Err)
     }
 }
-
-struct OwnedReader {
-    file: tokio::fs::File,
-    _snapshot: Snapshot,
+fn record_failure<T>(first: &mut Option<ExecutionError>, result: Result<T>) {
+    let Err(mut error) = result else {
+        return;
+    };
+    let Some(primary) = first.as_mut() else {
+        *first = Some(error);
+        return;
+    };
+    primary
+        .report
+        .help
+        .push(format!("while joining remaining work: {error}"));
+    primary.retained_paths.append(&mut error.retained_paths);
+    primary.compensation.append(&mut error.compensation);
 }
 
-impl tokio::io::AsyncRead for OwnedReader {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-        buffer: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::pin::Pin::new(&mut self.file).poll_read(context, buffer)
+fn schedule_error(cause: super::blocks::ScheduleError) -> ExecutionError {
+    ExecutionError::caused("invalid runtime schedule", Span::default(), cause)
+}
+fn admission_error(error: ExecutionError) -> ExecutionError {
+    let context = super::DiagnosticContext {
+        phase: super::DiagnosticPhase::Evaluate,
+        category: super::DiagnosticCategory::Capability,
+        location: super::DiagnosticLocation::Context,
+        action: "admit execution resources",
+        backend: None,
+        instruction: None,
+    };
+    error.with_context(context)
+}
+fn cleanup_failure(issues: Vec<super::CleanupIssue>, span: Span) -> ExecutionError {
+    let mut error = ExecutionError::new("private statement resources could not be retired", span);
+    for issue in issues {
+        error.retained_paths.extend(issue.retained_paths);
+        error.report.help.push(format!("cleanup: {}", issue.cause));
     }
-}
-
-fn local(location: &Location, source: bool, span: Span) -> Result<PathBuf> {
-    let path = crate::runtime::local_path(location, source)
-        .map_err(|message| ExecutionError::new(message, span))?
-        .ok_or_else(|| ExecutionError::new("a native local resource is required", span))?;
-    domain::normalize(&path, span)
-}
-
-fn verify_prepared(program: &crate::preparation::PreparedProgram) -> Result<()> {
-    program.verify().map_err(|reports| {
-        let mut reports = reports.into_iter();
-        let primary = reports.next().unwrap_or_else(|| {
-            crate::syntax::Report::new("prepared program verification failed", Span::default())
-        });
-        let mut failure =
-            ExecutionError::new(primary.diagnostic.message.clone(), primary.diagnostic.span);
-        failure.report = Box::new(primary);
-        failure
-            .report
-            .help
-            .extend(reports.map(|report| report.diagnostic.message));
-        failure
+    error.with_context(super::DiagnosticContext {
+        phase: super::DiagnosticPhase::Cleanup,
+        category: super::DiagnosticCategory::Cleanup,
+        location: super::DiagnosticLocation::Context,
+        action: "retire private statement resources",
+        backend: None,
+        instruction: None,
     })
 }
-
-fn file_source(source: &Input, span: Span) -> Result<Source> {
-    match source {
-        Input::Literal(text) => Ok(Source::Literal(text.clone())),
-        Input::File { location, .. } => match crate::runtime::local_path(location, true)
-            .map_err(|message| ExecutionError::new(message, span))?
-        {
-            Some(path) => Ok(Source::Local(domain::normalize(&path, span)?)),
-            None => Ok(Source::Remote {
-                location: location.clone(),
-                basename: location
-                    .path
-                    .trim_end_matches('/')
-                    .rsplit('/')
-                    .next()
-                    .map(std::ffi::OsString::from),
-            }),
-        },
-        _ => Err(ExecutionError::new(
-            "a finite file source was expected",
+fn verify(prepared: &crate::preparation::PreparedProgram) -> Result<()> {
+    prepared.verify().map_err(|reports| {
+        ExecutionError::new(
+            reports
+                .first()
+                .map(|r| r.diagnostic.message.clone())
+                .unwrap_or_else(|| "invalid prepared IR".into()),
+            Span::default(),
+        )
+    })
+}
+fn overlaps(a: &crate::endpoint::Location, b: &crate::endpoint::Location) -> bool {
+    a.backend == b.backend
+        && (PathBuf::from(&a.path).starts_with(&b.path)
+            || PathBuf::from(&b.path).starts_with(&a.path))
+}
+fn resource_location(
+    location: &crate::endpoint::Location,
+    source: bool,
+    span: Span,
+) -> Result<crate::endpoint::Location> {
+    #[cfg(windows)]
+    if crate::streams::is_named_pipe_path(&location.path) {
+        return Ok(location.clone());
+    }
+    let Some(path) = crate::runtime::local_path(location, source)
+        .map_err(|message| ExecutionError::new(message, span))?
+    else {
+        return Ok(location.clone());
+    };
+    #[cfg(windows)]
+    if crate::streams::is_named_pipe_path(&path.to_string_lossy()) {
+        return Ok(crate::endpoint::Location {
+            backend: crate::endpoint::Backend::Local,
+            path: path.to_string_lossy().into_owned(),
+        });
+    }
+    let path = super::domain::normalize(&path, span)?;
+    Ok(crate::endpoint::Location {
+        backend: crate::endpoint::Backend::Local,
+        path: path.to_string_lossy().into_owned(),
+    })
+}
+fn drain_output(location: &crate::endpoint::Location, span: Span) -> Result<bool> {
+    if matches!(location.backend, crate::endpoint::Backend::Tcp { .. }) {
+        return Ok(false);
+    }
+    #[cfg(windows)]
+    if crate::streams::is_named_pipe_path(&location.path) {
+        return Ok(false);
+    }
+    let Some(path) = crate::runtime::local_path(location, false)
+        .map_err(|message| ExecutionError::new(message, span))?
+    else {
+        return Ok(true);
+    };
+    #[cfg(windows)]
+    if crate::streams::is_named_pipe_path(&path.to_string_lossy()) {
+        return Ok(false);
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => Ok(metadata.is_file() || metadata.is_dir()),
+        Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(cause) => Err(ExecutionError::caused(
+            "cannot classify program output for shutdown",
             span,
+            cause,
         )),
     }
 }
-
-fn endpoint_unstable(
-    context: &crate::hir::graph::PlanningContext,
-    instruction: InstructionId,
-    role: crate::hir::effects::EndpointRole,
-) -> bool {
-    context
-        .host_unstable
-        .contains(&crate::hir::effects::EndpointKey { instruction, role })
-}
-
-fn transfer_unstable(context: &crate::hir::graph::PlanningContext, id: InstructionId) -> bool {
-    use crate::hir::effects::EndpointRole;
-    endpoint_unstable(context, id, EndpointRole::Source)
-        || endpoint_unstable(context, id, EndpointRole::Destination)
-}
-
-fn known_physical(
-    source: &Input,
-    destination: &Output,
-    facts: Option<&hir::effects::OperationFacts>,
-) -> bool {
-    transfer_locations(source, destination).any(|(location, source)| {
-        matches!(location.backend, Backend::Tcp { .. })
-            || facts.is_some_and(|facts| if source { facts.source } else { facts.destination } == crate::plan::FileClass::Stream)
-    })
-}
-
-fn transfer_locations<'a>(
-    source: &'a Input,
-    destination: &'a Output,
-) -> impl Iterator<Item = (&'a Location, bool)> {
-    let source = match source {
-        Input::File { location, .. } => Some((location, true)),
-        _ => None,
-    };
-    let destination = match destination {
-        Output::File { location, .. } => Some((location, false)),
-        _ => None,
-    };
-    source.into_iter().chain(destination)
-}
-
-fn live_domain(
-    program: &hir::Program,
-    options: &Options,
-    context: &crate::hir::graph::PlanningContext,
-) -> Result<Domain> {
-    fn sparse_destinations(
-        region: &Region,
-        context: &crate::hir::graph::PlanningContext,
-        result: &mut BTreeSet<InstructionId>,
-    ) {
-        use crate::plan::FileClass;
-        for node in &region.instructions {
-            if let InstructionKind::Transaction { body, .. } = &node.kind {
-                sparse_destinations(body, context, result);
-            }
-            let InstructionKind::Transfer {
-                source,
-                destination:
-                    Output::File {
-                        location,
-                        mode: DestinationMode::Exact,
-                    },
-            } = &node.kind
-            else {
-                continue;
-            };
-            let Some(facts) = context.operation_facts.get(&node.id) else {
-                continue;
-            };
-            let finite = matches!(source, Input::Literal(_))
-                || matches!(source,
-                Input::File { location, pattern: None }
-                if matches!(location.backend, Backend::Local | Backend::Env | Backend::Path)
-                    && facts.source == FileClass::Regular);
-            if finite
-                && facts.destination == FileClass::Missing
-                && matches!(location.backend, Backend::Local | Backend::Env)
-                && !transfer_unstable(context, node.id)
-            {
-                result.insert(node.id);
-            }
-        }
+fn input_label(input: &Input) -> String {
+    match input {
+        Input::File { location, .. } => location.to_string(),
+        Input::Literal(_) => "literal data".into(),
+        Input::Port { process, port } => format!("program {}::{port:?}", process.0),
     }
-    fn has_program(region: &Region) -> bool {
-        region.instructions.iter().any(|node| match &node.kind {
-            InstructionKind::Spawn { .. } => true,
-            InstructionKind::Transaction { body, .. } => has_program(body),
-            _ => false,
-        })
+}
+fn output_label(output: &Output) -> String {
+    match output {
+        Output::File { location, .. } => location.to_string(),
+        Output::Stdin(process) => format!("program {}::stdin", process.0),
     }
-    fn finite(
-        region: &Region,
-        roots: &mut Vec<PathBuf>,
-        context: &crate::hir::graph::PlanningContext,
-    ) -> Result<Region> {
-        use crate::hir::effects::EndpointRole;
-        let mut result = Region::default();
-        for node in &region.instructions {
-            if let InstructionKind::Transfer {
-                source,
-                destination,
-            } = &node.kind
-            {
-                let unstable = transfer_unstable(context, node.id);
-                if !unstable && let Some(spec) = physical::inspect(source, destination, node.span)?
-                {
-                    if spec.kinds.source == crate::plan::FileClass::Regular
-                        && let Some(location) = spec
-                            .source
-                            .filter(|location| location.backend == Backend::Local)
-                    {
-                        roots.push(domain::normalize(Path::new(&location.path), node.span)?);
-                    }
-                    if let Some((target, _)) = spec.managed {
-                        let mut root = target.parent().unwrap_or(Path::new(".")).to_owned();
-                        while !root.exists() {
-                            root = root
-                                .parent()
-                                .ok_or_else(|| {
-                                    ExecutionError::new("output has no existing parent", node.span)
-                                })?
-                                .to_owned();
-                        }
-                        if !physical::has_live_children(&root)? {
-                            roots.push(domain::normalize(&root, node.span)?);
-                        }
-                    }
-                    continue;
-                }
-                if endpoint::inspect(source, destination, node.span)?.is_some() {
-                    if let Input::File { location, .. } = source
-                        && let Some(path) = crate::runtime::local_path(location, true)
-                            .map_err(|message| ExecutionError::new(message, node.span))?
-                    {
-                        roots.push(
-                            if endpoint_unstable(context, node.id, EndpointRole::Source) {
-                                domain::deferred_envelope(&path, node.span)?
-                            } else {
-                                domain::normalize(&path, node.span)?
-                            },
-                        );
-                    }
-                    continue;
-                }
-                if unstable
-                    && known_physical(source, destination, context.operation_facts.get(&node.id))
-                {
-                    for (location, source) in transfer_locations(source, destination) {
-                        let facts = context
-                            .operation_facts
-                            .get(&node.id)
-                            .copied()
-                            .unwrap_or_default();
-                        if if source {
-                            facts.source
-                        } else {
-                            facts.destination
-                        } == crate::plan::FileClass::Stream
-                        {
-                            continue;
-                        }
-                        if let Some(path) = crate::runtime::local_path(location, source)
-                            .map_err(|message| ExecutionError::new(message, node.span))?
-                        {
-                            roots.push(domain::deferred_envelope(&path, node.span)?);
-                        }
-                    }
-                    continue;
-                }
-                if let (Input::File { location, .. }, Output::Stdin(_)) = (source, destination)
-                    && !endpoint_unstable(context, node.id, EndpointRole::Source)
-                    && physical::source_stream(location, node.span)?.is_some()
-                {
-                    continue;
-                }
-            }
-            match &node.kind {
-                InstructionKind::Spawn { cwd, arguments, .. } => {
-                    roots.push(domain::normalize(cwd, node.span)?);
-                    for argument in arguments {
-                        if let hir::Argument::Path(location) = argument {
-                            let path = domain::deferred_local(location, true, node.span)?;
-                            roots.push(domain::deferred_envelope(&path, node.span)?);
-                        }
-                    }
-                }
-                InstructionKind::Transfer {
-                    source: Input::Port { .. },
-                    destination: Output::File { location, .. },
-                } => {
-                    if endpoint_unstable(context, node.id, EndpointRole::Destination) {
-                        let path = domain::deferred_local(location, false, node.span)?;
-                        roots.push(domain::deferred_envelope(&path, node.span)?);
-                        continue;
-                    }
-                    let path = local(location, false, node.span)?;
-                    let mut parent = path.parent().unwrap_or(Path::new(".")).to_owned();
-                    while !parent.exists() {
-                        parent = parent
-                            .parent()
-                            .ok_or_else(|| {
-                                ExecutionError::new("output has no existing parent", node.span)
-                            })?
-                            .to_owned();
-                    }
-                    roots.push(parent);
-                }
-                InstructionKind::Transfer {
-                    source: Input::Port { .. },
-                    ..
-                } => {}
-                InstructionKind::Transfer {
-                    source: Input::File { location, .. },
-                    destination: Output::Stdin(_),
-                } => {
-                    if endpoint_unstable(context, node.id, EndpointRole::Source) {
-                        let path = domain::deferred_local(location, true, node.span)?;
-                        roots.push(domain::deferred_envelope(&path, node.span)?);
-                        continue;
-                    }
-                    let path = local(location, true, node.span)?;
-                    roots.push(path.parent().unwrap_or(Path::new(".")).to_owned());
-                }
-                InstructionKind::Transfer {
-                    destination: Output::Stdin(_),
-                    ..
-                } => {}
-                InstructionKind::Transaction { transaction, body } => {
-                    result.instructions.push(Instruction {
-                        id: node.id,
-                        span: node.span,
-                        expansion: node.expansion.clone(),
-                        kind: InstructionKind::Transaction {
-                            transaction: *transaction,
-                            body: finite(body, roots, context)?,
-                        },
-                    })
-                }
-                _ => result.instructions.push(node.clone()),
-            }
-        }
-        Ok(result)
-    }
-    let mut roots = Vec::new();
-    let filtered = hir::Program {
-        body: finite(&program.body, &mut roots, context)?,
-        transactions: program.transactions.clone(),
-    };
-    let mut sparse = BTreeSet::new();
-    if !has_program(&program.body) {
-        sparse_destinations(&filtered.body, context, &mut sparse);
-    }
-    let mut domain =
-        Domain::resolve_enrollment(&filtered, options, &context.host_unstable, &sparse)?;
-    domain.native_view = has_program(&program.body);
-    domain.roots.extend(roots);
-    domain.normalize_coverage();
-    Ok(domain)
 }
 
 #[cfg(test)]
-#[path = "source_tests.rs"]
-mod source_tests;
+mod cleanup_tests {
+    use super::*;
+    use std::future::Future;
 
-fn port_flow(node: &Instruction) -> bool {
-    matches!(
-        node.kind,
-        InstructionKind::Transfer {
-            destination: Output::Stdin(_),
-            ..
-        } | InstructionKind::Transfer {
-            source: Input::Port {
-                port: ReadPort::Stdout | ReadPort::Stderr,
-                ..
-            },
-            ..
+    #[test]
+    fn joining_more_work_preserves_the_primary_error_and_secondary_recovery_paths() {
+        let mut primary = Some(ExecutionError::new("first failure", Span::default()));
+        let mut later = ExecutionError::new("later cleanup failure", Span::default());
+        later.retained_paths.push(PathBuf::from("retained-stage"));
+        record_failure(&mut primary, Err::<(), _>(later));
+        let primary = primary.unwrap();
+        assert_eq!(primary.report.diagnostic.message, "first failure");
+        assert_eq!(primary.retained_paths, [PathBuf::from("retained-stage")]);
+        assert!(
+            primary
+                .report
+                .help
+                .iter()
+                .any(|help| help.contains("later cleanup failure"))
+        );
+    }
+    struct ReleaseOnDrop(WorkerGate);
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.release();
         }
-    )
-}
+    }
 
-fn fifo_consumers(region: &Region, group: &[InstructionId], result: &mut BTreeSet<ProcessId>) {
-    for node in &region.instructions {
-        match &node.kind {
-            InstructionKind::Transfer {
-                destination: Output::Stdin(process),
-                ..
-            } if group.contains(&node.id) => {
-                // Outputs/scalars can replay after exit; a stdin consumer must
-                // stay live while its FIFO peers open together.
-                result.insert(*process);
+    async fn until(mut condition: impl FnMut() -> bool) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !condition() {
+                tokio::task::yield_now().await;
             }
-            InstructionKind::Transaction { body, .. } => fifo_consumers(body, group, result),
-            _ => {}
+        })
+        .await
+        .unwrap();
+    }
+    fn literal(target: &Path, text: &str) -> hir::Program {
+        hir::Program {
+            body: hir::Region {
+                instructions: vec![Instruction {
+                    id: InstructionId(0),
+                    span: Span::default(),
+                    expansion: vec![],
+                    kind: InstructionKind::Transfer {
+                        source: Input::Literal(text.into()),
+                        destination: Output::File {
+                            location: crate::endpoint::Location {
+                                backend: crate::endpoint::Backend::Local,
+                                path: target.to_string_lossy().into_owned(),
+                            },
+                            mode: crate::language::DestinationMode::Exact,
+                        },
+                    },
+                }],
+            },
         }
+    }
+
+    fn file_flow(source: &Path, port: u16) -> hir::Program {
+        let mut program = literal(Path::new("unused"), "unused");
+        program.body.instructions[0].kind = InstructionKind::Transfer {
+            source: Input::File {
+                location: crate::endpoint::Location {
+                    backend: crate::endpoint::Backend::Local,
+                    path: source.to_string_lossy().into_owned(),
+                },
+                pattern: None,
+            },
+            destination: Output::File {
+                location: crate::endpoint::Location {
+                    backend: crate::endpoint::Backend::Tcp {
+                        host: "127.0.0.1".into(),
+                        port,
+                    },
+                    path: "/".into(),
+                },
+                mode: crate::language::DestinationMode::Exact,
+            },
+        };
+        program
+    }
+
+    fn capture_fixture() -> (tempfile::TempDir, RuntimeSession, std::net::TcpListener) {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        std::fs::create_dir_all(&base).unwrap();
+        let root = tempfile::Builder::new()
+            .prefix("capture-owner-")
+            .tempdir_in(base)
+            .unwrap();
+        std::fs::write(root.path().join("source"), b"owned capture bytes").unwrap();
+        let mut options = Options::new(root.path().join("scratch"));
+        options.limits.max_streams = 1;
+        let runtime = RuntimeSession::new(&options).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        (root, runtime, listener)
+    }
+
+    fn assert_unstarted(listener: &std::net::TcpListener) {
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "an abandoned acquisition must never dispatch its destination"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_submit_retains_capture_budget_and_shutdown_joins_the_worker() {
+        let (root, mut runtime, listener) = capture_fixture();
+        let program = file_flow(
+            &root.path().join("source"),
+            listener.local_addr().unwrap().port(),
+        );
+        let gate = WorkerGate::default();
+        let _release = ReleaseOnDrop(gate.clone());
+        runtime.acquisition_gate = Some(gate.clone());
+        let mut submit = Box::pin(runtime.submit(&program));
+        tokio::select! {
+            result=&mut submit=>panic!("capture escaped its worker gate: {result:?}"),
+            ()=until(||gate.entered())=>{},
+        }
+        drop(submit);
+        let backing = runtime.private_root().unwrap().unwrap().to_owned();
+        let record = runtime.private_stage_record().unwrap().unwrap().to_owned();
+        assert!(runtime.has_work());
+        assert_eq!(runtime.work_ids().len(), 1);
+        assert_eq!(
+            runtime
+                .admission
+                .availability(super::super::scheduler::Demand::flows(1)),
+            super::super::scheduler::Availability::Busy,
+        );
+        assert_unstarted(&listener);
+        let mut shutdown = Box::pin(runtime.shutdown());
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(
+                shutdown.as_mut().poll(cx).is_pending()
+            ))
+            .await
+        );
+        assert!(backing.is_dir());
+        assert!(record.is_file());
+        gate.release();
+        shutdown.await.unwrap();
+        assert!(!backing.exists());
+        assert!(!record.exists());
+        assert!(!runtime.has_work());
+        assert_unstarted(&listener);
+        assert_eq!(
+            std::fs::read(root.path().join("source")).unwrap(),
+            b"owned capture bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropped_session_retires_a_retained_capture_before_its_backing() {
+        let (root, mut runtime, listener) = capture_fixture();
+        let program = file_flow(
+            &root.path().join("source"),
+            listener.local_addr().unwrap().port(),
+        );
+        let gate = WorkerGate::default();
+        let _release = ReleaseOnDrop(gate.clone());
+        runtime.acquisition_gate = Some(gate.clone());
+        let mut submit = Box::pin(runtime.submit(&program));
+        tokio::select! {
+            result=&mut submit=>panic!("capture escaped its worker gate: {result:?}"),
+            ()=until(||gate.entered())=>{},
+        }
+        drop(submit);
+        let backing = runtime.private_root().unwrap().unwrap().to_owned();
+        let record = runtime.private_stage_record().unwrap().unwrap().to_owned();
+        drop(runtime);
+        tokio::task::yield_now().await;
+        assert!(backing.is_dir());
+        assert!(record.is_file());
+        assert!(!gate.finished());
+        gate.release();
+        until(|| !backing.exists() && !record.exists()).await;
+        assert_unstarted(&listener);
+        assert_eq!(
+            std::fs::read(root.path().join("source")).unwrap(),
+            b"owned capture bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn next_submit_joins_abandoned_capture_without_replaying_its_flow() {
+        let (root, mut runtime, listener) = capture_fixture();
+        let program = file_flow(
+            &root.path().join("source"),
+            listener.local_addr().unwrap().port(),
+        );
+        let gate = WorkerGate::default();
+        let _release = ReleaseOnDrop(gate.clone());
+        runtime.acquisition_gate = Some(gate.clone());
+        let mut submit = Box::pin(runtime.submit(&program));
+        tokio::select! {
+            result=&mut submit=>panic!("capture escaped its worker gate: {result:?}"),
+            ()=until(||gate.entered())=>{},
+        }
+        drop(submit);
+        let next = literal(&root.path().join("next"), "new statement");
+        let mut submit = Box::pin(runtime.submit(&next));
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(
+                submit.as_mut().poll(cx).is_pending()
+            ))
+            .await
+        );
+        assert!(!root.path().join("next").exists());
+        gate.release();
+        let report = submit.await.unwrap();
+        assert_eq!(report.assignments, 1);
+        assert_eq!(
+            std::fs::read(root.path().join("next")).unwrap(),
+            b"new statement"
+        );
+        assert_unstarted(&listener);
+        runtime.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn a_dropped_submit_cannot_complete_a_new_submission_with_reused_ids() {
+        use std::task::Poll;
+        let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let root = tempfile::Builder::new()
+            .prefix("submission-owner-")
+            .tempdir_in(scratch)
+            .unwrap();
+        let mut runtime = RuntimeSession::new(&Options::new(root.path().join("scratch"))).unwrap();
+        let first = literal(&root.path().join("first"), "first data");
+        let next = literal(&root.path().join("next"), "next data");
+        let old_gate = WorkerGate::default();
+        let _release_old = ReleaseOnDrop(old_gate.clone());
+        runtime.worker_gate = Some(old_gate.clone());
+        let mut old = Box::pin(runtime.submit(&first));
+        tokio::select! {
+            result=&mut old=>panic!("first publication escaped its gate: {result:?}"),
+            ()=until(||old_gate.entered())=>{},
+        }
+        drop(old);
+        old_gate.release();
+        until(|| old_gate.finished()).await;
+        assert_eq!(
+            std::fs::read(root.path().join("first")).unwrap(),
+            b"first data"
+        );
+
+        let next_gate = WorkerGate::default();
+        let _release_next = ReleaseOnDrop(next_gate.clone());
+        runtime.worker_gate = Some(next_gate.clone());
+        let mut operation = Box::pin(runtime.submit(&next));
+        tokio::select! {
+            result=&mut operation=>panic!("old completion falsely completed the new statement: {result:?}"),
+            ()=until(||next_gate.entered())=>{},
+        }
+        let pending =
+            std::future::poll_fn(|cx| Poll::Ready(operation.as_mut().poll(cx).is_pending())).await;
+        assert!(
+            pending,
+            "the new statement must retain its own publication gate"
+        );
+        assert!(!root.path().join("next").exists());
+        next_gate.release();
+        let report = operation.await.unwrap();
+        assert_eq!(report.assignments, 2);
+        assert_eq!(
+            std::fs::read(root.path().join("next")).unwrap(),
+            b"next data"
+        );
+        runtime.shutdown().await.unwrap();
     }
 }

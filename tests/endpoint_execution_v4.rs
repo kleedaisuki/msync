@@ -176,7 +176,7 @@ async fn real_wsl_upload_download_replace_and_conflict_are_statement_atomic() {
 
 #[tokio::test]
 #[ignore = "explicit WSL preflight and literal endpoint journey"]
-async fn real_wsl_literal_overwrite_and_named_transaction_fail_before_effects() {
+async fn real_wsl_literal_overwrite_uses_actual_remote_file() {
     let fixture = Fixture::new();
     fixture
         .run(&format!(
@@ -190,15 +190,6 @@ async fn real_wsl_literal_overwrite_and_named_transaction_fail_before_effects() 
         wsl("cat \"$1/literal\"", &[&fixture.remote]).stdout,
         b"second"
     );
-    let failure = fixture
-        .run(&format!(
-            "\"must not publish\" -> $pwd / \"before\"\ntransaction A:\n    \"unsafe\" -> {}\n",
-            fixture.remote("named")
-        ))
-        .await;
-    assert!(failure.is_err());
-    assert!(!fixture.path().join("before").exists());
-    wsl("test ! -e \"$1/named\"", &[&fixture.remote]);
 }
 
 #[tokio::test]

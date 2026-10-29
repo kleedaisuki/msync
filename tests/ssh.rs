@@ -1,4 +1,6 @@
 #![cfg(windows)]
+#[path = "support/statement_storage.rs"]
+mod statement_storage;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -194,13 +196,7 @@ impl SshFixture {
             details(&remote)
         );
         let local = self.workspace().join(".temp");
-        if local.exists() {
-            assert_eq!(
-                fs::read_dir(local).unwrap().count(),
-                0,
-                "local staging leaked"
-            );
-        }
+        statement_storage::assert_clean(&local);
     }
 
     fn shutdown(&mut self) {
@@ -568,12 +564,56 @@ fn ssh_literal_filenames_and_regex_selections_preserve_semantics() {
             .join("selected-local/b.toml.bak")
             .exists()
     );
-    success(&fixture.run("configs -> remote::~/all\nremote::~/all/<.+\\.toml> -> filtered/\n"));
+    success(&fixture.run("configs -> remote::~/all\n"));
+    success(&fixture.remote(
+        "ln -s /root/missing /root/all/unselected-link; \
+         mkfifo /root/all/unselected-fifo; \
+         printf secret > /root/all/unselected:windows-name; \
+         raw=$(printf 'unselected-\\377'); printf secret > \"/root/all/$raw\"; \
+         mkdir -p /root/all/picked/empty; \
+         printf nested > /root/all/picked/deep.toml",
+    ));
+    success(&fixture.run("remote::~/all/<.+\\.toml> -> filtered/\n"));
     assert_eq!(
         fs::read_to_string(fixture.workspace().join("filtered/a.toml")).unwrap(),
         "alpha"
     );
     assert!(!fixture.workspace().join("filtered/nested").exists());
+    assert_eq!(
+        fs::read_dir(fixture.workspace().join("filtered"))
+            .unwrap()
+            .count(),
+        1
+    );
+    success(&fixture.run("remote::~/all/<picked> -> picked-container/\n"));
+    assert!(
+        fixture
+            .workspace()
+            .join("picked-container/picked/empty")
+            .is_dir()
+    );
+    assert_eq!(
+        fs::read(
+            fixture
+                .workspace()
+                .join("picked-container/picked/deep.toml")
+        )
+        .unwrap(),
+        b"nested"
+    );
+    success(&fixture.run("remote::~/all/<never-matches> -> no-selection/\n"));
+    assert!(!fixture.workspace().join("no-selection").exists());
+    let selected_special = fixture.run("remote::~/all/<unselected-link> -> rejected-selection/\n");
+    assert!(
+        !selected_special.status.success(),
+        "{}",
+        details(&selected_special)
+    );
+    assert!(!fixture.workspace().join("rejected-selection").exists());
+    success(&fixture.remote(
+        "test -L /root/all/unselected-link; test -p /root/all/unselected-fifo; \
+         test \"$(cat /root/all/unselected:windows-name)\" = secret",
+    ));
     fixture.finish();
 }
 

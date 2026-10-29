@@ -1,4 +1,4 @@
-//! Typed whole-program macro arguments through the actual native transaction path.
+//! Typed program arguments and lexical globals through direct native execution.
 
 use std::fs;
 use std::io::{Read, Write};
@@ -12,7 +12,7 @@ use msync::language;
 const MARKER: &[u8] = b"MSYNC_TYPED_MACRO_PAYLOAD:";
 
 #[test]
-#[ignore = "native child fixture, launched only by the mediated macro test"]
+#[ignore = "native child fixture, launched only by the macro test"]
 fn macro_echo_child_fixture() {
     let mut bytes = Vec::new();
     std::io::stdin().read_to_end(&mut bytes).unwrap();
@@ -24,25 +24,12 @@ fn macro_echo_child_fixture() {
     std::process::exit(0);
 }
 
-fn compile(compiler: &mut Session, work: &Path, text: &str) -> msync::hir::Program {
-    compiler
-        .compile(
-            &language::parse(text).unwrap(),
-            &CompileContext {
-                pwd: work.to_owned(),
-                source_file: None,
-            },
-        )
-        .unwrap()
-}
-
 #[tokio::test]
-#[ignore = "requires a provisioned native process-resource backend"]
-async fn whole_program_macro_arguments_execute_and_undo_in_each_isolation_mode() {
+async fn whole_program_macro_arguments_preserve_payloads_and_lexical_globals() {
     let temporary = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
     fs::create_dir_all(&temporary).unwrap();
     let root = tempfile::Builder::new()
-        .prefix("macro-native-v4-")
+        .prefix("macro-native-")
         .tempdir_in(temporary)
         .unwrap();
     let executable = std::env::current_exe()
@@ -51,53 +38,41 @@ async fn whole_program_macro_arguments_execute_and_undo_in_each_isolation_mode()
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
     let payload = "  typed program 可莉\n保留末尾空格  ";
-    for (index, isolation) in [
-        "read uncommitted",
-        "read committed",
-        "repeatable read",
-        "serializable",
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let work = root.path().join(format!("work-{index}"));
-        fs::create_dir(&work).unwrap();
-        fs::write(work.join("state"), b"origin").unwrap();
-        let scratch = root.path().join(format!("scratch-{index}"));
-        fs::create_dir(&scratch).unwrap();
-        fs::write(scratch.join("user-sentinel"), b"preserve user data").unwrap();
-        let mut compiler = Session::new();
-        let mut runtime = RuntimeSession::new(&Options::new(&scratch)).unwrap();
-        runtime.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();
-        let script = format!(
-            "capture := captured\nmacro relay(program, bytes):\n    global capture\n    bytes -> program::stdin\n    program::stdout -> capture\ncapture := wrong-output\ntransaction A({isolation}):\n    child => $local::\"{executable}\"(\"--exact\", \"macro_echo_child_fixture\", \"--ignored\", \"--nocapture\")\n    relay(child, {payload:?})\n"
-        );
-        let program = compile(&mut compiler, &work, &script);
-        tokio::time::timeout(Duration::from_secs(30), runtime.execute(&program))
-            .await
-            .unwrap_or_else(|_| panic!("native macro timed out in {isolation}"))
-            .unwrap_or_else(|error| panic!("native macro failed in {isolation}: {error}"));
-        assert_eq!(fs::read(work.join("state")).unwrap(), payload.as_bytes());
-        let output = fs::read(work.join("captured")).unwrap();
-        let offset = output
-            .windows(MARKER.len())
-            .position(|bytes| bytes == MARKER)
-            .unwrap_or_else(|| panic!("missing child payload in {isolation}: {output:?}"));
-        assert_eq!(&output[offset + MARKER.len()..], payload.as_bytes());
-        assert!(!work.join("wrong-output").exists());
-        let undo = compile(&mut compiler, &work, "rollback A\n");
-        runtime.execute(&undo).await.unwrap();
-        assert_eq!(fs::read(work.join("state")).unwrap(), b"origin");
-        assert!(!work.join("captured").exists());
-        runtime.shutdown().await.unwrap();
-        let remaining = fs::read_dir(&scratch)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect::<Vec<_>>();
-        assert_eq!(remaining, [std::ffi::OsString::from("user-sentinel")]);
-        assert_eq!(
-            fs::read(scratch.join("user-sentinel")).unwrap(),
-            b"preserve user data"
-        );
-    }
+    let scratch = root.path().join("scratch");
+    fs::create_dir(&scratch).unwrap();
+    fs::write(scratch.join("user-sentinel"), b"preserve user data").unwrap();
+    let mut compiler = Session::new();
+    let mut runtime = RuntimeSession::new(&Options::new(&scratch)).unwrap();
+    let script = format!(
+        "capture := captured\nmacro relay(program, bytes):\n    global capture\n    bytes -> program::stdin\n    program::stdout -> capture\ncapture := wrong-output\nasync child => $local::\"{executable}\"(\"--exact\", \"macro_echo_child_fixture\", \"--ignored\", \"--nocapture\")\nrelay(child, {payload:?})\nawait child\n"
+    );
+    let program = compiler
+        .compile(
+            &language::parse(&script).unwrap(),
+            &CompileContext {
+                pwd: root.path().to_owned(),
+                source_file: None,
+            },
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(30), runtime.execute(&program))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        fs::read(root.path().join("state")).unwrap(),
+        payload.as_bytes()
+    );
+    let output = fs::read(root.path().join("captured")).unwrap();
+    let offset = output
+        .windows(MARKER.len())
+        .position(|bytes| bytes == MARKER)
+        .unwrap();
+    assert_eq!(&output[offset + MARKER.len()..], payload.as_bytes());
+    assert!(!root.path().join("wrong-output").exists());
+    runtime.shutdown().await.unwrap();
+    assert_eq!(
+        fs::read(scratch.join("user-sentinel")).unwrap(),
+        b"preserve user data"
+    );
 }

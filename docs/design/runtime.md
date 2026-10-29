@@ -1,5 +1,11 @@
 # Runtime safety and transports
 
+> Historical pre-v0.5 transport/runtime behavior. In particular, the per-leaf
+> partial directory completion described below is not the v0.5 statement-atomic
+> contract. See [statement atomicity](statement-atomicity.md) and
+> [barrier runtime](barrier-runtime.md). The legacy 0.3 adapter is not a substitute
+> for the current structured interpreter.
+
 ## Local execution
 
 A compiled operation resolves local, `$env` and `$path` endpoints into native paths, enumerates terminal regex selectors (anchored full basename match), and preflights every selected tree before creating anything. A trailing slash on the destination means append the source basename and refuse existing destination files, including files nested inside a merging directory. Without the slash, an existing regular file may be overwritten and a new tree may be created at a missing target, but an existing directory is an error: append `/` to explicitly select container semantics. No implicit directory-name insertion is performed in overwrite mode.

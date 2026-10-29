@@ -29,8 +29,13 @@ struct Repl {
 
 impl Repl {
     fn start(directory: &Path) -> Self {
+        Self::start_with_options(directory, &[])
+    }
+
+    fn start_with_options(directory: &Path, options: &[&str]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_msync"))
             .args(["repl", "--color", "never", "--trace", "trace.jsonl"])
+            .args(options)
             .current_dir(directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -237,7 +242,7 @@ fn live_stream_keeps_repl_responsive_and_stop_joins_resources() {
     assert!(status.success(), "{errors}");
     assert!(errors.contains("use /wait or /stop"), "{errors}");
     assert!(
-        errors.contains("shared working-directory or filesystem state"),
+        errors.contains("shared bindings, working-directory or filesystem state"),
         "{errors}"
     );
     assert!(!repl.output.contains('\u{1b}'));
@@ -254,9 +259,23 @@ fn live_stream_keeps_repl_responsive_and_stop_joins_resources() {
             .find(|line| line.contains(&format!("\"name\":\"{name}\"")))
             .unwrap()
     };
-    let execute = phase("execute");
     let schedule = phase("schedule");
-    let task = phase("task");
+    let execute = trace
+        .lines()
+        .find(|line| {
+            line.contains("\"name\":\"execute\"")
+                && json_string(line, "span_id") == json_string(schedule, "parent_span_id")
+        })
+        .expect(
+            "the schedule must retain its actual execution parent, not an earlier empty submission",
+        );
+    let task = trace
+        .lines()
+        .find(|line| {
+            line.contains("\"name\":\"task\"")
+                && json_string(line, "parent_span_id") == json_string(schedule, "span_id")
+        })
+        .expect("the scheduled flow must retain its actual task child");
     assert_eq!(
         json_string(schedule, "parent_span_id"),
         json_string(execute, "span_id")
@@ -325,7 +344,7 @@ fn quit_cancels_open_background_stream_instead_of_waiting_for_eof() {
     let (status, errors) = repl.finish();
     source.close();
     assert!(status.success(), "{errors}");
-    assert!(repl.output.contains("job 1: stopped"));
+    assert!(repl.output.contains("job 1: closed"));
 }
 
 #[test]
@@ -445,33 +464,34 @@ fn distinct_live_submissions_have_independent_job_ids_and_completion() {
 }
 
 #[test]
-fn explicit_structured_source_owns_jobs_even_with_legacy_default_and_blocks_cross_engine_effects() {
+fn rejected_obsolete_source_does_not_disturb_an_active_job() {
     let directory = workspace();
     let mut source = HeldSource::start(b"owned by structured session");
     fs::write(
         directory.path().join("stream.msync"),
         format!(
-            "# msync: 0.4\nwire => tcp://{}\nwire::/ -> output.bin\n",
+            "# msync: 0.5\nwire => tcp://{}\nwire::/ -> output.bin\n",
             source.address
         ),
     )
     .unwrap();
     fs::write(
-        directory.path().join("legacy.msync"),
+        directory.path().join("obsolete.msync"),
         "# msync: 0.3\ninput.txt -> copied.txt\n",
     )
     .unwrap();
     fs::write(directory.path().join("input.txt"), "must remain unassigned").unwrap();
     let mut repl = Repl::start(directory.path());
-    repl.send("/syntax 0.3\n/load stream.msync\n");
+    repl.send("/load stream.msync\n");
     source.connected();
     repl.until("job 1: running in background");
-    repl.send("/jobs\n/load legacy.msync\n/stop\n/quit\n");
+    repl.send("/jobs\n/load obsolete.msync\n/jobs\n/stop\n/quit\n");
     let (status, errors) = repl.finish();
     source.close();
     assert!(status.success(), "{errors}");
     assert!(repl.output.contains("job 1: stopped"), "{}", repl.output);
-    assert!(errors.contains("use /wait or /stop"), "{errors}");
+    assert!(errors.contains("unsupported syntax version"), "{errors}");
+    assert!(errors.contains("obsolete.msync:1:"), "{errors}");
     assert!(!directory.path().join("copied.txt").exists());
 }
 
@@ -521,19 +541,20 @@ fn waiting_without_work_does_not_invent_a_completed_job() {
 }
 
 #[test]
-fn header_selected_structured_input_imports_pending_legacy_bindings_once() {
+fn source_load_reuses_bindings_without_a_second_compiler() {
     let directory = workspace();
     fs::write(directory.path().join("input.txt"), "shared path binding").unwrap();
     fs::write(
         directory.path().join("modern.msync"),
-        "# msync: 0.4\nroot/input.txt -> copied.txt\n",
+        "# msync: 0.5\nroot/input.txt -> copied.txt\n",
     )
     .unwrap();
     let mut repl = Repl::start(directory.path());
-    repl.send("/syntax 0.3\nroot := $pwd::pwd\n/load modern.msync\n/quit\n");
+    repl.send("/syntax 0.3\n/syntax 0.5\nroot := $pwd::pwd\n/load modern.msync\n/quit\n");
     let (status, errors) = repl.finish();
     assert!(status.success(), "{errors}");
-    assert!(errors.is_empty(), "{errors}");
+    assert!(errors.contains("unsupported syntax version"), "{errors}");
+    assert!(repl.output.contains("syntax: 0.5"), "{}", repl.output);
     assert_eq!(
         fs::read(directory.path().join("copied.txt")).unwrap(),
         b"shared path binding"
@@ -542,7 +563,6 @@ fn header_selected_structured_input_imports_pending_legacy_bindings_once() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "requires an available native bubblewrap process-resource backend"]
 fn a_later_input_failure_keeps_its_source_inside_an_existing_program_job() {
     let directory = workspace();
     let unused = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -550,7 +570,7 @@ fn a_later_input_failure_keeps_its_source_inside_an_existing_program_job() {
     drop(unused);
     fs::write(
         directory.path().join("launch.msync"),
-        "child => $path::cat()\n",
+        "async child => $path::cat()\n",
     )
     .unwrap();
     let transfer = "wire::/ -> child::stdin";
@@ -581,7 +601,6 @@ fn a_later_input_failure_keeps_its_source_inside_an_existing_program_job() {
 
 #[cfg(unix)]
 #[test]
-#[ignore = "requires an available native bubblewrap process-resource backend"]
 fn check_and_plan_borrow_live_program_context_without_consuming_its_ports() {
     let directory = workspace();
     fs::write(
@@ -590,7 +609,7 @@ fn check_and_plan_borrow_live_program_context_without_consuming_its_ports() {
     )
     .unwrap();
     let mut repl = Repl::start(directory.path());
-    repl.send("child => $path::cat()\n/check inspect.msync\n/plan inspect.msync\n/bindings\n\"done\" -> child::stdin\nchild::stdout -> actual.txt\n/wait\n/quit\n");
+    repl.send("async child => $path::cat()\n/check inspect.msync\n/plan inspect.msync\n/bindings\n\"done\" -> child::stdin\nchild::stdout -> actual.txt\n/wait\n/quit\n");
     let (status, errors) = repl.finish();
     assert!(status.success(), "{errors}");
     assert!(errors.is_empty(), "{errors}");
@@ -601,4 +620,148 @@ fn check_and_plan_borrow_live_program_context_without_consuming_its_ports() {
         fs::read(directory.path().join("actual.txt")).unwrap(),
         b"done"
     );
+}
+
+fn marked_program(delay_millis: u32) -> String {
+    #[cfg(windows)]
+    let command = {
+        let windows = std::env::var_os("WINDIR").expect("Windows directory");
+        let executable = Path::new(&windows).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let executable = serde_json::to_string(&executable.to_string_lossy()).unwrap();
+        let script = serde_json::to_string(&format!(
+            "[IO.File]::WriteAllText('started.txt','started'); Start-Sleep -Milliseconds {delay_millis}; [IO.File]::WriteAllText('finished.txt','finished')",
+        ))
+        .unwrap();
+        format!(
+            "async child => $local::{executable}(\"-NoProfile\", \"-NonInteractive\", \"-Command\", {script})\n"
+        )
+    };
+    #[cfg(unix)]
+    let command = format!(
+        "async child => $local::/bin/sh(\"-c\", \"printf started > started.txt; sleep {}.{:03}; printf finished > finished.txt\")\n",
+        delay_millis / 1_000,
+        delay_millis % 1_000
+    );
+    command
+}
+
+fn wait_for_marker(directory: &Path, name: &str) {
+    let deadline = Instant::now() + DEADLINE;
+    while !directory.join(name).exists() {
+        assert!(
+            Instant::now() < deadline,
+            "external program did not create {name}"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn stop_drains_a_running_external_program_until_its_own_exit() {
+    let directory = workspace();
+    let mut repl = Repl::start(directory.path());
+    repl.send(&marked_program(500));
+    wait_for_marker(directory.path(), "started.txt");
+    assert!(!directory.path().join("finished.txt").exists());
+    repl.send("/stop\n/jobs\n/quit\n");
+    let (status, errors) = repl.finish();
+    assert!(status.success(), "{errors}");
+    assert_eq!(
+        fs::read(directory.path().join("finished.txt")).unwrap(),
+        b"finished"
+    );
+    assert!(repl.output.contains("no active jobs"), "{}", repl.output);
+    assert!(!errors.contains("Sandboxie"), "{errors}");
+    assert!(!errors.contains("bubblewrap"), "{errors}");
+}
+
+#[test]
+fn a_completed_default_program_retains_ports_for_later_repl_submissions() {
+    let directory = workspace();
+    let executable = serde_json::to_string(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let mut repl = Repl::start(directory.path());
+    repl.send(&format!("Program => $local::{executable}(\"--version\")\n"));
+    repl.until("done:");
+    assert!(!directory.path().join("version.txt").exists());
+    repl.send(
+        "Program::stdout -> version.txt\nProgram::exit_code -> exit.txt\nProgram::meta -> meta.json\n/jobs\n/quit\n",
+    );
+    let (status, errors) = repl.finish();
+    assert!(status.success(), "{errors}");
+    assert!(errors.is_empty(), "{errors}");
+    assert_eq!(
+        fs::read_to_string(directory.path().join("version.txt")).unwrap(),
+        format!("msync {}\n", env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(fs::read(directory.path().join("exit.txt")).unwrap(), b"0\n");
+    let meta: serde_json::Value =
+        serde_json::from_slice(&fs::read(directory.path().join("meta.json")).unwrap()).unwrap();
+    assert_eq!(meta["exit_code"], 0);
+}
+
+#[test]
+fn explicit_kill_is_destructive_and_does_not_masquerade_as_graceful_stop() {
+    let directory = workspace();
+    let mut repl = Repl::start(directory.path());
+    repl.send(&marked_program(20_000));
+    wait_for_marker(directory.path(), "started.txt");
+    repl.send("/kill\n/jobs\n/quit\n");
+    let (status, errors) = repl.finish();
+    assert!(status.success(), "{errors}");
+    assert!(errors.is_empty(), "{errors}");
+    assert!(directory.path().join("started.txt").exists());
+    assert!(!directory.path().join("finished.txt").exists());
+    assert!(
+        repl.output.contains("effects may be partial"),
+        "{}",
+        repl.output
+    );
+    assert!(repl.output.contains("no active jobs"), "{}", repl.output);
+}
+
+#[test]
+fn a_partial_submission_retains_the_started_program_job_and_its_bindings() {
+    let directory = workspace();
+    let mut source = HeldSource::start(b"earlier program completed");
+    let executable = serde_json::to_string(env!("CARGO_BIN_EXE_msync")).unwrap();
+    fs::write(
+        directory.path().join("child.msync"),
+        format!(
+            "wire => tcp://{}\nwire::/ -> child-completed.txt\n",
+            source.address
+        ),
+    )
+    .unwrap();
+    fs::write(
+        directory.path().join("admission.msync"),
+        format!(
+            "async child => $local::{executable}(\"run\", \"child.msync\", \"--color\", \"never\")\nasync blocked => $local::{executable}(\"--version\")\n"
+        ),
+    )
+    .unwrap();
+    let mut repl = Repl::start_with_options(directory.path(), &["--jobs", "1"]);
+    repl.send("/load admission.msync\n/jobs\n");
+    source.connected();
+    repl.until("job 1: running");
+    assert!(!directory.path().join("child-completed.txt").exists());
+    source.close();
+    repl.send("/stop\nchild::exit_code -> code\n/wait\n/jobs\n/quit\n");
+    let (status, errors) = repl.finish();
+    assert!(status.success(), "{errors}");
+    assert!(
+        errors.contains("limit") || errors.contains("capacity"),
+        "{errors}"
+    );
+    assert!(!errors.contains("unknown program"), "{errors}");
+    assert_eq!(
+        fs::read(directory.path().join("child-completed.txt")).unwrap(),
+        b"earlier program completed"
+    );
+    assert_eq!(fs::read(directory.path().join("code")).unwrap(), b"0\n");
+    assert!(
+        repl.output.contains("retained after partial submission"),
+        "{}",
+        repl.output
+    );
+    assert!(repl.output.contains("no active jobs"), "{}", repl.output);
 }

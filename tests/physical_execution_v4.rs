@@ -160,39 +160,6 @@ async fn file_to_tcp_uses_immutable_source_and_literal_to_tcp_is_data() {
     runtime.shutdown().await.unwrap();
 }
 #[tokio::test]
-async fn named_transaction_rejects_physical_consumption_before_first_effect() {
-    let root = workspace();
-    let work = root.path().join("work");
-    fs::create_dir(&work).unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let mut compiler = Session::new();
-    let mut runtime = runtime(root.path());
-    let program = compile(
-        &mut compiler,
-        &work,
-        &format!(
-            "wire => tcp://{}\ntransaction T:\n    \"early\" -> target\n    wire::/ -> output\n",
-            listener.local_addr().unwrap()
-        ),
-    );
-    assert!(
-        runtime
-            .submit(&program)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("transactional peer")
-    );
-    assert!(!work.join("target").exists());
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), listener.accept())
-            .await
-            .is_err()
-    );
-    runtime.shutdown().await.unwrap();
-}
-
-#[tokio::test]
 async fn closing_one_flow_does_not_stop_an_independent_flow() {
     let root = workspace();
     let work = root.path().join("work");
@@ -601,11 +568,14 @@ async fn hard_linked_fifo_aliases_preserve_wave_boundaries() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn a_later_fifo_peer_gets_a_constructive_single_submission_hint_and_can_recover() {
+async fn a_later_fifo_peer_coadmits_the_same_retained_channel_generation() {
+    use std::os::unix::fs::MetadataExt;
+
     let root = workspace();
     let work = root.path().join("work");
     fs::create_dir(&work).unwrap();
-    fs::write(work.join("input"), b"complete FIFO bytes").unwrap();
+    let bytes = b"complete cross-submission FIFO bytes\0".repeat(32 * 1024);
+    fs::write(work.join("input"), &bytes).unwrap();
     assert!(
         std::process::Command::new("mkfifo")
             .arg(work.join("wire"))
@@ -613,46 +583,100 @@ async fn a_later_fifo_peer_gets_a_constructive_single_submission_hint_and_can_re
             .unwrap()
             .success()
     );
+    let before = fs::symlink_metadata(work.join("wire")).unwrap();
     let mut compiler = Session::new();
     let mut session = runtime(root.path());
     session
         .submit(&compile(&mut compiler, &work, "input -> wire\n"))
         .await
         .unwrap();
-    let rejected = tokio::time::timeout(
+    tokio::time::timeout(
         Duration::from_secs(2),
         session.submit(&compile(&mut compiler, &work, "wire -> output\n")),
     )
     .await
-    .unwrap()
-    .unwrap_err();
+    .expect("a verified later peer must not wait for its own unpaired writer")
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), session.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs::read(work.join("output")).unwrap(), bytes);
+    let after = fs::symlink_metadata(work.join("wire")).unwrap();
+    assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+    session.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_recreated_fifo_is_not_a_peer_of_the_previous_retained_generation() {
+    use std::os::unix::fs::MetadataExt;
+
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    fs::write(work.join("old-source"), b"old generation bytes").unwrap();
+    let fifo = work.join("wire");
     assert!(
-        rejected
-            .report
-            .help
-            .iter()
-            .any(|help| help.contains("/load")
-                && help.contains("macro")
-                && help.contains("/wait alone")),
-        "{rejected:?}"
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
     );
-    assert!(!work.join("output").exists());
-    session.cancel_active().await.unwrap();
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        session.execute(&compile(
+    let old = fs::symlink_metadata(&fifo).unwrap();
+    let mut compiler = Session::new();
+    let mut session = runtime(root.path());
+    session
+        .submit(&compile(&mut compiler, &work, "old-source -> wire\n"))
+        .await
+        .unwrap();
+    fs::remove_file(&fifo).unwrap();
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let new = fs::symlink_metadata(&fifo).unwrap();
+    assert_ne!((old.dev(), old.ino()), (new.dev(), new.ino()));
+    let admitted = tokio::time::timeout(
+        Duration::from_secs(2),
+        session.submit(&compile(
             &mut compiler,
             &work,
-            "input -> wire\nwire -> output\n",
+            "\"new generation bytes\" -> wire\nwire -> output\n",
         )),
     )
     .await
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        fs::read(work.join("output")).unwrap(),
-        b"complete FIFO bytes"
-    );
+    .expect("a new channel generation must not await the previous unpaired flow");
+    match admitted {
+        Err(error) => {
+            assert!(
+                !error.report.help.is_empty(),
+                "generation refusal needs a constructive recovery hint: {error:?}"
+            );
+            assert!(!work.join("output").exists());
+        }
+        Ok(_) => {
+            let settled = tokio::time::timeout(Duration::from_secs(5), session.wait())
+                .await
+                .expect("different channel generations must not be joined as one rendezvous");
+            if let Ok(bytes) = fs::read(work.join("output")) {
+                assert_eq!(
+                    bytes, b"new generation bytes",
+                    "the old writer crossed into a replacement channel"
+                );
+            } else {
+                assert!(
+                    settled.is_err(),
+                    "a completed independent new-generation job lost its output"
+                );
+            }
+        }
+    }
+    let _ = session.cancel_active().await;
     session.shutdown().await.unwrap();
 }
 
@@ -759,7 +783,6 @@ async fn live_fifo_and_target_in_same_directory_publish_without_snapshotting_fif
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-#[ignore = "requires a provisioned native process-resource backend"]
 async fn a_reader_first_fifo_pipeline_can_feed_a_native_program_stdin() {
     let root = workspace();
     let work = root.path().join("work");
@@ -772,50 +795,14 @@ async fn a_reader_first_fifo_pipeline_can_feed_a_native_program_stdin() {
             .unwrap()
             .success()
     );
-    let mut limited_options = Options::new(root.path().join("limited-scratch"));
-    limited_options.limits.max_streams = 2;
-    limited_options.limits.memory_bytes = limited_options.limits.buffer_bytes * 8;
-    let mut limited = RuntimeSession::new(&limited_options).unwrap();
-    limited.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();
-    let mut limited_compiler = Session::new();
-    limited
-        .submit(&compile(
-            &mut limited_compiler,
-            &work,
-            "child => $path::cat()\n",
-        ))
-        .await
-        .unwrap();
-    let limited_program = compile(
-        &mut limited_compiler,
-        &work,
-        &format!(
-            "\"must not publish\" -> earlier\n$local::\"{}\" -> child::stdin\n\"reader-first bytes\" -> $local::\"{}\"\n",
-            fifo.display(),
-            fifo.display(),
-        ),
-    );
-    let error = limited.execute(&limited_program).await.unwrap_err();
-    assert!(
-        error
-            .report
-            .diagnostic
-            .message
-            .contains("retain 1 native program spaces"),
-        "{error}"
-    );
-    assert!(!work.join("earlier").exists());
-    assert_eq!(
-        limited.live_processes().len(),
-        1,
-        "the refused input must not discard its earlier live program"
-    );
-    limited.shutdown().await.unwrap();
     let mut compiler = Session::new();
     let mut session = runtime(root.path());
-    session.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();
     session
-        .submit(&compile(&mut compiler, &work, "child => $path::cat()\n"))
+        .submit(&compile(
+            &mut compiler,
+            &work,
+            "async child => $path::cat()\n",
+        ))
         .await
         .unwrap();
     let program = compile(
@@ -840,7 +827,6 @@ async fn a_reader_first_fifo_pipeline_can_feed_a_native_program_stdin() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-#[ignore = "requires a provisioned native process-resource backend"]
 async fn actual_child_exit_closes_an_idle_physical_source() {
     let root = workspace();
     let work = root.path().join("work");
@@ -848,13 +834,12 @@ async fn actual_child_exit_closes_an_idle_physical_source() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut compiler = Session::new();
     let mut runtime = runtime(root.path());
-    runtime.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();
     let shell = fs::canonicalize("/bin/sh").unwrap();
     let program = compile(
         &mut compiler,
         &work,
         &format!(
-            "wire => tcp://{}\nchild => $local::\"{}\"(\"-c\", \"sleep 0.3; exit 0\")\nwire::/ -> child::stdin\n",
+            "wire => tcp://{}\nasync child => $local::\"{}\"(\"-c\", \"sleep 0.3; exit 0\")\nwire::/ -> child::stdin\n",
             listener.local_addr().unwrap(),
             shell.display()
         ),
@@ -1083,4 +1068,85 @@ async fn unix_socket_peer_eof_ends_only_its_flow_and_stop_preserves_other_target
                 .is_socket()
         );
     }
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_named_pipe_bridge_coadmits_both_real_interpreter_flows() {
+    use std::os::windows::io::AsRawHandle;
+    use tokio::net::windows::named_pipe::ServerOptions;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType};
+
+    let root = workspace();
+    let work = root.path().join("work");
+    fs::create_dir(&work).unwrap();
+    let payload: Vec<u8> = (0..2 * 1024 * 1024)
+        .map(|offset| (offset % 251) as u8)
+        .collect();
+    fs::write(work.join("input"), &payload).unwrap();
+    let name = format!(
+        r"\\.\pipe\msync-interpreter-{}-{}",
+        std::process::id(),
+        root.path().file_name().unwrap().to_string_lossy(),
+    );
+    let input = format!("{name}-input");
+    let output = format!("{name}-output");
+    let mut inbound = ServerOptions::new()
+        .first_pipe_instance(true)
+        .access_inbound(true)
+        .access_outbound(false)
+        .create(&input)
+        .unwrap();
+    let mut outbound = ServerOptions::new()
+        .first_pipe_instance(true)
+        .access_inbound(false)
+        .access_outbound(true)
+        .create(&output)
+        .unwrap();
+    let quote = |path: &str| path.replace('\\', "\\\\").replace('"', "\\\"");
+    let program = compile(
+        &mut Session::new(),
+        &work,
+        &format!(
+            "input -> $local::\"{}\"\n$local::\"{}\" -> output\n",
+            quote(&input),
+            quote(&output)
+        ),
+    );
+    let bridge = async move {
+        // Neither side drains before both client instances have been admitted.
+        tokio::try_join!(inbound.connect(), outbound.connect())?;
+        let bytes = tokio::io::copy(&mut inbound, &mut outbound).await?;
+        outbound.shutdown().await?;
+        for pipe in [&inbound, &outbound] {
+            let kind = unsafe { GetFileType(pipe.as_raw_handle().cast()) };
+            assert_eq!(
+                kind, FILE_TYPE_PIPE,
+                "interpreter invalidated a server-owned pipe instance"
+            );
+        }
+        Ok::<_, std::io::Error>(bytes)
+    };
+    let mut session = runtime(root.path());
+    let result = tokio::time::timeout(Duration::from_secs(15), async {
+        tokio::try_join!(
+            async {
+                session
+                    .execute(&program)
+                    .await
+                    .map_err(|cause| cause.to_string())
+            },
+            async { bridge.await.map_err(|cause| cause.to_string()) },
+        )
+    })
+    .await;
+    if !matches!(&result, Ok(Ok(_))) {
+        let _ = session.cancel_active().await;
+    }
+    let (_, bridged) = result
+        .expect("named-pipe peers were serialized instead of coadmitted")
+        .unwrap_or_else(|cause| panic!("named-pipe interpreter journey failed: {cause}"));
+    assert_eq!(bridged, payload.len() as u64);
+    assert_eq!(fs::read(work.join("output")).unwrap(), payload);
+    session.shutdown().await.unwrap();
 }

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use msync::compiler::structured::Session;
 use msync::compiler::{Backend, CompileContext};
-use msync::hir::{Input, InstructionKind, Output};
+use msync::hir::{Argument, BarrierKind, Input, InstructionKind, Output};
 use msync::language::{self, DestinationMode, ExprKind, StatementKind};
 
 fn compile(source: &str) -> msync::hir::Program {
@@ -291,9 +291,26 @@ fn namespace_rooting_is_explicit_and_rooted_rhs_never_discards_a_base() {
 #[test]
 fn composed_executable_calls_and_selector_slashes_keep_their_grammar() {
     let program = compile("p => $pwd / \"tool name\"(\"exact arg\")\n");
-    let InstructionKind::Spawn { executable, .. } = &program.body.instructions[0].kind else {
-        panic!()
+    let [before, spawn, after] = program.body.instructions.as_slice() else {
+        panic!("a synchronous invocation must lower to before, spawn, await")
     };
+    assert!(matches!(
+        before.kind,
+        InstructionKind::Barrier {
+            kind: BarrierKind::Before
+        }
+    ));
+    let InstructionKind::Spawn {
+        process,
+        executable,
+        arguments,
+        ..
+    } = &spawn.kind
+    else {
+        panic!("the invocation must follow its before fence")
+    };
+    assert!(matches!(after.kind, InstructionKind::Await { process: Some(id) } if id == *process));
+    assert!(matches!(arguments.as_slice(), [Argument::Text(text)] if text == "exact arg"));
     assert!(executable.path.ends_with("/tool name"));
     let program = compile("server => https://example.com/base/path\nserver::item -> target\n");
     let InstructionKind::Transfer {

@@ -69,10 +69,15 @@ fn span<'a>(trace: &'a str, name: &str) -> &'a str {
 fn hierarchy(trace: &str) {
     let schedule = span(trace, "schedule");
     let task = span(trace, "task");
-    assert_eq!(
-        field(schedule, "parent_span_id"),
-        field(span(trace, "execute"), "span_id")
-    );
+    let execute = trace
+        .lines()
+        .find(|record| {
+            record.contains("\"kind\":\"span\"")
+                && record.contains("\"name\":\"execute\"")
+                && field(record, "span_id") == field(schedule, "parent_span_id")
+        })
+        .expect("a schedule must retain its own execute parent, not an earlier empty submission");
+    assert_eq!(field(schedule, "parent_span_id"), field(execute, "span_id"));
     assert_eq!(field(task, "parent_span_id"), field(schedule, "span_id"));
     assert!(schedule.contains("\"granted_slots\":1"));
     assert!(schedule.contains("\"reserved_buffer_bytes\":131072"));

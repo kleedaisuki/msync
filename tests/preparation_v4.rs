@@ -39,10 +39,8 @@ fn compile(root: &Path, text: &str) -> hir::Program {
 fn transfers(region: &Region) -> Vec<&hir::Instruction> {
     let mut output = Vec::new();
     for node in &region.instructions {
-        match &node.kind {
-            InstructionKind::Transfer { .. } => output.push(node),
-            InstructionKind::Transaction { body, .. } => output.extend(transfers(body)),
-            _ => {}
+        if let InstructionKind::Transfer { .. } = &node.kind {
+            output.push(node);
         }
     }
     output
@@ -140,36 +138,23 @@ fn deferred_wsl_drive_projection_is_not_a_native_alias_proof_for_rewrites() {
 
 fn pending_root_write(root: &Path) -> PlanningContext {
     use msync::hir::effects::{Access, AccessKind, Effects, FileResource, Resource, Scope};
-    use msync::hir::graph::ProcessEffects;
-    let process = hir::ProcessId(900);
-    let mut context = PlanningContext {
-        live_processes: vec![process],
+    PlanningContext {
+        pending_effects: vec![Effects {
+            accesses: vec![Access {
+                resource: Resource::File(FileResource::new(
+                    msync::endpoint::Location {
+                        backend: Backend::Local,
+                        path: root.to_string_lossy().into_owned(),
+                    },
+                    Scope::Tree,
+                )),
+                kind: AccessKind::Write,
+            }],
+            unknown_external: false,
+        }],
         ..PlanningContext::default()
-    };
-    context.process_effects.insert(
-        process,
-        ProcessEffects::mediated(
-            Effects {
-                accesses: vec![Access {
-                    resource: Resource::File(FileResource::new(
-                        msync::endpoint::Location {
-                            backend: Backend::Local,
-                            path: root.to_string_lossy().into_owned(),
-                        },
-                        Scope::Tree,
-                    )),
-                    kind: AccessKind::Write,
-                }],
-                unknown_external: false,
-            },
-            "retained-native-view",
-            "pending-import-epoch",
-        )
-        .unwrap(),
-    );
-    context
+    }
 }
-
 fn pending_file_write(path: &Path) -> PlanningContext {
     use msync::hir::effects::{Access, AccessKind, Effects, FileResource, Resource, Scope};
     PlanningContext {
@@ -361,13 +346,13 @@ fn a_deferred_verbatim_native_path_keeps_parent_traversal_in_its_captured_spelli
 }
 
 #[test]
-fn a_checkpoint_does_not_make_a_future_directory_replacement_exist_on_the_host() {
+fn a_preceding_directory_replacement_is_inferred_without_changing_the_host() {
     let root = workspace();
     fs::create_dir(root.path().join("source-tree")).unwrap();
     fs::write(root.path().join("node"), "old physical file").unwrap();
     let program = compile(
         root.path(),
-        "transaction T:\n    source-tree -> node/.\n    commit\n    \"value\" -> node/leaf\n    node/leaf -> observed\n",
+        "source-tree -> node/.\n\"value\" -> node/leaf\nnode/leaf -> observed\n",
     );
     let nodes = transfers(&program.body);
     let mut context = PlanningContext::default();
@@ -425,12 +410,18 @@ fn a_program_path_argument_is_not_promoted_to_a_required_source_operand() {
     .unwrap();
     fs::write(root.path().join("blocker"), "not a directory").unwrap();
     let program = compile(root.path(), "p => $pwd::program($pwd::blocker/child)\n");
-    let prepared = preparation::prepare(&program, true).unwrap();
-    assert!(!prepared.context.host_unstable.contains(&EndpointKey {
-        instruction: program.body.instructions[0].id,
+    let launch = program
+        .body
+        .instructions
+        .iter()
+        .find(|node| matches!(node.kind, InstructionKind::Spawn { .. }))
+        .unwrap();
+    let (resolved, context) =
+        preparation::resolve_instruction(launch, &PlanningContext::default()).unwrap();
+    assert!(!context.host_unstable.contains(&EndpointKey {
+        instruction: resolved.id,
         role: EndpointRole::Source
     }));
-    prepared.verify().unwrap();
 }
 
 #[test]
@@ -544,22 +535,17 @@ fn pending_write_defers_enotdir_probes_without_collapsing_unverified_parent_segm
 #[test]
 fn unrelated_or_readonly_writer_does_not_suppress_real_enotdir_errors() {
     use msync::hir::effects::AccessKind;
-    use msync::hir::graph::ProcessEffects;
     let root = workspace();
     fs::write(root.path().join("blocker"), "not a directory").unwrap();
     fs::create_dir(root.path().join("unrelated")).unwrap();
     let program = compile(root.path(), "blocker/child -> output\n");
     let unrelated = pending_root_write(&root.path().join("unrelated"));
     let mut readonly = pending_root_write(root.path());
-    let effects = readonly
-        .process_effects
-        .get_mut(&hir::ProcessId(900))
-        .unwrap();
-    let mut footprint = effects.footprint().clone();
-    for access in &mut footprint.accesses {
-        access.kind = AccessKind::Read;
+    for effect in &mut readonly.pending_effects {
+        for access in &mut effect.accesses {
+            access.kind = AccessKind::Read;
+        }
     }
-    *effects = ProcessEffects::mediated(footprint, "readonly-native-view", "read-epoch").unwrap();
     for context in [unrelated, readonly] {
         let errors =
             preparation::prepare_with_context_detailed(&program, true, context).unwrap_err();
@@ -578,7 +564,6 @@ fn unrelated_or_readonly_writer_does_not_suppress_real_enotdir_errors() {
 #[test]
 fn unrelated_or_readonly_live_footprints_do_not_erase_regular_file_type_proofs() {
     use msync::hir::effects::AccessKind;
-    use msync::hir::graph::ProcessEffects;
     let root = workspace();
     fs::write(root.path().join("one"), "first").unwrap();
     fs::write(root.path().join("two"), "second").unwrap();
@@ -587,15 +572,11 @@ fn unrelated_or_readonly_live_footprints_do_not_erase_regular_file_type_proofs()
     let program = compile(root.path(), "one -> output\ntwo -> output\n");
     let unrelated = pending_root_write(&root.path().join("unrelated"));
     let mut readonly = pending_root_write(root.path());
-    let effects = readonly
-        .process_effects
-        .get_mut(&hir::ProcessId(900))
-        .unwrap();
-    let mut footprint = effects.footprint().clone();
-    for access in &mut footprint.accesses {
-        access.kind = AccessKind::Read;
+    for effect in &mut readonly.pending_effects {
+        for access in &mut effect.accesses {
+            access.kind = AccessKind::Read;
+        }
     }
-    *effects = ProcessEffects::mediated(footprint, "readonly-native-view", "read-epoch").unwrap();
     for context in [unrelated, readonly] {
         let prepared = preparation::prepare_with_context(&program, true, context).unwrap();
         assert_eq!(transfers(&prepared.program.body).len(), 1);
@@ -609,8 +590,8 @@ fn unrelated_or_readonly_live_footprints_do_not_erase_regular_file_type_proofs()
 
 #[test]
 fn an_actual_pinned_input_retains_its_type_despite_a_pending_path_replacement() {
+    use msync::filesystem::{Entry, SnapshotStore};
     use msync::hir::graph::VersionReadProof;
-    use msync::transaction::filesystem::{Entry, SnapshotStore};
     let root = workspace();
     let managed = root.path().join("managed");
     fs::create_dir(&managed).unwrap();
@@ -901,68 +882,15 @@ fn forwarding_never_reads_a_newer_version_of_an_overwritten_origin() {
 }
 
 #[test]
-fn commits_and_rollback_versions_are_observation_boundaries() {
+fn parent_directory_kinds_follow_successful_creations_without_touching_the_host() {
     let root = workspace();
-    let program = compile(
-        root.path(),
-        "transaction A:\n    \"one\" -> value\n    commit\n    \"two\" -> value\n    rollback\n    value -> copy\nrollback A\n",
-    );
-    let prepared = preparation::prepare(&program, true).unwrap();
-    assert_eq!(transfers(&prepared.program.body).len(), 3);
-    let source = transfers(&prepared.program.body)[2];
-    assert_eq!(prepared.facts[&source.id].source, FileClass::Regular);
-    prepared.verify().unwrap();
-}
-
-#[test]
-fn named_origin_undo_does_not_erase_unrelated_type_state() {
-    let root = workspace();
-    let program = compile(
-        root.path(),
-        "transaction A:\n    \"a\" -> a\n\"b\" -> b\nrollback A\nb -> output\n",
-    );
-    let prepared = preparation::prepare(&program, true).unwrap();
-    let last = prepared.program.body.instructions.last().unwrap();
-    assert_eq!(prepared.facts[&last.id].source, FileClass::Regular);
-    let missing = compile(
-        root.path(),
-        "transaction A:\n    \"a\" -> a\nrollback A\na -> output\n",
-    );
-    assert!(preparation::prepare(&missing, true).is_err());
-}
-
-#[test]
-fn discarded_pending_writes_do_not_become_named_undo_footprints() {
-    let root = workspace();
-    let program = compile(
-        root.path(),
-        "transaction A:\n    \"a\" -> a\n    commit\n    \"discarded\" -> b\n    rollback\n\"unrelated\" -> b\nrollback A\nb -> output\n",
-    );
-    let prepared = preparation::prepare(&program, true).unwrap();
-    assert_eq!(
-        prepared.facts[&program.body.instructions.last().unwrap().id].source,
-        FileClass::Regular
-    );
-    prepared.verify().unwrap();
-}
-
-#[test]
-fn parent_directory_kinds_follow_successful_creations_and_origin_undo() {
-    let root = workspace();
-    let program = compile(
-        root.path(),
-        "transaction A:\n    \"data\" -> new/deep/file\n    new -> snapshot\nrollback A\n",
-    );
+    let program = compile(root.path(), "\"data\" -> new/deep/file\nnew -> snapshot\n");
     let prepared = preparation::prepare(&program, true).unwrap();
     let second = transfers(&prepared.program.body)[1];
     assert_eq!(prepared.facts[&second.id].source, FileClass::Directory);
-    let undone = compile(
-        root.path(),
-        "transaction A:\n    \"data\" -> new/deep/file\nrollback A\nnew -> snapshot\n",
-    );
-    assert!(preparation::prepare(&undone, true).is_err());
+    assert!(!root.path().join("new").exists());
+    prepared.verify().unwrap();
 }
-
 #[test]
 fn metadata_type_validation_distinguishes_directory_modes_and_selectors() {
     let root = workspace();
@@ -1000,28 +928,28 @@ fn programs_are_not_launched_and_future_outputs_remain_unknown_until_runtime_ref
         root.path(),
         "worker => $pwd::not-a-real-executable(\"do not run\")\nfuture-output -> copy\n",
     );
-    let prepared = preparation::prepare(&program, true).unwrap();
-    assert!(!prepared.is_execution_ready());
-    assert!(
-        prepared
-            .facts
-            .values()
-            .any(|facts| facts.source == FileClass::Unknown)
-    );
+    let errors = preparation::prepare(&program, true).unwrap_err();
+    assert!(errors[0].diagnostic.message.contains("one basic block"));
+    let first = program.blocks().next().unwrap();
+    preparation::prepare_block(&first, PlanningContext::default())
+        .unwrap()
+        .verify()
+        .unwrap();
     assert!(!root.path().join("copy").exists());
 }
 
 #[test]
-fn a_program_with_no_file_ports_still_requires_a_verified_resource_view() {
+fn a_program_with_no_file_ports_needs_no_sandbox_resource_view() {
     let root = workspace();
     fs::write(root.path().join("placeholder"), "metadata only").unwrap();
     let program = compile(
         root.path(),
         "program => $pwd::placeholder(\"not executed\")\n",
     );
-    let prepared = preparation::prepare(&program, true).unwrap();
-    assert!(!prepared.is_execution_ready());
-    assert!(prepared.context.process_effects.is_empty());
+    let block = program.blocks().next().unwrap();
+    let prepared = preparation::prepare_block(&block, PlanningContext::default()).unwrap();
+    assert!(prepared.is_execution_ready());
+    prepared.verify().unwrap();
 }
 
 #[test]
@@ -1042,65 +970,22 @@ fn existing_parent_frontiers_restore_disjoint_creation_scheduling_and_are_certif
         true,
     )
     .unwrap();
-    assert!(!siblings.graph.dependencies.is_empty());
-}
-
-#[test]
-fn a_private_program_write_and_unpinned_input_is_an_explicit_version_refinement() {
-    use msync::hir::effects::{Access, AccessKind, Effects, FileResource, Resource, Scope};
-    use msync::hir::graph::{ProcessEffects, RefinementKind};
-    let root = workspace();
-    fs::write(root.path().join("program"), "metadata placeholder").unwrap();
-    fs::write(
-        root.path().join("prompt"),
-        "immutable input not acquired by planning",
+    assert!(siblings.graph.dependencies.is_empty());
+    assert_eq!(siblings.graph.commutations.len(), 1);
+    siblings.verify().unwrap();
+    let shared_missing_parent = preparation::prepare(
+        &compile(root.path(), "\"a\" -> missing/a\n\"b\" -> missing/b\n"),
+        true,
     )
     .unwrap();
-    let program = compile(
-        root.path(),
-        "p => $pwd::program()\n$pwd::prompt -> p::stdin\n",
-    );
-    let mut context = PlanningContext::default();
-    let footprint = Effects {
-        accesses: vec![Access {
-            resource: Resource::File(FileResource::new(
-                msync::endpoint::Location {
-                    backend: Backend::Local,
-                    path: root.path().to_string_lossy().into_owned(),
-                },
-                Scope::Tree,
-            )),
-            kind: AccessKind::Write,
-        }],
-        unknown_external: false,
-    };
-    context.process_effects.insert(
-        hir::ProcessId(0),
-        ProcessEffects::mediated(footprint, "test-view-premise", "private-epoch").unwrap(),
-    );
-    context.operation_facts.insert(
-        program.body.instructions[1].id,
-        OperationFacts {
-            source: FileClass::Regular,
-            destination: FileClass::Stream,
-        },
-    );
-    let prepared = preparation::prepare_with_context(&program, true, context).unwrap();
-    assert!(
-        prepared
-            .graph
-            .refinements
-            .iter()
-            .any(|pending| pending.kind == RefinementKind::InputVersion)
-    );
-    assert!(!prepared.is_execution_ready());
-    prepared.verify().unwrap();
+    assert!(!shared_missing_parent.graph.dependencies.is_empty());
+    shared_missing_parent.verify().unwrap();
 }
 
 #[test]
 fn an_explicitly_retained_older_input_version_is_not_forwarded_by_path_alone() {
+    use msync::filesystem::{Entry, SnapshotStore};
     use msync::hir::graph::VersionReadProof;
-    use msync::transaction::filesystem::{Entry, SnapshotStore};
     let root = workspace();
     fs::write(root.path().join("a"), "new value").unwrap();
     fs::write(root.path().join("b"), "old retained value").unwrap();

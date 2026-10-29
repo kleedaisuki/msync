@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::Path;
 
-use msync::transaction::filesystem::SnapshotStore;
+use msync::filesystem::SnapshotStore;
 
 fn workspace() -> tempfile::TempDir {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
@@ -47,40 +47,6 @@ fn repl_shell_edits_are_not_hidden_by_prior_managed_snapshots() {
         fs::read(workspace.path().join("second")).unwrap(),
         b"after shell",
         "REPL copied a pre-shell snapshot; stdout={} stderr={}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-#[cfg(windows)]
-#[test]
-fn named_rollback_does_not_erase_a_later_authorized_shell_edit() {
-    use std::io::Write;
-    use std::process::{Command, Stdio};
-
-    let workspace = workspace();
-    fs::write(workspace.path().join("source"), b"original").unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_msync"))
-        .args(["repl", "--color", "never"])
-        .current_dir(workspace.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child.stdin.take().unwrap().write_all(
-        b"transaction A:\n    \"transaction value\" -> source\n\n/pwsh Set-Content -LiteralPath 'source' -Value 'after shell' -NoNewline\nrollback A\n/quit\n"
-    ).unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        fs::read(workspace.path().join("source")).unwrap(),
-        b"after shell",
-        "named rollback erased a later shell edit; stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );

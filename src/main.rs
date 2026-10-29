@@ -1,3 +1,4 @@
+mod doctor;
 mod editor;
 mod presentation;
 mod progress;
@@ -10,36 +11,37 @@ use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
-use std::thread::{self, JoinHandle};
 
-use msync::compiler::{CompileContext, Compiler};
+use msync::compiler::CompileContext;
 use msync::language::{self, Version};
-use msync::plan::{FileClass, Plan};
-use msync::scheduler::{self, ResourceLimits};
-use msync::syntax::{self, Report, Script, StatementKind};
+use msync::scheduler::ResourceLimits;
+use msync::syntax::{self, Report};
 use presentation::{CliError, CliResult, IoAction, Issue};
-use tokio_util::sync::CancellationToken;
 
 const HELP: &str = "msync — a compiled file synchronization DSL
 
 USAGE
   msync [run] FILE [--dry-run]     Execute a script ('-' reads stdin)
   msync check FILE                Parse and compile without changing files
-  msync plan FILE                 Show typed IR and conservative dependency graph
+  msync plan FILE                 Show ordered basic blocks and dependency graphs
   msync compile FILE              Compile to IR; no filesystem or remote probes
+  msync compile FILE -o OBJECT    Export a relocatable object for later execution
   msync fmt FILE                  Format the script file in place
   msync repl [--dry-run]          Start a persistent interactive session
+  msync doctor                   Inspect optional transports without launching them
 
 OPTIONS
   -n, --dry-run       Validate and preview without writing files
-  --jobs N           Maximum concurrent finite copies (default: 4)
+  -o, --output FILE  Relocatable object output (compile only; '-' writes stdout)
+  --jobs N           Copy slots and program slots, separately (default: 4 each)
   --max-streams N    Maximum background pipe/socket flows (default: 16)
   --buffer-size N    Buffer bytes per flow (default: 64KiB)
   --memory-limit N   Aggregate payload-buffer budget (default: 64MiB; not RSS)
+  --spool-limit N    Combined stdout/stderr bytes per program (default: unlimited)
   --check            Check formatting without modifying the file (fmt only)
   --stdout           Explicit formatting preview, never writes the file (fmt only)
   --color auto|always|never   Color policy (default: auto; honors NO_COLOR)
-  --syntax 0.3|0.4   Select grammar; must agree with '# msync: VERSION'
+  --syntax 0.5       Select grammar; must agree with '# msync: VERSION'
   --trace FILE        Write private, local JSONL telemetry ('-' = stderr)
   -h, --help          Show this help
   -V, --version       Show version
@@ -47,16 +49,26 @@ OPTIONS
 EXAMPLES
   msync check sync.msync          Check syntax and bindings before copying
   msync plan sync.msync           Inspect static IR and runtime proof obligations
+  msync compile sync.msync -o sync.mobj  Export without binding this machine's files
   msync run sync.msync --dry-run  Preview without transfers or remote probes
   msync fmt sync.msync --check    Check script formatting without rewriting
 
+PROGRAMS
+  async Program => $path::bash(\"-c\", \"ls\")
+  Program::stdout -> stdout.txt
+  await Program
+
 REPL: /help or /? for commands. No arguments starts the REPL.
-Syntax 0.4 is the default; use --syntax 0.3 for legacy quoted file sources.
+Syntax 0.5 is the only supported CLI grammar; migrate earlier scripts explicitly.
 An optional '# msync: VERSION' header makes the grammar explicit.
-In syntax 0.4 every bare quoted value is literal UTF-8 data, never an implicit file.
+In syntax 0.5 every bare quoted value is literal UTF-8 data, never an implicit file.
 Use ./\"file name\" or $local::\"file name\" for quoted path fragments.
 Use $pwd::pwd/file for working-directory paths; $file::this and $file::parent identify the source script.
 Pipes and sockets end independently; Ctrl-C cancels active streams.
+External programs run asynchronously internally; an unmarked call waits for exit.
+Use async to launch without waiting, and await to establish a completion barrier.
+Finite file statements recover as a whole; streams and external effects are not rolled back.
+Graceful cancellation waits for started children to exit and may wait forever.
 ";
 
 const REPL_HELP: &str = "REPL commands
@@ -72,16 +84,19 @@ const REPL_HELP: &str = "REPL commands
   /dry-run [on|off]         Show or change preview mode
   /load FILE               Execute a file in the current environment
   /check FILE              Check a file without changing the environment
-  /plan FILE               Print a resolved plan without executing it
+  /plan FILE               Print basic blocks and dependency graphs without executing
   /fmt FILE                Format a script file in place (never executes it)
-  /limits                  Show copy, stream and buffer resource limits
-  /syntax [0.3|0.4]         Show or change grammar (default: 0.4)
+  /limits                  Show execution, buffer and output-spool limits
+  /syntax [0.5]             Show or select the supported grammar
   /jobs                    Show background jobs and their identifiers
-  /wait                    Wait for all active work, publishing each ready flow
-  /stop                    Cancel and join active work
+  /wait                    Wait for active streams and external programs
+  /stop                    Stop streams; drain already-started external programs
+  /kill                    Force-terminate programs; external effects may be partial
 Enter DSL statements directly; bindings persist across submissions.
-Macro/transaction blocks end with a blank line; Ctrl-C discards a pending block.
-Streams and programs run in the background; independent submissions may continue.
+Macro blocks end with a blank line; Ctrl-C discards a pending block.
+async starts background work; await establishes a completion barrier.
+Unmarked external calls wait; macros await their outstanding programs before returning.
+Graceful /stop and Ctrl-C may wait forever for a nonterminating external program.
 Use /wait or /stop before changing shared cwd, files or syntax through a command.
 In supported terminals, Tab completes commands/namespaces and Up/Down browse history.
 Ctrl-C clears the edit and stops active work; Ctrl-D exits safely.
@@ -145,6 +160,7 @@ fn requested_color(args: &[String]) -> Color {
 struct Args {
     command: String,
     file: Option<String>,
+    output: Option<String>,
     dry_run: bool,
     write: bool,
     stdout: bool,
@@ -152,6 +168,7 @@ struct Args {
     color: Color,
     trace: Option<String>,
     limits: ResourceLimits,
+    spool_limit: Option<u64>,
     syntax: Option<Version>,
 }
 
@@ -171,6 +188,12 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--write" | "-w" => options.write = true,
             "--stdout" => options.stdout = true,
             "--check" => options.check_format = true,
+            "-o" | "--output" => {
+                let output = args.next().ok_or("--output requires a filename or '-'")?;
+                if options.output.replace(output).is_some() {
+                    return Err("--output may be specified only once".into());
+                }
+            }
             "--jobs" => {
                 options.limits.jobs =
                     positive(&args.next().ok_or("--jobs requires a positive integer")?)?
@@ -196,6 +219,13 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
                         .ok_or("--memory-limit requires bytes or KiB/MiB")?,
                 )?
             }
+            "--spool-limit" => {
+                options.spool_limit = Some(byte_count(
+                    &args
+                        .next()
+                        .ok_or("--spool-limit requires bytes or KiB/MiB")?,
+                )?);
+            }
             "--color" => {
                 options.color = match args.next().as_deref() {
                     Some("auto") => Color::Auto,
@@ -210,7 +240,7 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--syntax" => {
                 options.syntax = Some(
                     args.next()
-                        .ok_or("--syntax requires 0.3 or 0.4")?
+                        .ok_or("--syntax requires 0.5")?
                         .parse::<Version>()
                         .map_err(str::to_owned)?,
                 );
@@ -226,12 +256,14 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
                         "--max-streams",
                         "--buffer-size",
                         "--memory-limit",
+                        "--spool-limit",
                         "--check",
                         "--stdout",
                         "--write",
                         "--color",
                         "--trace",
                         "--syntax",
+                        "--output",
                     ],
                 )
                 .map_or_else(
@@ -245,6 +277,14 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     }
     if options.command.is_empty() {
         options.command = "repl".into();
+    }
+    if options.output.is_some() && options.command != "compile" {
+        return Err("--output exports a relocatable object; use 'compile FILE -o OBJECT'".into());
+    }
+    if options.output.is_some() && options.dry_run {
+        return Err(
+            "--output already compiles without execution; do not combine it with --dry-run".into(),
+        );
     }
     if options.command == "fmt" && options.dry_run {
         return Err("--dry-run previews transfer plans, not formatting; use 'fmt FILE --check' or '--stdout' for a read-only formatting command".into());
@@ -266,7 +306,7 @@ fn add_positional(options: &mut Args, arg: String) -> Result<(), String> {
     if options.command.is_empty() {
         if matches!(
             arg.as_str(),
-            "run" | "check" | "plan" | "compile" | "fmt" | "repl"
+            "run" | "check" | "plan" | "compile" | "fmt" | "repl" | "doctor"
         ) {
             options.command = arg;
             return Ok(());
@@ -280,22 +320,6 @@ fn add_positional(options: &mut Args, arg: String) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
-    #[cfg(windows)]
-    if env::args_os().nth(1).as_deref()
-        == Some(std::ffi::OsStr::new(
-            msync::process::view_windows::WORKER_FLAG,
-        ))
-    {
-        return msync::process::view_windows::worker_entry(env::args_os().skip(2));
-    }
-    #[cfg(target_os = "linux")]
-    if env::args_os().nth(1).as_deref()
-        == Some(std::ffi::OsStr::new(
-            msync::process::view_linux::WORKER_FLAG,
-        ))
-    {
-        return msync::process::view_linux::worker_entry(env::args_os().skip(2));
-    }
     let args: Vec<_> = env::args().skip(1).collect();
     let color = requested_color(&args);
     let result = arguments(args.into_iter())
@@ -346,6 +370,10 @@ fn dispatch(options: &Args) -> CliResult {
     match options.command.as_str() {
         "help" => print_help(HELP, options.color),
         "version" => print_text(concat!("msync ", env!("CARGO_PKG_VERSION"), "\n")),
+        "doctor" if options.file.is_none() => doctor::run(options.color),
+        "doctor" => Err(CliError::argument(
+            "doctor does not take an input file; run msync doctor".into(),
+        )),
         "repl" if options.file.is_none() => repl::run(options),
         "repl" => Err("repl does not take a file; use /load inside the REPL".into()),
         _ => run_file(options),
@@ -405,31 +433,18 @@ fn print_status(text: &str, color: Color) -> CliResult {
     ))
 }
 
-fn print_plan(plan: &Plan, color: Color) -> CliResult {
+fn print_limits(limits: &ResourceLimits, spool_limit: Option<u64>, color: Color) -> CliResult {
     if io::stdout().is_terminal() {
-        return print_text(&presentation::plan(plan, color.stdout()));
-    }
-    if !color.stdout() {
-        return print_text(&plan.to_string());
-    }
-    for line in plan.to_string().lines() {
-        print_text(&msync::highlight::highlight(
-            &presentation::escape(line),
-            true,
-        ))?;
-        print_text("\n")?;
-    }
-    Ok(())
-}
-
-fn print_limits(limits: &ResourceLimits, color: Color) -> CliResult {
-    if io::stdout().is_terminal() {
-        return print_text(&presentation::limits(limits, color.stdout()));
+        return print_text(&presentation::limits(limits, spool_limit, color.stdout()));
     }
     print_status(
         &format!(
-            "limits: jobs={}, max-streams={}, buffer-size={} bytes, memory-limit={} bytes",
-            limits.jobs, limits.max_streams, limits.buffer_bytes, limits.memory_bytes
+            "limits: jobs={}, max-streams={}, buffer-size={} bytes, memory-limit={} bytes, spool-limit={} per program (stdout+stderr)",
+            limits.jobs,
+            limits.max_streams,
+            limits.buffer_bytes,
+            limits.memory_bytes,
+            spool_limit.map_or_else(|| "unlimited".into(), |bytes| format!("{bytes} bytes"))
         ),
         color,
     )
@@ -444,10 +459,22 @@ fn positive(value: &str) -> Result<usize, String> {
 }
 
 fn byte_size(value: &str) -> Result<usize, String> {
+    let count = byte_count(value)?;
+    if count == 0 {
+        return Err(format!(
+            "'{value}' is not a positive byte budget; try --help"
+        ));
+    }
+    usize::try_from(count).map_err(|_| "byte budget is too large".into())
+}
+
+fn byte_count(value: &str) -> Result<u64, String> {
     let end = value
         .find(|ch: char| !ch.is_ascii_digit())
         .unwrap_or(value.len());
-    let number = positive(&value[..end])?;
+    let number = value[..end]
+        .parse::<u64>()
+        .map_err(|_| format!("'{value}' is not a nonnegative byte budget; try --help"))?;
     let scale = match value[end..].to_ascii_lowercase().as_str() {
         "" | "b" => 1,
         "k" | "kb" | "kib" => 1024,
@@ -464,9 +491,24 @@ fn byte_size(value: &str) -> Result<usize, String> {
         .ok_or_else(|| "byte budget is too large".into())
 }
 
-fn read_source(file: &str) -> CliResult<String> {
+fn source_text(file: &str, bytes: Vec<u8>) -> CliResult<String> {
+    String::from_utf8(bytes).map_err(|cause| {
+        let action = if file == "-" {
+            IoAction::ReadInput
+        } else {
+            IoAction::ReadScript
+        };
+        CliError::io(
+            action,
+            (file != "-").then(|| Path::new(file)),
+            io::Error::new(io::ErrorKind::InvalidData, cause),
+        )
+    })
+}
+
+fn read_input(file: &str) -> CliResult<Vec<u8>> {
     let mut trace = msync::telemetry::span("read");
-    let result = read_source_inner(file);
+    let result = read_input_inner(file);
     trace.finish_result(&result);
     if let Ok(source) = &result {
         trace.metric("bytes", source.len() as u64);
@@ -474,22 +516,134 @@ fn read_source(file: &str) -> CliResult<String> {
     result
 }
 
-fn read_source_inner(file: &str) -> CliResult<String> {
+fn read_input_inner(file: &str) -> CliResult<Vec<u8>> {
     if file != "-" {
-        return fs::read_to_string(file)
-            .map_err(|error| CliError::io(IoAction::ReadScript, Some(Path::new(file)), error));
+        let mut reader = fs::File::open(file)
+            .map_err(|cause| CliError::io(IoAction::ReadScript, Some(Path::new(file)), cause))?;
+        return read_content(&mut reader, file);
     }
-    let mut source = String::new();
-    io::stdin()
-        .read_to_string(&mut source)
-        .map_err(|error| CliError::io(IoAction::ReadInput, None, error))?;
+    read_content(&mut io::stdin().lock(), file)
+}
+
+fn read_content(reader: &mut impl Read, file: &str) -> CliResult<Vec<u8>> {
+    let action = if file == "-" {
+        IoAction::ReadInput
+    } else {
+        IoAction::ReadScript
+    };
+    let failure = |cause| CliError::io(action, (file != "-").then(|| Path::new(file)), cause);
+    let mut source = Vec::new();
+    // Fill the signature probe even when a pipe delivers one byte per read.
+    // Only identified objects have the object-format bound; source stays source.
+    reader
+        .by_ref()
+        .take((msync::object::MAGIC.len() + 1) as u64)
+        .read_to_end(&mut source)
+        .map_err(failure)?;
+    if msync::object::is_object(&source) {
+        let remaining = msync::object::MAX_OBJECT_BYTES.saturating_sub(source.len()) + 1;
+        reader
+            .take(remaining as u64)
+            .read_to_end(&mut source)
+            .map_err(failure)?;
+        if source.len() > msync::object::MAX_OBJECT_BYTES {
+            return Err(
+                Issue::new("relocatable object exceeds the 64MiB format bound")
+                    .stage(presentation::Stage::Load)
+                    .field("object", file)
+                    .help("Split the object into smaller modules and recompile it.")
+                    .into(),
+            );
+        }
+    } else {
+        reader.read_to_end(&mut source).map_err(failure)?;
+    }
     Ok(source)
+}
+
+fn write_object(output: &str, input: &str, bytes: &[u8]) -> CliResult {
+    if output == "-" {
+        if io::stdout().is_terminal() {
+            return Err(
+                Issue::new("object output requires a file or redirected standard output")
+                    .stage(presentation::Stage::Compile)
+                    .help("Use compile FILE -o module.mobj, or pipe --output - to another command.")
+                    .into(),
+            );
+        }
+        let mut writer = io::stdout().lock();
+        return writer
+            .write_all(bytes)
+            .and_then(|()| writer.flush())
+            .map_err(|cause| {
+                Issue::new("cannot write compiled object to standard output")
+                    .stage(presentation::Stage::Compile)
+                    .field("cause", cause.to_string())
+                    .into()
+            });
+    }
+    let target = Path::new(output);
+    if input != "-" {
+        let source = Path::new(input);
+        let same_name = std::path::absolute(source)
+            .ok()
+            .zip(std::path::absolute(target).ok())
+            .is_some_and(|(source, target)| source == target);
+        let same_identity = same_file::is_same_file(source, target).unwrap_or(false);
+        if same_name || same_identity {
+            return Err(
+                Issue::new("compiled object output would replace the input file")
+                    .stage(presentation::Stage::Compile)
+                    .field("input", input)
+                    .field("output", output)
+                    .help("Choose a separate object filename; compilation never edits its input.")
+                    .into(),
+            );
+        }
+    }
+    let failure = |cause: io::Error| {
+        CliError::from(
+            Issue::new("cannot publish compiled object")
+                .stage(presentation::Stage::Compile)
+                .field("output", output)
+                .field("cause", cause.to_string())
+                .help("Choose an ordinary writable output file in an existing directory."),
+        )
+    };
+    if fs::symlink_metadata(target).is_ok_and(|metadata| metadata.permissions().readonly()) {
+        return Err(failure(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "existing object output is read-only",
+        )));
+    }
+    let stage = msync::io::StagedFile::new(target, false).map_err(failure)?;
+    fs::write(stage.path(), bytes).map_err(failure)?;
+    stage.preserve_target_permissions().map_err(failure)?;
+    stage.commit().map_err(failure)
 }
 
 struct SourceUnit<'a> {
     text: &'a str,
     name: &'a str,
     context: CompileContext,
+}
+
+struct ObjectUnit<'a> {
+    bytes: &'a [u8],
+    name: &'a str,
+    context: CompileContext,
+}
+
+impl<'a> ObjectUnit<'a> {
+    fn file(bytes: &'a [u8], name: &'a str) -> CliResult<Self> {
+        let context = CompileContext::capture((name != "-").then(|| Path::new(name)))
+            .map_err(|cause| CliError::io(IoAction::WorkingDirectory, None, cause))?;
+        Ok(Self {
+            bytes,
+            name,
+            context,
+        })
+    }
 }
 
 impl<'a> SourceUnit<'a> {
@@ -539,16 +693,18 @@ fn run_file(options: &Args) -> CliResult {
     if options.command == "fmt" && file == "-" && !options.stdout && !options.check_format {
         return Err("fmt edits a script file; provide its filename, or use --stdout for an explicit preview".into());
     }
-    let source = read_source(file)?;
-    if options.command == "fmt" {
-        return format_file(file, &source, options);
-    }
-    let version = language::select_version(&source, options.syntax, Version::Structured)
-        .map_err(|errors| diagnostics(file, &source, &errors, options.color))?;
-    if version == Version::Structured {
+    let input = read_input(file)?;
+    if msync::object::is_object(&input) {
+        if options.command == "fmt" {
+            return Err(Issue::new("compiled objects are not source scripts")
+                .stage(presentation::Stage::Load)
+                .field("object", file)
+                .help("Format the original .msync source, then compile a new object.")
+                .into());
+        }
         let mut state = structured::State::default();
-        let outcome = state.submit(
-            SourceUnit::file(&source, file)?,
+        let outcome = state.submit_object(
+            ObjectUnit::file(&input, file)?,
             &options.command,
             options.dry_run,
             options,
@@ -557,14 +713,22 @@ fn run_file(options: &Args) -> CliResult {
         let closed = state.shutdown(options.color);
         return outcome.and(closed);
     }
-    submit(
+    let source = source_text(file, input)?;
+    if options.command == "fmt" {
+        return format_file(file, &source, options);
+    }
+    language::select_version(&source, options.syntax, Version::Structured)
+        .map_err(|errors| diagnostics(file, &source, &errors, options.color))?;
+    let mut state = structured::State::default();
+    let outcome = state.submit(
         SourceUnit::file(&source, file)?,
-        &mut Compiler::new(),
         &options.command,
         options.dry_run,
-        options.color,
-        &options.limits,
-    )
+        options,
+        false,
+    );
+    let closed = state.shutdown(options.color);
+    outcome.and(closed)
 }
 
 fn format_file(file: &str, source: &str, options: &Args) -> CliResult {
@@ -575,13 +739,10 @@ fn format_file(file: &str, source: &str, options: &Args) -> CliResult {
 }
 
 fn format_file_inner(file: &str, source: &str, options: &Args) -> CliResult {
-    let version = language::select_version(source, options.syntax, Version::Structured)
+    language::select_version(source, options.syntax, Version::Structured)
         .map_err(|errors| diagnostics(file, source, &errors, options.color))?;
-    let formatted = match version {
-        Version::Legacy => syntax::format_rich(source),
-        Version::Structured => language::format(source),
-    }
-    .map_err(|errors| diagnostics(file, source, &errors, options.color))?;
+    let formatted = language::format(source)
+        .map_err(|errors| diagnostics(file, source, &errors, options.color))?;
     if options.check_format {
         return if formatted == source {
             Ok(())
@@ -654,131 +815,6 @@ fn write_formatted(file: &str, formatted: &str) -> CliResult {
     result.map_err(|error| CliError::io(IoAction::WriteScript, Some(path), error))
 }
 
-fn submit(
-    input: SourceUnit<'_>,
-    compiler: &mut Compiler,
-    command: &str,
-    dry_run: bool,
-    color: Color,
-    limits: &ResourceLimits,
-) -> CliResult {
-    let mut trace = msync::telemetry::span("submission");
-    input.annotate(&mut trace);
-    let SourceUnit {
-        text: source,
-        name: file,
-        context,
-    } = input;
-    let result = (|| {
-        let script = syntax::parse_rich(source)
-            .map_err(|errors| diagnostics(file, source, &errors, color))?;
-        let mut candidate = compiler.clone();
-        let program = candidate
-            .compile_rich_with_context(&script, &context)
-            .map_err(|errors| diagnostics(file, source, &errors, color))?;
-        if command == "check" {
-            *compiler = candidate;
-            if !io::stdout().is_terminal() {
-                return print_text(&format!(
-                    "{}\n",
-                    presentation::paint("ok", "1;32", color.stdout())
-                ));
-            }
-            return print_status(
-                &format!(
-                    "ok: {} checked; no files written",
-                    presentation::escape(file)
-                ),
-                color,
-            );
-        }
-        let plan = prepare(&program, &script, !dry_run)
-            .map_err(|error| diagnostics(file, source, &[runtime_report(&script, error)], color))?;
-        *compiler = candidate;
-        if matches!(command, "plan" | "compile") {
-            return print_plan(&plan, color);
-        }
-        if dry_run {
-            print_plan(&plan, color)?;
-            return print_status(
-                &format!(
-                    "preview: {} operation(s); no files written\n",
-                    plan.nodes.len()
-                ),
-                color,
-            );
-        }
-        let mut execution = msync::telemetry::span("execute");
-        let result = scheduler::execute_plan(&plan, limits);
-        execution.finish_result(&result);
-        let summary = result
-            .map_err(|error| diagnostics(file, source, &[runtime_report(&script, error)], color))?;
-        print_summary(
-            summary,
-            plan.removed.len(),
-            !program.operations.is_empty(),
-            color,
-        )
-    })();
-    trace.finish_result(&result);
-    result
-}
-
-fn prepare(
-    program: &msync::compiler::Program,
-    script: &Script,
-    live: bool,
-) -> Result<Plan, msync::runtime::RuntimeError> {
-    let operands = script
-        .statements
-        .iter()
-        .filter(|statement| matches!(statement.kind, StatementKind::Copy { .. }))
-        .map(|statement| {
-            statement
-                .operands
-                .as_ref()
-                .map(|operands| (operands.left.content, operands.right.content))
-                .unwrap_or((statement.span, statement.span))
-        })
-        .collect::<Vec<_>>();
-    scheduler::prepare_spanned(program, live, &operands)
-}
-
-fn print_summary(
-    summary: scheduler::ExecutionSummary,
-    removed: usize,
-    show: bool,
-    color: Color,
-) -> CliResult {
-    let report = summary.report;
-    for action in report.actions {
-        print_text(&msync::highlight::highlight(
-            &presentation::escape(&action),
-            color.stdout(),
-        ))?;
-        print_text("\n")?;
-    }
-    if !show {
-        return Ok(());
-    }
-    let status = format!(
-        "done: {} operation(s), {} eliminated, {} file(s), {} directories, {} flow bytes\n",
-        summary.completed,
-        removed,
-        report.copied_files,
-        report.created_directories,
-        report.transferred_bytes
-    );
-    print_text(&if color.stdout() {
-        format!(
-            "\x1b[1;32mdone:\x1b[0m{}",
-            status.strip_prefix("done:").unwrap_or(&status)
-        )
-    } else {
-        status
-    })
-}
-
 fn diagnostics(file: &str, source: &str, errors: &[Report], color: Color) -> CliError {
     CliError::Presented(
         errors
@@ -789,33 +825,108 @@ fn diagnostics(file: &str, source: &str, errors: &[Report], color: Color) -> Cli
     )
 }
 
-fn runtime_report(script: &Script, error: msync::runtime::RuntimeError) -> Report {
-    let (title, detail) = error
-        .message
-        .split_once('\n')
-        .unwrap_or((&error.message, ""));
-    let mut report = Report::new(title, error.span);
-    if !detail.is_empty() {
-        report = report.help(format!("Runtime details:\n{detail}"));
-    }
-    if let Some(statement) = script.statements.iter().find(|statement| {
-        statement.span.start <= error.span.start && statement.span.end >= error.span.end
-    }) && let Some(operands) = &statement.operands
-        && error.span == statement.span
-    {
-        report.diagnostic.span = operands.operator;
-        report = report
-            .label(operands.left.content, "source of this transfer")
-            .label(operands.right.content, "destination of this transfer");
-    }
-    report.help(
-        "Inspect the marked source and destination. Use msync plan FILE for types/dependencies, or --trace FILE for operation details before retrying.",
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spool_limit_is_a_per_program_optional_nonnegative_byte_budget() {
+        let parse = |args: &[&str]| arguments(args.iter().map(|arg| (*arg).to_owned()));
+        assert_eq!(parse(&["repl"]).unwrap().spool_limit, None);
+        assert_eq!(
+            parse(&["repl", "--spool-limit", "0"]).unwrap().spool_limit,
+            Some(0)
+        );
+        assert_eq!(
+            parse(&["repl", "--spool-limit", "2KiB"])
+                .unwrap()
+                .spool_limit,
+            Some(2048)
+        );
+        assert!(parse(&["repl", "--spool-limit", "-1"]).is_err());
+        assert!(parse(&["repl", "--spool-limit"]).is_err());
+    }
+
+    #[test]
+    fn object_output_is_explicit_and_only_valid_for_compilation() {
+        let parse = |arguments: &[&str]| {
+            super::arguments(arguments.iter().map(|argument| (*argument).to_owned()))
+        };
+        let options = parse(&["compile", "input.msync", "-o", "module.mobj"]).unwrap();
+        assert_eq!(options.output.as_deref(), Some("module.mobj"));
+        assert_eq!(options.file.as_deref(), Some("input.msync"));
+        assert!(parse(&["run", "input.msync", "-o", "module.mobj"]).is_err());
+        assert!(parse(&["compile", "input.msync", "--output"]).is_err());
+        assert!(parse(&["compile", "input.msync", "-o", "a", "--output", "b"]).is_err());
+        assert!(parse(&["compile", "input.msync", "-o", "a", "--dry-run"]).is_err());
+        assert_eq!(
+            parse(&["compile", "-", "--output", "-"])
+                .unwrap()
+                .output
+                .as_deref(),
+            Some("-")
+        );
+    }
+
+    #[test]
+    fn object_export_never_replaces_its_source_or_a_readonly_output() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&root).unwrap();
+        let workspace = tempfile::tempdir_in(root).unwrap();
+        let source = workspace.path().join("input.msync");
+        let output = workspace.path().join("output.mobj");
+        fs::write(&source, "source -> target\n").unwrap();
+        assert!(
+            write_object(
+                source.to_str().unwrap(),
+                source.to_str().unwrap(),
+                b"object"
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_to_string(&source).unwrap(), "source -> target\n");
+        write_object(
+            output.to_str().unwrap(),
+            source.to_str().unwrap(),
+            b"first object",
+        )
+        .unwrap();
+        assert_eq!(fs::read(&output).unwrap(), b"first object");
+        let writable = fs::metadata(&output).unwrap().permissions();
+        let mut readonly = writable.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(&output, readonly).unwrap();
+        assert!(
+            write_object(
+                output.to_str().unwrap(),
+                source.to_str().unwrap(),
+                b"replacement"
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&output).unwrap(), b"first object");
+        fs::set_permissions(&output, writable).unwrap();
+        assert_eq!(fs::read_dir(workspace.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn object_signature_probe_does_not_misclassify_short_source_pipe_reads() {
+        struct OneByte<'a>(&'a [u8]);
+        impl Read for OneByte<'_> {
+            fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+                let length = self.0.len().min(output.len()).min(1);
+                output[..length].copy_from_slice(&self.0[..length]);
+                self.0 = &self.0[length..];
+                Ok(length)
+            }
+        }
+        for bytes in [
+            b"MSYNC-OBJECT -> target\n".as_slice(),
+            b"MSYNC-OBJECT\n{}".as_slice(),
+        ] {
+            assert_eq!(read_content(&mut OneByte(bytes), "-").unwrap(), bytes);
+        }
+    }
 
     #[test]
     fn formatter_never_removes_a_temporary_file_it_did_not_create() {

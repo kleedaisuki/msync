@@ -189,6 +189,46 @@ pub(crate) fn logical_remote_resource(location: &Location, scope: AccessScope) -
     })
 }
 
+/// A consuming channel is identified symbolically. Metadata or identity handles
+/// must never open a channel while constructing a plan.
+pub(crate) fn logical_stream_resource(location: &Location) -> Resource {
+    let path = if cfg!(windows) && location.backend == Backend::Local {
+        location.path.replace('\\', "/")
+    } else {
+        location.path.clone()
+    };
+    let components: Arc<[String]> = path
+        .split('/')
+        .filter(|part| !matches!(*part, "" | "."))
+        .map(str::to_owned)
+        .collect::<Vec<_>>()
+        .into();
+    let comparison = if cfg!(windows) && location.backend == Backend::Local {
+        components
+            .iter()
+            .map(|part| part.to_uppercase())
+            .collect::<Vec<_>>()
+            .into()
+    } else {
+        Arc::clone(&components)
+    };
+    Resource {
+        location: location.clone(),
+        scope: AccessScope::Exact,
+        key: ResourceKey {
+            endpoint: location.backend.to_string(),
+            components,
+            rooted: path.starts_with('/'),
+        },
+        comparison,
+        possible_windows_path: None,
+        identity_hint: None,
+        writable_file: None,
+        require_wsl_proof: true,
+        disjoint: None,
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Effects {
     pub reads: Vec<Resource>,

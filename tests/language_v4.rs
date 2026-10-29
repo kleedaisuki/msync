@@ -1,4 +1,4 @@
-use msync::language::{self, BindingOp, DestinationMode, ExprKind, Isolation, StatementKind};
+use msync::language::{self, BindingOp, DestinationMode, ExprKind, StatementKind};
 use proptest::prelude::*;
 
 const EXAMPLE: &str = r##"# 独立的词法环境
@@ -10,19 +10,13 @@ macro copy_codex(.codex, des):
 
 copy_codex($wsl::~/.codex, wsl)
 copy_codex($local::~/.codex, local)
-transaction A1(read uncommitted):
-	program => $path::bash("python", "run_codex.py", .codex)
-	$pwd::prompt.txt -> program::stdin
-	program::stdout -> output.txt
-	commit
-	program::exit_code -> exit_codex.txt
-	commit
-	program::exit_code -> wsl.txt
-	rollback
-rollback A1
-transaction B2(serializable):
-    verifier => $pwd::.venv/Scripts/python.exe(scripts/verify.py, "verify")
-    verifier::pid -> pid
+async program => $path::bash("python", "run_codex.py", .codex)
+$pwd::prompt.txt -> program::stdin
+program::stdout -> output.txt
+await program
+program::exit_code -> exit_codex.txt
+verifier => $pwd::.venv/Scripts/python.exe(scripts/verify.py, "verify")
+verifier::pid -> pid
 "scucess" -> result.txt
 "你好\n世界" -> 中文.txt
 "# not a comment" -> $local::"a # file.txt"
@@ -60,19 +54,22 @@ fn parses_the_requested_program_without_losing_types() {
         &EXAMPLE[destination.span.start..destination.span.end],
         "$pwd::des/agents/."
     );
-    let transaction = document
+    let scheduled = document
         .statements
         .iter()
         .find_map(|statement| match &statement.kind {
-            StatementKind::Transaction {
-                isolation, body, ..
-            } => Some((isolation, body)),
+            StatementKind::Scheduled {
+                asynchronous,
+                awaited,
+                statement,
+            } => Some((asynchronous, awaited, statement)),
             _ => None,
         })
         .unwrap();
-    assert_eq!(*transaction.0, Isolation::ReadUncommitted);
+    assert!(*scheduled.0);
+    assert!(!*scheduled.1);
     assert!(
-        matches!(&transaction.1[0].kind, StatementKind::Binding { op: BindingOp::Space, value, .. } if matches!(&value.kind, ExprKind::Call { arguments, .. } if arguments.len() == 3))
+        matches!(&scheduled.2.kind, StatementKind::Binding { op: BindingOp::Space, value, .. } if matches!(&value.kind, ExprKind::Call { arguments, .. } if arguments.len() == 3))
     );
     assert!(
         matches!(document.statements.last().unwrap().kind, StatementKind::Transfer { ref source, .. } if matches!(&source.kind, ExprKind::Literal(text) if text.is_empty()))
@@ -123,11 +120,10 @@ fn shape(source: &str) -> String {
                         name.span = Default::default();
                     }
                 }
-                StatementKind::Transaction { name, body, .. } => {
-                    name.span = Default::default();
-                    strip(body);
+                StatementKind::Scheduled { statement, .. } => {
+                    strip(std::slice::from_mut(statement.as_mut()))
                 }
-                StatementKind::Rollback(Some(name)) => name.span = Default::default(),
+                StatementKind::Await(Some(name)) => name.span = Default::default(),
                 _ => {}
             }
         }
@@ -215,32 +211,26 @@ fn adversarial_nesting_reports_a_span_instead_of_exhausting_the_stack() {
         &source[errors[0].diagnostic.span.start..errors[0].diagnostic.span.end],
         "("
     );
-    let mut blocks = String::new();
-    for depth in 0..129 {
-        blocks.push_str(&format!("{}transaction t{depth}:\n", "    ".repeat(depth)));
-    }
-    blocks.push_str(&format!("{}commit\n", "    ".repeat(129)));
-    assert!(
-        language::parse(&blocks)
-            .unwrap_err()
-            .iter()
-            .any(|report| report.diagnostic.message.contains("nesting"))
-    );
 }
 
 #[test]
-fn supports_all_isolations_and_the_default() {
-    for (text, expected) in [
-        ("", Isolation::Serializable),
-        ("()", Isolation::Serializable),
-        ("(read uncommitted)", Isolation::ReadUncommitted),
-        ("(read committed)", Isolation::ReadCommitted),
-        ("(repeatable read)", Isolation::RepeatableRead),
-        ("(serializable)", Isolation::Serializable),
+fn removed_transaction_controls_explain_the_statement_atomicity_model() {
+    for source in [
+        "transaction T:\n    a -> b\n",
+        "commit\n",
+        "rollback\n",
+        "rollback T\n",
     ] {
-        let document = language::parse(&format!("transaction T{text}:\n    commit\n")).unwrap();
+        let errors = language::parse(source).unwrap_err();
+        let removed = errors
+            .iter()
+            .find(|error| error.diagnostic.message.contains("removed"))
+            .unwrap();
         assert!(
-            matches!(document.statements[0].kind, StatementKind::Transaction { isolation, .. } if isolation == expected)
+            removed
+                .help
+                .iter()
+                .any(|help| help.contains("async") && help.contains("atomic"))
         );
     }
 }
@@ -261,8 +251,8 @@ fn header_comments_stay_in_their_regions_and_comment_indentation_is_not_a_block(
 #[test]
 fn diagnoses_ambiguous_indentation_and_nested_macros() {
     for source in [
-        "macro a():\n\tcommit\n        commit\n",
-        "macro a():\n \tcommit\n",
+        "macro a():\n\ta -> b\n        a -> b\n",
+        "macro a():\n \ta -> b\n",
         "macro a():\n    a -> b\n  b -> c\n",
         "  a -> b\n",
         "macro a():\n    macro b():\n        x -> y\n",
@@ -275,7 +265,7 @@ fn diagnoses_ambiguous_indentation_and_nested_macros() {
 
 #[test]
 fn diagnostics_point_at_precise_utf8_tokens_and_collect_independent_errors() {
-    let source = "你好 -> output\r\ncall(\"流\",, next)\r\ntransaction T(weird):\r\n";
+    let source = "你好 -> output\r\ncall(\"流\",, next)\r\nasync async a -> b\r\n";
     let errors = language::parse(source).unwrap_err();
     let missing = errors
         .iter()
@@ -285,13 +275,13 @@ fn diagnostics_point_at_precise_utf8_tokens_and_collect_independent_errors() {
         missing.diagnostic.span.start,
         source.find(",,").unwrap() + 1
     );
-    let isolation = errors
+    let duplicate = errors
         .iter()
-        .find(|error| error.diagnostic.message.contains("isolation"))
+        .find(|error| error.diagnostic.message.contains("duplicate"))
         .unwrap();
     assert_eq!(
-        &source[isolation.diagnostic.span.start..isolation.diagnostic.span.end],
-        "weird"
+        &source[duplicate.diagnostic.span.start..duplicate.diagnostic.span.end],
+        "async"
     );
     for report in errors {
         assert!(source.is_char_boundary(report.diagnostic.span.start));

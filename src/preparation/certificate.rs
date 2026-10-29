@@ -1,19 +1,6 @@
 use super::optimize;
 use crate::hir::{self, InstructionKind, Output, Region};
 pub(super) fn same_program(left: &hir::Program, right: &hir::Program) -> bool {
-    if left.transactions.len() != right.transactions.len() {
-        return false;
-    }
-    if !left
-        .transactions
-        .iter()
-        .zip(&right.transactions)
-        .all(|(a, b)| {
-            a.id == b.id && a.name == b.name && a.isolation == b.isolation && a.span == b.span
-        })
-    {
-        return false;
-    }
     same_region(&left.body, &right.body)
 }
 
@@ -39,29 +26,13 @@ fn same_region(left: &Region, right: &Region) -> bool {
                         },
                     ) => optimize::value(a) == optimize::value(b) && same_output(ad, bd),
                     (
-                        InstructionKind::Transaction {
-                            transaction: a,
-                            body: ab,
-                        },
-                        InstructionKind::Transaction {
-                            transaction: b,
-                            body: bb,
-                        },
-                    ) => a == b && same_region(ab, bb),
-                    (
-                        InstructionKind::Commit { transaction: a },
-                        InstructionKind::Commit { transaction: b },
+                        InstructionKind::Barrier { kind: a },
+                        InstructionKind::Barrier { kind: b },
                     ) => a == b,
                     (
-                        InstructionKind::Rollback {
-                            transaction: a,
-                            scope: ascope,
-                        },
-                        InstructionKind::Rollback {
-                            transaction: b,
-                            scope: bscope,
-                        },
-                    ) => a == b && ascope == bscope,
+                        InstructionKind::Await { process: a },
+                        InstructionKind::Await { process: b },
+                    ) => a == b,
                     (
                         InstructionKind::Spawn {
                             process: a,
@@ -105,5 +76,53 @@ fn same_output(left: &Output, right: &Output) -> bool {
         ) => a == b && am == bm,
         (Output::Stdin(a), Output::Stdin(b)) => a == b,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::same_program;
+    use crate::hir::{
+        BarrierKind, Instruction, InstructionId, InstructionKind, ProcessId, Program, Region,
+    };
+    use crate::syntax::Span;
+
+    fn program(kind: InstructionKind) -> Program {
+        Program {
+            body: Region {
+                instructions: vec![Instruction {
+                    id: InstructionId(0),
+                    kind,
+                    span: Span::default(),
+                    expansion: Vec::new(),
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn certificates_preserve_barrier_direction() {
+        let before = program(InstructionKind::Barrier {
+            kind: BarrierKind::Before,
+        });
+        let after = program(InstructionKind::Barrier {
+            kind: BarrierKind::After,
+        });
+        assert!(same_program(&before, &before.clone()));
+        assert!(!same_program(&before, &after));
+    }
+
+    #[test]
+    fn certificates_preserve_await_target() {
+        let all = program(InstructionKind::Await { process: None });
+        let first = program(InstructionKind::Await {
+            process: Some(ProcessId(1)),
+        });
+        let second = program(InstructionKind::Await {
+            process: Some(ProcessId(2)),
+        });
+        assert!(same_program(&first, &first.clone()));
+        assert!(!same_program(&all, &first));
+        assert!(!same_program(&first, &second));
     }
 }

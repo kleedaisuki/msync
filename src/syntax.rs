@@ -4,7 +4,8 @@ use std::fmt;
 use unicode_width::UnicodeWidthStr;
 
 /// A half-open UTF-8 byte range in the original source.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
@@ -563,6 +564,17 @@ pub fn render_report_named(source: &str, report: &Report, name: &str, color: boo
     render_rich(source, report, Some(name), color)
 }
 
+/// A runtime failure may retain source labels without becoming a compiler error.
+pub fn render_report_named_with_title(
+    source: &str,
+    report: &Report,
+    name: &str,
+    title: &str,
+    color: bool,
+) -> String {
+    render_rich_inner(source, report, Some(name), color, Some(title))
+}
+
 pub(crate) fn render_related_named(
     source: &str,
     labels: &[Label],
@@ -574,7 +586,7 @@ pub(crate) fn render_related_named(
     };
     let mut report = Report::new("", first.span);
     report.labels = labels.to_vec();
-    render_rich_inner(source, &report, Some(name), color, false)
+    render_rich_inner(source, &report, Some(name), color, None)
 }
 
 struct SourceLine<'a> {
@@ -589,7 +601,7 @@ struct Annotation<'a> {
 }
 
 fn render_rich(source: &str, report: &Report, name: Option<&str>, color: bool) -> String {
-    render_rich_inner(source, report, name, color, true)
+    render_rich_inner(source, report, name, color, Some("error:"))
 }
 
 fn render_rich_inner(
@@ -597,11 +609,11 @@ fn render_rich_inner(
     report: &Report,
     name: Option<&str>,
     color: bool,
-    primary_report: bool,
+    title: Option<&str>,
 ) -> String {
     let lines = source_lines(source);
     let mut annotations = report_annotations(source, report);
-    if !primary_report {
+    if title.is_none() {
         for annotation in &mut annotations {
             annotation.primary = false;
         }
@@ -616,10 +628,10 @@ fn render_rich_inner(
         Some(name) => format!("{}:{}:{column}", display_metadata(name), first + 1),
         None => format!("{}:{column}", first + 1),
     };
-    let mut output = if primary_report {
+    let mut output = if let Some(title) = title {
         format!(
             "{} {}\n",
-            paint("error:", "1;31", color),
+            paint(&display_metadata(title), "1;31", color),
             display_metadata(&report.diagnostic.message)
         )
     } else {

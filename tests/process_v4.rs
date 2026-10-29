@@ -159,6 +159,25 @@ async fn live_output_waits_for_more_data_instead_of_reporting_temporary_file_eof
 }
 
 #[tokio::test]
+async fn dropping_observer_does_not_kill_child_before_final_output() {
+    let workspace = workspace();
+    let mut process =
+        Process::spawn_native(child("paced"), ProcessConfig::new(workspace.path())).unwrap();
+    let mut stdout = process.take_stdout().unwrap();
+    let exited = process.exit_signal();
+    drop(process);
+    let mut bytes = Vec::new();
+    tokio::time::timeout(Duration::from_secs(10), stdout.read_to_end(&mut bytes))
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), exited.cancelled())
+        .await
+        .unwrap();
+    assert_eq!(payload(&bytes), b"beforeafter");
+}
+
+#[tokio::test]
 async fn cancellation_joins_descendant_tree_and_physically_closes_its_socket() {
     let workspace = workspace();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -190,7 +209,7 @@ async fn cancellation_joins_descendant_tree_and_physically_closes_its_socket() {
 }
 
 #[tokio::test]
-async fn leader_exit_quiesces_descendants_before_publishing_exit_metadata() {
+async fn leader_exit_waits_for_descendant_output_without_killing_it() {
     let workspace = workspace();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let mut command = child("tree-exit");
@@ -327,13 +346,13 @@ fn process_child_fixture() {
             if let Some(ready) = std::env::var_os("MSYNC_PROCESS_V4_READY") {
                 fs::write(ready, "connected").unwrap();
             }
-            std::thread::sleep(Duration::from_secs(120));
+            std::thread::sleep(Duration::from_millis(150));
             drop(socket);
         }
         "flood" => {
             let block = [b'F'; 4096];
             let mut out = std::io::stdout().lock();
-            loop {
+            for _ in 0..512 {
                 out.write_all(&block).unwrap();
             }
         }

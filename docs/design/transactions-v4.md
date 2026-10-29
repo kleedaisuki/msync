@@ -1,5 +1,9 @@
 # Transaction and process-resource mediation for v0.4
 
+> Historical design, explicitly removed in v0.5. No transaction grammar, MVCC
+> history, rollback command or native transactional process view is part of the
+> replacement [barrier execution model](barrier-execution.md).
+
 This note preserves the transaction design rationale, primary references and
 dated implementation evidence. The supplied v0.4 example is the language
 requirement. Current integration and acceptance are summarized in

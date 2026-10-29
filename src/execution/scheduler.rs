@@ -1,4 +1,4 @@
-//! Admission for co-started program pipes. A pipe must never wait behind itself.
+//! Independent copy, program and stream lanes with one payload-buffer budget.
 
 use std::future::{Future, poll_fn};
 use std::sync::Arc;
@@ -11,6 +11,7 @@ use crate::syntax::Span;
 use super::error::{ExecutionError, Result};
 
 pub(super) struct Admission {
+    copies: Arc<Semaphore>,
     programs: Arc<Semaphore>,
     streams: Arc<Semaphore>,
     buffers: Arc<Semaphore>,
@@ -20,6 +21,7 @@ pub(super) struct Admission {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct Demand {
+    pub copies: usize,
     pub programs: usize,
     pub streams: usize,
     pub buffers: usize,
@@ -27,11 +29,14 @@ pub(super) struct Demand {
 
 impl Demand {
     pub const COPY: Self = Self {
-        programs: 1,
+        copies: 1,
+        programs: 0,
         streams: 0,
         buffers: 1,
     };
+    #[cfg(test)]
     pub const PROGRAM: Self = Self {
+        copies: 0,
         programs: 1,
         streams: 0,
         buffers: 6,
@@ -39,17 +44,10 @@ impl Demand {
 
     pub fn flows(count: usize) -> Self {
         Self {
+            copies: 0,
             programs: 0,
             streams: count,
             buffers: count.saturating_mul(2),
-        }
-    }
-
-    pub fn with_programs(self, count: usize) -> Self {
-        Self {
-            programs: self.programs.saturating_add(count),
-            streams: self.streams,
-            buffers: self.buffers.saturating_add(count.saturating_mul(6)),
         }
     }
 }
@@ -68,6 +66,9 @@ pub(super) struct Lease {
 }
 
 impl Lease {
+    pub fn context(&self) -> Option<&crate::telemetry::TraceContext> {
+        self.context.as_ref()
+    }
     pub fn task(&self, role: &'static str) -> TaskTrace {
         let mut span = crate::telemetry::linked_span("task", self.context.as_ref());
         span.expect_completion();
@@ -90,27 +91,37 @@ impl TaskTrace {
             crate::telemetry::with_context(context.as_ref(), || future.as_mut().poll(cx))
         })
         .await;
-        let cancelled = result
-            .as_ref()
-            .err()
-            .is_some_and(ExecutionError::is_cancelled);
-        if let Err(cause) = &result
-            && !cancelled
-            && let Some(context) = &context
-        {
-            context.record_error("execution.task", cause);
-        }
-        if cancelled {
-            self.span.cancelled();
-        } else {
-            self.span.finish_result(&result);
-        }
+        finish_task(&mut self.span, &result, false);
         result
+    }
+}
+
+pub(super) fn finish_task<T>(
+    span: &mut crate::telemetry::LinkedSpan,
+    result: &Result<T>,
+    completed_cancelled: bool,
+) {
+    let cancelled = match result {
+        Ok(_) => completed_cancelled,
+        Err(cause) => cause.is_cancelled(),
+    };
+    if let Err(cause) = result
+        && !cancelled
+    {
+        span.record_error("execution.task", cause);
+    }
+    if cancelled {
+        span.cancelled();
+    } else {
+        span.finish_result(result);
     }
 }
 
 impl Admission {
     pub fn new(limits: &ResourceLimits) -> Result<Self> {
+        limits
+            .validate()
+            .map_err(|message| ExecutionError::new(message, Span::default()))?;
         let units = limits.memory_bytes / limits.buffer_bytes;
         if [limits.jobs, limits.max_streams, units]
             .into_iter()
@@ -120,11 +131,13 @@ impl Admission {
                 .help("Use bounded jobs/streams and payload capacity instead of the maximum integer value."));
         }
         Ok(Self {
+            copies: Arc::new(Semaphore::new(limits.jobs)),
             programs: Arc::new(Semaphore::new(limits.jobs)),
             streams: Arc::new(Semaphore::new(limits.max_streams)),
             buffers: Arc::new(Semaphore::new(units)),
             buffer_bytes: limits.buffer_bytes,
             capacity: Demand {
+                copies: limits.jobs,
                 programs: limits.jobs,
                 streams: limits.max_streams,
                 buffers: units,
@@ -145,6 +158,7 @@ impl Admission {
 
     pub fn available(&self) -> Demand {
         Demand {
+            copies: self.copies.available_permits(),
             programs: self.programs.available_permits(),
             streams: self.streams.available_permits(),
             buffers: self.buffers.available_permits(),
@@ -156,10 +170,10 @@ impl Admission {
             return Ok(());
         }
         Err(ExecutionError::new(format!(
-            "this admission requires {} program slots, {} stream slots and {} payload buffers; configured capacity is {}, {} and {}",
-            demand.programs, demand.streams, demand.buffers,
-            self.capacity.programs, self.capacity.streams, self.capacity.buffers,
-        ), span).help("Increase --jobs/--max-streams/--memory-limit or reduce --buffer-size. An inseparable co-start group must fit together; independent operations wait for occupied capacity."))
+            "this admission requires {} copy slots, {} program slots, {} stream slots and {} payload buffers; configured capacity is {}, {}, {} and {}",
+            demand.copies, demand.programs, demand.streams, demand.buffers,
+            self.capacity.copies, self.capacity.programs, self.capacity.streams, self.capacity.buffers,
+        ), span).help("Increase --jobs/--max-streams/--memory-limit or reduce --buffer-size. Connected work must fit together; a running async program is never implicitly awaited to free capacity."))
     }
 
     pub fn program(&self, span: Span) -> Result<Lease> {
@@ -167,7 +181,11 @@ impl Admission {
     }
 
     pub fn copy(&self, span: Span) -> Result<Lease> {
-        self.acquire(&self.programs, 1, span, "finite materialization")
+        self.acquire(&self.copies, 1, span, "finite materialization")
+    }
+
+    pub fn copy_availability(&self) -> Availability {
+        self.availability(Demand::COPY)
     }
 
     pub fn flow(&self, span: Span) -> Result<Lease> {
@@ -188,8 +206,8 @@ impl Admission {
         );
         let result = (|| {
             let slot = slots.clone().try_acquire_owned().map_err(|_| {
-            ExecutionError::new(format!("the ready {role} cohort exceeds its concurrent resource limit"), span)
-                .help("Increase --jobs/--max-streams for this co-start cohort, or split it at a completed program boundary; serially waiting on a connected pipe would deadlock.")
+            ExecutionError::new(format!("the ready {role} exceeds its concurrent resource limit"), span)
+                .help("Increase --jobs/--max-streams or add an explicit await after the program's inputs have been supplied. Automatically waiting on a connected pipe could deadlock.")
         })?;
             let memory = self.buffers.clone().try_acquire_many_owned(units).map_err(|_| {
             ExecutionError::new(format!("the ready {role} cohort exceeds the payload-buffer budget"), span)
@@ -214,7 +232,8 @@ impl Admission {
 }
 
 fn fits(demand: Demand, capacity: Demand) -> bool {
-    demand.programs <= capacity.programs
+    demand.copies <= capacity.copies
+        && demand.programs <= capacity.programs
         && demand.streams <= capacity.streams
         && demand.buffers <= capacity.buffers
 }
@@ -222,6 +241,48 @@ fn fits(demand: Demand, capacity: Demand) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn running_program_does_not_occupy_copy_lane() {
+        let limits = ResourceLimits {
+            jobs: 1,
+            max_streams: 1,
+            buffer_bytes: 1,
+            memory_bytes: 9,
+        };
+        let admission = Admission::new(&limits).unwrap();
+        let program = admission.program(Span::default()).unwrap();
+        assert_eq!(admission.availability(Demand::PROGRAM), Availability::Busy);
+        assert_eq!(admission.copy_availability(), Availability::Ready);
+        let copy = admission.copy(Span::default()).unwrap();
+        assert_eq!(admission.copy_availability(), Availability::Busy);
+        assert_eq!(
+            admission.availability(Demand::flows(1)),
+            Availability::Ready
+        );
+        let flow = admission.flow(Span::default()).unwrap();
+        assert_eq!(admission.available().buffers, 0);
+        drop((copy, flow, program));
+        assert_eq!(admission.available().buffers, 9);
+    }
+
+    #[test]
+    fn separate_lanes_still_share_payload_budget() {
+        let limits = ResourceLimits {
+            jobs: 1,
+            max_streams: 1,
+            buffer_bytes: 1,
+            memory_bytes: 6,
+        };
+        let admission = Admission::new(&limits).unwrap();
+        let program = admission.program(Span::default()).unwrap();
+        assert_eq!(admission.copy_availability(), Availability::Busy);
+        assert_eq!(admission.available().copies, 1);
+        assert!(admission.copy(Span::default()).is_err());
+        assert_eq!(admission.available().copies, 1);
+        drop(program);
+        assert_eq!(admission.copy_availability(), Availability::Ready);
+    }
 
     #[test]
     fn occupied_capacity_is_busy_not_an_impossible_request() {

@@ -1,0 +1,227 @@
+//! Versioned, untrusted relocatable modules. No host observations are encoded.
+
+mod debug;
+mod tables;
+mod validate;
+
+use std::collections::BTreeMap;
+use std::fmt;
+use std::sync::Arc;
+
+use serde::{Deserialize, Serialize};
+
+use crate::endpoint::Backend;
+use crate::hir::{self, InstructionId, ProcessId};
+use crate::relocatable::{Anchor, Export, Relocation};
+use crate::source::{Origins, Source, SourceMap, SourceSpan};
+
+pub use debug::{DebugInfo, DebugOrigin, DebugSite, DebugSource, ExportSite};
+
+pub const MAGIC: &[u8] = b"MSYNC-OBJECT\n";
+pub const FORMAT_VERSION: u32 = 2;
+pub const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
+pub const FEATURES: &[&str] = &[
+    "barrier_typed_ir_v2",
+    "context_relocations_v1",
+    "guarded_overwrites_v1",
+    "owned_source_map_v1",
+    "runtime_exports_v1",
+];
+
+/// Detection is content-based; a damaged payload with a valid header stays an
+/// object error rather than being retried through the source parser.
+pub fn is_object(bytes: &[u8]) -> bool {
+    bytes.starts_with(MAGIC)
+        || (!bytes.is_empty() && MAGIC.starts_with(bytes))
+        || bytes.starts_with(b"MSYNC-OBJECT\r\n")
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObjectModule {
+    pub format_version: u32,
+    pub language_version: String,
+    pub features: Vec<String>,
+    /// An opaque source-module symbol, never an implicit host path binding.
+    pub main_module: String,
+    pub program: hir::Program,
+    pub relocations: Vec<Relocation>,
+    pub symbols: Vec<Symbol>,
+    pub imports: Vec<Import>,
+    pub exports: Vec<Export>,
+    pub constraints: Vec<Constraint>,
+    pub debug: DebugInfo,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Symbol {
+    pub name: String,
+    pub kind: SymbolKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SymbolKind {
+    Process { process: ProcessId },
+    Context { anchor: Anchor, backend: Backend },
+    Capability { name: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Import {
+    pub symbol: String,
+    pub requirement: ImportKind,
+    pub users: Vec<InstructionId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ImportKind {
+    Context { anchor: Anchor, backend: Backend },
+    Endpoint { backend: Backend },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Constraint {
+    GuardedOverwrite {
+        first: InstructionId,
+        last: InstructionId,
+    },
+}
+
+#[derive(Debug)]
+pub struct ObjectError {
+    pub message: String,
+    pub help: String,
+    cause: Option<serde_json::Error>,
+}
+
+impl ObjectError {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            help: "Recompile the source with a compatible msync compiler; no module effects have started.".into(),
+            cause: None,
+        }
+    }
+
+    fn json(action: &str, cause: serde_json::Error) -> Self {
+        let mut error = Self::new(format!("cannot {action} object module: {cause}"));
+        error.cause = Some(cause);
+        error
+    }
+}
+
+impl fmt::Display for ObjectError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ObjectError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause
+            .as_ref()
+            .map(|cause| cause as &dyn std::error::Error)
+    }
+}
+
+impl ObjectModule {
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts(
+        mut program: hir::Program,
+        relocations: Vec<Relocation>,
+        mut exports: Vec<Export>,
+        primary: Arc<Source>,
+        sources: SourceMap,
+        origins: Origins,
+        export_sites: BTreeMap<String, SourceSpan>,
+        main_module: String,
+    ) -> Result<Self, ObjectError> {
+        validate::clear_relocated_fields(&mut program, &relocations)?;
+        for export in &mut exports {
+            if let crate::relocatable::ExportValue::Path {
+                path,
+                relocation: Some(_),
+                ..
+            } = &mut export.value
+            {
+                path.clear();
+            }
+        }
+        let export_names = exports
+            .iter()
+            .map(|export| export.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        let export_sites = export_sites
+            .into_iter()
+            .filter(|(name, _)| export_names.contains(name.as_str()))
+            .collect();
+        let debug = DebugInfo::from_parts(primary, sources, origins, export_sites);
+        let mut module = Self {
+            format_version: FORMAT_VERSION,
+            language_version: "0.5".into(),
+            features: FEATURES.iter().map(|name| (*name).into()).collect(),
+            main_module,
+            program,
+            relocations,
+            symbols: Vec::new(),
+            imports: Vec::new(),
+            exports,
+            constraints: Vec::new(),
+            debug,
+        };
+        module
+            .relocations
+            .sort_by_key(|relocation| (relocation.instruction, relocation.slot));
+        module.exports.sort_by_key(tables::export_key);
+        let tables = tables::derive(&module)?;
+        module.symbols = tables.symbols;
+        module.imports = tables.imports;
+        module.constraints = tables.constraints;
+        module.validate()?;
+        Ok(module)
+    }
+
+    pub fn validate(&self) -> Result<(), ObjectError> {
+        validate::module(self)
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, ObjectError> {
+        self.validate()?;
+        let payload =
+            serde_json::to_vec_pretty(self).map_err(|cause| ObjectError::json("encode", cause))?;
+        if payload.len() > MAX_OBJECT_BYTES.saturating_sub(MAGIC.len() + 1) {
+            return Err(ObjectError::new(
+                "object module exceeds the 64MiB format bound",
+            ));
+        }
+        let mut bytes = Vec::with_capacity(MAGIC.len() + payload.len() + 1);
+        bytes.extend_from_slice(MAGIC);
+        bytes.extend_from_slice(&payload);
+        bytes.push(b'\n');
+        Ok(bytes)
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, ObjectError> {
+        if bytes.len() > MAX_OBJECT_BYTES {
+            return Err(ObjectError::new(
+                "object module exceeds the 64MiB format bound",
+            ));
+        }
+        let payload = bytes
+            .strip_prefix(MAGIC)
+            .ok_or_else(|| ObjectError::new("invalid or truncated msync object header"))?;
+        let module: Self =
+            serde_json::from_slice(payload).map_err(|cause| ObjectError::json("decode", cause))?;
+        module.validate()?;
+        Ok(module)
+    }
+}
+
+pub(crate) fn nodes(program: &hir::Program) -> Vec<&hir::Instruction> {
+    program.body.instructions.iter().collect()
+}

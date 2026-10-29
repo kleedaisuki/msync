@@ -1,5 +1,10 @@
 # v0.4 structured compiler and execution architecture
 
+> Historical v0.4 architecture, superseded by the breaking v0.5 barrier model.
+> Transaction histories and native process views described below are not v0.5
+> contracts. See [barrier execution](barrier-execution.md) and
+> [statement atomicity](statement-atomicity.md) for the replacement design.
+
 ## Current integration checkpoint (2026-10-28)
 
 The CLI defaults to structured v0.4. Typed lexical macros,

@@ -1,5 +1,9 @@
 # End-to-end verification
 
+> This document records historical releases through v0.4. Its successful gates
+> do not validate the breaking v0.5 implementation. Current acceptance evidence
+> belongs in [barrier validation](barrier-validation.md).
+
 ## Current v0.4 requirement audit (2026-10-28)
 
 This is the source/test/gate mapping for the selected `0.4.0` implementation.

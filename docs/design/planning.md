@@ -1,5 +1,10 @@
 # Effect-aware planning and bounded execution
 
+> Historical v0.3/v0.4 planning notes. The current design specializes only the
+> next ordered basic block, without transaction epochs or filesystem-wide
+> prebinding; see [barrier execution](barrier-execution.md) and
+> [block specialization](block-specialization.md).
+
 ## Structured v0.4 preparation
 
 `preparation::prepare` resolves native paths and observes file kinds without

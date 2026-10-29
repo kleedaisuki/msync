@@ -1,4 +1,4 @@
-//! Real default-v0.4 command and persistent REPL journeys.
+//! Real default-language command and persistent REPL journeys.
 
 use std::fs;
 use std::io::Write;
@@ -102,11 +102,19 @@ fn static_macro_compilation_never_inspects_endpoints_or_starts_remote_helpers() 
 #[test]
 fn static_ir_does_not_change_when_endpoint_file_kinds_change() {
     let root = workspace();
-    let source = "source -> target\n\"data\" -> another\n";
+    let source = "source -> target\n\"data\" -> target\n";
     fs::write(root.path().join("source"), "before").unwrap();
     fs::write(root.path().join("target"), "keep").unwrap();
     let before = invoke(root.path(), &["compile", "-"], source);
     success(&before);
+    let ir = String::from_utf8_lossy(&before.stdout);
+    assert!(ir.contains("guarded candidate: 0000 -> 0001"), "{ir}");
+    assert_eq!(
+        ir.lines()
+            .filter(|line| line.ends_with(" transfer"))
+            .count(),
+        2
+    );
     fs::remove_file(root.path().join("source")).unwrap();
     fs::remove_file(root.path().join("target")).unwrap();
     fs::create_dir(root.path().join("source")).unwrap();
@@ -115,7 +123,7 @@ fn static_ir_does_not_change_when_endpoint_file_kinds_change() {
     success(&after);
     assert_eq!(before.stdout, after.stdout);
     assert!(!root.path().join(".temp").exists());
-    assert!(!root.path().join("another").exists());
+    assert!(root.path().join("target").is_dir());
 }
 
 #[test]
@@ -177,16 +185,9 @@ fn default_quotes_are_data_and_explicit_join_produces_a_path_without_existence_g
         fs::read_to_string(root.path().join("whitespace.txt")).unwrap(),
         "  可莉  "
     );
-    let legacy = invoke(
-        root.path(),
-        &["--syntax", "0.3", "run", "-"],
-        "\"file name\" -> legacy.txt\n",
-    );
-    success(&legacy);
-    assert_eq!(
-        fs::read_to_string(root.path().join("legacy.txt")).unwrap(),
-        "actual file payload"
-    );
+    let legacy = invoke(root.path(), &["--syntax", "0.3", "run", "-"], "");
+    assert!(!legacy.status.success());
+    assert!(String::from_utf8_lossy(&legacy.stderr).contains("0.5"));
 }
 
 #[test]
@@ -216,22 +217,17 @@ fn macro_check_and_plan_are_pure_then_explicit_directory_replacement_executes() 
 }
 
 #[test]
-fn actual_repl_retains_macros_and_named_origins_across_separate_submissions() {
+fn actual_repl_retains_macros_and_bindings_across_separate_submissions() {
     let root = workspace();
-    let source = "macro emit(value):\n    value -> result.txt\n\nemit(\"first\")\ntransaction A:\n    \"second\" -> result.txt\n    commit\n\nrollback A\n/bindings\n/quit\n";
+    let source = "macro emit(value):\n    value -> result.txt\n\nvalue := \"first\"\nemit(value)\nvalue := \"second\"\nemit(value)\n/bindings\n/quit\n";
     let output = invoke(root.path(), &["repl"], source);
     success(&output);
     assert_eq!(
         fs::read_to_string(root.path().join("result.txt")).unwrap(),
-        "first"
+        "second"
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains("macro emit(value)"));
-    assert!(
-        fs::read_dir(root.path().join(".temp"))
-            .unwrap()
-            .next()
-            .is_none()
-    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("value :="));
 }
 
 #[test]

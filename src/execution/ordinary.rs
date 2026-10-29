@@ -1,7 +1,7 @@
 //! Statement-local publication without MVCC enrollment or retained undo history.
 //!
-//! The interpreter selects this owner only before managed history or background
-//! work exists. Each statement captures its source and prepares only its selected
+//! The interpreter selects this owner for finite assignments. Each statement
+//! captures its source and prepares only its selected
 //! targets; unrelated cwd trees never enter a resource store. All selector
 //! members are validated and staged before publication, and their rename receipts
 //! remain reversible until the complete statement succeeds. Earlier completed
@@ -11,24 +11,25 @@
 //! returns `Unsupported` without opening it, so the interpreter can resume the
 //! remaining suffix through its flow scheduler instead of replaying prior IO.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use same_file::Handle;
 
 use crate::compiler::CopyOp;
 use crate::endpoint::{Backend, Location};
-use crate::hir::{Input, Instruction, InstructionId, InstructionKind, Output, Program};
+use crate::filesystem::{
+    Entry, FsError, InvocationRoot, NodeMetadata, Publication, Snapshot, SnapshotStore,
+};
+#[cfg(test)]
+use crate::hir::Program;
+use crate::hir::{Input, Instruction, InstructionId, InstructionKind, Output};
 use crate::language::DestinationMode;
 use crate::plan::FileClass;
 use crate::syntax::Span;
-use crate::transaction::filesystem::{
-    Entry, FsError, InvocationRoot, NodeMetadata, Publication, Snapshot, SnapshotStore,
-};
 
 use super::assignment::{self, Target};
 use super::error::{ExecutionError, Result};
@@ -41,22 +42,6 @@ pub(super) enum Attempt {
     Unsupported,
 }
 
-pub(super) fn supports(program: &Program) -> bool {
-    program.body.instructions.iter().all(|node| {
-        matches!(&node.kind,
-            InstructionKind::Transfer {
-                source: Input::Literal(_),
-                destination: Output::File { location, .. },
-            } if matches!(location.backend, Backend::Local | Backend::Env))
-            || matches!(&node.kind,
-                InstructionKind::Transfer {
-                    source: Input::File { location: source, .. },
-                    destination: Output::File { location, .. },
-                } if !matches!(source.backend, Backend::Tcp { .. })
-                    && matches!(location.backend, Backend::Local | Backend::Env))
-    })
-}
-
 pub(super) struct Ordinary {
     options: Options,
     storage: Option<Storage>,
@@ -66,8 +51,10 @@ pub(super) struct Ordinary {
 
 struct Storage {
     assets: SnapshotStore,
+    registry: crate::filesystem::recovery::Registry,
     imports: PathBuf,
     invocation: InvocationRoot,
+    capture_root: Option<InvocationRoot>,
     sequence: u64,
 }
 
@@ -86,10 +73,10 @@ enum Source {
     Remote(Location),
 }
 
+#[derive(Clone)]
 struct Assignment {
     target: PathBuf,
     snapshot: Snapshot,
-    existed: bool,
 }
 
 impl Ordinary {
@@ -110,9 +97,7 @@ impl Ordinary {
         self.origin = origin;
     }
 
-    /// Refuse physical endpoints before opening a journal or reading payloads.
-    pub fn execute(&mut self, node: &Instruction) -> Result<Attempt> {
-        self.options.check(node.span)?;
+    fn inspect_progress(&self, node: &Instruction) {
         if let Some(progress) = &self.progress {
             let mut event = Event::new(Phase::Inspect);
             event.instruction = Some(node.id);
@@ -134,38 +119,16 @@ impl Ordinary {
             }
             progress.update(event);
         }
+    }
+
+    /// Refuse physical endpoints before opening a journal or reading payloads.
+    pub fn execute(&mut self, node: &Instruction) -> Result<Attempt> {
+        self.options.check(node.span)?;
+        self.inspect_progress(node);
         let Some(ready) = Ready::inspect(node, self.origin.as_ref())? else {
             return Ok(Attempt::Unsupported);
         };
-        let mut trace = crate::telemetry::span("copy");
-        trace.expect_completion();
-        trace.attribute("copy.kind", "ordinary-assignment");
-        trace.attribute("publication.policy", "statement-journal");
-        trace.metric("instruction.id", node.id.0 as u64);
-        trace.attribute("destination.backend", "local");
-        trace.attribute_lazy("destination.path", || ready.target.display().to_string());
-        match &ready.source {
-            Source::Local(path) => {
-                trace.attribute("source.backend", "local");
-                trace.attribute_lazy("source.path", || path.display().to_string());
-            }
-            Source::Literal(_) => {
-                trace.attribute("source.backend", "literal");
-                trace.attribute("source.path", "<literal>");
-            }
-            Source::Remote(location) => {
-                trace.attribute(
-                    "source.backend",
-                    match location.backend {
-                        Backend::Wsl => "wsl",
-                        Backend::Ssh { .. } => "ssh",
-                        Backend::Http { .. } => "http",
-                        _ => "remote",
-                    },
-                );
-                trace.attribute("source.path", &location.path);
-            }
-        }
+        let mut trace = copy_trace(&ready, "ordinary-assignment");
         let result = (|| {
             if self.storage.is_none() {
                 self.storage = Some(Storage::new(&self.options, node.span)?);
@@ -237,8 +200,14 @@ impl Ready {
         if !matches!(location.backend, Backend::Local | Backend::Env) {
             return Ok(None);
         }
-        let target =
-            local(location, false, node.span).map_err(|error| error.with_operand(origin, true))?;
+        let target = crate::runtime::local_path(location, false)
+            .map_err(|message| ExecutionError::new(message, node.span).with_operand(origin, true))?
+            .ok_or_else(|| ExecutionError::new("a local resource was expected", node.span))?;
+        if named_pipe(&target) {
+            return Ok(None);
+        }
+        let target = super::domain::normalize(&target, node.span)
+            .map_err(|error| error.with_operand(origin, true))?;
         if metadata(&target, node.span)
             .map_err(|error| error.with_operand(origin, true))?
             .is_some_and(|meta| !meta.is_file() && !meta.is_dir())
@@ -280,6 +249,9 @@ impl Source {
             .map_err(|message| ExecutionError::new(message, span))?
         {
             Some(path) => {
+                if named_pipe(&path) {
+                    return Ok(None);
+                }
                 let path = super::domain::normalize(&path, span)?;
                 if metadata(&path, span)?.is_some_and(|meta| !meta.is_file() && !meta.is_dir()) {
                     return Ok(None);
@@ -302,18 +274,41 @@ impl Source {
 
 impl Storage {
     fn new(options: &Options, span: Span) -> Result<Self> {
-        let invocation = InvocationRoot::create(&options.scratch_root)
+        let scratch = options
+            .shared_invocation
+            .as_ref()
+            .map_or(options.scratch_root.as_path(), InvocationRoot::path);
+        let invocation = InvocationRoot::create(scratch)
             .map_err(|cause| failure("cannot create ordinary statement storage", span, cause))?;
         let imports = invocation.path().join("imports");
         let initialized = (|| {
-            let assets = SnapshotStore::new_in(&invocation.path().join("assets"), &invocation)
+            let capture_root = options.shared_invocation.as_ref().unwrap_or(&invocation);
+            let mut assets = SnapshotStore::new_in(&invocation.path().join("assets"), capture_root)
                 .map_err(|cause| failure("cannot create ordinary source store", span, cause))?;
+            let registry = crate::filesystem::recovery::Registry::new(&options.scratch_root)
+                .map_err(|cause| {
+                    ExecutionError::caused("cannot open statement recovery registry", span, cause)
+                })?;
+            assets.exclude_registry(&registry).map_err(|cause| {
+                failure("cannot retain recovery registry identity", span, cause)
+            })?;
+            if let Some(directory) = super::endpoint::owned_registry(&options.scratch_root)
+                .map_err(|cause| {
+                    ExecutionError::caused("cannot validate remote recovery registry", span, cause)
+                })?
+            {
+                assets
+                    .exclude_owned_directory(&directory)
+                    .map_err(|cause| {
+                        failure("cannot retain remote registry identity", span, cause)
+                    })?;
+            }
             fs::create_dir(&imports).map_err(|cause| {
                 ExecutionError::caused("cannot create ordinary imports", span, cause)
             })?;
-            Ok(assets)
+            Ok((assets, registry))
         })();
-        let assets = initialized.map_err(|mut error: ExecutionError| {
+        let (assets, registry) = initialized.map_err(|mut error: ExecutionError| {
             if let Err(cause) = invocation.cleanup() {
                 error.retained_paths.push(invocation.path().to_owned());
                 error.report.help.push(format!(
@@ -324,8 +319,10 @@ impl Storage {
         })?;
         Ok(Self {
             assets,
+            registry,
             imports,
             invocation,
+            capture_root: options.shared_invocation.clone(),
             sequence: 0,
         })
     }
@@ -363,7 +360,6 @@ impl Storage {
                 }
             }
             assignments.push(Assignment {
-                existed: metadata(&target, ready.span)?.is_some(),
                 target,
                 snapshot: assigned,
             });
@@ -375,9 +371,15 @@ impl Storage {
     }
 
     fn source(&mut self, ready: &Ready, options: &Options) -> Result<Option<Selection>> {
+        let selector = ready
+            .pattern
+            .as_deref()
+            .map(|pattern| regex::Regex::new(&format!("\\A(?:{pattern})\\z")))
+            .transpose()
+            .map_err(|cause| ExecutionError::caused("invalid selector regex", ready.span, cause))?;
         let (snapshot, basename, source) = match &ready.source {
             Source::Local(path) => (
-                self.assets.capture_in(path, &self.invocation),
+                self.capture_source(path, selector.as_ref()),
                 path.file_name().map(OsString::from),
                 Some(path.clone()),
             ),
@@ -406,7 +408,7 @@ impl Storage {
                             stage: &path,
                             logical_target: &ready.target,
                             mode: ready.mode,
-                            selector: ready.pattern.is_some(),
+                            pattern: ready.pattern.as_deref(),
                             invocation: &self.invocation,
                         },
                         options,
@@ -423,16 +425,46 @@ impl Storage {
                             }));
                         }
                         Acquisition::Stream => return Ok(None),
-                        Acquisition::Fallback => return Ok(None),
+                        Acquisition::Fallback => {
+                            let source =
+                                super::wsl_source::projected_source(location, options, ready.span)?;
+                            let snapshot = self
+                                .capture_source(&source, selector.as_ref())
+                                .map_err(|cause| {
+                                    failure(
+                                        "cannot capture projected WSL source",
+                                        ready.span,
+                                        cause,
+                                    )
+                                })?;
+                            return Ok(Some(Selection {
+                                snapshot,
+                                basename: source.file_name().map(OsString::from),
+                                source: Some(source),
+                            }));
+                        }
                     }
+                }
+                if ready.pattern.is_some() {
+                    fs::create_dir(&path).map_err(|cause| {
+                        ExecutionError::caused(
+                            "cannot create selected remote import root",
+                            ready.span,
+                            cause,
+                        )
+                    })?;
                 }
                 let op = CopyOp {
                     source: location.clone(),
                     destination: Location {
                         backend: Backend::Local,
-                        path: path.to_string_lossy().into_owned(),
+                        path: if ready.pattern.is_some() {
+                            format!("{}/", path.to_string_lossy())
+                        } else {
+                            path.to_string_lossy().into_owned()
+                        },
                     },
-                    pattern: None,
+                    pattern: ready.pattern.clone(),
                     span: ready.span,
                 };
                 crate::runtime::execute_copy_cancellable(
@@ -471,6 +503,20 @@ impl Storage {
         }))
     }
 
+    fn capture_source(
+        &self,
+        source: &Path,
+        selector: Option<&regex::Regex>,
+    ) -> std::result::Result<Snapshot, FsError> {
+        let invocation = self.capture_root.as_ref().unwrap_or(&self.invocation);
+        match selector {
+            Some(selector) => self
+                .assets
+                .capture_selected_in(source, invocation, selector),
+            None => self.assets.capture_in(source, invocation),
+        }
+    }
+
     fn fresh(&mut self, kind: &str) -> PathBuf {
         self.sequence += 1;
         self.imports.join(format!("{kind}-{}", self.sequence))
@@ -506,7 +552,10 @@ impl Storage {
         {
             Some(
                 self.assets
-                    .capture_in(target, &self.invocation)
+                    .capture_in(
+                        target,
+                        self.capture_root.as_ref().unwrap_or(&self.invocation),
+                    )
                     .map_err(|cause| {
                         failure("cannot capture container merge target", ready.span, cause)
                     })?,
@@ -543,51 +592,162 @@ impl Storage {
         progress: Option<&Progress>,
         report: &mut ExecutionReport,
     ) -> Result<()> {
-        if assignments.is_empty() {
-            return Ok(());
-        }
-        let mut parents = Parents::default();
-        let mut publications = Vec::new();
-        let span = ready.span;
-        let mut stage = crate::telemetry::span("ordinary.stage");
-        let result = self.prepare(assignments, span, options, &mut parents, &mut publications);
-        stage.finish_result(&result);
-        drop(stage);
-        let result = result.and_then(|()| {
-            observe(progress, ready, Phase::Publish, report);
-            let mut publish = crate::telemetry::span("ordinary.publish");
-            let result = publish_all(&mut publications, options, span);
-            publish.finish_result(&result);
-            result
-        });
-        if let Err(mut error) = result {
-            compensate(&mut publications, &mut error);
-            parents.rollback(span, &mut error);
-            return Err(error);
-        }
-        report.published_roots = publications.len();
-        for publication in &mut publications {
-            if let Err(cause) = publication.finalize() {
-                report
-                    .cleanup
-                    .push(cleanup(cause, publication.journal().to_owned()));
-            }
-        }
-        parents.finish(span, report);
-        Ok(())
+        self.publish_checked(
+            assignments,
+            ready,
+            options,
+            progress,
+            report,
+            None::<fn() -> bool>,
+        )
+        .map(|published| debug_assert!(published))
     }
 
+    fn publish_checked(
+        &self,
+        assignments: &[Assignment],
+        ready: &Ready,
+        options: &Options,
+        progress: Option<&Progress>,
+        report: &mut ExecutionReport,
+        guard: Option<impl FnOnce() -> bool>,
+    ) -> Result<bool> {
+        if assignments.is_empty() {
+            return Ok(true);
+        }
+        let span = ready.span;
+        let assignments = self.publication_roots(assignments, span)?;
+        for assignment in &assignments {
+            self.check_private_destination(&assignment.target, span)?;
+        }
+        let lease = self.registry.enter().map_err(|cause| {
+            ExecutionError::caused("cannot enter statement recovery registry", span, cause)
+        })?;
+        let mut publications = Vec::new();
+        let mut stage_registrations = Vec::new();
+        let mut stage = crate::telemetry::span("ordinary.stage");
+        let result = self.prepare_registered(
+            &assignments,
+            span,
+            options,
+            &lease,
+            &mut publications,
+            &mut stage_registrations,
+        );
+        stage.finish_result(&result);
+        drop(stage);
+        if let Err(mut error) = result {
+            compensate(&mut publications, &mut error);
+            retire_stages(stage_registrations, &mut error);
+            if guard.is_some() && error.retained_paths.is_empty() && error.compensation.is_empty() {
+                return Ok(false);
+            }
+            return Err(error);
+        }
+        // Release speculative handles after staged receipts own identity checks.
+        if guard.is_some_and(|guard| !guard()) {
+            let mut error = ExecutionError::new("runtime optimization guard was invalidated", span);
+            compensate(&mut publications, &mut error);
+            retire_stages(stage_registrations, &mut error);
+            if error.retained_paths.is_empty() && error.compensation.is_empty() {
+                return Ok(false);
+            }
+            return Err(error);
+        }
+        let count = publications.len();
+        let (mut batch, coordinator_stage) =
+            crate::filesystem::durable::Batch::prepare_registered(publications, &lease)
+                .map_err(|cause| failure("cannot prepare durable statement", span, cause))?;
+        stage_registrations.push(coordinator_stage);
+        let registration = match lease.register(batch.parent(), batch.journal_path()) {
+            Ok(registration) => registration,
+            Err(cause) => {
+                let mut error =
+                    ExecutionError::caused("cannot register durable statement", span, cause);
+                if let Err(cause) = batch.abort() {
+                    error.retained_paths.push(batch.journal_path().to_owned());
+                    error.compensation.push(cause);
+                }
+                return Err(error);
+            }
+        };
+        for stage in stage_registrations {
+            if let Err(cause) = stage.finish() {
+                let mut error = ExecutionError::caused(
+                    "cannot retire promoted stage registration",
+                    span,
+                    cause,
+                );
+                if let Err(cause) = batch.abort() {
+                    error.retained_paths.push(batch.journal_path().to_owned());
+                    error.compensation.push(cause);
+                }
+                return Err(error);
+            }
+        }
+        observe(progress, ready, Phase::Publish, report);
+        let mut publish = crate::telemetry::span("ordinary.publish");
+        let result = batch.publish_with(|event| {
+            if event != crate::filesystem::durable::Event::Committed
+                && options.cancel.is_cancelled()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    CancelPublication,
+                ));
+            }
+            Ok(())
+        });
+        publish.finish_result(&result);
+        if let Err(cause) = result {
+            let mut error = publication_failure(cause, span);
+            if !batch.is_committed() {
+                if let Err(cause) = batch.abort() {
+                    error.retained_paths.push(batch.journal_path().to_owned());
+                    error.compensation.push(cause);
+                    return Err(error);
+                }
+                registration.finish().map_err(|cause| {
+                    ExecutionError::caused(
+                        "cannot retire recovered statement registration",
+                        span,
+                        cause,
+                    )
+                })?;
+                return Err(error);
+            }
+            // A visible decision cannot be revoked, but failed durability is
+            // still an execution error. Keep recovery rather than claiming a
+            // successful durable commit or reverting installed new bytes.
+            error.retained_paths.push(batch.journal_path().to_owned());
+            error.report.help.push("The complete new statement is installed, but its durability could not be confirmed. Keep its journal and registry for startup recovery.".into());
+            return Err(error);
+        }
+        report.published_roots = count;
+        if let Err(cause) = batch.finalize() {
+            report
+                .cleanup
+                .push(cleanup(cause, batch.journal_path().to_owned()));
+        } else if let Err(cause) = registration.finish() {
+            report.cleanup.push(CleanupIssue {
+                cause: Box::new(cause),
+                retained_paths: Vec::new(),
+                resolved: false,
+            });
+        }
+        Ok(true)
+    }
+
+    #[cfg(test)]
     fn prepare(
         &self,
         assignments: &[Assignment],
         span: Span,
         options: &Options,
-        parents: &mut Parents,
         publications: &mut Vec<Publication>,
     ) -> Result<()> {
         for assignment in assignments {
             options.check(span)?;
-            parents.ensure(&assignment.target, assignment.existed, span)?;
             publications.push(
                 self.assets
                     .prepare(&assignment.snapshot, &assignment.target)
@@ -596,6 +756,160 @@ impl Storage {
         }
         Ok(())
     }
+
+    fn prepare_registered(
+        &self,
+        assignments: &[Assignment],
+        span: Span,
+        options: &Options,
+        lease: &crate::filesystem::recovery::RegistryLease,
+        publications: &mut Vec<Publication>,
+        registrations: &mut Vec<crate::filesystem::recovery::Registration>,
+    ) -> Result<()> {
+        for assignment in assignments {
+            options.check(span)?;
+            let (publication, registration) = self
+                .assets
+                .prepare_registered(&assignment.snapshot, &assignment.target, lease)
+                .map_err(|cause| failure("cannot prepare registered publication", span, cause))?;
+            publications.push(publication);
+            registrations.push(registration);
+        }
+        Ok(())
+    }
+
+    fn check_private_destination(&self, target: &Path, span: Span) -> Result<()> {
+        let backing = self.capture_root.as_ref().unwrap_or(&self.invocation);
+        let overlaps = backing
+            .contains_private(target)
+            .map_err(|cause| failure("cannot verify private destination boundary", span, cause))?
+            || contains_directory(target, backing.path(), span)?
+            || self.registry.contains_private(target).map_err(|cause| {
+                ExecutionError::caused("cannot verify recovery destination boundary", span, cause)
+            })?
+            || contains_directory(target, self.registry.directory(), span)?;
+        if overlaps {
+            return Err(ExecutionError::new("destination would replace active execution or recovery storage", span)
+                .help("Choose --scratch outside the destination tree. Active journals and program spools must not move while a statement is executing."));
+        }
+        Ok(())
+    }
+
+    /// Missing ancestors are part of the one staged replacement, not public setup.
+    fn publication_roots(&self, assignments: &[Assignment], span: Span) -> Result<Vec<Assignment>> {
+        let parent = assignments[0]
+            .target
+            .parent()
+            .ok_or_else(|| ExecutionError::new("destination has no parent", span))?;
+        let mut first_missing = None;
+        let mut cursor = parent;
+        loop {
+            match metadata(cursor, span)? {
+                Some(meta) if meta.is_dir() => break,
+                Some(_) => {
+                    return Err(ExecutionError::new(
+                        "destination parent is not a directory",
+                        span,
+                    ));
+                }
+                None => {
+                    first_missing = Some(cursor.to_owned());
+                    cursor = cursor.parent().ok_or_else(|| {
+                        ExecutionError::new("destination has no existing ancestor", span)
+                    })?;
+                }
+            }
+        }
+        let Some(root) = first_missing else {
+            return Ok(assignments.to_vec());
+        };
+        let directory = NodeMetadata::capture(&fs::metadata(&self.imports).map_err(|cause| {
+            ExecutionError::caused("cannot inspect staged directory permissions", span, cause)
+        })?)
+        .map_err(|cause| {
+            ExecutionError::caused("cannot inspect staged directory metadata", span, cause)
+        })?;
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            PathBuf::new(),
+            Entry::Directory {
+                metadata: directory.clone(),
+            },
+        );
+        for assignment in assignments {
+            let prefix = assignment.target.strip_prefix(&root).map_err(|_| {
+                ExecutionError::new(
+                    "statement publication targets do not share one parent",
+                    span,
+                )
+            })?;
+            for ancestor in prefix.ancestors().skip(1) {
+                entries
+                    .entry(ancestor.to_owned())
+                    .or_insert_with(|| Entry::Directory {
+                        metadata: directory.clone(),
+                    });
+            }
+            for (path, entry) in assignment.snapshot.entries() {
+                entries.insert(prefix.join(path), entry.clone());
+            }
+        }
+        Ok(vec![Assignment {
+            target: root,
+            snapshot: self.snapshot(entries, span)?,
+        }])
+    }
+}
+
+fn contains_directory(target: &Path, protected: &Path, span: Span) -> Result<bool> {
+    if metadata(target, span)?.is_none() {
+        return Ok(false);
+    }
+    let expected = Handle::from_path(target).map_err(|cause| {
+        ExecutionError::caused("cannot identify destination boundary", span, cause)
+    })?;
+    for ancestor in protected.ancestors() {
+        let actual = Handle::from_path(ancestor).map_err(|cause| {
+            ExecutionError::caused("cannot identify private storage boundary", span, cause)
+        })?;
+        if actual == expected {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn copy_trace(ready: &Ready, kind: &'static str) -> crate::telemetry::SpanGuard {
+    let mut trace = crate::telemetry::span("copy");
+    trace.expect_completion();
+    trace.attribute("copy.kind", kind);
+    trace.attribute("publication.policy", "statement-journal");
+    trace.metric("instruction.id", ready.instruction.0 as u64);
+    trace.attribute("destination.backend", "local");
+    trace.attribute_lazy("destination.path", || ready.target.display().to_string());
+    match &ready.source {
+        Source::Local(path) => {
+            trace.attribute("source.backend", "local");
+            trace.attribute_lazy("source.path", || path.display().to_string());
+        }
+        Source::Literal(_) => {
+            trace.attribute("source.backend", "literal");
+            trace.attribute("source.path", "<literal>");
+        }
+        Source::Remote(location) => {
+            trace.attribute(
+                "source.backend",
+                match location.backend {
+                    Backend::Wsl => "wsl",
+                    Backend::Ssh { .. } => "ssh",
+                    Backend::Http { .. } => "http",
+                    _ => "remote",
+                },
+            );
+            trace.attribute("source.path", &location.path);
+        }
+    }
+    trace
 }
 
 fn observe(progress: Option<&Progress>, ready: &Ready, phase: Phase, report: &ExecutionReport) {
@@ -616,141 +930,6 @@ fn observe(progress: Option<&Progress>, ready: &Ready, phase: Phase, report: &Ex
     });
 }
 
-#[derive(Default)]
-struct Parents {
-    observed: BTreeMap<PathBuf, (Handle, NodeMetadata)>,
-    changed: BTreeSet<PathBuf>,
-    created: Vec<(PathBuf, Handle)>,
-}
-
-impl Parents {
-    fn ensure(&mut self, target: &Path, existed: bool, span: Span) -> Result<()> {
-        let parent = target
-            .parent()
-            .ok_or_else(|| ExecutionError::new("destination has no parent", span))?;
-        self.directory(parent, span)?;
-        if !existed {
-            self.changed.insert(parent.to_owned());
-        }
-        Ok(())
-    }
-
-    fn directory(&mut self, path: &Path, span: Span) -> Result<()> {
-        if self.observed.contains_key(path)
-            || self.created.iter().any(|(created, _)| created == path)
-        {
-            return Ok(());
-        }
-        match metadata(path, span)? {
-            Some(meta) if meta.is_dir() => {
-                #[cfg(unix)]
-                if meta.permissions().readonly() {
-                    return Err(ExecutionError::caused(
-                        "destination parent is read-only",
-                        span,
-                        io::Error::new(io::ErrorKind::PermissionDenied, path.display().to_string()),
-                    ));
-                }
-                let stamp = NodeMetadata::capture(&meta).map_err(|cause| {
-                    ExecutionError::caused("cannot retain parent metadata", span, cause)
-                })?;
-                let identity = Handle::from_path(path).map_err(|cause| {
-                    ExecutionError::caused("cannot retain parent identity", span, cause)
-                })?;
-                self.observed.insert(path.to_owned(), (identity, stamp));
-                Ok(())
-            }
-            Some(_) => Err(ExecutionError::new(
-                format!("destination parent is not a directory: {}", path.display()),
-                span,
-            )),
-            None => self.create(path, span),
-        }
-    }
-
-    fn create(&mut self, path: &Path, span: Span) -> Result<()> {
-        let parent = path
-            .parent()
-            .ok_or_else(|| ExecutionError::new("destination has no existing ancestor", span))?;
-        self.directory(parent, span)?;
-        fs::create_dir(path).map_err(|cause| {
-            ExecutionError::caused("cannot create destination parent", span, cause)
-        })?;
-        let identity = Handle::from_path(path).map_err(|cause| {
-            ExecutionError::caused("cannot retain created parent identity", span, cause)
-        })?;
-        self.created.push((path.to_owned(), identity));
-        self.changed.insert(parent.to_owned());
-        Ok(())
-    }
-
-    fn rollback(&mut self, span: Span, error: &mut ExecutionError) {
-        for (path, identity) in self.created.iter().rev() {
-            let result = ensure_identity(path, identity).and_then(|()| fs::remove_dir(path));
-            if let Err(cause) = result {
-                error.retained_paths.push(path.clone());
-                error.report.help.push(format!(
-                    "cannot remove created parent {}: {cause}",
-                    path.display()
-                ));
-            }
-        }
-        self.restore(false, span, &mut |cause, path| {
-            error.retained_paths.push(path);
-            error.report.help.push(cause.to_string());
-        });
-    }
-
-    fn finish(&self, span: Span, report: &mut ExecutionReport) {
-        self.restore(true, span, &mut |cause, path| {
-            report.cleanup.push(CleanupIssue {
-                cause: Box::new(cause),
-                retained_paths: vec![path],
-                resolved: false,
-            });
-        });
-    }
-
-    fn restore(&self, success: bool, span: Span, issue: &mut impl FnMut(ExecutionError, PathBuf)) {
-        for (path, (identity, metadata)) in &self.observed {
-            let mut metadata = metadata.clone();
-            if success && self.changed.contains(path) {
-                metadata.modified = SystemTime::now();
-            }
-            if let Err(cause) = ensure_identity(path, identity).and_then(|()| metadata.apply(path))
-            {
-                issue(
-                    ExecutionError::caused(
-                        "cannot settle destination parent metadata",
-                        span,
-                        cause,
-                    ),
-                    path.clone(),
-                );
-            }
-        }
-    }
-}
-
-fn publish_all(publications: &mut [Publication], options: &Options, span: Span) -> Result<()> {
-    for publication in publications {
-        options.check(span)?;
-        publication
-            .publish_with(|_| {
-                if options.cancel.is_cancelled() {
-                    Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        CancelPublication,
-                    ))
-                } else {
-                    Ok(())
-                }
-            })
-            .map_err(|cause| publication_failure(cause, span))?;
-    }
-    Ok(())
-}
-
 #[derive(Debug)]
 struct CancelPublication;
 
@@ -767,7 +946,7 @@ fn publication_failure(cause: FsError, span: Span) -> ExecutionError {
         .cause
         .get_ref()
         .is_some_and(|cause| cause.is::<CancelPublication>());
-    if cancelled && cause.recovery == crate::transaction::filesystem::Recovery::Restored {
+    if cancelled && cause.recovery == crate::filesystem::Recovery::Restored {
         let mut error =
             ExecutionError::cancelled("ordinary assignment cancelled during publication", span);
         error.retained_paths.extend(cause.journal);
@@ -796,9 +975,27 @@ fn compensate(publications: &mut [Publication], error: &mut ExecutionError) {
                 && cause.journal.as_ref() == Some(&journal)
             {
                 cause.journal = None;
-                cause.recovery = crate::transaction::filesystem::Recovery::Restored;
+                cause.recovery = crate::filesystem::Recovery::Restored;
                 cause.recovery_error = None;
             }
+        }
+    }
+}
+
+fn retire_stages(
+    stages: Vec<crate::filesystem::recovery::Registration>,
+    error: &mut ExecutionError,
+) {
+    if !error.compensation.is_empty() {
+        return;
+    }
+    for stage in stages {
+        let path = stage.path().to_owned();
+        if let Err(cause) = stage.finish() {
+            error.retained_paths.push(path);
+            error.report.help.push(format!(
+                "cannot retire prepared statement registration: {cause}"
+            ));
         }
     }
 }
@@ -850,7 +1047,25 @@ fn local(location: &Location, source: bool, span: Span) -> Result<PathBuf> {
     let path = crate::runtime::local_path(location, source)
         .map_err(|message| ExecutionError::new(message, span))?
         .ok_or_else(|| ExecutionError::new("a local resource was expected", span))?;
+    if named_pipe(&path) {
+        return Err(ExecutionError::new(
+            "a named pipe requires the asynchronous stream owner",
+            span,
+        ));
+    }
     super::domain::normalize(&path, span)
+}
+
+fn named_pipe(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        crate::streams::is_named_pipe_path(&path.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
 }
 
 fn remote_kind(location: &Location, span: Span) -> Result<FileClass> {
@@ -879,14 +1094,6 @@ fn remote_basename(location: &Location) -> Option<OsString> {
         .map(OsString::from)
 }
 
-fn ensure_identity(path: &Path, expected: &Handle) -> io::Result<()> {
-    let actual = Handle::from_path(path)?;
-    if actual != *expected {
-        return Err(io::Error::other("destination parent identity changed"));
-    }
-    Ok(())
-}
-
 fn failure(action: &'static str, span: Span, cause: FsError) -> ExecutionError {
     let retained = cause.journal.clone();
     let mut error = ExecutionError::caused(action, span, cause);
@@ -901,6 +1108,10 @@ fn cleanup(cause: FsError, root: PathBuf) -> CleanupIssue {
         resolved: false,
     }
 }
+
+#[path = "ordinary_fold.rs"]
+mod fold;
+pub(super) use fold::FoldAttempt;
 
 #[cfg(test)]
 #[path = "ordinary_tests.rs"]

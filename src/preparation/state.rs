@@ -24,25 +24,15 @@ struct PendingWrite {
 struct Event {
     resource: Arc<FileResource>,
     tree: bool,
-    value: Value,
-}
-
-#[derive(Clone)]
-enum Value {
-    Kind(FileClass),
-    Restore(Arc<State>),
+    kind: FileClass,
 }
 
 impl State {
     pub(super) fn initial(context: &PlanningContext) -> Self {
         let mut state = Self::default();
-        for process in &context.live_processes {
-            let Some(effects) = context.process_effects.get(process) else {
-                state.unknown = true;
-                continue;
-            };
-            state.invalidate_writes(effects.footprint());
-        }
+        // Process IDs establish port availability, not filesystem snapshots.
+        // Current-block observations remain useful under explicitly async work;
+        // dispatch and publication still validate unmanaged filesystem races.
         for effects in &context.pending_effects {
             state.invalidate_writes(effects);
         }
@@ -56,13 +46,13 @@ impl State {
                 .accesses
                 .iter()
                 .filter(|access| {
-                    matches!(access.kind, AccessKind::Write | AccessKind::NamespaceMerge)
+                    access.kind == AccessKind::Write
                         && matches!(
                             access.resource,
                             Resource::File(_)
+                                | Resource::DirectoryEntry(_)
+                                | Resource::DirectoryEntries(_)
                                 | Resource::DirectoryMetadata(_)
-                                | Resource::NamespaceEntry(_)
-                                | Resource::NamespaceChange(_)
                         )
                 })
                 .map(|access| PendingWrite {
@@ -145,15 +135,7 @@ impl State {
         self.events.push(Event {
             resource: Arc::new(FileResource::new(location, Scope::Exact)),
             tree,
-            value: Value::Kind(kind),
-        });
-    }
-
-    pub(super) fn restore(&mut self, location: Location, tree: bool, origin: Arc<Self>) {
-        self.events.push(Event {
-            resource: Arc::new(FileResource::new(location, Scope::Exact)),
-            tree,
-            value: Value::Restore(origin),
+            kind,
         });
     }
 
@@ -169,22 +151,14 @@ impl State {
                 continue;
             }
             if event_location == location {
-                return match &event.value {
-                    Value::Kind(kind) => *kind,
-                    Value::Restore(origin) => origin.class(location, initial),
-                };
+                return event.kind;
             }
             if descendant(location, event_location)
-                && (event.tree
-                    || matches!(
-                        event.value,
-                        Value::Kind(FileClass::Missing | FileClass::Regular)
-                    ))
+                && (event.tree || matches!(event.kind, FileClass::Missing | FileClass::Regular))
             {
-                return match &event.value {
-                    Value::Kind(FileClass::Missing | FileClass::Regular) => FileClass::Missing,
-                    Value::Kind(_) => FileClass::Unknown,
-                    Value::Restore(origin) => origin.class(location, initial),
+                return match event.kind {
+                    FileClass::Missing | FileClass::Regular => FileClass::Missing,
+                    _ => FileClass::Unknown,
                 };
             }
             // A successful child assignment does not turn its ancestors into a
@@ -194,7 +168,7 @@ impl State {
             }
             if descendant(location, event_location)
                 && !event.tree
-                && matches!(event.value, Value::Kind(FileClass::Directory))
+                && matches!(event.kind, FileClass::Directory)
             {
                 continue;
             }
@@ -236,7 +210,7 @@ mod namespace_tests {
     use crate::hir::effects::Access;
 
     #[test]
-    fn cloned_events_share_exact_resources_and_preserve_restore_postconditions() {
+    fn cloned_events_share_exact_resources_and_preserve_postconditions() {
         let root = Location {
             backend: Backend::Local,
             path: "/state-cache".into(),
@@ -249,18 +223,18 @@ mod namespace_tests {
             (root.clone(), FileClass::Directory),
             (child.clone(), FileClass::Regular),
         ]);
-        let origin = Arc::new(State::default());
+
         let mut state = State::default();
         state.write(root.clone(), false, FileClass::Regular);
         assert_eq!(state.class(&child, &initial), FileClass::Missing);
-        state.restore(root.clone(), true, origin);
+        state.write(root.clone(), true, FileClass::Directory);
         let snapshot = state.clone();
         for (event, cloned) in state.events.iter().zip(&snapshot.events) {
             assert_eq!(event.resource.scope, Scope::Exact);
             assert!(Arc::ptr_eq(&event.resource, &cloned.resource));
         }
         assert_eq!(snapshot.class(&root, &initial), FileClass::Directory);
-        assert_eq!(snapshot.class(&child, &initial), FileClass::Regular);
+        assert_eq!(snapshot.class(&child, &initial), FileClass::Unknown);
     }
 
     #[test]

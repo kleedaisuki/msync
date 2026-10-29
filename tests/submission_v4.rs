@@ -32,7 +32,7 @@ fn a_compound_prefix_never_reaches_compilation_before_the_blank_line() {
 #[test]
 fn cancellation_discards_the_entire_block_and_next_input_is_independent() {
     let mut input = SubmissionBuffer::default();
-    input.push_line("transaction A:").unwrap();
+    input.push_line("macro discarded():").unwrap();
     input.push_line("    \"never copied\" -> target").unwrap();
     assert!(input.cancel());
     assert!(!input.cancel());
@@ -74,7 +74,7 @@ fn comments_and_quoted_header_words_are_not_compound_input() {
         assert!(!input.is_pending());
     }
     assert_eq!(input.push_line("  \t").unwrap(), Submission::Empty);
-    input.push_line("transaction A: # root context").unwrap();
+    input.push_line("macro delayed(): # root context").unwrap();
     input.push_line("    # no premature release").unwrap();
     input.push_line("    \"字节\" -> file").unwrap();
     let Submission::Ready(source) = input.push_line("  ").unwrap() else {
@@ -86,7 +86,7 @@ fn comments_and_quoted_header_words_are_not_compound_input() {
 #[test]
 fn malformed_multiline_editor_events_do_not_lose_or_submit_a_pending_prefix() {
     let mut input = SubmissionBuffer::default();
-    input.push_line("transaction A:").unwrap();
-    assert!(input.push_line("    commit\n/quit").is_err());
-    assert_eq!(input.finish().unwrap(), "transaction A:\n");
+    input.push_line("macro discarded():").unwrap();
+    assert!(input.push_line("    async\n/quit").is_err());
+    assert_eq!(input.finish().unwrap(), "macro discarded():\n");
 }

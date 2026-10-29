@@ -3,8 +3,8 @@
 //! composition provide explicit path context without filesystem guessing.
 
 use super::{
-    BindingOp, Block, DestinationMode, Document, Expr, ExprKind, Isolation, Name, PathExpr,
-    Statement, StatementKind,
+    BindingOp, Block, DestinationMode, Document, Expr, ExprKind, Name, PathExpr, Statement,
+    StatementKind,
 };
 use crate::syntax::{OperandSource, Report, Span};
 
@@ -12,7 +12,7 @@ const MAX_NESTING: usize = 128;
 
 pub(super) fn opens_block(line: &str) -> bool {
     let code = line[..comment_start(line).unwrap_or(line.len())].trim_start();
-    code.starts_with("macro ") || code.starts_with("transaction ")
+    code.starts_with("macro ")
 }
 
 #[derive(Clone, Copy)]
@@ -114,14 +114,13 @@ impl Parser<'_> {
                     "unexpected indentation or dedent to an unknown level"
                 };
                 self.errors.push(Report::new(message, span(line.offset, line.offset + line.code.len()))
-                    .help("Align this statement with its enclosing block; only macro and transaction headers introduce a block."));
+                    .help("Align this statement with its enclosing block; only macro headers introduce a block."));
                 continue;
             }
             match statement(line.code, line.offset) {
                 Ok(mut statement) => {
                     let is_macro = matches!(statement.kind, StatementKind::Macro { .. });
-                    let nested =
-                        is_macro || matches!(statement.kind, StatementKind::Transaction { .. });
+                    let nested = is_macro;
                     if is_macro && in_macro {
                         self.errors.push(Report::new("a macro cannot declare another macro", statement.span)
                             .help("Move the macro declaration to the top level and call it from this body."));
@@ -135,8 +134,7 @@ impl Parser<'_> {
                             statement.span.end = last.span.end;
                         }
                         match &mut statement.kind {
-                            StatementKind::Macro { body, .. }
-                            | StatementKind::Transaction { body, .. } => *body = child,
+                            StatementKind::Macro { body, .. } => *body = child,
                             _ => unreachable!(),
                         }
                     }
@@ -198,6 +196,9 @@ fn comment_statement((text, span): (&str, Span)) -> Statement {
 }
 
 fn statement(code: &str, offset: usize) -> Result<Statement, Report> {
+    if let Some(scheduled) = scheduled_statement(code, offset)? {
+        return Ok(scheduled);
+    }
     let kind = if let Some(header) = code.strip_prefix("macro ") {
         let (name, parameters) = macro_header(header, offset + 6)?;
         StatementKind::Macro {
@@ -205,19 +206,13 @@ fn statement(code: &str, offset: usize) -> Result<Statement, Report> {
             parameters,
             body: Vec::new(),
         }
-    } else if let Some(header) = code.strip_prefix("transaction ") {
-        let (name, isolation) = transaction_header(header, offset + 12)?;
-        StatementKind::Transaction {
-            name,
-            isolation,
-            body: Vec::new(),
-        }
-    } else if code == "commit" {
-        StatementKind::Commit
-    } else if code == "rollback" {
-        StatementKind::Rollback(None)
-    } else if let Some(target) = code.strip_prefix("rollback ") {
-        StatementKind::Rollback(Some(name(target, offset + 9)?))
+    } else if ["transaction", "commit", "rollback"]
+        .iter()
+        .any(|keyword| keyword_tail(code, keyword).is_some())
+    {
+        let end = code.find(char::is_whitespace).unwrap_or(code.len());
+        return Err(Report::new("transaction syntax has been removed", span(offset, offset + end))
+            .help("Each finite file statement is atomic. Use async and await to express scheduling barriers; there are no transaction checkpoints or rollback scopes."));
     } else if let Some(names) = code.strip_prefix("global ") {
         let names = split_arguments(names, offset + 7)?
             .into_iter()
@@ -237,6 +232,72 @@ fn statement(code: &str, offset: usize) -> Result<Statement, Report> {
         kind,
         span: span(offset, offset + code.len()),
     })
+}
+
+fn keyword_tail<'a>(code: &'a str, keyword: &str) -> Option<&'a str> {
+    let tail = code.strip_prefix(keyword)?;
+    (tail.is_empty() || tail.starts_with(char::is_whitespace)).then_some(tail)
+}
+
+fn scheduled_statement(code: &str, offset: usize) -> Result<Option<Statement>, Report> {
+    let mut rest = code;
+    let mut asynchronous = false;
+    let mut awaited = false;
+    while let Some((keyword, tail)) = ["async", "await"]
+        .into_iter()
+        .find_map(|keyword| keyword_tail(rest, keyword).map(|tail| (keyword, tail)))
+    {
+        let seen = if keyword == "async" {
+            &mut asynchronous
+        } else {
+            &mut awaited
+        };
+        let start = offset + code.len() - rest.len();
+        if *seen {
+            return Err(Report::new(
+                format!("duplicate '{keyword}' scheduling prefix"),
+                span(start, start + keyword.len()),
+            )
+            .help("Use each scheduling prefix at most once on a statement."));
+        }
+        *seen = true;
+        rest = tail.trim_start();
+    }
+    if !asynchronous && !awaited {
+        return Ok(None);
+    }
+    let whole = span(offset, offset + code.len());
+    let rest_offset = offset + code.len() - rest.len();
+    let kind = match (asynchronous, awaited, rest.is_empty()) {
+        (true, false, true) => StatementKind::Async,
+        (false, true, true) => StatementKind::Await(None),
+        (true, true, true) => {
+            return Err(Report::new("expected a statement after 'async await'", whole)
+                .help("Add a transfer or program call, or put the standalone async and await barriers on separate lines."));
+        }
+        (false, true, false) if name(rest, rest_offset).is_ok() => {
+            StatementKind::Await(Some(name(rest, rest_offset)?))
+        }
+        _ => {
+            if ["macro", "global", "transaction", "commit", "rollback"]
+                .iter()
+                .any(|keyword| keyword_tail(rest, keyword).is_some())
+            {
+                return Err(Report::new("scheduling prefixes require an executable statement", span(rest_offset, rest_offset + rest.len()))
+                    .help("Apply async or await to a transfer, program binding, or macro call; declarations do not execute work."));
+            }
+            let statement = Statement {
+                kind: ordinary_statement(rest, rest_offset)?,
+                span: span(rest_offset, rest_offset + rest.len()),
+            };
+            StatementKind::Scheduled {
+                asynchronous,
+                awaited,
+                statement: Box::new(statement),
+            }
+        }
+    };
+    Ok(Some(Statement { kind, span: whole }))
 }
 
 fn ordinary_statement(code: &str, offset: usize) -> Result<StatementKind, Report> {
@@ -305,31 +366,6 @@ fn macro_header(raw: &str, offset: usize) -> Result<(Name, Vec<Name>), Report> {
         }
     }
     Ok((macro_name, parameters))
-}
-
-fn transaction_header(raw: &str, offset: usize) -> Result<(Name, Isolation), Report> {
-    let header = header_body(raw, offset)?;
-    let scan = scan(header, offset)?;
-    let Some(open) = scan.first_call else {
-        return Ok((name(header, offset)?, Isolation::Serializable));
-    };
-    if !header.ends_with(')') {
-        return Err(Report::new(
-            "unexpected text after transaction isolation",
-            span(offset + open, offset + header.len()),
-        ));
-    }
-    let transaction_name = name(&header[..open], offset)?;
-    let isolation_text = header[open + 1..header.len() - 1].trim();
-    let isolation = match isolation_text {
-        "read uncommitted" => Isolation::ReadUncommitted,
-        "read committed" => Isolation::ReadCommitted,
-        "repeatable read" => Isolation::RepeatableRead,
-        "serializable" | "" => Isolation::Serializable,
-        _ => return Err(Report::new("unknown transaction isolation level", span(offset + open + 1, offset + header.len() - 1))
-            .help("Choose read uncommitted, read committed, repeatable read, or serializable (the default).")),
-    };
-    Ok((transaction_name, isolation))
 }
 
 fn header_body(raw: &str, offset: usize) -> Result<&str, Report> {

@@ -3,25 +3,13 @@ use super::{Diagnostic, Observations, Operand, endpoint_error, parents, validate
 use crate::endpoint::{Backend, Location};
 use crate::hir::effects::OperationFacts;
 use crate::hir::graph::PlanningContext;
-use crate::hir::{
-    Input, Instruction, InstructionKind, Output, ReadPort, Region, RollbackScope, TransactionId,
-};
+use crate::hir::{Input, Instruction, InstructionKind, Output, ReadPort, Region};
 use crate::language::DestinationMode;
 use crate::plan::FileClass;
-use std::collections::BTreeMap;
-use std::sync::Arc;
-#[derive(Clone)]
-pub(super) struct History {
-    origin: Arc<State>,
-    checkpoint: State,
-    writes: Vec<(Location, bool)>,
-    pending: Vec<(Location, bool)>,
-}
 
 pub(super) struct Types<'a> {
     pub(super) observations: &'a Observations,
     pub(super) context: &'a mut PlanningContext,
-    pub(super) histories: BTreeMap<TransactionId, History>,
     pub(super) errors: Vec<Diagnostic>,
     pub(super) live: bool,
 }
@@ -31,18 +19,13 @@ impl Types<'_> {
         state.class(location, &self.observations.classes)
     }
 
-    pub(super) fn region(
-        &mut self,
-        region: &Region,
-        state: &mut State,
-        current: Option<TransactionId>,
-    ) {
+    pub(super) fn region(&mut self, region: &Region, state: &mut State) {
         for node in &region.instructions {
             match &node.kind {
                 InstructionKind::Transfer {
                     source,
                     destination,
-                } => self.transfer(node, source, destination, state, current),
+                } => self.transfer(node, source, destination, state),
                 InstructionKind::Spawn { executable, .. } => {
                     let class = self.class(state, executable);
                     if matches!(class, FileClass::Directory | FileClass::Stream)
@@ -61,50 +44,7 @@ impl Types<'_> {
                     }
                     state.unknown();
                 }
-                InstructionKind::Transaction { transaction, body } => {
-                    self.histories.insert(
-                        *transaction,
-                        History {
-                            origin: Arc::new(state.clone()),
-                            checkpoint: state.clone(),
-                            writes: Vec::new(),
-                            pending: Vec::new(),
-                        },
-                    );
-                    self.region(body, state, Some(*transaction));
-                    if let Some(history) = self.histories.get_mut(transaction) {
-                        history.writes.append(&mut history.pending);
-                    }
-                }
-                InstructionKind::Commit { transaction } => {
-                    if let Some(history) = self.histories.get_mut(transaction) {
-                        history.writes.append(&mut history.pending);
-                        history.checkpoint = state.clone();
-                    }
-                }
-                InstructionKind::Rollback {
-                    transaction,
-                    scope: RollbackScope::Checkpoint,
-                } => {
-                    if let Some(history) = self.histories.get(transaction) {
-                        *state = history.checkpoint.clone();
-                    }
-                    if let Some(history) = self.histories.get_mut(transaction) {
-                        history.pending.clear();
-                    }
-                }
-                InstructionKind::Rollback {
-                    transaction,
-                    scope: RollbackScope::Begin,
-                } => {
-                    if let Some(history) = self.histories.get(transaction) {
-                        for (location, tree) in &history.writes {
-                            state.restore(location.clone(), *tree, history.origin.clone());
-                        }
-                    } else {
-                        state.unknown();
-                    }
-                }
+                InstructionKind::Barrier { .. } | InstructionKind::Await { .. } => {}
             }
         }
     }
@@ -115,7 +55,6 @@ impl Types<'_> {
         source: &Input,
         destination: &Output,
         state: &mut State,
-        current: Option<TransactionId>,
     ) {
         let pinned_file = matches!(source, Input::File { location, pattern: None }
             if self.context.pinned_inputs.get(&node.id).is_some_and(|proof| proof.covers(location)));
@@ -175,21 +114,9 @@ impl Types<'_> {
         };
         if facts.destination != FileClass::Stream {
             for parent in parents(location) {
-                let before = self.class(state, &parent);
                 state.write(parent.clone(), false, FileClass::Directory);
-                if before == FileClass::Missing
-                    && let Some(id) = current
-                    && let Some(history) = self.histories.get_mut(&id)
-                {
-                    history.pending.push((parent, true));
-                }
             }
         }
         state.write(location.clone(), tree, kind);
-        if let Some(id) = current
-            && let Some(history) = self.histories.get_mut(&id)
-        {
-            history.pending.push((location.clone(), tree));
-        }
     }
 }

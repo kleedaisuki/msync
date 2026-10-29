@@ -1,3 +1,6 @@
+#[path = "support/statement_storage.rs"]
+mod statement_storage;
+
 use std::fs;
 use std::path::Path;
 
@@ -48,10 +51,7 @@ fn typed_macro_copies_a_real_tree_into_explicit_replacement_without_nesting() {
     assert_eq!(text(root.path(), ".codex/agents/new.txt"), "new agent");
     assert_eq!(report.assignments, 1);
     assert!(report.cleanup.is_empty(), "{:?}", report.cleanup);
-    assert_eq!(
-        fs::read_dir(root.path().join("scratch")).unwrap().count(),
-        0
-    );
+    statement_storage::assert_clean(&root.path().join("scratch"));
 }
 
 #[test]
@@ -65,52 +65,6 @@ fn utf8_and_nul_literal_bytes_are_exact_and_parents_publish_with_the_statement()
     );
     assert_eq!(report.assigned_bytes, "可莉🌟\n\0done".len() as u64);
     assert!(report.cleanup.is_empty());
-}
-
-#[test]
-fn checkpoints_local_rewind_and_named_origin_restore_the_requested_lifecycle() {
-    let root = workspace();
-    fs::write(root.path().join("output.txt"), "origin").unwrap();
-    let source = "\"before\" -> before.txt\ntransaction A1(read uncommitted):\n    \"first\" -> output.txt\n    commit\n    \"0\" -> exit.txt\n    commit\n    \"pending\" -> wsl.txt\n    rollback\nrollback A1\n\"success\" -> result.txt\n";
-    let report = run(root.path(), source).unwrap();
-    assert_eq!(text(root.path(), "output.txt"), "origin");
-    assert!(!root.path().join("exit.txt").exists());
-    assert!(!root.path().join("wsl.txt").exists());
-    assert_eq!(text(root.path(), "before.txt"), "before");
-    assert_eq!(text(root.path(), "result.txt"), "success");
-    assert_eq!(report.rollbacks, 2);
-    assert!(report.cleanup.is_empty());
-}
-
-#[test]
-fn local_rollback_keeps_the_latest_checkpoint_at_implicit_block_commit() {
-    let root = workspace();
-    run(root.path(), "transaction A:\n    \"one\" -> a\n    commit\n    \"two\" -> a\n    \"discard\" -> b\n    rollback\n").unwrap();
-    assert_eq!(text(root.path(), "a"), "one");
-    assert!(!root.path().join("b").exists());
-}
-
-#[test]
-fn a_failed_named_region_restores_its_origin_but_not_prior_top_level_statements() {
-    let root = workspace();
-    fs::write(root.path().join("out"), "old").unwrap();
-    let error = run(root.path(), "\"earlier\" -> before\ntransaction A:\n    \"changed\" -> out\n    commit\n    missing -> broken\n").unwrap_err();
-    assert!(
-        error
-            .report
-            .diagnostic
-            .message
-            .contains("source does not exist")
-    );
-    assert_eq!(text(root.path(), "out"), "old");
-    assert_eq!(text(root.path(), "before"), "earlier");
-    assert!(!root.path().join("broken").exists());
-    assert!(error.recovery.is_empty(), "{error}");
-    assert!(error.retained_paths.is_empty(), "{error}");
-    assert_eq!(
-        fs::read_dir(root.path().join("scratch")).unwrap().count(),
-        0
-    );
 }
 
 #[test]
@@ -155,9 +109,13 @@ fn exact_directory_rejection_and_empty_selection_never_create_a_destination() {
 }
 
 #[test]
-fn transaction_reads_its_own_pending_producers_and_prior_versions_remain_immutable() {
+fn read_after_write_preserves_values_when_later_statements_overwrite_sources() {
     let root = workspace();
-    run(root.path(), "transaction A:\n    \"first\" -> a\n    a -> b\n    commit\n    \"second\" -> a\n    b -> c\n").unwrap();
+    run(
+        root.path(),
+        "\"first\" -> a\na -> b\n\"second\" -> a\nb -> c\n",
+    )
+    .unwrap();
     assert_eq!(text(root.path(), "a"), "second");
     assert_eq!(text(root.path(), "b"), "first");
     assert_eq!(text(root.path(), "c"), "first");
@@ -175,19 +133,6 @@ fn same_file_and_overlapping_tree_assignments_are_refused_without_mutation() {
     fs::write(root.path().join("tree/file"), "tree").unwrap();
     assert!(run(root.path(), "tree -> tree/child/.\n").is_err());
     assert!(!root.path().join("tree/child").exists());
-}
-
-#[test]
-fn unsupported_process_effects_are_rejected_before_an_earlier_file_assignment_starts() {
-    let root = workspace();
-    let error = run(
-        root.path(),
-        "\"never\" -> out\nchild => $path::missing_executable()\n",
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("verified process-resource view"));
-    assert!(!root.path().join("out").exists());
-    assert!(!root.path().join("scratch").exists());
 }
 
 #[test]
@@ -235,16 +180,6 @@ fn finite_http_sources_are_captured_at_execution_then_published_atomically() {
     server.join().unwrap();
     assert_eq!(text(root.path(), "out"), "remote");
     assert!(report.cleanup.is_empty());
-}
-
-#[test]
-fn remote_transaction_capability_failure_precedes_any_literal_publication() {
-    let root = workspace();
-    let source = "\"never\" -> before\ntransaction A:\n    $wsl::source -> out\n";
-    let error = run(root.path(), source).unwrap_err();
-    assert!(error.to_string().contains("versioned endpoint view"));
-    assert!(!root.path().join("before").exists());
-    assert!(!root.path().join("scratch").exists());
 }
 
 #[test]

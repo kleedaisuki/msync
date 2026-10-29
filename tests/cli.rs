@@ -358,29 +358,27 @@ fn pwd_namespace_rebinding_is_dynamic_but_path_alias_captures_its_value() {
 }
 
 #[test]
-fn explicit_legacy_pwd_forms_keep_their_migration_diagnostics() {
+fn removed_syntax_versions_are_rejected_before_any_file_effects() {
     let directory = workspace();
-    fs::write(directory.path().join("source.txt"), "legacy source").unwrap();
-    for source in [
-        "$pwd::source.txt -> target.txt\n",
-        "$pwd/source.txt -> target.txt\n",
-    ] {
-        let output = invoke(directory.path(), &["--syntax", "0.3", "check", "-"], source);
-        assert!(
-            !output.status.success(),
-            "legacy namespace misuse must not silently change meaning"
+    fs::write(directory.path().join("source.txt"), "source data").unwrap();
+    for version in ["0.3", "0.4"] {
+        let output = invoke(
+            directory.path(),
+            &["--syntax", version, "run", "-"],
+            "source.txt -> target.txt\n",
         );
-        assert!(stderr(&output).contains("$pwd::pwd"), "{}", stderr(&output));
+        assert!(!output.status.success());
+        assert!(stderr(&output).contains("0.5"), "{}", stderr(&output));
         assert!(!directory.path().join("target.txt").exists());
     }
     assert_success(&invoke(
         directory.path(),
-        &["--syntax", "0.3", "run", "-"],
+        &["--syntax", "0.5", "run", "-"],
         "source.txt -> target.txt\n",
     ));
     assert_eq!(
         fs::read_to_string(directory.path().join("target.txt")).unwrap(),
-        "legacy source"
+        "source data"
     );
 }
 
@@ -513,30 +511,30 @@ fn directory_target_without_trailing_slash_is_rejected_without_mutation() {
 }
 
 #[test]
-fn legacy_live_plan_eliminates_dead_file_write_before_bounded_execution() {
+fn static_plan_retains_guarded_writes_and_runtime_folds_them_before_bounded_execution() {
     let directory = workspace();
     fs::write(directory.path().join("first.txt"), "first source").unwrap();
     fs::write(directory.path().join("last.txt"), "last source").unwrap();
     fs::write(directory.path().join("target.txt"), "original target").unwrap();
     let script = "first.txt -> target.txt\nlast.txt -> target.txt\n";
-    let planned = invoke(directory.path(), &["--syntax", "0.3", "plan", "-"], script);
+    let planned = invoke(directory.path(), &["--syntax", "0.5", "plan", "-"], script);
     assert_success(&planned);
     assert!(
-        stdout(&planned).matches("0000 copy ").count() == 1,
+        stdout(&planned).matches(" transfer\n").count() == 2,
         "{}",
         stdout(&planned)
     );
-    assert!(stdout(&planned).contains("removed #0: overwritten by #1 before any read"));
+    assert!(stdout(&planned).contains("guarded candidate:"));
     assert_eq!(
         fs::read_to_string(directory.path().join("target.txt")).unwrap(),
         "original target",
-        "planning may inspect metadata but must not copy"
+        "planning must not inspect runtime endpoints or copy"
     );
     let executed = invoke(
         directory.path(),
         &[
             "--syntax",
-            "0.3",
+            "0.5",
             "run",
             "-",
             "--jobs",
@@ -551,6 +549,11 @@ fn legacy_live_plan_eliminates_dead_file_write_before_bounded_execution() {
         script,
     );
     assert_success(&executed);
+    assert!(
+        stdout(&executed).contains("1 assignment(s)"),
+        "{}",
+        stdout(&executed)
+    );
     assert_eq!(
         fs::read_to_string(directory.path().join("target.txt")).unwrap(),
         "last source"

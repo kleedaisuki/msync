@@ -1,6 +1,6 @@
 //! Metadata-only preparation of the structured IR.
 //!
-//! Type observations are premises at an instruction's epoch, not a license to
+//! Type observations are premises for the currently interpreted block, not a license to
 //! read payloads. Preparation never captures a snapshot, starts a user program,
 //! opens a stream connection, or configures a process-resource view.
 
@@ -130,24 +130,15 @@ impl PreparedProgram {
     }
 
     pub fn is_execution_ready(&self) -> bool {
-        self.graph.is_execution_ready() && verified_programs(&self.program.body, &self.context)
+        self.graph.is_execution_ready()
     }
-}
-
-fn verified_programs(region: &Region, context: &PlanningContext) -> bool {
-    region.instructions.iter().all(|node| match &node.kind {
-        InstructionKind::Spawn { process, .. } => context.process_effects.contains_key(process),
-        InstructionKind::Transaction { body, .. } => verified_programs(body, context),
-        _ => true,
-    })
 }
 
 pub fn prepare(program: &hir::Program, live: bool) -> Result<PreparedProgram, Vec<Report>> {
     prepare_with_context(program, live, PlanningContext::default())
 }
 
-/// Runtime-owned version/type observations override the host's current metadata.
-/// A caller must establish subprocess mediation before supplying its certificate.
+/// Runtime-owned type observations refine one currently interpreted block.
 pub fn prepare_with_context(
     program: &hir::Program,
     live: bool,
@@ -225,12 +216,45 @@ struct Observation {
     observations: Observations,
 }
 
-pub(crate) fn observe_runtime(
-    program: &hir::Program,
+/// Resolve an admitted operation using fresh observations after its dependencies
+/// have completed. No observations of a future block are retained here.
+pub fn resolve_instruction(
+    instruction: &Instruction,
+    context: &PlanningContext,
+) -> Result<(Instruction, PlanningContext), Vec<Diagnostic>> {
+    let program = hir::Program {
+        body: Region {
+            instructions: vec![instruction.clone()],
+        },
+    };
+    let mut current = context.clone();
+    current.operation_facts.remove(&instruction.id);
+    current.existing_parent_frontiers.remove(&instruction.id);
+    let observed = observe_program(&program, true, current)?;
+    Ok((
+        observed
+            .resolved
+            .body
+            .instructions
+            .into_iter()
+            .next()
+            .expect("one admitted instruction"),
+        observed.context,
+    ))
+}
+
+/// Specialize only the block selected by the interpreter. Its source operands
+/// may have been produced by earlier operations in this block.
+pub fn prepare_block(
+    block: &hir::BasicBlock<'_>,
     context: PlanningContext,
-) -> Result<(Arc<hir::Program>, PlanningContext), Vec<Diagnostic>> {
-    let observed = observe_program(program, true, context)?;
-    Ok((Arc::new(observed.resolved), observed.context))
+) -> Result<PreparedProgram, Vec<Diagnostic>> {
+    let program = hir::Program {
+        body: Region {
+            instructions: block.instructions.to_vec(),
+        },
+    };
+    prepare_with_context_detailed(&program, true, context)
 }
 
 fn observe_program(
@@ -238,6 +262,12 @@ fn observe_program(
     live: bool,
     mut context: PlanningContext,
 ) -> Result<Observation, Vec<Diagnostic>> {
+    if program.blocks().nth(1).is_some() {
+        return Err(vec![Diagnostic::general(Report::new(
+            "runtime preparation requires one basic block at a time",
+            Span::default(),
+        ).help("Interpret and complete the previous block before inspecting the next block's filesystem."))]);
+    }
     let mut resolved = program.clone();
     let mut initial = State::initial(&context);
     let mut observations = Observations::new(initial.clone(), context.host_unstable.clone(), live);
@@ -249,11 +279,10 @@ fn observe_program(
     let mut interpreter = Types {
         observations: &observations,
         context: &mut context,
-        histories: BTreeMap::new(),
         errors: Vec::new(),
         live,
     };
-    interpreter.region(&resolved.body, &mut state, None);
+    interpreter.region(&resolved.body, &mut state);
     if !interpreter.errors.is_empty() {
         return Err(interpreter.errors);
     }
@@ -275,28 +304,23 @@ fn rewrite_facts(
         resources: &HashMap<Location, Resource>,
     ) {
         for node in &region.instructions {
-            match &node.kind {
-                InstructionKind::Transfer {
-                    source,
-                    destination,
-                } => {
-                    let source_verified = !matches!(source, Input::File { location, .. } if !resources.contains_key(location));
-                    let destination_verified = !matches!(destination, Output::File { location, .. } if !resources.contains_key(location));
-                    if !source_verified || !destination_verified {
-                        facts.remove(&node.id);
-                    }
+            if let InstructionKind::Transfer {
+                source,
+                destination,
+            } = &node.kind
+            {
+                let source_verified = !matches!(source, Input::File { location, .. } if !resources.contains_key(location));
+                let destination_verified = !matches!(destination, Output::File { location, .. } if !resources.contains_key(location));
+                if !source_verified || !destination_verified {
+                    facts.remove(&node.id);
                 }
-                InstructionKind::Transaction { body, .. } => retain(body, facts, resources),
-                _ => {}
             }
         }
     }
     let mut facts = context
         .operation_facts
         .iter()
-        .filter(|(id, _)| {
-            !context.pinned_inputs.contains_key(id) && !context.namespace_merges.contains_key(id)
-        })
+        .filter(|(id, _)| !context.pinned_inputs.contains_key(id))
         .map(|(id, facts)| (*id, *facts))
         .collect();
     retain(&program.body, &mut facts, resources);
@@ -410,7 +434,9 @@ fn endpoint_error(message: impl Into<String>, location: &Location, span: Span) -
 }
 
 fn parents(location: &Location) -> Vec<Location> {
-    if !matches!(location.backend, Backend::Local) {
+    if !matches!(location.backend, Backend::Local)
+        || cfg!(windows) && crate::streams::is_named_pipe_path(&location.path)
+    {
         return Vec::new();
     }
     Path::new(&location.path)
@@ -444,7 +470,9 @@ fn resources(program: &hir::Program, observations: &Observations) -> HashMap<Loc
         observations: &Observations,
         cache: &mut crate::plan::ResourceSnapshots,
     ) -> Option<Resource> {
-        if let Some(canonical) = observations.canonical_remote.get(location) {
+        if observations.classes.get(location) == Some(&FileClass::Stream) {
+            Some(crate::plan::logical_stream_resource(location))
+        } else if let Some(canonical) = observations.canonical_remote.get(location) {
             Some(cache.capture(location, canonical, AccessScope::Exact))
         } else if observations.verified.contains(location) {
             Some(cache.capture(location, location, AccessScope::Exact))
@@ -460,28 +488,23 @@ fn resources(program: &hir::Program, observations: &Observations) -> HashMap<Loc
         output: &mut HashMap<Location, Resource>,
     ) {
         for node in &region.instructions {
-            match &node.kind {
-                InstructionKind::Transfer {
-                    source,
-                    destination,
-                } => {
-                    if let Input::File { location, .. } = source
-                        && !output.contains_key(location)
-                        && let Some(resource) = capture(location, observations, cache)
-                    {
-                        output.entry(location.clone()).or_insert(resource);
-                    }
-                    if let Output::File { location, .. } = destination
-                        && !output.contains_key(location)
-                        && let Some(resource) = capture(location, observations, cache)
-                    {
-                        output.entry(location.clone()).or_insert(resource);
-                    }
+            if let InstructionKind::Transfer {
+                source,
+                destination,
+            } = &node.kind
+            {
+                if let Input::File { location, .. } = source
+                    && !output.contains_key(location)
+                    && let Some(resource) = capture(location, observations, cache)
+                {
+                    output.entry(location.clone()).or_insert(resource);
                 }
-                InstructionKind::Transaction { body, .. } => {
-                    walk(body, observations, cache, output)
+                if let Output::File { location, .. } = destination
+                    && !output.contains_key(location)
+                    && let Some(resource) = capture(location, observations, cache)
+                {
+                    output.entry(location.clone()).or_insert(resource);
                 }
-                _ => {}
             }
         }
     }

@@ -1,63 +1,51 @@
-//! Reference and live execution of the structured language.
+//! Ordered basic-block interpretation with statement-local atomic publication.
 //!
-//! `execute` is the sequential filesystem oracle; `RuntimeSession` is the
-//! integrated bounded file/program/stream engine. Syntax, expansion and graph
-//! compilation remain pure; execution is the data-producing stage. The reference
-//! interpreter gives each file statement an atomic transaction. Live connected
-//! jobs retain their actual owner, and independent named bodies share a frontier.
-//! Named checkpoints retain reversible origins. Failure cancellation restores
-//! still-active scopes, including earlier checkpoints, not already finished
-//! named histories or an unrelated earlier background owner.
-//!
-//! The reference entry point rejects program/stream mediation before effects;
-//! the live engine uses verified native providers. Remote transactional peers
-//! remain capability-rejected rather than masquerading as distributed commits.
-//! Finite remote sources are imported at their atomic top-level transfer, not
-//! pre-downloaded before earlier statements can publish. Sources that contain the
-//! configured scratch domain omit only the identity-checked current invocation.
-//! Pre-existing user scratch data remains part of the source. Windows enrollment requires the manager's supported
-//! ordinal-insensitive domain policy and rejects case-sensitive NTFS ancestors.
+//! Compilation is pure. Filesystem observations belong to the currently admitted
+//! block, and external children observe the real filesystem at their launch.
 
 mod assignment;
+mod blocks;
 mod domain;
 mod endpoint;
 mod error;
-pub(crate) mod events;
+mod fifo;
+mod flow;
 pub mod live;
-mod materialize;
-mod native;
 mod ordinary;
-mod physical;
+mod path_policy;
 mod program;
 pub mod progress;
 mod scheduler;
 mod transfer;
 mod wsl_source;
 
+pub use error::{
+    DiagnosticCategory, DiagnosticContext, DiagnosticLocation, DiagnosticPhase, ExecutionError,
+};
 pub use live::RuntimeSession;
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::PathBuf;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WorkId {
+    Program(crate::hir::ProcessId),
+    Flow {
+        submission: u64,
+        instruction: crate::hir::InstructionId,
+    },
+}
 
-use tokio_util::sync::CancellationToken;
-
-use crate::hir::{self, Instruction, InstructionKind, Region, RollbackScope, TransactionId};
-use crate::language::Isolation;
 use crate::scheduler::ResourceLimits;
 use crate::syntax::Span;
-use crate::transaction::filesystem::{InvocationRoot, Snapshot, SnapshotStore};
-use crate::transaction::manager::{CommitReport, Manager};
-
-use domain::Domain;
-pub use error::ExecutionError;
 use error::Result;
+use std::path::PathBuf;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug)]
 pub struct Options {
     pub scratch_root: PathBuf,
     pub limits: ResourceLimits,
     pub cancel: CancellationToken,
+    pub max_output_bytes: Option<u64>,
+    pub(crate) shared_invocation: Option<crate::filesystem::InvocationRoot>,
 }
 
 impl Options {
@@ -66,13 +54,15 @@ impl Options {
             scratch_root: scratch_root.into(),
             limits: ResourceLimits::default(),
             cancel: CancellationToken::new(),
+            max_output_bytes: None,
+            shared_invocation: None,
         }
     }
 
     fn check(&self, span: Span) -> Result<()> {
         if self.cancel.is_cancelled() {
             return Err(ExecutionError::cancelled(
-                "execution cancelled before publication",
+                "execution cancelled before the next statement",
                 span,
             ));
         }
@@ -80,19 +70,15 @@ impl Options {
     }
 }
 
-/// Counts assignments and publication boundaries, not physical copy throughput.
 #[derive(Debug, Default)]
 pub struct ExecutionReport {
     pub assignments: usize,
     pub assigned_files: usize,
     pub assigned_bytes: u64,
-    pub checkpoints: usize,
-    pub rollbacks: usize,
     pub published_roots: usize,
     pub cleanup: Vec<CleanupIssue>,
 }
 
-/// Cleanup after a known commit is a warning, never a claim that it rolled back.
 #[derive(Debug)]
 pub struct CleanupIssue {
     pub cause: Box<dyn std::error::Error + Send + Sync>,
@@ -100,379 +86,43 @@ pub struct CleanupIssue {
     pub resolved: bool,
 }
 
-/// Execute one complete document against immutable versions of its local domain.
-pub fn execute(program: &hir::Program, options: &Options) -> Result<ExecutionReport> {
-    domain::validate(program)?;
-    options
-        .limits
-        .validate()
-        .map_err(|message| ExecutionError::new(message, Span::default()))?;
-    options.check(Span::default())?;
-    if program.body.instructions.is_empty() {
-        return Ok(ExecutionReport::default());
-    }
-    if !options.scratch_root.is_absolute() {
-        return Err(ExecutionError::new(
-            "execution scratch root must be absolute",
-            Span::default(),
-        ));
-    }
-    let mut domain = Domain::resolve(program, options)?;
-    let mut engine = Engine::new(&domain, options)?;
-    let result = engine.region(&program.body, &mut domain, None, program);
-    // Imported/source snapshots must release their artifact handles before close.
-    drop(domain);
-    match result {
-        Ok(()) => {
-            engine.close();
-            Ok(engine.report)
-        }
-        Err(mut failure) => {
-            engine.close();
-            for cleanup in engine.report.cleanup {
-                failure.retained_paths.extend(cleanup.retained_paths);
-                failure.report.help.push(format!(
-                    "cleanup{}: {}",
-                    if cleanup.resolved { " (recovered)" } else { "" },
-                    cleanup.cause
-                ));
-            }
-            failure
-                .retained_paths
-                .extend(engine.manager.retained_journals());
-            if !failure.retained_paths.is_empty() {
-                failure.retained_paths.push(engine.workspace);
-            }
-            Err(failure)
-        }
-    }
+pub(super) fn merge(target: &mut ExecutionReport, source: ExecutionReport) {
+    target.assignments += source.assignments;
+    target.assigned_files += source.assigned_files;
+    target.assigned_bytes = target.assigned_bytes.saturating_add(source.assigned_bytes);
+    target.published_roots += source.published_roots;
+    target.cleanup.extend(source.cleanup);
 }
 
-struct Engine {
-    manager: Manager,
-    assets: SnapshotStore,
-    workspace: PathBuf,
-    invocation: InvocationRoot,
-    imports: PathBuf,
-    directory: fs::Permissions,
-    roots: Vec<PathBuf>,
-    options: Options,
-    named: BTreeMap<TransactionId, TransactionId>,
-    next_transaction: usize,
-    report: ExecutionReport,
-}
-
-impl Engine {
-    fn new(domain: &Domain, options: &Options) -> Result<Self> {
-        let invocation = InvocationRoot::create(&options.scratch_root).map_err(|cause| {
-            ExecutionError::caused(
-                "cannot create owned execution invocation",
-                Span::default(),
-                cause,
-            )
-        })?;
-        let workspace = invocation.path().to_owned();
-        let assets =
-            SnapshotStore::new_in(&workspace.join("assets"), &invocation).map_err(|cause| {
-                ExecutionError::caused(
-                    "cannot create immutable import store",
-                    Span::default(),
-                    cause,
-                )
-            })?;
-        let manager =
-            Manager::new_in(&workspace.join("manager"), &invocation).map_err(|cause| {
-                ExecutionError::caused("cannot create transaction manager", Span::default(), cause)
-            })?;
-        let imports = workspace.join("imports");
-        fs::create_dir(&imports).map_err(|cause| {
-            ExecutionError::caused("cannot create private imports", Span::default(), cause)
-        })?;
-        let template = workspace.join("directory-template");
-        fs::create_dir(&template).map_err(|cause| {
-            ExecutionError::caused("cannot create directory template", Span::default(), cause)
-        })?;
-        let directory = fs::metadata(&template)
-            .map_err(|cause| {
-                ExecutionError::caused("cannot inspect directory template", Span::default(), cause)
-            })?
-            .permissions();
-        let mut engine = Self {
-            manager,
-            assets,
-            workspace,
-            invocation,
-            imports,
-            directory,
-            roots: domain.roots.clone(),
-            options: options.clone(),
-            named: BTreeMap::new(),
-            next_transaction: 0,
-            report: ExecutionReport::default(),
-        };
-        for root in &domain.roots {
-            if let Err(cause) = engine.manager.enroll(root) {
-                let mut failure = ExecutionError::caused(
-                    format!("cannot enroll resource {}", root.display()),
-                    domain.site(root),
-                    cause,
-                );
-                engine.close();
-                for cleanup in engine.report.cleanup {
-                    failure.retained_paths.extend(cleanup.retained_paths);
-                    failure.report.help.push(format!(
-                        "cleanup{}: {}",
-                        if cleanup.resolved { " (recovered)" } else { "" },
-                        cleanup.cause
-                    ));
+/// Blocking convenience entry point for finite documents. Async callers use a session.
+pub fn execute(program: &crate::hir::Program, options: &Options) -> Result<ExecutionReport> {
+    let mut session = RuntimeSession::new(options)?;
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(options.limits.jobs.min(4))
+        .enable_all()
+        .build()
+        .map_err(|cause| {
+            ExecutionError::caused("cannot start execution runtime", Span::default(), cause)
+        })?
+        .block_on(async {
+            let result = session.execute(program).await;
+            let cleanup = session.shutdown().await;
+            match (result, cleanup) {
+                (Ok(report), Ok(())) => Ok(report),
+                (Err(error), Ok(())) => Err(error),
+                (Ok(mut report), Err(error)) => {
+                    report.cleanup.push(CleanupIssue {
+                        retained_paths: error.retained_paths.clone(),
+                        cause: Box::new(error),
+                        resolved: false,
+                    });
+                    Ok(report)
                 }
-                return Err(failure);
-            }
-        }
-        Ok(engine)
-    }
-
-    fn allocate(&mut self) -> Result<TransactionId> {
-        let id = TransactionId(self.next_transaction);
-        self.next_transaction = self.next_transaction.checked_add(1).ok_or_else(|| {
-            ExecutionError::new("runtime transaction identities exhausted", Span::default())
-        })?;
-        Ok(id)
-    }
-
-    fn region(
-        &mut self,
-        region: &Region,
-        domain: &mut Domain,
-        current: Option<TransactionId>,
-        program: &hir::Program,
-    ) -> Result<()> {
-        for instruction in &region.instructions {
-            self.options.check(instruction.span)?;
-            self.instruction(instruction, domain, current, program)?;
-        }
-        Ok(())
-    }
-
-    fn instruction(
-        &mut self,
-        node: &Instruction,
-        domain: &mut Domain,
-        current: Option<TransactionId>,
-        program: &hir::Program,
-    ) -> Result<()> {
-        match &node.kind {
-            InstructionKind::Transfer { .. } => {
-                let transfer = domain.transfers.remove(&node.id).ok_or_else(|| {
-                    ExecutionError::new("duplicate or missing transfer identity", node.span)
-                })?;
-                if let Some(id) = current {
-                    self.manager.start_statement(id).map_err(|cause| {
-                        ExecutionError::caused("cannot begin statement view", node.span, cause)
-                    })?;
-                    return self.transfer(node.id, &transfer, id);
+                (Err(mut error), Err(cleanup)) => {
+                    error.report.help.push(format!("cleanup: {cleanup}"));
+                    error.retained_paths.extend(cleanup.retained_paths);
+                    Err(error)
                 }
-                let id = self.allocate()?;
-                self.manager
-                    .begin(id, Isolation::Serializable)
-                    .map_err(|cause| {
-                        ExecutionError::caused("cannot begin atomic transfer", node.span, cause)
-                    })?;
-                let result = self
-                    .transfer(node.id, &transfer, id)
-                    .and_then(|()| self.finish(id, node.span));
-                result.map_err(|mut failure| {
-                    self.abort(id, &mut failure);
-                    failure
-                })
             }
-            InstructionKind::Transaction { transaction, body } => {
-                if current.is_some() {
-                    return Err(ExecutionError::new(
-                        "nested named transactions need a nested manager context",
-                        node.span,
-                    ));
-                }
-                let isolation = program
-                    .transactions
-                    .iter()
-                    .find(|info| info.id == *transaction)
-                    .map(|info| info.isolation)
-                    .ok_or_else(|| {
-                        ExecutionError::new("transaction metadata is missing", node.span)
-                    })?;
-                let id = self.allocate()?;
-                self.manager.begin(id, isolation).map_err(|cause| {
-                    ExecutionError::caused("cannot begin named transaction", node.span, cause)
-                })?;
-                if self.named.insert(*transaction, id).is_some() {
-                    return Err(ExecutionError::new(
-                        "transaction identity has more than one declaration",
-                        node.span,
-                    ));
-                }
-                let result = self
-                    .region(body, domain, Some(id), program)
-                    .and_then(|()| self.finish(id, node.span));
-                result.map_err(|mut failure| {
-                    self.abort(id, &mut failure);
-                    failure
-                })
-            }
-            InstructionKind::Commit { transaction } => {
-                let id = self.current(*transaction, current, node.span)?;
-                let committed = self.manager.checkpoint(id).map_err(|cause| {
-                    ExecutionError::caused("checkpoint publication failed", node.span, cause)
-                })?;
-                self.report.checkpoints += 1;
-                self.committed(committed);
-                Ok(())
-            }
-            InstructionKind::Rollback { transaction, scope } => {
-                let id = match scope {
-                    RollbackScope::Checkpoint => self.current(*transaction, current, node.span)?,
-                    RollbackScope::Begin => {
-                        if current.is_some() {
-                            return Err(ExecutionError::new(
-                                "named rollback cannot run inside another transaction",
-                                node.span,
-                            ));
-                        }
-                        *self.named.get(transaction).ok_or_else(|| {
-                            ExecutionError::new("named rollback has no preceding origin", node.span)
-                        })?
-                    }
-                };
-                match scope {
-                    RollbackScope::Checkpoint => {
-                        self.manager.rollback_pending(id).map_err(|cause| {
-                            ExecutionError::caused(
-                                "cannot restore latest checkpoint",
-                                node.span,
-                                cause,
-                            )
-                        })?
-                    }
-                    RollbackScope::Begin => {
-                        let report = self.manager.rollback_origin(id).map_err(|cause| {
-                            ExecutionError::caused(
-                                "cannot restore transaction origin",
-                                node.span,
-                                cause,
-                            )
-                        })?;
-                        self.committed(report);
-                    }
-                }
-                self.report.rollbacks += 1;
-                Ok(())
-            }
-            InstructionKind::Spawn { .. } => unreachable!("capabilities validated"),
-        }
-    }
-
-    fn current(
-        &self,
-        named: TransactionId,
-        current: Option<TransactionId>,
-        span: Span,
-    ) -> Result<TransactionId> {
-        let id = *self
-            .named
-            .get(&named)
-            .ok_or_else(|| ExecutionError::new("transaction control has no origin", span))?;
-        if current != Some(id) {
-            return Err(ExecutionError::new(
-                "transaction control refers to another context",
-                span,
-            ));
-        }
-        Ok(id)
-    }
-
-    fn finish(&mut self, id: TransactionId, span: Span) -> Result<()> {
-        let committed = self
-            .manager
-            .finish(id)
-            .map_err(|cause| ExecutionError::caused("atomic publication failed", span, cause))?;
-        if self.named.values().any(|named| *named == id) {
-            self.report.checkpoints += 1;
-        }
-        self.committed(committed);
-        Ok(())
-    }
-
-    fn committed(&mut self, committed: CommitReport) {
-        self.report.published_roots += committed.published_roots;
-        self.report
-            .cleanup
-            .extend(committed.cleanup.into_iter().map(|cause| CleanupIssue {
-                retained_paths: cause.journal.iter().cloned().collect(),
-                cause: Box::new(cause),
-                resolved: false,
-            }));
-    }
-
-    fn abort(&mut self, id: TransactionId, failure: &mut ExecutionError) {
-        let recovery = self.manager.recover();
-        failure.compensation.extend(recovery);
-        if let Err(error) = self.manager.rollback_origin(id) {
-            failure.recovery.push(error);
-        }
-    }
-
-    fn close(&mut self) {
-        self.close_inner();
-        for issue in &mut self.report.cleanup {
-            issue
-                .retained_paths
-                .retain(|path| path.try_exists().unwrap_or(true));
-            issue.resolved = issue.retained_paths.is_empty();
-        }
-    }
-
-    fn close_inner(&mut self) {
-        if let Err(cause) = self.manager.shutdown() {
-            self.report.cleanup.push(CleanupIssue {
-                retained_paths: vec![self.workspace.clone()],
-                cause: Box::new(cause),
-                resolved: false,
-            });
-            return;
-        }
-        if let Err(cause) = self.assets.cleanup() {
-            self.report.cleanup.push(CleanupIssue {
-                retained_paths: vec![self.workspace.clone()],
-                cause: Box::new(cause),
-                resolved: false,
-            });
-            return;
-        }
-        if let Err(cause) = self.invocation.cleanup() {
-            self.report.cleanup.push(CleanupIssue {
-                retained_paths: vec![self.workspace.clone()],
-                cause: Box::new(cause),
-                resolved: false,
-            });
-        }
-    }
-
-    fn snapshot(
-        &self,
-        entries: BTreeMap<PathBuf, crate::transaction::filesystem::Entry>,
-        span: Span,
-    ) -> Result<Snapshot> {
-        self.assets.from_entries(entries).map_err(|cause| {
-            ExecutionError::caused("cannot assemble immutable assignment", span, cause)
         })
-    }
-
-    fn manager_error(
-        &self,
-        action: &'static str,
-        span: Span,
-        cause: crate::transaction::manager::ManagerError,
-    ) -> ExecutionError {
-        ExecutionError::caused(action, span, cause)
-    }
 }

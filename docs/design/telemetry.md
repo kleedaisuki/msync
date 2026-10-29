@@ -261,6 +261,15 @@ failures retain their error status and causal event, even during owner cleanup.
 The owner marker also cannot hide retained journals, recovery failures or failed
 compensation: those results remain failures and must not become a successful stop.
 
+The finite-task wrapper and byte-flow owner use the same terminal classifier.
+A flow's successful `FlowEnd::Cancelled` is a cancellation outcome, but it cannot
+override a typed failure. Actual failures emit one `execution.task` error event
+on their own task span before completion, preserving the causal path even when
+the lower IO layer has already emitted its native error. Trace consumers resolve
+an admitted schedule's execution parent by span ID, not by selecting the first
+`execute` record: an earlier declarations-only REPL submission can legitimately
+have its own recovery/execution scope without admitting a task.
+
 `tests/runtime_task_telemetry_v4.rs` invokes the real CLI against native TCP peers:
 successful EOF publication, `/stop` of an idle source, and refused connection.
 It checks execute→schedule→task→io.flow ownership, real reservation metrics,

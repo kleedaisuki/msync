@@ -121,6 +121,7 @@ pub(crate) struct FifoPins {
 }
 
 impl FifoPins {
+    #[cfg(test)]
     pub(crate) fn any(&self) -> bool {
         self.source.is_some() || self.destination.is_some()
     }

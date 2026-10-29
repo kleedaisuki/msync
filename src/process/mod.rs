@@ -1,18 +1,11 @@
 //! Owned asynchronous program spaces and their byte/scalar ports.
 //!
-//! Native launch is deliberately named: it is not a transaction sandbox. A
-//! transaction executor must prepare a mediated command before using this layer.
+//! Native children execute against the real filesystem, not a transactional view.
 //! Output is drained immediately into private spools, so a process can finish
 //! even when only its exit code is observed. Internal memory is buffer-bounded;
 //! disk use is bounded only when `max_output_bytes` is explicitly configured.
 
 mod tree;
-
-#[cfg(target_os = "linux")]
-pub mod view_linux;
-
-#[cfg(windows)]
-pub mod view_windows;
 
 use std::fmt;
 use std::fs::{self, OpenOptions};
@@ -116,6 +109,35 @@ impl std::error::Error for ProcessError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessExitStatus {
+    pub pid: u32,
+    /// A Unix signal is represented as its negative number, not a shell guess.
+    pub exit_code: i32,
+    pub success: bool,
+    pub cancelled: bool,
+}
+
+impl ProcessExitStatus {
+    fn new(pid: u32, status: &std::process::ExitStatus, cancelled: bool) -> Self {
+        let exit_code = status.code().unwrap_or({
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                -status.signal().unwrap_or(1)
+            }
+            #[cfg(not(unix))]
+            -1
+        });
+        Self {
+            pid,
+            exit_code,
+            success: status.success(),
+            cancelled,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExitInfo {
     pub pid: u32,
     /// A Unix signal is represented as its negative number, not a shell guess.
@@ -141,26 +163,32 @@ impl ExitInfo {
     }
 }
 
-/// The execution manager must join at a checkpoint; Drop requests cancellation
-/// but cannot synchronously await OS pipe closure. Readers keep their spool alive.
+/// The session joins children at barriers. Dropping this handle never kills a
+/// child; its independent worker retains wait ownership and drains both outputs.
 pub struct Process {
     pid: u32,
     stdin: Option<ChildStdin>,
     stdout: Option<SpoolReader>,
     stderr: Option<SpoolReader>,
     cancel: CancellationToken,
+    exited: CancellationToken,
+    status: watch::Receiver<Option<Result<ProcessExitStatus, ProcessError>>>,
     finished: watch::Receiver<Option<Result<ExitInfo, ProcessError>>>,
 }
 
+struct ExitObserver {
+    signal: CancellationToken,
+    status: watch::Sender<Option<Result<ProcessExitStatus, ProcessError>>>,
+}
+
 impl Process {
-    /// Launch an exact argv outside a transaction. No shell or path rewriting is
+    /// Launch an exact argv natively. No shell or path rewriting is
     /// inserted. The command's environment/cwd are retained; stdio is owned here.
     pub fn spawn_native(command: Command, config: ProcessConfig) -> Result<Self, ProcessError> {
         Self::spawn_prepared(command, config)
     }
 
-    /// Only an execution-layer adapter may supply a mediated transaction command.
-    /// This layer never silently falls back from mediation to native execution.
+    /// Shared launch implementation for execution-layer adapters.
     pub(crate) fn spawn_prepared(
         mut command: Command,
         config: ProcessConfig,
@@ -177,25 +205,16 @@ impl Process {
             .stderr(Stdio::piped());
         tree::configure(&mut command);
         let mut command = tokio::process::Command::from(command);
-        command.kill_on_drop(true);
+        command.kill_on_drop(false);
         let mut child = command
             .spawn()
             .map_err(|cause| ProcessError::new("launch", None, None, cause))?;
         let pid = child.id().ok_or_else(|| {
             ProcessError::new("launch", None, None, io::Error::other("child has no PID"))
         })?;
-        let tree = match tree::Tree::attach(&child, pid) {
-            Ok(tree) => tree,
-            Err(cause) => {
-                let _ = child.start_kill();
-                return Err(ProcessError::new(
-                    "own process tree",
-                    Some(pid),
-                    None,
-                    cause,
-                ));
-            }
-        };
+        // Tree membership supports force-stop only; an unavailable optional job
+        // must not kill a command that has already started doing external work.
+        let tree = tree::Tree::attach(&child, pid).ok();
         let stdin = child.stdin.take();
         // All three handles are guaranteed by our piped stdio configuration.
         let child_stdout = child.stdout.take().expect("piped stdout");
@@ -224,10 +243,17 @@ impl Process {
             pid,
         ));
         let (finished, receiver) = watch::channel(None);
+        let (status, status_receiver) = watch::channel(None);
         let worker_cancel = cancel.clone();
+        let exited = CancellationToken::new();
+        let worker_exited = ExitObserver {
+            signal: exited.clone(),
+            status,
+        };
         tokio::spawn(async move {
-            let result = finish(child, tree, pid, out, err, worker_cancel).await;
+            let result = finish(child, tree, pid, out, err, worker_cancel, &worker_exited).await;
             let _ = finished.send(Some(result));
+            worker_exited.signal.cancel();
         });
         Ok(Self {
             pid,
@@ -235,6 +261,8 @@ impl Process {
             stdout: Some(stdout_reader),
             stderr: Some(stderr_reader),
             cancel,
+            exited,
+            status: status_receiver,
             finished: receiver,
         })
     }
@@ -263,6 +291,51 @@ impl Process {
         self.finished.borrow().is_some()
     }
 
+    pub fn exit_signal(&self) -> CancellationToken {
+        self.exited.clone()
+    }
+
+    /// Observe the root's exit without waiting for inherited output pipes to
+    /// close. Unlike `completion`, this carries no final output-byte counts.
+    pub fn exit_status(
+        &self,
+    ) -> impl std::future::Future<Output = Result<ProcessExitStatus, ProcessError>> + Send + 'static
+    {
+        let mut status = self.status.clone();
+        let pid = self.pid;
+        async move {
+            loop {
+                let result = status.borrow().clone();
+                if let Some(result) = result {
+                    return result;
+                }
+                status.changed().await.map_err(|cause| {
+                    ProcessError::new("observe exit", Some(pid), None, io::Error::other(cause))
+                })?;
+            }
+        }
+    }
+
+    /// Observe the retained completion without borrowing the program owner.
+    /// Creating this future neither waits nor closes stdin.
+    pub fn completion(
+        &self,
+    ) -> impl std::future::Future<Output = Result<ExitInfo, ProcessError>> + Send + 'static {
+        let mut finished = self.finished.clone();
+        let pid = self.pid;
+        async move {
+            loop {
+                let result = finished.borrow().clone();
+                if let Some(result) = result {
+                    return result;
+                }
+                finished.changed().await.map_err(|cause| {
+                    ProcessError::new("join", Some(pid), None, io::Error::other(cause))
+                })?;
+            }
+        }
+    }
+
     /// Close any untaken stdin, then await the leader, descendants and both
     /// physical output drains. A nonzero program exit is data, not an I/O error.
     pub async fn wait(&mut self) -> Result<ExitInfo, ProcessError> {
@@ -277,9 +350,15 @@ impl Process {
         }
     }
 
-    pub async fn cancel_and_wait(&mut self) -> Result<ExitInfo, ProcessError> {
+    /// Explicit destructive stop, never used for ordinary interpreter cancellation.
+    pub async fn force_stop_and_wait(&mut self) -> Result<ExitInfo, ProcessError> {
         self.cancel.cancel();
         self.wait().await
+    }
+
+    /// Explicit destructive compatibility operation; prefer `force_stop_and_wait`.
+    pub async fn cancel_and_wait(&mut self) -> Result<ExitInfo, ProcessError> {
+        self.force_stop_and_wait().await
     }
 
     /// Scalar ports are replayable UTF-8. Stream ports must be taken exactly once
@@ -299,59 +378,60 @@ impl Process {
                 ),
             ));
         }
+        if port == ReadPort::ExitCode {
+            self.close_stdin();
+            let status = self.exit_status().await?;
+            return Ok(format!("{}\n", status.exit_code).into_bytes());
+        }
         let exit = self.wait().await?;
         Ok(match port {
-            ReadPort::ExitCode => format!("{}\n", exit.exit_code).into_bytes(),
             ReadPort::Meta => exit.metadata(),
             _ => unreachable!("ports checked above"),
         })
     }
 }
 
-impl Drop for Process {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-    }
-}
-
 async fn finish(
     mut child: Child,
-    tree: tree::Tree,
+    tree: Option<tree::Tree>,
     pid: u32,
     out: tokio::task::JoinHandle<Result<u64, ProcessError>>,
     err: tokio::task::JoinHandle<Result<u64, ProcessError>>,
     cancel: CancellationToken,
+    exited: &ExitObserver,
 ) -> Result<ExitInfo, ProcessError> {
     let status = tokio::select! {
         result = child.wait() => result,
         () = cancel.cancelled() => {
-            tree.terminate();
+            if let Some(tree) = &tree { tree.terminate(); }
             let _ = child.start_kill();
             child.wait().await
         }
+    }
+    .map_err(|cause| ProcessError::new("wait", Some(pid), None, cause));
+    let observed = status
+        .as_ref()
+        .map(|status| ProcessExitStatus::new(pid, status, cancel.is_cancelled()))
+        .map_err(Clone::clone);
+    let _ = exited.status.send_replace(Some(observed));
+    exited.signal.cancel();
+    let mut drains = std::pin::pin!(async { tokio::join!(out, err) });
+    let (out, err) = tokio::select! {
+        result = &mut drains => result,
+        () = cancel.cancelled() => {
+            if let Some(tree) = &tree { tree.terminate(); }
+            drains.await
+        }
     };
-    // The program space owns descendants too. A leader exiting cannot leave a
-    // descendant writing an output pipe or a supposedly committed file version.
-    tree.terminate();
     drop(tree);
-    let (out, err) = tokio::join!(out, err);
     let stdout_bytes = join_drain(out, pid)?;
     let stderr_bytes = join_drain(err, pid)?;
-    let status = status.map_err(|cause| ProcessError::new("wait", Some(pid), None, cause))?;
-    let exit_code = status.code().unwrap_or({
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::ExitStatusExt;
-            -status.signal().unwrap_or(1)
-        }
-        #[cfg(not(unix))]
-        -1
-    });
+    let status = ProcessExitStatus::new(pid, &status?, cancel.is_cancelled());
     Ok(ExitInfo {
         pid,
-        exit_code,
-        success: status.success(),
-        cancelled: cancel.is_cancelled(),
+        exit_code: status.exit_code,
+        success: status.success,
+        cancelled: status.cancelled,
         stdout_bytes,
         stderr_bytes,
     })
@@ -588,7 +668,7 @@ async fn drain(
     mut spool: SpoolWriter,
     buffer_bytes: usize,
     budget: Arc<OutputBudget>,
-    cancel: CancellationToken,
+    _cancel: CancellationToken,
     pid: u32,
 ) -> Result<u64, ProcessError> {
     let result = drain_inner(&mut source, &mut spool, buffer_bytes, &budget).await;
@@ -601,7 +681,15 @@ async fn drain(
             let error =
                 ProcessError::new("drain output", Some(pid), Some(spool.path.clone()), cause);
             spool.complete(Err(error.clone()));
-            cancel.cancel();
+            // A failed/quota-limited spool is not permission to kill a child.
+            // Keep draining into a bounded sink so its own exit remains possible.
+            let mut buffer = vec![0; buffer_bytes];
+            loop {
+                match source.read(&mut buffer).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+            }
             Err(error)
         }
     }

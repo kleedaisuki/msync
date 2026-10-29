@@ -1,63 +1,10 @@
 use super::*;
-
-struct ActiveJob {
-    id: u64,
-    handle: Option<JoinHandle<Result<scheduler::ExecutionSummary, Report>>>,
-    cancel: CancellationToken,
-    source: String,
-    file: String,
-    removed: usize,
-}
-
-impl ActiveJob {
-    fn finished(&self) -> bool {
-        self.handle.as_ref().is_none_or(JoinHandle::is_finished)
-    }
-
-    fn join(mut self, stop: bool, color: Color) -> CliResult {
-        let stop = stop && !self.finished();
-        if stop {
-            self.cancel.cancel();
-        }
-        let result = self
-            .handle
-            .take()
-            .ok_or("background job was already joined")?
-            .join()
-            .map_err(|_| {
-                "background worker panicked; its resources have been joined".to_string()
-            })?;
-        if stop && let Err(report) = &result {
-            print_status(&format!("job {}: stopped", self.id), color)?;
-            return print_text(&format!(
-                "  reason: {}\n",
-                presentation::escape(&report.diagnostic.message)
-            ));
-        }
-        let summary =
-            result.map_err(|report| diagnostics(&self.file, &self.source, &[report], color))?;
-        print_status(&format!("job {}: completed", self.id), color)?;
-        print_summary(summary, self.removed, true, color)
-    }
-}
-
-impl Drop for ActiveJob {
-    fn drop(&mut self) {
-        self.cancel.cancel();
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
+use std::thread;
 
 struct ReplState {
-    compiler: Compiler,
     structured: structured::State,
     syntax: Version,
     dry_run: bool,
-    active: Option<ActiveJob>,
-    next_job: u64,
-    legacy_dirty: bool,
 }
 
 impl ReplState {
@@ -97,158 +44,22 @@ impl ReplState {
     }
 
     fn join(&mut self, stop: bool, color: Color) -> CliResult {
-        match self.active.take() {
-            Some(job) => job.join(stop, color),
-            None => self.structured.wait(stop, color),
-        }
+        self.structured.wait(stop, color)
     }
 
     fn reap(&mut self, color: Color) {
         if let Err(message) = self.structured.reap(color) {
             print_error(&message, color);
         }
-        if self.active.as_ref().is_some_and(ActiveJob::finished)
-            && let Err(message) = self.join(false, color)
-        {
-            print_error(&message, color);
-        }
     }
 }
 
 fn repl_submit(input: SourceUnit<'_>, state: &mut ReplState, options: &Args) -> CliResult {
-    let mut trace = msync::telemetry::span("submission");
-    input.annotate(&mut trace);
-    let result = repl_submit_inner(input, state, options);
-    trace.finish_result(&result);
-    result
-}
-
-fn repl_submit_inner(input: SourceUnit<'_>, state: &mut ReplState, options: &Args) -> CliResult {
-    let version = language::select_version(input.text, None, state.syntax)
+    language::select_version(input.text, None, state.syntax)
         .map_err(|reports| diagnostics(input.name, input.text, &reports, options.color))?;
-    if version == Version::Structured {
-        if state.active.is_some() {
-            return Err("a legacy background plan is active; use /wait or /stop first".into());
-        }
-        if state.legacy_dirty {
-            state
-                .structured
-                .compiler
-                .try_merge_legacy(&state.compiler)
-                .map_err(|report| diagnostics(input.name, input.text, &[report], options.color))?;
-            state.legacy_dirty = false;
-        }
-        let result = state
-            .structured
-            .submit(input, "run", state.dry_run, options, true);
-        state.compiler = state.structured.compiler.legacy().clone();
-        return result;
-    }
-    let SourceUnit {
-        text: source,
-        name: file,
-        context,
-    } = input;
-    let script = syntax::parse_rich(source)
-        .map_err(|errors| diagnostics(file, source, &errors, options.color))?;
-    let copies = script
-        .statements
-        .iter()
-        .any(|statement| matches!(statement.kind, StatementKind::Copy { .. }));
-    if copies && (state.active.is_some() || state.structured.active()) {
-        return Err(
-            "a background plan is active; use /wait or /stop before submitting another copy plan"
-                .into(),
-        );
-    }
-    let mut candidate = state.compiler.clone();
-    let program = candidate
-        .compile_rich_with_context(&script, &context)
-        .map_err(|errors| diagnostics(file, source, &errors, options.color))?;
-    let plan = prepare(&program, &script, !state.dry_run).map_err(|error| {
-        diagnostics(
-            file,
-            source,
-            &[runtime_report(&script, error)],
-            options.color,
-        )
-    })?;
-    if !copies {
-        state.compiler = candidate;
-        state.legacy_dirty = true;
-        return Ok(());
-    }
-    if state.dry_run {
-        print_plan(&plan, options.color)?;
-        if copies {
-            print_status(
-                &format!(
-                    "preview: {} operation(s); no files written\n",
-                    plan.nodes.len()
-                ),
-                options.color,
-            )?;
-        }
-        state.compiler = candidate;
-        state.legacy_dirty = true;
-        return Ok(());
-    }
-    let streaming = plan.nodes.iter().any(|node| {
-        node.kinds.source == FileClass::Stream || node.kinds.destination == FileClass::Stream
-    });
-    if !streaming {
-        let mut execution = msync::telemetry::span("execute");
-        let result = scheduler::execute_plan(&plan, &options.limits);
-        execution.finish_result(&result);
-        state.compiler = candidate;
-        state.legacy_dirty = true;
-        return print_summary(
-            result.map_err(|error| {
-                diagnostics(
-                    file,
-                    source,
-                    &[runtime_report(&script, error)],
-                    options.color,
-                )
-            })?,
-            plan.removed.len(),
-            copies,
-            options.color,
-        );
-    }
-    let cancel = CancellationToken::new();
-    let worker_cancel = cancel.clone();
-    let limits = options.limits.clone();
-    let parent = msync::telemetry::context();
-    let removed = plan.removed.len();
-    let handle = thread::Builder::new()
-        .name("msync-repl-plan".into())
-        .spawn(move || {
-            let mut execution = msync::telemetry::linked_span("execute", parent.as_ref());
-            let context = execution.context();
-            let result = msync::telemetry::with_context(context.as_ref(), || {
-                scheduler::execute_plan_cancellable(&plan, &limits, worker_cancel)
-            });
-            execution.finish_result(&result);
-            result.map_err(|error| runtime_report(&script, error))
-        })
-        .map_err(|error| format!("cannot start background plan: {error}"))?;
-    let id = state.next_job;
-    state.next_job += 1;
-    state.active = Some(ActiveJob {
-        id,
-        handle: Some(handle),
-        cancel,
-        source: source.to_owned(),
-        file: file.to_owned(),
-        removed,
-    });
-    state.compiler = candidate;
-    state.legacy_dirty = true;
-    print_status(
-        &format!("job {id}: running in background; use /jobs, /wait or /stop\n"),
-        options.color,
-    )
+    state
+        .structured
+        .submit(input, "run", state.dry_run, options, true)
 }
 
 pub(super) fn run(options: &Args) -> CliResult {
@@ -275,13 +86,9 @@ fn repl_inner(options: &Args) -> CliResult {
         )?;
     }
     let mut state = ReplState {
-        compiler: Compiler::new(),
         structured: structured::State::default(),
         syntax: options.syntax.unwrap_or(Version::Structured),
         dry_run: options.dry_run,
-        active: None,
-        next_job: 1,
-        legacy_dirty: false,
     };
     let mut pending = language::SubmissionBuffer::default();
     loop {
@@ -306,7 +113,7 @@ fn repl_inner(options: &Args) -> CliResult {
             editor::InputEvent::Line(line) => line,
             editor::InputEvent::Interrupted => {
                 pending.cancel();
-                if state.active.is_some() || state.structured.active() {
+                if state.structured.active() {
                     state.join(true, options.color)?;
                 } else if interactive {
                     print_status(
@@ -351,20 +158,16 @@ fn repl_inner(options: &Args) -> CliResult {
             }
             repl_command(command_line, &mut state, options, &mut input)
         } else {
-            let source = if state.syntax == Version::Structured {
-                match pending.push_line(&line) {
-                    Ok(language::Submission::Ready(source)) => source,
-                    Ok(_) => continue,
-                    Err(report) => {
-                        print_error(
-                            &diagnostics("<repl>", &line, &[report], options.color),
-                            options.color,
-                        );
-                        continue;
-                    }
+            let source = match pending.push_line(&line) {
+                Ok(language::Submission::Ready(source)) => source,
+                Ok(_) => continue,
+                Err(report) => {
+                    print_error(
+                        &diagnostics("<repl>", &line, &[report], options.color),
+                        options.color,
+                    );
+                    continue;
                 }
-            } else {
-                line
             };
             SourceUnit::repl(&source).and_then(|input| repl_submit(input, &mut state, options))
         };
@@ -375,14 +178,9 @@ fn repl_inner(options: &Args) -> CliResult {
 }
 
 fn finish_repl(state: &mut ReplState, stop: bool, color: Color) -> CliResult {
-    let joined = if state.active.is_some() {
-        state.join(stop, color)
-    } else {
-        Ok(())
-    };
-    let structured = state.structured.finish(stop, color);
-    joined.and(structured)
+    state.structured.finish(stop, color)
 }
+
 fn is_repl_command(input: &str) -> bool {
     let (command, argument) = input.split_once(char::is_whitespace).unwrap_or((input, ""));
     if ["->", "=>", ":="]
@@ -437,6 +235,7 @@ fn repl_command_inner(
             | "jobs"
             | "wait"
             | "stop"
+            | "kill"
             | "reset"
             | "pwd"
             | "bindings"
@@ -450,11 +249,11 @@ fn repl_command_inner(
             .help(format!("Usage: {command}"))
             .into());
     }
-    if (state.active.is_some() || state.structured.active())
-        && matches!(name, "cd" | "fmt" | "bash" | "pwsh" | "syntax")
+    if (state.structured.active())
+        && matches!(name, "cd" | "fmt" | "bash" | "pwsh" | "syntax" | "reset")
     {
         return Err(format!(
-            "{command} changes shared working-directory or filesystem state; use /wait or /stop before this command"
+            "{command} changes shared bindings, working-directory or filesystem state; use /wait or /stop before this command"
         ).into());
     }
     match name {
@@ -469,20 +268,14 @@ fn repl_command_inner(
             Ok(())
         }
         "bash" | "pwsh" => run_shell(name, raw_argument, editor.interactive(), options.color),
-        "jobs" => match &state.active {
-            Some(job) => print_status(&format!("job {}: running", job.id), options.color),
-            None => state.structured.jobs(options.color),
-        },
+        "jobs" => state.structured.jobs(options.color),
         "wait" => state.join(false, options.color),
         "stop" => state.join(true, options.color),
+        "kill" => state.structured.force_stop(options.color),
         "help" | "?" => print_help(REPL_HELP, options.color),
-        "limits" => print_limits(&options.limits, options.color),
+        "limits" => print_limits(&options.limits, options.spool_limit, options.color),
         "bindings" => {
-            let bindings = if state.syntax == Version::Structured {
-                state.structured.compiler.bindings()
-            } else {
-                state.compiler.bindings()
-            };
+            let bindings = state.structured.compiler.bindings();
             let text = if bindings.is_empty() {
                 "# no user bindings; try: root := $pwd::pwd\n".to_owned()
             } else {
@@ -491,9 +284,7 @@ fn repl_command_inner(
             print_text(&msync::highlight::highlight(&text, options.color.stdout()))
         }
         "reset" => {
-            state.compiler = Compiler::new();
             state.structured.compiler.reset();
-            state.legacy_dirty = false;
             print_status(
                 "bindings cleared: ready for new declarations",
                 options.color,
@@ -533,16 +324,6 @@ fn repl_command_inner(
                 let version = argument
                     .parse::<Version>()
                     .map_err(|help| Issue::new("unsupported syntax version").help(help))?;
-                if version == Version::Structured && state.legacy_dirty {
-                    state
-                        .structured
-                        .compiler
-                        .try_merge_legacy(&state.compiler)
-                        .map_err(|report| diagnostics("<repl>", "", &[report], options.color))?;
-                    state.legacy_dirty = false;
-                } else if version == Version::Legacy && !state.legacy_dirty {
-                    state.compiler = state.structured.compiler.legacy().clone();
-                }
                 state.syntax = version;
             }
             print_status(&format!("syntax: {}", state.syntax), options.color)
@@ -551,7 +332,17 @@ fn repl_command_inner(
             if argument.is_empty() || argument == "-" {
                 return Err(format!("usage: {command} FILE (not stdin)").into());
             }
-            let source = read_source(argument)?;
+            let input = read_input(argument)?;
+            if msync::object::is_object(&input) {
+                return object_command(
+                    command.trim_start_matches(['/', ':']),
+                    argument,
+                    &input,
+                    state,
+                    options,
+                );
+            }
+            let source = source_text(argument, input)?;
             match command.trim_start_matches(['/', ':']) {
                 "fmt" => {
                     let mut formatting = options.clone();
@@ -563,20 +354,12 @@ fn repl_command_inner(
                     format_file(argument, &source, &formatting)
                 }
                 "load" => repl_submit(SourceUnit::file(&source, argument)?, state, options),
-                mode if language::select_version(&source, None, state.syntax).map_err(
-                    |reports| diagnostics(argument, &source, &reports, options.color),
-                )? == Version::Structured =>
-                {
-                    let mut compiler = state.structured.compiler.clone();
-                    if state.legacy_dirty {
-                        compiler
-                            .try_merge_legacy(&state.compiler)
-                            .map_err(|report| {
-                                diagnostics(argument, &source, &[report], options.color)
-                            })?;
-                    }
+                mode => {
+                    language::select_version(&source, None, state.syntax).map_err(|reports| {
+                        diagnostics(argument, &source, &reports, options.color)
+                    })?;
                     let input = SourceUnit::file(&source, argument)?;
-                    let saved = std::mem::replace(&mut state.structured.compiler, compiler);
+                    let saved = state.structured.compiler.clone();
                     let result =
                         state
                             .structured
@@ -584,14 +367,6 @@ fn repl_command_inner(
                     state.structured.compiler = saved;
                     result
                 }
-                mode => submit(
-                    SourceUnit::file(&source, argument)?,
-                    &mut state.compiler.clone(),
-                    if mode == "plan" { "compile" } else { "check" },
-                    state.dry_run,
-                    options.color,
-                    &options.limits,
-                ),
             }
         }
         _ => {
@@ -604,6 +379,37 @@ fn repl_command_inner(
             Err(issue.help("Use /help or /? to see commands. Enter DSL paths with an explicit -> transfer operator.").into())
         }
     }
+}
+
+fn object_command(
+    command: &str,
+    name: &str,
+    bytes: &[u8],
+    state: &mut ReplState,
+    options: &Args,
+) -> CliResult {
+    if command == "fmt" {
+        return Err(Issue::new("compiled objects are not source scripts")
+            .stage(presentation::Stage::Load)
+            .field("object", name)
+            .help("Format the original .msync source, then compile a new object.")
+            .into());
+    }
+    let input = ObjectUnit::file(bytes, name)?;
+    let previous = (command != "load").then(|| state.structured.compiler.clone());
+    let mut loading = options.clone();
+    loading.syntax = None;
+    let outcome = state.structured.submit_object(
+        input,
+        if command == "load" { "run" } else { command },
+        state.dry_run,
+        &loading,
+        command == "load",
+    );
+    if let Some(previous) = previous {
+        state.structured.compiler = previous;
+    }
+    outcome
 }
 
 fn run_shell(name: &str, argument: &str, interactive: bool, color: Color) -> CliResult {

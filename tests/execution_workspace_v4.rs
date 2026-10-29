@@ -7,8 +7,12 @@ use std::time::{Duration, UNIX_EPOCH};
 use msync::compiler::CompileContext;
 use msync::compiler::structured::Session;
 use msync::execution::{self, Options, RuntimeSession};
+use msync::filesystem::{InvocationRoot, SnapshotStore};
 use msync::pipeline;
-use msync::transaction::filesystem::{InvocationRoot, SnapshotStore};
+
+#[allow(dead_code)]
+#[path = "support/statement_storage.rs"]
+mod statement_storage;
 
 fn workspace() -> tempfile::TempDir {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
@@ -57,22 +61,41 @@ async fn run_live(runtime: &mut RuntimeSession, compiler: &mut Session, cwd: &Pa
     .unwrap();
 }
 
-fn private_files(path: &Path) -> (usize, u64) {
-    let mut files = 0;
-    let mut bytes = 0;
+fn assert_scratch_contents(path: &Path, users: &[&str], runtime: Option<&RuntimeSession>) {
+    let private = runtime.and_then(|runtime| runtime.private_root().unwrap());
+    let stage_record = runtime.and_then(|runtime| runtime.private_stage_record().unwrap());
+    let mut expected = users
+        .iter()
+        .map(|name| std::ffi::OsString::from(*name))
+        .collect::<std::collections::BTreeSet<_>>();
     for entry in fs::read_dir(path).unwrap() {
         let entry = entry.unwrap();
-        let metadata = entry.metadata().unwrap();
-        if metadata.is_dir() {
-            let (nested_files, nested_bytes) = private_files(&entry.path());
-            files += nested_files;
-            bytes += nested_bytes;
-        } else {
-            files += 1;
-            bytes += metadata.len();
+        if expected.remove(&entry.file_name()) {
+            continue;
         }
+        if entry.file_name() == ".msync-recovery-v1"
+            || entry.file_name() == ".msync-remote-recovery-v1"
+        {
+            statement_storage::assert_registry_metadata_with_owner(&entry.path(), stage_record);
+            continue;
+        }
+        let private = private.unwrap_or_else(|| {
+            panic!(
+                "unexpected retained scratch entry: {}",
+                entry.path().display()
+            )
+        });
+        assert!(
+            same_file::is_same_file(entry.path(), private).unwrap(),
+            "scratch entry is not the current verified runtime owner: {}",
+            entry.path().display()
+        );
+        statement_storage::assert_private_root_metadata(&entry.path());
     }
-    (files, bytes)
+    assert!(
+        expected.is_empty(),
+        "missing user scratch entries: {expected:?}"
+    );
 }
 
 #[tokio::test]
@@ -87,7 +110,7 @@ async fn ordinary_missing_file_retires_payload_without_capturing_unrelated_child
     let mut compiler = Session::new();
     run_live(&mut runtime, &mut compiler, &cwd, "input -> output\n").await;
     assert_eq!(fs::read(cwd.join("output")).unwrap(), payload);
-    assert_eq!(private_files(&cwd.join(".temp")), (0, 0));
+    assert_scratch_contents(&cwd.join(".temp"), &[], Some(&runtime));
     assert_eq!(
         fs::read(cwd.join("unrelated")).unwrap(),
         vec![b'X'; 1024 * 1024]
@@ -110,31 +133,6 @@ async fn ordinary_missing_file_retires_payload_without_capturing_unrelated_child
         1024 * 1024
     );
     runtime.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn sparse_named_origin_restores_parent_time_and_unknown_siblings() {
-    let workspace = workspace();
-    let cwd = workspace.path().join("work");
-    fs::create_dir(&cwd).unwrap();
-    fs::write(cwd.join("kept"), b"unobserved").unwrap();
-    set_modified(&cwd);
-    let before = fs::metadata(&cwd).unwrap().modified().unwrap();
-    let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
-    let mut compiler = Session::new();
-    run_live(
-        &mut runtime,
-        &mut compiler,
-        &cwd,
-        "transaction A:\n    \"new\" -> result\n    commit\n",
-    )
-    .await;
-    run_live(&mut runtime, &mut compiler, &cwd, "rollback A\n").await;
-    assert!(!cwd.join("result").exists());
-    assert_eq!(fs::read(cwd.join("kept")).unwrap(), b"unobserved");
-    assert_eq!(fs::metadata(&cwd).unwrap().modified().unwrap(), before);
-    runtime.shutdown().await.unwrap();
-    assert_eq!(fs::metadata(&cwd).unwrap().modified().unwrap(), before);
 }
 
 #[tokio::test]
@@ -219,7 +217,7 @@ async fn sparse_sibling_parents_promote_before_enrolling_their_common_parent() {
     let mut compiler = Session::new();
     run_live(&mut runtime, &mut compiler, &first, "seed -> copy\n").await;
     run_live(&mut runtime, &mut compiler, &second, "seed -> copy\n").await;
-    assert_eq!(private_files(&scratch), (0, 0));
+    assert_scratch_contents(&scratch, &[], Some(&runtime));
     run_live(
         &mut runtime,
         &mut compiler,
@@ -365,35 +363,9 @@ async fn sparse_root_upgrade_preserves_an_active_immutable_reader_of_a_known_fil
 }
 
 #[test]
-#[ignore = "native child fixture, launched only by the sparse-to-complete view test"]
+#[ignore = "child fixture launched by real-program workspace journeys"]
 fn sparse_view_child_fixture() {
-    use std::io::Read;
     assert_eq!(fs::read("seed").unwrap(), b"seed");
-    let private_check = std::env::args().any(|argument| argument == "private-check");
-    if private_check {
-        let mut path = String::new();
-        std::io::stdin().read_to_string(&mut path).unwrap();
-        let private = Path::new(path.trim_end_matches(['\r', '\n']));
-        for result in [
-            fs::read(private.join("backing-probe")).map(|_| ()),
-            fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(private.join("child-private-write"))
-                .map(|_| ()),
-        ] {
-            let error = result.expect_err("the current invocation backing was accessible");
-            assert!(
-                matches!(
-                    error.kind(),
-                    std::io::ErrorKind::PermissionDenied
-                        | std::io::ErrorKind::NotFound
-                        | std::io::ErrorKind::ReadOnlyFilesystem
-                ),
-                "{error}"
-            );
-        }
-    }
     for root in
         std::env::args().filter_map(|argument| argument.strip_prefix("root:").map(str::to_owned))
     {
@@ -404,24 +376,20 @@ fn sparse_view_child_fixture() {
             fs::read(root.join("extra")).unwrap(),
             b"previously unobserved"
         );
-        if private_check {
-            assert_eq!(
-                fs::read(root.join(".temp/user-visible")).unwrap(),
-                b"user data stays visible"
-            );
-        }
+        assert_eq!(
+            fs::read(root.join(".temp/user-visible")).unwrap(),
+            b"user data stays visible"
+        );
     }
-    fs::write("native-file", b"private native write").unwrap();
+    fs::write("native-file", b"external program write").unwrap();
 }
 
 #[tokio::test]
-#[ignore = "requires a provisioned native process-resource backend"]
-async fn sparse_file_coverage_upgrades_to_a_complete_native_program_view() {
+async fn program_observes_prior_file_publication_in_its_real_working_directory() {
     let workspace = workspace();
     let cwd = workspace.path().join("work");
     fs::create_dir(&cwd).unwrap();
     let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
-    runtime.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();
     let mut compiler = Session::new();
     run_live(&mut runtime, &mut compiler, &cwd, "\"seed\" -> seed\n").await;
     let executable = std::env::current_exe()
@@ -434,15 +402,14 @@ async fn sparse_file_coverage_upgrades_to_a_complete_native_program_view() {
     assert_eq!(fs::read(cwd.join("seed")).unwrap(), b"seed");
     assert_eq!(
         fs::read(cwd.join("native-file")).unwrap(),
-        b"private native write"
+        b"external program write"
     );
     assert_eq!(fs::read(cwd.join("code")).unwrap(), b"0\n");
     runtime.shutdown().await.unwrap();
 }
 
 #[tokio::test]
-#[ignore = "requires a provisioned native process-resource backend"]
-async fn sparse_parents_in_other_directories_upgrade_before_a_new_native_view() {
+async fn program_observes_prior_publications_and_user_scratch_in_other_directories() {
     let workspace = workspace();
     let a1 = workspace.path().join("a1");
     let a2 = workspace.path().join("a2");
@@ -456,7 +423,6 @@ async fn sparse_parents_in_other_directories_upgrade_before_a_new_native_view() 
     }
     fs::write(b.join("seed"), b"seed").unwrap();
     let mut runtime = RuntimeSession::new(&Options::new(a1.join(".temp"))).unwrap();
-    runtime.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();
     let mut compiler = Session::new();
     let quoted = |path: &Path| {
         path.to_string_lossy()
@@ -474,11 +440,7 @@ async fn sparse_parents_in_other_directories_upgrade_before_a_new_native_view() 
         ),
     )
     .await;
-    assert_eq!(
-        private_files(&a1.join(".temp")),
-        (0, 0),
-        "ordinary statements must not retain payloads or prime a managed view"
-    );
+    assert_scratch_contents(&a1.join(".temp"), &[], Some(&runtime));
     for directory in [&a1, &a2] {
         fs::create_dir_all(directory.join(".temp")).unwrap();
         fs::write(
@@ -497,37 +459,16 @@ async fn sparse_parents_in_other_directories_upgrade_before_a_new_native_view() 
         source_file: None,
     };
     let launch = pipeline::compile(&mut compiler,
-        &format!("child => $local::\"{executable}\"(\"--exact\", \"sparse_view_child_fixture\", \"--ignored\", \"--nocapture\", \"--skip\", \"root:{}\", \"--skip\", \"root:{}\", \"--skip\", \"private-check\")\n", quoted(&a1), quoted(&a2)), &context, &[]).unwrap();
-    runtime.submit(&launch.program).await.unwrap();
-    let private = fs::read_dir(a1.join(".temp"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .find(|path| {
-            path.is_dir()
-                && path
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .starts_with("execute-")
-        })
-        .expect("the active native owner has an invocation outside its managed root");
-    fs::write(private.join("backing-probe"), b"private runtime payload").unwrap();
+        &format!("child => $local::\"{executable}\"(\"--exact\", \"sparse_view_child_fixture\", \"--ignored\", \"--nocapture\", \"--skip\", \"root:{}\", \"--skip\", \"root:{}\")\n", quoted(&a1), quoted(&a2)), &context, &[]).unwrap();
+    runtime.execute(&launch.program).await.unwrap();
     let feed = pipeline::compile(
         &mut compiler,
-        &format!(
-            "\"{}\\n\" -> child::stdin\nchild::stderr -> child-errors\nchild::exit_code -> code\n",
-            quoted(&private)
-        ),
+        "child::stderr -> child-errors\nchild::exit_code -> code\n",
         &context,
         &runtime.live_processes(),
     )
     .unwrap();
     runtime.execute(&feed.program).await.unwrap();
-    assert_eq!(
-        fs::read(private.join("backing-probe")).unwrap(),
-        b"private runtime payload"
-    );
-    assert!(!private.join("child-private-write").exists());
     assert_eq!(
         fs::read(a1.join(".temp/user-visible")).unwrap(),
         b"user data stays visible"
@@ -547,7 +488,7 @@ async fn sparse_parents_in_other_directories_upgrade_before_a_new_native_view() 
     );
     assert_eq!(
         fs::read(b.join("native-file")).unwrap(),
-        b"private native write"
+        b"external program write"
     );
     runtime.shutdown().await.unwrap();
 }
@@ -617,7 +558,7 @@ async fn physical_parent_namespace_preserves_an_unobserved_fifo_above_sparse_chi
     let mut compiler = Session::new();
     run_live(&mut runtime, &mut compiler, &first, "seed -> copy\n").await;
     run_live(&mut runtime, &mut compiler, &second, "seed -> copy\n").await;
-    assert_eq!(private_files(&scratch), (0, 0));
+    assert_scratch_contents(&scratch, &[], Some(&runtime));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let context = CompileContext {
@@ -686,7 +627,7 @@ async fn finite_missing_file_preserves_unobserved_fifo_and_socket_siblings() {
     let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
     run_live(&mut runtime, &mut Session::new(), &cwd, "input -> output\n").await;
     assert_eq!(fs::read(cwd.join("output")).unwrap(), b"finite");
-    assert_eq!(private_files(&cwd.join(".temp")), (0, 0));
+    assert_scratch_contents(&cwd.join(".temp"), &[], Some(&runtime));
     let pipe_after = fs::symlink_metadata(cwd.join("fifo")).unwrap();
     let socket_after = fs::symlink_metadata(cwd.join("socket")).unwrap();
     assert!(pipe_after.file_type().is_fifo() && socket_after.file_type().is_socket());
@@ -871,32 +812,7 @@ fn copying_the_cwd_with_default_scratch_preserves_user_temp_without_recursive_ru
             .count(),
         1
     );
-    assert_eq!(fs::read_dir(cwd.join(".temp")).unwrap().count(), 1);
-}
-
-#[test]
-fn origin_undo_restores_the_containing_namespace_with_default_internal_scratch() {
-    for existing_scratch in [false, true] {
-        let workspace = workspace();
-        let cwd = workspace.path().join("work");
-        fs::create_dir(&cwd).unwrap();
-        if existing_scratch {
-            fs::create_dir(cwd.join(".temp")).unwrap();
-        }
-        fs::write(cwd.join("kept"), b"unchanged").unwrap();
-        set_modified(&cwd);
-        let before = fs::metadata(&cwd).unwrap().modified().unwrap();
-        let report = run(
-            &cwd,
-            "transaction A:\n    \"new\" -> result\n    commit\n    \"later\" -> other\nrollback A\n",
-        );
-        assert!(report.cleanup.is_empty(), "{:?}", report.cleanup);
-        assert!(!cwd.join("result").exists());
-        assert!(!cwd.join("other").exists());
-        assert_eq!(fs::read(cwd.join("kept")).unwrap(), b"unchanged");
-        assert_eq!(fs::metadata(&cwd).unwrap().modified().unwrap(), before);
-        assert_eq!(fs::read_dir(cwd.join(".temp")).unwrap().count(), 0);
-    }
+    assert_scratch_contents(&cwd.join(".temp"), &["user-sentinel"], None);
 }
 
 #[test]
@@ -916,7 +832,7 @@ fn cleanup_preserves_committed_user_entries_and_namespace_time_in_configured_scr
         b"existing user data"
     );
     assert!(fs::metadata(&scratch).unwrap().modified().unwrap() > before);
-    assert_eq!(fs::read_dir(&scratch).unwrap().count(), 2);
+    assert_scratch_contents(&scratch, &["result", "sentinel"], None);
 }
 
 #[test]
@@ -927,29 +843,11 @@ fn fresh_configured_scratch_accepts_an_ordinary_user_target() {
     let report = run(&cwd, "\"committed\" -> $pwd::pwd/.temp/user-file\n");
     assert!(report.cleanup.is_empty(), "{:?}", report.cleanup);
     assert_eq!(fs::read(cwd.join(".temp/user-file")).unwrap(), b"committed");
-    assert_eq!(fs::read_dir(cwd.join(".temp")).unwrap().count(), 1);
-}
-
-#[test]
-fn fresh_scratch_user_namespace_can_be_copied_and_rolled_back() {
-    let workspace = workspace();
-    let cwd = workspace.path().join("work");
-    fs::create_dir(&cwd).unwrap();
-    set_modified(&cwd);
-    let before = fs::metadata(&cwd).unwrap().modified().unwrap();
-    let report = run(
-        &cwd,
-        "transaction A:\n    \"committed\" -> $pwd::pwd/.temp/user-file\n    commit\n    $pwd::pwd/.temp -> $pwd::pwd/copied/.\nrollback A\n",
-    );
-    assert!(report.cleanup.is_empty(), "{:?}", report.cleanup);
-    assert!(!cwd.join(".temp/user-file").exists());
-    assert!(!cwd.join("copied").exists());
-    assert_eq!(fs::read_dir(cwd.join(".temp")).unwrap().count(), 0);
-    assert_eq!(fs::metadata(&cwd).unwrap().modified().unwrap(), before);
+    assert_scratch_contents(&cwd.join(".temp"), &["user-file"], None);
 }
 
 #[tokio::test]
-async fn finite_runtime_accepts_fresh_scratch_user_entries_then_named_undo() {
+async fn finite_runtime_accepts_and_copies_fresh_scratch_user_entries() {
     for existing_scratch in [false, true] {
         let workspace = workspace();
         let cwd = workspace.path().join("work");
@@ -965,13 +863,12 @@ async fn finite_runtime_accepts_fresh_scratch_user_entries_then_named_undo() {
         let mut compiler = Session::new();
         let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
         for script in [
-            "transaction A:\n    \"committed\" -> $pwd::pwd/.temp/user-file\n",
+            "\"committed\" -> $pwd::pwd/.temp/user-file\n",
             "$pwd::pwd/.temp -> $pwd::pwd/../copied/.\n",
-            "rollback A\n",
         ] {
             let compilation = pipeline::compile(&mut compiler, script, &context, &[]).unwrap();
             runtime.execute(&compilation.program).await.unwrap();
-            if script.starts_with("transaction") {
+            if script.starts_with('"') {
                 assert_eq!(fs::read(cwd.join(".temp/user-file")).unwrap(), b"committed");
             }
             if script.starts_with("$pwd") {
@@ -988,11 +885,13 @@ async fn finite_runtime_accepts_fresh_scratch_user_entries_then_named_undo() {
             }
         }
         runtime.shutdown().await.unwrap();
-        assert!(!cwd.join(".temp/user-file").exists());
-        assert_eq!(
-            fs::read_dir(cwd.join(".temp")).unwrap().count(),
-            usize::from(existing_scratch)
-        );
+        assert_eq!(fs::read(cwd.join(".temp/user-file")).unwrap(), b"committed");
+        let expected = if existing_scratch {
+            vec!["sentinel", "user-file"]
+        } else {
+            vec!["user-file"]
+        };
+        assert_scratch_contents(&cwd.join(".temp"), &expected, None);
         assert_eq!(
             fs::read(workspace.path().join("copied/user-file")).unwrap(),
             b"committed"
@@ -1007,14 +906,14 @@ async fn finite_runtime_accepts_fresh_scratch_user_entries_then_named_undo() {
 }
 
 #[test]
-#[ignore = "native child fixture, launched only by the mediated process test"]
+#[ignore = "child fixture launched by the real-program workspace journey"]
 fn scratch_namespace_child_fixture() {
     fs::create_dir_all(".temp").unwrap();
     fs::write(".temp/user-file", b"native child bytes").unwrap();
 }
 
 #[test]
-#[ignore = "native child fixture, launched only by the mediated process test"]
+#[ignore = "child fixture launched by the real-program workspace journey"]
 fn deferred_ancestor_child_fixture() {
     fs::remove_file("node").unwrap();
     fs::create_dir("node").unwrap();
@@ -1023,8 +922,7 @@ fn deferred_ancestor_child_fixture() {
 }
 
 #[tokio::test]
-#[ignore = "requires a provisioned native process-resource backend"]
-async fn native_import_gates_future_source_and_destination_traversal() {
+async fn program_completion_gates_future_source_and_destination_traversal() {
     let workspace = workspace();
     let cwd = workspace.path().join("work");
     fs::create_dir(&cwd).unwrap();
@@ -1035,7 +933,7 @@ async fn native_import_gates_future_source_and_destination_traversal() {
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
     let script = format!(
-        "transaction A:\n    child => $local::\"{executable}\"(\"--exact\", \"deferred_ancestor_child_fixture\", \"--ignored\", \"--nocapture\")\n    $pwd::pwd/node/../node/x -> observed\n    \"literal bytes\" -> $pwd::pwd/node/../node/literal\n    $pwd::pwd/node/../node/literal -> observed-literal\n    child::stdout -> $pwd::pwd/node/../node/stdout\n"
+        "child => $local::\"{executable}\"(\"--exact\", \"deferred_ancestor_child_fixture\", \"--ignored\", \"--nocapture\")\n$pwd::pwd/node/../node/x -> observed\n\"literal bytes\" -> $pwd::pwd/node/../node/literal\n$pwd::pwd/node/../node/literal -> observed-literal\nchild::stdout -> $pwd::pwd/node/../node/stdout\n"
     );
     let context = CompileContext {
         pwd: cwd.clone(),
@@ -1043,7 +941,6 @@ async fn native_import_gates_future_source_and_destination_traversal() {
     };
     let mut compiler = Session::new();
     let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
-    runtime.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();
     let compilation = pipeline::compile(&mut compiler, &script, &context, &[]).unwrap();
     tokio::time::timeout(
         std::time::Duration::from_secs(30),
@@ -1066,21 +963,18 @@ async fn native_import_gates_future_source_and_destination_traversal() {
             .unwrap()
             .contains("producer stdout")
     );
-    let rollback = pipeline::compile(&mut compiler, "rollback A\n", &context, &[]).unwrap();
-    runtime.execute(&rollback.program).await.unwrap();
     runtime.shutdown().await.unwrap();
+    assert!(cwd.join("node").is_dir());
+    assert_eq!(fs::read(cwd.join("observed")).unwrap(), b"producer bytes");
     assert_eq!(
-        fs::read(cwd.join("node")).unwrap(),
-        b"original ordinary file"
+        fs::read(cwd.join("observed-literal")).unwrap(),
+        b"literal bytes"
     );
-    assert!(!cwd.join("observed").exists());
-    assert!(!cwd.join("observed-literal").exists());
-    assert_eq!(fs::read_dir(cwd.join(".temp")).unwrap().count(), 0);
+    assert_scratch_contents(&cwd.join(".temp"), &[], None);
 }
 
 #[tokio::test]
-#[ignore = "requires a provisioned native process-resource backend"]
-async fn native_program_creates_user_scratch_then_copy_and_origin_undo() {
+async fn program_creates_user_scratch_then_following_block_copies_it() {
     for existing_scratch in [false, true] {
         let workspace = workspace();
         let cwd = workspace.path().join("work");
@@ -1095,7 +989,7 @@ async fn native_program_creates_user_scratch_then_copy_and_origin_undo() {
             .replace('\\', "\\\\")
             .replace('"', "\\\"");
         let launch = format!(
-            "transaction A:\n    child => $local::\"{executable}\"(\"--exact\", \"scratch_namespace_child_fixture\", \"--ignored\", \"--nocapture\")\n"
+            "child => $local::\"{executable}\"(\"--exact\", \"scratch_namespace_child_fixture\", \"--ignored\", \"--nocapture\")\n"
         );
         let context = CompileContext {
             pwd: cwd.clone(),
@@ -1103,11 +997,9 @@ async fn native_program_creates_user_scratch_then_copy_and_origin_undo() {
         };
         let mut compiler = Session::new();
         let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
-        runtime.set_worker(env!("CARGO_BIN_EXE_msync")).unwrap();
         for script in [
             launch.as_str(),
             "$pwd::pwd/.temp -> $pwd::pwd/../copied/.\n",
-            "rollback A\n",
         ] {
             let compilation = pipeline::compile(&mut compiler, script, &context, &[]).unwrap();
             tokio::time::timeout(
@@ -1119,15 +1011,20 @@ async fn native_program_creates_user_scratch_then_copy_and_origin_undo() {
             .unwrap();
         }
         runtime.shutdown().await.unwrap();
-        assert!(!cwd.join(".temp/user-file").exists());
+        assert_eq!(
+            fs::read(cwd.join(".temp/user-file")).unwrap(),
+            b"native child bytes"
+        );
         assert_eq!(
             fs::read(workspace.path().join("copied/user-file")).unwrap(),
             b"native child bytes"
         );
-        assert_eq!(
-            fs::read_dir(cwd.join(".temp")).unwrap().count(),
-            usize::from(existing_scratch)
-        );
+        let expected = if existing_scratch {
+            vec!["sentinel", "user-file"]
+        } else {
+            vec!["user-file"]
+        };
+        assert_scratch_contents(&cwd.join(".temp"), &expected, None);
         assert_eq!(
             fs::read_dir(workspace.path().join("copied"))
                 .unwrap()

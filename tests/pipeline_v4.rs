@@ -40,9 +40,9 @@ fn macro_expansion_and_graph_compilation_need_no_filesystem_or_child() {
 }
 
 #[test]
-fn failed_effect_check_does_not_commit_macros_bindings_or_process_identities() {
+fn failed_port_type_check_does_not_commit_macros_bindings_or_process_identities() {
     let mut session = Session::new();
-    let source = "leaked := no\nmacro leaked_macro(x):\n    x -> out\ntransaction A:\n    child => $path::bash(\"-c\", \"cat\")\n    commit\n    \"data\" -> child::stdin\n";
+    let source = "leaked := no\nmacro leaked_macro(x):\n    x -> out\nasync child => $path::bash(\"-c\", \"cat\")\nchild::stdin -> output\n";
     let errors = pipeline::compile(&mut session, source, &context(), &[]).unwrap_err();
     assert!(!errors.is_empty());
     assert!(session.bindings().is_empty());
@@ -58,7 +58,13 @@ fn failed_effect_check_does_not_commit_macros_bindings_or_process_identities() {
     )
     .unwrap();
     assert!(matches!(
-        next.program.body.instructions[0].kind,
+        next.program
+            .body
+            .instructions
+            .iter()
+            .find(|instruction| matches!(instruction.kind, InstructionKind::Spawn { .. }))
+            .unwrap()
+            .kind,
         InstructionKind::Spawn {
             process: ProcessId(0),
             ..
@@ -86,36 +92,4 @@ fn separate_submissions_retain_macro_environment_but_not_execution_effects() {
         panic!()
     };
     assert_eq!(PathBuf::from(&location.path), context().pwd.join("before"));
-}
-
-#[test]
-fn runtime_premises_are_retained_and_checked_in_the_frontend_certificate() {
-    use msync::hir::effects::Effects;
-    use msync::hir::graph::{PlanningContext, ProcessEffects};
-
-    let source = "first => $path::first()\nsecond => $path::second()\nfirst::stdout -> second::stdin\nsecond::stdout -> output\n";
-    let mut session = Session::new();
-    // This pure frontend test supplies a trusted-adapter premise; it neither
-    // launches these programs nor claims to have created an OS resource view.
-    let mut planning = PlanningContext::default();
-    for id in [ProcessId(0), ProcessId(1)] {
-        planning.process_effects.insert(
-            id,
-            ProcessEffects::mediated(
-                Effects::default(),
-                "test-provider",
-                format!("view-{}", id.0),
-            )
-            .unwrap(),
-        );
-    }
-    let mut compiled =
-        pipeline::compile_with_context(&mut session, source, &context(), &planning).unwrap();
-    compiled.verify().unwrap();
-    assert_eq!(compiled.planning, planning);
-    compiled.planning.process_effects.clear();
-    assert!(
-        compiled.verify().is_err(),
-        "a certificate must not survive removal of its resource-view premise"
-    );
 }

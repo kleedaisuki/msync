@@ -18,82 +18,87 @@ fn write(document: &Document) -> String {
 fn block(output: &mut String, statements: &Block, depth: usize) {
     for statement in statements {
         output.push_str(&"    ".repeat(depth));
-        match &statement.kind {
-            StatementKind::Binding { name, op, value } => {
+        write_statement(output, &statement.kind, depth);
+    }
+}
+
+fn write_statement(output: &mut String, kind: &StatementKind, depth: usize) {
+    match kind {
+        StatementKind::Binding { name, op, value } => {
+            output.push_str(&name.text);
+            output.push_str(match op {
+                BindingOp::Space => " => ",
+                BindingOp::Value => " := ",
+            });
+            expression(output, value);
+        }
+        StatementKind::Transfer {
+            source,
+            destination,
+        } => {
+            expression(output, source);
+            output.push_str(" -> ");
+            expression(output, destination);
+        }
+        StatementKind::Macro {
+            name,
+            parameters,
+            body,
+        } => {
+            output.push_str("macro ");
+            output.push_str(&name.text);
+            output.push('(');
+            for (index, parameter) in parameters.iter().enumerate() {
+                if index != 0 {
+                    output.push_str(", ");
+                }
+                output.push_str(&parameter.text);
+            }
+            output.push_str("):\n");
+            block(output, body, depth + 1);
+            return;
+        }
+        StatementKind::Call(call) => expression(output, call),
+        StatementKind::Global(names) => {
+            output.push_str("global ");
+            for (index, name) in names.iter().enumerate() {
+                if index != 0 {
+                    output.push_str(", ");
+                }
                 output.push_str(&name.text);
-                output.push_str(match op {
-                    BindingOp::Space => " => ",
-                    BindingOp::Value => " := ",
-                });
-                expression(output, value);
-            }
-            StatementKind::Transfer {
-                source,
-                destination,
-            } => {
-                expression(output, source);
-                output.push_str(" -> ");
-                expression(output, destination);
-            }
-            StatementKind::Macro {
-                name,
-                parameters,
-                body,
-            } => {
-                output.push_str("macro ");
-                output.push_str(&name.text);
-                output.push('(');
-                for (index, parameter) in parameters.iter().enumerate() {
-                    if index != 0 {
-                        output.push_str(", ");
-                    }
-                    output.push_str(&parameter.text);
-                }
-                output.push_str("):\n");
-                block(output, body, depth + 1);
-                continue;
-            }
-            StatementKind::Call(call) => expression(output, call),
-            StatementKind::Global(names) => {
-                output.push_str("global ");
-                for (index, name) in names.iter().enumerate() {
-                    if index != 0 {
-                        output.push_str(", ");
-                    }
-                    output.push_str(&name.text);
-                }
-            }
-            StatementKind::Transaction {
-                name,
-                isolation,
-                body,
-            } => {
-                output.push_str("transaction ");
-                output.push_str(&name.text);
-                output.push('(');
-                output.push_str(isolation.as_str());
-                output.push_str("):\n");
-                block(output, body, depth + 1);
-                continue;
-            }
-            StatementKind::Commit => output.push_str("commit"),
-            StatementKind::Rollback(target) => {
-                output.push_str("rollback");
-                if let Some(target) = target {
-                    output.push(' ');
-                    output.push_str(&target.text);
-                }
-            }
-            StatementKind::Comment(comment) => {
-                output.push('#');
-                if !comment.is_empty() {
-                    output.push(' ');
-                    output.push_str(comment);
-                }
             }
         }
-        output.push('\n');
+        StatementKind::Scheduled {
+            asynchronous,
+            awaited,
+            statement,
+        } => {
+            if *asynchronous {
+                output.push_str("async ");
+            }
+            if *awaited {
+                output.push_str("await ");
+            }
+            write_statement(output, &statement.kind, depth);
+            return;
+        }
+        StatementKind::Async => output.push_str("async"),
+        StatementKind::Await(target) => {
+            output.push_str("await");
+            if let Some(target) = target {
+                output.push(' ');
+                output.push_str(&target.text);
+            }
+        }
+        StatementKind::Comment(comment) => {
+            output.push('#');
+            if !comment.is_empty() {
+                output.push(' ');
+                output.push_str(comment);
+            }
+        }
     }
+    output.push('\n');
 }
 
 fn expression(output: &mut String, value: &Expr) {

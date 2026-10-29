@@ -124,7 +124,10 @@ fn describe(snapshot: &Snapshot) -> String {
         text.push_str(&presentation::escape(destination));
     }
     if event.files != 0 || event.bytes != 0 {
-        text.push_str(&format!(" ({} files, {} bytes)", event.files, event.bytes));
+        text.push_str(&format!(
+            " (input: {} files, {} bytes)",
+            event.files, event.bytes
+        ));
     }
     // Keep a progress redraw on one ordinary terminal line, including CJK paths.
     truncate(&text, 76)

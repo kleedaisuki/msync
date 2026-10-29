@@ -856,3 +856,238 @@ the standalone harness executable is
 The production binary hashes remain those recorded in the initial worker
 experiment. Removing disposable raw files does not erase this decision, setup
 or measurements.
+
+## User macro workload follow-up: phase boundaries dominate (2026-10-28)
+
+The user's real four-assignment macro exposed a workload missing from the earlier
+finite-file and literal acceptance: two small directory trees, one read through
+WSL, ordinary statements without a named transaction, and both compile and run
+latency. The earlier component speedups do not establish that this journey is
+fast. Its reproduced baseline is slow despite a sub-millisecond frontend.
+
+The maintained Windows runner is `benches/macro_latency_v4.ps1`. It never reads
+the user's `.codex`: a repository-owned `.temp` fixture contains `config.toml`
+and 13 nested agent files (63,041 bytes), and an exclusively allocated WSL
+`/tmp/msync-macro-latency.*` source contains the same tree plus one byte. The
+same two-operation macro is called once with each source and the distinct
+`local`/`wsl` destinations. Thus the mixed run reproduces the user's exact
+**4 assignments, 28 files, 126,083 bytes**. The original `~/.codex` binding is
+replaced by explicit owned roots; no personal configuration is accessed.
+Existing destination config files and a stale agent child are seeded before
+every command. Every successful run checks all exact file bytes, exactly 14
+files per destination and removal of the stale directory child. Setup, cleanup
+and validation are outside the complete child-process timer. Tracing is enabled
+for both reference and candidate, with trace files outside the measured cwd.
+
+The frozen Windows release is `4d54eff` / `msync 0.4.0`, SHA-256
+`190b8c5cba8e563a9cf0e352b77df851795685a96f3a13c9b097c4cd16c4194d`, retained at
+`target/performance-v4/baselines/msync-user-macro-4d54eff-windows.exe`.
+The host source and destinations are on Windows NTFS `D:`; the WSL source is
+genuinely native ext4 (`stat -f` magic `ef53`, `findmnt` `/dev/sdd ext4 /`),
+not a `/mnt/d` source mislabeled as ext4. WSL was already started before timing.
+The complete mixed path deliberately crosses ext4 to NTFS because that is the
+reported Windows-to-WSL workload. No SSH configuration or global mount policy
+is modified. The owned WSL source is removed after measurement.
+
+Three diagnostic samples, warm WSL/source/loader caches, default limits and the
+normal release profile gave these complete command medians (not tail estimates):
+
+| Command | Both sources local NTFS, ms | Second source native WSL ext4, ms |
+| --- | ---: | ---: |
+| `check` | 20.14 | 25.62 |
+| `compile` | 30.65 | 414.65 |
+| `plan` | 26.04 | 299.94 |
+| `run` | 473.74 | 3420.66 |
+
+All mixed runs printed four checkpoints even though the source has no explicit
+transaction. The baseline uses implicit Manager transaction publication for
+each top-level assignment. That is an internal implementation policy, not four
+user-requested checkpoint statements. Their `transaction.publish` spans total
+129--166 ms in these three mixed runs; checkpoints alone do **not** explain the
+3.4-second command. Each mixed execution also launches **16 WSL transport
+processes**, including **10 metadata batches**, and transport spans total
+2.824--3.053 seconds. The compile command launches two WSL processes through
+live preparation, while its actual frontend compile span is only 0.635--1.051 ms.
+Nested span totals overlap: transport time, metadata time, copy time and prepare
+time must not be added as if they were disjoint phases.
+
+A separate inexpensive control added 1,000 unrelated cwd files / 8,192,000 bytes.
+Its local run took 475.62 ms, close to the 473.74-ms small-cwd median. This does
+not establish unrelated-cwd snapshot amplification on this exact path. Enrollment,
+capture, staging and publication still need more granular tracing before their
+remaining local cost can be attributed precisely. The causal evidence currently
+supports correcting the compile/runtime boundary, eliminating repeated remote
+probes and using the lightweight ordinary-assignment path rather than blaming
+the graph algorithm or introducing another general IO engine.
+
+A bounded transport-only probe further separated the small-file crossing cost.
+For 13 files / 61,100 bytes, four alternating rounds measured native WSL
+`cp -a` into the NTFS mount at 250--460 ms, versus Windows file copying from
+`\\wsl.localhost\Ubuntu-24.04\tmp\<owned-source>` at 57--122 ms. This is not a
+production fast-path acceptance: it checked file counts and byte lengths, not
+the full alias, symlink, permission, metadata and cancellation contracts. The
+baseline's actual agents import took about 1.18 seconds because `REMOTE_COPY`
+also runs per-leaf path checks, temporary-file creation, stat, copy and rename
+before the upper layer captures and publishes another version. That public-copy
+machinery is excessive for an already private, invisible import target. A
+guarded bulk private acquisition is a concrete runtime follow-up; it must not
+discard the final statement's failure-atomic publication. Microsoft's
+[cross-filesystem guidance](https://learn.microsoft.com/en-us/windows/wsl/filesystems#file-storage-and-performance-across-file-systems)
+also distinguishes Linux-native storage from mounted Windows storage; it does
+not establish which transfer implementation wins this measured mixed workflow.
+Disposable probe details are `.temp/macro-latency-v4/raw-copy.ps1` and
+`raw-copy-results.txt`.
+
+Reproduce the diagnostic baseline without a build:
+
+```powershell
+./benches/macro_latency_v4.ps1 -Executable target/performance-v4/baselines/msync-user-macro-4d54eff-windows.exe -Samples 3
+./benches/macro_latency_v4.ps1 -Executable target/performance-v4/baselines/msync-user-macro-4d54eff-windows.exe -Samples 1 -Endpoint local -UnrelatedFiles 1000 -Commands run
+```
+
+For a fixed-source comparison, supply `-Candidate PATH` to alternate before/after
+order within each sample and use identical fixtures and byte checks. Disposable
+baseline output is `.temp/macro-latency-v4/baseline-three.txt`, with per-command
+phase traces under its reported `results-*` directory. These few samples locate
+the material bottlenecks; final adoption must compare the actual revised path,
+not extrapolate speedups from the existing static frontend or a microbenchmark.
+
+### Guarded private WSL acquisition
+
+The revised `execution/wsl_source.rs` specializes only actual native ext4 sources
+whose complete tree stays on the same device, into an actual native NTFS/ReFS
+destination. Unknown, projected or mixed-device paths deoptimize to the managed
+interpreter's fresh resource checks; they are not relabeled as local resources
+by path spelling. Two WSL invocations replace the legacy private import's
+repeated classification and public per-leaf rename machinery. The first returns
+a NUL-framed manifest including path, basename, device/inode, mode, size, mtime
+and ctime. Rust runs the existing Windows name/device/Unicode-case validation
+before the second invocation performs `cp -a` into the exclusively owned,
+invisible stage. Fresh source manifests must match before and after copying.
+Failed guards do not publish or replay a completed statement.
+
+The implementation deliberately does not kill an in-flight Windows WSL launcher
+on finite-owner cancellation: its exit would not prove that a guest copy stopped.
+The actual finite helper drains normally, with the owner and private invocation
+retained, and cancellation is checked again before capture/publication. A real
+guest `cp` wrapper barrier demonstrated that cancellation cannot return while
+the guest waits at that barrier; after release the actual copy finishes, the
+owner returns typed cancellation and the logical destination keeps its old bytes.
+This is cooperative finite IO, not a claim of instant interruption of arbitrary
+guest filesystem syscalls or a changed physical-stream cancellation contract.
+
+Three focused protocol/name units passed. Two explicit actual WSL cases passed:
+ordinary file and 13 nested UTF-8/spaced-name files, preserved year-2000 file
+mtime, missing source, top/nested symlinks, a Windows device basename, FIFO
+non-opening, pre-cancel and the deterministic in-flight barrier/cleanup control.
+These correctness gates do not establish the final latency improvement; the
+selected release must still run the alternating same-fixture comparison above.
+
+### Five-pair revised-path comparison
+
+The unchanged fixture and maintained runner compared the frozen `0.4.0` image
+above with source `95df1e5` / `msync 0.4.1`, immutable binary SHA-256
+`083af37ee8b87cd29ce19ce1b8f5eb72aaa3ad33472cf125e0c5596bde1dc6d1`, retained as
+`target/performance-v4/baselines/msync-user-macro-95df1e5-windows.exe`.
+Five paired samples alternated executable order, using the same warm native-ext4
+WSL source, NTFS destinations, default resource limits and opt-in traces. All
+before/after byte, exact-file-count and stale-child-removal checks passed. The
+mixed case remained exactly 28 files / 126,083 bytes, not a smaller replacement
+workload. The two-local-source control contains 126,082 bytes because the WSL
+source's deliberately added byte is absent.
+
+| Complete command | Before p50 ms | Revised p50 ms | Median paired difference ms | Revised faster |
+| --- | ---: | ---: | ---: | ---: |
+| Local `compile` | 25.58 | 24.56 | -3.29 | 4/5 |
+| Local `run` | 427.05 | 265.83 | -152.99 | 5/5 |
+| Mixed `compile` | 267.33 | 22.91 | -244.42 | 5/5 |
+| Mixed `plan` | 258.83 | 23.91 | -234.91 | 5/5 |
+| Mixed `run` | 3339.48 | 2015.72 | -1349.78 | 5/5 |
+
+`check` and the small local static commands remain roughly 20--30-ms process
+journeys; these few samples do not establish a meaningful general startup win.
+The material compile improvement is removal of runtime work: mixed `compile`
+and `plan` launch **zero** WSL helpers rather than two and emit static typed IR,
+not stale metadata observations. The ordinary mixed run uses **four** WSL helper
+processes instead of 16, with no standalone remote metadata batches instead of
+ten. Its four ordinary statement publications create **zero transaction
+checkpoints**. It reports assignments, bytes and elapsed time without inventing
+user transaction activity. Real `ordinary.acquire`, `ordinary.stage` and
+`ordinary.publish` spans replace the old transaction-publication path.
+
+These results improve the user's actual journey, but the revised mixed median
+is still about two seconds and must not be described as universally fast. In
+particular, the 1,500-byte config's CAPTURE transport span varied from 639 to
+1,730 ms, while the 13-file agents CAPTURE took 258--303 ms. The next probe
+located that counterintuitive delay instead of assuming it was file-copy time.
+
+One bounded guest `strace -f -T -tt` probe inserted a forwarding shim only around
+the two actual CAPTURE commands. The executable data remained byte-identical
+to the immutable image; original Rust naming checks, all pre/post source proofs,
+ordinary publication and exact final-output checks were unchanged. The shim
+forwarded through the actual System32 WSL launcher and wrote traces to a private
+native-ext4 journal, removed after exporting the logs into repository `.temp`.
+The first PATH-only shim setup did not intercept Windows' earlier system lookup
+and produced no syscall evidence; the successful probe colocated the shim with
+the byte-identical executable. Neither setup changed user PATH or WSL settings.
+
+In the successful probe the config's complete guest script lasted **123.4 ms**,
+and its actual `cp -a` process only **29.4 ms**, despite a **2108.9-ms** host
+transport span. The agents guest script took **294.9 ms**, including **191.9 ms**
+for `cp -a`, against a **393.7-ms** host span. The remaining approximately
+1,985 ms in that config invocation is outside the traced guest script, in the
+Windows launch/WSL bridge/forwarding path. Guest/host clock offset was about
+30 ms; comparing elapsed durations does not depend on that offset. No guest
+filesystem syscall showed a seconds-long stall. This evidence does **not**
+identify Windows Defender, an OS scheduler or a specific launcher subsystem as
+the cause, and does not justify removing source guards or adding a ring engine.
+
+Reproduction of the paired comparison:
+
+```powershell
+./benches/macro_latency_v4.ps1 -Executable target/performance-v4/baselines/msync-user-macro-4d54eff-windows.exe -Candidate target/performance-v4/baselines/msync-user-macro-95df1e5-windows.exe -Samples 5
+```
+
+Disposable records are `.temp/macro-latency-v4/paired-95df1e5-five.txt` and its
+reported per-command traces. The bounded syscall probe uses
+`.temp/macro-latency-v4/wsl-capture-shim.rs`, `run-capture-strace.ps1`,
+`strace-probe-cli.txt` and `capture-{21372,23444}.log`. These exact results concern
+`95df1e5`; any later functional integration repair needs its own acceptance,
+not a claim that a new executable hash was used in this table.
+
+### Rejected hypothesis: inherited Windows cwd explains CAPTURE startup
+
+One final bounded hypothesis test asked whether WSL's inherited Windows cwd,
+translated through DrvFS on every launch, explains the delay outside the guest.
+CAPTURE always receives an absolute canonical source and absolute Windows stage,
+so `wsl.exe --cd / --exec ...` is semantically testable there. PREFLIGHT may
+resolve relative user paths and must continue inheriting the original cwd.
+
+Two application-directory forwarding shims used identical executable bytes
+(`083af37e...`) and identical shim bytes (SHA-256
+`8c07f513153b0fd19e60f925adb985ad3e5d0c830ffa1ef6b4b06e4345bf1ef7`). The only
+behavioral difference was injecting `--cd /` before the inner WSL invocation for
+CAPTURE. Both arms added the same private native-ext4 guest start/end timestamps
+and host invocation timings; original helper scripts, source guards, stdout
+receipts and final byte checks were retained. Three alternating paired mixed
+`run` samples all passed 28 files / 126,083 bytes and stale-child removal.
+Neither user PATH nor any WSL/global configuration was changed.
+
+The whole-command medians were 1651.38 ms with inherited cwd and 1483.71 ms with
+root cwd. Rooted execution won all three pairs (-248.95, -75.42 and -318.03 ms),
+but the directly affected inner WSL calls did **not** improve: their median was
+206.53 versus 250.95 ms across six CAPTURE calls per arm, and the median
+host-minus-guest interval was 65.96 versus 69.21 ms. The large config-specific
+gap occurred **before the shim entered the inner WSL call**: 294--893 ms in the
+normal arm and 273--318 ms in the rooted arm, versus only 8--46 ms for directory
+captures. The later process/drain interval was 2--11 ms. Since `--cd /` is added
+only after that initial gap, it cannot causally explain the earlier delay.
+Application-path/initialization effects and host noise remain possible, not
+proven diagnoses. Whole-command medians alone would incorrectly encourage a
+cwd change without evidence for its proposed mechanism.
+
+The decision is **not to add the cwd specialization from this experiment**.
+No further matrix is planned for that hypothesis. Disposable reproduction uses
+`.temp/macro-latency-v4/wsl-cwd-shim.rs` and `run-cwd-pair.ps1`; paired samples
+and matched host/guest timestamps are in
+`cwd-paired-782a7b62655b4b9199c587e2c813ef46/` under the same directory.

@@ -33,12 +33,15 @@ jobs:
   test:
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.docs == 'true'
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -60,7 +63,7 @@ jobs:
           }
           $targets = @($env:TARGETS | ConvertFrom-Json)
           $clippyArgs = @('clippy', '--locked', '--lib', '--bin', 'msync')
-          $testArgs = @('test', '--locked', '--lib')
+          $testArgs = @('test', '--locked', '--lib', '--bin', 'msync')
           foreach ($target in $targets) {
             $clippyArgs += @('--test', $target)
             $testArgs += @('--test', $target)
@@ -71,74 +74,3 @@ jobs:
           exit $LASTEXITCODE
       - if: needs.changes.outputs.docs == 'true' || needs.changes.outputs.full == 'true'
         run: cargo test --locked --doc
-      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_linux_v4') || contains(fromJSON(needs.changes.outputs.targets), 'program_execution_v4') || contains(fromJSON(needs.changes.outputs.targets), 'macro_native_v4') || contains(fromJSON(needs.changes.outputs.targets), 'physical_execution_v4') || contains(fromJSON(needs.changes.outputs.targets), 'repl_jobs') || contains(fromJSON(needs.changes.outputs.targets), 'execution_workspace_v4'))
-        name: Provision the ephemeral Linux resource-view gate
-        shell: bash
-        run: |
-          if ! command -v bwrap >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y bubblewrap
-          fi
-          if test -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          bwrap --version
-      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_linux_v4'))
-        name: Exercise actual Linux process-resource views
-        run: cargo test --locked --test process_view_linux_v4 -- --ignored --skip view_child_fixture --nocapture
-      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'program_execution_v4'))
-        name: Exercise actual Linux transactional program execution
-        run: cargo test --locked --test program_execution_v4 -- --ignored --skip program_child_fixture --nocapture
-      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'macro_native_v4'))
-        name: Exercise native macro program arguments in all isolation modes
-        run: cargo test --locked --test macro_native_v4 -- --ignored --skip _child_fixture --nocapture
-      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'physical_execution_v4'))
-        name: Exercise actual Linux physical-stream consumer closure
-        run: cargo test --locked --test physical_execution_v4 -- --ignored --nocapture
-      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'repl_jobs'))
-        name: Exercise owned REPL proofs and provenance across native inputs
-        run: cargo test --locked --test repl_jobs -- --ignored --nocapture
-      - if: matrix.os == 'ubuntu-latest' && (needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'execution_workspace_v4'))
-        name: Exercise native writes into the shared user scratch namespace
-        run: cargo test --locked --test execution_workspace_v4 -- --ignored --skip _child_fixture --nocapture
-
-  windows-resource-view:
-    needs: changes
-    if: needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'process_view_windows_v4') || contains(fromJSON(needs.changes.outputs.targets), 'program_execution_v4') || contains(fromJSON(needs.changes.outputs.targets), 'macro_native_v4') || contains(fromJSON(needs.changes.outputs.targets), 'execution_workspace_v4')
-    runs-on: windows-2022
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Provision the pinned signed backend on this ephemeral runner
-        shell: pwsh
-        run: ./scripts/ci-install-sandboxie.ps1
-      - name: Exercise actual native Windows program-resource views
-        shell: pwsh
-        run: |
-          cargo test --locked --test process_view_windows_v4 -- --ignored --skip boxed_child_fixture --nocapture 2>&1 | Tee-Object -FilePath .temp/sandboxie-ci/journeys.log
-          exit $LASTEXITCODE
-      - if: needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'program_execution_v4')
-        name: Exercise actual Windows transactional program execution
-        shell: pwsh
-        run: |
-          cargo test --locked --test program_execution_v4 -- --ignored --skip program_child_fixture --nocapture 2>&1 | Tee-Object -FilePath .temp/sandboxie-ci/execution.log
-          exit $LASTEXITCODE
-      - if: needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'macro_native_v4')
-        name: Exercise native macro program arguments in all isolation modes
-        shell: pwsh
-        run: |
-          cargo test --locked --test macro_native_v4 -- --ignored --skip _child_fixture --nocapture 2>&1 | Tee-Object -FilePath .temp/sandboxie-ci/macros.log
-          exit $LASTEXITCODE
-      - if: needs.changes.outputs.full == 'true' || contains(fromJSON(needs.changes.outputs.targets), 'execution_workspace_v4')
-        name: Exercise actual native writes into the shared user scratch namespace
-        shell: pwsh
-        run: |
-          cargo test --locked --test execution_workspace_v4 -- --ignored --skip _child_fixture --nocapture 2>&1 | Tee-Object -FilePath .temp/sandboxie-ci/workspace.log
-          exit $LASTEXITCODE
-      - if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-resource-view-diagnostics
-          path: .temp/sandboxie-ci/
-          if-no-files-found: ignore

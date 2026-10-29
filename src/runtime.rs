@@ -566,7 +566,7 @@ fn source_basename(path: &str) -> &str {
 }
 
 pub(crate) fn local_path(location: &Location, source: bool) -> Result<Option<PathBuf>> {
-    match &location.backend {
+    let path = match &location.backend {
         Backend::Local => Ok(Some(expand_home(&location.path)?)),
         Backend::Env => {
             let (name, suffix) = location
@@ -590,7 +590,7 @@ pub(crate) fn local_path(location: &Location, source: bool) -> Result<Option<Pat
             }
             let paths = env::var_os("PATH").unwrap_or_default();
             for directory in env::split_paths(&paths) {
-                let candidate = directory.join(name);
+                let candidate = native_path(directory.join(name));
                 if candidate.is_file() {
                     return Ok(Some(candidate));
                 }
@@ -598,6 +598,33 @@ pub(crate) fn local_path(location: &Location, source: bool) -> Result<Option<Pat
             Err(format!("file {:?} was not found in PATH", location.path))
         }
         _ => Ok(None),
+    }?;
+    Ok(path.map(native_path))
+}
+
+pub(crate) fn native_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        if !path.as_os_str().as_encoded_bytes().contains(&b'/') {
+            return path;
+        }
+        let native: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .map(|unit| {
+                if unit == u16::from(b'/') {
+                    u16::from(b'\\')
+                } else {
+                    unit
+                }
+            })
+            .collect();
+        PathBuf::from(std::ffi::OsString::from_wide(&native))
+    }
+    #[cfg(not(windows))]
+    {
+        path
     }
 }
 
@@ -1367,6 +1394,9 @@ fn receive(
     pattern: Option<&str>,
     context: &CopyContext<'_>,
 ) -> Result<PathBuf> {
+    if let Some(pattern) = pattern {
+        return receive_selected(location, scratch, pattern, context);
+    }
     let listing = if matches!(location.backend, Backend::Ssh { .. }) {
         let output = remote_command_cancellable(
             &location.backend,
@@ -1419,6 +1449,50 @@ fn receive(
             )?;
         }
         _ => return Err("unsupported source endpoint".into()),
+    }
+    Ok(target)
+}
+
+fn receive_selected(
+    location: &Location,
+    scratch: &Scratch,
+    pattern: &str,
+    context: &CopyContext<'_>,
+) -> Result<PathBuf> {
+    if !matches!(location.backend, Backend::Wsl | Backend::Ssh { .. }) {
+        return Err("this source endpoint cannot enumerate a regex selection".into());
+    }
+    let regex = Regex::new(&format!("\\A(?:{pattern})\\z")).map_err(|error| error.to_string())?;
+    let listing =
+        remote_command_cancellable(&location.backend, REMOTE_LIST, &[&location.path], context)?;
+    let mut names: Vec<_> = listing
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|name| std::str::from_utf8(name).ok())
+        .filter(|name| !name.is_empty() && regex.is_match(name))
+        .collect();
+    names.sort_unstable();
+    let mut selected_listing = b"\0selection\0".to_vec();
+    for name in &names {
+        selected_listing.extend_from_slice(name.as_bytes());
+        selected_listing.push(0);
+        selected_listing.extend_from_slice(name.as_bytes());
+        selected_listing.push(0);
+    }
+    validate_remote_names(&selected_listing)?;
+    let target = scratch.0.join("selection");
+    fs::create_dir(&target).map_err(|error| at(&target, error))?;
+    for name in names {
+        context.check()?;
+        let child = Location {
+            backend: location.backend.clone(),
+            path: format!("{}/{name}", location.path.trim_end_matches('/')),
+        };
+        // Only a selected child enters validation and transport. A separate
+        // scratch root keeps every valid basename distinct from our envelope.
+        let child_scratch = Scratch::new()?;
+        let captured = receive(&child, &child_scratch, None, context)?;
+        fs::rename(&captured, target.join(name)).map_err(|error| at(&captured, error))?;
     }
     Ok(target)
 }
@@ -1738,6 +1812,7 @@ while [ "$p" != / ] && [ "$p" != . ]; do
     [ ! -L "$p" ] || { echo 'refusing source symbolic link' >&2; exit 1; }
     p=$(dirname -- "$p")
 done
+[ -d "$s" ] || { echo 'a regex source must be a directory' >&2; exit 1; }
 find "$s" -mindepth 1 -maxdepth 1 -printf '%f\0'
 "#;
 
@@ -2372,6 +2447,51 @@ mod transport_tests {
         eprintln!(
             "WSL metadata 16 real paths: 16 client processes {:?}, batched one process {:?}",
             serial_time, batch_time
+        );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod native_path_tests {
+    use super::*;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    #[test]
+    fn verbatim_paths_keep_their_prefix_and_raw_traversal_obligations() {
+        let location = Location {
+            backend: Backend::Local,
+            path: r"\\?\D:\root/step/../future-file".into(),
+        };
+        let native = local_path(&location, false).unwrap().unwrap();
+        assert_eq!(
+            native.as_os_str(),
+            OsStr::new(r"\\?\D:\root\step\..\future-file")
+        );
+    }
+
+    #[test]
+    fn native_separator_conversion_preserves_non_unicode_windows_units() {
+        let units = [
+            u16::from(b'D'),
+            u16::from(b':'),
+            u16::from(b'/'),
+            0xd800,
+            u16::from(b'/'),
+            u16::from(b'x'),
+        ];
+        let original = PathBuf::from(std::ffi::OsString::from_wide(&units));
+        let native = native_path(original);
+        let actual: Vec<u16> = native.as_os_str().encode_wide().collect();
+        assert_eq!(
+            actual,
+            [
+                u16::from(b'D'),
+                u16::from(b':'),
+                u16::from(b'\\'),
+                0xd800,
+                u16::from(b'\\'),
+                u16::from(b'x')
+            ]
         );
     }
 }

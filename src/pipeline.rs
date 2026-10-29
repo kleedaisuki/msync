@@ -7,11 +7,38 @@
 use crate::compiler::CompileContext;
 use crate::compiler::structured::Session;
 use crate::hir::graph::{self, PlanGraph, PlanningContext};
-use crate::hir::{self, Instruction, InstructionId, InstructionKind, ProcessId, Region};
+use crate::hir::{self, Instruction, InstructionId, ProcessId, Region};
 use crate::language::{self, Document};
 use crate::source::{LocatedReport, Origins, Source, SourceMap};
 use crate::syntax::{Report, Span};
 use std::sync::Arc;
+
+/// In-memory relocatable compilation. Physical-looking compatibility operands
+/// are not authoritative until their explicit contextual relocations are bound.
+#[derive(Clone, Debug)]
+pub struct RelocatableCompilation {
+    pub compilation: Compilation,
+    pub relocations: Vec<crate::relocatable::Relocation>,
+    pub exports: Vec<crate::relocatable::Export>,
+    pub export_sites: std::collections::BTreeMap<String, crate::source::SourceSpan>,
+    pub main_module: String,
+    pub module_bindings: std::collections::BTreeMap<String, std::path::PathBuf>,
+}
+
+impl RelocatableCompilation {
+    pub fn into_object(self) -> Result<crate::object::ObjectModule, crate::object::ObjectError> {
+        crate::object::ObjectModule::from_parts(
+            self.compilation.program,
+            self.relocations,
+            self.exports,
+            self.compilation.source,
+            self.compilation.sources,
+            self.compilation.origins,
+            self.export_sites,
+            self.main_module,
+        )
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Compilation {
@@ -131,6 +158,19 @@ pub fn compile_named(
     context: &CompileContext,
     planning: &PlanningContext,
 ) -> Result<Compilation, Vec<LocatedReport>> {
+    compile_relocatable_named(session, source, name, context, planning)
+        .map(|compiled| compiled.compilation)
+}
+
+/// Compile one source unit while retaining the contextual path expressions that
+/// an interpreter can contextualize without filesystem observations or process capabilities.
+pub fn compile_relocatable_named(
+    session: &mut Session,
+    source: &str,
+    name: &str,
+    context: &CompileContext,
+    planning: &PlanningContext,
+) -> Result<RelocatableCompilation, Vec<LocatedReport>> {
     let source = Source::new(name, source);
     let document = {
         let mut trace = crate::telemetry::span("parse");
@@ -151,25 +191,52 @@ pub fn compile_named(
     };
     let mut trace = crate::telemetry::span("compile");
     trace.attribute("source.path", name);
-    let result = compile_document(session, document, source, context, planning);
+    let result = compile_document_relocatable(session, document, source, context, planning);
     trace.finish_result(&result);
     trace.metric(
         "errors",
         result.as_ref().err().map_or(0, |errors| errors.len()) as u64,
     );
     if let Ok(compilation) = &result {
-        trace.metric("operations", compilation.origins.len() as u64);
+        trace.metric("operations", compilation.compilation.origins.len() as u64);
     }
     result
 }
 
-fn compile_document(
+/// Emit a closed executable object; macro templates are compile-time definitions,
+/// not an embedded source program to be reparsed by the object loader.
+pub fn compile_object_named(
+    session: &mut Session,
+    source: &str,
+    name: &str,
+    context: &CompileContext,
+) -> Result<crate::object::ObjectModule, Vec<LocatedReport>> {
+    let mut candidate = session.clone();
+    let compilation = compile_relocatable_named(
+        &mut candidate,
+        source,
+        name,
+        context,
+        &PlanningContext::default(),
+    )?;
+    let debug = compilation.compilation.source.clone();
+    let module = compilation.into_object().map_err(|error| {
+        vec![LocatedReport::new(
+            debug,
+            Report::new(error.message, Span::default()).help(error.help),
+        )]
+    })?;
+    *session = candidate;
+    Ok(module)
+}
+
+fn compile_document_relocatable(
     session: &mut Session,
     document: Document,
     source: Arc<Source>,
     context: &CompileContext,
     planning: &PlanningContext,
-) -> Result<Compilation, Vec<LocatedReport>> {
+) -> Result<RelocatableCompilation, Vec<LocatedReport>> {
     let mut candidate = session.clone();
     let lowered = candidate.compile_named(&document, context, source.clone())?;
     let program = lowered.program;
@@ -188,11 +255,13 @@ fn compile_document(
                 for node in sites {
                     report = report.label(node.span, "this operation participates in the conflict");
                 }
-                let report = report.help("Keep both ends of a live program stream in the same checkpoint region; do not cross a commit with a pipe needed to finish that program.");
+                let report = report.help("Connect each live program stream only once, and await the program after arranging the flows needed for it to finish.");
                 LocatedReport::new(source.clone(), report)
             })
             .collect());
     }
+    let exports = candidate.object_exports(&program);
+    let export_sites = candidate.object_export_sites();
     *session = candidate;
     let mut sources = SourceMap::default();
     sources.insert(source.clone());
@@ -207,27 +276,40 @@ fn compile_document(
             sources.insert(right.source.clone());
         }
     }
-    Ok(Compilation {
-        document,
-        program,
-        graph,
-        planning: planning.clone(),
-        source,
-        sources,
-        origins: lowered.origins,
+    let main_module = context
+        .source_file
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| source.name.to_string());
+    let mut module_bindings = std::collections::BTreeMap::new();
+    for relocation in &lowered.relocations {
+        let module = match &relocation.path.anchor {
+            crate::relocatable::Anchor::ModuleFile { module }
+            | crate::relocatable::Anchor::ModuleDirectory { module } => module,
+            _ => continue,
+        };
+        // These keys were emitted by the lowering source-context operation,
+        // not inferred from a path prefix or the diagnostic source filename.
+        module_bindings.insert(module.clone(), std::path::PathBuf::from(module));
+    }
+    Ok(RelocatableCompilation {
+        compilation: Compilation {
+            document,
+            program,
+            graph,
+            planning: planning.clone(),
+            source,
+            sources,
+            origins: lowered.origins,
+        },
+        relocations: lowered.relocations,
+        exports,
+        export_sites,
+        main_module,
+        module_bindings,
     })
 }
 
 fn instruction(region: &Region, id: InstructionId) -> Option<&Instruction> {
-    for node in &region.instructions {
-        if node.id == id {
-            return Some(node);
-        }
-        if let InstructionKind::Transaction { body, .. } = &node.kind
-            && let Some(found) = instruction(body, id)
-        {
-            return Some(found);
-        }
-    }
-    None
+    region.instructions.iter().find(|node| node.id == id)
 }

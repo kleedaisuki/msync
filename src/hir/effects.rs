@@ -9,8 +9,6 @@ use crate::hir::{Input, Instruction, InstructionId, InstructionKind, Output, Pro
 use crate::language::DestinationMode;
 use crate::plan::{FileClass, OperationKinds};
 
-mod namespace;
-pub use namespace::{NamespaceMergeEpoch, NamespaceMergeProof};
 mod rendezvous;
 pub use rendezvous::{FifoEndpointProof, FifoRendezvousProof};
 
@@ -90,10 +88,39 @@ impl FileResource {
         if self.location.backend != other.location.backend {
             return Some(false);
         }
+        if let Some(answer) = self.pipe_overlap(other) {
+            return Some(answer);
+        }
         if self.path.root != other.path.root || self.path.uncertain || other.path.uncertain {
             return Some(true);
         }
         None
+    }
+
+    fn pipe_overlap(&self, other: &Self) -> Option<bool> {
+        let left = self.local_pipe_name();
+        let right = other.local_pipe_name();
+        match (left, right) {
+            (Some(left), Some(right)) => {
+                Some(!left.is_ascii() || !right.is_ascii() || left.eq_ignore_ascii_case(&right))
+            }
+            (Some(_), None) if other.path.root.ends_with(':') => Some(false),
+            (None, Some(_)) if self.path.root.ends_with(':') => Some(false),
+            _ => None,
+        }
+    }
+
+    fn local_pipe_name(&self) -> Option<String> {
+        if !cfg!(windows) || self.location.backend != Backend::Local {
+            return None;
+        }
+        let path = self.location.path.replace('\\', "/");
+        let prefix = path.get(..9)?;
+        if !prefix.eq_ignore_ascii_case("//./pipe/") {
+            return None;
+        }
+        let name = &path[9..];
+        (!name.is_empty() && !name.contains('\0')).then(|| name.to_owned())
     }
 
     fn same_path(&self, other: &Self) -> bool {
@@ -311,14 +338,14 @@ pub enum Resource {
         provider: String,
         identity: String,
     },
-    /// Canonical native child identity for one certified file insertion.
-    NamespaceEntry(NamespaceMergeProof),
-    /// Parent membership/mtime delta committed by the Manager receipt algebra.
-    NamespaceChange(NamespaceMergeProof),
     /// Bytes already selected by a retained immutable-version reader. Private
     /// writes to the original pathname do not mutate this captured object.
     SnapshotFile(VersionReadProof),
-    /// Directory entries and directory metadata, not sibling regular-file data.
+    /// One replaceable pathname binding, not the containing directory's state.
+    DirectoryEntry(FileResource),
+    /// The complete immediate child-name set used by enumeration or insertion.
+    DirectoryEntries(FileResource),
+    /// Explicitly observed directory attributes, not incidental sibling mtime.
     DirectoryMetadata(FileResource),
     /// Finite responses are not immutable versions. Requests at one origin
     /// remain ordered even when they use different URL paths.
@@ -331,14 +358,11 @@ pub enum Resource {
 
 impl Resource {
     pub fn may_overlap(&self, other: &Self) -> bool {
-        if let (Self::NamespaceEntry(left), Self::NamespaceEntry(right)) = (self, other) {
-            return left.entry_overlaps(right);
+        if let Self::DirectoryEntry(entry) = self {
+            return entry_overlap(entry, other);
         }
-        if let (Self::NamespaceEntry(entry), Self::NamespaceChange(change))
-        | (Self::NamespaceChange(change), Self::NamespaceEntry(entry)) = (self, other)
-            && entry.same_native_parent(change)
-        {
-            return false;
+        if let Self::DirectoryEntry(entry) = other {
+            return entry_overlap(entry, self);
         }
         if let (Some(left), Some(right)) = (self.file(), other.file()) {
             return left.may_overlap(right);
@@ -388,17 +412,30 @@ impl Resource {
     fn file(&self) -> Option<&FileResource> {
         match self {
             Self::File(file) | Self::StreamPath(file) => Some(file),
-            Self::NamespaceEntry(proof) => Some(proof.target_resource()),
             _ => None,
         }
     }
 
     fn metadata(&self) -> Option<&FileResource> {
         match self {
-            Self::DirectoryMetadata(file) => Some(file),
-            Self::NamespaceChange(proof) => Some(proof.parent_resource()),
+            Self::DirectoryEntries(file) | Self::DirectoryMetadata(file) => Some(file),
             _ => None,
         }
+    }
+}
+
+fn entry_overlap(entry: &FileResource, other: &Resource) -> bool {
+    match other {
+        Resource::DirectoryEntry(other) | Resource::File(other) | Resource::StreamPath(other) => {
+            entry.may_overlap(other)
+        }
+        Resource::DirectoryEntries(directory) | Resource::DirectoryMetadata(directory) => {
+            entry.contains_path(directory)
+                || entry
+                    .parent()
+                    .is_some_and(|parent| parent.same_path(directory))
+        }
+        _ => false,
     }
 }
 
@@ -415,7 +452,6 @@ pub enum AccessKind {
     Read,
     Write,
     Consume,
-    NamespaceMerge,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -444,27 +480,12 @@ impl Effects {
                 if !before.resource.may_overlap(&after.resource) {
                     continue;
                 }
-                if before.kind == AccessKind::NamespaceMerge
-                    && after.kind == AccessKind::NamespaceMerge
-                    && let (Resource::NamespaceChange(left), Resource::NamespaceChange(right)) =
-                        (&before.resource, &after.resource)
-                    && left.commutes_with(right)
-                {
-                    continue;
-                }
                 let kind = match (before.kind, after.kind) {
                     (AccessKind::Read, AccessKind::Read) => continue,
                     (AccessKind::Consume, _) | (_, AccessKind::Consume) => Hazard::ConsumingRead,
-                    (AccessKind::Write | AccessKind::NamespaceMerge, AccessKind::Read) => {
-                        Hazard::ReadAfterWrite
-                    }
-                    (AccessKind::Read, AccessKind::Write | AccessKind::NamespaceMerge) => {
-                        Hazard::WriteAfterRead
-                    }
-                    (
-                        AccessKind::Write | AccessKind::NamespaceMerge,
-                        AccessKind::Write | AccessKind::NamespaceMerge,
-                    ) => Hazard::WriteAfterWrite,
+                    (AccessKind::Write, AccessKind::Read) => Hazard::ReadAfterWrite,
+                    (AccessKind::Read, AccessKind::Write) => Hazard::WriteAfterRead,
+                    (AccessKind::Write, AccessKind::Write) => Hazard::WriteAfterWrite,
                 };
                 conflicts.push(Conflict {
                     kind,
@@ -497,7 +518,7 @@ pub fn summarize(instruction: &Instruction) -> Effects {
 }
 
 pub fn summarize_with_facts(instruction: &Instruction, facts: OperationFacts) -> Effects {
-    summarize_prepared(instruction, facts, None, None, None)
+    summarize_prepared(instruction, facts, None, None)
 }
 
 pub fn summarize_prepared(
@@ -505,33 +526,17 @@ pub fn summarize_prepared(
     facts: OperationFacts,
     existing_parent: Option<&Location>,
     pinned_input: Option<&VersionReadProof>,
-    namespace_merge: Option<&NamespaceMergeProof>,
 ) -> Effects {
-    let namespace_merge = namespace_merge.filter(|proof| proof.supports(instruction, facts));
     match &instruction.kind {
         InstructionKind::Transfer {
             source,
             destination,
-        } => transfer(
-            source,
-            destination,
-            facts,
-            existing_parent,
-            pinned_input,
-            namespace_merge,
-        ),
+        } => transfer(source, destination, facts, existing_parent, pinned_input),
         InstructionKind::Spawn { .. } => Effects {
             unknown_external: true,
             ..Effects::default()
         },
-        InstructionKind::Transaction { body, .. } => {
-            let mut effects = Effects::default();
-            for instruction in &body.instructions {
-                effects.append(summarize(instruction));
-            }
-            effects
-        }
-        InstructionKind::Commit { .. } | InstructionKind::Rollback { .. } => Effects::default(),
+        InstructionKind::Barrier { .. } | InstructionKind::Await { .. } => Effects::default(),
     }
 }
 
@@ -550,7 +555,6 @@ fn transfer(
     facts: OperationFacts,
     existing_parent: Option<&Location>,
     pinned_input: Option<&VersionReadProof>,
-    namespace_merge: Option<&NamespaceMergeProof>,
 ) -> Effects {
     let mut effects = Effects::default();
     let pinned = match source {
@@ -600,6 +604,13 @@ fn transfer(
             }
             if class == FileClass::Directory || pattern.is_some() {
                 effects.accesses.push(Access {
+                    resource: Resource::DirectoryEntries(FileResource::new(
+                        location.clone(),
+                        Scope::Exact,
+                    )),
+                    kind: AccessKind::Read,
+                });
+                effects.accesses.push(Access {
                     resource: Resource::DirectoryMetadata(FileResource::new(
                         location.clone(),
                         Scope::Exact,
@@ -645,17 +656,6 @@ fn transfer(
                 Scope::Tree
             };
             let resource = FileResource::new(location.clone(), scope);
-            if let Some(proof) = namespace_merge {
-                effects.accesses.push(Access {
-                    resource: Resource::NamespaceEntry(proof.clone()),
-                    kind: AccessKind::Write,
-                });
-                effects.accesses.push(Access {
-                    resource: Resource::NamespaceChange(proof.clone()),
-                    kind: AccessKind::NamespaceMerge,
-                });
-                return effects;
-            }
             effects.accesses.push(Access {
                 resource: if destination_class == FileClass::Stream {
                     Resource::StreamPath(resource.clone())
@@ -668,7 +668,6 @@ fn transfer(
                 &mut effects,
                 resource,
                 *mode,
-                source_class,
                 destination_class,
                 existing_parent,
             );
@@ -688,21 +687,15 @@ fn add_namespace_writes(
     effects: &mut Effects,
     resource: FileResource,
     mode: DestinationMode,
-    source: FileClass,
     destination: FileClass,
     existing_parent: Option<&Location>,
 ) {
-    if destination == FileClass::Stream
-        || (destination == FileClass::Regular && mode == DestinationMode::Exact)
-        || (destination == FileClass::Directory
-            && source == FileClass::Directory
-            && mode == DestinationMode::ReplaceTree)
-    {
+    if destination == FileClass::Stream {
         return;
     }
     if mode == DestinationMode::Container {
         effects.accesses.push(Access {
-            resource: Resource::DirectoryMetadata(FileResource::new(
+            resource: Resource::DirectoryEntries(FileResource::new(
                 resource.location.clone(),
                 Scope::Exact,
             )),
@@ -712,18 +705,27 @@ fn add_namespace_writes(
             return;
         }
     }
-    let mut parent = resource.parent();
-    while let Some(directory) = parent {
-        let at_frontier = existing_parent.is_some_and(|frontier| {
-            directory.definitely_same_path(&FileResource::new(frontier.clone(), Scope::Exact))
+    let frontier = existing_parent
+        .map(|location| FileResource::new(location.clone(), Scope::Exact))
+        .filter(|frontier| {
+            frontier.is_definite_ancestor_of(&resource) && !frontier.definitely_same_path(&resource)
         });
-        parent = if !at_frontier && matches!(destination, FileClass::Missing | FileClass::Unknown) {
-            directory.parent()
+    let mut binding = Some(resource);
+    while let Some(entry) = binding {
+        let at_frontier = frontier
+            .as_ref()
+            .is_some_and(|frontier| entry.definitely_same_path(frontier));
+        let parent = entry.parent();
+        if at_frontier || parent.is_none() {
+            break;
+        }
+        binding = if matches!(destination, FileClass::Missing | FileClass::Unknown) {
+            parent
         } else {
             None
         };
         effects.accesses.push(Access {
-            resource: Resource::DirectoryMetadata(directory),
+            resource: Resource::DirectoryEntry(entry),
             kind: AccessKind::Write,
         });
     }

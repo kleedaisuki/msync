@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use msync::compiler::structured::Session;
 use msync::compiler::{Backend, CompileContext};
-use msync::hir::{self, Argument, Input, InstructionKind, Output, ReadPort, RollbackScope};
-use msync::language::{self, DestinationMode, Isolation};
+use msync::hir::{self, Argument, Input, InstructionKind, Output, ReadPort};
+use msync::language::{self, DestinationMode};
 
 fn context() -> CompileContext {
     CompileContext {
@@ -150,12 +150,37 @@ fn namespace_arguments_and_stream_arguments_retain_types() {
         Backend::Wsl
     );
     assert!(matches!(
-        transfer(&program.body.instructions[2]).0,
-        Input::Port {
-            port: ReadPort::Stdout,
-            ..
-        }
+        program
+            .body
+            .instructions
+            .iter()
+            .find_map(|instruction| match &instruction.kind {
+                InstructionKind::Transfer {
+                    source: Input::Port { process, port },
+                    ..
+                } => Some((process, port)),
+                _ => None,
+            }),
+        Some((_, ReadPort::Stdout))
     ));
+}
+
+fn spawn(program: &hir::Program) -> &hir::Instruction {
+    program
+        .body
+        .instructions
+        .iter()
+        .find(|instruction| matches!(instruction.kind, InstructionKind::Spawn { .. }))
+        .unwrap()
+}
+
+fn transfers(program: &hir::Program) -> Vec<&hir::Instruction> {
+    program
+        .body
+        .instructions
+        .iter()
+        .filter(|instruction| matches!(instruction.kind, InstructionKind::Transfer { .. }))
+        .collect()
 }
 
 #[test]
@@ -215,14 +240,14 @@ fn macro_source_file_is_definition_bound_but_pwd_is_call_bound() {
 fn process_call_preserves_direct_argv_and_all_typed_ports() {
     let program = compile(
         &mut Session::new(),
-        "program => $path::python(\"-c\", \"print('a -> b; $HOME')\", input.txt)\n\"你好\\n\" -> program::stdin\nprogram::stdout -> output.txt\nprogram::stderr -> errors.txt\nprogram::pid -> pid\nprogram::exit_code -> status1\nprogram::exit_code -> status2\nprogram::meta -> metadata\n",
+        "async program => $path::python(\"-c\", \"print('a -> b; $HOME')\", input.txt)\n\"你好\\n\" -> program::stdin\nprogram::stdout -> output.txt\nprogram::stderr -> errors.txt\nprogram::pid -> pid\nprogram::exit_code -> status1\nprogram::exit_code -> status2\nprogram::meta -> metadata\n",
     );
     let InstructionKind::Spawn {
         process,
         executable,
         arguments,
         cwd,
-    } = &program.body.instructions[0].kind
+    } = &spawn(&program).kind
     else {
         panic!()
     };
@@ -234,25 +259,18 @@ fn process_call_preserves_direct_argv_and_all_typed_ports() {
     assert!(matches!(&arguments[1], Argument::Text(value) if value == "print('a -> b; $HOME')"));
     assert!(matches!(&arguments[2], Argument::Path(value) if value.path.ends_with("/input.txt")));
     assert!(
-        matches!(transfer(&program.body.instructions[1]).0, Input::Literal(text) if text.as_ref() == "你好\n")
+        matches!(transfer(transfers(&program)[0]).0, Input::Literal(text) if text.as_ref() == "你好\n")
     );
-    assert!(
-        matches!(transfer(&program.body.instructions[1]).1, Output::Stdin(id) if id == process)
-    );
-    assert_eq!(program.body.instructions.len(), 8);
+    assert!(matches!(transfer(transfers(&program)[0]).1, Output::Stdin(id) if id == process));
+    assert_eq!(transfers(&program).len(), 7);
 }
 
 #[test]
 fn consuming_streams_have_one_owner_and_compile_failure_does_not_consume_them() {
     let mut session = Session::new();
     compile(&mut session, "p => $path::python(\"-V\")\n");
-    let errors = rejected(&mut session, "p::stdout -> first\ncommit\n");
-    assert!(
-        errors[0]
-            .diagnostic
-            .message
-            .contains("enclosing transaction")
-    );
+    let errors = rejected(&mut session, "p::stdout -> first\nmissing_macro()\n");
+    assert!(errors[0].diagnostic.message.contains("unknown macro"));
     compile(&mut session, "p::stdout -> accepted\n");
     let errors = rejected(&mut session, "p::stdout -> duplicate\n");
     assert!(errors[0].diagnostic.message.contains("only one owner"));
@@ -284,82 +302,23 @@ fn process_directions_and_unknown_items_are_diagnosed_before_execution() {
 }
 
 #[test]
-fn transaction_checkpoints_named_origin_and_shared_bindings_are_distinct() {
-    let program = compile(
-        &mut Session::new(),
-        "transaction A1(read uncommitted):\n    result := output\n    \"first\" -> result\n    commit\n    \"second\" -> result\n    rollback\nrollback A1\n\"third\" -> result\ntransaction B2:\n    \"ok\" -> verifier\n",
-    );
-    assert_eq!(program.transactions.len(), 2);
-    assert_eq!(
-        program.transactions[0].isolation,
-        Isolation::ReadUncommitted
-    );
-    assert_eq!(program.transactions[1].isolation, Isolation::Serializable);
-    let InstructionKind::Transaction { transaction, body } = &program.body.instructions[0].kind
-    else {
-        panic!()
-    };
-    assert!(
-        matches!(body.instructions[1].kind, InstructionKind::Commit { transaction: id } if id == *transaction)
-    );
-    assert!(matches!(
-        body.instructions[3].kind,
-        InstructionKind::Rollback {
-            scope: RollbackScope::Checkpoint,
-            ..
-        }
-    ));
-    assert!(matches!(
-        program.body.instructions[1].kind,
-        InstructionKind::Rollback {
-            scope: RollbackScope::Begin,
-            ..
-        }
-    ));
-    assert!(
-        output_path(transfer(&program.body.instructions[2]).1)
-            .0
-            .path
-            .ends_with("/output")
-    );
-}
-
-#[test]
-fn other_transaction_rollback_is_forbidden_inside_a_transaction() {
-    let errors = rejected(
-        &mut Session::new(),
-        "transaction A:\n    \"a\" -> output\ntransaction B:\n    rollback A\n",
-    );
-    assert!(errors[0].diagnostic.message.contains("not allowed inside"));
-    assert!(
-        errors[0]
-            .help
-            .iter()
-            .any(|help| help.contains("bare rollback"))
-    );
-}
-
-#[test]
 fn ids_are_not_recycled_across_submissions_or_reset() {
     let mut session = Session::new();
-    let first = compile(
-        &mut session,
-        "p => $path::python()\ntransaction A:\n    \"a\" -> out\n",
-    );
-    let second = compile(&mut session, "q => $path::python()\nrollback A\n");
-    let InstructionKind::Spawn { process: first, .. } = first.body.instructions[0].kind else {
+    let first = compile(&mut session, "async p => $path::python()\n\"a\" -> out\n");
+    let second = compile(&mut session, "async q => $path::python()\n");
+    let InstructionKind::Spawn { process: first, .. } = spawn(&first).kind else {
         panic!()
     };
     let InstructionKind::Spawn {
         process: second, ..
-    } = second.body.instructions[0].kind
+    } = spawn(&second).kind
     else {
         panic!()
     };
     assert!(second.0 > first.0);
     session.reset();
     let third = compile(&mut session, "r => $path::python()\n");
-    let InstructionKind::Spawn { process: third, .. } = third.body.instructions[0].kind else {
+    let InstructionKind::Spawn { process: third, .. } = spawn(&third).kind else {
         panic!()
     };
     assert!(third.0 > second.0);
@@ -373,7 +332,7 @@ fn failed_compilation_does_not_leak_lexical_or_macro_bindings() {
     assert!(
         !rejected(
             &mut session,
-            "new := discarded\nmacro unused():\n    \"x\" -> output\ncommit\n"
+            "new := discarded\nmacro unused():\n    \"x\" -> output\nmissing_macro()\n"
         )
         .is_empty()
     );
@@ -501,20 +460,6 @@ fn qualified_quoted_source_remains_a_path_not_a_literal() {
     );
     assert!(
         matches!(transfer(&program.body.instructions[1]).0, Input::Literal(text) if text.as_ref() == "folder name/file.txt")
-    );
-}
-
-#[test]
-fn a_transaction_does_not_create_a_macro_lexical_scope() {
-    let program = compile(
-        &mut Session::new(),
-        "transaction A:\n    root := captured\n    macro save():\n        global root\n        root -> output\nsave()\n",
-    );
-    assert_eq!(program.body.instructions.len(), 2);
-    assert!(
-        input_path(transfer(&program.body.instructions[1]).0)
-            .path
-            .ends_with("/captured")
     );
 }
 

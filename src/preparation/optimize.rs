@@ -96,7 +96,7 @@ fn region(
 ) {
     let mut output = Vec::new();
     let mut epoch = Vec::new();
-    for mut node in std::mem::take(&mut region.instructions) {
+    for node in std::mem::take(&mut region.instructions) {
         if eligible(&node, facts, resources) {
             epoch.push(node);
             continue;
@@ -110,9 +110,6 @@ fn region(
             use_legacy,
             records,
         );
-        if let InstructionKind::Transaction { body, .. } = &mut node.kind {
-            self::region(body, facts, resources, unstable, use_legacy, records);
-        }
         output.push(node);
     }
     flush(

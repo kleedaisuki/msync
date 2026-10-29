@@ -18,6 +18,10 @@ use crate::syntax::Span;
 
 use super::error::{ExecutionError, Result};
 
+#[path = "remote.rs"]
+mod remote;
+pub(super) use remote::{execute, owned_registry, recover};
+
 #[derive(Clone, Debug)]
 pub(super) struct Spec {
     pub destination: Location,
@@ -25,6 +29,7 @@ pub(super) struct Spec {
     pub span: Span,
     pattern: Option<String>,
     origin: Option<Location>,
+    literal: bool,
 }
 
 pub(super) struct Report {
@@ -64,6 +69,7 @@ pub(super) fn inspect(source: &Input, output: &Sink, span: Span) -> Result<Optio
             Input::File { location, .. } => Some(location.clone()),
             _ => None,
         },
+        literal: matches!(source, Input::Literal(_)),
     }))
 }
 
@@ -75,6 +81,7 @@ impl Spec {
         basename: Option<OsString>,
         buffer: usize,
         cancel: CancellationToken,
+        scratch: PathBuf,
     ) -> Result<Report> {
         let span = self.span;
         let cancel = cancel.child_token();
@@ -83,7 +90,9 @@ impl Spec {
         // Receipt settlement must outlive a caller dropping its transfer future.
         // Dropping the caller cancels this worker, but does not abort its join.
         tokio::spawn(async move {
-            let result = self.run_inner(source, basename, buffer, cancel).await;
+            let result = self
+                .run_inner(source, basename, buffer, cancel, scratch)
+                .await;
             if let (Some(trace), Err(error)) = (trace, &result) {
                 trace.record_error("remote_publication", error);
             }
@@ -99,6 +108,7 @@ impl Spec {
         basename: Option<OsString>,
         buffer: usize,
         cancel: CancellationToken,
+        scratch: PathBuf,
     ) -> Result<Report> {
         let names = self.names(&source, basename)?;
         if self.pattern.is_some() && names.is_empty() {
@@ -136,6 +146,7 @@ impl Spec {
             ));
         }
         let (journal, target, root) = (fields[0], fields[1], fields[2]);
+        let pending = remote::Pending::create(&scratch, backend, journal, target, self.span)?;
         let op = crate::compiler::CopyOp {
             source: Location {
                 backend: Backend::Local,
@@ -177,19 +188,33 @@ impl Spec {
             mode,
             if self.pattern.is_some() {
                 "selected"
+            } else if self.literal {
+                "literal"
             } else {
                 "single"
             },
         ];
         arguments.extend(names.iter().map(String::as_str));
         let publication = command(backend, PUBLISH, &arguments, &cancel, span).await;
-        let (committed, cleanup) = self.settle(journal, &cancel).await?;
+        let (committed, mut cleanup) = self.settle(journal, &cancel).await?;
         if committed {
+            let record = pending.path().to_owned();
+            if let Some(issue) = cleanup.as_mut() {
+                issue.retained_paths.push(record);
+                drop(pending);
+            } else if let Err(cause) = pending.finish(self.span) {
+                cleanup = Some(super::CleanupIssue {
+                    cause: Box::new(cause),
+                    retained_paths: vec![record],
+                    resolved: false,
+                });
+            }
             return Ok(Report {
                 transfer: report,
                 cleanup,
             });
         }
+        pending.finish(self.span)?;
         publication?;
         Err(ExecutionError::new(
             "remote publication ended without a commit receipt; before-image restored",
@@ -235,7 +260,7 @@ impl Spec {
 
     fn names(&self, source: &std::path::Path, basename: Option<OsString>) -> Result<Vec<String>> {
         if let Some(pattern) = &self.pattern {
-            let regex = regex::Regex::new(&format!("^(?:{pattern})$")).map_err(|cause| {
+            let regex = regex::Regex::new(&format!("\\A(?:{pattern})\\z")).map_err(|cause| {
                 ExecutionError::caused("invalid remote selector", self.span, cause)
             })?;
             let mut names = Vec::new();
@@ -347,7 +372,8 @@ async fn command_output(
     cancel: &CancellationToken,
     span: Span,
 ) -> Result<Output> {
-    let command = crate::runtime::remote_command_builder(backend, script, args)
+    let script = format!("{RECOVERY}\n{script}");
+    let command = crate::runtime::remote_command_builder(backend, &script, args)
         .map_err(|message| ExecutionError::new(message, span))?;
     let mut command = tokio::process::Command::from(command);
     command.kill_on_drop(true);
@@ -385,17 +411,56 @@ async fn command_output(
     Ok(output)
 }
 
-async fn drain(reader: impl tokio::io::AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
+async fn drain(mut reader: impl tokio::io::AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
     // Control responses are bounded independently of source payload buffers.
-    let mut limited = reader.take(1024 * 1024);
     let mut bytes = Vec::new();
-    limited.read_to_end(&mut bytes).await?;
+    let mut buffer = [0; 4096];
+    loop {
+        let count = reader.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        let retain = count.min((1024 * 1024usize).saturating_sub(bytes.len()));
+        bytes.extend_from_slice(&buffer[..retain]);
+    }
     Ok(bytes)
 }
+
+const RECOVERY: &str = r#"
+recover_journal() (
+    j=$1
+    [ -f "$j/intent" ] || return 0
+    [ ! -L "$j" ] && [ ! -L "$j/intent" ] || return 1
+    IFS= read -r r < "$j/intent"
+    [ "$(dirname -- "$r")" = "$(dirname -- "$j")" ] || { echo 'invalid remote recovery root' >&2; return 1; }
+    [ ! -L "$r" ] || { echo 'remote recovery target became symbolic link' >&2; return 1; }
+    if [ ! -e "$j/COMMITTED" ]; then
+        expected=$(cat "$j/after-id")
+        if [ -e "$j/before" ]; then
+            if [ -e "$r" ]; then
+                current=$(stat -c '%d:%i' -- "$r")
+                if [ -f "$j/before-id" ] && [ "$current" = "$(cat "$j/before-id")" ]; then
+                    rm -rf -- "$j/before"
+                    sync -f -- "$(dirname -- "$j")"
+                    return 0
+                fi
+                [ "$current" = "$expected" ] || { echo 'remote recovery target changed; journal retained' >&2; return 1; }
+                rm -rf -- "$r"
+            fi
+            mv -T -- "$j/before" "$r"
+        elif [ ! -e "$j/had-before" ] && [ -e "$r" ]; then
+            [ "$(stat -c '%d:%i' -- "$r")" = "$expected" ] || { echo 'remote recovery target changed; journal retained' >&2; return 1; }
+            rm -rf -- "$r"
+        fi
+    fi
+    sync -f -- "$(dirname -- "$j")"
+)
+"#;
 
 const ALLOCATE: &str = r#"
 set -eu
 command -v flock >/dev/null || { echo 'remote publication requires flock' >&2; exit 1; }
+command -v sync >/dev/null || { echo 'remote publication requires GNU sync -f' >&2; exit 1; }
 case $1 in '~') d=$HOME;; '~/'*) d=$HOME/${1#\~/};; /*) d=$1;; *) d=$PWD/$1;; esac
 p=$d
 while [ "$p" != / ]; do
@@ -418,6 +483,11 @@ r=$d
 while [ ! -e "$(dirname -- "$r")" ]; do r=$(dirname -- "$r"); done
 p=$(dirname -- "$r")
 [ -d "$p" ] || { echo 'destination ancestor is not a directory' >&2; exit 1; }
+exec 7<"$p"
+flock -x 7
+# Startup settles only journals owned by an unlocked coordinator record. A
+# sibling allocation must not delete another client's acknowledged commit
+# receipt in the gap between its publisher exit and receipt settlement.
 umask 077
 j=$(mktemp -d "$p/.msync-v4.XXXXXXXXXX")
 printf '%s\n%s\n%s\n' "$j" "$d" "$r"
@@ -427,12 +497,11 @@ const PUBLISH: &str = r#"
 set -eu
 j=$1; d=$2; r=$3; mode=$4; selection=$5; shift 5
 exec 9>"$j/lock"
+exec 7<"$(dirname -- "$j")"
+flock -x 7
 flock -x 9
 rollback() {
-    if [ ! -e "$j/COMMITTED" ]; then
-        if [ -e "$j/published" ]; then rm -rf -- "$r"; fi
-        if [ -e "$j/before" ]; then mv -T -- "$j/before" "$r"; fi
-    fi
+    recover_journal "$j"
 }
 trap rollback EXIT
 trap 'exit 130' HUP INT TERM
@@ -447,8 +516,14 @@ for tree in "$j/payload" "$r"; do
     [ ! -e "$tree" ] || [ -z "$(find "$tree" ! -type f ! -type d -print -quit)" ] || fail "unsupported entry in tree: $tree"
 done
 [ "$mode" != exact ] || [ ! -d "$d" ] || fail 'destination is an existing directory; append / or /.'
+[ "$mode" != exact ] || [ ! -d "$j/payload" ] || [ ! -e "$d" ] || fail 'a directory source cannot replace an existing ordinary file'
 [ "$mode" != replace ] || [ -d "$j/payload" ] || fail 'directory replacement requires a directory source'
 [ "$mode" != replace ] || [ ! -e "$d" ] || [ -d "$d" ] || fail 'directory replacement target is not a directory'
+if [ "$mode" = exact ] && [ -f "$d" ]; then
+    permissions=$(stat -c '%a' -- "$d")
+    [ $((0$permissions & 0222)) -ne 0 ] || fail 'the existing file is read-only'
+    if [ "$selection" = literal ]; then chmod --reference="$d" -- "$j/payload"; fi
+fi
 if [ "$mode" = container ]; then
     [ ! -e "$d" ] || [ -d "$d" ] || fail 'container destination is not a directory'
     if [ -e "$r" ]; then cp -a --reflink=auto -- "$r" "$j/next"; else mkdir "$j/next"; fi
@@ -482,11 +557,25 @@ else
     fi
 fi
 [ ! -e "$j/ABORT" ] || fail 'publication cancelled'
-if [ -e "$r" ]; then mv -T -- "$r" "$j/before"; fi
+stat -c '%d:%i' -- "$j/next" > "$j/after-id"
+if [ -e "$r" ]; then
+    : > "$j/had-before"
+    stat -c '%d:%i' -- "$r" > "$j/before-id"
+fi
+printf '%s\n' "$r" > "$j/intent"
+# The intent, complete staged payload and before-image decision reach the same
+# filesystem before any destructive rename. Recovery is idempotent.
+sync -f -- "$j"
+if [ -f "$r" ] && [ -f "$j/next" ]; then
+    cp -a --reflink=auto -- "$r" "$j/before"
+    sync -f -- "$j"
+elif [ -e "$r" ]; then mv -T -- "$r" "$j/before"; fi
 # Keep the before-image until the independent receipt query joins this lock.
 : > "$j/published"
 mv -T -- "$j/next" "$r"
+sync -f -- "$j"
 : > "$j/COMMITTED"
+sync -f -- "$j"
 printf 'COMMITTED\n'
 "#;
 
@@ -496,12 +585,39 @@ j=$1
 [ -d "$j" ] || { echo 'remote journal disappeared' >&2; exit 1; }
 : > "$j/ABORT"
 exec 9>"$j/lock"
+exec 7<"$(dirname -- "$j")"
+flock -x 7
 flock -x -w 30 9 || { echo 'remote publication still active; journal retained' >&2; exit 1; }
 if [ -e "$j/COMMITTED" ]; then printf 'COMMITTED\n'
 else
-    # The publishing helper's EXIT trap restores the before-image under lock.
-    [ ! -e "$j/before" ] || { echo 'remote before-image remains; journal retained' >&2; exit 1; }
+    recover_journal "$j"
     printf 'ABORTED\n'
 fi
 rm -rf -- "$j"
+"#;
+
+const RECOVER: &str = r#"
+set -eu
+j=$1
+[ -d "$j" ] || { printf 'UNCHANGED\n'; exit 0; }
+[ ! -L "$j" ] || { echo 'remote journal became symbolic link' >&2; exit 1; }
+exec 7<"$(dirname -- "$j")"
+flock -x 7
+exec 9>"$j/lock"
+flock -x -w 30 9 || { echo 'remote publication remains active' >&2; exit 1; }
+if [ ! -f "$j/intent" ]; then
+    # The coordinator record is exclusively owned by recovery: no live client
+    # can advance this upload to publication. Any surviving uploader can only
+    # write this private journal, never the user destination.
+    p=$(dirname -- "$j")
+    rm -rf -- "$j"
+    sync -f -- "$p"
+    printf 'UNCHANGED\n'
+    exit 0
+fi
+recover_journal "$j"
+if [ -e "$j/COMMITTED" ]; then printf 'COMMITTED\n'; else printf 'ABORTED\n'; fi
+p=$(dirname -- "$j")
+rm -rf -- "$j"
+sync -f -- "$p"
 "#;
