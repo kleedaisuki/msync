@@ -1,9 +1,179 @@
-//! Machine-independent candidates. Recognition never authorizes an IO rewrite.
+//! Pure directional scheduling and guarded machine-independent IO candidates.
 
 use crate::endpoint::{Backend, Location};
 use crate::language::DestinationMode;
 
-use super::{BasicBlock, Input, Instruction, InstructionId, InstructionKind, Output, Region};
+use super::{
+    BarrierKind, BasicBlock, Input, Instruction, InstructionId, InstructionKind, Output, Region,
+};
+
+/// Normalize original directional constraints without permuting IO or crossing
+/// native launch/join observations. Returned IDs belong only to redundant markers.
+pub fn normalize_fences(region: &mut Region) -> Vec<InstructionId> {
+    let mut removed = Vec::new();
+    let mut result = Vec::with_capacity(region.instructions.len());
+    let mut segment = Vec::new();
+    for instruction in std::mem::take(&mut region.instructions) {
+        if matches!(
+            instruction.kind,
+            InstructionKind::Transfer { .. } | InstructionKind::Barrier { .. }
+        ) {
+            segment.push(instruction);
+            continue;
+        }
+        let before_spawn = matches!(instruction.kind, InstructionKind::Spawn { .. });
+        result.extend(normalize_segment(
+            std::mem::take(&mut segment),
+            before_spawn,
+            &mut removed,
+        ));
+        result.push(instruction);
+    }
+    result.extend(normalize_segment(segment, false, &mut removed));
+    region.instructions = result;
+    removed
+}
+
+struct Placement {
+    instruction: Instruction,
+    slot: usize,
+    lower: usize,
+}
+
+fn normalize_segment(
+    instructions: Vec<Instruction>,
+    before_spawn: bool,
+    removed: &mut Vec<InstructionId>,
+) -> Vec<Instruction> {
+    let mut markers = Vec::new();
+    let mut transfers = Vec::new();
+    let mut lower = 0;
+    for instruction in instructions {
+        match instruction.kind {
+            InstructionKind::Barrier { kind } => {
+                markers.push(instruction);
+                if kind == BarrierKind::After {
+                    lower = markers.len();
+                }
+            }
+            InstructionKind::Transfer { .. } => transfers.push(Placement {
+                instruction,
+                slot: markers.len(),
+                lower,
+            }),
+            _ => unreachable!("native program controls delimit normalization segments"),
+        }
+    }
+    let upper = upper_bounds(&markers);
+    let mut result = Vec::with_capacity(markers.len() + transfers.len());
+    let mut markers = markers.into_iter();
+    let mut position = 0;
+    let mut point = 0;
+    // Bounds belong to the original marker order. Deriving new bounds after
+    // local swaps can invent constraints and trap the optimizer in a worse cut.
+    for (index, transfer) in transfers.into_iter().enumerate() {
+        if index == 0 || transfer.lower > point {
+            point = upper[transfer.slot];
+        }
+        while position < point {
+            result.push(
+                markers
+                    .next()
+                    .expect("a legal slot is within the marker list"),
+            );
+            position += 1;
+        }
+        result.push(transfer.instruction);
+    }
+    result.extend(markers);
+    compact_markers(result, before_spawn, removed)
+}
+
+fn upper_bounds(markers: &[Instruction]) -> Vec<usize> {
+    let mut upper = vec![markers.len(); markers.len() + 1];
+    let mut next = markers.len();
+    for (index, marker) in markers.iter().enumerate().rev() {
+        if matches!(
+            marker.kind,
+            InstructionKind::Barrier {
+                kind: BarrierKind::Before
+            }
+        ) {
+            next = index;
+        }
+        upper[index] = next;
+    }
+    upper
+}
+
+fn compact_markers(
+    instructions: Vec<Instruction>,
+    before_spawn: bool,
+    removed: &mut Vec<InstructionId>,
+) -> Vec<Instruction> {
+    let mut result = Vec::with_capacity(instructions.len());
+    let mut markers = Vec::new();
+    for instruction in instructions {
+        if matches!(instruction.kind, InstructionKind::Barrier { .. }) {
+            markers.push(instruction);
+            continue;
+        }
+        let markers = std::mem::take(&mut markers);
+        if result.is_empty() {
+            removed.extend(markers.into_iter().map(|marker| marker.id));
+        } else {
+            result.extend(cut_markers(markers, false, removed));
+        }
+        result.push(instruction);
+    }
+    if before_spawn {
+        result.extend(cut_markers(markers, true, removed));
+    } else {
+        removed.extend(markers.into_iter().map(|marker| marker.id));
+    }
+    result
+}
+
+fn cut_markers(
+    markers: Vec<Instruction>,
+    launch: bool,
+    removed: &mut Vec<InstructionId>,
+) -> Vec<Instruction> {
+    let before = markers.iter().position(|marker| {
+        matches!(
+            marker.kind,
+            InstructionKind::Barrier {
+                kind: BarrierKind::Before
+            }
+        )
+    });
+    let after = before.and_then(|before| {
+        markers
+            .iter()
+            .enumerate()
+            .skip(before + 1)
+            .find_map(|(index, marker)| {
+                matches!(
+                    marker.kind,
+                    InstructionKind::Barrier {
+                        kind: BarrierKind::After
+                    }
+                )
+                .then_some(index)
+            })
+    });
+    let mut result = Vec::new();
+    for (index, marker) in markers.into_iter().enumerate() {
+        if (launch && before == Some(index))
+            || (!launch && after.is_some() && (before == Some(index) || after == Some(index)))
+        {
+            result.push(marker);
+        } else {
+            removed.push(marker.id);
+        }
+    }
+    result
+}
 
 /// Both original instructions remain in the IR until an ordinary runtime owner
 /// pins the surviving value and proves its type, alias and namespace guards.

@@ -131,15 +131,17 @@ The AST represents modifiers as a scheduled statement with independent
 
 | Construct | Ordering obligation |
 | --- | --- |
-| `async STATEMENT` | Flush the preceding region; no preceding operation moves after the start boundary |
-| `await STATEMENT` | Flush after this operation; no subsequent operation moves before its completion boundary |
+| `async STATEMENT` | Earlier work cannot sink past its start boundary; later independent work may hoist |
+| `await STATEMENT` | Later work cannot hoist before its completion boundary; earlier independent work may sink |
 | `async await STATEMENT` | Both obligations |
 | `async` | Standalone start-side boundary |
 | `await Program` | Wait for this program and connected port work |
 | `await` | Wait for outstanding work |
 
-The compiler lowers boundaries explicitly, partitions ordered basic blocks, and
-constructs/optimizes each block's dependency graph independently. The interpreter
+The compiler lowers boundaries explicitly, normalizes their original one-way
+constraints, then partitions the optimized IR and constructs each block's
+dependency graph. It can merge file-only source regions without moving IO across
+an opaque program launch or actual join. The interpreter
 finishes the previous block before contextualizing the next. A launch block's
 completion means the async process is admitted and owned, not that it has exited.
 Similarly, admitting a background stream does not mean waiting for EOF.

@@ -22,7 +22,7 @@ separately in `barrier-validation.md`; this document is not a release acceptance
 ## Compilation and interpretation contract
 
 ```text
-source -> parse -> hygienic typed expansion -> HIR + static block graph
+source -> parse -> hygienic typed expansion -> directional normalization -> HIR + static block graph
                                                     |
                                    exported object -+
                                                     v
@@ -47,9 +47,11 @@ program may have created, renamed or removed that path.
 `hir::Program` owns exactly one `Region`; that region owns the instruction vector.
 `Program::blocks()` and `Region::blocks()` partition it into borrowed `BasicBlock`
 slices. This avoids two mutable representations of instruction order. Block IDs
-are derived, not persisted runtime identity claims. Each static dependency,
-commutation proof and rewrite candidate belongs to exactly one block. Blocks
-themselves are interpreted in source order.
+are derived, not persisted runtime identity claims. Pure directional normalization
+runs before partitioning, so these are optimized interpretation blocks rather
+than immutable source-order compartments. Each resulting static dependency,
+commutation proof and IO rewrite candidate belongs to exactly one block. Those
+blocks themselves are then interpreted serially.
 
 ## Syntax and lowering
 
@@ -85,6 +87,76 @@ The HIR operation vocabulary is `Transfer`, `Spawn`, `Await`, and
 `Barrier { Before | After }`. `Await { process: None }` means a real join-all,
 whereas a generic after fence only orders the associated block; these must not
 be conflated.
+
+## Directional fence normalization
+
+A generic `async` marker is not a bidirectional wall: work originally before
+it cannot sink past it, but work after it may move earlier. A generic `await`
+marker imposes the reverse constraint: later work cannot hoist before it,
+while earlier work may move later. Marker order is retained. Consequently a
+`Before` followed by an `After` can impose a genuine hard cut; the reverse
+sequence need not separate any file work.
+
+Normalization uses the **original** marker order. Between opaque native
+`Spawn`/`Await` anchors, let marker slots run from zero through the marker count.
+Each transfer has a legal interval:
+
+```text
+lower = slot immediately after its nearest preceding After marker, or zero
+upper = slot immediately before its nearest following Before marker, or the end
+```
+
+These interval endpoints are monotone in transfer order. The linear greedy pass
+places the first transfer at its upper endpoint and includes every subsequent
+transfer whose lower endpoint still reaches that point. When that intersection
+ends, it starts a new group at the next upper endpoint. This minimizes the number
+of transfer groups **while preserving the original order of all IO**. It does
+not claim a global minimum over arbitrary IO permutations. The usual effect and
+alias graph is rebuilt for the resulting blocks and independently governs which
+members can execute concurrently or out of order.
+
+Using original intervals matters: repeatedly sliding `Before` right and `After`
+left can invent constraints. For example, `Before T1 After T2` permits both
+transfers after both markers, whereas an eager local hoist traps `T1` before
+them. The interval pass also avoids the interior version of this trap without
+quadratic bubbling or an iteration budget.
+
+Leading/trailing marker-only regions are vacuous; a terminal `Before` needed by
+a following native launch is retained. Between two occupied slots, a marker-only
+run is represented by its single `Before`-then-`After` hard cut. The partitioner
+includes that pair in the preceding block, avoiding a control-only interpretation
+round. Remaining operation IDs, spans and macro origins are unchanged; deleted
+marker origins are pruned, not renumbered. Source compilation and pure object
+contextualization both apply the same idempotent normalization.
+
+Actual process launches and joins remain opaque temporal observation anchors.
+In particular, an empty resource summary for `Await` does not authorize reading
+a generator's future file before that join. No filesystem probe, helper launch,
+input acquisition or external request occurs in normalization.
+
+The one-way analogy is consistent with LLVM's documented
+[release/acquire motion rules](https://llvm.org/docs/Atomics.html), without
+importing C++ atomic synchronization or pairing requirements into this DSL.
+MLIR's [effects and speculation distinction](https://mlir.llvm.org/docs/Rationale/SideEffectsAndSpeculation/)
+explains why marker scheduling does not by itself justify speculative IO.
+
+### Generation-9 directional integration gate
+
+The frozen Windows generation-9 executable passed all seven assigned targets:
+`directional_barriers_v5` 15, `barrier_graph_v5` 10, `frontend_barriers_v5` 6,
+`language_barriers_v5` 7, `join_v4` 10, `hir_plan_v4` 33, and `preparation_v4` 35:
+**116 passed, zero failed**. The new directional suite includes two independent
+96-case properties: effectful-operation/identity conservation with idempotence,
+and an independent dynamic-programming minimum-block oracle. It also executes
+both local-swap counterexamples, exact hard-cut preservation, real data hazards,
+source/debug/object parity, and the native observation anchor without a synthetic
+launch marker. The actual launch/stdout/await example remains three blocks.
+
+Images and logs are recorded in `.temp/barrier-direction-{images,results}-gen9.json`
+and `.temp/barrier-direction-<target>-gen9.log`. The CLI SHA-256 remained
+`3055BF33F2378FB2A2BEACB62E9A13A7F4D47D840737E96610F169CF72431AF7`
+throughout this gate. This selected Windows result does not replace the root's
+native Linux, complete CI, CLI lifecycle or performance gates.
 
 ## Macro lifetime
 

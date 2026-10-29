@@ -374,6 +374,9 @@ impl Session {
         if !errors.is_empty() {
             return Err(errors);
         }
+        for removed in hir::rewrite::normalize_fences(&mut body) {
+            lower.origins.remove(&removed);
+        }
         lower.program.body = body;
         let result = Lowered {
             program: lower.program,

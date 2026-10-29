@@ -229,3 +229,106 @@ owned, and verify shutdown/Drop/new-submit retirement never connects the
 abandoned destination. This closes the reported P2 on the inspected Windows
 source and execution evidence. Cross-platform acceptance remains a separate
 Linux gate; this review does not infer it from Windows results.
+
+## Directional-marker normalization: mathematical review
+
+The user clarified that generic `Before` (`async`) and `After` (`await`)
+markers are directional, not symmetric walls. The following model concerns
+ordinary transfers between opaque native `Spawn` / actual `Await` anchors.
+Those anchors are not movable and are not generic markers. Transfer order is
+preserved by this pass; any subsequent parallel execution or reordering still
+requires the resource/dependency graph's ordinary hazard checks.
+
+### Exact legal-slot model
+
+Number the generic markers in source order `0 .. k-1`; slot `s` lies after
+exactly `s` markers. Marker order is retained. For transfer `i`, define:
+
+```text
+L_i = 1 + index of its nearest preceding After, or 0 if none
+U_i = index of its nearest following Before, or k if none
+```
+
+Its legal slots are precisely the integer interval `[L_i, U_i]`. A preceding
+After forbids hoisting the transfer across it; a following Before forbids
+sinking across it. A preceding Before supplies no lower bound, and a following
+After supplies no upper bound. Both endpoint sequences are nondecreasing in
+transfer source order, and each interval contains the transfer's original slot.
+Consequently, a nondecreasing slot assignment inside these intervals gives a
+stable merge of transfers and markers satisfying every original directional
+edge. Conversely, any such stable legal ordering must obey these bounds.
+
+Compute nearest following Before indices by a reverse scan, preceding After
+indices by a forward scan. No filesystem observation, alias premise, or native
+program speculation is used in this calculation. At an opaque anchor, terminate
+the segment; in particular, retain the terminal Before needed before a Spawn.
+
+### Minimum occupied transfer groups
+
+Within this model, choose the first uncovered interval's upper endpoint `p`.
+Assign consecutive intervals to `p` while their lower endpoint is at most `p`;
+the monotone upper endpoints ensure that they also contain `p`. Repeat at the
+first remaining interval. Chosen points increase, so transfer order is retained.
+
+The exchange argument is short: a first group can use some point `q <= U_0`.
+Moving that point right to `U_0` preserves every covered interval, because each
+of their lower endpoints is at most `q` and each upper endpoint is at least
+`U_0`. Thus an optimum exists using the greedy first point; apply the same
+argument to the suffix. This minimizes the number of nonempty consecutive
+transfer groups in linear time. It does **not** claim global optimality over
+arbitrary I/O permutations, graph contractions, resource limits, or scheduling
+around opaque native-process anchors.
+
+An independent exact oracle for a small transfer interval list is:
+
+```text
+best[0] = 0
+best[e] = min(best[s] + 1)
+          over s < e with max(L_s .. L_(e-1)) <= min(U_s .. U_(e-1))
+```
+
+The oracle enumerates consecutive groups by interval intersection rather than
+implementing the greedy rule. An executed JavaScript enumeration compared the
+two on every word over `{Transfer, Before, After}` of lengths zero through
+eleven: **265,720 cases, no mismatch**. This validates the small abstract model,
+not the Rust implementation or runtime integration; those need their own tests.
+
+### Why an arbitrary local fixed point is weaker
+
+The initially proposed two scans, sliding Before right and then After left,
+preserve legality but can choose a locally irreversible, suboptimal placement.
+Here `T` means a transfer, `B` Before, and `A` After:
+
+| Original word | Two-scan result | Better legal grouping |
+| --- | --- | --- |
+| `B T1 A T2` | `T1 B A T2`: two groups | `B A T1 T2`: one group |
+| `T0 B A B T1 A T2` | `T0 B A T1 B A T2`: three groups | Place `T1` with `T2`: two groups |
+
+The first counterexample has intervals `[0,2]`, `[2,2]`. The second has
+`[0,0]`, `[2,4]`, `[4,4]` and survives stripping all leading and trailing generic
+markers. Hoisting a transfer across Before first can manufacture a hard
+Before-to-After placement that was not forced by the original marker edges.
+Merely reaching a local fixed point therefore does not establish the intended
+block-elimination result. These examples and the independent oracle were sent
+to the implementation leader and test owner before accepting minimum claims.
+
+The production distinction between effect ordering and permission to speculate
+also matches [MLIR's side-effect/speculation rationale](https://mlir.llvm.org/docs/Rationale/SideEffectsAndSpeculation/).
+Its interfaces are useful engineering context, not a theorem imported into this
+DSL: native effects, nontermination, and contextual file observations still
+need their separate runtime contracts. LLVM's acquire/release terminology is
+only an analogy; no LLVM memory-model synchronization guarantee is asserted here.
+
+Follow-up source review: the implementation in `hir::rewrite` now uses the
+original-slot interval algorithm rather than the two-scan candidate. Its reverse
+upper-bound table and forward preceding-After bound match the definitions above.
+After placement, an interior marker-only run keeps just its first Before and
+first following After, if that pair exists. Such a pair carries the remaining
+hard cut; other markers in a run with no intervening transfer cannot distinguish
+another transfer group. Prefix and suffix runs disappear except for the Before
+retained at a Spawn anchor. This also removes the empty control-only round in
+the interior counterexample. The canonical generic segment consists only of
+transfer groups separated by Before/After pairs, making a second normalization
+unchanged. The independent dynamic-programming test's indexing was reviewed and
+matches the oracle above. No further substantive issue was found in these source
+paths; execution of the actual Rust tests remains the root integration gate.

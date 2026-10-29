@@ -133,7 +133,7 @@ pub fn contextualize(
         .validate()
         .map_err(|cause| ContextError::new(format!("invalid object module: {cause}")))?;
     validate_context(context)?;
-    let (source, sources, origins, export_sites) = module
+    let (source, sources, mut origins, export_sites) = module
         .debug
         .materialize()
         .map_err(|cause| ContextError::new(format!("invalid object debug information: {cause}")))?;
@@ -145,6 +145,9 @@ pub fn contextualize(
         context,
         &origins,
     )?;
+    for removed in hir::rewrite::normalize_fences(&mut program.body) {
+        origins.remove(&removed);
+    }
     let mut exports = module.exports.clone();
     bind_exports(&mut exports, &module.main_module, context)?;
     let maps = IdMaps::new(&program, candidate.object_id_bases())?;

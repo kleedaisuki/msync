@@ -173,7 +173,7 @@ fn async_and_await_are_independent_directional_fences_for_file_statements() {
         .iter()
         .map(|name| transfer_named(&program, name))
         .collect();
-    assert!(map[&ids[0]] < map[&ids[1]]);
+    assert_eq!(map[&ids[0]], map[&ids[1]]);
     assert_eq!(map[&ids[1]], map[&ids[2]]);
     assert_eq!(map[&ids[2]], map[&ids[3]]);
     assert!(map[&ids[3]] < map[&ids[4]]);
@@ -335,7 +335,11 @@ proptest! {
             prop_assert!(!block.instructions.is_empty());
             for (position, instruction) in block.instructions.iter().enumerate() {
                 match instruction.kind {
-                    InstructionKind::Barrier { kind: BarrierKind::Before } => prop_assert_eq!(position, 0),
+                    InstructionKind::Barrier { kind: BarrierKind::Before } if position > 0 => {
+                        prop_assert!(matches!(block.instructions.get(position + 1).map(|node| &node.kind),
+                            Some(InstructionKind::Barrier { kind: BarrierKind::After })),
+                            "an internal before fence must belong to the hard-cut pair");
+                    },
                     InstructionKind::Await { .. } => {
                         prop_assert_eq!(position, 0);
                         prop_assert_eq!(block.instructions.len(), 1);

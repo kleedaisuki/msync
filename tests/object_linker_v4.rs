@@ -357,7 +357,7 @@ fn contextualization_accepts_future_paths_without_searching_or_starting_a_progra
 }
 
 #[test]
-fn object_optimization_hints_never_cross_an_explicit_directional_barrier() {
+fn object_optimization_hints_follow_directional_normalization_and_retain_hard_cuts() {
     let fixture = workspace();
     let straight = module(fixture.path(), "\"first\" -> output\n\"last\" -> output\n");
     assert_eq!(straight.constraints.len(), 1);
@@ -366,13 +366,26 @@ fn object_optimization_hints_never_cross_an_explicit_directional_barrier() {
         "await \"first\" -> output\n\"last\" -> output\n",
     ] {
         let barrier = module(fixture.path(), source);
-        assert!(barrier.constraints.is_empty(), "{source}");
+        assert_eq!(barrier.constraints.len(), 1, "{source}");
         let encoded = barrier.encode().unwrap();
-        assert!(
+        assert_eq!(
             msync::object::ObjectModule::decode(&encoded)
                 .unwrap()
                 .constraints
-                .is_empty()
+                .len(),
+            1
         );
     }
+    let hard_cut = module(
+        fixture.path(),
+        "\"first\" -> output\nasync \"middle\" -> marker\nawait \"guard\" -> guard\n\"last\" -> output\n",
+    );
+    assert_eq!(hard_cut.program.blocks().count(), 2);
+    assert!(hard_cut.constraints.is_empty());
+    assert!(
+        msync::object::ObjectModule::decode(&hard_cut.encode().unwrap())
+            .unwrap()
+            .constraints
+            .is_empty()
+    );
 }

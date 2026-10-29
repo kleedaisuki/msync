@@ -71,11 +71,24 @@ impl<'a> Iterator for Blocks<'a> {
             return None;
         }
         let mut end = self.remaining.len();
+        let mut has_transfer = false;
         for (index, instruction) in self.remaining.iter().enumerate() {
             match instruction.kind {
+                InstructionKind::Transfer { .. } => has_transfer = true,
+                InstructionKind::Spawn { .. } if has_transfer => {
+                    end = index;
+                    break;
+                }
                 InstructionKind::Barrier {
                     kind: BarrierKind::Before,
-                } if index > 0 => {
+                } if index > 0
+                    && !matches!(
+                        self.remaining.get(index + 1).map(|node| &node.kind),
+                        Some(InstructionKind::Barrier {
+                            kind: BarrierKind::After
+                        })
+                    ) =>
+                {
                     end = index;
                     break;
                 }

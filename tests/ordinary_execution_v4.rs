@@ -494,11 +494,28 @@ async fn an_overwrite_run_folds_between_independent_prefix_and_suffix_operations
 }
 
 #[tokio::test]
-async fn an_explicit_barrier_prevents_coalescing_writes_in_distinct_blocks() {
+async fn a_single_directional_fence_allows_coalescing_in_a_merged_block() {
+    for source in [
+        "await first -> target\nlast -> target\n",
+        "first -> target\nasync last -> target\n",
+    ] {
+        let root = workspace();
+        fs::write(root.path().join("first"), b"first").unwrap();
+        fs::write(root.path().join("last"), b"last").unwrap();
+        let report = run(root.path(), source).await.unwrap();
+        assert_eq!(report.assignments, 1);
+        assert_eq!(report.published_roots, 1);
+        assert_eq!(fs::read(root.path().join("target")).unwrap(), b"last");
+        statement_storage::assert_clean(&root.path().join(".temp"));
+    }
+}
+
+#[tokio::test]
+async fn an_actual_await_join_retains_distinct_publication_blocks() {
     let root = workspace();
     fs::write(root.path().join("first"), b"first").unwrap();
     fs::write(root.path().join("last"), b"last").unwrap();
-    let report = run(root.path(), "await first -> target\nlast -> target\n")
+    let report = run(root.path(), "first -> target\nawait\nlast -> target\n")
         .await
         .unwrap();
     assert_eq!(report.assignments, 2);

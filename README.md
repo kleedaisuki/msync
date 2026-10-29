@@ -109,6 +109,12 @@ These are directional barriers, not syntax that must be paired. The compiler
 inserts a wait at macro exit for asynchronous programs started in that macro and
 not already awaited. A macro does not silently leak an unfinished local child.
 
+`async` still allows later independent work to move into an earlier block;
+`await` still allows earlier independent work to move into a later block. The
+compiler normalizes these one-way constraints and removes unnecessary blocks
+before building dependency graphs. Real launches and joins remain observation
+anchors; data dependencies and possible aliases still constrain execution.
+
 For a program's newly created files, wait for that program before reading them.
 `async` alone guarantees launch ordering, not file readiness:
 
