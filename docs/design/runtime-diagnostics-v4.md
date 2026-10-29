@@ -51,6 +51,22 @@ observer. The original failure remains primary, but `/jobs` and later joins
 must still identify that child. Source lifetime follows physical ownership, not
 the success or failure of the command that admitted it.
 
+Logical REPL jobs are not physical `WorkId`s. A later stdin/stdout/stderr or
+completion flow belongs to the existing job that owns its native program; it
+does not create a second job merely because it arrived in another submission.
+Each admitted work item retains its own `ExecutionUnit` and program associations,
+so joining a job cannot overwrite its launch source with a later input source.
+Completed work releases that source independently. A flow connecting two jobs
+merges their connected component under the oldest job ID and reports which ID
+joined it. Pure physical flows without native-program associations remain
+separate jobs across submissions, even when they use the same endpoint.
+
+Attach newly admitted work before reconciling completed members, so a program
+that finishes while a related flow is being admitted cannot lose its logical
+job identity in between. HIR instruction IDs are compilation-local; when an
+error has no owned origin, source fallback requires an unambiguous admitted
+instruction/source pair rather than selecting the first matching numeric ID.
+
 Statement startup recovery uses the same configured scratch root before new
 runtime effects. A foreign target identity, active owner lock, or damaged
 recovery record must identify the exact retained coordinator/control paths and
@@ -175,3 +191,21 @@ verified persistent recovery-control metadata, not retained payload or journals.
 Evidence is in `.temp/barrier-cli-<suite>-gen8.log` and the hash/result manifest
 `.temp/barrier-cli-results-gen8.json`. This Windows gate does not replace native
 Linux, full-source CI, performance, or installed-artifact verification.
+
+### Generation-9 logical-job gate
+
+The Windows CLI image
+`3055BF33F2378FB2A2BEACB62E9A13A7F4D47D840737E96610F169CF72431AF7`
+passed 64 direct tests: binary unit tests 26, REPL jobs 16, real terminal tests
+nine, task telemetry three, and structured CLI ten. One optional installed-WSL
+Bash terminal journey remained ignored. Start/end image hashes were unchanged;
+the serial runner exited successfully. Logs and image/result hashes are retained
+in `.temp/barrier-cli-<suite>-gen9.log` and
+`.temp/barrier-cli-results-gen9.json`.
+
+The four new pure job tests exercise later input attachment with its own source,
+per-work source release, oldest-ID program-bridge merging, independent physical
+flows, ambiguous compilation-local instruction IDs, and exclusion of unadmitted
+future port uses from grouping. These Windows tests do not execute the original
+Unix-only `cat` input-failure reproduction; that journey remains a separate
+native Linux gate rather than being inferred from the registration model.

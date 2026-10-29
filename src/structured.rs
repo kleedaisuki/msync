@@ -12,12 +12,8 @@ use std::sync::Arc;
 
 mod unit;
 use unit::ExecutionUnit;
-
-struct Job {
-    id: u64,
-    work: BTreeSet<msync::execution::WorkId>,
-    source: Arc<ExecutionUnit>,
-}
+mod jobs;
+use jobs::Job;
 
 #[derive(Clone, Copy)]
 enum JoinMode {
@@ -64,8 +60,8 @@ impl State {
             .unwrap_or_default();
         let mut retained = Vec::new();
         for mut job in std::mem::take(&mut self.jobs) {
-            job.work.retain(|id| pending.contains(id));
-            if job.work.is_empty() {
+            job.retain(&pending);
+            if job.is_empty() {
                 self.notices.push(format!("job {}: completed", job.id));
             } else {
                 retained.push(job);
@@ -353,24 +349,24 @@ impl State {
             .copied()
             .collect::<BTreeSet<_>>();
         let partial = outcome.is_err().then(|| runtime.take_report());
-        self.reconcile();
         let job = if incremental && !added.is_empty() {
-            self.next_job += 1;
-            let id = self.next_job;
-            self.jobs.push(Job {
-                id,
-                work: added,
-                source: Arc::clone(&compiled),
-            });
+            let admission = jobs::register(&mut self.jobs, &mut self.next_job, added, &compiled);
+            let id = admission.id;
+            for merged in &admission.merged {
+                self.notices.push(format!(
+                    "job {merged}: joined job {id} through program ports"
+                ));
+            }
             if outcome.is_err() {
                 self.notices.push(format!(
                     "job {id}: retained after partial submission; use /jobs, /wait, /stop or /kill"
                 ));
             }
-            Some(id)
+            Some(admission)
         } else {
             None
         };
+        self.reconcile();
         if let Some(report) = partial {
             self.queue_progress(report);
         }
@@ -401,9 +397,17 @@ impl State {
         }
         self.reconcile();
         self.flush_notices(options.color)?;
-        if let Some(id) = job {
+        if let Some(admission) = job {
+            let activity = if admission.created {
+                "running in background"
+            } else {
+                "additional background work attached"
+            };
             print_status(
-                &format!("job {id}: running in background; use /jobs, /wait or /stop"),
+                &format!(
+                    "job {}: {activity}; use /jobs, /wait or /stop",
+                    admission.id
+                ),
                 options.color,
             )?;
             self.queue_progress(report);
@@ -625,12 +629,7 @@ fn dispatch_located<T>(
     let result = executor.block_on(contextual(context.clone(), future));
     trace.finish_result(&result);
     result.map_err(|error| {
-        let source = error
-            .context()
-            .instruction
-            .and_then(|id| jobs.iter().find(|job| job.source.origins.contains_key(&id)))
-            .or_else(|| (jobs.len() == 1).then(|| &jobs[0]))
-            .map(|job| job.source.as_ref());
+        let source = jobs::source(jobs, error.context().instruction);
         msync::telemetry::with_context(context.as_ref(), || execution_error(error, source, color))
     })
 }
