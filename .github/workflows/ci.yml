@@ -3,6 +3,12 @@ name: Rust
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Run the complete Rust and documentation acceptance matrix
+        type: boolean
+        default: true
 
 concurrency:
   group: rust-${{ github.event.pull_request.number || github.ref }}
@@ -24,12 +30,17 @@ jobs:
         shell: pwsh
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          FORCE_FULL: ${{ github.event_name == 'workflow_dispatch' && inputs.full }}
         run: |
-          if (-not $env:BASE -or $env:BASE -match '^0+$') {
-            $env:BASE = git merge-base HEAD origin/main
-          }
           ./scripts/test-ci-select.ps1
-          ./scripts/ci-select.ps1 -Base $env:BASE -GitHubOutput
+          if ($env:FORCE_FULL -eq 'true') {
+            ./scripts/ci-select.ps1 -ForceFull -GitHubOutput
+          } else {
+            if (-not $env:BASE -or $env:BASE -match '^0+$') {
+              $env:BASE = git merge-base HEAD origin/main
+            }
+            ./scripts/ci-select.ps1 -Base $env:BASE -GitHubOutput
+          }
   test:
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.docs == 'true'

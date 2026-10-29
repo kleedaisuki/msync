@@ -1,6 +1,7 @@
 param(
     [string[]] $Paths = @(),
     [string] $Base,
+    [switch] $ForceFull,
     [switch] $GitHubOutput
 )
 
@@ -11,9 +12,9 @@ if ($Base) {
 }
 
 $targets = [System.Collections.Generic.SortedSet[string]]::new()
-$full = $false
-$docs = $false
-$rust = $false
+$full = [bool] $ForceFull
+$docs = $full
+$rust = $full
 
 function Add-Targets([string[]] $Names) {
     foreach ($name in $Names) {
@@ -23,7 +24,7 @@ function Add-Targets([string[]] $Names) {
     }
 }
 
-$frontend = @('language_v4', 'language_barriers_v5', 'frontend_barriers_v5', 'join_v4', 'version_v4', 'source_v4', 'lowering_v4', 'hir_plan_v4', 'barrier_graph_v5', 'planner_optimization_v4', 'planner_proof_sharing_v4', 'pipeline_v4', 'submission_v4', 'cli_structured_v4')
+$frontend = @('directional_barriers_v5', 'language_v4', 'language_barriers_v5', 'frontend_barriers_v5', 'join_v4', 'version_v4', 'source_v4', 'lowering_v4', 'hir_plan_v4', 'barrier_graph_v5', 'planner_optimization_v4', 'planner_proof_sharing_v4', 'pipeline_v4', 'submission_v4', 'cli_structured_v4')
 $execution = @('execution_v4', 'ordinary_execution_v4', 'runtime_guards_v4', 'block_specialization_v5', 'execution_workspace_v4', 'program_execution_v4', 'macro_native_v4', 'physical_execution_v4', 'endpoint_execution_v4', 'remote_publication_v5', 'barrier_cli_v5', 'barrier_runtime_v5', 'process_exit_observation_v5', 'recovery_concurrency_v5', 'barrier_crash_v5', 'storage_crash_v5', 'cli_structured_v4', 'runtime_task_telemetry_v4', 'structured_telemetry_v4', 'repl_jobs')
 $objects = @('object_codec_v4', 'object_linker_v4', 'relocation_lowering_v4', 'artifact_cli_v4', 'independent_object_integrity_v4', 'independent_object_journeys_v4', 'independent_phase_journeys_v4', 'barrier_cli_v5')
 

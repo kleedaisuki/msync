@@ -467,3 +467,71 @@ results remain the separately identified 258-pass gate above: that Linux image
 predates the final shared telemetry/proof-Arc refinements, so it must not be
 misrepresented as a generation-8 Linux run. Full CI, the measured performance
 optimization round, and installed-artifact acceptance remain pending.
+
+## First remote CI checkpoints (architecture and platform follow-up)
+
+Architecture commit `73402e4525868b63e1ac845e9cbf4cf46321f39a` reached actual
+GitHub Actions run `40848530975`. Both platform jobs failed: Linux strict Clippy
+found two Unix-only needless returns and a drop of a non-Drop Unix process-tree
+wrapper; Windows reached the crash suite, where its independent `collect` helper
+joined an empty relative root onto a regular-file path and `fs::read` failed with
+OS 267. That helper now preserves the exact root spelling for the empty key;
+all twenty crash/restart assertions remain unchanged. Root subsequently recorded
+strict Linux all-target Clippy passing in 26.22 seconds and the three repaired
+crash tests/twenty journeys passing in 8.74 seconds. This is a fixture repair,
+not a relaxation of recoverable statement atomicity.
+
+The platform follow-up commit `f06f7a7548526f0f5ea7eb3495c399594253a65b` reached
+actual run `40849390402`. Authoritative API state says completed/failure:
+Windows succeeded (31 result groups, 418 passed, zero failed, 29 ignored), while
+Linux failed in the Unix-only REPL job-source ownership journey (24 groups,
+416 passed, one failed, 12 ignored). That journey retained its feed-file source
+location but reported a second public background job for an input flow attached
+to an existing program; its expected job grouping requires owner diagnosis.
+At this checkpoint that Linux failure remains open, not an accepted test waiver.
+This run explicitly used `FULL: false`, so it is changed-target CI, not a
+complete rerun of all 73 integration targets.
+
+Actual job logs and final API states are preserved beneath `.temp` with prefixes
+`barrier-ci-73402e4` and `barrier-ci-f06f7a7`. A GitHub CLI watcher terminated on
+transient API EOF during each observation period; those watcher errors were not
+mistaken for test outcomes. Direct official API reads established the terminal
+job results and retrieved their logs. No production optimization gate has been
+claimed green from these incomplete CI checkpoints.
+
+## Generation-9 directional normalization and logical-job repair
+
+Commit `45fb376` groups native-port work with its owning public REPL job, and
+`1af015c` normalizes directional fences into minimal legal blocks following the
+user's clarified semantics. The Windows generation-9 directional/property gate
+passed 116 tests and the CLI gate passed 64; their separate
+`.temp/barrier-direction-results-gen9.json` and
+`.temp/barrier-cli-results-gen9.json` retain test-image hashes. Root Windows
+regressions additionally passed library 136, object codec 6, integrity 12,
+phase journeys 4, artifact CLI 3, and runtime 9. The initial object-linker log
+retains its one obsolete single-fence expectation failure; the subsequent
+`.temp/barrier-soft-fence-migration-gen9.log` records object 9 and ordinary 17
+passing after explicit soft-fence/hard-cut control cases replaced that expectation.
+
+The actual Linux generation-9 gate built and ran all nineteen suites on isolated
+tmpfs with effective capabilities zero and DAC enforced: initially 362 passed,
+two obsolete single-fence expectations failed, six outer-harness entries ignored.
+The precise test-only repair then rebuilt and passed library 140, object linker 9,
+and ordinary 19. It preserved the exact same CLI hash
+`7a7155cfa23ec087571dc73170c1d34b38d6e42d53f2f4ee0f981291242d7806`
+and library image hash, proving no production rebuild changed the earlier gate.
+The combined current evidence is **365 unique passing cases**, not a claim that
+all nineteen suites were rerun together and not a double-count of the repeated
+library suite. In particular all eighteen Linux REPL job journeys passed,
+including the exact logical-job/source-context regression that failed remote CI.
+Soft standalone fences now have a one-publication optimization control, while
+an actual await join retains two publication blocks; opposed directional cuts
+remain hard boundaries. Initial and repaired logs/manifests remain separate under
+`.temp/barrier-wsl-gen9*`. Final native Linux strict all-target Clippy passed in
+26.23 seconds (`barrier-wsl-gen9-clippy.stderr`).
+
+Full remote CI remains pending. The prepared explicit full-acceptance selector
+supports both manual `full=true` and the workflow-file change's automatic full
+push gate; the next actual run must be checked for `FULL: true`, not inferred
+from successful focused tests. Measured optimization and installed-artifact
+acceptance remain later gates.

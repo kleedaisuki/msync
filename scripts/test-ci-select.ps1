@@ -1,8 +1,8 @@
 $ErrorActionPreference = 'Stop'
 Set-Location (Join-Path $PSScriptRoot '..')
 
-function Select-Changes([string[]] $Paths) {
-    (& "$PSScriptRoot/ci-select.ps1" -Paths $Paths) | ConvertFrom-Json
+function Select-Changes([string[]] $Paths, [switch] $ForceFull) {
+    (& "$PSScriptRoot/ci-select.ps1" -Paths $Paths -ForceFull:$ForceFull) | ConvertFrom-Json
 }
 function Assert([bool] $Condition, [string] $Message) {
     if (-not $Condition) { throw $Message }
@@ -23,6 +23,10 @@ function Assert-Selected([string] $Path, [string[]] $Targets) {
 
 $docs = Select-Changes @('docs/design/barrier-execution.md')
 Assert (-not $docs.rust -and -not $docs.full) 'Design-only edits must not start Cargo jobs'
+$forcedDocs = Select-Changes -Paths @('docs/design/barrier-execution.md') -ForceFull
+Assert ($forcedDocs.rust -and $forcedDocs.full -and $forcedDocs.docs) 'Explicit full acceptance must override design-only selection'
+$forcedEmpty = Select-Changes -Paths @() -ForceFull
+Assert ($forcedEmpty.rust -and $forcedEmpty.full -and $forcedEmpty.docs) 'Explicit full acceptance must work without changed paths'
 $sdk = Select-Changes @('README.md')
 Assert ($sdk.docs -and -not $sdk.full) 'Embedded SDK documentation needs its doctest'
 $one = Select-Changes @('tests/ux_031.rs')
@@ -40,7 +44,7 @@ Assert (-not $selector.full -and -not $selector.rust) 'Selector regression check
 Assert-Selected 'src/filesystem.rs' @('filesystem_v5', 'selected_capture_v5', 'recovery_registry_v5', 'storage_crash_v5', 'storage_stage_crash_v5', 'barrier_crash_v5', 'ordinary_execution_v4', 'review_foundation_v4')
 Assert-Selected 'src/execution/live.rs' @('barrier_cli_v5', 'barrier_runtime_v5', 'barrier_crash_v5', 'program_execution_v4', 'physical_execution_v4', 'endpoint_execution_v4')
 Assert-Selected 'src/process/direct.rs' @('barrier_cli_v5', 'program_execution_v4')
-Assert-Selected 'src/hir/graph.rs' @('barrier_graph_v5', 'language_barriers_v5', 'lowering_v4', 'planner_proof_sharing_v4')
+Assert-Selected 'src/hir/graph.rs' @('directional_barriers_v5', 'barrier_graph_v5', 'language_barriers_v5', 'lowering_v4', 'planner_proof_sharing_v4')
 Assert-Selected 'src/preparation.rs' @('preparation_v4', 'runtime_guards_v4', 'planner_optimization_v4')
 Assert-Selected 'src/context.rs' @('object_codec_v4', 'object_linker_v4', 'artifact_cli_v4')
 Assert-Selected 'src/object/validate.rs' @('object_codec_v4', 'independent_object_integrity_v4', 'artifact_cli_v4')
