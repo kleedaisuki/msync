@@ -439,6 +439,7 @@ async fn an_unrelated_fifo_is_not_enrolled_or_snapshotted() {
     let name = CString::new(fifo.as_os_str().as_bytes()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
     let report = run(root.path(), "\"value\" -> output\n").await.unwrap();
+    assert_eq!(report.assignments, 1);
     assert_eq!(fs::read(root.path().join("output")).unwrap(), b"value");
     use std::os::unix::fs::FileTypeExt;
     assert!(fs::symlink_metadata(fifo).unwrap().file_type().is_fifo());

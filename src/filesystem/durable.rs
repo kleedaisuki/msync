@@ -781,12 +781,12 @@ pub(super) fn sync_directory(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        return OpenOptions::new()
+        OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(path)
             .and_then(|file| file.sync_all())
-            .map_err(|cause| failure("sync statement directory", path, cause));
+            .map_err(|cause| failure("sync statement directory", path, cause))
     }
     #[cfg(windows)]
     {
@@ -805,10 +805,10 @@ fn identity(path: &Path) -> Result<Option<Identity>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        return Ok(Some(Identity {
+        Ok(Some(Identity {
             volume: metadata.dev(),
             index: metadata.ino(),
-        }));
+        }))
     }
     #[cfg(windows)]
     {

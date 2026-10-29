@@ -6,6 +6,7 @@ use std::path::Path;
 use msync::compiler::{CompileContext, structured::Session};
 use msync::hir::{InstructionKind, Output};
 
+#[cfg(windows)]
 fn quoted(value: &str) -> String {
     serde_json::to_string(value).unwrap()
 }

@@ -423,6 +423,7 @@ async fn finish(
             drains.await
         }
     };
+    #[cfg(windows)]
     drop(tree);
     let stdout_bytes = join_drain(out, pid)?;
     let stderr_bytes = join_drain(err, pid)?;

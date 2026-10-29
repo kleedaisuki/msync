@@ -199,7 +199,11 @@ fn tree(root: &Path) -> Option<BTreeMap<PathBuf, Node>> {
 }
 
 fn collect(root: &Path, relative: &Path, result: &mut BTreeMap<PathBuf, Node>) {
-    let path = root.join(relative);
+    let path = if relative.as_os_str().is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(relative)
+    };
     if path.is_dir() {
         result.insert(relative.to_owned(), Node::Directory);
         for entry in fs::read_dir(path).unwrap() {
