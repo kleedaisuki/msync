@@ -424,38 +424,16 @@ impl Material {
                     };
                     (snapshot, basename)
                 } else {
-                    if pattern.is_some() {
-                        fs::create_dir(&source_path).map_err(|cause| {
-                            failure("create selected remote import root", span, cause)
-                        })?;
-                    }
-                    let operation = crate::compiler::CopyOp {
-                        source: location.clone(),
-                        destination: Location {
-                            backend: Backend::Local,
-                            path: if pattern.is_some() {
-                                format!("{}/", source_path.to_string_lossy())
-                            } else {
-                                source_path.to_string_lossy().into_owned()
-                            },
-                        },
-                        pattern: pattern.clone(),
-                        span,
-                    };
-                    crate::runtime::execute_copy_cancellable(
-                        &operation,
+                    let receipt = crate::runtime::import_finite_source(
+                        location,
+                        &source_path,
+                        pattern.as_deref(),
                         options.limits.buffer_bytes,
                         options.cancel.clone(),
+                        span,
                     )
                     .map_err(|cause| failure("capture remote finite source", span, cause))?;
-                    let basename = location
-                        .path
-                        .trim_end_matches('/')
-                        .rsplit('/')
-                        .next()
-                        .filter(|name| !name.is_empty())
-                        .map(OsString::from);
-                    (self.assets.capture(&source_path), basename)
+                    (self.assets.capture(&source_path), receipt.basename)
                 }
             }
             Input::Port { .. } => unreachable!("ports are asynchronous flows"),

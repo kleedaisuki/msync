@@ -408,6 +408,55 @@ n=$(printf '\377'); printf invalid-name > "$1/source/$n"
     }
 
     #[tokio::test]
+    #[ignore = "actual WSL-to-WSL generic import must retain contextual root provenance and metadata"]
+    async fn generic_wsl_contextual_root_keeps_actual_name_data_and_portable_metadata() {
+        let fixture = Fixture::new();
+        probe(
+            r#"set -eu
+mkdir -p "$1/source/nested/empty" "$1/copied"
+printf 'chosen\000bytes' > "$1/source/nested/data"
+printf retained > "$1/copied/keep"
+touch -d '@978307200' "$1/source/nested/data"
+touch -d '@978307202' "$1/source/nested/empty"
+touch -d '@978307204' "$1/source/nested"
+touch -d '@978307206' "$1/source"
+"#,
+            &[&fixture.remote],
+        );
+        let source = format!(
+            "{} -> {} /\n",
+            fixture.endpoint("source/."),
+            fixture.endpoint("copied")
+        );
+        let program = compile(fixture.local.path(), &source);
+        let mut runtime =
+            RuntimeSession::new(&Options::new(fixture.local.path().join("scratch"))).unwrap();
+        let report = tokio::time::timeout(Duration::from_secs(60), runtime.execute(&program))
+            .await
+            .expect("generic finite WSL import did not finish")
+            .unwrap();
+        runtime.shutdown().await.unwrap();
+        assert_eq!(report.assigned_files, 1);
+        assert_eq!(report.assigned_bytes, 12);
+        assert!(report.cleanup.is_empty(), "{:?}", report.cleanup);
+        probe(
+            r#"set -eu
+[ -d "$1/copied/source/nested/empty" ]
+[ "$(cat "$1/copied/keep")" = retained ]
+cmp "$1/source/nested/data" "$1/copied/source/nested/data"
+for p in source source/nested source/nested/empty source/nested/data; do
+    a=$(stat -c %Y -- "$1/$p")
+    b=$(stat -c %Y -- "$1/copied/$p")
+    [ "$a" = "$b" ] || { echo "modification time mismatch $p: $a != $b" >&2; exit 1; }
+done
+[ "$(find "$1/copied" -mindepth 1 -maxdepth 1 | wc -l)" = 2 ]
+"#,
+            &[&fixture.remote],
+        );
+        fixture.assert_clean();
+    }
+
+    #[tokio::test]
     #[ignore = "actual native-ext4 WSL directory locking must not modify or create sidecar files"]
     async fn parent_directory_lock_preserves_user_sidecar_and_creates_no_reserved_file() {
         let fixture = Fixture::new();

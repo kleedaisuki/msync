@@ -19,7 +19,6 @@ use std::path::{Path, PathBuf};
 
 use same_file::Handle;
 
-use crate::compiler::CopyOp;
 use crate::endpoint::{Backend, Location};
 use crate::filesystem::{
     Entry, FsError, InvocationRoot, NodeMetadata, Publication, Snapshot, SnapshotStore,
@@ -445,32 +444,13 @@ impl Storage {
                         }
                     }
                 }
-                if ready.pattern.is_some() {
-                    fs::create_dir(&path).map_err(|cause| {
-                        ExecutionError::caused(
-                            "cannot create selected remote import root",
-                            ready.span,
-                            cause,
-                        )
-                    })?;
-                }
-                let op = CopyOp {
-                    source: location.clone(),
-                    destination: Location {
-                        backend: Backend::Local,
-                        path: if ready.pattern.is_some() {
-                            format!("{}/", path.to_string_lossy())
-                        } else {
-                            path.to_string_lossy().into_owned()
-                        },
-                    },
-                    pattern: ready.pattern.clone(),
-                    span: ready.span,
-                };
-                crate::runtime::execute_copy_cancellable(
-                    &op,
+                let receipt = crate::runtime::import_finite_source(
+                    location,
+                    &path,
+                    ready.pattern.as_deref(),
                     options.limits.buffer_bytes,
                     options.cancel.clone(),
+                    ready.span,
                 )
                 .map_err(|cause| {
                     ExecutionError::caused(
@@ -479,7 +459,7 @@ impl Storage {
                         cause,
                     )
                 })?;
-                (self.assets.capture(&path), remote_basename(location), None)
+                (self.assets.capture(&path), receipt.basename, None)
             }
         };
         let snapshot = snapshot
@@ -1082,16 +1062,6 @@ fn remote_kind(location: &Location, span: Span) -> Result<FileClass> {
     }
     crate::runtime::inspect_location(location, true)
         .map_err(|message| ExecutionError::new(message, span))
-}
-
-fn remote_basename(location: &Location) -> Option<OsString> {
-    location
-        .path
-        .trim_end_matches(['/', '\\'])
-        .rsplit(['/', '\\'])
-        .next()
-        .filter(|name| !matches!(*name, "" | "." | ".." | "~"))
-        .map(OsString::from)
 }
 
 fn failure(action: &'static str, span: Span, cause: FsError) -> ExecutionError {

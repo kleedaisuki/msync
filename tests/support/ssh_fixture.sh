@@ -36,7 +36,7 @@ install_binary() {
 }
 for path in /bin/bash /bin/sh /bin/cat /bin/cp /bin/chmod /bin/mkdir /bin/rm /bin/mv /bin/ln \
     /usr/bin/find /usr/bin/realpath /usr/bin/dirname /usr/bin/basename /usr/bin/mktemp /usr/bin/stat \
-    /usr/bin/flock /usr/bin/sync /usr/bin/mkfifo; do
+    /usr/bin/flock /usr/bin/sync /usr/bin/mkfifo /usr/bin/touch; do
     install_binary "$path"
 done
 if [ "$python" = 1 ]; then
