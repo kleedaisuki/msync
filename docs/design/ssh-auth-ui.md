@@ -131,10 +131,11 @@ repository tests keep disposable fixtures under project `.temp`.
 - Windows tests must exercise prompt text/context classification, secret-free
   cancellation/error paths, early-helper dispatch and JobObject descendant
   ownership. Cross-compilation proves signatures/types, not actual desktop UI.
-- A real Windows desktop acceptance pass is needed to verify the visible native
-  dialog, focus/accessibility, correct native client askpass invocation and
-  cancellation with an open window. Do not label Unix or headless evidence as
-  completing that visual/native-platform check.
+- Actual Windows dialog acceptance must be distinguished from compilation and
+  headless protocol tests. The owned-window journeys below exercise visible
+  native controls and OK/Cancel on Windows; they are not a human focus,
+  screen-reader or complete interactive SSH-client usability certification.
+  Never label Unix or cross-compilation results as native-window execution.
 
 Opt-in automated native-window acceptance lives in `tests/windows_askpass.rs`.
 The Windows Actions job explicitly runs its ignored tests, while default local
