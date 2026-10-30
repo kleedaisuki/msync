@@ -27,7 +27,9 @@ impl ActiveJob {
             .map_err(|_| {
                 "background worker panicked; its resources have been joined".to_string()
             })?;
-        if stop && let Err(report) = &result {
+        if (stop || self.cancel.is_cancelled())
+            && let Err(report) = &result
+        {
             print_status(&format!("job {}: stopped", self.id), color)?;
             return print_text(&format!(
                 "  reason: {}\n",
@@ -563,6 +565,31 @@ fn path_argument(argument: &str) -> CliResult<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parent_token_cancellation_is_neutral_but_worker_failure_remains_an_error() {
+        fn job(cancel: CancellationToken) -> ActiveJob {
+            ActiveJob {
+                id: 1,
+                handle: Some(thread::spawn(|| {
+                    Err(Report::new(
+                        "test flow ended",
+                        msync::syntax::Span::default(),
+                    ))
+                })),
+                cancel,
+                source: String::new(),
+                file: "<test>".into(),
+                removed: 0,
+            }
+        }
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(job(cancelled).join(false, Color::Never).is_ok());
+        let genuine_failure = CancellationToken::new();
+        genuine_failure.child_token().cancel();
+        assert!(job(genuine_failure).join(false, Color::Never).is_err());
+    }
 
     #[test]
     fn shell_shortcuts_keep_shell_operators_out_of_the_dsl_dispatcher() {
