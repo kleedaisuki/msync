@@ -54,7 +54,7 @@ if ($LASTEXITCODE -ne 0 -or "$reportedVersion".Trim() -ne "msync $version") {
     throw "Release executable version does not match Cargo.toml ($version): $reportedVersion"
 }
 
-$dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+$dumpbin = Get-Command dumpbin.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 $dumpbinPath = $null
 if ($dumpbin) { $dumpbinPath = $dumpbin.Source }
 if (-not $dumpbinPath) {
@@ -94,8 +94,8 @@ try {
     }
     Copy-Item -LiteralPath (Join-Path $root 'docs') -Destination $documentation -Recurse
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'portable-readme.txt') -Destination (Join-Path $stage 'INSTALL.md')
-    $python = Get-Command python -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $python) { $python = Get-Command python3 -CommandType Application -ErrorAction SilentlyContinue }
+    $python = Get-Command python -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $python) { $python = Get-Command python3 -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 }
     if (-not $python) { throw 'Packaging requires Python 3 to collect third-party license notices (not needed by installed local-copy users).' }
     Push-Location $root
     try {
