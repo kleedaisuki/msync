@@ -56,6 +56,14 @@ struct ReplState {
     active: Option<ActiveJob>,
     next_job: u64,
     ssh: msync::runtime::ssh::SshContext,
+    last: Option<LastSubmission>,
+}
+
+struct LastSubmission {
+    compiler: Compiler,
+    script: Script,
+    program: msync::compiler::Program,
+    context: CompileContext,
 }
 
 impl ReplState {
@@ -111,7 +119,7 @@ fn repl_submit_inner(input: SourceUnit<'_>, state: &mut ReplState, options: &Arg
     let authentication =
         auth::Submission::new(&program, !state.dry_run, &state.ssh)?.with_label(file);
     authentication.run(|| {
-        let plan = prepare(&program, &script, !state.dry_run).map_err(|error| {
+        let prepared = prepare_snapshot(&program, &script, !state.dry_run).map_err(|error| {
             diagnostics(
                 file,
                 source,
@@ -119,6 +127,15 @@ fn repl_submit_inner(input: SourceUnit<'_>, state: &mut ReplState, options: &Arg
                 options.color,
             )
         })?;
+        if copies {
+            state.last = Some(LastSubmission {
+                compiler: state.compiler.clone(),
+                script: script.clone(),
+                program: prepared.program,
+                context: context.clone(),
+            });
+        }
+        let plan = prepared.plan;
         if !copies {
             state.compiler = candidate;
             return Ok(());
@@ -237,6 +254,7 @@ fn repl_inner(options: &Args) -> CliResult {
         active: None,
         next_job: 1,
         ssh: msync::runtime::ssh::SshContext::default(),
+        last: None,
     };
     loop {
         state.reap(options.color);
@@ -356,12 +374,49 @@ fn repl_command_inner(
             .help(format!("Usage: {command}"))
             .into());
     }
-    if state.active.is_some() && matches!(name, "cd" | "fmt" | "bash" | "pwsh") {
+    if state.active.is_some()
+        && matches!(
+            name,
+            "cd" | "fmt" | "bash" | "pwsh" | "load-ir" | "export-ir" | "export-relocatable"
+        )
+    {
         return Err(format!(
             "{command} changes shared working-directory or filesystem state; use /wait or /stop before this command"
         ).into());
     }
     match name {
+        "export-ir" | "export-relocatable" => {
+            if argument.is_empty() {
+                return Err(format!("usage: {command} FILE").into());
+            }
+            let last = state.last.as_ref().ok_or(
+                "no compiled transfer submission to export; enter a transfer or /load FILE first",
+            )?;
+            let artifact = if name == "export-relocatable" {
+                msync::ir::Artifact::Relocatable(
+                    last.compiler
+                        .compile_relocatable(&last.script)
+                        .map_err(artifact_cli::reports)?,
+                )
+            } else {
+                msync::ir::Artifact::Contextual(
+                    msync::ir::Contextual::capture(&last.program, &last.context)
+                        .map_err(artifact_cli::reports)?,
+                )
+            };
+            artifact_cli::export(&artifact, argument)
+        }
+        "load-ir" => {
+            if argument.is_empty() || argument == "-" {
+                return Err(format!("usage: {command} FILE (not stdin)").into());
+            }
+            let text = read_source(argument)?;
+            let artifact = msync::ir::Artifact::from_json(&text)?;
+            let context = CompileContext::capture(None)
+                .map_err(|error| CliError::io(IoAction::WorkingDirectory, None, error))?;
+            let bound = artifact.bind(&context).map_err(artifact_cli::reports)?;
+            artifact_cli::execute(&bound, options, &state.ssh, false, state.dry_run)
+        }
         "clear" => {
             if !editor.clear().map_err(|cause| Issue::new("cannot clear the terminal viewport")
                 .field("cause", cause)
@@ -395,6 +450,7 @@ fn repl_command_inner(
         }
         "reset" => {
             state.compiler = Compiler::new();
+            state.last = None;
             print_status(
                 "bindings cleared: ready for new declarations",
                 options.color,

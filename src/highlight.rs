@@ -6,6 +6,9 @@
 use crate::syntax::Span;
 
 pub const COMMANDS: &[&str] = &[
+    "/export-ir",
+    "/export-relocatable",
+    "/load-ir",
     "/help",
     "/?",
     "/quit",

@@ -368,6 +368,14 @@ fn source_basename(path: &str) -> &str {
 }
 
 pub(crate) fn local_path(location: &Location, source: bool) -> Result<Option<PathBuf>> {
+    local_path_at(location, source, None)
+}
+
+pub(crate) fn local_path_at(
+    location: &Location,
+    source: bool,
+    pwd: Option<&Path>,
+) -> Result<Option<PathBuf>> {
     match &location.backend {
         Backend::Local => Ok(Some(expand_home(&location.path)?)),
         Backend::Env => {
@@ -392,6 +400,10 @@ pub(crate) fn local_path(location: &Location, source: bool) -> Result<Option<Pat
             }
             let paths = env::var_os("PATH").unwrap_or_default();
             for directory in env::split_paths(&paths) {
+                let directory = match pwd {
+                    Some(pwd) if directory.is_relative() => pwd.join(directory),
+                    _ => directory,
+                };
                 let candidate = directory.join(name);
                 if candidate.is_file() {
                     return Ok(Some(candidate));

@@ -58,6 +58,14 @@ pub struct ExecutionSummary {
     pub peak_buffer_bytes: usize,
 }
 
+/// One preparation's unoptimized, resolved transfers and disposable execution plan.
+/// Persist `program`, not the filesystem observations/proofs embedded in `plan`.
+#[derive(Clone, Debug)]
+pub struct Prepared {
+    pub program: Program,
+    pub plan: Plan,
+}
+
 /// Resolve local execution context once, inspect types without opening stream data,
 /// then optimize effects. Offline preparation never launches a remote client.
 pub fn prepare(program: &Program, live: bool) -> Result<Plan, RuntimeError> {
@@ -69,6 +77,14 @@ pub fn prepare_spanned(
     live: bool,
     operands: &[(Span, Span)],
 ) -> Result<Plan, RuntimeError> {
+    prepare_snapshot_spanned(program, live, operands).map(|prepared| prepared.plan)
+}
+
+pub fn prepare_snapshot_spanned(
+    program: &Program,
+    live: bool,
+    operands: &[(Span, Span)],
+) -> Result<Prepared, RuntimeError> {
     let mut trace = crate::telemetry::span("prepare");
     let mut observations = Observations::default();
     let result = prepare_inner(program, live, operands, &mut observations);
@@ -94,7 +110,7 @@ fn prepare_inner(
     live: bool,
     operands: &[(Span, Span)],
     observations: &mut Observations,
-) -> Result<Plan, RuntimeError> {
+) -> Result<Prepared, RuntimeError> {
     let mut resolved = program.clone();
     let mut kinds = Vec::with_capacity(resolved.operations.len());
     let mut failures = Vec::new();
@@ -187,7 +203,10 @@ fn prepare_inner(
         }
         validate_operation(&node.operation, node.kinds, pair)?;
     }
-    Ok(plan)
+    Ok(Prepared {
+        program: resolved,
+        plan,
+    })
 }
 
 #[derive(Default)]

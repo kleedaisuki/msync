@@ -1,6 +1,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod compiler;
+pub use compiler::ir;
 pub mod highlight;
 pub mod io;
 pub mod plan;

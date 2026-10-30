@@ -8,11 +8,13 @@ use crate::suggest::distance as edit_distance;
 use regex::Regex;
 use url::Url;
 
+pub mod ir;
+
 use crate::syntax::{
     Diagnostic, OperandSource, Operands, Report, Script, Span, Statement, StatementKind,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Backend {
     Local,
     Wsl,
@@ -32,13 +34,13 @@ pub enum Backend {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Location {
     pub backend: Backend,
     pub path: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CopyOp {
     pub source: Location,
     pub destination: Location,
@@ -46,14 +48,14 @@ pub struct CopyOp {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Program {
     pub operations: Vec<CopyOp>,
 }
 
 /// Logical source identity and working directory, captured once per submission.
 /// Resolving a namespace never canonicalizes paths or reads filesystem metadata.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CompileContext {
     pub pwd: PathBuf,
     pub source_file: Option<PathBuf>,
