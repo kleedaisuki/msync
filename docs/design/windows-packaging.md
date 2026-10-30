@@ -221,3 +221,33 @@ still verify the real GitHub API and downloaded asset digests.
 5. Verify the public asset names, downloaded SHA256SUMS and tag commit. Windows
    signing is a separate publisher-certificate integration; do not describe an
    unsigned package as signed/trusted just because its checksums match.
+
+## v0.4.0 public delivery acceptance (2026-10-30)
+
+Feature PR #1 and packaging PR #2 are merged into main. The actual release source
+and lightweight tag `v0.4.0` both point to
+`5fa4e8613c56d09a742c6ec2e4766157f328292b`.
+[Main release run 41062665252](https://github.com/kleedaisuki/msync/actions/runs/41062665252)
+passes version/publication invariants, Linux packaging, native Windows ISCC
+compilation and the full actual installer lifecycle, then publishes all assets.
+The successful pre-merge package run is 41061927696.
+
+Native evidence includes static-CRT import inspection, portable payload-manifest
+verification, installed and named-PATH commands, Start Menu target/arguments/cwd,
+fresh file copying and IR replay, same-version repair with preexisting data,
+REG_SZ/REG_EXPAND_SZ exact restoration with known/unknown environment references,
+preexisting/declined PATH ownership, config/data/custom-helper preservation and
+installed-uninstaller cleanup. A post-uninstall log handle race is handled only
+by bounded sharing/lock retries; overall PASS follows cleanup rather than
+preceding it. Tool-discovery, checkout-resource bytes and exact Inno 6 ABI repairs
+remain explicit in the source/history instead of suppressing native checks.
+
+The public [v0.4.0 release](https://github.com/kleedaisuki/msync/releases/tag/v0.4.0)
+is neither draft nor prerelease. Its Windows setup, Windows ZIP and Linux archive
+were downloaded again from the public release and all matched `SHA256SUMS`.
+The Windows portable payload manifest also verified, its executable is x86-64,
+and the public Linux binary reported 0.4.0 and performed a fresh preview/IR/copy
+journey with exact output bytes. Untracked working notes are absent from the
+archives. Downloaded products/inspection results are under `dist/downloads/v0.4.0`;
+disposable tool logs and fresh-copy fixtures are under project `.temp/release`.
+This evidence-only documentation update does not modify the tagged build inputs.
