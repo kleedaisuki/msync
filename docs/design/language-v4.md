@@ -9,7 +9,7 @@ The default structured syntax is `0.5`, also selected explicitly by
 `--syntax 0.5`, REPL `/syntax 0.5`, or an initial `# msync: 0.5` header.
 This is the only CLI grammar: both `0.3` and transactional `0.4` are rejected
 with migration guidance. An old wholly quoted filename must become an explicit
-path, for example `$pwd / "file name"` or `$local::"file name"`; bare quotes now
+path, for example `$pwd::pwd / "file name"` or `$local::"file name"`; bare quotes now
 always construct literal data. The CLI does not route old scripts around the
 common statement publication/recovery owner. Internal flat parser/compiler
 primitives are implementation components, not alternate public CLI semantics.
@@ -55,9 +55,9 @@ explicit path context:
 
 ```text
 text := "file name"
-path := $pwd / "file name"
-text -> $pwd / "message.txt"
-path -> $pwd / "copy.txt"
+path := $pwd::pwd / "file name"
+text -> $pwd::pwd / "message.txt"
+path -> $pwd::pwd / "copy.txt"
 ```
 
 Literal destinations are read-only and rejected. Literal whitespace is
@@ -70,12 +70,23 @@ Unqualified path values remain endpoint-polymorphic where declared that way:
 `codex := ~/.codex` can be used with both `$local::codex` and `$wsl::codex`.
 A contextual local value cannot silently be reinterpreted as a guest path.
 
-### Context namespaces
+### Spaces, items and `$pwd::pwd`
 
-`$pwd::pwd` is the logical cwd; `$pwd / "child"` explicitly composes under it.
-Contextual qualification of a declared relative value, such as `$pwd::des`,
-anchors that value under the namespace. A namespace alias follows later context
-changes; a path captured with `:=` retains its declaration-time value.
+`$pwd` is a built-in **space**, not a directory item. Its built-in item `pwd`
+is the absolute logical working-directory path for the current submission:
+
+| Expression/declaration | Type and meaning | Binding time |
+| --- | --- | --- |
+| `$pwd` | Built-in space/capability | Per submission |
+| `$pwd::pwd` | Working-directory path item | Resolved in this submission's context |
+| `here => $pwd` | User alias for the space | `here::pwd` follows subsequent contexts |
+| `cwd := $pwd::pwd` | User path item holding the resolved cwd | Captured at declaration; does not move on REPL `/cd` |
+| `pwd => $pwd` | A space alias whose user-chosen name happens to be `pwd` | Access its cwd item as `pwd::pwd`, not bare `pwd` |
+
+Use `$pwd::pwd` when a path item is intended. `=>` naming a space is not the
+same operation as `::` selecting one of its items; `:=` does not implicitly
+select a cwd item from a space. Built-in `$pwd` and a user binding named `pwd`
+are different names. A bare space is not a readable/writable transfer operand.
 
 `$file::this` and `$file::parent` require a named source/module context. Stdin or
 a direct REPL submission does not substitute cwd. Source identity is a logical
@@ -87,6 +98,70 @@ the relevant block.
 Guest `~` is the endpoint user's home. SSH login-relative paths are not rebased
 under the client's cwd. Remote-relative contexts must be represented explicitly,
 not synthesized with a guessed `/mnt/<drive>` translation or global `chdir`.
+
+### `/` operator: evaluated item composition
+
+`/` is an expression operator, not a request to concatenate unexamined source
+text. Compact and spaced forms have the same meaning; `a/b/c` groups as
+`(a / b) / c`. Both operands are resolved in their lexical environment first,
+including `:=` bindings, macro arguments and definition-time `global` snapshots.
+Its signature is `(Item | StringLiteral) / (Item | StringLiteral) -> Item`;
+here the item must support path composition. A space is not an item. The
+resulting typed values select the operator's behavior:
+
+| Left value | Right value | Definition |
+| --- | --- | --- |
+| Path item | Relative path item | Append the right path, retaining compatible endpoint identity |
+| Path item | String literal | Interpret the string as a path fragment **inside this operator**, then apply the same append rules |
+| String literal | Path item or string literal | Interpret the left string as a path base and apply the same rules |
+| Space, program, or program port | Any | Type error; select a path item before applying `/` |
+
+The string overloads do not make a bare quoted transfer source a file. For
+example, `"input.txt" -> output` copies literal bytes, while
+`$pwd::pwd / "input.txt" -> output` reads a file. An endpoint-qualified quoted
+operand such as `$local::"whole path"` remains a path token, not literal data.
+
+For path **append**, the right item must be relative after expansion. `/absolute`,
+`\absolute`, absolute drive paths, `~`, and `~/child` cannot replace the left
+base. Endpoints must agree where both operands carry one; an unqualified item
+can inherit an explicit endpoint. A known file item cannot have children.
+Fragments must be nonempty, NUL-free and have no component-boundary whitespace;
+interior spaces are valid. There is **no space overload of `/`**. Space-related
+home/root access uses the existing `~`/namespace mechanism: `remote::~` obtains
+the remote home path item; `/` then operates on that item. A rooted path can be
+qualified directly, e.g. `$local::"/absolute/path"`, without a space `/` operation.
+
+A final `/` marks a container and `/.` marks explicit tree replacement. These
+are syntax-level destination intentions, not arbitrary characters silently
+inferred from a string literal; quoting `"."` does not request replacement.
+
+Consequently this is a valid item expansion followed by an invalid append:
+
+```text
+remote => ssh://Example
+.codex := ~/.codex
+remote::~/.codex/config.toml -> record.txt
+# The failing subexpression is remote::~ / .codex.
+# left  expands to ssh://Example::~
+# right expands to ~/.codex, which is rooted too.
+```
+
+Use `remote::.codex/config.toml -> record.txt` when the alias already supplies
+its home root. `leaf := other` also means `folder/leaf` uses the expanded item
+`other`; the final spelling is not protected from item lookup merely because it
+appears after `/`.
+
+### Expansion-visible diagnostics
+
+An invalid append retains the `/` token as its primary error site, labels the
+actual expanded left/right path values, and points to captured item definitions.
+Intermediate aliases and macro arguments carry their own definition/call sites;
+rebinding an upstream alias later does not rewrite an earlier captured expansion.
+Owned source identities keep earlier REPL submissions and loaded modules distinct
+even when they share the same display name. Only relevant bindings are shown,
+with at most 16 stored frames and 160 Unicode scalar values per displayed value;
+truncation is explicit. This adds diagnostic provenance, not filesystem probes,
+remote HOME discovery, changed grammar, or an executable IR format change.
 
 ### Destination intent
 
@@ -172,7 +247,7 @@ macro generate(output):
     async Generator => $path::bash("-c", "printf generated")
     Generator::stdout -> output
 
-generate($pwd / "generated.txt")
+generate($pwd::pwd / "generated.txt")
 ```
 
 At definition, retain the body AST, formal declarations, source identity, and a

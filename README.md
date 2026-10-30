@@ -12,7 +12,7 @@ Syntax **0.5 is the only CLI grammar**. An optional `# msync: 0.5` header or
 `--syntax 0.5` makes that explicit. Syntax 0.3 and transactional syntax 0.4 are
 rejected with migration guidance, not accepted with silently changed semantics.
 To migrate an old quoted filename, use an explicit joined or qualified path,
-such as `$pwd / "file name"`; bare `"file name"` is literal data. All scripts
+such as `$pwd::pwd / "file name"`; bare `"file name"` is literal data. All scripts
 use the same statement publication/recovery owner.
 
 ## Install a release
@@ -57,8 +57,8 @@ macro copy_codex_config(codex, des):
     codex/agents -> des/agents/.
 
 codex := ~/.codex
-copy_codex_config($local::codex, $pwd::local)
-copy_codex_config($wsl::codex, $pwd::wsl)
+copy_codex_config($local::codex, $pwd::pwd/local)
+copy_codex_config($wsl::codex, $pwd::pwd/wsl)
 ```
 
 `:=` binds a typed value; `=>` binds an endpoint, namespace, or program.
@@ -67,13 +67,25 @@ UTF-8 data, not a filename inferred from its position or current existence:
 
 ```text
 "hello, 可莉" -> message.txt
-$pwd / "input file.txt" -> $pwd / "copied file.txt"
+$pwd::pwd / "input file.txt" -> $pwd::pwd / "copied file.txt"
 ```
 
 Path components may contain internal spaces but not leading/trailing whitespace.
 Literal content is preserved byte-for-byte. Macros expand typed values in an
 isolated lexical environment. `global name` imports a binding from the macro's
 definition-time environment; caller locals are not implicitly captured.
+
+`$pwd` is a space; `$pwd::pwd` is its working-directory **item**. For example,
+`here => $pwd` aliases the space (use `here::pwd`), whereas
+`cwd := $pwd::pwd` captures the cwd path value. Naming a space with `=>` does not
+select its item. `/` has no space overload: select the item first. Space-related
+home access uses `~`, as in `remote::~`, rather than `/`.
+
+`/` evaluates both item operands before composing paths: `:=` bindings are
+expanded even on the right. A rooted right item cannot replace a path base.
+String literals have explicit path-fragment overloads inside `/`; a bare quoted
+transfer source still means literal data. See the [complete operator and space/item
+definitions](docs/design/language-v4.md#-operator-evaluated-item-composition).
 
 ## Reusable IR commands
 
@@ -243,7 +255,7 @@ completion. See [stream details](docs/design/streams.md).
 | --- | --- |
 | `$local` | Local filesystem; `~/` uses the local user's home |
 | `$wsl` | Default WSL distribution through its file adapter |
-| `$pwd::pwd`, `$pwd / "child"` | Explicit working-directory context |
+| `$pwd::pwd`, `$pwd::pwd / "child"` | Explicit working-directory context |
 | `$file::this`, `$file::parent` | Named source/module and its parent |
 | `$path::bash` | Executable lookup when the relevant block executes |
 | `$env::NAME/child` | Environment-derived path |

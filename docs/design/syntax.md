@@ -79,3 +79,67 @@ These are explicit binding-time rules, not filesystem-resolution heuristics: nam
 ## Stream endpoint syntax
 
 TCP endpoint declarations use `tcp://host:port` with mandatory explicit port, no credentials/query/fragment and no nontrivial URL path. They lower to `Backend::Tcp`; execution and stream framing are owned by the plan/stream layers, not encoded as parser special cases.
+
+## 0.5 item-expansion diagnostics and operator contracts
+
+The current operator contract is explicit in
+[the language reference](language-v4.md#-operator-evaluated-item-composition):
+`/` evaluates item/string operands, including `:=` expansion on the right. It
+has **no space overload**. `$pwd` is a space; `$pwd::pwd` selects its cwd item;
+`pwd => $pwd` merely creates another space name whose item is `pwd::pwd`.
+Space-related home access remains `~`, e.g. `remote::~`. The earlier implicit
+space-to-path branches and source generators using them are corrected, not
+replaced with an atomic-path parser. Item and literal composition remains.
+
+A rooted RHS can legitimately appear only after expansion. The compiler retains
+its original semantic error at `/`, but labels the actual expanded LHS/RHS and
+related item definitions rather than presenting an unexplained "rooted" label.
+For `.codex := ~/.codex`, `remote::~/.codex/config.toml` shows that the right
+item `.codex` expands to `~/.codex`; it does not reinterpret the user's item as
+unexpanded filename text or silently discard the left root.
+
+`compiler/structured/diagnostics.rs` owns private, bounded expansion traces.
+Each declaration records its own source identity, a bounded typed value summary,
+and shared references to relevant inherited frames. Macro parameter traces use
+argument sites; explicit globals keep definition-time snapshots. Rebinding a
+name cannot rewrite earlier traces. Storage as well as rendering is limited to
+16 flat frames, avoiding both unbounded REPL chains and recursive graph drops.
+Displayed values/names retain at most 160 Unicode scalars with explicit elision.
+The normal successful resolver does not build an error report or re-run IO.
+
+`Scope.sites` still describes semantic operand origin and may intentionally
+collapse aliases. It is **not** repurposed as a declaration site. New objects
+export known own declaration locations using the existing debug-site schema;
+imported frames are explicitly labeled `source origin`, so older objects with
+collapsed source origins do not falsely claim to retain an alias declaration or
+a complete expansion chain. No public `Report` constructor or executable IR
+format is changed. `LocatedReport` already owns cross-source labels, including
+separate REPL submissions with the same display name.
+
+The diagnostic visitor must follow actual namespace lookup order: unknown or
+non-space qualifiers fail before RHS lookup, `$file::parent`/`this` do not expand
+same-named user bindings, and intrinsic `$pwd::pwd` does not consult a user
+`pwd` item. Negative provenance tests protect these distinctions; a plausible
+but unvisited binding is worse than an omitted frame.
+
+This follows production compiler practice rather than inventing a diagnostic
+language: [Clang bounds template-instantiation notes](https://clang.llvm.org/docs/UsersManual.html#options-to-control-error-and-warning-messages),
+[GCC exposes template structure](https://gcc.gnu.org/onlinedocs/gcc/Diagnostic-Message-Formatting-Options.html#index-fdiagnostics-show-template-tree),
+and [Rust keeps call-site expansion ancestry](https://rustc-dev-guide.rust-lang.org/macro-expansion.html#the-call-site-hierarchy).
+Here those mechanisms map to item definitions, typed expanded operands and
+macro argument/call sites, not arbitrary host environment dumps or remote HOME
+probes. Local Clang/GCC template-error probes and the real msync REPL/copy/IR
+journeys were run during implementation; disposable evidence is under
+`.temp/syntax-restoration/`.
+
+Relevant regressions are `tests/source_v4.rs`, `tests/join_v4.rs` and
+`tests/cli.rs`: real error/recovery flows, cross-source alias and macro snapshots,
+old/new imported origins, rejected space operands, explicit cwd-item copying,
+bounded chains, Unicode/color properties, and replayable binding serialization
+without generated space `/` expressions.
+
+Recent research on [Gradual Metaprogramming (2025)](https://arxiv.org/abs/2506.09043)
+also treats identifying the generating source location as a first-class problem.
+The applicable lesson here is to preserve the binding/argument responsible for
+an invalid expanded value, not merely report the final failed operation. Its
+gradual-type calculus is not needed for this already typed, compile-time resolver.
