@@ -25,6 +25,8 @@ $existing = $hive.OpenSubKey($uninstallKey)
 if ($null -ne $existing) { $existing.Dispose(); $environment.Dispose(); $hive.Dispose(); throw 'Refusing to test over an existing per-user msync installation. Use an isolated Windows account/CI runner.' }
 $owner = $hive.OpenSubKey($ownerKey)
 if ($null -ne $owner) { $owner.Dispose(); $environment.Dispose(); $hive.Dispose(); throw 'Refusing to overwrite existing msync installer ownership state. Use an isolated Windows account/CI runner.' }
+$shortcutPath = Join-Path ([Environment]::GetFolderPath('Programs')) 'msync/msync REPL.lnk'
+if (Test-Path -LiteralPath $shortcutPath) { $environment.Dispose(); $hive.Dispose(); throw 'Refusing to overwrite an existing msync REPL shortcut. Use an isolated Windows account/CI runner.' }
 
 function Read-UserPath {
     $present = @($environment.GetValueNames()) -contains 'Path'
@@ -67,12 +69,39 @@ function Uninstall-App([string]$Directory) {
     Invoke-Setup $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') (Join-Path $work 'uninstall.log')
     $remaining = $hive.OpenSubKey($uninstallKey)
     if ($null -ne $remaining) { $remaining.Dispose(); throw 'Uninstall entry remains after successful uninstall.' }
+    if (Test-Path -LiteralPath $shortcutPath) { throw 'Installer-owned REPL shortcut remains after uninstall.' }
 }
 function Invoke-Msync([string]$Executable, [string[]]$Arguments) {
     $output = & $Executable @Arguments
     if ($LASTEXITCODE -ne 0) { throw "Installed msync failed ($LASTEXITCODE): $Arguments" }
     return $output
 }
+function Assert-InstalledUx([string]$Directory) {
+    $exe = Join-Path $Directory 'bin/msync.exe'
+    $previousProcessPath = $env:Path
+    try {
+        # Simulate a restarted terminal; do not change Machine/User PATH here.
+        $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+        $resolved = Get-Command msync.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+        if ($resolved.Source -ine $exe) { throw "Refreshed terminal resolved the wrong msync: $($resolved.Source)" }
+        $reported = & msync.exe --version
+        if ($LASTEXITCODE -ne 0 -or "$reported".Trim() -ne "msync $version") { throw 'Named msync command is not usable after PATH installation.' }
+    } finally { $env:Path = $previousProcessPath }
+    if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) { throw 'Installed REPL shortcut is missing.' }
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $null
+    try {
+        # CreateShortcut reads an existing link; no Save call or unrelated edit.
+        $link = $shell.CreateShortcut($shortcutPath)
+        if ($link.TargetPath -ine $exe -or $link.Arguments -cne 'repl' -or $link.WorkingDirectory -ine $env:USERPROFILE) {
+            throw 'Installed REPL shortcut has an unexpected executable, arguments or working directory.'
+        }
+    } finally {
+        if ($null -ne $link) { $null = [Runtime.InteropServices.Marshal]::FinalReleaseComObject($link) }
+        $null = [Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)
+    }
+}
+
 function Assert-InstalledJourney([string]$Directory) {
     $exe = Join-Path $Directory 'bin/msync.exe'
     $reported = Invoke-Msync $exe @('--version')
@@ -153,8 +182,7 @@ try {
     $bin = Join-Path $active 'bin'
     if (-not $installedPath.Present -or $installedPath.Raw -cne $bin) { throw 'Missing user PATH was not created with the installed bin directory.' }
     Assert-InstalledJourney $active
-    Install-App $active $true
-    Assert-Path $installedPath 'Upgrade'
+    Assert-InstalledUx $active
     $config = Join-Path $active 'config.toml'
     [IO.File]::WriteAllText($config, 'user-owned configuration must survive')
     $data = Join-Path $active 'data'
@@ -162,6 +190,15 @@ try {
     [IO.File]::WriteAllText((Join-Path $data 'note.txt'), 'user-owned data')
     $helper = Join-Path $active 'bin/custom-helper.exe'
     [IO.File]::WriteAllText($helper, 'user-owned helper sentinel, not an executable')
+    Install-App $active $true
+    Assert-Path $installedPath 'Upgrade'
+    if ([IO.File]::ReadAllText($config) -cne 'user-owned configuration must survive' -or
+        [IO.File]::ReadAllText((Join-Path $data 'note.txt')) -cne 'user-owned data' -or
+        [IO.File]::ReadAllText($helper) -cne 'user-owned helper sentinel, not an executable') {
+        throw 'Repair/upgrade changed user configuration, data or a custom helper.'
+    }
+    Assert-InstalledJourney $active
+    Assert-InstalledUx $active
     $addon = Join-Path $work 'unrelated addon'
     $withAddon = [pscustomobject]@{ Present = $true; Raw = "$($installedPath.Raw);$addon"; Kind = $installedPath.Kind }
     Write-UserPath $withAddon
@@ -173,7 +210,7 @@ try {
     $active = $null
 
     foreach ($kind in @([Microsoft.Win32.RegistryValueKind]::String, [Microsoft.Win32.RegistryValueKind]::ExpandString)) {
-        $baseline = [pscustomobject]@{ Present = $true; Raw = ';C:\First;;%MSYNC_UNEXPANDED_TEST%;C:\Last;'; Kind = $kind }
+        $baseline = [pscustomobject]@{ Present = $true; Raw = ';C:\First;;%USERPROFILE%\kept;%MSYNC_UNEXPANDED_TEST%;C:\Last;'; Kind = $kind }
         Write-UserPath $baseline
         $active = Join-Path $work ("existing-$kind")
         Install-App $active $true
