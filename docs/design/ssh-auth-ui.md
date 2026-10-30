@@ -135,3 +135,15 @@ repository tests keep disposable fixtures under project `.temp`.
   dialog, focus/accessibility, correct native client askpass invocation and
   cancellation with an open window. Do not label Unix or headless evidence as
   completing that visual/native-platform check.
+
+Opt-in automated native-window acceptance lives in `tests/windows_askpass.rs`.
+The Windows Actions job explicitly runs its ignored tests, while default local
+runs do not open unsolicited dialogs. The tests enumerate only the owned helper
+PID's windows, check the branded caption, connection/task/request labels and a
+masked password control, then drive the actual dialog's OK/Cancel handlers using
+bounded window messages. Acceptance must produce the exact Unicode fixture
+response on stdout; cancellation must signal the parent event without response
+bytes. Missing desktop access or an unexpected external UI broker is a diagnostic
+failure, not a silent skip. No global focus, keyboard injection, clipboard, or
+unrelated window manipulation is used. Human focus, screen-reader and visual
+usability review remains distinct from these automated native-control checks.
