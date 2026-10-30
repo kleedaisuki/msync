@@ -88,6 +88,7 @@ One statement per nonempty line. `#` begins a comment at a whitespace boundary o
 | --- | --- |
 | `remote => $wsl` | Bind an endpoint |
 | `server => ssh://alice@host:2222` | Bind SSH |
+| `server => ssh://Production_Box` | Use a native OpenSSH `Host Production_Box` configuration entry |
 | `public => https://example.com/` | Bind a read-only HTTP(S) source |
 | `wire => tcp://127.0.0.1:9000` | Bind an active TCP stream endpoint; use `wire::/` as its operand |
 | `.config := ~/.config` | Bind a path alias |

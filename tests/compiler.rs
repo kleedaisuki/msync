@@ -524,3 +524,30 @@ fn tcp_path_aliases_preserve_socket_marker_and_reject_suffixes() {
         assert!(report.help[0].contains("TCP has no filesystem path"));
     }
 }
+
+#[test]
+fn ssh_configuration_aliases_preserve_exact_names_and_optional_overrides() {
+    for (url, host, user, port) in [
+        ("ssh://Production_Box", "Production_Box", None, None),
+        ("ssh://Build.Host", "Build.Host", None, None),
+        (
+            "ssh://Alice@Production_Box:2222",
+            "Production_Box",
+            Some("Alice"),
+            Some(2222),
+        ),
+        ("ssh://alice@[::1]:2222", "[::1]", Some("alice"), Some(2222)),
+    ] {
+        let source = format!("server => {url}\nserver::input -> output\n");
+        let program = compile(&source);
+        assert_eq!(
+            program.operations[0].source.backend,
+            Backend::Ssh {
+                host: host.to_owned(),
+                user: user.map(str::to_owned),
+                port,
+            }
+        );
+        assert_eq!(program.operations[0].source.backend.to_string(), url);
+    }
+}

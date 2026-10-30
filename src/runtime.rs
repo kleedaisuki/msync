@@ -41,6 +41,9 @@ impl fmt::Display for RuntimeError {
 impl std::error::Error for RuntimeError {}
 
 mod inspection;
+pub mod ssh;
+#[cfg(windows)]
+pub(crate) mod windows_auth;
 
 #[cfg(all(test, windows))]
 use inspection::inspect_location_live;
@@ -837,10 +840,10 @@ impl Drop for Scratch {
 }
 
 fn run(command: &mut Command) -> Result<Output> {
-    run_cancellable(
-        command,
-        &CopyContext::new(64 * 1024, &CancellationToken::new()),
-    )
+    let cancel = ssh::current()
+        .and_then(|context| context.cancellation())
+        .unwrap_or_default();
+    run_cancellable(command, &CopyContext::new(64 * 1024, &cancel))
 }
 
 fn run_cancellable(command: &mut Command, context: &CopyContext<'_>) -> Result<Output> {
@@ -864,15 +867,24 @@ fn run_process(
 ) -> Result<Output> {
     context.check()?;
     let name = command.get_program().to_string_lossy().into_owned();
-    let mut child = command
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            trace.io_error("spawn", &error);
-            format!("cannot start {name}: {error}")
-        })?;
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    let spawned = windows_auth::spawn(command);
+    #[cfg(not(windows))]
+    let spawned = command.spawn();
+    #[cfg(windows)]
+    let (mut child, process_job) = spawned.map_err(|error| {
+        trace.io_error("spawn", &error);
+        format!("cannot start owned transport {name}: {error}")
+    })?;
+    #[cfg(not(windows))]
+    let mut child = spawned.map_err(|error| {
+        trace.io_error("spawn", &error);
+        format!("cannot start {name}: {error}")
+    })?;
     trace.metric("pid", child.id() as u64);
     trace.event("process.open", &[], &[]);
     let stdout = child
@@ -889,6 +901,8 @@ fn run_process(
     let status = loop {
         if context.cancel.is_cancelled() {
             cancelled = true;
+            #[cfg(windows)]
+            let _ = process_job.terminate();
             let _ = child.kill();
             break child.wait();
         }
@@ -902,6 +916,9 @@ fn run_process(
             }
         }
     };
+    // A helper may inherit the capture pipes after its parent exits.
+    #[cfg(windows)]
+    let _ = process_job.terminate();
     let stdout = output
         .join()
         .map_err(|_| "subprocess output reader failed")?
@@ -1014,6 +1031,9 @@ pub(crate) fn remote_command_builder(
         }
         Backend::Ssh { host, user, port } => {
             let mut command = ssh_client("ssh");
+            if let Some(context) = ssh::current() {
+                context.configure(&mut command, backend);
+            }
             if let Some(port) = port {
                 command.args(["-p", &port.to_string()]);
             }
@@ -1376,6 +1396,9 @@ fn scp(location: &Location, local: &Path, upload: bool, context: &CopyContext<'_
         return Err("SCP requires SSH endpoint".into());
     };
     let mut command = ssh_client("scp");
+    if let Some(context) = ssh::current() {
+        context.configure_scp(&mut command, &location.backend);
+    }
     command.arg("-r");
     if let Some(port) = port {
         command.args(["-P", &port.to_string()]);

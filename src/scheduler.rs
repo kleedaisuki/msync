@@ -404,15 +404,19 @@ pub async fn execute_plan_async(
     let parent = crate::telemetry::context();
     let mut trace = crate::telemetry::linked_span("schedule", parent.as_ref());
     trace.expect_completion();
-    let result = async {
+    let ssh = runtime::ssh::current();
+    let execution = async {
         limits
             .validate()
             .map_err(|message| error(message, first_span(plan)))?;
         validate_graph(plan)?;
         validate_execution_kinds(plan)?;
         schedule(plan, limits, cancel, trace.context()).await
-    }
-    .await;
+    };
+    let result = match ssh {
+        Some(context) => context.scope(execution).await,
+        None => execution.await,
+    };
     trace.finish_result(&result);
     if let Ok(summary) = &result {
         trace.metric("completed", summary.completed as u64);
@@ -771,8 +775,15 @@ impl<'a> Scheduler<'a> {
         let parent = self.parent.clone();
         let cancel = self.cancel.clone();
         let buffer = self.limits.buffer_bytes;
-        self.tasks
-            .spawn(async move { (id, run_node(operation, kinds, buffer, cancel, parent).await) });
+        let ssh = runtime::ssh::current();
+        self.tasks.spawn(async move {
+            let execution = run_node(operation, kinds, buffer, cancel, parent);
+            let result = match ssh {
+                Some(context) => context.scope(execution).await,
+                None => execution.await,
+            };
+            (id, result)
+        });
     }
 
     fn accept(&mut self, joined: Result<Completion, tokio::task::JoinError>) {
@@ -936,10 +947,13 @@ async fn run_node(
             })
     } else {
         let context = trace.context();
+        let ssh = runtime::ssh::current();
         let span = operation.span;
         tokio::task::spawn_blocking(move || {
-            crate::telemetry::with_context(context.as_ref(), || {
-                runtime::execute_copy_cancellable(&operation, buffer, cancel)
+            runtime::ssh::with_context(ssh.as_ref(), || {
+                crate::telemetry::with_context(context.as_ref(), || {
+                    runtime::execute_copy_cancellable(&operation, buffer, cancel)
+                })
             })
         })
         .await

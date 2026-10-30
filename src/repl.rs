@@ -55,6 +55,7 @@ struct ReplState {
     dry_run: bool,
     active: Option<ActiveJob>,
     next_job: u64,
+    ssh: msync::runtime::ssh::SshContext,
 }
 
 impl ReplState {
@@ -107,86 +108,104 @@ fn repl_submit_inner(input: SourceUnit<'_>, state: &mut ReplState, options: &Arg
     let program = candidate
         .compile_rich_with_context(&script, &context)
         .map_err(|errors| diagnostics(file, source, &errors, options.color))?;
-    let plan = prepare(&program, &script, !state.dry_run).map_err(|error| {
-        diagnostics(
-            file,
-            source,
-            &[runtime_report(&script, error)],
+    let authentication =
+        auth::Submission::new(&program, !state.dry_run, &state.ssh)?.with_label(file);
+    authentication.run(|| {
+        let plan = prepare(&program, &script, !state.dry_run).map_err(|error| {
+            diagnostics(
+                file,
+                source,
+                &[runtime_report(&script, error)],
+                options.color,
+            )
+        })?;
+        if !copies {
+            state.compiler = candidate;
+            return Ok(());
+        }
+        if state.dry_run {
+            print_plan(&plan, options.color)?;
+            if copies {
+                print_status(
+                    &format!(
+                        "preview: {} operation(s); no files written\n",
+                        plan.nodes.len()
+                    ),
+                    options.color,
+                )?;
+            }
+            state.compiler = candidate;
+            return Ok(());
+        }
+        let streaming = plan.nodes.iter().any(|node| {
+            node.kinds.source == FileClass::Stream || node.kinds.destination == FileClass::Stream
+        });
+        if !streaming || authentication.foreground_reason().is_some() {
+            if streaming && let Some(reason) = authentication.foreground_reason() {
+                print_status(
+                    "SSH plan: running in foreground because a safe background authentication lease is unavailable; Ctrl-C cancels the transfer",
+                    options.color,
+                )?;
+                print_text(&format!("  reason: {}\n", presentation::escape(reason)))?;
+            }
+            let mut execution = msync::telemetry::span("execute");
+            let result = scheduler::execute_plan_cancellable(
+                &plan,
+                &options.limits,
+                authentication.cancellation(),
+            );
+            execution.finish_result(&result);
+            state.compiler = candidate;
+            return print_summary(
+                result.map_err(|error| {
+                    diagnostics(
+                        file,
+                        source,
+                        &[runtime_report(&script, error)],
+                        options.color,
+                    )
+                })?,
+                plan.removed.len(),
+                copies,
+                options.color,
+            );
+        }
+        let cancel = authentication.cancellation();
+        let worker_cancel = cancel.clone();
+        let ssh = msync::runtime::ssh::current();
+        let limits = options.limits.clone();
+        let parent = msync::telemetry::context();
+        let removed = plan.removed.len();
+        let handle = thread::Builder::new()
+            .name("msync-repl-plan".into())
+            .spawn(move || {
+                let mut execution = msync::telemetry::linked_span("execute", parent.as_ref());
+                let context = execution.context();
+                let result = msync::telemetry::with_context(context.as_ref(), || {
+                    msync::runtime::ssh::with_context(ssh.as_ref(), || {
+                        scheduler::execute_plan_cancellable(&plan, &limits, worker_cancel)
+                    })
+                });
+                execution.finish_result(&result);
+                result.map_err(|error| runtime_report(&script, error))
+            })
+            .map_err(|error| format!("cannot start background plan: {error}"))?;
+        let id = state.next_job;
+        state.next_job += 1;
+        state.active = Some(ActiveJob {
+            id,
+            handle: Some(handle),
+            cancel,
+            source: source.to_owned(),
+            file: file.to_owned(),
+            removed,
+        });
+        state.compiler = candidate;
+        print_status(
+            &format!("job {id}: running in background; use /jobs, /wait or /stop\n"),
             options.color,
         )
-    })?;
-    if !copies {
-        state.compiler = candidate;
-        return Ok(());
-    }
-    if state.dry_run {
-        print_plan(&plan, options.color)?;
-        if copies {
-            print_status(
-                &format!(
-                    "preview: {} operation(s); no files written\n",
-                    plan.nodes.len()
-                ),
-                options.color,
-            )?;
-        }
-        state.compiler = candidate;
-        return Ok(());
-    }
-    let streaming = plan.nodes.iter().any(|node| {
-        node.kinds.source == FileClass::Stream || node.kinds.destination == FileClass::Stream
-    });
-    if !streaming {
-        let mut execution = msync::telemetry::span("execute");
-        let result = scheduler::execute_plan(&plan, &options.limits);
-        execution.finish_result(&result);
-        state.compiler = candidate;
-        return print_summary(
-            result.map_err(|error| {
-                diagnostics(
-                    file,
-                    source,
-                    &[runtime_report(&script, error)],
-                    options.color,
-                )
-            })?,
-            plan.removed.len(),
-            copies,
-            options.color,
-        );
-    }
-    let cancel = CancellationToken::new();
-    let worker_cancel = cancel.clone();
-    let limits = options.limits.clone();
-    let parent = msync::telemetry::context();
-    let removed = plan.removed.len();
-    let handle = thread::Builder::new()
-        .name("msync-repl-plan".into())
-        .spawn(move || {
-            let mut execution = msync::telemetry::linked_span("execute", parent.as_ref());
-            let context = execution.context();
-            let result = msync::telemetry::with_context(context.as_ref(), || {
-                scheduler::execute_plan_cancellable(&plan, &limits, worker_cancel)
-            });
-            execution.finish_result(&result);
-            result.map_err(|error| runtime_report(&script, error))
-        })
-        .map_err(|error| format!("cannot start background plan: {error}"))?;
-    let id = state.next_job;
-    state.next_job += 1;
-    state.active = Some(ActiveJob {
-        id,
-        handle: Some(handle),
-        cancel,
-        source: source.to_owned(),
-        file: file.to_owned(),
-        removed,
-    });
-    state.compiler = candidate;
-    print_status(
-        &format!("job {id}: running in background; use /jobs, /wait or /stop\n"),
-        options.color,
-    )
+    })
 }
 
 pub(super) fn run(options: &Args) -> CliResult {
@@ -217,6 +236,7 @@ fn repl_inner(options: &Args) -> CliResult {
         dry_run: options.dry_run,
         active: None,
         next_job: 1,
+        ssh: msync::runtime::ssh::SshContext::default(),
     };
     loop {
         state.reap(options.color);

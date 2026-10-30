@@ -1,7 +1,10 @@
+mod auth;
 mod editor;
 mod presentation;
 mod repl;
 mod shell;
+#[cfg(any(windows, test))]
+mod windows_askpass;
 
 use std::env;
 use std::fs;
@@ -260,6 +263,10 @@ fn add_positional(options: &mut Args, arg: String) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    if let Some(status) = windows_askpass::handle() {
+        return status;
+    }
     let args: Vec<_> = env::args().skip(1).collect();
     let color = requested_color(&args);
     let result = arguments(args.into_iter())
@@ -637,33 +644,44 @@ fn submit(
                 color,
             );
         }
-        let plan = prepare(&program, &script, !dry_run)
-            .map_err(|error| diagnostics(file, source, &[runtime_report(&script, error)], color))?;
-        *compiler = candidate;
-        if matches!(command, "plan" | "compile") {
-            return print_plan(&plan, color);
-        }
-        if dry_run {
-            print_plan(&plan, color)?;
-            return print_status(
-                &format!(
-                    "preview: {} operation(s); no files written\n",
-                    plan.nodes.len()
-                ),
+        let authentication = auth::Submission::foreground(
+            &program,
+            !dry_run,
+            &msync::runtime::ssh::SshContext::default(),
+        )?
+        .with_label(file);
+        authentication.run(|| {
+            let plan = prepare(&program, &script, !dry_run).map_err(|error| {
+                diagnostics(file, source, &[runtime_report(&script, error)], color)
+            })?;
+            *compiler = candidate;
+            if matches!(command, "plan" | "compile") {
+                return print_plan(&plan, color);
+            }
+            if dry_run {
+                print_plan(&plan, color)?;
+                return print_status(
+                    &format!(
+                        "preview: {} operation(s); no files written\n",
+                        plan.nodes.len()
+                    ),
+                    color,
+                );
+            }
+            let mut execution = msync::telemetry::span("execute");
+            let result =
+                scheduler::execute_plan_cancellable(&plan, limits, authentication.cancellation());
+            execution.finish_result(&result);
+            let summary = result.map_err(|error| {
+                diagnostics(file, source, &[runtime_report(&script, error)], color)
+            })?;
+            print_summary(
+                summary,
+                plan.removed.len(),
+                !program.operations.is_empty(),
                 color,
-            );
-        }
-        let mut execution = msync::telemetry::span("execute");
-        let result = scheduler::execute_plan(&plan, limits);
-        execution.finish_result(&result);
-        let summary = result
-            .map_err(|error| diagnostics(file, source, &[runtime_report(&script, error)], color))?;
-        print_summary(
-            summary,
-            plan.removed.len(),
-            !program.operations.is_empty(),
-            color,
-        )
+            )
+        })
     })();
     trace.finish_result(&result);
     result

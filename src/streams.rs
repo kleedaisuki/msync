@@ -995,6 +995,8 @@ fn fifo_closed(file: &fs::File) -> io::Result<bool> {
 }
 
 struct RemoteProcess {
+    #[cfg(windows)]
+    job: crate::runtime::windows_auth::ProcessJob,
     child: tokio::process::Child,
     stderr: Arc<Mutex<Vec<u8>>>,
     drain: tokio::task::JoinHandle<()>,
@@ -1126,6 +1128,9 @@ impl RemoteProcess {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(windows)]
+        let (mut child, job) = crate::runtime::windows_auth::spawn_async(&mut command)?;
+        #[cfg(not(windows))]
         let mut child = command.spawn()?;
         let stderr = child
             .stderr
@@ -1140,6 +1145,8 @@ impl RemoteProcess {
             Arc::clone(&committed),
         ));
         Ok(Self {
+            #[cfg(windows)]
+            job,
             child,
             stderr: captured,
             drain,
@@ -1173,6 +1180,9 @@ impl RemoteProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        #[cfg(windows)]
+        let (mut child, job) = crate::runtime::windows_auth::spawn_async(&mut command)?;
+        #[cfg(not(windows))]
         let mut child = command.spawn()?;
         let stderr = child
             .stderr
@@ -1188,6 +1198,8 @@ impl RemoteProcess {
             Arc::clone(&committed),
         ));
         let mut process = Self {
+            #[cfg(windows)]
+            job,
             child,
             stderr: captured,
             drain,
@@ -1256,6 +1268,8 @@ impl RemoteProcess {
 
     async fn wait(&mut self) -> Result<(), String> {
         let status = self.child.wait().await.map_err(|error| error.to_string())?;
+        #[cfg(windows)]
+        let _ = self.job.terminate();
         if self.file_output() || !status.success() {
             let _ = (&mut self.drain).await;
         }
@@ -1316,6 +1330,8 @@ impl Drop for RemoteProcess {
             }
         }
         self.drain.abort();
+        #[cfg(windows)]
+        let _ = self.job.terminate();
         let _ = self.child.start_kill();
     }
 }
