@@ -530,6 +530,14 @@ fn ssh_configuration_aliases_preserve_exact_names_and_optional_overrides() {
     for (url, host, user, port) in [
         ("ssh://Production_Box", "Production_Box", None, None),
         ("ssh://Build.Host", "Build.Host", None, None),
+        ("ssh://开发机", "开发机", None, None),
+        ("ssh://开发%机", "开发%机", None, None),
+        (
+            "ssh://Alice@开发机:2222",
+            "开发机",
+            Some("Alice"),
+            Some(2222),
+        ),
         (
             "ssh://Alice@Production_Box:2222",
             "Production_Box",
@@ -549,5 +557,20 @@ fn ssh_configuration_aliases_preserve_exact_names_and_optional_overrides() {
             }
         );
         assert_eq!(program.operations[0].source.backend.to_string(), url);
+    }
+}
+
+#[test]
+fn ssh_configuration_lookup_never_silently_strips_host_controls() {
+    for endpoint in [
+        "ssh://host\nother",
+        "ssh://host\tother",
+        "ssh://host\rother",
+        "ssh:\t//host",
+    ] {
+        let source = format!("remote => {endpoint:?}\nremote::input -> output\n");
+        let errors = reports(&source);
+        assert!(!errors.is_empty());
+        assert!(errors[0].diagnostic.message.contains("control characters"));
     }
 }

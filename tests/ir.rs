@@ -253,3 +253,24 @@ fn contextual_capture_resolves_native_drive_relative_paths() {
     }
     Artifact::Contextual(captured).to_json().unwrap();
 }
+
+#[test]
+fn native_ssh_configuration_names_survive_both_ir_stages_without_url_encoding() {
+    let root = workspace();
+    let script = syntax::parse("remote => ssh://开发%机\nremote::input -> output\n").unwrap();
+    let portable = Artifact::Relocatable(Compiler::new().compile_relocatable(&script).unwrap());
+    let bound = Artifact::from_json(&portable.to_json().unwrap())
+        .unwrap()
+        .bind(&context(root.path()))
+        .unwrap();
+    let contextual = Artifact::from_json(&Artifact::Contextual(bound).to_json().unwrap()).unwrap();
+    let rebound = contextual.bind(&context(root.path())).unwrap();
+    assert_eq!(
+        rebound.program().operations[0].source.backend,
+        Backend::Ssh {
+            host: "开发%机".to_owned(),
+            user: None,
+            port: None
+        }
+    );
+}

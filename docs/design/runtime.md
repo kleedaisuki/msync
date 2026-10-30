@@ -400,3 +400,19 @@ preexisting project-local scratch staging contract, so a read-only cwd can refus
 those downloads for that independent reason. This wave neither hides that
 limitation nor changes download staging policy while fixing authentication lease
 compatibility.
+
+### Exact native configuration names
+
+SSH Host names are native lookup keys, not HTTP-style normalized domain names.
+The compiler preserves the raw non-IPv6 authority hostname after URL structure,
+credential and port validation; it never percent-decodes a literal `%` alias or
+percent-encodes Unicode aliases. IPv6 retains its existing bracketed parsing.
+Whitespace/control characters that a general URL parser might silently remove
+are rejected instead of changing the lookup key. User and port overrides keep
+their established semantics.
+
+Local `native_unicode_config_alias_is_not_url_encoded_and_reuses_authentication`
+uses an isolated real OpenSSH config with `Host 开发%机`, checks `ssh -G` resolves
+it to the fixture, performs a real authenticated download and a second copy with
+no new authentication prompt. Compiler and both IR round-trip tests retain the
+same raw alias. The user's SSH configuration is not changed or copied into IR.

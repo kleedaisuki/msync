@@ -499,3 +499,52 @@ fn long_cwd_fifo_fallback_runs_foreground_and_cancels_after_real_open() {
     assert!(copied.exists(), "foreground retry failed: {retry:?}");
     repl.exit();
 }
+
+#[test]
+#[ignore = "requires native sshd and ssh-keygen; exact Unicode/percent Host name journey"]
+fn native_unicode_config_alias_is_not_url_encoded_and_reuses_authentication() {
+    let server = Server::start();
+    let config = server.root.path().join("config");
+    let text = fs::read_to_string(&config).unwrap();
+    fs::write(
+        &config,
+        text.replace("Host Auth_Fixture\n", "Host Auth_Fixture 开发%机\n"),
+    )
+    .unwrap();
+    let resolved = Command::new("ssh")
+        .arg("-G")
+        .arg("-F")
+        .arg(&config)
+        .arg("开发%机")
+        .output()
+        .unwrap();
+    assert!(
+        resolved.status.success(),
+        "{}",
+        String::from_utf8_lossy(&resolved.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&resolved.stdout)
+            .lines()
+            .any(|line| line == "hostname 127.0.0.1")
+    );
+    let mut repl = server.terminal();
+    repl.submit("remote => ssh://开发%机");
+    repl.mark();
+    repl.send("remote::/etc/hostname -> unicode-hostname\r");
+    repl.until("Enter passphrase");
+    repl.send("fixture-passphrase\r");
+    let output = repl.prompt();
+    assert_eq!(
+        fs::read(server.root.path().join("unicode-hostname")).unwrap(),
+        fs::read("/etc/hostname").unwrap(),
+        "{output:?}"
+    );
+    let repeated = repl.submit("remote::/etc/hostname -> unicode-again");
+    assert!(!repeated.contains("Enter passphrase"), "{repeated:?}");
+    assert_eq!(
+        fs::read(server.root.path().join("unicode-again")).unwrap(),
+        fs::read("/etc/hostname").unwrap()
+    );
+    repl.exit();
+}
