@@ -1,5 +1,6 @@
 //! User-facing journeys for the transaction-free, barrier-based language.
 
+use msync::language::{self, ExprKind, StatementKind};
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -59,10 +60,42 @@ fn forced_color_help_explains_barriers_without_obsolete_dependencies() {
     success(&output);
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(text.contains("\u{1b}["), "help has no color: {text}");
-    for word in ["async", "await", "barrier", "0.5"] {
-        assert!(text.contains(word), "help lacks {word}: {text}");
+    let plain = regex::Regex::new(r"\x1b\[[0-9;]*m")
+        .unwrap()
+        .replace_all(&text, "");
+    for word in ["release", "acquire", "acqrel", "basic blocks", "0.5"] {
+        assert!(plain.contains(word), "help lacks {word}: {text}");
     }
-    let plain = text.to_ascii_lowercase();
+    assert!(plain.contains("  symbol home(space):\n      return space::~\n"));
+    let symbol = language::parse("symbol home(space):\n    return space::~\n").unwrap();
+    assert!(matches!(
+        symbol.statements[0].kind,
+        StatementKind::Symbol { .. }
+    ));
+    let execute = plain
+        .lines()
+        .find(|line| line.starts_with("  execute "))
+        .unwrap()
+        .trim_start()
+        .split("  ")
+        .next()
+        .unwrap();
+    let example = language::parse(execute).unwrap();
+    let StatementKind::Execute(expression) = &example.statements[0].kind else {
+        panic!("help example is not execute: {execute}");
+    };
+    let ExprKind::Join {
+        suffix: Some(suffix),
+        ..
+    } = &expression.kind
+    else {
+        panic!("help selector is not a joined path: {execute}");
+    };
+    let ExprKind::Path(selector) = &suffix.kind else {
+        panic!("help selector must not be a literal: {execute}");
+    };
+    assert_eq!(selector.path, r"<.+\.msync>");
+    let plain = plain.to_ascii_lowercase();
     for obsolete in ["transaction", "sandboxie", "bubblewrap"] {
         assert!(
             !plain.contains(obsolete),

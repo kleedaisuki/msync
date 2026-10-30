@@ -28,7 +28,7 @@ USAGE
   msync [run] FILE [--dry-run]     Execute a script ('-' reads stdin)
   msync check FILE                Parse and compile without changing files
   msync plan FILE                 Show ordered basic blocks and dependency graphs
-  msync compile FILE              Compile to IR; no filesystem or remote probes
+  msync compile FILE              Compile to IR without running transfers
   msync compile FILE -o OBJECT    Export a relocatable object for later execution
   msync fmt FILE                  Format the script file in place
   msync repl [--dry-run]          Start a persistent interactive session
@@ -67,7 +67,7 @@ SOURCE COMPOSITION
   symbol home(space):
       return space::~
   include \"shared.msync\"         Inline source in this lexical environment
-  execute \"tasks/<.+\\.msync>\"  Inline sorted scripts with isolated environments
+  execute tasks/<.+\\.msync>      Inline sorted scripts with isolated environments
 
 PROGRAMS
   release Program => $path::bash(\"-c\", \"ls\")
@@ -453,9 +453,10 @@ fn print_help(help: &str, color: Color) -> CliResult {
             output.push('\n');
         } else if line.starts_with("  ") {
             let content = line.trim_start();
+            let indentation = &line[..line.len() - content.len()];
             let end = content.find("  ").unwrap_or(content.len());
             output.push_str(&format!(
-                "  \x1b[1;36m{}\x1b[0m{}\n",
+                "{indentation}\x1b[1;36m{}\x1b[0m{}\n",
                 presentation::escape(&content[..end]),
                 presentation::escape(&content[end..])
             ));
