@@ -276,7 +276,9 @@ fn the_public_040_ir_wire_format_remains_executable() {
         include_bytes!("fixtures/ir-v0.4.0.json"),
     )
     .unwrap();
-    success(run(root.path(), &["plan-ir", "old.json"]));
+    let plan = success(run(root.path(), &["plan-ir", "old.json"]));
+    let text = String::from_utf8(plan.stdout).unwrap();
+    assert!(text.contains("plan:") && !text.contains("Plan {"), "{text}");
     success(run(root.path(), &["run-ir", "old.json"]));
     assert_eq!(
         fs::read(root.path().join("output")).unwrap(),

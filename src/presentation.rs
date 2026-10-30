@@ -293,6 +293,106 @@ pub(super) fn human(text: &str, enabled: bool) -> String {
     }
 }
 
+pub(super) fn legacy_plan(plan: &msync::plan::Plan, color: bool) -> String {
+    let mut text = format!(
+        "{} {} operation(s), {} eliminated, {} forwarded, {} dependency edge(s)\n",
+        paint("plan:", "1;36", color),
+        plan.nodes.len(),
+        plan.removed.len(),
+        plan.forwarded.len(),
+        plan.edges.len()
+    );
+    text.push_str("  Metadata preview only; no file data has been copied.\n");
+    if plan.nodes.is_empty() {
+        text.push_str("\n  No transfers to execute. Add a source -> destination statement.\n");
+    }
+    for node in &plan.nodes {
+        let verb = if node.operation.pattern.is_some() {
+            "select & copy"
+        } else if node.kinds.source == msync::plan::FileClass::Stream
+            || node.kinds.destination == msync::plan::FileClass::Stream
+        {
+            "flow"
+        } else {
+            "copy"
+        };
+        text.push_str(&format!(
+            "\n  {} {verb}  [{} -> {}]\n",
+            paint(&format!("#{}", node.id), "1;34", color),
+            kind(node.kinds.source),
+            kind(node.kinds.destination)
+        ));
+        text.push_str(&format!(
+            "    {} {}\n",
+            paint("from:", "1;34", color),
+            location(&node.operation.source, color)
+        ));
+        text.push_str(&format!(
+            "    {} {}\n",
+            paint("  to:", "1;34", color),
+            location(&node.operation.destination, color)
+        ));
+        if let Some(pattern) = &node.operation.pattern {
+            text.push_str(&format!("    select: {}\n", escape(pattern)));
+        }
+        let needs = if node.dependencies.is_empty() {
+            "ready".to_owned()
+        } else {
+            node.dependencies
+                .iter()
+                .map(|id| format!("#{id}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        text.push_str(&format!("    needs: {needs}\n"));
+    }
+    for group in &plan.stream_groups {
+        let ids = group
+            .iter()
+            .map(|id| format!("#{id}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        text.push_str(&format!("\n  start together: {ids}\n"));
+    }
+    for item in &plan.removed {
+        text.push_str(&format!(
+            "\n  removed input #{}: overwritten by input #{} before any read\n",
+            item.original_index, item.overwritten_by
+        ));
+    }
+    for item in &plan.forwarded {
+        text.push_str(&format!(
+            "\n  forwarded input #{}: {} -> {}\n",
+            item.original_index,
+            location(&item.from, color),
+            location(&item.to, color)
+        ));
+    }
+    for issue in &plan.issues {
+        text.push_str(&format!("\n  issue: {}\n", escape(&issue.message)));
+    }
+    text
+}
+
+fn location(location: &msync::compiler::Location, color: bool) -> String {
+    format!(
+        "{} {}",
+        paint(&escape(&location.backend.to_string()), "35", color),
+        escape(&location.path)
+    )
+}
+
+fn kind(kind: msync::plan::FileClass) -> &'static str {
+    use msync::plan::FileClass;
+    match kind {
+        FileClass::Regular => "file",
+        FileClass::Directory => "directory",
+        FileClass::Stream => "pipe/socket",
+        FileClass::Missing => "missing",
+        FileClass::Unknown => "not inspected",
+    }
+}
+
 pub(super) fn limits(
     limits: &msync::scheduler::ResourceLimits,
     spool_limit: Option<u64>,
@@ -328,6 +428,15 @@ fn bytes(bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn human_plan_has_an_explicit_empty_state_and_retains_a_plain_header() {
+        let plan = msync::plan::Plan::default();
+        let text = super::legacy_plan(&plan, false);
+        assert!(text.starts_with("plan: 0 operation(s)"));
+        assert!(text.contains("No transfers to execute"));
+        assert!(!text.contains('\x1b'));
+    }
 
     #[test]
     fn resource_limits_preserve_plain_and_colored_presentations() {

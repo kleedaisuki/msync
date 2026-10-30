@@ -147,7 +147,7 @@ pub(super) fn execute(
             Issue::new("cannot prepare IR execution").field("cause", error.message)
         })?;
         if plan_only || dry_run {
-            return print_text(&format!("{plan:#?}\n"));
+            return print_legacy_plan(&plan, options.color);
         }
         let removed = plan.removed.len();
         let summary = scheduler::execute_plan_cancellable(
@@ -156,12 +156,58 @@ pub(super) fn execute(
             authentication.cancellation(),
         )
         .map_err(|error| Issue::new("IR execution failed").field("cause", error.message))?;
-        print_text(&format!(
-            "done: {} operation(s), {} eliminated, {} file(s), {} flow bytes\n",
-            summary.completed,
-            removed,
-            summary.report.copied_files,
-            summary.report.transferred_bytes
-        ))
+        print_summary(summary, removed, true, options.color)
     })
+}
+
+fn print_summary(
+    summary: scheduler::ExecutionSummary,
+    removed: usize,
+    show: bool,
+    color: Color,
+) -> CliResult {
+    let report = summary.report;
+    for action in report.actions {
+        print_text(&msync::highlight::highlight(
+            &presentation::escape(&action),
+            color.stdout(),
+        ))?;
+        print_text("\n")?;
+    }
+    if !show {
+        return Ok(());
+    }
+    let status = format!(
+        "done: {} operation(s), {} eliminated, {} file(s), {} directories, {} flow bytes\n",
+        summary.completed,
+        removed,
+        report.copied_files,
+        report.created_directories,
+        report.transferred_bytes
+    );
+    print_text(&if color.stdout() {
+        format!(
+            "\x1b[1;32mdone:\x1b[0m{}",
+            status.strip_prefix("done:").unwrap_or(&status)
+        )
+    } else {
+        status
+    })
+}
+
+fn print_legacy_plan(plan: &msync::plan::Plan, color: Color) -> CliResult {
+    if io::stdout().is_terminal() {
+        return print_text(&presentation::legacy_plan(plan, color.stdout()));
+    }
+    if !color.stdout() {
+        return print_text(&plan.to_string());
+    }
+    for line in plan.to_string().lines() {
+        print_text(&msync::highlight::highlight(
+            &presentation::escape(line),
+            true,
+        ))?;
+        print_text("\n")?;
+    }
+    Ok(())
 }
