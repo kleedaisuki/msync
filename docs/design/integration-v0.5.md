@@ -150,3 +150,42 @@ neither changed nor shipped.
 Windows binaries remain unsigned. Authenticity is not inferred from a checksum;
 SmartScreen warnings and terminal PATH refresh guidance remain explicit in the
 README, release notes and installer documentation.
+
+## Current local Linux installation (2026-10-31)
+
+The earlier request to replace an existing v0.4.0 installation was explicitly
+superseded: install the current main build on this host instead. There was no
+existing local msync command or `~/.msync` installation. The Windows upgrade and
+public-release records above remain historical evidence, not this host's current
+installation target.
+
+[PR #4](https://github.com/kleedaisuki/msync/pull/4) is merged into main at
+`106d8164102bad12dea63d948d3c08cdab50226b`; its post-merge full Linux/Windows
+[run 41107248397](https://github.com/kleedaisuki/msync/actions/runs/41107248397)
+succeeded. That exact source was built with `cargo build --locked --release`
+and installed per-user:
+
+- Actual executable: `~/.msync/bin/msync`, mode 0755.
+- Command launcher: `~/.local/bin/msync`, a relative symlink to that executable.
+- Provenance receipt: `~/.msync/install.json`, mode 0600, recording source commit,
+  tree, executable digest and installation kind `local-main-build`.
+- CLI version remains **0.5.0** because the manifest was not bumped. This is the
+  newer main-source build with item-expansion diagnostics and item/string-only
+  `/`, not a claim that the public v0.5.0 release asset was replaced.
+- Installed SHA-256: `d43631efacdc461ced4339da52bf4a7a0233136ccb82f47a8826be7816c11416`.
+
+The installed bytes match the tested release build. A fresh login shell resolves
+`msync` through the launcher; the existing `.profile` already adds `.local/bin`
+when present. `.profile` and `.bashrc` were verified byte-unchanged. Already
+running shells retain their old environment; `source ~/.profile` refreshes PATH
+there without a persistent configuration rewrite.
+
+Actual verification used the **installed PATH command**, not `cargo run` or the
+project executable: check/dry-run, a Unicode/space-containing macro file copy,
+contextual IR and native object replay after source deletion, and REPL item
+expansion diagnostics followed by corrected offline input. Every copy was byte
+compared and the offline target remained absent. The receipt/hash/source identity
+was checked separately. Disposable fixtures/logs are under `.temp/local-install/`;
+installation products and provenance remain in the conventional per-user paths.
+No user configuration, SSH configuration, published release asset or Windows
+installation was changed by this local deployment.
