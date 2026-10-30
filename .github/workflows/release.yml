@@ -6,6 +6,7 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - .gitattributes
       - packaging/**
       - .github/workflows/release.yml
       - docs/releases/**
@@ -13,6 +14,7 @@ on:
     paths:
       - Cargo.toml
       - Cargo.lock
+      - .gitattributes
       - packaging/**
       - .github/workflows/release.yml
       - docs/releases/**
@@ -40,6 +42,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Verify publication invariants
+        run: node --test packaging/test-publish-release.cjs
       - id: version
         shell: bash
         env:
@@ -136,56 +140,5 @@ jobs:
           PACKAGE_VERSION: ${{ needs.version.outputs.version }}
         with:
           script: |
-            const fs = require('node:fs');
-            const crypto = require('node:crypto');
-            const version = process.env.PACKAGE_VERSION;
-            const tag = `v${version}`;
-            const repo = context.repo;
-            const files = [
-              `msync-${version}-windows-x86_64-setup.exe`,
-              `msync-${version}-windows-x86_64.zip`,
-              `msync-${version}-linux-x86_64.tar.gz`,
-            ].sort();
-            const hashes = new Map();
-            for (const file of files) {
-              const bytes = fs.readFileSync(`dist/${file}`);
-              if (!bytes.length) throw new Error(`Empty release asset: ${file}`);
-              hashes.set(file, crypto.createHash('sha256').update(bytes).digest('hex'));
-            }
-            fs.writeFileSync('dist/SHA256SUMS', files.map(file => `${hashes.get(file)}  ${file}`).join('\n') + '\n');
-            files.push('SHA256SUMS');
-            let release;
-            try { release = (await github.rest.repos.getReleaseByTag({...repo, tag})).data; }
-            catch (error) { if (error.status !== 404) throw error; }
-            if (release && !release.draft) {
-              core.notice(`${tag} is already published; immutable assets were not changed. Bump Cargo version for a new release.`);
-              return;
-            }
-            if (release && release.target_commitish !== context.sha) {
-              throw new Error(`Existing ${tag} draft targets another revision; refusing to replace it`);
-            }
-            if (!release) {
-              const notes = fs.readFileSync(`docs/releases/${version}.md`, 'utf8');
-              release = (await github.rest.repos.createRelease({
-                ...repo, tag_name: tag, target_commitish: context.sha,
-                name: `msync ${tag}`, draft: true, prerelease: false,
-                body: notes + `\n\nSource: [${tag}](https://github.com/${repo.owner}/${repo.repo}/tree/${tag}) (commit ${context.sha}).\n`,
-              })).data;
-            }
-            const existing = (await github.rest.repos.listReleaseAssets({...repo, release_id: release.id})).data;
-            for (const file of files) {
-              const bytes = fs.readFileSync(`dist/${file}`);
-              const digest = 'sha256:' + crypto.createHash('sha256').update(bytes).digest('hex');
-              const asset = existing.find(asset => asset.name === file);
-              if (asset) {
-                if (asset.digest !== digest || asset.size !== bytes.length) throw new Error(`Draft asset differs: ${file}`);
-                continue;
-              }
-              await github.rest.repos.uploadReleaseAsset({
-                ...repo, release_id: release.id, name: file,
-                data: bytes, headers: {'content-type': 'application/octet-stream', 'content-length': bytes.length},
-              });
-            }
-            const result = await github.rest.repos.updateRelease({...repo, release_id: release.id, draft: false, make_latest: 'true'});
-            core.summary.addLink(`Download msync ${tag}`, result.data.html_url);
-            await core.summary.write();
+            const publish = require('./packaging/publish-release.cjs');
+            await publish({github, context, core, version: process.env.PACKAGE_VERSION});
