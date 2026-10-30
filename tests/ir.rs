@@ -50,11 +50,15 @@ fn relocation_resolves_names_but_binds_namespace_roots_at_reuse() {
         let ctx = context(&root.path().join(subdir));
         let contextual = artifact.bind(&ctx).unwrap();
         let direct = Compiler::new().compile_with_context(&script, &ctx).unwrap();
-        assert_eq!(signature(contextual.program()), signature(&direct));
-        assert_eq!(
-            contextual.program().operations[0].source.path,
-            format!("{}/configs/", ctx.pwd.display())
+        let direct = Contextual::capture(&direct, &ctx).unwrap();
+        assert_eq!(signature(contextual.program()), signature(direct.program()));
+        let source = &contextual.program().operations[0].source.path;
+        assert!(
+            Path::new(source)
+                .components()
+                .eq(ctx.pwd.join("configs").components())
         );
+        assert!(source.ends_with('/'));
     }
 }
 
