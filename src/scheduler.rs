@@ -1,6 +1,6 @@
 //! Typed planning and bounded execution of file and stream dependency graphs.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -552,6 +552,54 @@ fn execution_groups(plan: &Plan) -> Result<(Vec<Vec<usize>>, Vec<usize>), Runtim
 type NodeResult = Result<(ExecutionReport, u64), RuntimeError>;
 type Completion = (usize, NodeResult);
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct Demand {
+    copies: usize,
+    streams: usize,
+    bytes: usize,
+}
+
+impl Demand {
+    fn fits(self, available: Self) -> bool {
+        self.copies <= available.copies
+            && self.streams <= available.streams
+            && self.bytes <= available.bytes
+    }
+}
+
+#[derive(Default)]
+struct Ready {
+    classes: BTreeMap<Demand, VecDeque<(usize, usize)>>,
+    sequence: usize,
+}
+
+impl Ready {
+    fn push(&mut self, group: usize, demand: Demand) {
+        self.classes
+            .entry(demand)
+            .or_default()
+            .push_back((self.sequence, group));
+        self.sequence += 1;
+    }
+
+    fn pop_fitting(&mut self, available: Demand) -> Option<usize> {
+        // Compare class heads to preserve FIFO among eligible groups, without
+        // visiting every queued member of a saturated resource class.
+        let demand = self
+            .classes
+            .iter()
+            .filter(|(demand, _)| demand.fits(available))
+            .min_by_key(|(_, queue)| queue.front().unwrap().0)
+            .map(|(demand, _)| *demand)?;
+        let queue = self.classes.get_mut(&demand).unwrap();
+        let (_, group) = queue.pop_front().unwrap();
+        if queue.is_empty() {
+            self.classes.remove(&demand);
+        }
+        Some(group)
+    }
+}
+
 struct Scheduler<'a> {
     plan: &'a Plan,
     limits: &'a ResourceLimits,
@@ -559,13 +607,13 @@ struct Scheduler<'a> {
     parent: Option<crate::telemetry::TraceContext>,
     remaining: Vec<usize>,
     dependents: Vec<Vec<usize>>,
-    ready: VecDeque<usize>,
+    ready: Ready,
     tasks: JoinSet<Completion>,
     reports: Vec<Option<ExecutionReport>>,
     costs: Vec<usize>,
     groups: Vec<Vec<usize>>,
     owners: Vec<usize>,
-    started: Vec<bool>,
+    demands: Vec<Demand>,
     copies: usize,
     streams: usize,
     buffer_bytes: usize,
@@ -580,16 +628,6 @@ impl<'a> Scheduler<'a> {
         cancel: CancellationToken,
         parent: Option<crate::telemetry::TraceContext>,
     ) -> Result<Self, RuntimeError> {
-        let remaining: Vec<_> = plan
-            .nodes
-            .iter()
-            .map(|node| node.dependencies.len())
-            .collect();
-        let ready = remaining
-            .iter()
-            .enumerate()
-            .filter_map(|(id, count)| (*count == 0).then_some(id))
-            .collect();
         let mut dependents = vec![Vec::new(); plan.nodes.len()];
         let mut costs = Vec::with_capacity(plan.nodes.len());
         for node in &plan.nodes {
@@ -599,13 +637,13 @@ impl<'a> Scheduler<'a> {
             costs.push(buffer_cost(&node.operation, node.kinds, limits)?);
         }
         let (groups, owners) = execution_groups(plan)?;
+        let mut remaining = Vec::with_capacity(groups.len());
+        let mut demands = Vec::with_capacity(groups.len());
+        let mut ready = Ready::default();
         for group in &groups {
-            let stream_count = group
+            let streams = group
                 .iter()
-                .filter(|id| {
-                    let kinds = plan.nodes[**id].kinds;
-                    kinds.source == FileClass::Stream || kinds.destination == FileClass::Stream
-                })
+                .filter(|id| is_stream(plan.nodes[**id].kinds))
                 .count();
             let bytes = group
                 .iter()
@@ -616,21 +654,38 @@ impl<'a> Scheduler<'a> {
                         first_span(plan),
                     )
                 })?;
-            if stream_count > limits.max_streams
-                || group.len() - stream_count > limits.jobs
-                || bytes > limits.memory_bytes
-            {
+            let demand = Demand {
+                copies: group.len() - streams,
+                streams,
+                bytes,
+            };
+            if !demand.fits(Demand {
+                copies: limits.jobs,
+                streams: limits.max_streams,
+                bytes: limits.memory_bytes,
+            }) {
                 let span = group
                     .first()
                     .map(|id| plan.nodes[*id].operation.span)
                     .unwrap_or_default();
                 return Err(error(
                     format!(
-                        "pipeline must co-start {stream_count} streams and reserve {bytes} buffer bytes; increase --max-streams/--memory-limit or reduce --buffer-size"
+                        "pipeline must co-start {streams} streams and reserve {bytes} buffer bytes; increase --max-streams/--memory-limit or reduce --buffer-size"
                     ),
                     span,
                 ));
             }
+            let pending = group
+                .iter()
+                .map(|id| plan.nodes[*id].dependencies.len())
+                .sum();
+            remaining.push(pending);
+            demands.push(demand);
+        }
+        let mut initial: Vec<_> = (0..groups.len()).filter(|id| remaining[*id] == 0).collect();
+        initial.sort_unstable_by_key(|id| groups[*id].iter().min().copied().unwrap());
+        for id in initial {
+            ready.push(id, demands[id]);
         }
         Ok(Self {
             plan,
@@ -645,7 +700,7 @@ impl<'a> Scheduler<'a> {
             costs,
             groups,
             owners,
-            started: vec![false; plan.nodes.len()],
+            demands,
             copies: 0,
             streams: 0,
             buffer_bytes: 0,
@@ -689,40 +744,18 @@ impl<'a> Scheduler<'a> {
     }
 
     fn launch_ready(&mut self) {
-        for _ in 0..self.ready.len() {
-            let id = self.ready.pop_front().unwrap();
-            if self.started[id] {
-                continue;
-            }
-            let group = self.owners[id];
-            if !self.can_start(group) {
-                self.ready.push_back(id);
-                continue;
-            }
-            for member in self.groups[group].clone() {
-                self.launch(member);
+        while let Some(group) = self.ready.pop_fitting(Demand {
+            copies: self.limits.jobs - self.copies,
+            streams: self.limits.stream_slots() - self.streams,
+            bytes: self.limits.memory_bytes - self.buffer_bytes,
+        }) {
+            for index in 0..self.groups[group].len() {
+                self.launch(self.groups[group][index]);
             }
         }
-    }
-
-    fn can_start(&self, group: usize) -> bool {
-        let members = &self.groups[group];
-        if members
-            .iter()
-            .any(|id| self.remaining[*id] != 0 || self.started[*id])
-        {
-            return false;
-        }
-        let streams = members.iter().filter(|id| self.is_stream(**id)).count();
-        let copies = members.len() - streams;
-        let bytes: usize = members.iter().map(|id| self.costs[*id]).sum();
-        self.streams + streams <= self.limits.stream_slots()
-            && self.copies + copies <= self.limits.jobs
-            && bytes <= self.limits.memory_bytes - self.buffer_bytes
     }
 
     fn launch(&mut self, id: usize) {
-        self.started[id] = true;
         let stream = self.is_stream(id);
         if stream {
             self.streams += 1;
@@ -773,16 +806,16 @@ impl<'a> Scheduler<'a> {
             return;
         }
         for next in &self.dependents[id] {
-            self.remaining[*next] -= 1;
-            if self.remaining[*next] == 0 {
-                self.ready.push_back(*next);
+            let group = self.owners[*next];
+            self.remaining[group] -= 1;
+            if self.remaining[group] == 0 {
+                self.ready.push(group, self.demands[group]);
             }
         }
     }
 
     fn is_stream(&self, id: usize) -> bool {
-        let kinds = self.plan.nodes[id].kinds;
-        kinds.source == FileClass::Stream || kinds.destination == FileClass::Stream
+        is_stream(self.plan.nodes[id].kinds)
     }
 
     fn fail(&mut self, error: RuntimeError) {
@@ -817,6 +850,10 @@ impl Drop for Scheduler<'_> {
     fn drop(&mut self) {
         self.cancel.cancel();
     }
+}
+
+fn is_stream(kinds: OperationKinds) -> bool {
+    kinds.source == FileClass::Stream || kinds.destination == FileClass::Stream
 }
 
 fn buffer_cost(
@@ -933,4 +970,146 @@ fn first_span(plan: &Plan) -> Span {
 }
 fn error(message: String, span: Span) -> RuntimeError {
     RuntimeError { message, span }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::{Demand, Ready};
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn demand_classes_match_oldest_fitting_fifo(
+            events in prop::collection::vec((any::<bool>(), 0_usize..8, 0_usize..8, 0_usize..32), 0..500)
+        ) {
+            let mut ready = Ready::default();
+            let mut reference = Vec::new();
+            for (id, (enqueue, copies, streams, bytes)) in events.into_iter().enumerate() {
+                let demand = Demand { copies, streams, bytes };
+                if enqueue {
+                    ready.push(id, demand);
+                    reference.push((id, demand));
+                    continue;
+                }
+                let expected = reference.iter().position(|(_, cost)| cost.fits(demand))
+                    .map(|index| reference.remove(index).0);
+                prop_assert_eq!(ready.pop_fitting(demand), expected);
+                prop_assert!(ready.classes.values().all(|queue| !queue.is_empty()));
+            }
+            let unlimited = Demand { copies: usize::MAX, streams: usize::MAX, bytes: usize::MAX };
+            for (id, _) in reference {
+                prop_assert_eq!(ready.pop_fitting(unlimited), Some(id));
+            }
+            prop_assert!(ready.classes.is_empty());
+        }
+    }
+
+    #[test]
+    fn cohort_waits_for_every_external_dependency_edge_and_enqueues_once() {
+        use super::{ResourceLimits, Scheduler, validate_graph};
+        use crate::compiler::Compiler;
+        use crate::plan::{FileClass, OperationKinds, Plan};
+        use crate::runtime::ExecutionReport;
+        use crate::syntax;
+        use tokio_util::sync::CancellationToken;
+
+        let program = Compiler::new()
+            .compile(
+                &syntax::parse(
+                    "input0 -> output0\ninput1 -> output1\ninput2 -> output2\ninput3 -> output3\n",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let kinds = OperationKinds {
+            source: FileClass::Regular,
+            destination: FileClass::Missing,
+        };
+        let mut plan = Plan::build(&program, &[kinds; 4]);
+        plan.nodes[2].dependencies = vec![0];
+        plan.nodes[3].dependencies = vec![0, 1];
+        plan.stream_groups = vec![vec![2, 3]];
+        validate_graph(&plan).unwrap();
+        let limits = ResourceLimits::default();
+        let mut scheduler = Scheduler::new(&plan, &limits, CancellationToken::new(), None).unwrap();
+        let capacity = Demand {
+            copies: limits.jobs,
+            streams: limits.max_streams,
+            bytes: limits.memory_bytes,
+        };
+        assert_eq!(
+            scheduler.ready.pop_fitting(capacity),
+            Some(scheduler.owners[0])
+        );
+        assert_eq!(
+            scheduler.ready.pop_fitting(capacity),
+            Some(scheduler.owners[1])
+        );
+        assert_eq!(scheduler.ready.pop_fitting(capacity), None);
+        scheduler.copies = 2;
+        scheduler.buffer_bytes = scheduler.costs[0] + scheduler.costs[1];
+        scheduler.complete(0, Ok((ExecutionReport::default(), 0)));
+        assert_eq!(scheduler.remaining[scheduler.owners[2]], 1);
+        assert_eq!(scheduler.ready.pop_fitting(capacity), None);
+        scheduler.complete(1, Ok((ExecutionReport::default(), 0)));
+        assert_eq!(
+            scheduler.ready.pop_fitting(capacity),
+            Some(scheduler.owners[2])
+        );
+        assert_eq!(scheduler.ready.pop_fitting(capacity), None);
+    }
+
+    #[test]
+    fn blocked_large_cohort_does_not_hide_a_smaller_or_other_lane_cohort() {
+        let mut ready = Ready::default();
+        ready.push(
+            0,
+            Demand {
+                copies: 1,
+                streams: 2,
+                bytes: 4,
+            },
+        );
+        ready.push(
+            1,
+            Demand {
+                copies: 1,
+                streams: 0,
+                bytes: 1,
+            },
+        );
+        ready.push(
+            2,
+            Demand {
+                copies: 0,
+                streams: 1,
+                bytes: 1,
+            },
+        );
+        ready.push(
+            3,
+            Demand {
+                copies: 1,
+                streams: 0,
+                bytes: 1,
+            },
+        );
+        let available = Demand {
+            copies: 1,
+            streams: 1,
+            bytes: 2,
+        };
+        assert_eq!(ready.pop_fitting(available), Some(1));
+        assert_eq!(ready.pop_fitting(available), Some(2));
+        assert_eq!(ready.pop_fitting(available), Some(3));
+        assert_eq!(ready.pop_fitting(available), None);
+        assert_eq!(
+            ready.pop_fitting(Demand {
+                copies: 1,
+                streams: 2,
+                bytes: 4
+            }),
+            Some(0)
+        );
+    }
 }

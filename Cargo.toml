@@ -40,3 +40,7 @@ harness = false
 [[bench]]
 name = "startup"
 harness = false
+
+[[bench]]
+name = "scheduler"
+harness = false
