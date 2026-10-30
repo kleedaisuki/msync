@@ -666,3 +666,32 @@ fn object_alias_exports_keep_own_declarations_and_imported_origins_are_honest() 
     assert!(origin.message.ends_with("source origin"));
     assert!(!origin.message.ends_with("bound here"));
 }
+
+#[test]
+fn rejected_call_values_do_not_claim_to_expand_unvisited_callees_or_arguments() {
+    for expression in ["base/hidden() -> output\n", "bad := hidden()\n"] {
+        let source = format!("hidden := ~/not-used\n{expression}");
+        let errors = pipeline::compile_named(
+            &mut Session::new(),
+            &source,
+            "calls.msync",
+            &context("calls.msync"),
+            &PlanningContext::default(),
+        )
+        .unwrap_err();
+        let error = &errors[0];
+        assert!(
+            !error
+                .report
+                .labels
+                .iter()
+                .any(|label| label.message.starts_with("item 'hidden' expands to"))
+        );
+        assert!(
+            !error
+                .related
+                .iter()
+                .any(|label| label.message.starts_with("item 'hidden' expands to"))
+        );
+    }
+}

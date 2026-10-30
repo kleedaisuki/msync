@@ -11,6 +11,7 @@ pub(super) type ExpansionMap = BTreeMap<String, ExpansionTrace>;
 struct Frame {
     site: SourceSpan,
     name: String,
+    kind: &'static str,
     value: String,
     origin: Origin,
 }
@@ -34,6 +35,11 @@ impl ExpansionTrace {
         trace.frames.push(Arc::new(Frame {
             site,
             name: short(name),
+            kind: match value {
+                Value::Space(_) => "space alias",
+                Value::Process(_) => "program",
+                _ => "item",
+            },
             value: describe(value),
             origin,
         }));
@@ -130,10 +136,7 @@ impl From<Report> for Failure {
 impl Failure {
     pub fn with_expression(mut self, expression: &Expr, scope: &Scope) -> Self {
         if self.trace.frames.is_empty() && contains(expression.span, self.report.diagnostic.span) {
-            self.trace = ExpansionTrace::inputs(
-                failing_expression(expression, self.report.diagnostic.span),
-                scope,
-            );
+            self.trace = failure_inputs(expression, self.report.diagnostic.span, scope);
         }
         self
     }
@@ -142,9 +145,9 @@ impl Failure {
         let mut located = LocatedReport::new(source, self.report);
         for frame in self.trace.frames {
             let (kind, site) = match frame.origin {
-                Origin::Item => ("item", "bound here"),
-                Origin::Parameter => ("macro parameter", "argument bound here"),
-                Origin::Imported => ("imported item", "source origin"),
+                Origin::Item => (frame.kind.to_owned(), "bound here"),
+                Origin::Parameter => ("macro parameter".to_owned(), "argument bound here"),
+                Origin::Imported => (format!("imported {}", frame.kind), "source origin"),
             };
             located = located.label(
                 frame.site.clone(),
@@ -164,12 +167,18 @@ pub(super) fn resolve(
     context: &CompileContext,
 ) -> Result<Value, Failure> {
     super::resolve(expression, scope, context).map_err(|report| {
-        let expression = failing_expression(expression, report.diagnostic.span);
-        Failure {
-            report,
-            trace: ExpansionTrace::inputs(expression, scope),
-        }
+        let trace = failure_inputs(expression, report.diagnostic.span, scope);
+        Failure { report, trace }
     })
+}
+
+fn failure_inputs(expression: &Expr, span: Span, scope: &Scope) -> ExpansionTrace {
+    let expression = failing_expression(expression, span);
+    if matches!(expression.kind, ExprKind::Call { .. }) {
+        // Calls rejected as values never resolve their callee or arguments.
+        return ExpansionTrace::default();
+    }
+    ExpansionTrace::inputs(expression, scope)
 }
 
 fn failing_expression(expression: &Expr, span: Span) -> &Expr {

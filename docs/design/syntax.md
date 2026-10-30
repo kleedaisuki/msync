@@ -118,8 +118,8 @@ separate REPL submissions with the same display name.
 
 The diagnostic visitor must follow actual namespace lookup order: unknown or
 non-space qualifiers fail before RHS lookup, `$file::parent`/`this` do not expand
-same-named user bindings, and intrinsic `$pwd::pwd` does not consult a user
-`pwd` item. Negative provenance tests protect these distinctions; a plausible
+same-named user bindings, intrinsic `$pwd::pwd` does not consult a user
+`pwd` item, and a call rejected as a value does not visit its callee or arguments. Negative provenance tests protect these distinctions; a plausible
 but unvisited binding is worse than an omitted frame.
 
 This follows production compiler practice rather than inventing a diagnostic

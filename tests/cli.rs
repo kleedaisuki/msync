@@ -896,7 +896,7 @@ fn repl_join_errors_show_prior_item_expansion_then_allow_corrected_offline_input
     for expected in [
         "right operand expands to endpoint-relative path item \"~/.codex\"",
         "item '.codex' expands to",
-        "item 'remote' expands to",
+        "space alias 'remote' expands to",
         ".codex := ~/.codex",
     ] {
         assert!(error.contains(expected), "missing {expected:?}: {error}");
@@ -933,5 +933,5 @@ fn named_pwd_space_selects_its_pwd_item_before_real_string_path_composition() {
     );
     assert!(!rejected.status.success());
     assert!(stderr(&rejected).contains("not a space"));
-    assert!(stderr(&rejected).contains("item 'pwd' expands to space $pwd"));
+    assert!(stderr(&rejected).contains("space alias 'pwd' expands to space $pwd"));
 }
