@@ -283,7 +283,30 @@ fn foreign_definition_modules_need_semantic_bindings_not_debug_filename_guesses(
     assert!(contextualize(&object, &source_bindings, &mut Session::new()).is_ok());
 
     let artifact_bindings = Context::new(&caller);
-    assert!(contextualize(&object, &artifact_bindings, &mut Session::new()).is_err());
+    // New executable objects carry explicit semantic source bindings. Debug
+    // filenames remain presentation-only and cannot redirect those bindings.
+    assert!(contextualize(&object, &artifact_bindings, &mut Session::new()).is_ok());
+    let mut renamed_debug = object.clone();
+    for source in &mut renamed_debug.debug.sources {
+        source.name = "untrusted-debug-name.msync".into();
+    }
+    let linked = contextualize(&renamed_debug, &artifact_bindings, &mut Session::new()).unwrap();
+    let InstructionKind::Transfer {
+        source: Input::File { location, .. },
+        ..
+    } = &linked.program.body.instructions[0].kind
+    else {
+        panic!()
+    };
+    assert_eq!(Path::new(&location.path), definition.pwd.join("input"));
+    // Old-format objects retain their explicit caller-binding requirement.
+    let mut legacy = object.clone();
+    legacy.source_modules.clear();
+    legacy
+        .features
+        .retain(|feature| feature != msync::object::SOURCE_MODULES_FEATURE);
+    legacy.validate().unwrap();
+    assert!(contextualize(&legacy, &artifact_bindings, &mut Session::new()).is_err());
     assert!(fs::read_dir(root.path()).unwrap().next().is_none());
 }
 

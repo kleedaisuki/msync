@@ -20,6 +20,8 @@ pub use debug::{DebugInfo, DebugOrigin, DebugSite, DebugSource, ExportSite};
 pub const MAGIC: &[u8] = b"MSYNC-OBJECT\n";
 pub const FORMAT_VERSION: u32 = 2;
 pub const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
+pub const SOURCE_MODULES_FEATURE: &str = "source_modules_v1";
+
 pub const FEATURES: &[&str] = &[
     "barrier_typed_ir_v2",
     "context_relocations_v1",
@@ -36,6 +38,20 @@ pub fn is_object(bytes: &[u8]) -> bool {
         || bytes.starts_with(b"MSYNC-OBJECT\r\n")
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceModule {
+    pub name: String,
+    pub path: SourceModulePath,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SourceModulePath {
+    Absolute { path: String },
+    Contextual { path: crate::relocatable::Path },
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObjectModule {
@@ -44,6 +60,8 @@ pub struct ObjectModule {
     pub features: Vec<String>,
     /// An opaque source-module symbol, never an implicit host path binding.
     pub main_module: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_modules: Vec<SourceModule>,
     pub program: hir::Program,
     pub relocations: Vec<Relocation>,
     pub symbols: Vec<Symbol>,
@@ -166,6 +184,7 @@ impl ObjectModule {
             language_version: "0.5".into(),
             features: FEATURES.iter().map(|name| (*name).into()).collect(),
             main_module,
+            source_modules: Vec::new(),
             program,
             relocations,
             symbols: Vec::new(),
@@ -184,6 +203,48 @@ impl ObjectModule {
         module.constraints = tables.constraints;
         module.validate()?;
         Ok(module)
+    }
+
+    pub fn with_source_modules(mut self, modules: Vec<SourceModule>) -> Result<Self, ObjectError> {
+        if modules.len() > 1024 {
+            return Err(ObjectError::new("too many source module bindings"));
+        }
+        let mut needed = std::collections::BTreeSet::new();
+        for relocation in &self.relocations {
+            source_module_dependency(&relocation.path, &mut needed);
+        }
+        for export in &self.exports {
+            if let crate::relocatable::ExportValue::Path {
+                relocation: Some(path),
+                ..
+            } = &export.value
+            {
+                source_module_dependency(path, &mut needed);
+            }
+        }
+        let mut changed = true;
+        while changed {
+            let before = needed.len();
+            for module in &modules {
+                if needed.contains(&module.name)
+                    && let SourceModulePath::Contextual { path } = &module.path
+                {
+                    source_module_dependency(path, &mut needed);
+                }
+            }
+            changed = before != needed.len();
+        }
+        self.source_modules = modules
+            .into_iter()
+            .filter(|module| needed.contains(&module.name) && module.name != self.main_module)
+            .collect();
+        self.features
+            .retain(|feature| feature != SOURCE_MODULES_FEATURE);
+        if !self.source_modules.is_empty() {
+            self.features.push(SOURCE_MODULES_FEATURE.into());
+        }
+        self.validate()?;
+        Ok(self)
     }
 
     pub fn validate(&self) -> Result<(), ObjectError> {
@@ -224,4 +285,13 @@ impl ObjectModule {
 
 pub(crate) fn nodes(program: &hir::Program) -> Vec<&hir::Instruction> {
     program.body.instructions.iter().collect()
+}
+
+fn source_module_dependency(
+    path: &crate::relocatable::Path,
+    names: &mut std::collections::BTreeSet<String>,
+) {
+    if let Anchor::ModuleFile { module } | Anchor::ModuleDirectory { module } = &path.anchor {
+        names.insert(module.clone());
+    }
 }

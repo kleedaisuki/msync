@@ -1,6 +1,6 @@
 [package]
 name = "msync"
-version = "0.5.0"
+version = "0.5.2"
 edition = "2024"
 description = "A compiled file synchronization DSL with an interactive shell"
 license = "GPL-3.0-only"

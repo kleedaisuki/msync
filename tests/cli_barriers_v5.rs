@@ -133,7 +133,7 @@ fn static_async_compile_and_plan_show_blocks_without_launching_child() {
             blocks >= 3,
             "expected launch, output, and await blocks: {text}"
         );
-        assert!(text.contains("await program"), "{text}");
+        assert!(text.contains("acquire program"), "{text}");
         assert!(text.contains(child_name), "{text}");
         no_effects(root.path());
         assert_eq!(

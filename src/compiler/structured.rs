@@ -21,6 +21,8 @@ use crate::source::{InstructionOrigin, LocatedReport, Origins, Source, SourceId,
 use crate::syntax::{OperandSource, Report, Span};
 
 mod diagnostics;
+mod scripts;
+mod symbols;
 use diagnostics::{ExpansionMap, ExpansionTrace, Failure, Origin as ExpansionOrigin};
 
 #[derive(Clone, Debug)]
@@ -87,6 +89,7 @@ struct Macro {
     global_sites: Arc<BTreeMap<String, SourceSpan>>,
     global_expansions: Arc<ExpansionMap>,
     macros: Arc<BTreeMap<String, Arc<Macro>>>,
+    symbols: Arc<BTreeMap<String, Arc<symbols::Symbol>>>,
     source_file: Option<PathBuf>,
     source: Arc<Source>,
 }
@@ -95,6 +98,10 @@ struct Macro {
 struct Scope {
     // Macro debug sources change during expansion; the caller's link unit does not.
     current_unit: Option<SourceId>,
+    source: Option<Arc<Source>>,
+    symbols: Arc<BTreeMap<String, Arc<symbols::Symbol>>>,
+    symbol_calls: Vec<(Arc<symbols::Symbol>, SourceSpan)>,
+    symbol_budget: symbols::Budget,
     defined_units: Arc<BTreeMap<String, SourceId>>,
     values: Arc<BTreeMap<String, Value>>,
     macros: Arc<BTreeMap<String, Arc<Macro>>>,
@@ -120,6 +127,7 @@ pub struct Lowered {
     pub program: hir::Program,
     pub origins: Origins,
     pub relocations: Vec<Relocation>,
+    pub source_modules: Vec<crate::object::SourceModule>,
 }
 
 impl Session {
@@ -232,6 +240,12 @@ impl Session {
                 .join(", ");
             format!("macro {}({parameters})", definition.name.text)
         }));
+        bindings.extend(
+            self.scope
+                .symbols
+                .values()
+                .map(|definition| definition.signature()),
+        );
         bindings
     }
 
@@ -403,7 +417,9 @@ impl Session {
             .map_err(|report| vec![LocatedReport::new(source.clone(), report)])?;
         let mut candidate = self.clone();
         let mut scope = candidate.scope.clone();
+        scope.symbol_budget = symbols::Budget::default();
         scope.current_unit = Some(source.id);
+        scope.source = Some(source.clone());
         let mut lower = Lower {
             session: &mut candidate,
             program: hir::Program::default(),
@@ -415,6 +431,7 @@ impl Session {
             origins: Origins::default(),
             relocations: Vec::new(),
             pending: Default::default(),
+            scripts: scripts::State::new(context.source_file.clone()),
         };
         let mut body = Region::default();
         let errors = lower.block(&document.statements, &mut scope, context, &mut body);
@@ -425,10 +442,17 @@ impl Session {
             lower.origins.remove(&removed);
         }
         lower.program.body = body;
+        symbols::complete_source_modules(
+            &scope,
+            context,
+            &lower.relocations,
+            &mut lower.scripts.modules,
+        );
         let result = Lowered {
             program: lower.program,
             origins: lower.origins,
             relocations: lower.relocations,
+            source_modules: lower.scripts.modules,
         };
         candidate.scope = scope;
         candidate.refresh_legacy();
@@ -450,6 +474,13 @@ impl Session {
             }
         }
         self.legacy = legacy;
+    }
+}
+
+fn value_expression(statement: &language::Statement) -> &Expr {
+    match &statement.kind {
+        language::StatementKind::Binding { value, .. } => value,
+        _ => unreachable!("program binding pattern"),
     }
 }
 
@@ -562,6 +593,7 @@ struct Lower<'a> {
     origins: Origins,
     relocations: Vec<Relocation>,
     pending: BTreeSet<ProcessId>,
+    scripts: scripts::State,
 }
 
 impl Lower<'_> {
@@ -607,7 +639,7 @@ impl Lower<'_> {
                         ).help("Await a program bound with 'name => executable(arguments)'."))),
                         None => Err(self.located(Report::new(
                             format!("unknown program '{}'", name.text), name.span,
-                        ).help("Declare the program before awaiting it, or use bare 'await' to join all pending programs."))),
+                        ).help("Declare the program before acquiring it, or use bare 'acquire' to join all pending programs."))),
                     }
                 }).transpose()?;
                 self.join(region, statement.span, process);
@@ -635,7 +667,7 @@ impl Lower<'_> {
                         kind: ExprKind::Call { .. },
                         ..
                     },
-            } => Some(name),
+            } if !symbols::is_call(value_expression(statement), scope) => Some(name),
             _ => None,
         };
         if asynchronous || program_name.is_some() {
@@ -664,6 +696,11 @@ impl Lower<'_> {
     ) -> Result<(), LocatedReport> {
         use language::StatementKind;
         match &statement.kind {
+            StatementKind::Call(call) if symbols::is_call(call, scope) => {
+                diagnostics::resolve(call, scope, context)
+                    .map(|_| ())
+                    .map_err(|error| self.located(error))
+            }
             StatementKind::Call(call) => self.expand_macro(call, scope, context, region),
             StatementKind::Transfer {
                 source,
@@ -680,6 +717,21 @@ impl Lower<'_> {
             } => self
                 .define_macro(name, parameters, body, scope, context)
                 .map_err(|report| self.located(report)),
+            StatementKind::Symbol {
+                name,
+                parameters,
+                body,
+            } => self.define_symbol(name, parameters, body, scope, context),
+            StatementKind::Return(value) => Err(self.located(Report::new(
+                "return is only allowed inside a symbol",
+                value.span,
+            ))),
+            StatementKind::Execute(expression) => {
+                self.script(expression, false, scope, context, region)
+            }
+            StatementKind::Include(expression) => {
+                self.script(expression, true, scope, context, region)
+            }
             StatementKind::Global(names) => {
                 import_globals(names, scope).map_err(|report| self.located(report))
             }
@@ -720,6 +772,14 @@ impl Lower<'_> {
             end: expression.span.end,
         };
         let mut value = match (&expression.kind, op) {
+            (ExprKind::Call { .. }, _) if symbols::is_call(expression, scope) => {
+                let value = diagnostics::resolve(expression, scope, context)?;
+                if op == BindingOp::Space && !matches!(value, Value::Space(_) | Value::Process(_)) {
+                    return Err(Report::new("'=>' expects a space or program returned by the symbol; use ':=' for an item", expression.span).into());
+                }
+                value
+            }
+
             (ExprKind::Call { callee, arguments }, BindingOp::Space) => {
                 let (executable, executable_relocation) = file_value(diagnostics::resolve(callee, scope, context)?, callee.span, context)?;
                 if !matches!(executable.backend, Backend::Local | Backend::Path | Backend::Wsl | Backend::Ssh { .. }) {
@@ -979,6 +1039,7 @@ impl Lower<'_> {
             global_sites: scope.sites.clone(),
             global_expansions: scope.expansions.clone(),
             macros: scope.macros.clone(),
+            symbols: scope.symbols.clone(),
             source_file: context.source_file.clone(),
             source: self.source.clone(),
         };
@@ -1092,6 +1153,10 @@ impl Lower<'_> {
             .collect();
         let mut scope = Scope {
             current_unit: caller.current_unit,
+            source: Some(definition.source.clone()),
+            symbols: definition.symbols.clone(),
+            symbol_calls: caller.symbol_calls.clone(),
+            symbol_budget: caller.symbol_budget.clone(),
             defined_units: Arc::new(BTreeMap::new()),
             values: Arc::new(values),
             macros: definition.macros.clone(),
@@ -1196,7 +1261,7 @@ impl Lower<'_> {
 fn import_globals(names: &[Name], scope: &mut Scope) -> Result<(), Report> {
     let globals = scope.globals.as_ref().ok_or_else(|| {
         Report::new(
-            "global is only meaningful inside a macro",
+            "global is only meaningful inside a macro or symbol",
             names.first().map_or(Span::default(), |name| name.span),
         )
         .help("Top-level bindings already share one lexical environment.")
@@ -1204,15 +1269,23 @@ fn import_globals(names: &[Name], scope: &mut Scope) -> Result<(), Report> {
     for name in names {
         check_name(name)?;
         if scope.values.contains_key(&name.text) && !scope.imported.contains(&name.text) {
-            return Err(Report::new(format!("global '{}' conflicts with a parameter or local binding", name.text), name.span)
-                .help("Use another local name; an explicit global import cannot overwrite a macro parameter."));
+            return Err(Report::new(
+                format!(
+                    "global '{}' conflicts with a parameter or local binding",
+                    name.text
+                ),
+                name.span,
+            )
+            .help(
+                "Use another local name; an explicit global import cannot overwrite a parameter.",
+            ));
         }
         let value = globals.get(&name.text).cloned().ok_or_else(|| {
             Report::new(
-                format!("global '{}' was not declared before this macro", name.text),
+                format!("global '{}' was not declared before this definition", name.text),
                 name.span,
             )
-            .help("Declare the binding before the macro definition, or pass it as a parameter.")
+            .help("Declare the binding before the macro or symbol definition, or pass it as a parameter.")
         })?;
         Arc::make_mut(&mut scope.values).insert(name.text.clone(), value);
         if let Some(site) = scope
@@ -1236,7 +1309,17 @@ fn import_globals(names: &[Name], scope: &mut Scope) -> Result<(), Report> {
     Ok(())
 }
 
-fn resolve(expression: &Expr, scope: &Scope, context: &CompileContext) -> Result<Value, Report> {
+fn resolve(expression: &Expr, scope: &Scope, context: &CompileContext) -> Result<Value, Failure> {
+    let value = resolve_value(expression, scope, context)?;
+    symbols::check_value(&value, expression.span, scope)?;
+    Ok(value)
+}
+
+fn resolve_value(
+    expression: &Expr,
+    scope: &Scope,
+    context: &CompileContext,
+) -> Result<Value, Failure> {
     match &expression.kind {
         ExprKind::Literal(text) => Ok(Value::Literal(Arc::from(text.as_str()))),
         ExprKind::Path(path) => {
@@ -1255,13 +1338,12 @@ fn resolve(expression: &Expr, scope: &Scope, context: &CompileContext) -> Result
             operator,
             mode,
         } => resolve_join(base, suffix.as_deref(), *operator, *mode, scope, context),
-        ExprKind::Call { .. } => Err(Report::new(
-            "a call is not a path or stream value",
-            expression.span,
-        )
-        .help(
-            "Bind a program with 'name => executable(arguments)' or invoke a macro as a statement.",
-        )),
+        ExprKind::Select {
+            namespace,
+            item,
+            operator,
+        } => resolve_select(namespace, item, *operator, scope, context),
+        ExprKind::Call { .. } => symbols::evaluate(expression, scope, context),
     }
 }
 
@@ -1301,7 +1383,7 @@ fn resolve_join(
     mode: DestinationMode,
     scope: &Scope,
     context: &CompileContext,
-) -> Result<Value, Report> {
+) -> Result<Value, Failure> {
     let base_value = resolve(base, scope, context)?;
     let suffix_value = suffix
         .map(|expression| resolve(expression, scope, context))
@@ -1309,14 +1391,16 @@ fn resolve_join(
     let suffix_site = suffix.map_or(operator, |expression| expression.source.content);
     let mut base_path = path_fragment(base_value, base.source.content)?;
     if base_path.is_file {
-        return Err(Report::new(
+        return Err((Report::new(
             "a known file value cannot have child path components",
             operator,
         )
-        .help("Join with its containing directory, not a known file value."));
+        .help("Join with its containing directory, not a known file value."))
+        .into());
     }
     let Some(suffix_value) = suffix_value else {
         if !base_path.path.ends_with(['/', '\\']) {
+            symbols::check_size(base_path.path.len().saturating_add(1), operator, scope)?;
             base_path.path.push('/');
             if let Some(relocation) = &mut base_path.relocation {
                 relocation.append("/");
@@ -1327,16 +1411,16 @@ fn resolve_join(
     };
     let suffix_path = path_fragment(suffix_value, suffix_site)?;
     if rooted_fragment(&suffix_path.path) {
-        return Err(Report::new("a rooted right operand cannot replace a path-join base", operator)
+        return Err((Report::new("a rooted right operand cannot replace a path-join base", operator)
             .label(base.source.content, format!("left operand expands to {}", diagnostics::path_description(&base_path)))
             .label(suffix_site, format!("right operand expands to {}; this is rooted", diagnostics::path_description(&suffix_path)))
-            .help("'/' expands both operands before joining; its right path item must be relative. Use the rooted item directly instead of placing it after another path base."));
+            .help("'/' expands both operands before joining; its right path item must be relative. Use the rooted item directly instead of placing it after another path base.")).into());
     }
     if let (Some(left), Some(right)) = (&base_path.backend, &suffix_path.backend)
         && left != right
     {
         return Err(
-            Report::new("joined path operands have conflicting endpoints", operator)
+            (Report::new("joined path operands have conflicting endpoints", operator)
                 .label(
                     base.source.content,
                     format!(
@@ -1350,9 +1434,17 @@ fn resolve_join(
                         "right operand expands to {}",
                         diagnostics::path_description(&suffix_path)
                     ),
-                ),
+                ))
+            .into(),
         );
     }
+    let separator = usize::from(!base_path.path.ends_with(['/', '\\']));
+    let projected = base_path
+        .path
+        .len()
+        .saturating_add(separator)
+        .saturating_add(suffix_path.path.len());
+    symbols::check_size(projected, operator, scope)?;
     if base_path.backend.is_none() {
         base_path.backend = suffix_path.backend;
     }
@@ -1423,12 +1515,9 @@ fn resolve_path(
     site: &OperandSource,
     scope: &Scope,
     context: &CompileContext,
-) -> Result<Value, Report> {
+) -> Result<Value, Failure> {
     if path.path.is_empty() || path.path.contains('\0') {
-        return Err(Report::new(
-            "paths must be nonempty and cannot contain NUL",
-            span,
-        ));
+        return Err((Report::new("paths must be nonempty and cannot contain NUL", span)).into());
     }
     let quoted = site.content.start > site.span.start;
     if path.qualifier.is_none()
@@ -1440,20 +1529,128 @@ fn resolve_path(
     let qualifier = match &path.qualifier {
         Some(name) => match scope.values.get(&name.text) {
             Some(Value::Process(process)) => {
-                return process_port(*process, &path.path, site.content);
+                return process_port(*process, &path.path, site.content).map_err(Into::into);
             }
             Some(Value::Space(space)) => Some(space.clone()),
-            Some(_) => return Err(Report::new(
+            Some(_) => return Err((Report::new(
                 format!("'{}' is a value, not a namespace or program", name.text),
                 name.span,
             )
             .help(
                 "Append path components with '/', or qualify with a namespace declared using '=>'.",
-            )),
+            ))
+            .into()),
             None => Some(Compiler::new().space(&name.text, name.span)?),
         },
         None => None,
     };
+    resolve_namespace(path, span, site, scope, context, qualifier)
+}
+
+fn resolve_select(
+    namespace: &Expr,
+    item: &Expr,
+    operator: Span,
+    scope: &Scope,
+    context: &CompileContext,
+) -> Result<Value, Failure> {
+    let value = resolve(namespace, scope, context)?;
+    if !matches!(value, Value::Space(_) | Value::Process(_)) {
+        return Err(Report::new(
+            "the left operand of '::' must be a space or program",
+            operator,
+        )
+        .label(
+            namespace.span,
+            format!("left operand expands to {}", diagnostics::describe(&value)),
+        )
+        .into());
+    }
+    let path = match &item.kind {
+        ExprKind::Path(path) if path.qualifier.is_none() => Some(path.clone()),
+        ExprKind::Literal(text) => Some(PathExpr {
+            qualifier: None,
+            path: text.clone(),
+            mode: DestinationMode::Exact,
+        }),
+        _ => None,
+    };
+    if let Some(path) = path {
+        return select_named(namespace, item, path, value, scope, context);
+    }
+    let fragment = path_fragment(resolve(item, scope, context)?, item.span)?;
+    match value {
+        Value::Space(Space::Endpoint(backend)) => qualify(Value::Path(fragment), backend, operator),
+        Value::Space(Space::Pwd)
+            if fragment.backend.is_some()
+                || fragment.path.split(['/', '\\']).next() != Some("pwd") =>
+        {
+            contextualize_pwd_value(Value::Path(fragment), item.span, context)
+        }
+        Value::Space(_) | Value::Process(_) => {
+            if fragment.backend.is_some() {
+                return Err(Report::new(
+                    "a named namespace member must not carry a physical endpoint",
+                    item.span,
+                )
+                .into());
+            }
+            let path = PathExpr {
+                qualifier: None,
+                path: fragment.path,
+                mode: fragment.mode,
+            };
+            select_named(namespace, item, path, value, scope, context)
+        }
+        _ => unreachable!("validated namespace type"),
+    }
+}
+
+fn select_named(
+    namespace: &Expr,
+    item: &Expr,
+    mut path: PathExpr,
+    value: Value,
+    scope: &Scope,
+    context: &CompileContext,
+) -> Result<Value, Failure> {
+    if let Value::Process(process) = value {
+        return process_port(process, &path.path, item.span).map_err(Into::into);
+    }
+    let Value::Space(space) = value else {
+        unreachable!("validated namespace type");
+    };
+    let text = scope
+        .source
+        .as_ref()
+        .and_then(|source| source.text.get(namespace.span.start..namespace.span.end))
+        .unwrap_or("symbol result");
+    path.qualifier = Some(Name {
+        text: text.to_owned(),
+        span: namespace.span,
+    });
+    resolve_namespace(
+        &path,
+        Span {
+            start: namespace.span.start,
+            end: item.span.end,
+        },
+        &item.source,
+        scope,
+        context,
+        Some(space),
+    )
+}
+
+fn resolve_namespace(
+    path: &PathExpr,
+    span: Span,
+    site: &OperandSource,
+    scope: &Scope,
+    context: &CompileContext,
+    qualifier: Option<Space>,
+) -> Result<Value, Failure> {
+    let quoted = site.content.start > site.span.start;
     match qualifier {
         Some(Space::Pwd) => resolve_pwd(path, span, site, scope, context),
         Some(Space::File) => {
@@ -1486,6 +1683,7 @@ fn resolve_path(
                 ));
                 Value::Path(value)
             })
+            .map_err(Into::into)
         }
         Some(Space::Endpoint(backend)) => qualify(
             if quoted {
@@ -1520,18 +1718,19 @@ fn resolve_component(
     span: Span,
     scope: &Scope,
     context: &CompileContext,
-) -> Result<Value, Report> {
+) -> Result<Value, Failure> {
     let name = path.split(['/', '\\']).next().unwrap_or(path);
     let suffix = &path[name.len()..];
     if let Some(value) = scope.values.get(name) {
         return match value {
             Value::Path(base) => {
                 if base.is_file && !suffix.is_empty() {
-                    return Err(Report::new(
+                    return Err((Report::new(
                         "a known file value cannot have child path components",
                         span,
                     )
-                    .help("Use the containing directory value to form child paths."));
+                    .help("Use the containing directory value to form child paths."))
+                    .into());
                 }
                 let mut base = captured_path(base, scope);
                 if !suffix.is_empty() {
@@ -1546,16 +1745,21 @@ fn resolve_component(
                 Ok(Value::Path(base))
             }
             _ if suffix.is_empty() => Ok(captured_value(value, scope)),
-            _ => Err(Report::new(format!("'{name}' is not a path value"), span)
-                .help("Only file/directory path values can have '/child' suffixes.")),
+            _ => Err((Report::new(format!("'{name}' is not a path value"), span)
+                .help("Only file/directory path values can have '/child' suffixes."))
+            .into()),
         };
     }
     if path.starts_with('$') && !path.contains(['/', '\\']) || path.contains("://") {
-        return Compiler::new().space(path, span).map(Value::Space);
+        return Compiler::new()
+            .space(path, span)
+            .map(Value::Space)
+            .map_err(Into::into);
     }
     Compiler::new()
         .expand(path, &OperandSource::unmapped(span), context)
         .map(|path| Value::Path(path.into()))
+        .map_err(Into::into)
 }
 
 fn resolve_pwd(
@@ -1564,7 +1768,7 @@ fn resolve_pwd(
     site: &OperandSource,
     scope: &Scope,
     context: &CompileContext,
-) -> Result<Value, Report> {
+) -> Result<Value, Failure> {
     let component = path.path.split(['/', '\\']).next().unwrap_or(&path.path);
     let quoted = site.content.start > site.span.start;
     if component == "pwd" && !quoted {
@@ -1584,7 +1788,8 @@ fn resolve_pwd(
                 path.path[component.len()..].trim_start_matches(['/', '\\']),
             ));
             Value::Path(value)
-        });
+        })
+        .map_err(Into::into);
     }
     let value = if quoted {
         Value::Path(PathValue {
@@ -1598,14 +1803,22 @@ fn resolve_pwd(
     } else {
         resolve_component(&path.path, site.content, scope, context)?
     };
-    let mut value = path_fragment(value, site.content)?;
+    contextualize_pwd_value(value, site.content, context)
+}
+
+fn contextualize_pwd_value(
+    value: Value,
+    span: Span,
+    context: &CompileContext,
+) -> Result<Value, Failure> {
+    let mut value = path_fragment(value, span)?;
     if value
         .backend
         .as_ref()
         .is_some_and(|backend| backend != &Backend::Local)
     {
-        return Err(Report::new("a remote path cannot be contextualized inside local $pwd", span)
-            .help("Remove '$pwd::' to retain the parameter's remote endpoint, or pass a relative path item."));
+        return Err((Report::new("a remote path cannot be contextualized inside local $pwd", span)
+            .help("Remove '$pwd::' to retain the parameter's remote endpoint, or pass a relative path item.")).into());
     }
     if !absolute_fragment(&value.path) {
         let cwd = context
@@ -1630,14 +1843,14 @@ fn qualified_source(
     OperandSource::mapped(span, span, offsets)
 }
 
-fn qualify(value: Value, backend: Backend, span: Span) -> Result<Value, Report> {
+fn qualify(value: Value, backend: Backend, span: Span) -> Result<Value, Failure> {
     let mut path = path_fragment(value, span)?;
     if path.backend.as_ref().is_some_and(|other| other != &backend) {
-        return Err(Report::new("path value has a conflicting endpoint", span)
-            .help("Remove the explicit qualifier to retain the value's original endpoint, or pass an unqualified path item."));
+        return Err((Report::new("path value has a conflicting endpoint", span)
+            .help("Remove the explicit qualifier to retain the value's original endpoint, or pass an unqualified path item.")).into());
     }
     if matches!(backend, Backend::Tcp { .. }) && path.path != "/" {
-        return Err(super::tcp_path_report(span));
+        return Err((super::tcp_path_report(span)).into());
     }
     path.backend = Some(backend);
     Ok(Value::Path(path))
@@ -1869,8 +2082,9 @@ fn selector_site(expression: &Expr) -> Span {
 fn reject_nested_macro(body: &[language::Statement]) -> Result<(), Report> {
     for statement in body {
         match &statement.kind {
-            language::StatementKind::Macro { name, .. } => {
-                return Err(Report::new("a macro cannot declare another macro", name.span)
+            language::StatementKind::Macro { name, .. }
+            | language::StatementKind::Symbol { name, .. } => {
+                return Err(Report::new("a macro cannot declare another macro or symbol", name.span)
                     .help("Declare the inner macro at the top level before this macro, then call it from the body."));
             }
             language::StatementKind::Scheduled { statement, .. } => {

@@ -12,7 +12,7 @@ const MAX_NESTING: usize = 128;
 
 pub(super) fn opens_block(line: &str) -> bool {
     let code = line[..comment_start(line).unwrap_or(line.len())].trim_start();
-    code.starts_with("macro ")
+    code.starts_with("macro ") || code.starts_with("symbol ")
 }
 
 #[derive(Clone, Copy)]
@@ -114,19 +114,19 @@ impl Parser<'_> {
                     "unexpected indentation or dedent to an unknown level"
                 };
                 self.errors.push(Report::new(message, span(line.offset, line.offset + line.code.len()))
-                    .help("Align this statement with its enclosing block; only macro headers introduce a block."));
+                    .help("Align this statement with its enclosing block; only macro and symbol headers introduce a block."));
                 continue;
             }
             match statement(line.code, line.offset) {
                 Ok(mut statement) => {
                     let is_macro = matches!(statement.kind, StatementKind::Macro { .. });
-                    let nested = is_macro;
+                    let nested = is_macro || matches!(statement.kind, StatementKind::Symbol { .. });
                     if is_macro && in_macro {
                         self.errors.push(Report::new("a macro cannot declare another macro", statement.span)
                             .help("Move the macro declaration to the top level and call it from this body."));
                     }
                     if nested {
-                        let mut child = self.child(line, in_macro || is_macro, depth + 1);
+                        let mut child = self.child(line, in_macro || nested, depth + 1);
                         if let Some(comment) = line.comment {
                             child.insert(0, comment_statement(comment));
                         }
@@ -134,7 +134,8 @@ impl Parser<'_> {
                             statement.span.end = last.span.end;
                         }
                         match &mut statement.kind {
-                            StatementKind::Macro { body, .. } => *body = child,
+                            StatementKind::Macro { body, .. }
+                            | StatementKind::Symbol { body, .. } => *body = child,
                             _ => unreachable!(),
                         }
                     }
@@ -200,19 +201,32 @@ fn statement(code: &str, offset: usize) -> Result<Statement, Report> {
         return Ok(scheduled);
     }
     let kind = if let Some(header) = code.strip_prefix("macro ") {
-        let (name, parameters) = macro_header(header, offset + 6)?;
+        let (name, parameters) = definition_header(header, offset + 6, "macro")?;
         StatementKind::Macro {
             name,
             parameters,
             body: Vec::new(),
         }
+    } else if let Some(header) = code.strip_prefix("symbol ") {
+        let (name, parameters) = definition_header(header, offset + 7, "symbol")?;
+        StatementKind::Symbol {
+            name,
+            parameters,
+            body: Vec::new(),
+        }
+    } else if let Some(value) = keyword_tail(code, "return") {
+        StatementKind::Return(expression(value, offset + 6)?)
+    } else if let Some(value) = keyword_tail(code, "execute") {
+        StatementKind::Execute(expression(value, offset + 7)?)
+    } else if let Some(value) = keyword_tail(code, "include") {
+        StatementKind::Include(expression(value, offset + 7)?)
     } else if ["transaction", "commit", "rollback"]
         .iter()
         .any(|keyword| keyword_tail(code, keyword).is_some())
     {
         let end = code.find(char::is_whitespace).unwrap_or(code.len());
         return Err(Report::new("transaction syntax has been removed", span(offset, offset + end))
-            .help("Each finite file statement is atomic. Use async and await to express scheduling barriers; there are no transaction checkpoints or rollback scopes."));
+            .help("Each finite file statement is atomic. Use release and acquire to express scheduling barriers (legacy async/await aliases remain accepted); there are no transaction checkpoints or rollback scopes."));
     } else if let Some(names) = code.strip_prefix("global ") {
         let names = split_arguments(names, offset + 7)?
             .into_iter()
@@ -243,24 +257,26 @@ fn scheduled_statement(code: &str, offset: usize) -> Result<Option<Statement>, R
     let mut rest = code;
     let mut asynchronous = false;
     let mut awaited = false;
-    while let Some((keyword, tail)) = ["async", "await"]
+    while let Some((keyword, tail)) = ["release", "acquire", "acqrel", "async", "await"]
         .into_iter()
         .find_map(|keyword| keyword_tail(rest, keyword).map(|tail| (keyword, tail)))
     {
-        let seen = if keyword == "async" {
-            &mut asynchronous
-        } else {
-            &mut awaited
+        let (releases, acquires) = match keyword {
+            "release" | "async" => (true, false),
+            "acquire" | "await" => (false, true),
+            "acqrel" => (true, true),
+            _ => unreachable!(),
         };
         let start = offset + code.len() - rest.len();
-        if *seen {
+        if releases && asynchronous || acquires && awaited {
             return Err(Report::new(
                 format!("duplicate '{keyword}' scheduling prefix"),
                 span(start, start + keyword.len()),
             )
-            .help("Use each scheduling prefix at most once on a statement."));
+            .help("Use release or acquire once, or acqrel to combine both effects."));
         }
-        *seen = true;
+        asynchronous |= releases;
+        awaited |= acquires;
         rest = tail.trim_start();
     }
     if !asynchronous && !awaited {
@@ -272,19 +288,29 @@ fn scheduled_statement(code: &str, offset: usize) -> Result<Option<Statement>, R
         (true, false, true) => StatementKind::Async,
         (false, true, true) => StatementKind::Await(None),
         (true, true, true) => {
-            return Err(Report::new("expected a statement after 'async await'", whole)
-                .help("Add a transfer or program call, or put the standalone async and await barriers on separate lines."));
+            return Err(Report::new("expected a statement after 'acqrel'", whole)
+                .help("Add a transfer or program call, or put the standalone release and acquire barriers on separate lines."));
         }
         (false, true, false) if name(rest, rest_offset).is_ok() => {
             StatementKind::Await(Some(name(rest, rest_offset)?))
         }
         _ => {
-            if ["macro", "global", "transaction", "commit", "rollback"]
-                .iter()
-                .any(|keyword| keyword_tail(rest, keyword).is_some())
+            if [
+                "macro",
+                "symbol",
+                "global",
+                "return",
+                "execute",
+                "include",
+                "transaction",
+                "commit",
+                "rollback",
+            ]
+            .iter()
+            .any(|keyword| keyword_tail(rest, keyword).is_some())
             {
                 return Err(Report::new("scheduling prefixes require an executable statement", span(rest_offset, rest_offset + rest.len()))
-                    .help("Apply async or await to a transfer, program binding, or macro call; declarations do not execute work."));
+                    .help("Apply release, acquire or acqrel to a transfer, program binding, or macro call; declarations do not execute work."));
             }
             let statement = Statement {
                 kind: ordinary_statement(rest, rest_offset)?,
@@ -315,7 +341,7 @@ fn ordinary_statement(code: &str, offset: usize) -> Result<StatementKind, Report
                 ":=" | "=>" => Ok(StatementKind::Binding {
                     name: name(left, offset)?,
                     op: if *operator == ":=" { BindingOp::Value } else { BindingOp::Space },
-                    value: expression(right, right_offset)?,
+                    value: expression_with_role(right, right_offset, if *operator == "=>" { CallRole::Executable } else { CallRole::Value })?,
                 }),
                 _ => unreachable!(),
             }
@@ -334,19 +360,21 @@ fn ordinary_statement(code: &str, offset: usize) -> Result<StatementKind, Report
     }
 }
 
-fn macro_header(raw: &str, offset: usize) -> Result<(Name, Vec<Name>), Report> {
+fn definition_header(raw: &str, offset: usize, kind: &str) -> Result<(Name, Vec<Name>), Report> {
     let header = header_body(raw, offset)?;
     let scan = scan(header, offset)?;
-    let open = scan.first_call.ok_or_else(|| {
+    let open = scan.calls.first().map(|(open, _)| *open).ok_or_else(|| {
         Report::new(
-            "macro parameters require parentheses",
+            format!("{kind} parameters require parentheses"),
             span(offset, offset + header.len()),
         )
-        .help("Write 'macro name(parameter, other):' and indent its body.")
+        .help(format!(
+            "Write '{kind} name(parameter, other):' and indent its body."
+        ))
     })?;
     if !header.ends_with(')') {
         return Err(Report::new(
-            "unexpected text after macro parameters",
+            format!("unexpected text after {kind} parameters"),
             span(offset + open, offset + header.len()),
         ));
     }
@@ -360,9 +388,11 @@ fn macro_header(raw: &str, offset: usize) -> Result<(Name, Vec<Name>), Report> {
             .iter()
             .find(|previous| previous.text == parameter.text)
         {
-            return Err(Report::new("duplicate macro parameter", parameter.span)
-                .label(previous.span, "first declared here")
-                .help("Give every parameter a distinct name."));
+            return Err(
+                Report::new(format!("duplicate {kind} parameter"), parameter.span)
+                    .label(previous.span, "first declared here")
+                    .help("Give every parameter a distinct name."),
+            );
         }
     }
     Ok((macro_name, parameters))
@@ -395,7 +425,17 @@ fn name(raw: &str, offset: usize) -> Result<Name, Report> {
     })
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CallRole {
+    Value,
+    Executable,
+}
+
 fn expression(raw: &str, offset: usize) -> Result<Expr, Report> {
+    expression_with_role(raw, offset, CallRole::Value)
+}
+
+fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr, Report> {
     let (text, offset) = trimmed(raw, offset);
     let range = span(offset, offset + text.len());
     if text.is_empty() {
@@ -411,26 +451,11 @@ fn expression(raw: &str, offset: usize) -> Result<Expr, Report> {
         .help("Place each binding or transfer on its own line."));
     }
     let mut provenance = OperandSource::unmapped(range);
-    let kind = if let Some(open) = scan.first_call {
-        if !text.ends_with(')') || scan.call_close != Some(text.len() - 1) {
-            return Err(Report::new("unexpected text after call", span(offset + scan.call_close.unwrap_or(open) + 1, offset + text.len()))
-                .help("A call must end with its closing ')'; quote parentheses that belong to a filename."));
-        }
-        let callee = expression(&text[..open], offset)?;
-        if !matches!(callee.kind, ExprKind::Path(_) | ExprKind::Join { .. }) {
-            return Err(Report::new(
-                "a call requires a macro name or executable path",
-                callee.span,
-            ));
-        }
-        let arguments = split_arguments(&text[open + 1..text.len() - 1], offset + open + 1)?
-            .into_iter()
-            .map(|(text, at)| expression(text, at))
-            .collect::<Result<Vec<_>, _>>()?;
-        ExprKind::Call {
-            callee: Box::new(callee),
-            arguments,
-        }
+    let executable_call = (role == CallRole::Executable)
+        .then(|| scan.calls.last().copied())
+        .flatten();
+    let kind = if let Some((open, close)) = executable_call {
+        call_expression(text, offset, open, close)?
     } else if let Some(operator) = join_operator(text, &scan) {
         if scan.joins.len() > MAX_NESTING {
             return Err(Report::new(
@@ -461,6 +486,24 @@ fn expression(raw: &str, offset: usize) -> Result<Expr, Report> {
             operator: span(offset + operator, offset + operator + 1),
             mode,
         }
+    } else if let Some(operator) = scan
+        .selections
+        .iter()
+        .rev()
+        .copied()
+        .find(|operator| scan.calls.iter().any(|(_, close)| *close < *operator))
+    {
+        if scan.selections.len() > MAX_NESTING {
+            return Err(Report::new("namespace expression nesting is too deep", span(offset + operator, offset + operator + 2))
+                .help("Bind an intermediate space; one expression supports at most 128 namespace operators."));
+        }
+        ExprKind::Select {
+            namespace: Box::new(expression(&text[..operator], offset)?),
+            item: Box::new(expression(&text[operator + 2..], offset + operator + 2)?),
+            operator: span(offset + operator, offset + operator + 2),
+        }
+    } else if let Some((open, close)) = scan.calls.last().copied() {
+        call_expression(text, offset, open, close)?
     } else if text.starts_with('"') {
         let (value, source) = quoted(text, offset)?;
         provenance = source;
@@ -503,6 +546,36 @@ fn expression(raw: &str, offset: usize) -> Result<Expr, Report> {
         kind,
         span: range,
         source: provenance,
+    })
+}
+
+fn call_expression(
+    text: &str,
+    offset: usize,
+    open: usize,
+    close: usize,
+) -> Result<ExprKind, Report> {
+    if close != text.len() - 1 {
+        return Err(Report::new(
+            "unexpected text after call",
+            span(offset + close + 1, offset + text.len()),
+        )
+        .help("Join a returned symbol value with '/', or qualify a returned space with '::'."));
+    }
+    let callee = expression(&text[..open], offset)?;
+    if matches!(callee.kind, ExprKind::Literal(_)) {
+        return Err(Report::new(
+            "a call requires a macro or symbol name, or an executable path",
+            callee.span,
+        ));
+    }
+    let arguments = split_arguments(&text[open + 1..close], offset + open + 1)?
+        .into_iter()
+        .map(|(text, at)| expression(text, at))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ExprKind::Call {
+        callee: Box::new(callee),
+        arguments,
     })
 }
 
@@ -623,18 +696,18 @@ fn quoted(text: &str, offset: usize) -> Result<(String, OperandSource), Report> 
 struct Scan {
     operators: Vec<(usize, &'static str)>,
     commas: Vec<usize>,
-    first_call: Option<usize>,
-    call_close: Option<usize>,
     joins: Vec<usize>,
+    selections: Vec<usize>,
+    calls: Vec<(usize, usize)>,
 }
 
 fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
     let mut result = Scan {
         operators: Vec::new(),
         commas: Vec::new(),
-        first_call: None,
-        call_close: None,
         joins: Vec::new(),
+        selections: Vec::new(),
+        calls: Vec::new(),
     };
     let bytes = text.as_bytes();
     let mut quote = None;
@@ -672,6 +745,10 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
             continue;
         }
         match byte {
+            b':' if parentheses.is_empty() && bytes.get(index + 1) == Some(&b':') => {
+                result.selections.push(index);
+                index += 1;
+            }
             b'/' if parentheses.is_empty() => result.joins.push(index),
             b'"' => quote = Some(index),
             b'<' => selector = Some(index),
@@ -680,21 +757,24 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
                     return Err(Report::new("call nesting is too deep", span(offset + index, offset + index + 1))
                         .help("Use no more than 128 nested argument lists; bind an intermediate value instead."));
                 }
-                if parentheses.is_empty() && result.first_call.is_none() {
-                    result.first_call = Some(index);
-                }
                 parentheses.push(index);
             }
             b')' => {
-                if parentheses.pop().is_none() {
+                let Some(open) = parentheses.pop() else {
                     return Err(Report::new(
                         "unmatched closing ')'",
                         span(offset + index, offset + index + 1),
                     )
                     .help("Remove this ')' or add its matching '(' before the arguments."));
-                }
-                if parentheses.is_empty() && result.call_close.is_none() {
-                    result.call_close = Some(index);
+                };
+                if parentheses.is_empty() {
+                    if result.calls.len() == MAX_NESTING {
+                        return Err(Report::new(
+                            "call expression nesting is too deep",
+                            span(offset + open, offset + index + 1),
+                        ));
+                    }
+                    result.calls.push((open, index));
                 }
             }
             b',' if parentheses.is_empty() => result.commas.push(index),

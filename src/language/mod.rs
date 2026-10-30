@@ -56,6 +56,14 @@ pub enum StatementKind {
         parameters: Vec<Name>,
         body: Block,
     },
+    Symbol {
+        name: Name,
+        parameters: Vec<Name>,
+        body: Block,
+    },
+    Return(Expr),
+    Execute(Expr),
+    Include(Expr),
     Call(Expr),
     Global(Vec<Name>),
     /// Explicit scheduling prefixes; the compiler supplies the default join for
@@ -93,6 +101,11 @@ pub enum ExprKind {
     Call {
         callee: Box<Expr>,
         arguments: Vec<Expr>,
+    },
+    Select {
+        namespace: Box<Expr>,
+        item: Box<Expr>,
+        operator: Span,
     },
     Join {
         base: Box<Expr>,

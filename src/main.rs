@@ -63,10 +63,16 @@ EXAMPLES
   msync run sync.msync --dry-run  Preview without transfers or remote probes
   msync fmt sync.msync --check    Check script formatting without rewriting
 
+SOURCE COMPOSITION
+  symbol home(space):
+      return space::~
+  include \"shared.msync\"         Inline source in this lexical environment
+  execute \"tasks/<.+\\.msync>\"  Inline sorted scripts with isolated environments
+
 PROGRAMS
-  async Program => $path::bash(\"-c\", \"ls\")
+  release Program => $path::bash(\"-c\", \"ls\")
   Program::stdout -> stdout.txt
-  await Program
+  acquire Program
 
 REPL: /help or /? for commands. No arguments starts the REPL.
 Syntax 0.5 is the only supported CLI grammar; migrate earlier scripts explicitly.
@@ -76,7 +82,7 @@ Use $pwd::pwd / \"file name\" or $local::\"file name\" for paths containing spac
 Use $pwd::pwd/file for working-directory paths; $file::this and $file::parent identify the source script.
 Pipes and sockets end independently; Ctrl-C cancels active streams.
 External programs run asynchronously internally; an unmarked call waits for exit.
-Use async to launch without waiting, and await to establish a completion barrier.
+Use release to launch without waiting, acquire to join, and acqrel for both effects.
 Finite file statements recover as a whole; streams and external effects are not rolled back.
 Graceful cancellation waits for started children to exit and may wait forever.
 ";
@@ -107,8 +113,8 @@ const REPL_HELP: &str = "REPL commands
   /kill                    Force-terminate programs; external effects may be partial
 Enter DSL statements directly; bindings persist across submissions.
 Macro blocks end with a blank line; Ctrl-C discards a pending block.
-async starts background work; await establishes a completion barrier.
-Unmarked external calls wait; macros await their outstanding programs before returning.
+release starts background work; acquire joins it; acqrel combines both effects.
+Unmarked external calls wait; macros acquire their outstanding programs before returning.
 Graceful /stop and Ctrl-C may wait forever for a nonterminating external program.
 Use /wait or /stop before changing shared cwd, files or syntax through a command.
 In supported terminals, Tab completes commands/namespaces and Up/Down browse history.

@@ -54,7 +54,7 @@ fn independent_prefixes_apply_to_finite_statements_and_macro_calls() {
     }
     assert_eq!(
         language::format("await async a->b").unwrap(),
-        "async await a -> b\n"
+        "acqrel a -> b\n"
     );
 }
 
@@ -67,7 +67,12 @@ fn standalone_barriers_and_macro_bodies_are_preserved() {
     };
     assert!(matches!(body[0].kind, StatementKind::Async));
     assert!(matches!(body[4].kind, StatementKind::Await(None)));
-    assert_eq!(language::format(source).unwrap(), source);
+    assert_eq!(
+        language::format(source).unwrap(),
+        source
+            .replace("async", "release")
+            .replace("await", "acquire")
+    );
     let mut buffer = SubmissionBuffer::default();
     assert!(matches!(
         buffer.push_line("macro copy(a, b):").unwrap(),

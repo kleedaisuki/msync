@@ -44,8 +44,17 @@ fn write_statement(output: &mut String, kind: &StatementKind, depth: usize) {
             name,
             parameters,
             body,
+        }
+        | StatementKind::Symbol {
+            name,
+            parameters,
+            body,
         } => {
-            output.push_str("macro ");
+            output.push_str(if matches!(kind, StatementKind::Symbol { .. }) {
+                "symbol "
+            } else {
+                "macro "
+            });
             output.push_str(&name.text);
             output.push('(');
             for (index, parameter) in parameters.iter().enumerate() {
@@ -57,6 +66,18 @@ fn write_statement(output: &mut String, kind: &StatementKind, depth: usize) {
             output.push_str("):\n");
             block(output, body, depth + 1);
             return;
+        }
+        StatementKind::Return(value)
+        | StatementKind::Execute(value)
+        | StatementKind::Include(value) => {
+            let keyword = match kind {
+                StatementKind::Return(_) => "return ",
+                StatementKind::Execute(_) => "execute ",
+                StatementKind::Include(_) => "include ",
+                _ => unreachable!(),
+            };
+            output.push_str(keyword);
+            expression(output, value);
         }
         StatementKind::Call(call) => expression(output, call),
         StatementKind::Global(names) => {
@@ -73,18 +94,18 @@ fn write_statement(output: &mut String, kind: &StatementKind, depth: usize) {
             awaited,
             statement,
         } => {
-            if *asynchronous {
-                output.push_str("async ");
-            }
-            if *awaited {
-                output.push_str("await ");
-            }
+            output.push_str(match (*asynchronous, *awaited) {
+                (true, true) => "acqrel ",
+                (true, false) => "release ",
+                (false, true) => "acquire ",
+                (false, false) => "",
+            });
             write_statement(output, &statement.kind, depth);
             return;
         }
-        StatementKind::Async => output.push_str("async"),
+        StatementKind::Async => output.push_str("release"),
         StatementKind::Await(target) => {
-            output.push_str("await");
+            output.push_str("acquire");
             if let Some(target) = target {
                 output.push(' ');
                 output.push_str(&target.text);
@@ -118,6 +139,13 @@ fn expression(output: &mut String, value: &Expr) {
             }
         }
         ExprKind::Literal(text) => quoted(output, text),
+        ExprKind::Select {
+            namespace, item, ..
+        } => {
+            expression(output, namespace);
+            output.push_str("::");
+            expression(output, item);
+        }
         ExprKind::Join { base, suffix, .. } => {
             expression(output, base);
             output.push('/');

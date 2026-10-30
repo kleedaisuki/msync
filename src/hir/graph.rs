@@ -408,7 +408,7 @@ fn validate_processes(
         if !known.contains(&process) {
             graph.issues.push(issue(
                 instruction.id,
-                "program port or await refers to a program that has not been launched",
+                "program port or acquire refers to a program that has not been launched",
             ));
         } else {
             graph.external_processes.push(ExternalProcessRequirement {

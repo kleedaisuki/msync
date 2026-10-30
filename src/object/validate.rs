@@ -15,10 +15,13 @@ pub(super) fn module(module: &ObjectModule) -> Result<(), ObjectError> {
             "unsupported object format or language version",
         ));
     }
-    let supported = FEATURES
+    let mut supported = FEATURES
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<BTreeSet<_>>();
+    if !module.source_modules.is_empty() {
+        supported.insert(SOURCE_MODULES_FEATURE.into());
+    }
     if module.features.iter().cloned().collect::<BTreeSet<_>>() != supported
         || module.features.len() != supported.len()
     {
@@ -27,6 +30,7 @@ pub(super) fn module(module: &ObjectModule) -> Result<(), ObjectError> {
         ));
     }
     text(&module.main_module, "module symbol")?;
+    source_modules(module)?;
     let mut state = ProgramState::default();
     state.region(&module.program.body)?;
     let nodes = nodes(&module.program);
@@ -650,4 +654,64 @@ fn clear(
     if pending.remove(&(id, slot)) {
         location.path.clear();
     }
+}
+
+fn source_modules(module: &ObjectModule) -> Result<(), ObjectError> {
+    if module.source_modules.len() > 1024 {
+        return Err(ObjectError::new("too many source module bindings"));
+    }
+    let mut names = BTreeSet::new();
+    for binding in &module.source_modules {
+        text(&binding.name, "source module symbol")?;
+        if binding.name == module.main_module || !names.insert(binding.name.clone()) {
+            return Err(ObjectError::new("duplicate or main source module binding"));
+        }
+        match &binding.path {
+            SourceModulePath::Absolute { path } => {
+                no_nul(path, "source module path")?;
+                if !absolute(path) {
+                    return Err(ObjectError::new(
+                        "captured source module path must be absolute",
+                    ));
+                }
+            }
+            SourceModulePath::Contextual { path } => {
+                path_expression(path)?;
+                if matches!(path.anchor, Anchor::SearchPath { .. }) {
+                    return Err(ObjectError::new(
+                        "source module bindings cannot require a filesystem PATH search",
+                    ));
+                }
+            }
+        }
+    }
+    let mut ready = BTreeSet::from([module.main_module.clone()]);
+    for _ in 0..=module.source_modules.len() {
+        let before = ready.len();
+        for binding in &module.source_modules {
+            let parent = match &binding.path {
+                SourceModulePath::Contextual {
+                    path:
+                        crate::relocatable::Path {
+                            anchor:
+                                Anchor::ModuleFile { module } | Anchor::ModuleDirectory { module },
+                            ..
+                        },
+                } => Some(module),
+                _ => None,
+            };
+            if parent.is_none_or(|parent| ready.contains(parent)) {
+                ready.insert(binding.name.clone());
+            }
+        }
+        if ready.len() == module.source_modules.len() + 1 {
+            return Ok(());
+        }
+        if ready.len() == before {
+            return Err(ObjectError::new(
+                "cyclic or unresolved source module binding",
+            ));
+        }
+    }
+    Err(ObjectError::new("source module dependency bound exceeded"))
 }

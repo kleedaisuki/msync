@@ -20,6 +20,7 @@ struct Frame {
 pub(super) enum Origin {
     Item,
     Parameter,
+    SymbolParameter,
     Imported,
 }
 
@@ -108,8 +109,18 @@ impl ExpansionTrace {
                     self.expression(suffix, scope);
                 }
             }
+            ExprKind::Select {
+                namespace, item, ..
+            } => {
+                self.expression(namespace, scope);
+                // Computed namespace members may be intrinsic names; do not
+                // invent a lexical RHS lookup when only a member is selected.
+                let _ = item;
+            }
             ExprKind::Call { callee, arguments } => {
-                self.expression(callee, scope);
+                if !symbols::is_call(expression, scope) {
+                    self.expression(callee, scope);
+                }
                 for argument in arguments {
                     self.expression(argument, scope);
                 }
@@ -120,33 +131,50 @@ impl ExpansionTrace {
 }
 
 pub(super) struct Failure {
-    report: Report,
+    report: Box<Report>,
     trace: ExpansionTrace,
+    located: Option<Box<LocatedReport>>,
 }
 
 impl From<Report> for Failure {
     fn from(report: Report) -> Self {
         Self {
-            report,
+            report: Box::new(report),
             trace: ExpansionTrace::default(),
+            located: None,
         }
     }
 }
 
 impl Failure {
+    pub fn located(report: LocatedReport) -> Self {
+        Self {
+            report: report.report.clone(),
+            trace: ExpansionTrace::default(),
+            located: Some(Box::new(report)),
+        }
+    }
+
     pub fn with_expression(mut self, expression: &Expr, scope: &Scope) -> Self {
-        if self.trace.frames.is_empty() && contains(expression.span, self.report.diagnostic.span) {
+        if self.located.is_none()
+            && self.trace.frames.is_empty()
+            && contains(expression.span, self.report.diagnostic.span)
+        {
             self.trace = failure_inputs(expression, self.report.diagnostic.span, scope);
         }
         self
     }
 
     pub fn locate(self, source: Arc<Source>) -> LocatedReport {
-        let mut located = LocatedReport::new(source, self.report);
+        if let Some(located) = self.located {
+            return *located;
+        }
+        let mut located = LocatedReport::new(source, *self.report);
         for frame in self.trace.frames {
             let (kind, site) = match frame.origin {
                 Origin::Item => (frame.kind.to_owned(), "bound here"),
                 Origin::Parameter => ("macro parameter".to_owned(), "argument bound here"),
+                Origin::SymbolParameter => ("symbol parameter".to_owned(), "argument bound here"),
                 Origin::Imported => (format!("imported {}", frame.kind), "source origin"),
             };
             located = located.label(
@@ -166,10 +194,8 @@ pub(super) fn resolve(
     scope: &Scope,
     context: &CompileContext,
 ) -> Result<Value, Failure> {
-    super::resolve(expression, scope, context).map_err(|report| {
-        let trace = failure_inputs(expression, report.diagnostic.span, scope);
-        Failure { report, trace }
-    })
+    super::resolve(expression, scope, context)
+        .map_err(|failure| failure.with_expression(expression, scope))
 }
 
 fn failure_inputs(expression: &Expr, span: Span, scope: &Scope) -> ExpansionTrace {
@@ -192,6 +218,22 @@ fn failing_expression(expression: &Expr, span: Span) -> &Expr {
                 .as_deref()
                 .filter(|suffix| contains(suffix.span, span))
                 .map_or(expression, |suffix| failing_expression(suffix, span))
+        }
+        ExprKind::Select {
+            namespace,
+            item,
+            operator,
+        } => {
+            if *operator == span {
+                return expression;
+            }
+            if contains(namespace.span, span) {
+                return failing_expression(namespace, span);
+            }
+            if contains(item.span, span) {
+                return failing_expression(item, span);
+            }
+            expression
         }
         ExprKind::Call { callee, arguments } => std::iter::once(callee.as_ref())
             .chain(arguments)

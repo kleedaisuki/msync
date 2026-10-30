@@ -1093,9 +1093,9 @@ fn print_block(
             InstructionKind::Await {
                 process: Some(process),
             } => {
-                format!("await program {}", process.0)
+                format!("acquire program {}", process.0)
             }
-            InstructionKind::Await { process: None } => "await pending work".into(),
+            InstructionKind::Await { process: None } => "acquire pending work".into(),
         };
         print_text(&format!(
             "{prefix}{}\n",

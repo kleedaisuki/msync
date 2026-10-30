@@ -51,7 +51,7 @@ fn removed_duplicate_and_late_headers_are_rejected_before_execution() {
         let help = reports[0].help.join(" ");
         assert!(help.contains("literal bytes"));
         assert!(help.contains("$pwd"));
-        assert!(help.contains("async") && help.contains("await"));
+        assert!(help.contains("release") && help.contains("acquire"));
     }
     assert!(select_version("# msync: 0.5\n# msync: 0.5\n", None, Version::Structured).is_err());
     assert!(

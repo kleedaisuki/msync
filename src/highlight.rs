@@ -281,16 +281,18 @@ fn word_tokens(source: &str, start: usize, end: usize, first: bool, tokens: &mut
 
 fn control_word(source: &str, word: &str, first: bool, end: usize) -> bool {
     let prefix = &source[..end - word.len()];
-    let scheduling = matches!(word, "async" | "await")
+    let scheduling = matches!(word, "release" | "acquire" | "acqrel" | "async" | "await")
         && prefix
             .split_whitespace()
-            .all(|word| matches!(word, "async" | "await"));
+            .all(|word| matches!(word, "release" | "acquire" | "acqrel" | "async" | "await"));
     if scheduling {
         return true;
     }
     first
-        && (matches!(word, "macro" | "global")
-            || (is_command(word) && !operator_at(source[end..].trim_start(), 0)))
+        && (matches!(
+            word,
+            "macro" | "symbol" | "return" | "execute" | "include" | "global"
+        ) || (is_command(word) && !operator_at(source[end..].trim_start(), 0)))
 }
 
 pub fn highlight(source: &str, color: bool) -> String {

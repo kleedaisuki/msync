@@ -132,7 +132,9 @@ pub fn contextualize(
     module
         .validate()
         .map_err(|cause| ContextError::new(format!("invalid object module: {cause}")))?;
-    validate_context(context)?;
+    let context = source_module_context(module, context)?;
+    validate_context(&context)?;
+    let context = &context;
     let (source, sources, mut origins, export_sites) = module
         .debug
         .materialize()
@@ -217,6 +219,56 @@ pub fn contextualize_source(
         origins: compiled.origins.clone(),
         obligations,
     })
+}
+
+fn source_module_context(
+    module: &ObjectModule,
+    context: &Context,
+) -> Result<Context, ContextError> {
+    use crate::object::SourceModulePath;
+    let mut context = context.clone();
+    let mut pending: Vec<_> = module.source_modules.iter().collect();
+    while !pending.is_empty() {
+        let before = pending.len();
+        let mut remaining = Vec::new();
+        for binding in pending {
+            if context.modules.contains_key(&binding.name) {
+                continue;
+            }
+            let file = match &binding.path {
+                SourceModulePath::Absolute { path } => PathBuf::from(path),
+                SourceModulePath::Contextual { path } => {
+                    let parent = match &path.anchor {
+                        Anchor::ModuleFile { module } | Anchor::ModuleDirectory { module } => {
+                            Some(module)
+                        }
+                        _ => None,
+                    };
+                    if parent.is_some_and(|parent| {
+                        parent != &module.main_module && !context.modules.contains_key(parent)
+                    }) {
+                        remaining.push(binding);
+                        continue;
+                    }
+                    let location = bound_path(
+                        path,
+                        &Backend::Local,
+                        &module.main_module,
+                        &context,
+                        None,
+                        &mut Vec::new(),
+                    )?;
+                    PathBuf::from(location.path)
+                }
+            };
+            context.modules.insert(binding.name.clone(), file);
+        }
+        if remaining.len() == before {
+            return Err(ContextError::new("unresolved source-module dependency"));
+        }
+        pending = remaining;
+    }
+    Ok(context)
 }
 
 fn validate_context(context: &Context) -> Result<(), ContextError> {

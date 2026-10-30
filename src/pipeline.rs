@@ -7,7 +7,7 @@
 use crate::compiler::CompileContext;
 use crate::compiler::structured::Session;
 use crate::hir::graph::{self, PlanGraph, PlanningContext};
-use crate::hir::{self, Instruction, InstructionId, ProcessId, Region};
+use crate::hir::{self, InstructionId, ProcessId};
 use crate::language::{self, Document};
 use crate::source::{LocatedReport, Origins, Source, SourceMap};
 use crate::syntax::{Report, Span};
@@ -23,6 +23,7 @@ pub struct RelocatableCompilation {
     pub export_sites: std::collections::BTreeMap<String, crate::source::SourceSpan>,
     pub main_module: String,
     pub module_bindings: std::collections::BTreeMap<String, std::path::PathBuf>,
+    pub source_modules: Vec<crate::object::SourceModule>,
 }
 
 impl RelocatableCompilation {
@@ -36,7 +37,8 @@ impl RelocatableCompilation {
             self.compilation.origins,
             self.export_sites,
             self.main_module,
-        )
+        )?
+        .with_source_modules(self.source_modules)
     }
 }
 
@@ -246,17 +248,17 @@ fn compile_document_relocatable(
             .issues
             .iter()
             .map(|issue| {
-                let mut sites = issue
-                    .instructions
-                    .iter()
-                    .filter_map(|id| instruction(&program.body, *id));
-                let site = sites.next().map_or(Span::default(), |node| node.span);
-                let mut report = Report::new(&issue.message, site);
-                for node in sites {
-                    report = report.label(node.span, "this operation participates in the conflict");
+                let mut sites = issue.instructions.iter().filter_map(|id| lowered.origins.get(id));
+                let mut report = Report::new(&issue.message, Span::default())
+                    .help("Connect each live program stream only once, and acquire the program after arranging the flows needed for it to finish.");
+                let mut located = if let Some(origin) = sites.next() {
+                    report.diagnostic.span = origin.site.span;
+                    origin.report(report, None)
+                } else { LocatedReport::new(source.clone(), report) };
+                for origin in sites {
+                    located = located.label(origin.site.clone(), "this operation participates in the conflict");
                 }
-                let report = report.help("Connect each live program stream only once, and await the program after arranging the flows needed for it to finish.");
-                LocatedReport::new(source.clone(), report)
+                located
             })
             .collect());
     }
@@ -265,6 +267,9 @@ fn compile_document_relocatable(
     *session = candidate;
     let mut sources = SourceMap::default();
     sources.insert(source.clone());
+    for site in export_sites.values() {
+        sources.insert(site.source.clone());
+    }
     for origin in lowered.origins.values() {
         sources.insert(origin.site.source.clone());
         sources.insert(origin.definition.source.clone());
@@ -307,9 +312,6 @@ fn compile_document_relocatable(
         export_sites,
         main_module,
         module_bindings,
+        source_modules: lowered.source_modules,
     })
-}
-
-fn instruction(region: &Region, id: InstructionId) -> Option<&Instruction> {
-    region.instructions.iter().find(|node| node.id == id)
 }
