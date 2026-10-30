@@ -31,7 +31,7 @@ fn future_remote_publication_is_compiled_without_opening_its_source() {
     let program = compile(
         work.path(),
         "Maker => $path::not-a-real-generator(\"future\")\n\
-         $pwd / \"not-created\" -> $wsl::\"/tmp/msync-v5-unopened/target ' 可莉\"\n",
+         $pwd::pwd / \"not-created\" -> $wsl::\"/tmp/msync-v5-unopened/target ' 可莉\"\n",
     );
     assert!(!work.path().join("not-created").exists());
     let blocks: Vec<_> = program.blocks().collect();
@@ -195,8 +195,8 @@ mod wsl {
         ];
         let script = format!(
             "Maker => $local::{}({})\n\
-             $pwd / \"generated ' 可莉.txt\" -> {}\n\
-             {} -> $pwd / \"roundtrip.txt\"\n",
+             $pwd::pwd / \"generated ' 可莉.txt\" -> {}\n\
+             {} -> $pwd::pwd / \"roundtrip.txt\"\n",
             quoted(&executable.to_string_lossy()),
             arguments
                 .iter()
@@ -225,7 +225,7 @@ mod wsl {
         fs::write(tree.join("obsolete"), b"removed by replacement").unwrap();
         fixture
             .run(&format!(
-                "$pwd / \"tree ' 可莉\" -> {}\n",
+                "$pwd::pwd / \"tree ' 可莉\" -> {}\n",
                 fixture.endpoint("target")
             ))
             .await
@@ -234,7 +234,7 @@ mod wsl {
         fs::write(tree.join("nested/data"), b"second").unwrap();
         fixture
             .run(&format!(
-                "$pwd / \"tree ' 可莉\" -> {} /.\n",
+                "$pwd::pwd / \"tree ' 可莉\" -> {} /.\n",
                 fixture.endpoint("target")
             ))
             .await
@@ -245,7 +245,7 @@ mod wsl {
         );
         let error = fixture
             .run(&format!(
-                "$pwd / \"tree ' 可莉\" -> {}\n",
+                "$pwd::pwd / \"tree ' 可莉\" -> {}\n",
                 fixture.endpoint("target")
             ))
             .await;
@@ -256,7 +256,7 @@ mod wsl {
 
         fixture
             .run(&format!(
-                "$pwd / \"tree ' 可莉\" -> {} /\n",
+                "$pwd::pwd / \"tree ' 可莉\" -> {} /\n",
                 fixture.endpoint("container")
             ))
             .await
@@ -265,7 +265,7 @@ mod wsl {
         assert!(
             fixture
                 .run(&format!(
-                    "$pwd / \"tree ' 可莉\" -> {} /\n",
+                    "$pwd::pwd / \"tree ' 可莉\" -> {} /\n",
                     fixture.endpoint("container")
                 ))
                 .await
@@ -284,7 +284,7 @@ mod wsl {
         let fixture = Fixture::new();
         fixture
             .run(&format!(
-                "\"first\" -> {}\n\"last\" -> {}\n{} -> $pwd / \"download\"\n",
+                "\"first\" -> {}\n\"last\" -> {}\n{} -> $pwd::pwd / \"download\"\n",
                 fixture.endpoint("data"),
                 fixture.endpoint("data"),
                 fixture.endpoint("data"),
@@ -331,7 +331,7 @@ mod wsl {
         assert!(
             fixture
                 .run(&format!(
-                    "$pwd / \"directory\" -> {}\n",
+                    "$pwd::pwd / \"directory\" -> {}\n",
                     fixture.endpoint("data")
                 ))
                 .await

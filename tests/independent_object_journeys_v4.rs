@@ -90,7 +90,7 @@ fn identical_object_bytes_bind_two_environments_without_rebasing_absolute_consta
     let absolute = build.join("absolute-constant");
     fs::write(&absolute, b"old constant contents must not be captured").unwrap();
     fs::write(build.join("code.msync"), format!(
-        "macro copy(src, des):\n    src -> des\ncopy($pwd / \"input\", from-pwd)\ncopy(~/input, from-home)\ncopy($env::MSYNC_OBJECT_INPUT/input, from-env)\n$local::\"{}\" -> from-absolute\n",
+        "macro copy(src, des):\n    src -> des\ncopy($pwd::pwd / \"input\", from-pwd)\ncopy(~/input, from-home)\ncopy($env::MSYNC_OBJECT_INPUT/input, from-env)\n$local::\"{}\" -> from-absolute\n",
         quote(&absolute)
     )).unwrap();
     success(&invoke(
@@ -157,7 +157,7 @@ fn module_file_and_directory_anchors_are_distinct_from_the_invocation_directory(
     let package = directory(root.path(), "package");
     let cwd = directory(root.path(), "invocation");
     fs::write(build.join("code.msync"),
-        "$file::parent/module-input -> from-module\n$pwd / \"cwd-input\" -> from-cwd\n$file::this -> object-copy\n"
+        "$file::parent/module-input -> from-module\n$pwd::pwd / \"cwd-input\" -> from-cwd\n$file::this -> object-copy\n"
     ).unwrap();
     fs::write(build.join("module-input"), b"compile-time module poison").unwrap();
     success(&invoke(
@@ -195,7 +195,7 @@ fn deleted_source_still_supplies_owned_runtime_debug_locations() {
     let root = workspace();
     let build = directory(root.path(), "build");
     let runtime = directory(root.path(), "runtime");
-    let source = "macro publish(src):\n    src -> output\npublish($pwd / \"不存在\")\n";
+    let source = "macro publish(src):\n    src -> output\npublish($pwd::pwd / \"不存在\")\n";
     fs::write(build.join("diagnostic-script.msync"), source).unwrap();
     success(&invoke(
         &build,
@@ -209,7 +209,7 @@ fn deleted_source_still_supplies_owned_runtime_debug_locations() {
     let error = String::from_utf8_lossy(&failed.stderr);
     assert!(error.starts_with("execution error:"), "{error}");
     assert!(error.contains("diagnostic-script.msync:3:"), "{error}");
-    assert!(error.contains("publish($pwd /"), "{error}");
+    assert!(error.contains("publish($pwd::pwd /"), "{error}");
     assert!(error.contains("不存在") && error.contains('^'), "{error}");
     assert!(!runtime.join("output").exists());
 }

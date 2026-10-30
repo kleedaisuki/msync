@@ -144,7 +144,7 @@ fn assert_recovered(root: &Path) {
 #[test]
 fn empty_and_declarations_only_submissions_recover_before_returning() {
     for object in [false, true] {
-        for source in ["", "unused := $pwd / \"not-created\"\n"] {
+        for source in ["", "unused := $pwd::pwd / \"not-created\"\n"] {
             let root = workspace();
             let target = root.path().join("target");
             fs::write(root.path().join("source"), b"new bytes").unwrap();

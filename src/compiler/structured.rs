@@ -20,6 +20,9 @@ use crate::relocatable::{
 use crate::source::{InstructionOrigin, LocatedReport, Origins, Source, SourceId, SourceSpan};
 use crate::syntax::{OperandSource, Report, Span};
 
+mod diagnostics;
+use diagnostics::{ExpansionMap, ExpansionTrace, Failure, Origin as ExpansionOrigin};
+
 #[derive(Clone, Debug)]
 enum Value {
     Path(PathValue),
@@ -82,6 +85,7 @@ struct Macro {
     body: language::Block,
     globals: Arc<BTreeMap<String, Value>>,
     global_sites: Arc<BTreeMap<String, SourceSpan>>,
+    global_expansions: Arc<ExpansionMap>,
     macros: Arc<BTreeMap<String, Arc<Macro>>>,
     source_file: Option<PathBuf>,
     source: Arc<Source>,
@@ -98,6 +102,8 @@ struct Scope {
     imported: HashSet<String>,
     sites: Arc<BTreeMap<String, SourceSpan>>,
     global_sites: Option<Arc<BTreeMap<String, SourceSpan>>>,
+    expansions: Arc<ExpansionMap>,
+    global_expansions: Option<Arc<ExpansionMap>>,
 }
 
 /// Persistent structured compiler environment, independent of executor state.
@@ -155,6 +161,7 @@ impl Session {
         for (name, space) in compiler.spaces.iter() {
             values.insert(name.clone(), Value::Space(space.clone()));
             Arc::make_mut(&mut self.scope.sites).remove(name);
+            Arc::make_mut(&mut self.scope.expansions).remove(name);
             Arc::make_mut(&mut self.scope.defined_units).remove(name);
         }
         for (name, path) in compiler.aliases.iter() {
@@ -162,6 +169,7 @@ impl Session {
             path.mode = legacy_path_mode(&path.path);
             values.insert(name.clone(), Value::Path(path));
             Arc::make_mut(&mut self.scope.sites).remove(name);
+            Arc::make_mut(&mut self.scope.expansions).remove(name);
             Arc::make_mut(&mut self.scope.defined_units).remove(name);
         }
         self.refresh_legacy();
@@ -185,6 +193,17 @@ impl Session {
 
     pub fn bindings(&self) -> Vec<String> {
         let mut bindings = Vec::new();
+        let mut endpoints = HashMap::<Backend, String>::new();
+        for (name, value) in self.scope.values.iter() {
+            if let Value::Space(space) = value {
+                bindings.push(format!("{name} => {space}"));
+                if let Space::Endpoint(backend) = space {
+                    endpoints
+                        .entry(backend.clone())
+                        .or_insert_with(|| name.clone());
+                }
+            }
+        }
         for (name, value) in self.scope.values.iter() {
             match value {
                 Value::Literal(text) => bindings.push(format!("{name} := {}", literal_text(text))),
@@ -192,8 +211,16 @@ impl Session {
                 Value::Port(id, port) => {
                     bindings.push(format!("{name} := <program {} {port:?}>", id.0))
                 }
-                Value::Path(path) => bindings.push(format!("{name} := {}", path_text(path))),
-                Value::Space(space) => bindings.push(format!("{name} => {space}")),
+                Value::Path(path) => {
+                    let qualifier = path.backend.as_ref().map(|backend| {
+                        binding_qualifier(backend, &self.scope, &mut endpoints, &mut bindings)
+                    });
+                    bindings.push(format!(
+                        "{name} := {}",
+                        path_text(path, qualifier.as_deref())
+                    ));
+                }
+                Value::Space(_) => {}
             }
         }
         bindings.extend(self.scope.macros.values().map(|definition| {
@@ -262,7 +289,15 @@ impl Session {
             .sites
             .iter()
             .filter(|(name, _)| defined_here(&self.scope, name))
-            .map(|(name, site)| (name.clone(), site.clone()))
+            .map(|(name, site)| {
+                let declaration = self
+                    .scope
+                    .expansions
+                    .get(name)
+                    .and_then(ExpansionTrace::declaration)
+                    .unwrap_or_else(|| site.clone());
+                (name.clone(), declaration)
+            })
             .collect()
     }
 
@@ -295,6 +330,18 @@ impl Session {
                 ));
             }
             let value = imported_value(&export.value);
+            if let Some(site) = site {
+                let trace = ExpansionTrace::new(
+                    &export.name,
+                    &value,
+                    site.clone(),
+                    ExpansionTrace::default(),
+                    ExpansionOrigin::Imported,
+                );
+                Arc::make_mut(&mut candidate.scope.expansions).insert(export.name.clone(), trace);
+            } else {
+                Arc::make_mut(&mut candidate.scope.expansions).remove(&export.name);
+            }
             Arc::make_mut(&mut candidate.scope.values).insert(export.name.clone(), value);
             Arc::make_mut(&mut candidate.scope.defined_units).remove(&export.name);
             if let Some(site) = site {
@@ -625,7 +672,7 @@ impl Lower<'_> {
             StatementKind::Comment(_) => Ok(()),
             StatementKind::Binding { name, op, value } => self
                 .bind(name, *op, value, scope, context, region)
-                .map_err(|report| self.located(report)),
+                .map_err(|failure| self.located(failure.with_expression(value, scope))),
             StatementKind::Macro {
                 name,
                 parameters,
@@ -655,8 +702,8 @@ impl Lower<'_> {
         }
     }
 
-    fn located(&self, report: Report) -> LocatedReport {
-        LocatedReport::new(self.source.clone(), report)
+    fn located(&self, report: impl Into<Failure>) -> LocatedReport {
+        report.into().locate(self.source.clone())
     }
     fn bind(
         &mut self,
@@ -666,7 +713,7 @@ impl Lower<'_> {
         scope: &mut Scope,
         context: &CompileContext,
         region: &mut Region,
-    ) -> Result<(), Report> {
+    ) -> Result<(), Failure> {
         check_name(name)?;
         let span = Span {
             start: name.span.start,
@@ -674,18 +721,18 @@ impl Lower<'_> {
         };
         let mut value = match (&expression.kind, op) {
             (ExprKind::Call { callee, arguments }, BindingOp::Space) => {
-                let (executable, executable_relocation) = file_value(resolve(callee, scope, context)?, callee.span, context)?;
+                let (executable, executable_relocation) = file_value(diagnostics::resolve(callee, scope, context)?, callee.span, context)?;
                 if !matches!(executable.backend, Backend::Local | Backend::Path | Backend::Wsl | Backend::Ssh { .. }) {
-                    return Err(Report::new("this endpoint cannot launch a program", callee.span)
-                        .help("Use a local, PATH, WSL or SSH executable endpoint."));
+                    return Err((Report::new("this endpoint cannot launch a program", callee.span)
+                        .help("Use a local, PATH, WSL or SSH executable endpoint.")).into());
                 }
                 let mut relocations = Vec::new();
                 if let Some(path) = executable_relocation { relocations.push((Slot::Executable, path)); }
-                let arguments = arguments.iter().enumerate().map(|(index, argument)| match resolve(argument, scope, context)? {
+                let arguments = arguments.iter().enumerate().map(|(index, argument)| match diagnostics::resolve(argument, scope, context)? {
                     Value::Literal(text) => {
                         if text.contains('\0') {
-                            return Err(Report::new("program arguments cannot contain NUL", argument.span)
-                                .help("Pass these bytes through program::stdin or a file instead; native argv strings cannot contain NUL."));
+                            return Err((Report::new("program arguments cannot contain NUL", argument.span)
+                                .help("Pass these bytes through program::stdin or a file instead; native argv strings cannot contain NUL.")).into());
                         }
                         Ok(Argument::Text(text.to_string()))
                     }
@@ -694,9 +741,9 @@ impl Lower<'_> {
                         if let Some(path) = relocation { relocations.push((Slot::Argument { index }, path)); }
                         Ok(Argument::Path(location))
                     },
-                    _ => Err(Report::new("program arguments must be text or file paths", argument.span)
-                        .help("Quote literal argv text; pass a path binding to retain its endpoint identity.")),
-                }).collect::<Result<Vec<_>, _>>()?;
+                    _ => Err((Report::new("program arguments must be text or file paths", argument.span)
+                        .help("Quote literal argv text; pass a path binding to retain its endpoint identity.")).into()),
+                }).collect::<Result<Vec<_>, Failure>>()?;
                 let id = ProcessId(self.session.next_process);
                 self.session.next_process += 1;
                 let instruction = self.emit(region, span, InstructionKind::Spawn { process: id, executable, arguments, cwd: context.pwd.clone() });
@@ -706,15 +753,15 @@ impl Lower<'_> {
                 Value::Process(id)
             }
             (ExprKind::Call { .. }, BindingOp::Value) => {
-                return Err(Report::new("a program call binds a program space with '=>'", expression.span)
-                    .help("Use 'program => executable(arguments)' and read program::stdout or program::exit_code."));
+                return Err((Report::new("a program call binds a program space with '=>'", expression.span)
+                    .help("Use 'program => executable(arguments)' and read program::stdout or program::exit_code.")).into());
             }
-            (_, BindingOp::Space) => match resolve(expression, scope, context)? {
+            (_, BindingOp::Space) => match diagnostics::resolve(expression, scope, context)? {
                 Value::Space(space) => Value::Space(space),
-                _ => return Err(Report::new("'=>' expects an endpoint namespace or a program call", expression.span)
-                    .help("Use ':=' for path values, or '=>' with $local, $wsl, an endpoint URL or executable(arguments).")),
+                _ => return Err((Report::new("'=>' expects an endpoint namespace or a program call", expression.span)
+                    .help("Use ':=' for path values, or '=>' with $local, $wsl, an endpoint URL or executable(arguments).")).into()),
             },
-            (_, BindingOp::Value) => resolve(expression, scope, context)?,
+            (_, BindingOp::Value) => diagnostics::resolve(expression, scope, context)?,
         };
         if let Value::Path(path) = &mut value
             && contextual(path.relocation.as_ref())
@@ -722,6 +769,14 @@ impl Lower<'_> {
         {
             path.relocation_unit = scope.current_unit;
         }
+        let trace = ExpansionTrace::new(
+            &name.text,
+            &value,
+            self.source.at(name.span),
+            ExpansionTrace::inputs(expression, scope),
+            ExpansionOrigin::Item,
+        );
+        Arc::make_mut(&mut scope.expansions).insert(name.text.clone(), trace);
         let site = self.expression_site(expression, scope);
         Arc::make_mut(&mut scope.sites).insert(name.text.clone(), site);
         if let Some(unit) = scope.current_unit {
@@ -751,7 +806,13 @@ impl Lower<'_> {
             relocations,
         } = self
             .transfer_values(source, destination, scope, context)
-            .map_err(|report| self.located(report))?;
+            .map_err(|failure| {
+                self.located(
+                    failure
+                        .with_expression(source, scope)
+                        .with_expression(destination, scope),
+                )
+            })?;
         for (key, site) in &owned {
             if let Some(previous) = self.session.consumed.get(key) {
                 return Err(self.located(Report::new("a live program stream may have only one owner", *site)
@@ -788,9 +849,9 @@ impl Lower<'_> {
         destination: &Expr,
         scope: &Scope,
         context: &CompileContext,
-    ) -> Result<TransferValues, Report> {
-        let source_value = resolve(source, scope, context)?;
-        let destination_value = resolve(destination, scope, context)?;
+    ) -> Result<TransferValues, Failure> {
+        let source_value = diagnostics::resolve(source, scope, context)?;
+        let destination_value = diagnostics::resolve(destination, scope, context)?;
         let mut owned = Vec::new();
         let mut relocations = Vec::new();
         let source = match source_value {
@@ -811,13 +872,14 @@ impl Lower<'_> {
                 if pattern.is_some()
                     && matches!(path.backend, Some(Backend::Http { .. } | Backend::Path))
                 {
-                    return Err(Report::new(
+                    return Err((Report::new(
                         "selectors require a directory-capable source",
                         source.span,
                     )
                     .help(
                         "Select from a local, WSL or SSH directory, not an HTTP or PATH endpoint.",
-                    ));
+                    ))
+                    .into());
                 }
                 let (location, relocation) = location(path, context, source.span)?;
                 if let Some(path) = relocation {
@@ -833,9 +895,10 @@ impl Lower<'_> {
             }
             _ => {
                 return Err(
-                    Report::new("this value is not a readable source", source.span).help(
+                    (Report::new("this value is not a readable source", source.span).help(
                         "Use a file, quoted UTF-8 literal, stdout/stderr, pid, exit_code or meta.",
-                    ),
+                    ))
+                    .into(),
                 );
             }
         };
@@ -844,10 +907,10 @@ impl Lower<'_> {
             Value::Path(mut path) => {
                 let mode = if mode == DestinationMode::Exact { path.mode } else { mode };
                 if matches!(path.backend, Some(Backend::Http { .. } | Backend::Path)) {
-                    return Err(Report::new("HTTP(S) and PATH endpoints are read-only", qualifier_site(destination)));
+                    return Err((Report::new("HTTP(S) and PATH endpoints are read-only", qualifier_site(destination))).into());
                 }
                 if path.path.contains(['<', '>']) {
-                    return Err(Report::new("selectors are only allowed in the source", selector_site(destination)));
+                    return Err((Report::new("selectors are only allowed in the source", selector_site(destination))).into());
                 }
                 if mode == DestinationMode::ReplaceTree {
                     if path.path.ends_with("/.") || path.path.ends_with("\\.") {
@@ -859,8 +922,8 @@ impl Lower<'_> {
                     reject_root_replacement(&path, destination.span)?;
                 }
                 if matches!(&source, Input::File { pattern: Some(_), .. }) && mode != DestinationMode::Container {
-                    return Err(Report::new("a selector requires a destination container ending in '/'", destination.span)
-                        .help("Append '/' to preserve each selected entry's basename."));
+                    return Err((Report::new("a selector requires a destination container ending in '/'", destination.span)
+                        .help("Append '/' to preserve each selected entry's basename.")).into());
                 }
                 let (location, relocation) = location(path, context, destination.span)?;
                 if let Some(path) = relocation { relocations.push((Slot::Destination, path)); }
@@ -870,8 +933,8 @@ impl Lower<'_> {
                 owned.push(((process, Port::Stdin), destination.span));
                 Output::Stdin(process)
             }
-            _ => return Err(Report::new("this value is not a writable destination", destination.span)
-                .help("Use a writable path such as './\"output name\"' or '$pwd / \"output name\"', or program::stdin. Bare quoted expressions and output streams are read-only.")),
+            _ => return Err((Report::new("this value is not a writable destination", destination.span)
+                .help("Use a writable path such as './\"output name\"' or '$pwd::pwd / \"output name\"', or program::stdin. Bare quoted expressions and output streams are read-only.")).into()),
         };
         Ok(TransferValues {
             source,
@@ -914,6 +977,7 @@ impl Lower<'_> {
             body: body.to_vec(),
             globals: scope.values.clone(),
             global_sites: scope.sites.clone(),
+            global_expansions: scope.expansions.clone(),
             macros: scope.macros.clone(),
             source_file: context.source_file.clone(),
             source: self.source.clone(),
@@ -993,9 +1057,12 @@ impl Lower<'_> {
             .iter()
             .zip(arguments)
             .map(|(parameter, argument)| {
-                Ok((parameter.text.clone(), resolve(argument, caller, context)?))
+                Ok((
+                    parameter.text.clone(),
+                    diagnostics::resolve(argument, caller, context)?,
+                ))
             })
-            .collect::<Result<BTreeMap<_, _>, Report>>()
+            .collect::<Result<BTreeMap<_, _>, Failure>>()
             .map_err(|report| self.located(report))?;
         let sites = definition
             .parameters
@@ -1008,6 +1075,21 @@ impl Lower<'_> {
                 )
             })
             .collect();
+        let expansions = definition
+            .parameters
+            .iter()
+            .zip(arguments)
+            .map(|(parameter, argument)| {
+                let trace = ExpansionTrace::new(
+                    &parameter.text,
+                    &values[&parameter.text],
+                    self.source.at(argument.span),
+                    ExpansionTrace::inputs(argument, caller),
+                    ExpansionOrigin::Parameter,
+                );
+                (parameter.text.clone(), trace)
+            })
+            .collect();
         let mut scope = Scope {
             current_unit: caller.current_unit,
             defined_units: Arc::new(BTreeMap::new()),
@@ -1017,6 +1099,8 @@ impl Lower<'_> {
             imported: HashSet::new(),
             sites: Arc::new(sites),
             global_sites: Some(definition.global_sites.clone()),
+            expansions: Arc::new(expansions),
+            global_expansions: Some(definition.global_expansions.clone()),
         };
         let context = CompileContext {
             pwd: context.pwd.clone(),
@@ -1138,6 +1222,15 @@ fn import_globals(names: &[Name], scope: &mut Scope) -> Result<(), Report> {
         {
             Arc::make_mut(&mut scope.sites).insert(name.text.clone(), site.clone());
         }
+        if let Some(trace) = scope
+            .global_expansions
+            .as_ref()
+            .and_then(|traces| traces.get(&name.text))
+        {
+            Arc::make_mut(&mut scope.expansions).insert(name.text.clone(), trace.clone());
+        } else {
+            Arc::make_mut(&mut scope.expansions).remove(&name.text);
+        }
         scope.imported.insert(name.text.clone());
     }
     Ok(())
@@ -1214,29 +1307,7 @@ fn resolve_join(
         .map(|expression| resolve(expression, scope, context))
         .transpose()?;
     let suffix_site = suffix.map_or(operator, |expression| expression.source.content);
-    if let Value::Space(Space::Endpoint(backend)) = base_value {
-        let mut path = path_fragment(
-            suffix_value.ok_or_else(|| {
-                Report::new("a physical namespace needs a path after '/'", operator)
-            })?,
-            suffix_site,
-        )?;
-        if mode != DestinationMode::Exact {
-            path.mode = mode;
-        }
-        return qualify(Value::Path(path), backend, operator);
-    }
-    let mut base_path = match base_value {
-        Value::Space(Space::Pwd) => PathValue {
-            backend: Some(Backend::Local),
-            path: context.pwd.to_string_lossy().into_owned(),
-            is_file: false,
-            mode: DestinationMode::Exact,
-            relocation: Some(RelocPath::new(Anchor::WorkingDirectory, "")),
-            relocation_unit: None,
-        },
-        value => path_fragment(value, base.source.content)?,
-    };
+    let mut base_path = path_fragment(base_value, base.source.content)?;
     if base_path.is_file {
         return Err(Report::new(
             "a known file value cannot have child path components",
@@ -1257,16 +1328,30 @@ fn resolve_join(
     let suffix_path = path_fragment(suffix_value, suffix_site)?;
     if rooted_fragment(&suffix_path.path) {
         return Err(Report::new("a rooted right operand cannot replace a path-join base", operator)
-            .label(suffix_site, "this operand is rooted")
-            .help("Use the rooted path directly, or qualify it with a physical namespace such as '$local / \"/absolute/path\"'."));
+            .label(base.source.content, format!("left operand expands to {}", diagnostics::path_description(&base_path)))
+            .label(suffix_site, format!("right operand expands to {}; this is rooted", diagnostics::path_description(&suffix_path)))
+            .help("'/' expands both operands before joining; its right path item must be relative. Use the rooted item directly instead of placing it after another path base."));
     }
     if let (Some(left), Some(right)) = (&base_path.backend, &suffix_path.backend)
         && left != right
     {
-        return Err(Report::new(
-            "joined path operands have conflicting endpoints",
-            operator,
-        ));
+        return Err(
+            Report::new("joined path operands have conflicting endpoints", operator)
+                .label(
+                    base.source.content,
+                    format!(
+                        "left operand expands to {}",
+                        diagnostics::path_description(&base_path)
+                    ),
+                )
+                .label(
+                    suffix_site,
+                    format!(
+                        "right operand expands to {}",
+                        diagnostics::path_description(&suffix_path)
+                    ),
+                ),
+        );
     }
     if base_path.backend.is_none() {
         base_path.backend = suffix_path.backend;
@@ -1301,11 +1386,12 @@ fn path_fragment(value: Value, span: Span) -> Result<PathValue, Report> {
             relocation: None,
             relocation_unit: None,
         },
-        _ => {
+        value => {
             return Err(Report::new(
-                "'/' joins path values or string fragments, not programs or streams",
+                "a path fragment must be an item or string literal, not a space, program or stream",
                 span,
-            ));
+            ).label(span, format!("this operand expands to {}", diagnostics::describe(&value)))
+            .help("Select a space's item with '::' before composing a path, for example '$pwd::pwd / \"child\"'."));
         }
     };
     if path.path.is_empty()
@@ -1639,7 +1725,7 @@ fn file_value(
             "an executable must be a path, not a namespace, literal or program stream",
             span,
         )
-        .help("Use '$path::python', '$pwd::tool' or an explicit executable path.")),
+        .help("Use '$path::python', '$pwd::pwd/tool' or an explicit executable path.")),
     }
 }
 
@@ -1649,7 +1735,37 @@ fn literal_text(text: &str) -> String {
     output
 }
 
-fn path_text(path: &PathValue) -> String {
+fn binding_qualifier(
+    backend: &Backend,
+    scope: &Scope,
+    endpoints: &mut HashMap<Backend, String>,
+    bindings: &mut Vec<String>,
+) -> String {
+    if matches!(
+        backend,
+        Backend::Local | Backend::Wsl | Backend::Path | Backend::Env
+    ) {
+        return backend.to_string();
+    }
+    if let Some(name) = endpoints.get(backend) {
+        return name.clone();
+    }
+    let mut index = endpoints.len();
+    let name = loop {
+        let candidate = format!("_msync_endpoint_{index}");
+        index += 1;
+        if !scope.values.contains_key(&candidate)
+            && !endpoints.values().any(|name| *name == candidate)
+        {
+            break candidate;
+        }
+    };
+    bindings.push(format!("{name} => {backend}"));
+    endpoints.insert(backend.clone(), name.clone());
+    name
+}
+
+fn path_text(path: &PathValue, qualifier: Option<&str>) -> String {
     let mut raw = path.path.as_str();
     match path.mode {
         DestinationMode::Container if !raw.chars().all(|ch| matches!(ch, '/' | '\\')) => {
@@ -1664,9 +1780,9 @@ fn path_text(path: &PathValue) -> String {
         }
         DestinationMode::Exact => {}
     }
-    let mut output = if let Some(backend) = &path.backend {
+    let mut output = if let Some(qualifier) = qualifier {
         format!(
-            "{backend} / {}",
+            "{qualifier}::{}",
             literal_text(if raw.is_empty() { "/" } else { raw })
         )
     } else if raw.starts_with("//") || raw.starts_with('\\') {

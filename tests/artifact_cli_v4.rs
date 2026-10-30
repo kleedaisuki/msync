@@ -51,7 +51,7 @@ fn exported_macro_object_moves_and_binds_pwd_without_reopening_source() {
     )
     .unwrap();
     fs::write(runtime.join("input"), b"runtime selected value").unwrap();
-    fs::write(build.join("code.msync"), "base := $pwd / \"output\"\nmacro copy(value):\n    global base\n    value -> base / \"result\"\ncopy($pwd / \"input\")\n").unwrap();
+    fs::write(build.join("code.msync"), "base := $pwd::pwd / \"output\"\nmacro copy(value):\n    global base\n    value -> base / \"result\"\ncopy($pwd::pwd / \"input\")\n").unwrap();
     let compiled = invoke(&build, &["compile", "code.msync", "-o", "module.mobj"]);
     success(&compiled);
     assert!(build.join("module.mobj").metadata().unwrap().len() > 0);

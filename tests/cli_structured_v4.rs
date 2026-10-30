@@ -170,7 +170,7 @@ fn default_quotes_are_data_and_explicit_join_produces_a_path_without_existence_g
     let output = invoke(
         root.path(),
         &["run", "-"],
-        "text := \"file name\"\ntext -> literal.txt\n$pwd / \"file name\" -> copied.txt\n\"  可莉  \" -> whitespace.txt\n",
+        "text := \"file name\"\ntext -> literal.txt\n$pwd::pwd / \"file name\" -> copied.txt\n\"  可莉  \" -> whitespace.txt\n",
     );
     success(&output);
     assert_eq!(
@@ -197,7 +197,7 @@ fn macro_check_and_plan_are_pure_then_explicit_directory_replacement_executes() 
     fs::create_dir_all(root.path().join("target/agents")).unwrap();
     fs::write(root.path().join("source/agents/new"), "new").unwrap();
     fs::write(root.path().join("target/agents/old"), "old").unwrap();
-    let source = "macro copy(src, des):\n    src / \"agents\" -> des / \"agents\" / .\ncopy($pwd / \"source\", $pwd / \"target\")\n";
+    let source = "macro copy(src, des):\n    src / \"agents\" -> des / \"agents\" / .\ncopy($pwd::pwd / \"source\", $pwd::pwd / \"target\")\n";
     success(&invoke(root.path(), &["check", "-"], source));
     let plan = invoke(root.path(), &["plan", "-"], source);
     success(&plan);
@@ -303,7 +303,7 @@ fn command_alias_cannot_change_the_grammar_of_a_pending_macro() {
     let output = invoke(
         root.path(),
         &["repl"],
-        "macro copy(src, des):\n    src -> des\n:syntax 0.3\n\ncopy(\"data\", $pwd / \"out\")\n/quit\n",
+        "macro copy(src, des):\n    src -> des\n:syntax 0.3\n\ncopy(\"data\", $pwd::pwd / \"out\")\n/quit\n",
     );
     assert!(output.status.success());
     let errors = String::from_utf8_lossy(&output.stderr);

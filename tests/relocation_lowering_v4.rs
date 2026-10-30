@@ -84,7 +84,7 @@ fn an_explicit_absolute_constant_under_compile_pwd_is_not_made_relocatable() {
         .replace('\\', "\\\\");
     let compiled = lower(
         &mut Session::new(),
-        &format!("$local::\"{absolute}\" -> result\n$pwd / \"relative\" -> second\n"),
+        &format!("$local::\"{absolute}\" -> result\n$pwd::pwd / \"relative\" -> second\n"),
         &context,
     );
     assert!(
@@ -111,7 +111,7 @@ fn captured_module_paths_keep_definition_identity_across_macro_call_sources() {
         "captured := $file::parent\nmacro emit(des):\n    global captured\n    captured/input -> des\n    $file::parent/direct -> second\n",
         &definition,
     );
-    let compiled = lower(&mut compiler, "emit($pwd / \"out\")\n", &caller);
+    let compiled = lower(&mut compiler, "emit($pwd::pwd / \"out\")\n", &caller);
     let module = definition
         .source_file
         .unwrap()
@@ -146,12 +146,12 @@ fn a_prior_unit_capture_does_not_rebind_to_a_later_compile_cwd() {
     let mut compiler = Session::new();
     lower(
         &mut compiler,
-        "frozen := $pwd / \"input\"\nns => $pwd\n",
+        "frozen := $pwd::pwd / \"input\"\nns => $pwd\n",
         &first,
     );
     let compiled = lower(
         &mut compiler,
-        "again := frozen\nagain -> output\nns / \"input\" -> dynamic\n",
+        "again := frozen\nagain -> output\nns::pwd / \"input\" -> dynamic\n",
         &second,
     );
     assert!(
@@ -191,7 +191,7 @@ fn a_prior_unit_capture_does_not_rebind_to_a_later_compile_cwd() {
 fn program_relocations_distinguish_literal_argv_from_paths_and_cwd() {
     let compiled = lower(
         &mut Session::new(),
-        "p => $path::python(\"literal argument\", $pwd / \"run.py\", $env::WORK/input)\np::stdout -> output\n",
+        "p => $path::python(\"literal argument\", $pwd::pwd / \"run.py\", $env::WORK/input)\np::stdout -> output\n",
         &context("code.msync"),
     );
     let spawn = compiled
@@ -240,7 +240,7 @@ fn program_relocations_distinguish_literal_argv_from_paths_and_cwd() {
 fn selectors_are_not_part_of_a_relocated_directory_path() {
     let compiled = lower(
         &mut Session::new(),
-        "$pwd / \"source\" / <.+\\.toml> -> $pwd / \"target\"/\n",
+        "$pwd::pwd / \"source\" / <.+\\.toml> -> $pwd::pwd / \"target\"/\n",
         &context("code.msync"),
     );
     assert_eq!(
@@ -295,7 +295,7 @@ fn importing_link_bound_values_freezes_paths_but_keeps_namespaces_dynamic() {
     let mut compiler = Session::new();
     let compiled = lower(
         &mut compiler,
-        "captured := $pwd / \"input\"\nns => $pwd\n",
+        "captured := $pwd::pwd / \"input\"\nns => $pwd\n",
         &first,
     );
     let mut exports = compiler.object_exports(&compiled.program);
@@ -323,7 +323,7 @@ fn importing_link_bound_values_freezes_paths_but_keeps_namespaces_dynamic() {
     };
     let used = lower(
         &mut imported,
-        "captured -> output\nns / \"dynamic\" -> other\n",
+        "captured -> output\nns::pwd / \"dynamic\" -> other\n",
         &next,
     );
     let msync::hir::InstructionKind::Transfer {

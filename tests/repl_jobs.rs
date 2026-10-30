@@ -521,8 +521,14 @@ fn wait_does_not_hold_a_ready_second_job_behind_an_idle_first_job() {
     }
     assert!(!directory.path().join("output.bin").exists());
     slow.close();
-    repl.until("job 1: completed");
-    repl.until("job 2: completed");
+    // Independent jobs may report completion in either order. Waiting for the
+    // first ID can already consume the other job's notice.
+    for id in [1, 2] {
+        let notice = format!("job {id}: completed");
+        if !repl.output.contains(&notice) {
+            repl.until(&notice);
+        }
+    }
     repl.send("/quit\n");
     let (status, errors) = repl.finish();
     assert!(status.success(), "{errors}");

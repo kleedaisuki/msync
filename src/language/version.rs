@@ -38,7 +38,7 @@ impl FromStr for Version {
     }
 }
 
-const MIGRATION_HELP: &str = "Choose syntax 0.5; syntax 0.3 and 0.4 are no longer supported. Quoted sources are literal bytes: use '$pwd / \"filename\"' for a file path. Replace transaction controls with async and await barriers.";
+const MIGRATION_HELP: &str = "Choose syntax 0.5; syntax 0.3 and 0.4 are no longer supported. Quoted sources are literal bytes: use '$pwd::pwd / \"filename\"' for a file path. Replace transaction controls with async and await barriers.";
 
 /// Select grammar before any compilation or effects. The header stays in source,
 /// so it never shifts diagnostic byte ranges. Unmarked input uses `fallback`.

@@ -75,7 +75,7 @@ async fn projected_file_cannot_replace_its_same_windows_file() {
     let target = root.path().join("same-file");
     fs::write(&target, b"must remain unchanged").unwrap();
     let guest = projected(&target);
-    let script = format!("$wsl::{} -> $pwd / \"same-file\"\n", quoted(&guest));
+    let script = format!("$wsl::{} -> $pwd::pwd / \"same-file\"\n", quoted(&guest));
     let result = run(root.path(), &root.path().join("scratch"), &script).await;
     assert!(
         result.is_err(),
@@ -92,7 +92,10 @@ async fn projected_directory_cannot_publish_inside_itself() {
     fs::create_dir(&source).unwrap();
     fs::write(source.join("payload"), b"unchanged source").unwrap();
     let guest = projected(&source);
-    let script = format!("$wsl::{} -> $pwd / \"source/child\"/.\n", quoted(&guest));
+    let script = format!(
+        "$wsl::{} -> $pwd::pwd / \"source/child\"/.\n",
+        quoted(&guest)
+    );
     let result = run(root.path(), &root.path().join("scratch"), &script).await;
     assert!(
         result.is_err(),
@@ -143,7 +146,10 @@ async fn projected_capture_excludes_only_owned_runtime_backing_and_registry() {
     .unwrap();
     let expected = inventory(&source);
     let guest = projected(&source);
-    let script = format!("$wsl::{} -> $pwd / \"destination\"/.\n", quoted(&guest));
+    let script = format!(
+        "$wsl::{} -> $pwd::pwd / \"destination\"/.\n",
+        quoted(&guest)
+    );
     run(root.path(), &scratch, &script).await.unwrap();
     let destination = root.path().join("destination");
     assert_eq!(

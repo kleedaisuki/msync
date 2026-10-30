@@ -29,8 +29,8 @@ fn transfer(source: &str) -> (Input, Output) {
 
 #[test]
 fn slash_is_structural_and_compact_or_spaced_forms_resolve_identically() {
-    let left = transfer("$pwd / \"input file\" -> output\n");
-    let right = transfer("$pwd/\"input file\" -> output\n");
+    let left = transfer("$pwd::pwd / \"input file\" -> output\n");
+    let right = transfer("$pwd::pwd/\"input file\" -> output\n");
     let (Input::File { location: left, .. }, _) = left else {
         panic!()
     };
@@ -267,7 +267,7 @@ fn joined_macro_operands_are_lexical_values_not_source_text_substitutions() {
 
 #[test]
 fn namespace_rooting_is_explicit_and_rooted_rhs_never_discards_a_base() {
-    let (Input::File { location, .. }, _) = transfer("$wsl / \"/root/agents\" -> target\n") else {
+    let (Input::File { location, .. }, _) = transfer("$wsl::\"/root/agents\" -> target\n") else {
         panic!()
     };
     assert_eq!(location.path, "/root/agents");
@@ -290,7 +290,7 @@ fn namespace_rooting_is_explicit_and_rooted_rhs_never_discards_a_base() {
 
 #[test]
 fn composed_executable_calls_and_selector_slashes_keep_their_grammar() {
-    let program = compile("p => $pwd / \"tool name\"(\"exact arg\")\n");
+    let program = compile("p => $pwd::pwd / \"tool name\"(\"exact arg\")\n");
     let [before, spawn, after] = program.body.instructions.as_slice() else {
         panic!("a synchronous invocation must lower to before, spawn, await")
     };
@@ -338,10 +338,10 @@ fn composed_executable_calls_and_selector_slashes_keep_their_grammar() {
 
 #[test]
 fn formatting_join_expressions_is_idempotent_and_keeps_literal_fragments_quoted() {
-    let source = "macro copy(base, leaf):\n\tbase / leaf -> $pwd / \"destination name\" / .\ncopy($wsl::~/.codex, \"agents\")\n\" literal data \" -> target\n";
+    let source = "macro copy(base, leaf):\n\tbase / leaf -> $pwd::pwd / \"destination name\" / .\ncopy($wsl::~/.codex, \"agents\")\n\" literal data \" -> target\n";
     let formatted = language::format(source).unwrap();
     assert_eq!(language::format(&formatted).unwrap(), formatted);
-    assert!(formatted.contains("$pwd/\"destination name\"/."));
+    assert!(formatted.contains("$pwd::pwd/\"destination name\"/."));
     assert!(formatted.contains("\" literal data \" -> target"));
     let program = compile(&formatted);
     assert_eq!(program.body.instructions.len(), 2);
@@ -357,4 +357,85 @@ fn pathological_join_nesting_returns_a_source_diagnostic() {
     );
     let errors = language::parse(&source).unwrap_err();
     assert!(errors[0].diagnostic.message.contains("nesting"));
+}
+
+#[test]
+fn slash_has_only_item_and_string_operands_never_space_operands() {
+    let context = CompileContext {
+        pwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        source_file: None,
+    };
+    for source in [
+        "$pwd / \"child\" -> output\n",
+        "$local / \"/absolute\" -> output\n",
+        "$wsl / child -> output\n",
+        "here => $pwd\nhere / child -> output\n",
+        "remote => ssh://Example\nremote / child -> output\n",
+        "root/$pwd -> output\n",
+    ] {
+        let errors = Session::new()
+            .compile(&language::parse(source).unwrap(), &context)
+            .unwrap_err();
+        assert!(
+            errors[0].diagnostic.message.contains("not a space"),
+            "{source}: {errors:?}"
+        );
+        assert!(
+            errors[0].help.iter().any(|help| help.contains("$pwd::pwd")),
+            "{errors:?}"
+        );
+    }
+    let (Input::File { location, .. }, _) =
+        transfer("here => $pwd\nhere::pwd / \"child\" -> output\n")
+    else {
+        panic!()
+    };
+    assert_eq!(PathBuf::from(location.path), context.pwd.join("child"));
+    assert_eq!(location.backend, Backend::Local);
+    let (Input::File { location, .. }, _) =
+        transfer("remote => ssh://Example\nremote::~/child -> output\n")
+    else {
+        panic!()
+    };
+    assert_eq!(location.path, "~/child");
+    assert!(matches!(location.backend, Backend::Ssh { .. }));
+}
+
+#[test]
+fn binding_display_replays_captured_endpoint_items_after_the_space_alias_changes() {
+    let context = CompileContext {
+        pwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+        source_file: None,
+    };
+    let source = "server => ssh://Original\nsaved := server::folder\nserver => ssh://Replacement\n_msync_endpoint_1 := reserved\n";
+    let mut original = Session::new();
+    original
+        .compile(&language::parse(source).unwrap(), &context)
+        .unwrap();
+    let printed = original.bindings().join("\n");
+    assert!(
+        printed.contains("_msync_endpoint_2 => ssh://Original"),
+        "{printed}"
+    );
+    assert!(
+        printed.contains("saved := _msync_endpoint_2::\"folder\""),
+        "{printed}"
+    );
+    assert!(!printed.contains("ssh://Original /"), "{printed}");
+    let mut replay = Session::new();
+    replay
+        .compile(&language::parse(&printed).unwrap(), &context)
+        .unwrap();
+    let program = replay
+        .compile(&language::parse("saved -> output\n").unwrap(), &context)
+        .unwrap();
+    let InstructionKind::Transfer {
+        source: Input::File { location, .. },
+        ..
+    } = &program.body.instructions[0].kind
+    else {
+        panic!()
+    };
+    assert!(matches!(&location.backend, Backend::Ssh { host, .. } if host == "Original"));
+    assert_eq!(location.path, "folder");
 }

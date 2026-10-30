@@ -885,3 +885,53 @@ fn http_fetch_journey_uses_real_local_server_and_preserves_body() {
         b"hello via HTTP"
     );
 }
+
+#[test]
+fn repl_join_errors_show_prior_item_expansion_then_allow_corrected_offline_input() {
+    let directory = workspace();
+    let session = "remote => ssh://Example\n.codex := ~/.codex\nremote::~/.codex/config.toml -> record.txt\n/dry-run on\nremote::.codex/config.toml -> record.txt\n/bindings\n/quit\n";
+    let result = invoke(directory.path(), &["repl", "--color", "never"], session);
+    assert_success(&result);
+    let error = stderr(&result);
+    for expected in [
+        "right operand expands to endpoint-relative path item \"~/.codex\"",
+        "item '.codex' expands to",
+        "space alias 'remote' expands to",
+        ".codex := ~/.codex",
+    ] {
+        assert!(error.contains(expected), "missing {expected:?}: {error}");
+    }
+    assert_eq!(error.matches("error:").count(), 1, "{error}");
+    assert!(!error.contains('\x1b'));
+    assert!(
+        stdout(&result).contains("Static IR preview"),
+        "{}",
+        stdout(&result)
+    );
+    assert!(!directory.path().join("record.txt").exists());
+}
+
+#[test]
+fn named_pwd_space_selects_its_pwd_item_before_real_string_path_composition() {
+    let directory = workspace();
+    fs::write(
+        directory.path().join("input file.txt"),
+        "cwd item payload 可莉\n",
+    )
+    .unwrap();
+    let source = "pwd => $pwd\ncwd := pwd::pwd\ncwd / \"input file.txt\" -> pwd::pwd / \"copied file.txt\"\n";
+    let result = invoke(directory.path(), &["run", "-", "--color", "never"], source);
+    assert_success(&result);
+    assert_eq!(
+        fs::read(directory.path().join("input file.txt")).unwrap(),
+        fs::read(directory.path().join("copied file.txt")).unwrap()
+    );
+    let rejected = invoke(
+        directory.path(),
+        &["check", "-"],
+        "pwd => $pwd\npwd / \"child\" -> output\n",
+    );
+    assert!(!rejected.status.success());
+    assert!(stderr(&rejected).contains("not a space"));
+    assert!(stderr(&rejected).contains("space alias 'pwd' expands to space $pwd"));
+}
