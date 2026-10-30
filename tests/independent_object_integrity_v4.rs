@@ -43,7 +43,7 @@ fn compile(root: &Path, text: &str) -> ObjectModule {
 fn module(root: &Path) -> ObjectModule {
     compile(
         root,
-        "\"可莉\" -> $pwd / \"one\"\n$pwd / \"one\" -> $pwd / \"two\"\n",
+        "\"可莉\" -> $pwd::pwd / \"one\"\n$pwd::pwd / \"one\" -> $pwd::pwd / \"two\"\n",
     )
 }
 
@@ -265,7 +265,7 @@ fn foreign_definition_modules_need_semantic_bindings_not_debug_filename_guesses(
     .unwrap();
     let compiled = msync::pipeline::compile_relocatable_named(
         &mut compiler,
-        "read_definition($pwd / \"output\")\n",
+        "read_definition($pwd::pwd / \"output\")\n",
         caller.source_file.as_ref().unwrap().to_str().unwrap(),
         &caller,
         &Default::default(),
@@ -376,7 +376,7 @@ async fn an_external_program_can_create_a_source_before_its_block_is_evaluated()
     let producer = "producer => $path::cmd(\"/d\", \"/c\", \"echo produced>created\")\n";
     #[cfg(not(windows))]
     let producer = "producer => $path::sh(\"-c\", \"printf produced > created\")\n";
-    let text = format!("{producer}$pwd / \"created\" -> $pwd / \"copied\"\n");
+    let text = format!("{producer}$pwd::pwd / \"created\" -> $pwd::pwd / \"copied\"\n");
     let object = compile(root.path(), &text);
     let decoded = ObjectModule::decode(&object.encode().unwrap()).unwrap();
     let instantiated = contextualize(
@@ -410,8 +410,9 @@ async fn an_external_programs_deletion_is_observed_after_its_completion_barrier(
     let remover = "remover => $path::cmd(\"/d\", \"/c\", \"del stale\")\n";
     #[cfg(not(windows))]
     let remover = "remover => $path::sh(\"-c\", \"rm stale\")\n";
-    let text =
-        format!("\"before\" -> $pwd / \"stale\"\n{remover}$pwd / \"stale\" -> $pwd / \"copied\"\n");
+    let text = format!(
+        "\"before\" -> $pwd::pwd / \"stale\"\n{remover}$pwd::pwd / \"stale\" -> $pwd::pwd / \"copied\"\n"
+    );
     let object = compile(root.path(), &text);
     let instantiated = contextualize(
         &object,

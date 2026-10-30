@@ -91,12 +91,12 @@ async fn real_wsl_upload_download_replace_and_conflict_are_statement_atomic() {
     fs::write(tree.join("nested/hello.txt"), "hello native WSL").unwrap();
     fs::write(tree.join("extra"), "extra").unwrap();
     let upload = format!(
-        "$pwd / \"tree ' 可莉\" -> {}\n",
+        "$pwd::pwd / \"tree ' 可莉\" -> {}\n",
         fixture.remote("target ' 可莉")
     );
     fixture.run(&upload).await.unwrap();
     let readback = format!(
-        "{} -> $pwd / \"download\"\n",
+        "{} -> $pwd::pwd / \"download\"\n",
         fixture.remote("target ' 可莉")
     );
     fixture.run(&readback).await.unwrap();
@@ -109,7 +109,7 @@ async fn real_wsl_upload_download_replace_and_conflict_are_statement_atomic() {
     fs::write(tree.join("nested/hello.txt"), "replacement").unwrap();
     fixture
         .run(&format!(
-            "$pwd / \"tree ' 可莉\" -> {} /.\n",
+            "$pwd::pwd / \"tree ' 可莉\" -> {} /.\n",
             fixture.remote("target ' 可莉")
         ))
         .await
@@ -153,7 +153,7 @@ async fn real_wsl_upload_download_replace_and_conflict_are_statement_atomic() {
     .unwrap();
     let conflict = fixture
         .run(&format!(
-            "$pwd / \"tree ' 可莉\" -> {} /\n",
+            "$pwd::pwd / \"tree ' 可莉\" -> {} /\n",
             fixture.remote("container")
         ))
         .await;
@@ -162,7 +162,7 @@ async fn real_wsl_upload_download_replace_and_conflict_are_statement_atomic() {
     assert!(
         fixture
             .run(&format!(
-                "$pwd / \"tree ' 可莉\" -> {} /\n",
+                "$pwd::pwd / \"tree ' 可莉\" -> {} /\n",
                 fixture.remote("container")
             ))
             .await
@@ -204,7 +204,7 @@ async fn real_wsl_committed_receipt_survives_readonly_before_image_cleanup_failu
     );
     let report = fixture
         .run(&format!(
-            "$pwd / \"replacement\" -> {} /.\n",
+            "$pwd::pwd / \"replacement\" -> {} /.\n",
             fixture.remote("protected")
         ))
         .await
@@ -236,7 +236,7 @@ fn http_destination_is_rejected_before_any_prior_statement_effect() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
     fs::create_dir_all(&fixture).unwrap();
     let root = tempfile::tempdir_in(fixture).unwrap();
-    let source = "web => https://example.invalid\n\"never\" -> $pwd / \"before\"\n\"read only\" -> web::\"target\"\n";
+    let source = "web => https://example.invalid\n\"never\" -> $pwd::pwd / \"before\"\n\"read only\" -> web::\"target\"\n";
     let errors = Session::new()
         .compile(
             &msync::language::parse(source).unwrap(),

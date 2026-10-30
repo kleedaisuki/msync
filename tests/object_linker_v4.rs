@@ -62,7 +62,7 @@ fn module_context_relocates_cwd_home_and_debug_without_touching_endpoints() {
     fs::create_dir(&new).unwrap();
     let object = module(
         &old,
-        "macro copy(src, des):\n    src -> des\ncopy($pwd / \"missing\", $pwd / \"output\")\n$local::~/also-missing -> $pwd / \"home-output\"\n",
+        "macro copy(src, des):\n    src -> des\ncopy($pwd::pwd / \"missing\", $pwd::pwd / \"output\")\n$local::~/also-missing -> $pwd::pwd / \"home-output\"\n",
     );
     let encoded = object.encode().unwrap();
     let object = msync::object::ObjectModule::decode(&encoded).unwrap();
@@ -98,7 +98,7 @@ fn absolute_constants_under_the_compile_directory_are_not_relocated_by_prefix() 
         .replace('\\', "\\\\");
     let object = module(
         fixture.path(),
-        &format!("$local::\"{constant}\" -> $pwd / \"output\"\n"),
+        &format!("$local::\"{constant}\" -> $pwd::pwd / \"output\"\n"),
     );
     let new = fixture.path().join("another");
     fs::create_dir(&new).unwrap();
@@ -259,7 +259,7 @@ fn captured_pwd_values_freeze_but_namespace_exports_follow_later_submissions() {
     let fixture = workspace();
     let object = module(
         fixture.path(),
-        "frozen := $pwd / \"input\"\ndynamic => $pwd\n",
+        "frozen := $pwd::pwd / \"input\"\ndynamic => $pwd\n",
     );
     let instance = fixture.path().join("instance");
     let later = fixture.path().join("later");
@@ -269,8 +269,10 @@ fn captured_pwd_values_freeze_but_namespace_exports_follow_later_submissions() {
     context::contextualize(&object, &context(&instance), &mut session).unwrap();
     let program = session
         .compile(
-            &msync::language::parse("frozen -> captured\ndynamic / \"input\" -> dynamic-copy\n")
-                .unwrap(),
+            &msync::language::parse(
+                "frozen -> captured\ndynamic::pwd / \"input\" -> dynamic-copy\n",
+            )
+            .unwrap(),
             &CompileContext {
                 pwd: later.clone(),
                 source_file: None,
@@ -334,7 +336,7 @@ fn contextualization_accepts_future_paths_without_searching_or_starting_a_progra
     let fixture = workspace();
     let object = module(
         fixture.path(),
-        "async p => $path::not_installed_during_contextualization()\n$pwd / \"future-source\" -> $pwd / \"future-output\"\nawait p\n",
+        "async p => $path::not_installed_during_contextualization()\n$pwd::pwd / \"future-source\" -> $pwd::pwd / \"future-output\"\nawait p\n",
     );
     let future = fixture.path().join("directory-created-only-later");
     let instantiated =

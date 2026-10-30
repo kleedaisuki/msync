@@ -143,7 +143,8 @@ fn an_unused_program_macro_cannot_import_a_provider_into_source_or_exported_exec
 #[test]
 fn a_macro_operand_failure_is_execution_while_its_unknown_namespace_is_frontend() {
     let root = workspace();
-    let source = "macro copy(src):\n    src -> $pwd / \"result\"\n\ncopy($pwd / \"missing\")\n";
+    let source =
+        "macro copy(src):\n    src -> $pwd::pwd / \"result\"\n\ncopy($pwd::pwd / \"missing\")\n";
     fs::write(root.path().join("code.msync"), source).unwrap();
     success(&invoke(root.path(), &["check", "code.msync"]));
     assert!(!root.path().join(".temp").exists());
@@ -168,7 +169,7 @@ fn a_macro_operand_failure_is_execution_while_its_unknown_namespace_is_frontend(
     assert!(!root.path().join("result").exists());
 
     let source =
-        "macro copy(src):\n    src -> $pwd / \"result\"\n\ncopy(unknown_namespace::missing)\n";
+        "macro copy(src):\n    src -> $pwd::pwd / \"result\"\n\ncopy(unknown_namespace::missing)\n";
     fs::write(root.path().join("code.msync"), source).unwrap();
     let failed = invoke(
         root.path(),

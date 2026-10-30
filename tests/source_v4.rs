@@ -351,3 +351,318 @@ fn preparation_macro_operand_errors_keep_the_actual_argument_source() {
     assert!(rendered.contains("definition.msync"), "{rendered}");
     assert_eq!(rendered.matches("error:").count(), 1, "{rendered}");
 }
+
+#[test]
+fn failed_join_shows_expanded_operands_and_owned_item_definitions() {
+    let mut session = Session::new();
+    let definitions = "remote => ssh://Example\n.codex := ~/.codex\n";
+    pipeline::compile_named(
+        &mut session,
+        definitions,
+        "definitions.msync",
+        &context("definitions.msync"),
+        &PlanningContext::default(),
+    )
+    .unwrap();
+    let expression = "remote::~/.codex/config.toml -> record.txt\n";
+    let errors = pipeline::compile_named(
+        &mut session,
+        expression,
+        "<repl>",
+        &context("use.msync"),
+        &PlanningContext::default(),
+    )
+    .unwrap_err();
+    let error = &errors[0];
+    assert_eq!(
+        &expression[error.report.diagnostic.span.start..error.report.diagnostic.span.end],
+        "/"
+    );
+    let output = error.render(false);
+    for expected in [
+        "left operand expands to path item ssh://Example::\"~\"",
+        "right operand expands to endpoint-relative path item \"~/.codex\"",
+        "item '.codex' expands to",
+        "definitions.msync:1:",
+        "<repl>:1:",
+    ] {
+        assert!(output.contains(expected), "missing {expected:?}: {output}");
+    }
+    assert_eq!(output.matches("error:").count(), 1, "{output}");
+    assert!(!output.contains('\x1b'));
+    let basic = error.clone().into_report();
+    assert!(basic.help.iter().any(
+        |help| help.contains("item '.codex' expands to") && help.contains("definitions.msync")
+    ));
+}
+
+#[test]
+fn expansion_trace_retains_alias_snapshots_and_macro_parameter_calls() {
+    let mut session = Session::new();
+    let definitions = "base := ~/.codex\nmiddle := base\nleaf := middle\nmacro inner(component):\n    root/component -> output\nmacro outer(argument):\n    inner(argument)\nbase := safe\n";
+    pipeline::compile_named(
+        &mut session,
+        definitions,
+        "defs.msync",
+        &context("defs.msync"),
+        &PlanningContext::default(),
+    )
+    .unwrap();
+    let errors = pipeline::compile_named(
+        &mut session,
+        "outer(leaf)\n",
+        "use.msync",
+        &context("use.msync"),
+        &PlanningContext::default(),
+    )
+    .unwrap_err();
+    let error = &errors[0];
+    let output = error.render(false);
+    for expected in [
+        "item 'leaf' expands to",
+        "item 'middle' expands to",
+        "item 'base' expands to endpoint-relative path item \"~/.codex\"",
+        "macro parameter 'component' expands to",
+        "macro parameter 'argument' expands to",
+        "while expanding macro 'inner'",
+        "while expanding macro 'outer'",
+        "use.msync:1:",
+    ] {
+        assert!(output.contains(expected), "missing {expected:?}: {output}");
+    }
+    // Inspect structured related locations rather than inferring a declaration
+    // from the renderer's surrounding context lines.
+    assert!(
+        error
+            .related
+            .iter()
+            .any(|label| label.message.starts_with("item 'base' expands to")
+                && label.site.span.start == 0)
+            || error
+                .report
+                .labels
+                .iter()
+                .any(|label| label.message.starts_with("item 'base' expands to")
+                    && label.span.start == 0)
+    );
+    assert_eq!(output.matches("error:").count(), 1, "{output}");
+}
+
+#[test]
+fn stored_expansion_traces_are_bounded_across_long_rebinding_chains() {
+    let mut source = String::from("item := ~/root\n");
+    for _ in 0..2000 {
+        source.push_str("item := item\n");
+    }
+    source.push_str("base/item -> output\n");
+    let errors = pipeline::compile_named(
+        &mut Session::new(),
+        &source,
+        "long.msync",
+        &context("long.msync"),
+        &PlanningContext::default(),
+    )
+    .unwrap_err();
+    let output = errors[0].render(false);
+    assert_eq!(output.matches("; bound here").count(), 16, "{output}");
+    assert!(
+        output.contains("Further item expansion frames omitted (limit 16)"),
+        "{output}"
+    );
+    assert!(
+        output.len() < 20_000,
+        "unexpected expansion flood: {} bytes",
+        output.len()
+    );
+}
+
+#[test]
+fn expansion_labels_escape_controls_and_preserve_literal_join_semantics() {
+    let source = "bad := \"/root/file\\n\\tend\"\nbase/bad -> output\n";
+    let errors = pipeline::compile_named(
+        &mut Session::new(),
+        source,
+        "controls.msync",
+        &context("controls.msync"),
+        &PlanningContext::default(),
+    )
+    .unwrap_err();
+    let output = errors[0].render(false);
+    assert!(
+        output.contains("item 'bad' expands to string literal"),
+        "{output}"
+    );
+    assert!(output.contains("\\n\\t"), "{output}");
+    assert!(!output.contains('\x1b'));
+    assert!(
+        output.contains("right operand expands to endpoint-relative path item"),
+        "{output}"
+    );
+}
+
+mod expansion_properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn alias_frames_are_bounded_unicode_safe_and_color_invariant(count in 1usize..65, tail in "[a-z一-龥]{1,20}") {
+            let mut source = format!("item_0 := ~/{tail}\n");
+            for index in 1..count { source.push_str(&format!("item_{index} := item_{}\n", index - 1)); }
+            source.push_str(&format!("base/item_{} -> output\n", count - 1));
+            let errors = pipeline::compile_named(&mut Session::new(), &source, "property.msync", &context("property.msync"), &PlanningContext::default()).unwrap_err();
+            let error = &errors[0];
+            prop_assert_eq!(&source[error.report.diagnostic.span.start..error.report.diagnostic.span.end], "/");
+            let plain = error.render(false);
+            prop_assert_eq!(plain.matches("; bound here").count(), count.min(16));
+            prop_assert_eq!(plain.contains("Further item expansion frames omitted"), count > 16);
+            prop_assert!(plain.contains(&tail));
+            let styled = error.render(true);
+            let sgr = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+            let unstyled = sgr.replace_all(&styled, "");
+            prop_assert_eq!(unstyled.as_ref(), plain.as_str());
+        }
+    }
+}
+
+#[test]
+fn macro_global_expansion_uses_the_definition_time_binding_not_a_later_rebind() {
+    let mut session = Session::new();
+    let definitions = "root := ~/original\nmacro bad():\n    global root\n    base/root -> output\nroot := relative\n";
+    pipeline::compile_named(
+        &mut session,
+        definitions,
+        "snapshot.msync",
+        &context("snapshot.msync"),
+        &PlanningContext::default(),
+    )
+    .unwrap();
+    let errors = pipeline::compile_named(
+        &mut session,
+        "bad()\n",
+        "use.msync",
+        &context("use.msync"),
+        &PlanningContext::default(),
+    )
+    .unwrap_err();
+    let output = errors[0].render(false);
+    assert!(
+        output.contains("item 'root' expands to endpoint-relative path item \"~/original\""),
+        "{output}"
+    );
+    assert!(
+        !output.contains("item 'root' expands to endpoint-relative path item \"relative\""),
+        "{output}"
+    );
+    assert!(output.contains("while expanding macro 'bad'"), "{output}");
+}
+
+#[test]
+fn builtin_module_items_do_not_borrow_unrelated_same_named_user_origins() {
+    for item in ["parent", "this"] {
+        let source = format!("{item} := ~/not-used\nbase/$file::{item} -> output\n");
+        let errors = pipeline::compile_named(
+            &mut Session::new(),
+            &source,
+            "builtin.msync",
+            &context("builtin.msync"),
+            &PlanningContext::default(),
+        )
+        .unwrap_err();
+        let report = &errors[0];
+        let false_origin = format!("item '{item}' expands to");
+        assert!(
+            !report
+                .report
+                .labels
+                .iter()
+                .any(|label| label.message.starts_with(&false_origin))
+        );
+        assert!(
+            !report
+                .related
+                .iter()
+                .any(|label| label.message.starts_with(&false_origin))
+        );
+        assert!(
+            report
+                .render(false)
+                .contains("right operand expands to path item $local::")
+        );
+    }
+}
+
+#[test]
+fn failed_qualifier_does_not_claim_an_unvisited_rhs_item_was_expanded() {
+    for qualifier in ["missing", "space"] {
+        let source =
+            format!("space := value\nhidden := ~/not-used\n{qualifier}::hidden -> output\n");
+        let errors = pipeline::compile_named(
+            &mut Session::new(),
+            &source,
+            "qualifier.msync",
+            &context("qualifier.msync"),
+            &PlanningContext::default(),
+        )
+        .unwrap_err();
+        let error = &errors[0];
+        assert!(
+            !error
+                .report
+                .labels
+                .iter()
+                .any(|label| label.message.starts_with("item 'hidden' expands to"))
+        );
+        assert!(
+            !error
+                .related
+                .iter()
+                .any(|label| label.message.starts_with("item 'hidden' expands to"))
+        );
+    }
+}
+
+#[test]
+fn object_alias_exports_keep_own_declarations_and_imported_origins_are_honest() {
+    let mut session = Session::new();
+    let source = "a := ~/old\nb := a\n";
+    let module = pipeline::compile_relocatable_named(
+        &mut session,
+        source,
+        "aliases.msync",
+        &context("aliases.msync"),
+        &PlanningContext::default(),
+    )
+    .unwrap()
+    .into_object()
+    .unwrap();
+    let mut imported = Session::new();
+    msync::context::contextualize(
+        &module,
+        &msync::context::Context::new(&context("use.msync")),
+        &mut imported,
+    )
+    .unwrap();
+    let errors = pipeline::compile_named(
+        &mut imported,
+        "base/b -> output\n",
+        "use.msync",
+        &context("use.msync"),
+        &PlanningContext::default(),
+    )
+    .unwrap_err();
+    let error = &errors[0];
+    let origin = error
+        .related
+        .iter()
+        .find(|label| label.message.starts_with("imported item 'b' expands to"))
+        .unwrap();
+    assert_eq!(
+        &origin.site.source.text[origin.site.span.start..origin.site.span.end],
+        "b"
+    );
+    assert_eq!(origin.site.span.start, source.find("b :=").unwrap());
+    assert!(origin.message.ends_with("source origin"));
+    assert!(!origin.message.ends_with("bound here"));
+}

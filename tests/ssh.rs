@@ -704,7 +704,7 @@ fn ssh_literal_filenames_and_regex_selections_preserve_semantics() {
         "wrong local glob match",
     )
     .unwrap();
-    let operand = format!("$pwd / \"{name}\"");
+    let operand = format!("$pwd::pwd / \"{name}\"");
     success(&fixture.run(&format!("{operand} -> remote::~/\n")));
     success(&fixture.remote("printf wrong > '/root/a1 '\"'\"' ;$(mkdir injected).txt'"));
     success(&fixture.run(&format!("remote::\"~/{name}\" -> literal.txt\n")));

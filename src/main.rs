@@ -72,7 +72,7 @@ REPL: /help or /? for commands. No arguments starts the REPL.
 Syntax 0.5 is the only supported CLI grammar; migrate earlier scripts explicitly.
 An optional '# msync: VERSION' header makes the grammar explicit.
 In syntax 0.5 every bare quoted value is literal UTF-8 data, never an implicit file.
-Use ./\"file name\" or $local::\"file name\" for quoted path fragments.
+Use $pwd::pwd / \"file name\" or $local::\"file name\" for paths containing spaces.
 Use $pwd::pwd/file for working-directory paths; $file::this and $file::parent identify the source script.
 Pipes and sockets end independently; Ctrl-C cancels active streams.
 External programs run asynchronously internally; an unmarked call waits for exit.

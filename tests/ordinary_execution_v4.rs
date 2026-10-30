@@ -46,7 +46,7 @@ async fn the_config_macro_copies_four_assignments_without_transaction_history() 
     fs::create_dir_all(root.path().join("codex/agents/empty")).unwrap();
     fs::write(root.path().join("codex/config.toml"), "model = '可莉'\n").unwrap();
     fs::write(root.path().join("codex/agents/helper"), "agent").unwrap();
-    let report = run(root.path(), "macro copy(codex, des):\n    codex/config.toml -> des/config.toml\n    codex/agents -> des/agents/.\ncopy($pwd / \"codex\", $pwd / \"local\")\ncopy($pwd / \"codex\", $pwd / \"other\")\n").await.unwrap();
+    let report = run(root.path(), "macro copy(codex, des):\n    codex/config.toml -> des/config.toml\n    codex/agents -> des/agents/.\ncopy($pwd::pwd / \"codex\", $pwd::pwd / \"local\")\ncopy($pwd::pwd / \"codex\", $pwd::pwd / \"other\")\n").await.unwrap();
     assert_eq!(report.assignments, 4);
     assert!(report.cleanup.is_empty(), "{:?}", report.cleanup);
     for destination in ["local", "other"] {
@@ -227,8 +227,8 @@ async fn ordinary_failures_retain_the_semantic_macro_operand_not_the_whole_call(
     let root = workspace();
     fs::create_dir(root.path().join("directory")).unwrap();
     for (arguments, destination) in [
-        ("$pwd / \"missing\", $pwd / \"output\"", false),
-        ("\"literal\", $pwd / \"directory\"", true),
+        ("$pwd::pwd / \"missing\", $pwd::pwd / \"output\"", false),
+        ("\"literal\", $pwd::pwd / \"directory\"", true),
     ] {
         let text = format!("macro copy(src, des):\n    src -> des\ncopy({arguments})\n");
         let context = CompileContext {
