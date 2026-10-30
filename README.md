@@ -4,9 +4,9 @@ A typed file-synchronization DSL in Rust: a pure optimizing compiler, a
 block-at-a-time interpreter, bounded asynchronous execution, source-mapped
 errors, a script formatter, and a persistent REPL.
 
-> This document describes the **v0.5 breaking-update contract**. Integration and
-> release verification are in progress; it does not certify an installed binary.
-> The transaction model is removed, not silently emulated.
+> The source grammar is **0.5**. The transaction model is removed, not silently
+> emulated. See the [release notes](docs/releases/0.5.0.md) for migration and
+> [integration acceptance](docs/design/integration-v0.5.md) for verified coverage.
 
 Syntax **0.5 is the only CLI grammar**. An optional `# msync: 0.5` header or
 `--syntax 0.5` makes that explicit. Syntax 0.3 and transactional syntax 0.4 are

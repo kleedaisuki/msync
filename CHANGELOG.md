@@ -1,6 +1,15 @@
 # Changelog
 
-## 0.5.0 — 2026-10-29
+## 0.5.0 — 2026-10-30
+
+### Integrated public delivery
+
+- Merge the complete structured-language branch alongside main's native SSH
+  authentication/cancellation, exact Host aliases and per-user Windows packaging.
+- Keep CLI/REPL reusable IR commands for expanded 0.5 objects while preserving
+  the actual public 0.4 artifact wire/execution contract.
+- Verify portable/installed macro execution, source-free object/IR replay,
+  multiline REPL exports and public 0.4-to-0.5 installer upgrades.
 
 ### Breaking execution model
 

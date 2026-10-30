@@ -70,11 +70,20 @@ jobs:
       - name: Build static-CRT portable ZIP and per-user installer
         shell: pwsh
         run: ./packaging/windows/build.ps1 -Target x86_64-pc-windows-msvc -OutputDirectory dist
+      - name: Verify immutable public installer for cross-version upgrade
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path .temp -Force | Out-Null
+          $previous = Join-Path $PWD '.temp/msync-0.4.0-windows-x86_64-setup.exe'
+          Invoke-WebRequest 'https://github.com/kleedaisuki/msync/releases/download/v0.4.0/msync-0.4.0-windows-x86_64-setup.exe' -OutFile $previous
+          if ((Get-FileHash $previous -Algorithm SHA256).Hash.ToLowerInvariant() -cne 'ed22547657e0981cb282180d72342f3e6cf95ea3ceada33993b8dec9e5e03498') {
+            throw 'Public v0.4.0 installer does not match the immutable upgrade baseline.'
+          }
       - name: Exercise actual install, repair, PATH, transfer and uninstall
         shell: pwsh
         env:
           PACKAGE_VERSION: ${{ needs.version.outputs.version }}
-        run: ./packaging/windows/test.ps1 -InstallerPath "dist/msync-$env:PACKAGE_VERSION-windows-x86_64-setup.exe"
+        run: ./packaging/windows/test.ps1 -InstallerPath "dist/msync-$env:PACKAGE_VERSION-windows-x86_64-setup.exe" -PreviousInstallerPath .temp/msync-0.4.0-windows-x86_64-setup.exe
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-windows-x86_64

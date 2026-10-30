@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][Alias('Installer')][string]$InstallerPath,
-    [string]$PortableZip
+    [string]$PortableZip,
+    [string]$PreviousInstallerPath
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -13,6 +14,7 @@ if (-not $PortableZip) {
     $PortableZip = Join-Path ([IO.Path]::GetDirectoryName($installer)) ([IO.Path]::GetFileName($installer) -replace '-setup\.exe$', '.zip')
 }
 $portable = (Resolve-Path -LiteralPath $PortableZip).Path
+$previous = if ($PreviousInstallerPath) { (Resolve-Path -LiteralPath $PreviousInstallerPath).Path } else { $null }
 $versionMatch = [regex]::Match([IO.File]::ReadAllText((Join-Path $root 'Cargo.toml')), '(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*$')
 if (-not $versionMatch.Success) { throw 'Cargo package version not found.' }
 $version = $versionMatch.Groups[1].Value
@@ -58,10 +60,10 @@ function Invoke-Setup([string]$Executable, [string[]]$Arguments, [string]$Log) {
     }
     if ($process.ExitCode -ne 0) { throw "Installer exited $($process.ExitCode); inspect $Log" }
 }
-function Install-App([string]$Directory, [bool]$AddPath) {
+function Install-App([string]$Directory, [bool]$AddPath, [string]$Setup = $installer) {
     $tasks = '/TASKS='
     if ($AddPath) { $tasks = '/TASKS=addpath' }
-    Invoke-Setup $installer @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$Directory", $tasks) (Join-Path $work 'install.log')
+    Invoke-Setup $Setup @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$Directory", $tasks) (Join-Path $work 'install.log')
 }
 function Uninstall-App([string]$Directory) {
     $uninstaller = Join-Path $Directory 'installer/unins000.exe'
@@ -278,6 +280,31 @@ try {
     Uninstall-App $active
     Assert-Path $baseline 'Uninstall after declined PATH task'
     $active = $null
+    if ($previous) {
+        $baseline = [pscustomobject]@{ Present = $true; Raw = 'C:\Before;;%MSYNC_UNEXPANDED_TEST%;'; Kind = [Microsoft.Win32.RegistryValueKind]::ExpandString }
+        Write-UserPath $baseline
+        $active = Join-Path $work 'upgrade from public 0.4.0'
+        Install-App $active $true $previous
+        $oldVersion = Invoke-Msync (Join-Path $active 'bin/msync.exe') @('--version')
+        if ("$oldVersion".Trim() -ne 'msync 0.4.0') { throw "Unexpected upgrade baseline: $oldVersion" }
+        $ownedPath = Read-UserPath
+        $config = Join-Path $active 'config.toml'
+        $helper = Join-Path $active 'bin/custom-helper.exe'
+        [IO.File]::WriteAllText($config, 'configuration from the prior public installation')
+        [IO.File]::WriteAllText($helper, 'prior custom helper sentinel')
+        Install-App $active $true
+        Assert-Path $ownedPath 'Public 0.4.0 to current upgrade'
+        Assert-InstalledJourney $active
+        Assert-InstalledUx $active
+        if ([IO.File]::ReadAllText($config) -cne 'configuration from the prior public installation' -or
+            [IO.File]::ReadAllText($helper) -cne 'prior custom helper sentinel') { throw 'Cross-version upgrade changed user-owned files.' }
+        Uninstall-App $active
+        Assert-Path $baseline 'Cross-version uninstall restores original PATH ownership'
+        if ([IO.File]::ReadAllText($config) -cne 'configuration from the prior public installation' -or
+            [IO.File]::ReadAllText($helper) -cne 'prior custom helper sentinel') { throw 'Cross-version uninstall removed user-owned files.' }
+        $active = $null
+        Write-Host 'PASS: public 0.4.0 -> current installed macro/IR upgrade, PATH ownership and data retention.'
+    }
     $completed = $true
 } finally {
     try {
@@ -293,4 +320,4 @@ try {
         else { Write-Warning "Retained installer diagnostics and fixture files at $work" }
     }
 }
-Write-Host 'PASS: portable manifest/CLI/IR, installed CLI/IR, upgrade, PATH ownership/types, declined PATH, user config/data/helper retention.'
+Write-Host 'PASS: portable manifest/macros/CLI/IR, installed macros/CLI/IR, upgrade, PATH ownership/types, declined PATH, user config/data/helper retention.'
