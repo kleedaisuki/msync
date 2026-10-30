@@ -416,3 +416,11 @@ uses an isolated real OpenSSH config with `Host 开发%机`, checks `ssh -G` res
 it to the fixture, performs a real authenticated download and a second copy with
 no new authentication prompt. Compiler and both IR round-trip tests retain the
 same raw alias. The user's SSH configuration is not changed or copied into IR.
+
+Without a reusable authentication lease (for example the exceptional Unix
+long-cwd foreground fallback), native metadata and data clients can each request
+a password. msync does not cache or replay that password. The password fixture
+responds to each observed native request and waits for an actual `done:` result,
+not merely a terminal prompt redraw; its explicit long-cwd journey proves fresh
+file bytes after repeated requests. Missing-output diagnostics retain the PTY
+and server causes while redacting the generated fixture secret.

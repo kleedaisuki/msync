@@ -25,15 +25,18 @@ struct Server {
 
 impl Server {
     fn start() -> Self {
+        Self::start_in(&Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp"))
+    }
+
+    fn start_in(scratch: &Path) -> Self {
         let host_accounts = ["/etc/passwd", "/etc/group"]
             .into_iter()
             .map(|path| (path, fs::read(path).unwrap()))
             .collect();
-        let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
-        fs::create_dir_all(&scratch).unwrap();
+        fs::create_dir_all(scratch).unwrap();
         let root = tempfile::Builder::new()
             .prefix("ssh-password-")
-            .tempdir_in(&scratch)
+            .tempdir_in(scratch)
             .unwrap();
         let path = root.path();
         assert!(
@@ -154,8 +157,39 @@ impl Server {
         )
     }
 
-    fn verify(&self, target: &str) {
-        assert_eq!(fs::read(self.root.path().join(target)).unwrap(), PAYLOAD);
+    fn finish_authentication(&self, repl: &mut pty::Terminal) -> String {
+        let mut transcript = String::new();
+        for _ in 0..16 {
+            repl.mark();
+            repl.send(&format!("{}\r", self.password));
+            let observed = repl.until_matching(|raw| {
+                let visible = pty::visible(raw);
+                visible.contains("password:")
+                    || visible.contains("done:")
+                    || visible.contains("error:")
+            });
+            assert!(!observed.contains(&self.password), "password echoed");
+            transcript.push_str(&observed);
+            if !pty::visible(&observed).contains("password:") {
+                transcript.push_str(&repl.prompt());
+                return transcript;
+            }
+        }
+        panic!(
+            "native authentication did not finish within 16 prompts; terminal={:?}",
+            transcript.replace(&self.password, "<redacted>")
+        );
+    }
+
+    fn verify(&self, target: &str, terminal: &str) {
+        let bytes = fs::read(self.root.path().join(target)).unwrap_or_else(|error| {
+            panic!(
+                "missing transfer target {target}: {error}; terminal={:?}; sshd={}",
+                terminal.replace(&self.password, "<redacted>"),
+                self.log(),
+            )
+        });
+        assert_eq!(bytes, PAYLOAD);
         assert!(
             self.log().contains("Accepted password for fixture"),
             "{}",
@@ -195,14 +229,12 @@ fn username_password_wrong_then_correct_is_noecho_and_copies_real_data() {
         !retry.contains("wrong-fixture-password"),
         "password echoed: {retry:?}"
     );
-    repl.mark();
-    repl.send(&format!("{}\r", server.password));
-    let authenticated = repl.prompt();
+    let authenticated = server.finish_authentication(&mut repl);
     assert!(
         !authenticated.contains(&server.password),
         "password echoed: {authenticated:?}"
     );
-    server.verify("copied");
+    server.verify("copied", &authenticated);
     assert!(
         server.log().contains("Failed password for fixture"),
         "{}",
@@ -227,10 +259,35 @@ fn username_password_ctrl_c_leaves_repl_usable_and_next_attempt_succeeds() {
     repl.mark();
     repl.send(&server.transfer("retried"));
     repl.until("password:");
-    repl.mark();
-    repl.send(&format!("{}\r", server.password));
-    let authenticated = repl.prompt();
+    let authenticated = server.finish_authentication(&mut repl);
     assert!(!authenticated.contains(&server.password));
-    server.verify("retried");
+    server.verify("retried", &authenticated);
+    repl.exit();
+}
+
+#[test]
+#[ignore = "requires native sshd/OpenSSH, openssl and unprivileged user/mount/PID namespaces"]
+fn username_password_long_cwd_handles_each_native_foreground_request() {
+    let scratch = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+    fs::create_dir_all(&scratch).unwrap();
+    let parent = tempfile::Builder::new()
+        .prefix("ssh-password-long-")
+        .tempdir_in(scratch)
+        .unwrap();
+    let long = parent
+        .path()
+        .join("long-working-directory-component-for-no-multiplexing-fallback");
+    let server = Server::start_in(&long);
+    assert!(server.root.path().as_os_str().len() > 95);
+    let mut repl = server.terminal();
+    repl.mark();
+    repl.send(&server.transfer("copied"));
+    repl.until("password:");
+    let authenticated = server.finish_authentication(&mut repl);
+    assert!(
+        pty::visible(&authenticated).contains("password:"),
+        "long-cwd fallback should exercise another native authentication request"
+    );
+    server.verify("copied", &authenticated);
     repl.exit();
 }
