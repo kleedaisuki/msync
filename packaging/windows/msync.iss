@@ -68,26 +68,28 @@ const
   WaitObject = 0;
   WaitAbandoned = $80;
 
-function RegGetValueType(Key: HKEY; SubKey, ValueName: String; Flags: Cardinal;
-  var ValueType: Cardinal; Data: NativeUInt; var DataSize: Cardinal): Integer;
+// Inno Setup 6 executes a 32-bit installer even in 64-bit install mode.
+// Match its real DLL ABI, not newer documentation's WinSDK type aliases.
+function RegGetValueType(Key: LongInt; SubKey, ValueName: String; Flags: Cardinal;
+  var ValueType: Cardinal; Data: LongWord; var DataSize: Cardinal): Integer;
   external 'RegGetValueW@advapi32.dll stdcall';
-function CreatePathMutex(Attributes: NativeUInt; InitialOwner: Boolean;
+function CreatePathMutex(Attributes: LongWord; InitialOwner: LongBool;
   Name: String): THandle;
   external 'CreateMutexW@kernel32.dll stdcall';
 function WaitPathMutex(Handle: THandle; Milliseconds: Cardinal): Cardinal;
   external 'WaitForSingleObject@kernel32.dll stdcall';
-function ReleasePathMutex(Handle: THandle): Boolean;
+function ReleasePathMutex(Handle: THandle): LongBool;
   external 'ReleaseMutex@kernel32.dll stdcall';
-function ClosePathHandle(Handle: THandle): Boolean;
+function ClosePathHandle(Handle: THandle): LongBool;
   external 'CloseHandle@kernel32.dll stdcall';
 
-function BroadcastEnvironment(Wnd: HWND; Msg: Cardinal; WParam: WPARAM;
-  Value: String; Flags, Timeout: Cardinal; var Reply: DWORD_PTR): LRESULT;
+function BroadcastEnvironment(Wnd: THandle; Msg: Cardinal; WParam: LongWord;
+  Value: String; Flags, Timeout: Cardinal; var Reply: LongWord): LongInt;
   external 'SendMessageTimeoutW@user32.dll stdcall';
 
 procedure NotifyEnvironment;
 var
-  Reply: DWORD_PTR;
+  Reply: LongWord;
 begin
   BroadcastEnvironment($FFFF, $001A, 0, 'Environment', $0002, 5000, Reply);
 end;
