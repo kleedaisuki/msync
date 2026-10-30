@@ -1,6 +1,34 @@
 # Reusable staged intermediate representations
 
-## Binding contract
+## 0.5 structured artifacts
+
+The CLI IR command names and REPL export commands are retained. New exports use
+`msync-ir` envelope version **2**, stage `structured`, wrapping the validated
+`ObjectModule` used by `compile -o`. Macro expansion, literal data, exact-argv
+program calls, directional barriers, source maps and context relocations are
+therefore shared with ordinary 0.5 execution, not replayed through the old parser.
+The object itself keeps its independent format/language version checks.
+
+`Structured.context == None` is relocatable. `bind-ir` or contextual export
+instantiates symbolic roots and freezes local cwd/HOME/ENV/PATH bindings into
+physical operands, retaining the original compile context. Unknown filesystem
+kinds, runtime optimization premises, authentication sessions and private recovery
+state are never serialized. A REPL export of a submission referencing a process
+owned by an earlier submission is rejected as non-standalone, without rejecting
+the original valid in-session operation.
+
+A dedicated version-1 endpoint wire adapter keeps previously exported flat
+artifacts readable and executable under their original semantics. Their
+externally tagged backend representation must not change just because the new
+structured object uses a `kind` discriminator. The public 0.4.0-generated fixture
+in `tests/fixtures/ir-v0.4.0.json` exercises this actual compatibility boundary.
+The original finite-copy API remains available; its compatibility projection of
+structured IR rejects program/literal/barrier effects instead of discarding them.
+
+This separation follows [MLIR's format-version versus dialect-semantics distinction](https://mlir.llvm.org/docs/BytecodeFormat/):
+container compatibility alone does not authorize changing executable meaning.
+
+## Version-1 binding contract
 
 The compiler now exposes a distinct name-resolved relocatable representation.
 This is not serialized source, an AST replay, or a serialized optimized Plan.

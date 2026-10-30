@@ -1,10 +1,11 @@
 //! Explicit artifact commands; ordinary script command behavior stays unchanged.
 use super::*;
-use msync::ir::{Artifact, Contextual};
+use msync::ir::{Artifact, Contextual, Structured};
+use msync::{compiler::structured::Session, scheduler};
 
 pub(super) fn validate_options(options: &Args) -> Result<(), String> {
     let exporting = matches!(options.command.as_str(), "emit-ir" | "bind-ir");
-    if options.output.is_some() && !exporting {
+    if options.output.is_some() && !exporting && options.command != "compile" {
         return Err("--output is only valid with emit-ir or bind-ir".into());
     }
     if options.ir_stage.is_some() && options.command != "emit-ir" {
@@ -56,23 +57,36 @@ pub(super) fn run(options: &Args) -> CliResult {
         .file
         .as_deref()
         .ok_or("missing input file; try --help")?;
-    let text = read_source(file)?;
+    let text = if file == "-" {
+        let mut text = String::new();
+        io::stdin()
+            .read_to_string(&mut text)
+            .map_err(|error| error.to_string())?;
+        text
+    } else {
+        fs::read_to_string(file)
+            .map_err(|error| CliError::io(IoAction::ReadScript, Some(Path::new(file)), error))?
+    };
     let artifact = if options.command == "emit-ir" {
         let input = SourceUnit::file(&text, file)?;
-        let script = syntax::parse_rich(&text)
+        language::select_version(&text, options.syntax, Version::Structured)
             .map_err(|errors| diagnostics(file, &text, &errors, options.color))?;
-        if options.ir_stage.as_deref() == Some("contextual") {
-            let program = Compiler::new()
-                .compile_rich_with_context(&script, &input.context)
-                .map_err(|errors| diagnostics(file, &text, &errors, options.color))?;
-            Artifact::Contextual(Contextual::capture(&program, &input.context).map_err(reports)?)
+        let lowered = msync::pipeline::compile_relocatable_named(
+            &mut Session::new(),
+            &text,
+            file,
+            &input.context,
+            &Default::default(),
+        )
+        .map_err(|errors| structured::located(errors, options.color, "frontend"))?;
+        let module = lowered.into_object().map_err(|error| error.to_string())?;
+        let ir = Structured::relocatable(module)?;
+        let ir = if options.ir_stage.as_deref() == Some("contextual") {
+            ir.bind(&input.context)?
         } else {
-            Artifact::Relocatable(
-                Compiler::new()
-                    .compile_relocatable(&script)
-                    .map_err(|errors| diagnostics(file, &text, &errors, options.color))?,
-            )
-        }
+            ir
+        };
+        Artifact::Structured(Box::new(ir))
     } else {
         Artifact::from_json(&text).map_err(|cause| {
             Issue::new("cannot read IR artifact")
@@ -85,6 +99,18 @@ pub(super) fn run(options: &Args) -> CliResult {
     }
     let context = CompileContext::capture(options.source_file.as_deref().map(Path::new))
         .map_err(|error| CliError::io(IoAction::WorkingDirectory, None, error))?;
+    if let Artifact::Structured(ir) = &artifact {
+        if options.command == "bind-ir" {
+            return export(
+                &Artifact::Structured(Box::new(ir.bind(&context)?)),
+                options.output.as_deref().unwrap_or("-"),
+            );
+        }
+        let mut state = structured::State::default();
+        let result = state.submit_ir(ir, &context, options, false);
+        let cleanup = state.finish(result.is_err(), options.color);
+        return result.and(cleanup);
+    }
     let bound = artifact.bind(&context).map_err(reports)?;
     if options.command == "bind-ir" {
         return export(
@@ -121,7 +147,7 @@ pub(super) fn execute(
             Issue::new("cannot prepare IR execution").field("cause", error.message)
         })?;
         if plan_only || dry_run {
-            return print_plan(&plan, options.color);
+            return print_text(&format!("{plan:#?}\n"));
         }
         let removed = plan.removed.len();
         let summary = scheduler::execute_plan_cancellable(
@@ -130,6 +156,12 @@ pub(super) fn execute(
             authentication.cancellation(),
         )
         .map_err(|error| Issue::new("IR execution failed").field("cause", error.message))?;
-        print_summary(summary, removed, true, options.color)
+        print_text(&format!(
+            "done: {} operation(s), {} eliminated, {} file(s), {} flow bytes\n",
+            summary.completed,
+            removed,
+            summary.report.copied_files,
+            summary.report.transferred_bytes
+        ))
     })
 }

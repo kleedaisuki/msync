@@ -36,7 +36,7 @@ pub enum AccessScope {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct ResourceKey {
+pub(crate) struct ResourceKey {
     endpoint: String,
     components: Arc<[String]>,
     rooted: bool,
@@ -51,12 +51,45 @@ pub struct Resource {
     possible_windows_path: Option<Arc<[String]>>,
     // A collision only adds a conservative dependency; it never justifies DSE.
     identity_hint: Option<u64>,
+    writable_file: Option<bool>,
+    require_wsl_proof: bool,
+    disjoint: Option<Arc<BTreeSet<ResourceKey>>>,
 }
 
 impl Resource {
+    pub(crate) fn key(&self) -> &ResourceKey {
+        &self.key
+    }
+
+    pub(crate) fn writable_file(&self) -> Option<bool> {
+        self.writable_file
+    }
+
+    pub(crate) fn prove_disjoint(&mut self, other: &Self) {
+        let proven = self
+            .disjoint
+            .get_or_insert_with(|| Arc::new(BTreeSet::new()));
+        Arc::make_mut(proven).insert(other.key.clone());
+    }
+
     pub fn overlaps(&self, other: &Self) -> bool {
         if self.key.endpoint == "*" || other.key.endpoint == "*" {
             return true;
+        }
+        if (self.require_wsl_proof || other.require_wsl_proof)
+            && matches!(
+                (&self.location.backend, &other.location.backend),
+                (Backend::Local, Backend::Wsl) | (Backend::Wsl, Backend::Local)
+            )
+        {
+            return !self
+                .disjoint
+                .as_ref()
+                .is_some_and(|keys| keys.contains(&other.key))
+                && !other
+                    .disjoint
+                    .as_ref()
+                    .is_some_and(|keys| keys.contains(&self.key));
         }
         if let (Some(left), Some(right)) =
             (&self.possible_windows_path, &other.possible_windows_path)
@@ -77,7 +110,7 @@ impl Resource {
         left.starts_with(right) || right.starts_with(left)
     }
 
-    fn same_path(&self, other: &Self) -> bool {
+    pub(crate) fn same_path(&self, other: &Self) -> bool {
         self.key == other.key
     }
 
@@ -96,6 +129,103 @@ impl Resource {
             (Some(cover), Some(path)) => path.starts_with(cover),
             (None, Some(_)) => false,
         }
+    }
+}
+
+/// Capture the existing planner's metadata/alias proof once for another IR.
+/// Comparing the returned resources does not inspect the filesystem again.
+#[derive(Default)]
+pub(crate) struct ResourceSnapshots(ResourceCache);
+
+impl ResourceSnapshots {
+    pub(crate) fn capture(
+        &mut self,
+        original: &Location,
+        canonical: &Location,
+        scope: AccessScope,
+    ) -> Resource {
+        let mut resource = self.0.get(canonical, scope);
+        resource.location = original.clone();
+        resource.require_wsl_proof = true;
+        resource
+    }
+}
+
+/// Construct a remote logical identity without observing a native alias. WSL
+/// drive projections and unresolved parent traversal still require inspection.
+pub(crate) fn logical_remote_resource(location: &Location, scope: AccessScope) -> Option<Resource> {
+    if !matches!(location.backend, Backend::Wsl | Backend::Ssh { .. })
+        || !location.path.starts_with('/')
+        || location.path.contains(['\\', '\0'])
+    {
+        return None;
+    }
+    let components = location
+        .path
+        .split('/')
+        .filter(|part| !matches!(*part, "" | "."))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if components.iter().any(|part| part == "..")
+        || location.backend == Backend::Wsl && components.first().is_some_and(|part| part == "mnt")
+    {
+        return None;
+    }
+    let components: Arc<[String]> = components.into();
+    Some(Resource {
+        location: location.clone(),
+        scope,
+        key: ResourceKey {
+            endpoint: location.backend.to_string(),
+            components: components.clone(),
+            rooted: true,
+        },
+        comparison: components,
+        possible_windows_path: None,
+        identity_hint: None,
+        writable_file: None,
+        require_wsl_proof: true,
+        disjoint: None,
+    })
+}
+
+/// A consuming channel is identified symbolically. Metadata or identity handles
+/// must never open a channel while constructing a plan.
+pub(crate) fn logical_stream_resource(location: &Location) -> Resource {
+    let path = if cfg!(windows) && location.backend == Backend::Local {
+        location.path.replace('\\', "/")
+    } else {
+        location.path.clone()
+    };
+    let components: Arc<[String]> = path
+        .split('/')
+        .filter(|part| !matches!(*part, "" | "."))
+        .map(str::to_owned)
+        .collect::<Vec<_>>()
+        .into();
+    let comparison = if cfg!(windows) && location.backend == Backend::Local {
+        components
+            .iter()
+            .map(|part| part.to_uppercase())
+            .collect::<Vec<_>>()
+            .into()
+    } else {
+        Arc::clone(&components)
+    };
+    Resource {
+        location: location.clone(),
+        scope: AccessScope::Exact,
+        key: ResourceKey {
+            endpoint: location.backend.to_string(),
+            components,
+            rooted: path.starts_with('/'),
+        },
+        comparison,
+        possible_windows_path: None,
+        identity_hint: None,
+        writable_file: None,
+        require_wsl_proof: true,
+        disjoint: None,
     }
 }
 
@@ -982,6 +1112,7 @@ fn resource(location: &Location, cache: &mut ResourceCache) -> Resource {
         path = "/".into();
     }
     let mut identity_hint = None;
+    let mut writable_file = None;
     if matches!(location.backend, Backend::Local) {
         let expanded = cache.local_absolute(&path);
         let named_pipe = cfg!(windows)
@@ -994,8 +1125,12 @@ fn resource(location: &Location, cache: &mut ResourceCache) -> Resource {
         } else {
             // Opening a FIFO/socket can block or consume a connection. Metadata
             // inspection is sufficient to restrict identity handles to files/dirs.
-            let ordinary = std::fs::symlink_metadata(&expanded)
-                .is_ok_and(|metadata| metadata.is_file() || metadata.is_dir());
+            let metadata = std::fs::symlink_metadata(&expanded).ok();
+            writable_file = metadata
+                .as_ref()
+                .filter(|metadata| metadata.is_file())
+                .map(|metadata| !metadata.permissions().readonly());
+            let ordinary = metadata.is_some_and(|metadata| metadata.is_file() || metadata.is_dir());
             if ordinary && let Ok(handle) = same_file::Handle::from_path(&expanded) {
                 cache.identity_handles += 1;
                 let mut hash = DefaultHasher::new();
@@ -1047,6 +1182,9 @@ fn resource(location: &Location, cache: &mut ResourceCache) -> Resource {
         comparison,
         possible_windows_path,
         identity_hint,
+        writable_file,
+        require_wsl_proof: false,
+        disjoint: None,
     }
 }
 

@@ -212,42 +212,69 @@ every failure.
 - [PowerShell invocation documentation](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pwsh)
   is the authority for explicit interactive versus command invocation options.
 
-## Lexical rendering follow-up (2026-10-30)
+## Structured-default integration: preserve the interaction contract
 
-The display scanner now recognizes the REPL's established colon command aliases
-(`:help`, `:pwd`, etc.), not only slash spellings. Static completion and unique
-hints retain the user's chosen colon prefix; DSL operands followed by an operator
-remain operands, and shell payloads remain outside DSL highlighting.
+The 0.4 grammar deliberately changes quoted sources into data and introduces
+typed path/container syntax. That does not justify changing background-job
+ownership, losing original diagnostic sources, delaying physical EOF publication,
+or weakening the editor/shell behavior already exercised by the 0.3.1 journeys.
+Unquoted `wire::/ -> $pwd::pwd/output.bin` is not a legacy-only fixture.
 
-Contextual lookup items are included in the namespace-colored span for `$pwd`,
-`$file`, and `$env`. For example, `$file::parent/assets` styles
-`$file::parent`, leaving `/assets` as a path. Ordinary endpoint paths such as
-`remote::configs/app` still style only `remote::`. This is lexical presentation,
-not binding validation: no filesystem, network, compiler, or retained alias-state
-lookup runs while typing.
+The initial structured REPL integration exposed the following distinct ownership
+pitfalls. These are enduring acceptance requirements rather than a substitute
+for inspecting the latest implementation or claiming a test result.
 
-Quoted operands preserve their public `String` token classification. Rendering
-adds a cyan style to the grammar's recognized two-character escape pairs
-(backslash, quote, `n`, `r`, `t`), while unknown escapes and an unfinished trailing
-backslash remain ordinary green quoted text. Unquoted Windows backslashes are
-not escapes. Stripping styles preserves the same display text, and the existing
-editor control-character/width handling is unchanged. No public token enum
-variants or execution grammar changed.
+| Pitfall | User-visible consequence | Required invariant |
+| --- | --- | --- |
+| Treat submission/admission as completion | `done: 0 files / 0 bytes` appears while a source is still open | A pending physical transfer announces `job N: running in background`; completion and its counters follow actual EOF/publication |
+| Replace identified jobs with one generic `program work active` flag | `/jobs`, `/wait`, `/stop` lose the identity shown when work started | Keep monotonic job IDs and `running` / `completed` / `stopped` / `failed` outcomes; no phantom completed job merely because a runtime was initialized |
+| Choose the work owner using the default grammar | In `/syntax 0.3`, loading a header-selected 0.4 flow can show active work but route `/stop` to an empty legacy slot | Grammar selects compilation, not lifetime ownership; lifecycle commands and Ctrl-C act on actual pending work independently of the next-input grammar |
+| Check only one executor before starting another | A legacy-header copy can race a structured flow outside its shared admission/namespace model | Reject unsafe cross-engine transfer submissions before effects; supported structured incremental attachments stay within the authoritative runtime's admission and dependency model |
+| Only reap while submitting new executable instructions | A finished flow can leave `/jobs` and shared-state guards stale; pure declarations may not even trigger reaping | Reconcile ready runtime work before compiling/dispatching commands and service completion while the editor waits |
+| Publish a physical file capture only on a later keystroke | The source closes normally but the destination remains old until `/wait` or another input | Source EOF must drive managed publication without requiring more REPL input; input may stay idle the whole time |
+| Await implicit transactions only in creation order | `/wait` on an older idle stream delays publication of a later independent stream that already reached EOF | Drain ready independent completions while waiting for all work; waiting must not impose a new global publication fence |
+| Discard the compilation when asynchronous work starts | A later connection/IO error has no original `<repl>` statement, macro provenance or file snippet | Retain the owning compilation/source map until terminal outcome and use it when rendering poll/wait/stop/EOF failures |
+| Take one session-wide report without an ownership label | A later unrelated finite command can inherit earlier physical-flow byte/file counts | Attribute deltas to their job/submission or explicitly label them session progress; never present another job's work as that command's own completion |
 
-Verification on Linux: `cargo test --test highlight` passes three focused
-regressions; all ten `repl_terminal` journeys pass, including a new real PTY case
-that completes `:hel` with Tab, observes contextual-item and escape colors before
-Enter, discards an unfinished contextual expression, and submits a Unicode alias
-whose recognized and unknown escapes round-trip through `/bindings`. Existing
-random-edit coverage and style-removal properties pass. Strict all-target Clippy
-also passes. Windows ConPTY execution remains a separate platform check; no
-Windows execution is inferred from Linux PTY results.
+Relevant boundaries are `ReplState::{read,reap,join}` and
+`structured::State::{submit,poll,wait,finish}` at the UI, together with
+`RuntimeSession::{submit_prepared,work_ids,poll_ready,wait}` at execution. The
+physical adapter writes invocation-owned captures; only runtime version management
+publishes them. A finished transport handle therefore is not yet proof of a
+published file, and an initialized runtime is not proof of an active job.
 
-Native terminal assertions observe foreground-color semantics rather than exact
-SGR parameter grouping. Windows ConPTY can emit `ESC[36m ESC[1m` where a Unix PTY
-preserves `ESC[1;36m`; these render the same bold cyan. The added normalization
-regression uses the actual native-stream shape. Direct highlighter tests still
-check the intended bold/color sequences before terminal transport, while the
-PTY journey verifies distinct command, namespace-item, known-escape and ordinary
-string colors before Enter. Do not repair a transport-encoding assertion by
-removing the real-terminal rendering checks.
+A small UI job record needs only its display ID, authoritative pending-work
+membership, retained source/compilation and completion/report ownership. Runtime
+transactions and shared program cohorts remain the authority. An incremental
+port attachment may join existing work; do not invent an independent lifetime
+solely because it arrived in a later input. Terminal status is emitted once,
+after real join/publication/cancellation, then the job leaves the active view.
+
+Required focused real journeys for this boundary:
+
+1. Start an unquoted TCP-to-file flow with a held peer. Verify a running job ID,
+   responsive `/help`, `/clear` preserving that job, blocked unsafe shell entry,
+   and `/stop` closing the actual peer and preserving an unpublished target.
+2. Close that source normally while sending **no additional REPL input**. Verify
+   destination bytes publish at EOF; the next `/jobs` sees no stale active work.
+3. Start an older held stream and a later independent stream, enter `/wait`, then
+   close only the later source. Its destination must publish while `/wait` still
+   waits for the older source. No cancellation or premature publication of the
+   held source is permitted.
+4. Set `/syntax 0.3`, then `/load` a header-selected 0.4 script that starts a real
+   flow. `/jobs`, `/stop`, Ctrl-C and EOF must still target the structured owner.
+   Conversely, a legacy-header transfer must not bypass an active structured
+   runtime's resource and namespace rules.
+5. Run a finite ordinary assignment and then `/wait` or `/stop`; report no active
+   jobs, not an invented completion. Exercise reset and subsequent work without
+   reusing a runtime identity.
+6. Fail a real background connection, issue `/wait` and `/help`, and retain the
+   original `<repl>` source token/line while recovering to a usable prompt.
+7. Retain the current terminal highlight/edit/Unicode/history/clear/shell tests
+   and plain-output error journeys. Migrate only intentionally changed quoted
+   data/path syntax; do not force the entire suite into legacy grammar to hide
+   lifecycle regressions.
+
+`tests/repl_jobs.rs`, `tests/ux_031.rs` and `tests/repl_terminal.rs` already encode
+many of these observable promises. Preserve their real peer/stage/EOF conditions
+and stable job messages rather than weakening them to a generic active boolean.

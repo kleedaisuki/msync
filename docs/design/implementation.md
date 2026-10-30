@@ -1,4 +1,12 @@
-# Implementation contract
+# Legacy v0.3 implementation contract
+
+This note describes the retained legacy parser/compiler/transport APIs. It is
+not the default development CLI grammar. For v0.4, use
+[language-v4.md](language-v4.md), [architecture-v4.md](architecture-v4.md),
+[planning.md](planning.md), and [transactions-v4.md](transactions-v4.md).
+In particular, the legacy `$pwd` item restrictions and quoted-path rules below
+must not be applied to the structured frontend. The CLI defaults to v0.4;
+`--syntax 0.3` or `/syntax 0.3` explicitly selects this older language.
 
 This is the current architecture after the user-requested Plan → Execute, contextual-namespace and uniform-flow redesign. The supplied `docs/dsl/spread.msync` remains the semantic seed, but the explicit directory-target and formatting changes below supersede the original implementation's behavior. Detailed proofs, transport boundaries and evidence belong in the linked focused notes rather than duplicated here.
 

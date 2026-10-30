@@ -304,6 +304,9 @@ mod tests {
             comparison,
             possible_windows_path: projection.map(|path| components(path).into()),
             identity_hint: identity.map(u64::from),
+            writable_file: None,
+            require_wsl_proof: false,
+            disjoint: None,
         }
     }
 

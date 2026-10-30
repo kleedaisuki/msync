@@ -266,3 +266,108 @@ fn repl_artifact_writes_wait_for_background_work_to_stop() {
     let json = fs::read_to_string(root.path().join("allowed.json")).unwrap();
     msync::ir::Artifact::from_json(&json).unwrap();
 }
+
+#[test]
+fn the_public_040_ir_wire_format_remains_executable() {
+    let root = workspace();
+    fs::write(root.path().join("source"), b"existing user artifact").unwrap();
+    fs::write(
+        root.path().join("old.json"),
+        include_bytes!("fixtures/ir-v0.4.0.json"),
+    )
+    .unwrap();
+    success(run(root.path(), &["plan-ir", "old.json"]));
+    success(run(root.path(), &["run-ir", "old.json"]));
+    assert_eq!(
+        fs::read(root.path().join("output")).unwrap(),
+        b"existing user artifact"
+    );
+    success(run(
+        root.path(),
+        &["bind-ir", "old.json", "-o", "bound.json"],
+    ));
+    success(run(root.path(), &["run-ir", "bound.json"]));
+}
+
+#[test]
+fn macros_literals_and_native_objects_share_reusable_ir_execution() {
+    let root = workspace();
+    let first = root.path().join("first");
+    let second = root.path().join("second");
+    fs::create_dir(&first).unwrap();
+    fs::create_dir(&second).unwrap();
+    let source = "macro copy_one(source, destination):\n    source -> destination\n\ncopy_one(input, output)\n\"literal 可莉 bytes\" -> literal\n";
+    fs::write(first.join("macro.msync"), source).unwrap();
+    fs::write(second.join("input"), b"relocated macro payload").unwrap();
+    success(run(
+        &first,
+        &["emit-ir", "macro.msync", "-o", "../macro.json"],
+    ));
+    success(run(
+        &first,
+        &["compile", "macro.msync", "-o", "../macro.mobj"],
+    ));
+    fs::remove_file(first.join("macro.msync")).unwrap();
+    success(run(
+        &second,
+        &["bind-ir", "../macro.json", "-o", "../bound.json"],
+    ));
+    success(run(&first, &["plan-ir", "../bound.json"]));
+    success(run(&first, &["run-ir", "../bound.json", "--dry-run"]));
+    assert!(!second.join("output").exists());
+    success(run(&first, &["run-ir", "../bound.json"]));
+    assert_eq!(
+        fs::read(second.join("output")).unwrap(),
+        b"relocated macro payload"
+    );
+    assert_eq!(
+        fs::read(second.join("literal")).unwrap(),
+        "literal 可莉 bytes".as_bytes()
+    );
+    fs::remove_file(second.join("output")).unwrap();
+    success(run(&second, &["run", "../macro.mobj"]));
+    assert_eq!(
+        fs::read(second.join("output")).unwrap(),
+        b"relocated macro payload"
+    );
+    assert!(!first.join("output").exists());
+}
+
+#[test]
+#[ignore = "native child fixture launched only by the IR test"]
+fn ir_child_fixture() {
+    std::io::stdout()
+        .write_all(b"typed macro program output")
+        .unwrap();
+    std::io::stdout().flush().unwrap();
+    std::process::exit(0);
+}
+
+#[test]
+fn exported_macro_programs_and_barriers_use_the_structured_interpreter() {
+    let root = workspace();
+    let exe = std::env::current_exe()
+        .unwrap()
+        .to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
+    let source = format!(
+        "macro capture(program):\n    program::stdout -> output\n\nasync child => $local::\"{exe}\"(\"--exact\", \"ir_child_fixture\", \"--ignored\", \"--nocapture\")\ncapture(child)\nawait child\n"
+    );
+    fs::write(root.path().join("macro.msync"), source).unwrap();
+    success(run(
+        root.path(),
+        &["emit-ir", "macro.msync", "-o", "macro.json"],
+    ));
+    success(run(
+        root.path(),
+        &["bind-ir", "macro.json", "-o", "bound.json"],
+    ));
+    fs::remove_file(root.path().join("macro.msync")).unwrap();
+    success(run(root.path(), &["run-ir", "bound.json"]));
+    assert!(
+        String::from_utf8(fs::read(root.path().join("output")).unwrap())
+            .unwrap()
+            .contains("typed macro program output")
+    );
+}

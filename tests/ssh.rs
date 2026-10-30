@@ -1,4 +1,6 @@
 #![cfg(windows)]
+#[path = "support/statement_storage.rs"]
+mod statement_storage;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -32,6 +34,14 @@ impl SshFixture {
     }
 
     fn with_mode(python: bool) -> Self {
+        Self::with_options(python, false)
+    }
+
+    fn with_private_umask() -> Self {
+        Self::with_options(false, true)
+    }
+
+    fn with_options(python: bool, private_umask: bool) -> Self {
         let temporary = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
         fs::create_dir_all(&temporary).unwrap();
         let root = tempfile::Builder::new()
@@ -62,11 +72,11 @@ impl SshFixture {
         );
         success(&generated);
         let script = fixture.root.path().join("fixture.sh");
-        fs::write(
-            &script,
-            include_str!("support/ssh_fixture.sh").replace("\r\n", "\n"),
-        )
-        .unwrap();
+        let mut source = include_str!("support/ssh_fixture.sh").replace("\r\n", "\n");
+        if private_umask {
+            source = source.replace("set -euo pipefail", "set -euo pipefail\numask 077");
+        }
+        fs::write(&script, source).unwrap();
         let mapped = fixture.command(
             Command::new("wsl")
                 .args(["--exec", "wslpath", "-a", "-u"])
@@ -167,11 +177,14 @@ impl SshFixture {
     fn run_with_config(&self, source: &str, config: &Path) -> Output {
         let source = format!("remote => ssh://root@127.0.0.1:{}\n{source}", self.port);
         self.command(
-            Command::new(env!("CARGO_BIN_EXE_msync"))
-                .current_dir(self.workspace())
-                .env("MSYNC_SSH_CONFIG", config)
-                .args(["run", "-", "--trace"])
-                .arg(self.root.path().join("trace.jsonl")),
+            Command::new(
+                std::env::var_os("MSYNC_TEST_EXE")
+                    .unwrap_or_else(|| env!("CARGO_BIN_EXE_msync").into()),
+            )
+            .current_dir(self.workspace())
+            .env("MSYNC_SSH_CONFIG", config)
+            .args(["run", "-", "--trace"])
+            .arg(self.root.path().join("trace.jsonl")),
             Some(&source),
         )
     }
@@ -185,7 +198,8 @@ impl SshFixture {
     }
 
     fn assert_clean_staging(&self) {
-        let remote = self.remote("find /tmp -mindepth 1 -maxdepth 1 -name 'msync.*' -print");
+        let remote =
+            self.remote("find /tmp /root \\( -name 'msync.*' -o -name '.msync-v4.*' \\) -print");
         success(&remote);
         assert!(
             remote.stdout.is_empty(),
@@ -193,13 +207,7 @@ impl SshFixture {
             details(&remote)
         );
         let local = self.workspace().join(".temp");
-        if local.exists() {
-            assert_eq!(
-                fs::read_dir(local).unwrap().count(),
-                0,
-                "local staging leaked"
-            );
-        }
+        statement_storage::assert_clean(&local);
     }
 
     fn shutdown(&mut self) {
@@ -438,6 +446,167 @@ fn ssh_upload_download_and_overwrite_are_real_and_isolated() {
 
 #[test]
 #[ignore = "requires Windows OpenSSH, WSL root, sshd and mount/PID namespaces"]
+fn ssh_acquired_source_names_survive_contextual_paths_and_container_insertion() {
+    let fixture = SshFixture::new();
+    fs::write(fixture.workspace().join("payload.bin"), b"acquired name").unwrap();
+    success(&fixture.run("payload.bin -> remote::~/payload.bin\n"));
+    success(&fixture.run(
+        "remote::~/ -> home-snapshot/\n\
+         remote::. -> dot-snapshot/\n\
+         remote::~/./payload.bin -> file-container/\n",
+    ));
+    for path in [
+        "home-snapshot/root/payload.bin",
+        "dot-snapshot/root/payload.bin",
+        "file-container/payload.bin",
+    ] {
+        assert_eq!(
+            fs::read(fixture.workspace().join(path)).unwrap(),
+            b"acquired name"
+        );
+    }
+    success(&fixture.run(&format!(
+        "other => ssh://root@localhost:{}\n\
+         remote::~/ -> other::/tmp/home-container/\n\
+         other::/tmp/home-container/root/payload.bin -> returned.bin\n",
+        fixture.port,
+    )));
+    assert_eq!(
+        fs::read(fixture.workspace().join("returned.bin")).unwrap(),
+        b"acquired name"
+    );
+    fixture.finish();
+}
+
+#[test]
+#[ignore = "requires Windows OpenSSH, WSL root, sshd and mount/PID namespaces"]
+fn ssh_finite_transfers_preserve_portable_file_and_directory_metadata() {
+    let fixture = SshFixture::with_private_umask();
+    success(&fixture.remote(
+        "mkdir -p /root/source/nested/empty; printf body > /root/source/nested/file.bin; \
+         chmod 0440 /root/source/nested/file.bin; chmod 0550 /root/source/nested/empty; \
+         touch -d @978307207 /root/source/nested/file.bin; \
+         touch -d @978307209 /root/source/nested/empty; \
+         touch -d @978307208 /root/source/nested; touch -d @978307206 /root/source",
+    ));
+    success(&fixture.run(
+        "remote::~/source/. -> copied/\n\
+         remote::~/source/nested/file.bin -> exact.bin\n\
+         remote::~/source/nested/<file\\.bin> -> selected/\n",
+    ));
+    for (path, seconds) in [
+        ("copied/source", 978_307_206),
+        ("copied/source/nested", 978_307_208),
+        ("copied/source/nested/empty", 978_307_209),
+        ("copied/source/nested/file.bin", 978_307_207),
+        ("exact.bin", 978_307_207),
+        ("selected/file.bin", 978_307_207),
+    ] {
+        let path = fixture.workspace().join(path);
+        assert_eq!(
+            fs::metadata(&path)
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            seconds,
+            "portable mtime changed for {}",
+            path.display(),
+        );
+    }
+    assert_eq!(
+        fs::read(fixture.workspace().join("exact.bin")).unwrap(),
+        b"body"
+    );
+    assert!(
+        fs::metadata(fixture.workspace().join("exact.bin"))
+            .unwrap()
+            .permissions()
+            .readonly()
+    );
+
+    let upload = fixture.workspace().join("upload-tree");
+    fs::create_dir_all(upload.join("empty")).unwrap();
+    fs::write(upload.join("file.bin"), b"upload metadata").unwrap();
+    let readonly = upload.join("readonly.bin");
+    fs::write(&readonly, b"portable read-only").unwrap();
+    let mut permissions = fs::metadata(&readonly).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&readonly, permissions).unwrap();
+    for (path, seconds) in [
+        (upload.join("file.bin"), 978_307_211),
+        (readonly, 978_307_213),
+        (upload.join("empty"), 978_307_212),
+        (upload.clone(), 978_307_210),
+    ] {
+        let mut metadata =
+            msync::filesystem::NodeMetadata::capture(&fs::metadata(&path).unwrap()).unwrap();
+        metadata.modified = std::time::UNIX_EPOCH + Duration::from_secs(seconds);
+        metadata.apply(&path).unwrap();
+    }
+    success(&fixture.run("upload-tree -> remote::~/uploaded-tree\n"));
+    success(&fixture.remote(
+        "test \"$(stat -c %Y /root/uploaded-tree)\" = 978307210; \
+         test \"$(stat -c %Y /root/uploaded-tree/file.bin)\" = 978307211; \
+         test \"$(stat -c %Y /root/uploaded-tree/empty)\" = 978307212; \
+         test \"$(stat -c %Y /root/uploaded-tree/readonly.bin)\" = 978307213; \
+         test \"$(stat -c %a /root/uploaded-tree)\" = 700; \
+         test \"$(stat -c %a /root/uploaded-tree/empty)\" = 700; \
+         test \"$(stat -c %a /root/uploaded-tree/file.bin)\" = 600; \
+         test \"$(stat -c %a /root/uploaded-tree/readonly.bin)\" = 400",
+    ));
+    success(&fixture.remote(
+        "mkdir -p /root/merge-container/upload-tree/empty; \
+         printf keep > /root/merge-container/upload-tree/keep; \
+         chmod 0710 /root/merge-container /root/merge-container/upload-tree /root/merge-container/upload-tree/empty",
+    ));
+    success(&fixture.run("upload-tree -> remote::~/merge-container/\n"));
+    success(&fixture.remote(
+        "test \"$(stat -c %a /root/merge-container)\" = 710; \
+         test \"$(stat -c %a /root/merge-container/upload-tree)\" = 710; \
+         test \"$(stat -c %a /root/merge-container/upload-tree/empty)\" = 710; \
+         test \"$(stat -c %a /root/merge-container/upload-tree/file.bin)\" = 600; \
+         test \"$(stat -c %a /root/merge-container/upload-tree/readonly.bin)\" = 400; \
+         test \"$(cat /root/merge-container/upload-tree/keep)\" = keep",
+    ));
+    let links = fixture.workspace().join("link-tree");
+    fs::create_dir(&links).unwrap();
+    fs::write(links.join("first.bin"), b"first").unwrap();
+    success(&fixture.remote(
+        "mkdir -p /root/outside /root/symlink-container/link-tree; \
+         printf protected > /root/outside/keep; \
+         ln -s /root/outside /root/symlink-container/link-tree/unrelated",
+    ));
+    success(&fixture.run("link-tree -> remote::~/symlink-container/\n"));
+    success(&fixture.remote(
+        "test -L /root/symlink-container/link-tree/unrelated; \
+         test /root/symlink-container/link-tree/unrelated -ef /root/outside; \
+         test \"$(cat /root/symlink-container/link-tree/first.bin)\" = first",
+    ));
+    fs::remove_file(links.join("first.bin")).unwrap();
+    fs::create_dir(links.join("blocked")).unwrap();
+    fs::write(links.join("blocked/new.bin"), b"must stay private").unwrap();
+    success(&fixture.remote("ln -s /root/outside /root/symlink-container/link-tree/blocked"));
+    let blocked = fixture.run("link-tree -> remote::~/symlink-container/\n");
+    assert!(!blocked.status.success(), "{}", details(&blocked));
+    assert!(
+        String::from_utf8_lossy(&blocked.stderr).contains("symbolic link"),
+        "{}",
+        details(&blocked)
+    );
+    success(&fixture.remote(
+        "test ! -e /root/outside/new.bin; \
+         test \"$(cat /root/outside/keep)\" = protected; \
+         test -L /root/symlink-container/link-tree/blocked; \
+         test \"$(cat /root/symlink-container/link-tree/first.bin)\" = first",
+    ));
+    fixture.finish();
+}
+
+#[test]
+#[ignore = "requires Windows OpenSSH, WSL root, sshd and mount/PID namespaces"]
 fn ssh_recursive_directories_merge_and_conflicts_preflight() {
     let fixture = SshFixture::new();
     let tree = fixture.workspace().join("tree");
@@ -535,10 +704,10 @@ fn ssh_literal_filenames_and_regex_selections_preserve_semantics() {
         "wrong local glob match",
     )
     .unwrap();
-    let operand = format!("\"{name}\"");
+    let operand = format!("$pwd / \"{name}\"");
     success(&fixture.run(&format!("{operand} -> remote::~/\n")));
     success(&fixture.remote("printf wrong > '/root/a1 '\"'\"' ;$(mkdir injected).txt'"));
-    success(&fixture.run(&format!("\"remote::~/{name}\" -> literal.txt\n")));
+    success(&fixture.run(&format!("remote::\"~/{name}\" -> literal.txt\n")));
     assert_eq!(
         fs::read_to_string(fixture.workspace().join("literal.txt")).unwrap(),
         "literal brackets and shell syntax"
@@ -567,12 +736,56 @@ fn ssh_literal_filenames_and_regex_selections_preserve_semantics() {
             .join("selected-local/b.toml.bak")
             .exists()
     );
-    success(&fixture.run("configs -> remote::~/all\nremote::~/all/<.+\\.toml> -> filtered/\n"));
+    success(&fixture.run("configs -> remote::~/all\n"));
+    success(&fixture.remote(
+        "ln -s /root/missing /root/all/unselected-link; \
+         mkfifo /root/all/unselected-fifo; \
+         printf secret > /root/all/unselected:windows-name; \
+         raw=$(printf 'unselected-\\377'); printf secret > \"/root/all/$raw\"; \
+         mkdir -p /root/all/picked/empty; \
+         printf nested > /root/all/picked/deep.toml",
+    ));
+    success(&fixture.run("remote::~/all/<.+\\.toml> -> filtered/\n"));
     assert_eq!(
         fs::read_to_string(fixture.workspace().join("filtered/a.toml")).unwrap(),
         "alpha"
     );
     assert!(!fixture.workspace().join("filtered/nested").exists());
+    assert_eq!(
+        fs::read_dir(fixture.workspace().join("filtered"))
+            .unwrap()
+            .count(),
+        1
+    );
+    success(&fixture.run("remote::~/all/<picked> -> picked-container/\n"));
+    assert!(
+        fixture
+            .workspace()
+            .join("picked-container/picked/empty")
+            .is_dir()
+    );
+    assert_eq!(
+        fs::read(
+            fixture
+                .workspace()
+                .join("picked-container/picked/deep.toml")
+        )
+        .unwrap(),
+        b"nested"
+    );
+    success(&fixture.run("remote::~/all/<never-matches> -> no-selection/\n"));
+    assert!(!fixture.workspace().join("no-selection").exists());
+    let selected_special = fixture.run("remote::~/all/<unselected-link> -> rejected-selection/\n");
+    assert!(
+        !selected_special.status.success(),
+        "{}",
+        details(&selected_special)
+    );
+    assert!(!fixture.workspace().join("rejected-selection").exists());
+    success(&fixture.remote(
+        "test -L /root/all/unselected-link; test -p /root/all/unselected-fifo; \
+         test \"$(cat /root/all/unselected:windows-name)\" = secret",
+    ));
     fixture.finish();
 }
 

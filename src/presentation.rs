@@ -31,18 +31,56 @@ pub(super) enum IoAction {
 
 #[derive(Debug)]
 pub(super) struct Issue {
+    stage: Option<Stage>,
     title: String,
     fields: Vec<(&'static str, String)>,
     hints: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Stage {
+    Compile,
+    Load,
+    Evaluate,
+    Execute,
+    Cleanup,
+}
+
+impl Stage {
+    pub(super) fn heading(self) -> &'static str {
+        match self {
+            Self::Compile => "compile error:",
+            Self::Load => "load error:",
+            Self::Evaluate => "evaluation error:",
+            Self::Execute => "execution error:",
+            Self::Cleanup => "cleanup error:",
+        }
+    }
+}
+
+impl From<msync::execution::DiagnosticPhase> for Stage {
+    fn from(phase: msync::execution::DiagnosticPhase) -> Self {
+        match phase {
+            msync::execution::DiagnosticPhase::Evaluate => Self::Evaluate,
+            msync::execution::DiagnosticPhase::Execute => Self::Execute,
+            msync::execution::DiagnosticPhase::Cleanup => Self::Cleanup,
+        }
+    }
+}
+
 impl Issue {
     pub(super) fn new(title: impl Into<String>) -> Self {
         Self {
+            stage: None,
             title: title.into(),
             fields: Vec::new(),
             hints: Vec::new(),
         }
+    }
+
+    pub(super) fn stage(mut self, stage: Stage) -> Self {
+        self.stage = Some(stage);
+        self
     }
 
     pub(super) fn field(mut self, name: &'static str, value: impl Into<String>) -> Self {
@@ -56,7 +94,8 @@ impl Issue {
     }
 
     fn render(&self, color: bool) -> String {
-        let mut output = format!("{} {}", paint("error:", "1;31", color), escape(&self.title));
+        let heading = self.stage.map_or("error:", Stage::heading);
+        let mut output = format!("{} {}", paint(heading, "1;31", color), escape(&self.title));
         for (name, value) in &self.fields {
             output.push_str(&format!(
                 "\n  {} {}",
@@ -254,116 +293,22 @@ pub(super) fn human(text: &str, enabled: bool) -> String {
     }
 }
 
-pub(super) fn plan(plan: &msync::plan::Plan, color: bool) -> String {
-    let mut text = format!(
-        "{} {} operation(s), {} eliminated, {} forwarded, {} dependency edge(s)\n",
-        paint("plan:", "1;36", color),
-        plan.nodes.len(),
-        plan.removed.len(),
-        plan.forwarded.len(),
-        plan.edges.len()
-    );
-    text.push_str("  Metadata preview only; no file data has been copied.\n");
-    if plan.nodes.is_empty() {
-        text.push_str("\n  No transfers to execute. Add a source -> destination statement.\n");
-    }
-    for node in &plan.nodes {
-        let verb = if node.operation.pattern.is_some() {
-            "select & copy"
-        } else if node.kinds.source == msync::plan::FileClass::Stream
-            || node.kinds.destination == msync::plan::FileClass::Stream
-        {
-            "flow"
-        } else {
-            "copy"
-        };
-        text.push_str(&format!(
-            "\n  {} {verb}  [{} -> {}]\n",
-            paint(&format!("#{}", node.id), "1;34", color),
-            kind(node.kinds.source),
-            kind(node.kinds.destination)
-        ));
-        text.push_str(&format!(
-            "    {} {}\n",
-            paint("from:", "1;34", color),
-            location(&node.operation.source, color)
-        ));
-        text.push_str(&format!(
-            "    {} {}\n",
-            paint("  to:", "1;34", color),
-            location(&node.operation.destination, color)
-        ));
-        if let Some(pattern) = &node.operation.pattern {
-            text.push_str(&format!("    select: {}\n", escape(pattern)));
-        }
-        let needs = if node.dependencies.is_empty() {
-            "ready".to_owned()
-        } else {
-            node.dependencies
-                .iter()
-                .map(|id| format!("#{id}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        text.push_str(&format!("    needs: {needs}\n"));
-    }
-    for group in &plan.stream_groups {
-        let ids = group
-            .iter()
-            .map(|id| format!("#{id}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        text.push_str(&format!("\n  start together: {ids}\n"));
-    }
-    for item in &plan.removed {
-        text.push_str(&format!(
-            "\n  removed input #{}: overwritten by input #{} before any read\n",
-            item.original_index, item.overwritten_by
-        ));
-    }
-    for item in &plan.forwarded {
-        text.push_str(&format!(
-            "\n  forwarded input #{}: {} -> {}\n",
-            item.original_index,
-            location(&item.from, color),
-            location(&item.to, color)
-        ));
-    }
-    for issue in &plan.issues {
-        text.push_str(&format!("\n  issue: {}\n", escape(&issue.message)));
-    }
-    text
-}
-
-fn location(location: &msync::compiler::Location, color: bool) -> String {
+pub(super) fn limits(
+    limits: &msync::scheduler::ResourceLimits,
+    spool_limit: Option<u64>,
+    color: bool,
+) -> String {
     format!(
-        "{} {}",
-        paint(&escape(&location.backend.to_string()), "35", color),
-        escape(&location.path)
-    )
-}
-
-fn kind(kind: msync::plan::FileClass) -> &'static str {
-    use msync::plan::FileClass;
-    match kind {
-        FileClass::Regular => "file",
-        FileClass::Directory => "directory",
-        FileClass::Stream => "pipe/socket",
-        FileClass::Missing => "missing",
-        FileClass::Unknown => "not inspected",
-    }
-}
-
-pub(super) fn limits(limits: &msync::scheduler::ResourceLimits, color: bool) -> String {
-    format!(
-        "{}\n  finite copies: {}\n  background flows: {}\n  buffer size: {} ({} bytes)\n  payload budget: {} ({} bytes; not process RSS)\n",
+        "{}\n  finite copies: {}\n  external programs: {} (separate slots)\n  background flows: {}\n  buffer size: {} ({} bytes)\n  payload budget: {} ({} bytes; not process RSS)\n  output spool: {} per program (stdout + stderr)\n",
         paint("limits:", "1;36", color),
+        limits.jobs,
         limits.jobs,
         limits.max_streams,
         bytes(limits.buffer_bytes),
         limits.buffer_bytes,
         bytes(limits.memory_bytes),
-        limits.memory_bytes
+        limits.memory_bytes,
+        spool_limit.map_or_else(|| "unlimited".into(), |bytes| format!("{bytes} bytes"))
     )
 }
 
@@ -385,12 +330,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn human_plan_has_an_explicit_empty_state_and_retains_a_plain_header() {
-        let plan = msync::plan::Plan::default();
-        let text = super::plan(&plan, false);
-        assert!(text.starts_with("plan: 0 operation(s)"));
-        assert!(text.contains("No transfers to execute"));
-        assert!(!text.contains('\x1b'));
+    fn resource_limits_preserve_plain_and_colored_presentations() {
+        let limits = msync::scheduler::ResourceLimits::default();
+        let plain = super::limits(&limits, None, false);
+        assert!(plain.starts_with("limits:"));
+        assert!(plain.contains("finite copies:"));
+        assert!(plain.contains("payload budget:"));
+        assert!(!plain.contains('\x1b'));
+        let colored = super::limits(&limits, Some(1024), true);
+        assert!(colored.starts_with("\x1b[1;36mlimits:\x1b[0m"));
+        assert!(colored.contains("not process RSS"));
     }
 
     #[test]
@@ -412,6 +361,19 @@ mod tests {
             assert!(output.contains(expected), "{output}");
         }
         assert!(!output.contains('\x1b'));
+    }
+
+    #[test]
+    fn runtime_context_errors_do_not_masquerade_as_compiler_errors() {
+        let output = CliError::from(
+            Issue::new("cannot resolve the current block")
+                .stage(Stage::Evaluate)
+                .field("path", "missing/input"),
+        )
+        .render(Color::Never);
+        assert!(output.starts_with("evaluation error:"), "{output}");
+        assert!(!output.contains("compile error:"));
+        assert!(!output.contains(" --> "));
     }
 
     #[test]

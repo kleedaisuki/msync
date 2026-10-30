@@ -161,36 +161,45 @@ fn missing_dsl_source_explains_the_resolved_alias_path_not_only_the_alias_spelli
         "# unrelated intervening context\n".repeat(8)
     );
     fs::write(directory.path().join("alias-source.msync"), script).unwrap();
-    for mode in ["plan", "run"] {
-        let output = invoke(
-            directory.path(),
-            &[mode, "alias-source.msync", "--color", "never"],
-            "",
-        );
-        assert!(!output.status.success());
-        let error = text(&output.stderr);
-        assert!(
-            error.contains("root/input.txt"),
-            "the exact failing token must remain visible: {error}"
-        );
-        assert!(
-            error.contains("missing-parent") && error.contains("input.txt"),
-            "the user needs the resolved source as well as the alias token: {error}"
-        );
-        assert!(
-            error.contains(
-                &directory
-                    .path()
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string()
-            ),
-            "include the resolved endpoint path rather than making the user reconstruct $pwd: {error}"
-        );
-        assert!(error.lines().any(|line| line.contains("help:")), "{error}");
-        assert!(!directory.path().join("output.txt").exists());
-    }
+    let plan = invoke(
+        directory.path(),
+        &["plan", "alias-source.msync", "--color", "never"],
+        "",
+    );
+    assert!(
+        plan.status.success(),
+        "static planning must not inspect the missing alias: {}",
+        text(&plan.stderr)
+    );
+    assert!(!directory.path().join("output.txt").exists());
+    let output = invoke(
+        directory.path(),
+        &["run", "alias-source.msync", "--color", "never"],
+        "",
+    );
+    assert!(!output.status.success());
+    let error = text(&output.stderr);
+    assert!(
+        error.contains("root/input.txt"),
+        "the exact failing token must remain visible: {error}"
+    );
+    assert!(
+        error.contains("missing-parent") && error.contains("input.txt"),
+        "the user needs the resolved source as well as the alias token: {error}"
+    );
+    assert!(
+        error.contains(
+            &directory
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        ),
+        "include the resolved endpoint path rather than making the user reconstruct $pwd: {error}"
+    );
+    assert!(error.lines().any(|line| line.contains("help:")), "{error}");
+    assert!(!directory.path().join("output.txt").exists());
 }
 
 #[test]

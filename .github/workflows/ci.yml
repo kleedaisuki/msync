@@ -4,23 +4,87 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      full:
+        description: Run the complete Rust and documentation acceptance matrix
+        type: boolean
+        default: true
+
+concurrency:
+  group: rust-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.select.outputs.rust }}
+      full: ${{ steps.select.outputs.full }}
+      docs: ${{ steps.select.outputs.docs }}
+      targets: ${{ steps.select.outputs.targets }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: select
+        shell: pwsh
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          FORCE_FULL: ${{ github.event_name == 'workflow_dispatch' && inputs.full }}
+        run: |
+          ./scripts/test-ci-select.ps1
+          if ($env:FORCE_FULL -eq 'true') {
+            ./scripts/ci-select.ps1 -ForceFull -GitHubOutput
+          } else {
+            if (-not $env:BASE -or $env:BASE -match '^0+$') {
+              $env:BASE = git merge-base HEAD origin/main
+            }
+            ./scripts/ci-select.ps1 -Base $env:BASE -GitHubOutput
+          }
   test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.docs == 'true'
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked --all-targets
+      - if: needs.changes.outputs.rust == 'true'
+        run: cargo fmt --check
+      - if: needs.changes.outputs.rust == 'true'
+        shell: pwsh
+        env:
+          FULL: ${{ needs.changes.outputs.full }}
+          TARGETS: ${{ needs.changes.outputs.targets }}
+        run: |
+          if ($env:FULL -eq 'true') {
+            cargo clippy --locked --all-targets -- -D warnings
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo test --locked --all-targets
+            exit $LASTEXITCODE
+          }
+          $targets = @($env:TARGETS | ConvertFrom-Json)
+          $clippyArgs = @('clippy', '--locked', '--lib', '--bin', 'msync')
+          $testArgs = @('test', '--locked', '--lib', '--bin', 'msync')
+          foreach ($target in $targets) {
+            $clippyArgs += @('--test', $target)
+            $testArgs += @('--test', $target)
+          }
+          & cargo @clippyArgs -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & cargo @testArgs
+          exit $LASTEXITCODE
       - name: Exercise native SSH credential windows
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && needs.changes.outputs.rust == 'true'
         run: cargo test --locked --test windows_askpass -- --ignored --test-threads=1
-      - run: cargo test --locked --doc
+      - if: needs.changes.outputs.docs == 'true' || needs.changes.outputs.full == 'true'
+        run: cargo test --locked --doc

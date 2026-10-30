@@ -109,21 +109,34 @@ function Assert-InstalledJourney([string]$Directory) {
     $journey = Join-Path $work ('journey-' + [guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Path $journey
     $utf8 = New-Object Text.UTF8Encoding $false
-    [IO.File]::WriteAllText((Join-Path $journey 'source.txt'), 'installed artifact payload', $utf8)
-    [IO.File]::WriteAllText((Join-Path $journey 'sync.msync'), "source.txt -> output.txt`n", $utf8)
+    [IO.File]::WriteAllText((Join-Path $journey 'source.txt'), 'installed artifact payload 可莉', $utf8)
+    [IO.File]::WriteAllText((Join-Path $journey 'sync.msync'), "macro copy_one(source, destination):`n    source -> destination`n`ncopy_one(source.txt, output.txt)`n", $utf8)
     Push-Location $journey
     try {
         $null = Invoke-Msync $exe @('check', 'sync.msync')
         $null = Invoke-Msync $exe @('run', 'sync.msync', '--dry-run')
         if (Test-Path -LiteralPath 'output.txt') { throw 'Installed dry-run created an output.' }
         $null = Invoke-Msync $exe @('run', 'sync.msync')
-        if ([IO.File]::ReadAllText((Join-Path $journey 'output.txt')) -cne 'installed artifact payload') { throw 'Installed copy bytes differ.' }
+        if ([IO.File]::ReadAllText((Join-Path $journey 'output.txt')) -cne 'installed artifact payload 可莉') { throw 'Installed copy bytes differ.' }
         $null = Invoke-Msync $exe @('emit-ir', 'sync.msync', '-o', 'portable.json')
         $null = Invoke-Msync $exe @('bind-ir', 'portable.json', '-o', 'bound.json')
         $null = Invoke-Msync $exe @('plan-ir', 'bound.json')
+        $null = Invoke-Msync $exe @('compile', 'sync.msync', '-o', 'macro.mobj')
+        Remove-Item -LiteralPath 'sync.msync'
+        Remove-Item -LiteralPath 'output.txt'
+        $null = Invoke-Msync $exe @('run', 'macro.mobj')
+        if ([IO.File]::ReadAllText((Join-Path $journey 'output.txt')) -cne 'installed artifact payload 可莉') { throw 'Installed macro object replay bytes differ.' }
+        $replInput = "macro copy_one(source, destination):`n    source -> destination`n`ncopy_one(source.txt, repl-output.txt)`n/export-relocatable repl.json`n/quit`n"
+        $replOutput = $replInput | & $exe repl 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "Installed multiline macro REPL failed: $replOutput" }
+        if ([IO.File]::ReadAllText((Join-Path $journey 'repl-output.txt')) -cne 'installed artifact payload 可莉') { throw 'Installed multiline macro REPL bytes differ.' }
+        Remove-Item -LiteralPath 'repl-output.txt'
+        $null = Invoke-Msync $exe @('run-ir', 'repl.json')
+        if ([IO.File]::ReadAllText((Join-Path $journey 'repl-output.txt')) -cne 'installed artifact payload 可莉') { throw 'Installed macro REPL export bytes differ.' }
+
         Remove-Item -LiteralPath 'output.txt'
         $null = Invoke-Msync $exe @('run-ir', 'bound.json')
-        if ([IO.File]::ReadAllText((Join-Path $journey 'output.txt')) -cne 'installed artifact payload') { throw 'Installed IR replay bytes differ.' }
+        if ([IO.File]::ReadAllText((Join-Path $journey 'output.txt')) -cne 'installed artifact payload 可莉') { throw 'Installed IR replay bytes differ.' }
     } finally { Pop-Location }
 }
 

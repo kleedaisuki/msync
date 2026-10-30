@@ -1,5 +1,11 @@
 # Runtime safety and transports
 
+> Historical pre-v0.5 transport/runtime behavior. In particular, the per-leaf
+> partial directory completion described below is not the v0.5 statement-atomic
+> contract. See [statement atomicity](statement-atomicity.md) and
+> [barrier runtime](barrier-runtime.md). The legacy 0.3 adapter is not a substitute
+> for the current structured interpreter.
+
 ## Local execution
 
 A compiled operation resolves local, `$env` and `$path` endpoints into native paths, enumerates terminal regex selectors (anchored full basename match), and preflights every selected tree before creating anything. A trailing slash on the destination means append the source basename and refuse existing destination files, including files nested inside a merging directory. Without the slash, an existing regular file may be overwritten and a new tree may be created at a missing target, but an existing directory is an error: append `/` to explicitly select container semantics. No implicit directory-name insertion is performed in overwrite mode.
@@ -259,168 +265,45 @@ The authenticated SSH fixture now covers remote regular-file sinks, not just IPC
 
 `ssh_remote_file_stages_rollback_after_prefix_reset_cancel_and_future_abort` passed against the isolated server: TCP resets, token cancellation and direct future abort each occur only after 4096 bytes are observed in the remote file stage, for both existing and absent targets. Helpers and stages are audited while the caller process and Tokio runtime remain alive, so process exit cannot hide a missing future-drop cleanup path. An empty finite source that has requested FINISH into a FIFO with no reader remains promptly cancellable. The producer fixture explicitly holds its connection until interruption; it does not confuse an unused TCP write half's EOF with the end of the producing stream.
 
-## Foreground SSH authentication leases
+### Structured v0.4 finite remote publication
 
-`ssh://Production_Box` passes the exact opaque host spelling to OpenSSH, including case and underscores. It is a local `Host` configuration name, not a DNS lookup performed by msync. Optional user/port overrides and bracketed IPv6 retain their existing representation. URL passwords remain rejected; no password or key passphrase belongs in compiler state, plans, traces, or history.
+The live engine routes finite file/literal writes to WSL/SSH through `execution::endpoint`, after physical pipe/socket classification. Local sources are read through the version manager; remote sources are imported at the actual logical transfer, not during planning. An immutable source is materialized only inside the invocation. Existing source/target aliases and directory overlap are rejected, including a local source's WSL pathname alias. HTTP/PATH remain read-only.
 
-`runtime::ssh::SshContext` owns a shared session registry, with separate cancellation tokens for each submission. Interactive Unix callers authenticate before metadata preparation and before returning terminal input ownership to the REPL. Native OpenSSH owns its password, encrypted-key and host-key prompts; msync does not capture secrets or set `BatchMode` during foreground authentication. The existing editor has already left raw mode when a submitted statement is handled.
+Transport populates a privately owned `.msync-v4.*` journal on the destination filesystem. The helper constructs a complete replacement root before touching the user binding. `/` container insertion recursively preflights collisions in that private clone; `/.` replaces the entire directory; an exact existing directory rejects. Missing parent trees are staged from their first absent ancestor. Source selectors use the same anchored Rust regex semantics over immutable direct-child basenames; an empty selection publishes nothing.
 
-A configured master is checked using native `ssh -O check` and is never stopped by msync. When none exists, msync starts its own non-forking `ssh -M -N` master with an exclusive project-local `.temp` directory (mode 0700), a private control socket, and `ControlPersist=no`. Forwardings are disabled for this transport-only lease. Subsequent SSH commands select the private socket with `-S`; SCP uses `-o ControlPath=...` because SCP's `-S` selects a program instead. Authentication polling is cancellable and reaps the owned process on cancellation/failure. Unix shutdown first requests SIGTERM so OpenSSH can restore terminal echo, then falls back to kill/reap after a bounded grace period. The registry holds no credentials, checks owned-master liveness before reuse, and kills/reaps only its own masters when its last context drops.
+Publication retains the old root as a before-image, restores it on helper failure, and creates `COMMITTED` only after the replacement rename. An independent receipt query acquires the helper's `flock` before cleanup. This distinguishes a known committed assignment from cancellation or a lost SSH/WSL client acknowledgement; known COMMITTED wins a later client error. Unreachable or still-locked journals are retained and diagnosed as unknown commit state, never deleted speculatively. Finite remote publication requires the existing GNU-compatible tools plus `flock`. Rename publication provides runtime statement atomicity with compensation, not an OS-wide multi-path isolation or fsync/crash-durability promise against unrelated external writers.
 
-Context propagation is explicit: synchronous scopes restore thread-local state even on panic; asynchronous scopes use Tokio task-local state. Workers must capture and reestablish the context rather than relying on ambient thread-local state across an await or thread boundary. The metadata process runner uses the same submission cancellation token, not a fresh uncancellable token.
+Named remote transactions and program-output/remote publication cohorts still require a real versioned endpoint participant. The live preflight rejects them before any preceding statement executes; it never presents independent remote publication as a distributed transaction. No SSH configuration is changed. The explicit Windows `endpoint_execution_v4` integration target exercises native WSL filesystem destinations, Unicode/apostrophe paths, upload/download, directory replacement, container conflict rollback, literals, missing ancestors and named-transaction preflight. These are correctness journeys, not cross-filesystem performance measurements.
 
-The owned-mux path is Unix-specific. Noninteractive/direct foreground callers retain native-client authentication. Interactive Windows REPL submissions instead use the scoped native GUI askpass path described below; they do not pretend to provide unsupported native connection multiplexing. Private control sockets require a writable project `.temp` and a sufficiently short Unix socket pathname. Those optional lease-storage constraints do not reject an otherwise valid foreground finite transfer: REPL preparation retains the native foreground client context if socket workspace creation fails or its path is too long. If such a submission contains streams, it runs in the foreground with an explicit notice and shared Ctrl-C cancellation instead of resuming a competing raw-mode editor. Other authentication and transport failures remain errors; they are not downgraded to workspace fallbacks. No helper changes cwd, so relative `IdentityFile` and `ProxyCommand` semantics remain intact. A master failing after admission is an execution failure, not a reason to ask for new credentials silently from a background editor session: only clients with a previously authenticated registry entry receive `BatchMode=yes` as a lease-loss guard. Resubmit to reauthenticate in the foreground. Unregistered native clients and initial authentication remain unaffected.
+The finite remote implementation moves an already-owned payload into the private replacement root for exact assignments and absent container slots, eliminating a redundant full data copy before the publication rename. Existing container clones and merges request GNU `cp --reflink=auto`, preserving independent file identities with an ordinary-copy fallback on filesystems without copy-on-write cloning. The real WSL suite also covers a read-only before-image that makes cleanup fail after commit: the assignment succeeds with a retained-journal cleanup issue rather than being misreported as an unknown or failed transfer. A publication worker remains alive to cancel and settle its receipt if its caller drops the future; settlement timeout explicitly kills and joins the client instead of merely dropping its process future.
 
-Reproduce native encrypted-key journeys using `cargo test --locked --test ssh_auth -- --ignored --nocapture`. The explicit fixture requires installed `sshd` and `ssh-keygen`, runs an unprivileged loopback daemon with private host/client keys and configuration under repository `.temp`, and never changes user SSH configuration or account passwords. An encrypted-key prompt exercises the same native controlling-terminal boundary, but does not establish successful account-password authentication.
+#### Actual default-runtime remote acceptance (2026-10-28)
 
-Primary mechanism references: [OpenSSH ssh(1)](https://man.openbsd.org/ssh.1) (`-M`, `-N`, `-O`, `-S`) and [ssh_config(5)](https://man.openbsd.org/ssh_config.5) (`Host`, `ControlMaster`, `ControlPath`, `ControlPersist`).
+After the source-capability publication fix at `26b83a7`, the Windows
+`endpoint_execution_v4` target passed all four cases with `--include-ignored
+--test-threads=1` (25.18 seconds). This exercises real WSL upload/download,
+recursive replacement and collision rejection, literal overwrite, rejection of
+named remote transactions before prior effects, and the known-COMMITTED cleanup
+warning. Its ordinary HTTP destination control also passed. The fixture uses an
+exclusively owned native WSL filesystem directory, not a simulated transport.
 
-Native Linux acceptance for the authentication lease additionally covers a genuinely preexisting configured master surviving REPL exit; first authentication before an idle remote FIFO becomes a background job; `/jobs`, `/stop` and a subsequent transfer without another prompt; owned socket-directory removal on exit; and deliberately terminating an owned master between admission and execution. That last journey verifies no askpass invocation during failed downstream work and successful explicit foreground reauthentication afterward. The existing `SSH_ASKPASS` protocol is used only by that isolated subprocess fixture; production authentication remains owned by OpenSSH.
+Four actual Windows OpenSSH/chrooted-WSL journeys passed together under the
+default v0.4 CLI grammar (102.95 seconds):
 
-### Genuine account-password acceptance (2026-10-30)
+- `ssh_upload_download_and_overwrite_are_real_and_isolated`;
+- `ssh_recursive_directories_merge_and_conflicts_preflight`;
+- `ssh_literal_filenames_and_regex_selections_preserve_semantics`;
+- `ssh_conflicts_failures_and_telemetry_leave_no_staging`.
 
-`tests/ssh_password.rs` closes the account-password boundary separately from the
-encrypted-key journeys. On native Debian Linux/ext4 with OpenSSH client/server
-10.0p2 and OpenSSL 3.5.7, both explicit real controlling-terminal tests passed:
-
-```sh
-cargo test --locked --test ssh_password -- --ignored --nocapture --test-threads=1
-cargo clippy --locked --test ssh_password -- -D warnings
-```
-
-The first test submits an incorrect password, observes a new native password
-prompt without terminal echo, submits the correct password, and checks actual
-copied bytes. The private server log must contain both `Failed password for
-fixture` and `Accepted password for fixture`. The second interrupts a password
-prompt with Ctrl-C, verifies the target was not created and the REPL remains
-usable, then authenticates on a new submission and checks actual copied bytes.
-These are genuine OpenSSH account-password authentications, not a scripted
-replacement client, passphrase-only evidence, or an askpass substitute.
-
-The fixture requires installed `ssh`, `sshd`, `ssh-keygen`, `openssl`, `unshare`,
-`mount`, and support for unprivileged user/mount/PID namespaces; tests remain
-explicitly ignored in portable default runs rather than silently substituting a
-mock. All writable fixture state is under repository `.temp`. Each fixture uses
-a cryptographically random password passed to `openssl passwd` on stdin; its
-plaintext is never placed in process arguments, scripts, client configuration,
-or a fixture file. Public-key and keyboard-interactive authentication are
-disabled on the private loopback server and client, so successful authentication
-cannot accidentally use an agent or existing key.
-
-`tests/support/ssh_password_fixture.sh` runs only inside private namespaces. The
-outer user namespace maps the caller to root solely to bind private fixture
-passwd/shadow/group files over `/etc` paths in the private mount namespace. A
-second user namespace maps the same caller to uid/gid 1000 and starts non-root
-sshd; this avoids requiring an unmapped privilege-separation account. Host
-account files are not written, no system SSH service/configuration is changed,
-and readable host passwd/group contents are compared before/after. The
-`unshare --kill-child` process owns a private PID namespace, so teardown also
-terminates its sshd session descendants, including after a failed assertion.
-No global user account, password change, sudo invocation, or third-party Python
-server is needed. These Linux results do not establish Windows password-prompt
-behavior.
-
-Namespace mechanism references: [unshare(1)](https://man7.org/linux/man-pages/man1/unshare.1.html)
-and [user_namespaces(7)](https://man7.org/linux/man-pages/man7/user_namespaces.7.html).
-
-### Windows transport process-tree ownership
-
-`runtime/windows_auth.rs` owns a separate anonymous Job Object for each transport client, including askpass GUI descendants. Both synchronous and Tokio clients start with `CREATE_SUSPENDED`; the job is configured with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` and the child is assigned before its primary thread resumes. Since Rust's process wrappers do not expose the initial thread handle, the wrapper finds that still-suspended process's thread through a ToolHelp snapshot and opens only that thread with resume access. Assignment or resume failure terminates the owned job/child; synchronous children are waited immediately and Tokio retains its kill-on-drop reaper.
-
-The job handle remains alive for the transport lifetime. Cancellation and stream drop terminate that job, not a host-wide executable-name search. After the root client exits, remaining owned helpers are terminated **before** capture readers are joined or stderr drain is awaited: an inherited pipe in a forgotten GUI/helper must not keep a completed operation waiting forever. Nested jobs are supported on the modern Windows versions targeted by this implementation; assignment errors retain the native cause instead of silently running an unowned process tree. No unrelated master, editor, shell or GUI process is assigned to this transport's job.
-
-Windows-only self-contained tests exercise a real child/grandchild tree, job drop, asynchronous ownership, and a descendant keeping a capture pipe open after parent exit. They need no SSH server or interactive desktop. Linux-to-Windows GNU `cargo check --tests` establishes type/API compatibility only; it does not execute these tests or prove native GUI behavior.
-
-Primary references: [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects), [AssignProcessToJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject), and [ResumeThread](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-resumethread).
-
-Graphical Windows authentication also owns a per-submission named manual-reset cancellation event. A native dialog Cancel signals that event instead of relying on askpass's nonzero exit alone: OpenSSH can otherwise interpret the failed helper as an empty password and retry. An Arc-held event watcher cancels the same submission token used by metadata and background processes; final event drop signals a separate stop event and joins the watcher. Event names are unique process/counter identities with default logon security, not credentials; creation rejects existing names. For explicitly forced graphical askpass, both process wrappers add `CREATE_NO_WINDOW` to the suspended spawn, preventing native-console fallback from competing with the REPL. Ordinary foreground/key clients do not receive that flag.
-
-
-### Scoped Windows authentication UI
-
-For a live SSH submission in an interactive Windows REPL, the submission context
-sets `SSH_ASKPASS_REQUIRE=force` only on its own SSH/SCP children. If a nonempty
-`SSH_ASKPASS` is already configured it remains the selected helper; otherwise
-msync uses its current executable in a private early-dispatch mode. No password,
-helper path, or preference is written to user configuration. Local operations,
-offline previews, direct foreground CLI requests, and the parent environment are
-unchanged. Native clients implementing `SSH_ASKPASS_REQUIRE` (OpenSSH 8.4 or
-newer) are required. GUI-configured clients start without a console as well as
-suspended, so an unsupported client cannot silently steal the editor's terminal.
-
-The built-in helper dynamically loads CredUI/user32 only after recognizing its
-private marker and prompt argument, before normal arguments, tracing or history
-are processed. The dialog identifies msync, the exact connection alias, explicit
-user/port where known, a trusted task label, and the native request. Unresolved
-OpenSSH configuration is not presented as a fabricated host, user or port.
-Credentials are masked and not persisted; the already-selected username is not
-editable. Host-key confirmation and informational prompts use separate native
-message-box paths, not a masked credential field. See
-[SSH authentication UI](ssh-auth-ui.md) for the complete interaction contract.
-
-Cancel uses more than an unsuccessful askpass exit: OpenSSH can interpret a
-failed helper as an empty response and retry. Each graphical submission therefore
-owns a uniquely named Win32 cancellation event and a private stop event. On native
-GUI cancellation the helper signals that event, the waiting owner cancels the
-submission token, and the transport's Job Object terminates its client/helper
-tree. The event context follows the background task through explicit context
-propagation; closing the foreground submission scope does not orphan it. The last
-context signals stop and joins its watcher. Only an event name crosses child
-environment variables, never the response secret. A user-supplied external helper
-retains its own interaction/cancellation behavior.
-
-Without native Windows multiplexing or password caching, separate native clients
-may request credentials more than once. This is deliberate rather than caching
-plaintext secrets or altering the user's SSH configuration. Owned UTF-16 and
-UTF-8 response buffers are erased before release; the response is written only to
-OpenSSH's inherited output pipe, never application status output, telemetry or IR.
-
-Linux executes the helper protocol, message-classification and scoped-child-env
-unit tests. Windows-only default tests exercise real process-tree ownership and
-named-event cancellation without a desktop or SSH server. Windows GNU all-target
-compile/Clippy checks establish API/type compatibility; actual Windows desktop
-focus/accessibility, native-client invocation and cancellation with an open dialog
-still require the native acceptance run, not an inference from cross-compilation.
-
-
-### Optional mux storage compatibility regressions
-
-Native OpenSSH fixtures in `tests/ssh_auth.rs` cover finite upload and download
-from a cwd too long for the owned Unix socket, and local-to-SSH upload from a
-read-only cwd using absolute writable source/destination paths. Their client key
-is unencrypted and `IdentityFile` is relative to the exact submitted cwd; moving
-clients to another directory to shorten socket paths would fail these journeys.
-A long-cwd FIFO transfer proves the exceptional foreground notice, physically
-observes an open destination stage, then cancels with Ctrl-C and verifies stage
-cleanup, unchanged prior target bytes, REPL recovery and a successful next copy.
-
-The read-only upload regression deliberately exercises the previously supported
-path without local transport scratch. Remote finite downloads still use the
-preexisting project-local scratch staging contract, so a read-only cwd can refuse
-those downloads for that independent reason. This wave neither hides that
-limitation nor changes download staging policy while fixing authentication lease
-compatibility.
-
-### Exact native configuration names
-
-SSH Host names are native lookup keys, not HTTP-style normalized domain names.
-The compiler preserves the raw non-IPv6 authority hostname after URL structure,
-credential and port validation; it never percent-decodes a literal `%` alias or
-percent-encodes Unicode aliases. IPv6 retains its existing bracketed parsing.
-Whitespace/control characters that a general URL parser might silently remove
-are rejected instead of changing the lookup key. User and port overrides keep
-their established semantics.
-
-Local `native_unicode_config_alias_is_not_url_encoded_and_reuses_authentication`
-uses an isolated real OpenSSH config with `Host 开发%机`, checks `ssh -G` resolves
-it to the fixture, performs a real authenticated download and a second copy with
-no new authentication prompt. Compiler and both IR round-trip tests retain the
-same raw alias. The user's SSH configuration is not changed or copied into IR.
-
-Without a reusable authentication lease (for example the exceptional Unix
-long-cwd foreground fallback), native metadata and data clients can each request
-a password. msync does not cache or replay that password. The password fixture
-responds to each observed native request and waits for an actual `done:` result,
-not merely a terminal prompt redraw; its explicit long-cwd journey proves fresh
-file bytes after repeated requests. Missing-output diagnostics retain the PTY
-and server causes while redacting the generated fixture secret.
+The new journal protocol exposed one fixture dependency: its minimal chroot
+lacked `flock`. The fixture now copies the already-installed executable and its
+shared libraries into its private tmpfs; no package, persistent SSH configuration
+or account file is changed. Filename fixtures use explicit `$pwd / "name"` and
+`remote::"~/name"` paths rather than overriding the default grammar. Cleanup
+audits cover both the legacy `msync.*` temporaries and `.msync-v4.*` journals
+throughout the private remote home and temporary directories. Each successful
+SSH journey verified unchanged Windows/WSL SSH and account-file fingerprints,
+no remaining stages, and no surviving authenticated service after teardown.
+The two larger SSH streaming/interruption cases were deliberately excluded from
+this finite-endpoint acceptance run. These times describe correctness harness
+runtimes, not performance benchmarks.

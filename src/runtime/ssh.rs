@@ -86,6 +86,42 @@ pub fn with_context<T>(context: Option<&SshContext>, action: impl FnOnce() -> T)
     action()
 }
 
+/// Capture before spawning: Tokio task locals do not inherit into child tasks.
+pub fn scope_current<F: Future>(future: F) -> impl Future<Output = F::Output> {
+    let context = current();
+    async move {
+        match context {
+            Some(context) => context.scope(future).await,
+            None => future.await,
+        }
+    }
+}
+
+pub(crate) fn spawn<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio::spawn(scope_current(future))
+}
+
+pub(crate) fn blocking<F, T>(action: F) -> impl FnOnce() -> T + Send + 'static
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let context = current();
+    move || with_context(context.as_ref(), action)
+}
+
+pub(crate) fn spawn_blocking<F, T>(action: F) -> tokio::task::JoinHandle<T>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(blocking(action))
+}
+
 impl SshContext {
     pub fn for_submission(&self, cancel: CancellationToken) -> Self {
         Self {
@@ -499,6 +535,29 @@ fn check_master(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn owned_authentication_context_follows_tasks_and_blocking_workers() {
+        let cancel = CancellationToken::new();
+        let context = SshContext::default().for_submission(cancel.clone());
+        let task = with_context(Some(&context), || {
+            spawn(async {
+                tokio::task::yield_now().await;
+                let cancel = current().unwrap().cancellation().unwrap();
+                spawn_blocking(move || {
+                    assert!(current().is_some());
+                    current().unwrap().cancellation().unwrap().cancel();
+                })
+                .await
+                .unwrap();
+                assert!(cancel.is_cancelled());
+            })
+        });
+        assert!(current().is_none());
+        task.await.unwrap();
+        assert!(cancel.is_cancelled());
+        assert!(spawn_blocking(|| current().is_none()).await.unwrap());
+    }
 
     #[test]
     fn graphical_auth_is_child_scoped_and_preserves_configured_helpers() {

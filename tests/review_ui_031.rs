@@ -61,7 +61,7 @@ fn a_deleted_working_directory_does_not_end_the_repl_or_lose_bindings() {
             .any(|line| line == directory.path().to_string_lossy()),
         "{stdout}"
     );
-    assert!(stdout.contains("keep := saved"), "{stdout}");
+    assert!(stdout.contains("keep := \".\"/\"saved\""), "{stdout}");
     assert!(
         !stdout.contains("next :="),
         "a failed submission leaked a binding: {stdout}"

@@ -32,13 +32,16 @@ fn invoke_command(command: &mut Command, input: &str) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
-    child.wait_with_output().unwrap()
+    let written = child.stdin.take().unwrap().write_all(input.as_bytes());
+    let output = child.wait_with_output().unwrap();
+    if let Err(cause) = written {
+        assert!(
+            cause.kind() == std::io::ErrorKind::BrokenPipe && !output.status.success(),
+            "stdin failed unexpectedly: {cause}; stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    output
 }
 
 fn stdout(output: &Output) -> String {
@@ -232,7 +235,7 @@ fn repl_slash_commands_keep_bindings_recover_from_errors_and_load_files() {
     assert_success(&result);
     let out = stdout(&result);
     assert!(out.contains("REPL commands"));
-    assert!(out.contains("base := ."));
+    assert!(out.contains("base :="), "{out}");
     assert!(out.contains("dry-run: on"));
     assert!(out.contains("bindings cleared"));
     assert!(
@@ -355,29 +358,27 @@ fn pwd_namespace_rebinding_is_dynamic_but_path_alias_captures_its_value() {
 }
 
 #[test]
-fn old_pwd_path_forms_fail_with_migration_help_but_bare_paths_stay_compatible() {
+fn removed_syntax_versions_are_rejected_before_any_file_effects() {
     let directory = workspace();
-    fs::write(directory.path().join("source.txt"), "legacy source").unwrap();
-    for source in [
-        "$pwd::source.txt -> target.txt\n",
-        "$pwd/source.txt -> target.txt\n",
-    ] {
-        let output = invoke(directory.path(), &["check", "-"], source);
-        assert!(
-            !output.status.success(),
-            "legacy namespace misuse must not silently change meaning"
+    fs::write(directory.path().join("source.txt"), "source data").unwrap();
+    for version in ["0.3", "0.4"] {
+        let output = invoke(
+            directory.path(),
+            &["--syntax", version, "run", "-"],
+            "source.txt -> target.txt\n",
         );
-        assert!(stderr(&output).contains("$pwd::pwd"), "{}", stderr(&output));
+        assert!(!output.status.success());
+        assert!(stderr(&output).contains("0.5"), "{}", stderr(&output));
         assert!(!directory.path().join("target.txt").exists());
     }
     assert_success(&invoke(
         directory.path(),
-        &["run", "-"],
+        &["--syntax", "0.5", "run", "-"],
         "source.txt -> target.txt\n",
     ));
     assert_eq!(
         fs::read_to_string(directory.path().join("target.txt")).unwrap(),
-        "legacy source"
+        "source data"
     );
 }
 
@@ -499,7 +500,7 @@ fn directory_target_without_trailing_slash_is_rejected_without_mutation() {
         "the destination type error belongs on its operand: {diagnostic}"
     );
     assert!(
-        diagnostic.contains("append") && diagnostic.contains('/'),
+        diagnostic.to_lowercase().contains("append") && diagnostic.contains('/'),
         "show the actionable container-mode fix: {diagnostic}"
     );
     assert!(!directory.path().join("destination/new.txt").exists());
@@ -510,28 +511,30 @@ fn directory_target_without_trailing_slash_is_rejected_without_mutation() {
 }
 
 #[test]
-fn live_plan_eliminates_dead_file_write_before_bounded_execution() {
+fn static_plan_retains_guarded_writes_and_runtime_folds_them_before_bounded_execution() {
     let directory = workspace();
     fs::write(directory.path().join("first.txt"), "first source").unwrap();
     fs::write(directory.path().join("last.txt"), "last source").unwrap();
     fs::write(directory.path().join("target.txt"), "original target").unwrap();
     let script = "first.txt -> target.txt\nlast.txt -> target.txt\n";
-    let planned = invoke(directory.path(), &["plan", "-"], script);
+    let planned = invoke(directory.path(), &["--syntax", "0.5", "plan", "-"], script);
     assert_success(&planned);
     assert!(
-        stdout(&planned).contains("plan: 1 operation(s), 1 eliminated"),
+        stdout(&planned).matches(" transfer\n").count() == 2,
         "{}",
         stdout(&planned)
     );
-    assert!(stdout(&planned).contains("overwritten by #1"));
+    assert!(stdout(&planned).contains("guarded candidate:"));
     assert_eq!(
         fs::read_to_string(directory.path().join("target.txt")).unwrap(),
         "original target",
-        "planning may inspect metadata but must not copy"
+        "planning must not inspect runtime endpoints or copy"
     );
     let executed = invoke(
         directory.path(),
         &[
+            "--syntax",
+            "0.5",
             "run",
             "-",
             "--jobs",
@@ -546,6 +549,11 @@ fn live_plan_eliminates_dead_file_write_before_bounded_execution() {
         script,
     );
     assert_success(&executed);
+    assert!(
+        stdout(&executed).contains("1 assignment(s)"),
+        "{}",
+        stdout(&executed)
+    );
     assert_eq!(
         fs::read_to_string(directory.path().join("target.txt")).unwrap(),
         "last source"
@@ -584,6 +592,24 @@ fn cli_rejects_invalid_resource_limits_before_writing() {
             "preserved target"
         );
     }
+}
+
+#[test]
+fn argument_rejection_does_not_require_consuming_a_large_stdin() {
+    let directory = workspace();
+    fs::write(directory.path().join("target.txt"), "untouched").unwrap();
+    let input = "source.txt -> target.txt\n".repeat(65_536);
+    let output = invoke(directory.path(), &["run", "-", "--jobs", "0"], &input);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("positive integer"),
+        "{}",
+        stderr(&output)
+    );
+    assert_eq!(
+        fs::read_to_string(directory.path().join("target.txt")).unwrap(),
+        "untouched"
+    );
 }
 
 #[test]
@@ -744,6 +770,34 @@ fn trace_file_survives_exit_and_connects_all_pipeline_phases_without_payload_cap
         .collect::<Vec<_>>();
     assert_eq!(root.len(), 1, "one end-to-end session must have one root");
     assert_eq!(string_field(root[0], "name"), "session");
+    let copy = spans
+        .iter()
+        .find(|line| string_field(line, "name") == "copy")
+        .unwrap();
+    assert!(
+        copy.contains("\"publication.policy\":\"statement-journal\""),
+        "{copy}"
+    );
+    assert!(copy.contains("\"phase\":\"committed\""), "{copy}");
+    assert!(
+        copy.contains("private-source.txt") && copy.contains("private-destination.txt"),
+        "{copy}"
+    );
+    assert!(copy.contains("\"files.assigned\":1"), "{copy}");
+    assert!(copy.contains("\"bytes.assigned\":15"), "{copy}");
+    assert!(
+        !copy.contains("\"bytes.committed\""),
+        "ordinary assignment metrics must not masquerade as transaction commits: {copy}"
+    );
+    for forbidden in ["prepare", "transaction.publish"] {
+        assert!(
+            !trace.contains(&format!("\"name\":\"{forbidden}\"")),
+            "ordinary assignment unexpectedly entered {forbidden}: {trace}"
+        );
+    }
+    for phase in ["ordinary.acquire", "ordinary.stage", "ordinary.publish"] {
+        assert!(trace.contains(&format!("\"name\":\"{phase}\"")), "{trace}");
+    }
     assert!(!trace.contains("private payload"));
     assert!(!trace.contains("MSYNC_TEST_TELEMETRY_SECRET"));
     assert!(!trace.contains("sensitive env value must not leak"));
@@ -778,6 +832,7 @@ fn http_fetch_journey_uses_real_local_server_and_preserves_body() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     listener.set_nonblocking(true).unwrap();
+    let (stop, stopped) = std::sync::mpsc::channel();
     let server = thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -806,6 +861,9 @@ fn http_fetch_journey_uses_real_local_server_and_preserves_body() {
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stopped.try_recv().is_ok() {
+                        return;
+                    }
                     assert!(Instant::now() < deadline, "HTTP client never connected");
                     thread::sleep(Duration::from_millis(10));
                 }
@@ -818,8 +876,10 @@ fn http_fetch_journey_uses_real_local_server_and_preserves_body() {
         &["run", "-"],
         &format!("web => http://{address}/base/\nweb::~/help.txt -> help.txt\n"),
     );
-    server.join().unwrap();
+    let _ = stop.send(());
+    let served = server.join();
     assert_success(&result);
+    served.unwrap();
     assert_eq!(
         fs::read(directory.path().join("help.txt")).unwrap(),
         b"hello via HTTP"

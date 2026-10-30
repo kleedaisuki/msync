@@ -106,12 +106,19 @@ jobs:
           mkdir -p '.temp/package-smoke/user workspace'
           cd '.temp/package-smoke/user workspace'
           printf 'fresh packaged bytes\n' > source
-          printf 'source -> destination\n' > copy.msync
+          printf 'macro copy_one(source, destination):\n    source -> destination\n\ncopy_one(source, destination)\n' > copy.msync
           "$exe" check copy.msync
           "$exe" run copy.msync --dry-run
           test ! -e destination
           "$exe" emit-ir copy.msync -o portable.json
-          "$exe" run-ir portable.json
+          "$exe" bind-ir portable.json -o bound.json
+          "$exe" plan-ir bound.json
+          "$exe" compile copy.msync -o macro.mobj
+          rm copy.msync
+          "$exe" run macro.mobj
+          cmp source destination
+          rm destination
+          "$exe" run-ir bound.json
           cmp source destination
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
