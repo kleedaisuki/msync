@@ -22,6 +22,34 @@ source + CompileContext → parser/provenance → resolved Program
                  directory expansion → leaf byte flows → OS-selected I/O
 ```
 
+## Install a release
+
+Download from the [official GitHub Releases](https://github.com/kleedaisuki/msync/releases/latest).
+
+| Platform | Recommended asset | Experience |
+| --- | --- | --- |
+| Windows 10/11 x64 | `msync-<version>-windows-x86_64-setup.exe` | Per-user setup, no administrator rights; optional User PATH and Start Menu REPL |
+| Windows portable | `msync-<version>-windows-x86_64.zip` | Extract and run `bin\msync.exe`; no registry or PATH changes |
+| Linux x86-64, glibc 2.35+ | `msync-<version>-linux-x86_64.tar.gz` | Extract and run `bin/msync`; other platforms can build from source |
+
+Windows setup defaults to `%USERPROFILE%\.msync`, with the executable in `bin`.
+Restart an already-running terminal application to pick up PATH changes, or use
+**msync REPL** in the Start Menu immediately. Check the installation with
+`msync --version` and `msync --help`. Close running msync transfers before upgrading.
+Uninstall removes packaged files and installer-owned PATH entries, preserving
+user configuration, scripts, data and unrelated helpers. The application still
+does not load a standalone `~/.msync/config.toml`; SSH profiles remain in OpenSSH's
+configuration. Rust and the Visual C++ Redistributable are not required to use
+the Windows packages. Optional transport clients are described below.
+
+Windows release files are currently **unsigned**: SmartScreen may show an unknown
+publisher warning. Verify the official release origin and compare `Get-FileHash
+<download> -Algorithm SHA256` with that release's `SHA256SUMS`; do not disable
+system protection. Checksums detect corruption, not a trusted code-signing
+identity. Matching GPL source and third-party notices accompany each release.
+See [Windows packaging and lifecycle](docs/design/windows-packaging.md) for
+upgrade/PATH ownership and reproducible developer packaging commands.
+
 ## Build and run
 
 ```sh

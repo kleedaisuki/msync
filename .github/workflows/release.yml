@@ -1,0 +1,191 @@
+name: Release packages
+
+on:
+  push:
+    branches: [main, 'codex/**']
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - packaging/**
+      - .github/workflows/release.yml
+      - docs/releases/**
+  pull_request:
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - packaging/**
+      - .github/workflows/release.yml
+      - docs/releases/**
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the manifest version (main only; never overwrite a published release)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packages-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: version
+        shell: bash
+        env:
+          PUBLISH_REQUESTED: ${{ github.event_name != 'workflow_dispatch' || inputs.publish }}
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected a numeric Cargo package version' >&2; exit 1; }
+          test -s "docs/releases/$version.md"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          publish=false
+          if [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" != pull_request && "$PUBLISH_REQUESTED" == true ]]; then publish=true; fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Build static-CRT portable ZIP and per-user installer
+        shell: pwsh
+        run: ./packaging/windows/build.ps1 -Target x86_64-pc-windows-msvc -OutputDirectory dist
+      - name: Exercise actual install, repair, PATH, transfer and uninstall
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.version }}
+        run: ./packaging/windows/test.ps1 -InstallerPath "dist/msync-$env:PACKAGE_VERSION-windows-x86_64-setup.exe"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows-x86_64
+          if-no-files-found: error
+          path: |
+            dist/msync-${{ needs.version.outputs.version }}-windows-x86_64-setup.exe
+            dist/msync-${{ needs.version.outputs.version }}-windows-x86_64.zip
+
+  linux:
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+      - name: Build and verify portable archive
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          ./packaging/linux/build.sh
+          mkdir -p .temp/package-smoke
+          tar -xzf "dist/msync-$PACKAGE_VERSION-linux-x86_64.tar.gz" -C .temp/package-smoke
+          exe="$PWD/.temp/package-smoke/msync-$PACKAGE_VERSION-linux-x86_64/bin/msync"
+          test "$("$exe" --version)" = "msync $PACKAGE_VERSION"
+          mkdir -p '.temp/package-smoke/user workspace'
+          cd '.temp/package-smoke/user workspace'
+          printf 'fresh packaged bytes\n' > source
+          printf 'source -> destination\n' > copy.msync
+          "$exe" check copy.msync
+          "$exe" run copy.msync --dry-run
+          test ! -e destination
+          "$exe" emit-ir copy.msync -o portable.json
+          "$exe" run-ir portable.json
+          cmp source destination
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-linux-x86_64
+          if-no-files-found: error
+          path: dist/msync-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz
+
+  publish:
+    needs: [version, windows, linux]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Publish complete checksummed assets without replacing released versions
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.version }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const crypto = require('node:crypto');
+            const version = process.env.PACKAGE_VERSION;
+            const tag = `v${version}`;
+            const repo = context.repo;
+            const files = [
+              `msync-${version}-windows-x86_64-setup.exe`,
+              `msync-${version}-windows-x86_64.zip`,
+              `msync-${version}-linux-x86_64.tar.gz`,
+            ].sort();
+            const hashes = new Map();
+            for (const file of files) {
+              const bytes = fs.readFileSync(`dist/${file}`);
+              if (!bytes.length) throw new Error(`Empty release asset: ${file}`);
+              hashes.set(file, crypto.createHash('sha256').update(bytes).digest('hex'));
+            }
+            fs.writeFileSync('dist/SHA256SUMS', files.map(file => `${hashes.get(file)}  ${file}`).join('\n') + '\n');
+            files.push('SHA256SUMS');
+            let release;
+            try { release = (await github.rest.repos.getReleaseByTag({...repo, tag})).data; }
+            catch (error) { if (error.status !== 404) throw error; }
+            if (release && !release.draft) {
+              core.notice(`${tag} is already published; immutable assets were not changed. Bump Cargo version for a new release.`);
+              return;
+            }
+            if (release && release.target_commitish !== context.sha) {
+              throw new Error(`Existing ${tag} draft targets another revision; refusing to replace it`);
+            }
+            if (!release) {
+              const notes = fs.readFileSync(`docs/releases/${version}.md`, 'utf8');
+              release = (await github.rest.repos.createRelease({
+                ...repo, tag_name: tag, target_commitish: context.sha,
+                name: `msync ${tag}`, draft: true, prerelease: false,
+                body: notes + `\n\nSource: [${tag}](https://github.com/${repo.owner}/${repo.repo}/tree/${tag}) (commit ${context.sha}).\n`,
+              })).data;
+            }
+            const existing = (await github.rest.repos.listReleaseAssets({...repo, release_id: release.id})).data;
+            for (const file of files) {
+              const bytes = fs.readFileSync(`dist/${file}`);
+              const digest = 'sha256:' + crypto.createHash('sha256').update(bytes).digest('hex');
+              const asset = existing.find(asset => asset.name === file);
+              if (asset) {
+                if (asset.digest !== digest || asset.size !== bytes.length) throw new Error(`Draft asset differs: ${file}`);
+                continue;
+              }
+              await github.rest.repos.uploadReleaseAsset({
+                ...repo, release_id: release.id, name: file,
+                data: bytes, headers: {'content-type': 'application/octet-stream', 'content-length': bytes.length},
+              });
+            }
+            const result = await github.rest.repos.updateRelease({...repo, release_id: release.id, draft: false, make_latest: 'true'});
+            core.summary.addLink(`Download msync ${tag}`, result.data.html_url);
+            await core.summary.write();
