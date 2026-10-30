@@ -92,7 +92,19 @@ try {
     foreach ($name in @('README.md', 'LICENSE')) {
         Copy-Item -LiteralPath (Join-Path $root $name) -Destination $documentation
     }
-    Copy-Item -LiteralPath (Join-Path $root 'docs') -Destination $documentation -Recurse
+    # Only version-controlled documentation belongs in a distributable; local
+    # research notes may coexist in docs without becoming public package data.
+    $git = Get-Command git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $git) { throw 'Packaging requires Git and a source checkout to identify distributable documentation.' }
+    $trackedDocs = @(& $git.Source -C $root -c core.quotepath=false ls-files -- docs 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $trackedDocs.Count -eq 0) {
+        throw 'Packaging requires a Git source checkout with tracked documentation; source archives must be checked out before building packages.'
+    }
+    foreach ($relative in $trackedDocs) {
+        $destination = Join-Path $documentation $relative
+        $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($destination)) -Force
+        Copy-Item -LiteralPath (Join-Path $root $relative) -Destination $destination
+    }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'portable-readme.txt') -Destination (Join-Path $stage 'INSTALL.md')
     $python = Get-Command python -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $python) { $python = Get-Command python3 -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 }

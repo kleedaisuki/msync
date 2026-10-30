@@ -179,3 +179,26 @@ verbatim Rust attribution copying and deterministic hash inventories. The native
 PowerShell 7.6.9 parser reported zero syntax errors for both Windows scripts. None
 of these checks substitute for compiling Inno Setup and running the generated
 installer on Windows; that acceptance result belongs with the actual Actions run.
+
+## Source inventory and publication integrity
+
+Packaging requires a Git checkout and copies only tracked `docs` entries, not an
+arbitrary recursive working directory. This deliberately excludes unrelated
+untracked analysis, drafts and local fixtures. Installed users need neither Git
+nor the build-time Python collector. Linux packaging honors `CARGO_TARGET_DIR`
+and `SOURCE_DATE_EPOCH`; final archives remain under `dist`.
+
+The pinned license supplement is marked byte-preserving in `.gitattributes`.
+Windows checkout newline conversion must not change a resource whose actual
+upstream bytes and SHA-256 were approved. Validation keeps the strict hash check;
+it does not silently normalize a mismatching license into apparent success.
+
+Publication resolves existing lightweight or annotated tags to the exact tested
+commit, creates only a missing matching tag and rechecks before publication.
+GitHub ignores `target_commitish` when a tag already exists, so merely setting
+that parameter cannot establish a corresponding-source guarantee. Published
+versions are never overwritten. A retry may resume a matching draft, but changed
+or unknown draft assets fail rather than being silently replaced/published.
+Local Node tests exercise tag mismatch/dereference/races, partial upload failure
+and immutable public releases. The actual first main-branch publication must
+still verify the real GitHub API and downloaded asset digests.
