@@ -127,6 +127,29 @@ function Assert-InstalledJourney([string]$Directory) {
     } finally { Pop-Location }
 }
 
+function Remove-OwnedWorkspace([string]$Directory) {
+    $elapsed = [Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+        try {
+            Remove-Item -LiteralPath $Directory -Recurse -Force -ErrorAction Stop
+            return
+        } catch {
+            $code = 0
+            for ($cause = $_.Exception; $null -ne $cause; $cause = $cause.InnerException) {
+                $native = $cause.HResult -band 0xffff
+                if ($native -in @(32, 33)) { $code = $native; break }
+            }
+            # Only Windows sharing/lock violations are transient here. Preserve
+            # all other errors rather than turning cleanup into a false pass.
+            if ($code -eq 0) { throw }
+            if ($elapsed.Elapsed.TotalSeconds -ge 10) {
+                throw "Timed out cleaning owned workspace $Directory (Win32 error $code); diagnostics retained. Cause: $($cause.Message)"
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+}
+
 function Assert-PortablePackage {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive = [IO.Compression.ZipFile]::OpenRead($portable)
@@ -243,7 +266,6 @@ try {
     Assert-Path $baseline 'Uninstall after declined PATH task'
     $active = $null
     $completed = $true
-    Write-Host 'PASS: portable manifest/CLI/IR, installed CLI/IR, upgrade, PATH ownership/types, declined PATH, user config/data/helper retention.'
 } finally {
     try {
         if ($active -and (Test-Path -LiteralPath (Join-Path $active 'installer/unins000.exe'))) { Uninstall-App $active }
@@ -254,7 +276,8 @@ try {
         $hive.DeleteSubKeyTree($ownerKey, $false)
         $environment.Dispose()
         $hive.Dispose()
-        if ($completed) { Remove-Item -LiteralPath $work -Recurse -Force }
+        if ($completed) { Remove-OwnedWorkspace $work }
         else { Write-Warning "Retained installer diagnostics and fixture files at $work" }
     }
 }
+Write-Host 'PASS: portable manifest/CLI/IR, installed CLI/IR, upgrade, PATH ownership/types, declined PATH, user config/data/helper retention.'
