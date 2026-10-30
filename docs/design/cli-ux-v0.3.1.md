@@ -242,3 +242,12 @@ whose recognized and unknown escapes round-trip through `/bindings`. Existing
 random-edit coverage and style-removal properties pass. Strict all-target Clippy
 also passes. Windows ConPTY execution remains a separate platform check; no
 Windows execution is inferred from Linux PTY results.
+
+Native terminal assertions observe foreground-color semantics rather than exact
+SGR parameter grouping. Windows ConPTY can emit `ESC[36m ESC[1m` where a Unix PTY
+preserves `ESC[1;36m`; these render the same bold cyan. The added normalization
+regression uses the actual native-stream shape. Direct highlighter tests still
+check the intended bold/color sequences before terminal transport, while the
+PTY journey verifies distinct command, namespace-item, known-escape and ordinary
+string colors before Enter. Do not repair a transport-encoding assertion by
+removing the real-terminal rendering checks.
