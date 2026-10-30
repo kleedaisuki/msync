@@ -202,3 +202,22 @@ or unknown draft assets fail rather than being silently replaced/published.
 Local Node tests exercise tag mismatch/dereference/races, partial upload failure
 and immutable public releases. The actual first main-branch publication must
 still verify the real GitHub API and downloaded asset digests.
+
+## Maintainer release procedure
+
+1. Change the package version in `Cargo.toml` and update `Cargo.lock`; add matching
+   `docs/releases/VERSION.md` notes. Use a numeric stable version for this workflow.
+2. Open a PR. Package diagnostics exercise both platforms and the real Windows
+   install/uninstall lifecycle; no branch protection or required-check gate is
+   configured by these files.
+3. Merge into `main`. A relevant main push builds/test packages and creates the
+   exact source tag, uploads all assets into a draft, then publishes it. Do not
+   pre-create a tag at an unrelated commit. A published version is never replaced;
+   bump the version for a changed distribution.
+4. `workflow_dispatch` defaults to build-only. To recover publication, run it on
+   main with `publish=true`, or retry only the failed publish job to reuse the
+   same artifacts. A changed/foreign draft or tag is an explicit operator decision,
+   not something automation force-overwrites.
+5. Verify the public asset names, downloaded SHA256SUMS and tag commit. Windows
+   signing is a separate publisher-certificate integration; do not describe an
+   unsigned package as signed/trusted just because its checksums match.

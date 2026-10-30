@@ -1,7 +1,7 @@
 # msync for Linux x86-64
 
 Extract the archive, then run `./bin/msync --help` or `./bin/msync` for the REPL.
-The GNU/Linux binary is built on Ubuntu 22.04 (glibc 2.35); older libc systems and
+The official release GNU/Linux binary is built on Ubuntu 22.04 (glibc 2.35); older libc systems and
 other architectures should build from the matching source tag.
 
 For a per-user command, copy `bin/msync` into `~/.local/bin` and ensure that
