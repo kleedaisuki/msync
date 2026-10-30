@@ -497,6 +497,108 @@ pub(crate) fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
     Ok(extended)
 }
 
+/// Establish the ordinal-insensitive identity policy used by the new local
+/// transaction manager. Legacy copy execution does not opt into this policy.
+pub(crate) fn require_case_insensitive_ancestors(path: &Path) -> io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Foundation::{
+        ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_CASE_SENSITIVE_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES,
+        FileCaseSensitiveInfo, GetFileInformationByHandleEx,
+    };
+
+    for directory in path.ancestors() {
+        let metadata = match fs::symlink_metadata(directory) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(case_policy_error(directory, error, false)),
+        };
+        if !metadata.is_dir() {
+            continue;
+        }
+        let file = fs::OpenOptions::new()
+            .access_mode(FILE_READ_ATTRIBUTES)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(directory)
+            .map_err(|cause| case_policy_error(directory, cause, false))?;
+        let mut info = FILE_CASE_SENSITIVE_INFO::default();
+        // SAFETY: A live directory handle and correctly sized output buffer.
+        let result = unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileCaseSensitiveInfo,
+                (&raw mut info).cast(),
+                std::mem::size_of::<FILE_CASE_SENSITIVE_INFO>() as u32,
+            )
+        };
+        if result == 0 {
+            let cause = io::Error::last_os_error();
+            let unsupported = cause.raw_os_error().is_some_and(|code| {
+                [
+                    ERROR_INVALID_FUNCTION,
+                    ERROR_INVALID_PARAMETER,
+                    ERROR_NOT_SUPPORTED,
+                ]
+                .contains(&(code as u32))
+            });
+            return Err(case_policy_error(directory, cause, unsupported));
+        }
+        // FILE_CS_FLAG_CASE_SENSITIVE_DIR. Do not merge names the filesystem
+        // treats as distinct, including directories created through WSL.
+        // https://devblogs.microsoft.com/commandline/per-directory-case-sensitivity-and-wsl/
+        if info.Flags & 1 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "case-sensitive Windows directory {} requires a case-sensitive resource adapter",
+                    directory.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn case_policy_error(path: &Path, cause: io::Error, unsupported: bool) -> io::Error {
+    let kind = if unsupported {
+        io::ErrorKind::Unsupported
+    } else {
+        cause.kind()
+    };
+    io::Error::new(
+        kind,
+        CasePolicyError {
+            path: path.to_owned(),
+            cause,
+        },
+    )
+}
+
+#[derive(Debug)]
+struct CasePolicyError {
+    path: std::path::PathBuf,
+    cause: io::Error,
+}
+
+impl std::fmt::Display for CasePolicyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "cannot establish native case policy for {}: {}; no case-insensitive identity is assumed",
+            self.path.display(),
+            self.cause
+        )
+    }
+}
+
+impl std::error::Error for CasePolicyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

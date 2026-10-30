@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use super::{Backend, CompileContext, Compiler, CopyOp, Location, Program, Space};
 use crate::syntax::{OperandSource, Report, Script, Span, StatementKind};
 
+mod structured;
+pub(crate) mod wire;
+pub use structured::Structured;
+
 const VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -28,6 +32,7 @@ struct Transfer {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PathValue {
+    #[serde(with = "wire::optional_backend")]
     backend: Option<Backend>,
     base: Base,
     path: String,
@@ -55,6 +60,7 @@ pub struct Contextual {
 pub enum Artifact {
     Relocatable(Relocatable),
     Contextual(Contextual),
+    Structured(Box<Structured>),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -379,7 +385,11 @@ impl Artifact {
         self.validate()?;
         serde_json::to_string_pretty(&Envelope {
             format: "msync-ir".to_owned(),
-            version: VERSION,
+            version: if matches!(self, Self::Structured(_)) {
+                2
+            } else {
+                VERSION
+            },
             artifact: self.clone(),
         })
         .map(|text| format!("{text}\n"))
@@ -389,11 +399,14 @@ impl Artifact {
     pub fn from_json(text: &str) -> Result<Self, String> {
         let envelope: Envelope =
             serde_json::from_str(text).map_err(|error| format!("invalid IR JSON: {error}"))?;
-        if envelope.format != "msync-ir" || envelope.version != VERSION {
+        if envelope.format != "msync-ir" || !matches!(envelope.version, VERSION | 2) {
             return Err(format!(
                 "unsupported IR format/version: {} {} (expected msync-ir {VERSION})",
                 envelope.format, envelope.version
             ));
+        }
+        if matches!(envelope.artifact, Self::Structured(_)) != (envelope.version == 2) {
+            return Err("IR version does not match its execution model".into());
         }
         envelope.artifact.validate()?;
         Ok(envelope.artifact)
@@ -403,6 +416,7 @@ impl Artifact {
         let reports = match self {
             Self::Relocatable(ir) => ir.materialize(&type_context()).map(|_| ()),
             Self::Contextual(ir) => ir.validate(),
+            Self::Structured(ir) => return ir.validate(),
         };
         reports.map_err(|reports| {
             reports
@@ -416,6 +430,7 @@ impl Artifact {
     pub fn bind(&self, context: &CompileContext) -> Result<Contextual, Vec<Report>> {
         match self {
             Self::Relocatable(ir) => ir.bind(context),
+            Self::Structured(ir) => ir.legacy(context),
             Self::Contextual(ir) => {
                 ir.validate()?;
                 Ok(ir.clone())

@@ -413,6 +413,15 @@ fn finite_ssh_upload_from_readonly_cwd_uses_absolute_source_and_destination() {
         "run this fixture as an unprivileged user"
     );
     let server = Server::start();
+    let wrapper = fs::read_to_string(&server.wrapper).unwrap();
+    let wrapper = wrapper.replace(
+        "exec ",
+        &format!(
+            "export MSYNC_STATE_DIR='{}'\nexec ",
+            server.root.path().join("runtime-state").display()
+        ),
+    );
+    fs::write(&server.wrapper, wrapper).unwrap();
     let cwd = server.root.path().join("readonly-working-directory");
     fs::create_dir(&cwd).unwrap();
     unencrypted_relative_identity(&server, &cwd);

@@ -35,13 +35,13 @@ install_binary() {
     done < <(ldd "$path" | awk '$2 == "=>" && $3 ~ /^\// {print $3} $1 ~ /^\// {print $1}')
 }
 for path in /bin/bash /bin/sh /bin/cat /bin/cp /bin/chmod /bin/mkdir /bin/rm /bin/mv /bin/ln \
-    /usr/bin/find /usr/bin/realpath /usr/bin/dirname /usr/bin/basename /usr/bin/mktemp /usr/bin/stat; do
+    /usr/bin/find /usr/bin/realpath /usr/bin/dirname /usr/bin/basename /usr/bin/mktemp /usr/bin/stat \
+    /usr/bin/flock /usr/bin/sync /usr/bin/mkfifo /usr/bin/touch; do
     install_binary "$path"
 done
 if [ "$python" = 1 ]; then
     mkdir -p "$jail/proc"
     mount -t proc -o nosuid,nodev,noexec proc "$jail/proc"
-    install_binary /usr/bin/mkfifo
     install_binary /usr/bin/python3
     stdlib=$(/usr/bin/python3 -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')
     mkdir -p "$jail$stdlib"

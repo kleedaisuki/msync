@@ -2,6 +2,8 @@
 
 #[path = "support/pty.rs"]
 mod pty;
+#[path = "support/statement_storage.rs"]
+mod statement_storage;
 
 use std::fs;
 use std::io::{Read, Write};
@@ -17,6 +19,31 @@ fn workspace() -> tempfile::TempDir {
         .prefix("repl-terminal-")
         .tempdir_in(root)
         .unwrap()
+}
+
+fn unpublished_stages(directory: &Path) -> Vec<std::path::PathBuf> {
+    let mut directories = vec![directory.to_owned()];
+    let mut stages = Vec::new();
+    while let Some(directory) = directories.pop() {
+        let Ok(entries) = fs::read_dir(directory) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                directories.push(entry.path());
+            } else if kind.is_file() {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with(".msync-") && name.ends_with(".part") {
+                    stages.push(entry.path());
+                }
+            }
+        }
+    }
+    stages
 }
 
 #[test]
@@ -35,7 +62,7 @@ fn native_terminal_plan_and_limits_separate_paths_dependencies_and_resource_unit
     let mut repl = terminal(directory.path(), "never");
     let plan = repl.submit("/plan flow.msync");
     for expected in [
-        "Metadata preview only",
+        "Static IR preview",
         "from:",
         "to:",
         "source.txt",
@@ -124,11 +151,17 @@ fn native_terminal_highlights_before_enter_and_keeps_unicode_editing_history_and
         "actual edited path"
     );
     repl.exit();
+    let mut entries: Vec<_> = fs::read_dir(directory.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    entries.sort();
     assert_eq!(
-        fs::read_dir(directory.path()).unwrap().count(),
-        3,
-        "the editor must not persist a history/cache file into its isolated HOME"
+        entries,
+        [".temp", "after-clear.txt", "copied.txt", "x"].map(std::ffi::OsString::from),
+        "the editor must not persist history/cache files into its isolated HOME"
     );
+    statement_storage::assert_clean(&directory.path().join(".temp"));
 }
 
 #[test]
@@ -331,7 +364,14 @@ fn terminal_ctrl_c_joins_an_open_flow_preserves_target_and_physically_closes_the
         socket.write_all(prefix).unwrap();
         opened.send(()).unwrap();
         let mut reverse = [0_u8; 1];
-        closed.send(socket.read(&mut reverse).unwrap()).unwrap();
+        let closed_peer = match socket.read(&mut reverse) {
+            Ok(count) => count == 0,
+            Err(error) => matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+            ),
+        };
+        closed.send(closed_peer).unwrap();
     });
     let mut repl = terminal(directory.path(), "never");
     repl.submit(&format!("wire => tcp://{address}"));
@@ -342,16 +382,13 @@ fn terminal_ctrl_c_joins_an_open_flow_preserves_target_and_physically_closes_the
     connected.recv_timeout(Duration::from_secs(5)).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let staged = fs::read_dir(directory.path())
-            .unwrap()
-            .filter_map(Result::ok)
-            .any(|entry| {
-                entry.path() != target
-                    && fs::File::open(entry.path())
-                        .and_then(|file| file.metadata())
-                        .is_ok_and(|metadata| {
-                            metadata.is_file() && metadata.len() >= prefix.len() as u64
-                        })
+        let staged = unpublished_stages(directory.path())
+            .into_iter()
+            .any(|path| {
+                fs::File::open(path).is_ok_and(|mut file| {
+                    let mut bytes = vec![0; prefix.len()];
+                    file.read_exact(&mut bytes).is_ok() && bytes == prefix
+                })
             });
         if staged {
             break;
@@ -370,22 +407,97 @@ fn terminal_ctrl_c_joins_an_open_flow_preserves_target_and_physically_closes_the
     repl.mark();
     repl.send("\u{3}");
     repl.until("job 1: stopped");
-    assert_eq!(
+    assert!(
         eof.recv_timeout(Duration::from_secs(5)).unwrap(),
-        0,
         "Ctrl-C must release the physical connection"
     );
     source.join().unwrap();
     assert_eq!(fs::read_to_string(&target).unwrap(), "keep published bytes");
-    assert_eq!(
-        fs::read_dir(directory.path()).unwrap().count(),
-        1,
+    assert!(
+        unpublished_stages(directory.path()).is_empty(),
         "no uncommitted stage may survive the joined cancellation"
     );
     repl.mark();
     repl.send("/?\r");
     repl.until("REPL commands");
     repl.exit();
+    statement_storage::assert_clean(&directory.path().join(".temp"));
+}
+
+#[test]
+fn waiting_for_real_io_reports_its_phase_and_joins_the_observer_before_the_prompt() {
+    let directory = workspace();
+    let target = directory.path().join("progress-target.txt");
+    fs::write(&target, b"old published bytes").unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let bytes = b"the source withholds EOF until progress is visible";
+    let (opened, connected) = mpsc::channel();
+    let (release, released) = mpsc::channel();
+    let source = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut socket = loop {
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "progress source never connected");
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        socket.set_nonblocking(false).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        socket.write_all(bytes).unwrap();
+        opened.send(()).unwrap();
+        released.recv_timeout(Duration::from_secs(15)).unwrap();
+        socket.shutdown(std::net::Shutdown::Write).unwrap();
+        let mut reverse = [0_u8; 1];
+        assert_eq!(socket.read(&mut reverse).unwrap(), 0);
+    });
+    let mut repl = terminal(directory.path(), "always");
+    repl.submit(&format!("wire => tcp://{address}"));
+    assert!(
+        pty::visible(&repl.submit("wire::/ -> $pwd::pwd/progress-target.txt"))
+            .contains("running in background")
+    );
+    connected.recv_timeout(Duration::from_secs(5)).unwrap();
+    repl.mark();
+    repl.send("/wait\r");
+    let pending = repl.until("working: wait for IO");
+    assert!(!pty::visible(&pending).contains("job 1: completed"));
+    assert_eq!(fs::read(&target).unwrap(), b"old published bytes");
+    release.send(()).unwrap();
+    let completed = repl.until_followed_by("job 1: completed", "msync>");
+    source.join().unwrap();
+    assert_eq!(fs::read(&target).unwrap(), bytes);
+    let marker = completed.find("working:").unwrap();
+    let published = completed[marker..].find("job 1").unwrap() + marker;
+    let line_end = completed[published..].find('\n').unwrap() + published;
+    let repaint = completed[..published].rfind('\r').unwrap();
+    // ConPTY can replace column zero, emit the shorter completion, then erase
+    // the old progress tail with EL0. That is equivalent to clearing first.
+    let cleared = ["\u{1b}[2K", "\u{1b}[0K", "\u{1b}[K"]
+        .iter()
+        .any(|sequence| completed[repaint..line_end].contains(sequence));
+    assert!(
+        cleared,
+        "the completion row must erase the previous progress before its newline: {completed:?}"
+    );
+    assert_eq!(
+        pty::visible(&completed[published..line_end]),
+        "job 1: completed",
+        "completion must replace progress, not append to its retained row"
+    );
+    repl.prompt();
+    let after = repl.submit("/bindings");
+    assert!(pty::visible(&after).contains("wire"));
+    assert!(!pty::visible(&after).contains("working:"));
+    repl.exit();
+    statement_storage::assert_clean(&directory.path().join(".temp"));
 }
 
 #[cfg(unix)]

@@ -31,18 +31,56 @@ pub(super) enum IoAction {
 
 #[derive(Debug)]
 pub(super) struct Issue {
+    stage: Option<Stage>,
     title: String,
     fields: Vec<(&'static str, String)>,
     hints: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Stage {
+    Compile,
+    Load,
+    Evaluate,
+    Execute,
+    Cleanup,
+}
+
+impl Stage {
+    pub(super) fn heading(self) -> &'static str {
+        match self {
+            Self::Compile => "compile error:",
+            Self::Load => "load error:",
+            Self::Evaluate => "evaluation error:",
+            Self::Execute => "execution error:",
+            Self::Cleanup => "cleanup error:",
+        }
+    }
+}
+
+impl From<msync::execution::DiagnosticPhase> for Stage {
+    fn from(phase: msync::execution::DiagnosticPhase) -> Self {
+        match phase {
+            msync::execution::DiagnosticPhase::Evaluate => Self::Evaluate,
+            msync::execution::DiagnosticPhase::Execute => Self::Execute,
+            msync::execution::DiagnosticPhase::Cleanup => Self::Cleanup,
+        }
+    }
+}
+
 impl Issue {
     pub(super) fn new(title: impl Into<String>) -> Self {
         Self {
+            stage: None,
             title: title.into(),
             fields: Vec::new(),
             hints: Vec::new(),
         }
+    }
+
+    pub(super) fn stage(mut self, stage: Stage) -> Self {
+        self.stage = Some(stage);
+        self
     }
 
     pub(super) fn field(mut self, name: &'static str, value: impl Into<String>) -> Self {
@@ -56,7 +94,8 @@ impl Issue {
     }
 
     fn render(&self, color: bool) -> String {
-        let mut output = format!("{} {}", paint("error:", "1;31", color), escape(&self.title));
+        let heading = self.stage.map_or("error:", Stage::heading);
+        let mut output = format!("{} {}", paint(heading, "1;31", color), escape(&self.title));
         for (name, value) in &self.fields {
             output.push_str(&format!(
                 "\n  {} {}",
@@ -254,7 +293,7 @@ pub(super) fn human(text: &str, enabled: bool) -> String {
     }
 }
 
-pub(super) fn plan(plan: &msync::plan::Plan, color: bool) -> String {
+pub(super) fn legacy_plan(plan: &msync::plan::Plan, color: bool) -> String {
     let mut text = format!(
         "{} {} operation(s), {} eliminated, {} forwarded, {} dependency edge(s)\n",
         paint("plan:", "1;36", color),
@@ -354,16 +393,22 @@ fn kind(kind: msync::plan::FileClass) -> &'static str {
     }
 }
 
-pub(super) fn limits(limits: &msync::scheduler::ResourceLimits, color: bool) -> String {
+pub(super) fn limits(
+    limits: &msync::scheduler::ResourceLimits,
+    spool_limit: Option<u64>,
+    color: bool,
+) -> String {
     format!(
-        "{}\n  finite copies: {}\n  background flows: {}\n  buffer size: {} ({} bytes)\n  payload budget: {} ({} bytes; not process RSS)\n",
+        "{}\n  finite copies: {}\n  external programs: {} (separate slots)\n  background flows: {}\n  buffer size: {} ({} bytes)\n  payload budget: {} ({} bytes; not process RSS)\n  output spool: {} per program (stdout + stderr)\n",
         paint("limits:", "1;36", color),
+        limits.jobs,
         limits.jobs,
         limits.max_streams,
         bytes(limits.buffer_bytes),
         limits.buffer_bytes,
         bytes(limits.memory_bytes),
-        limits.memory_bytes
+        limits.memory_bytes,
+        spool_limit.map_or_else(|| "unlimited".into(), |bytes| format!("{bytes} bytes"))
     )
 }
 
@@ -387,10 +432,23 @@ mod tests {
     #[test]
     fn human_plan_has_an_explicit_empty_state_and_retains_a_plain_header() {
         let plan = msync::plan::Plan::default();
-        let text = super::plan(&plan, false);
+        let text = super::legacy_plan(&plan, false);
         assert!(text.starts_with("plan: 0 operation(s)"));
         assert!(text.contains("No transfers to execute"));
         assert!(!text.contains('\x1b'));
+    }
+
+    #[test]
+    fn resource_limits_preserve_plain_and_colored_presentations() {
+        let limits = msync::scheduler::ResourceLimits::default();
+        let plain = super::limits(&limits, None, false);
+        assert!(plain.starts_with("limits:"));
+        assert!(plain.contains("finite copies:"));
+        assert!(plain.contains("payload budget:"));
+        assert!(!plain.contains('\x1b'));
+        let colored = super::limits(&limits, Some(1024), true);
+        assert!(colored.starts_with("\x1b[1;36mlimits:\x1b[0m"));
+        assert!(colored.contains("not process RSS"));
     }
 
     #[test]
@@ -412,6 +470,19 @@ mod tests {
             assert!(output.contains(expected), "{output}");
         }
         assert!(!output.contains('\x1b'));
+    }
+
+    #[test]
+    fn runtime_context_errors_do_not_masquerade_as_compiler_errors() {
+        let output = CliError::from(
+            Issue::new("cannot resolve the current block")
+                .stage(Stage::Evaluate)
+                .field("path", "missing/input"),
+        )
+        .render(Color::Never);
+        assert!(output.starts_with("evaluation error:"), "{output}");
+        assert!(!output.contains("compile error:"));
+        assert!(!output.contains(" --> "));
     }
 
     #[test]

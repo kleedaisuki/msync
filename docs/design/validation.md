@@ -1,6 +1,165 @@
 # End-to-end verification
 
-The supplied `docs/dsl/spread.msync` and `implementation.md` define the expected language behavior. Independent CLI tests live in `tests/cli.rs`; they invoke the built binary, with each journey isolated beneath repository-local `.temp/`. Tests set environment variables on child processes only, so parallel tests do not race over process-wide environment or working directory.
+> This document records historical releases through v0.4. Its successful gates
+> do not validate the breaking v0.5 implementation. Current acceptance evidence
+> belongs in [barrier validation](barrier-validation.md).
+
+## Current v0.4 requirement audit (2026-10-28)
+
+This is the source/test/gate mapping for the selected `0.4.0` implementation.
+The historical checkpoints below retain their original scope. The independent
+audit inspected committed `6631f28`, test bodies and execution paths; the final
+`345d455` matrix then accepted the selected source with additional contract tests
+and the versioned manifest. The final literal-worker experiment was rejected after paired and
+swapped-fixture measurements; production retains the accepted bounded Tokio
+implementation. The final release matrix and selected artifact verification are
+recorded in [Final v0.4.0 delivery](#final-v040-delivery).
+
+| User requirement | Authoritative implementation and acceptance gate | Assessment / boundary |
+| --- | --- | --- |
+| Typed lexical macros, declaration-time `global`, no textual substitution or nested macros | `compiler/structured.rs`; `lowering_v4::{user_macro_expands_typed_remote_sources_and_contextual_destination_items,macro_global_uses_definition_snapshot_and_locals_do_not_leak,namespace_arguments_and_stream_arguments_retain_types,manually_constructed_nested_macro_ast_is_rejected_even_if_not_called}`; actual `macro_native_v4::whole_program_macro_arguments_execute_and_undo_in_each_isolation_mode` | Implemented path/namespace/port/program values; the native fixture checks whole-program formals, captured global destination, exact bytes and undo. Pure expansion tests alone do not establish native IO. |
+| Python-like blocks, UTF-8 literals, structural `/` and contextual `::` | `language_v4::{parses_the_requested_program_without_losing_types,canonical_format_is_idempotent_and_preserves_nested_regions,diagnoses_ambiguous_indentation_and_nested_macros}`; `join_v4`; `cli_structured_v4` | Default grammar deliberately treats quotes as data; explicit joins/qualification construct paths. Formatting is in-place script formatting, not execution or implicit stdout redirection. |
+| Shared transaction lexical environment and forbidden foreign rollback inside a block | `lowering_v4::{a_transaction_does_not_create_a_macro_lexical_scope,other_transaction_rollback_is_forbidden_inside_a_transaction}`; runtime owner/control checks | Implemented separately from resource lifetime. Resource rewind does not undo compile-time bindings. |
+| Four isolation modes, default serializable | `language_v4::supports_all_isolations_and_the_default`; `transaction_store_v4` dirty-read, statement-refresh, repeatable snapshot, write-skew, absence and phantom cases; disk `transaction_manager_v4::visibility_reads_are_immutable_even_while_other_transactions_stage_and_publish`; native four-mode macro loop | Actual version semantics exist, not merely accepted names. The native loop proves the program lifecycle under each mode, not an experiment distinguishing all concurrent native visibility outcomes. |
+| Checkpoint commit, local pending rewind, retained named origin and foreign-history-safe undo | `transaction_store_v4::{checkpoint_and_full_rollback_have_distinct_scopes_and_preserve_unrelated_writes,origin_rollback_never_erases_an_intervening_foreign_publication}`; disk Manager checkpoint/origin cases; native `program_execution_v4::{the_requested_checkpoint_and_program_port_lifecycle_runs_end_to_end,checkpoint_rollback_cancels_pending_native_io_and_starts_a_fresh_epoch}` | Covers the supplied A1/B2 lifecycle, including direct child writes. Commit does not destroy origin history; rollback joins/discards the current native epoch before reset. |
+| Exact argv and stdin/stdout/stderr/pid/exit_code/meta | `process_v4::exact_argv_boundaries_are_not_shell_parsed_and_spools_are_removed`; lowering port/direction tests; native `program_execution_v4::{large_stderr_and_stdin_co_start_and_nonzero_exit_remains_replayable_data,replayed_scalars_finish_each_implicit_statement_before_staging_its_sibling}` | Nonzero status is replayable data; large stderr cannot block stdin/stdout completion. Scalar sibling publication is an atomic-statement boundary, not merely deferred staging. |
+| Genuine mediation of relevant external-program filesystem IO | `process_view_linux_v4` actual namespace/bubblewrap cases; `process_view_windows_v4` actual signed-driver cases; native workspace file-to-directory/raw-`..`/undo case | Original logical paths and descendant writes are mediated by real providers. No unisolated fallback or private-cwd-only claim. Unsupported managed snapshot node kinds and external-service rollback are capability boundaries, not simulated transactions. |
+| Plan -> Execute, replayable optimization proofs and fixed-point semantics | `preparation::PreparedProgram::verify`; `hir_plan_v4` schedule/property and cohort cases; `planner_optimization_v4` creation fusion, readonly, namespace-order, alias and metadata controls; `planner_proof_sharing_v4` tamper rejection | Adjacent safe missing-target writes can fuse to one assignment while retaining the surviving source site and creation facts. Type alone does not prove alias separation or writability. Shared proof storage does not delete proof obligations. |
+| Bounded asynchronous work and logically valid reordering | `physical_execution_v4::{independent_tcp_inputs_queue_at_the_concurrent_capacity_limit,interactive_capacity_refusal_preserves_the_old_flow_and_can_be_retried,fifo_waves_preserve_order_and_reject_half_cohort_resource_budgets,fifo_cohort_waits_for_all_external_prerequisites_before_reserving_slots}`; `named_execution_v4::{disjoint_named_literal_jobs_overlap_and_keep_checkpoint_and_origin_semantics,named_sibling_creations_keep_the_existing_strict_parent_gate}`; `execution/frontier.rs` owner-binding regression | Independent finite work queues at occupied capacity; inseparable overflow refuses before effects. Named continuations actually overlap two checked independent literal writes with two jobs and serialize with one; strict parent-creation hazards remain. Actual post-open/post-flush intervals, bytes, checkpoint and origin metadata are checked. Opaque programs still retain conservative effects; this is not arbitrary native-program parallelism. |
+| Ordinary files, directories and physical streams; exact-directory refusal and explicit container/replacement intent | `execution_v4::{exact_directory_rejection_and_empty_selection_never_create_a_destination,container_merge_retains_existing_names_and_does_not_overwrite_nested_files,typed_macro_copies_a_real_tree_into_explicit_replacement_without_nesting}`; `physical_execution_v4` real TCP, FIFO and Unix-socket cases | Existing exact directories are rejected, trailing `/` retains container semantics, and `/.` explicitly replaces the tree. Non-directory byte sources can feed physical endpoints; directory-to-socket rejection precedes connection. EOF ends only that flow. These are not snapshot copies of live FIFO/socket inodes. |
+| Persistent REPL, owned token diagnostics, script formatting and highlighted help | `cli_structured_v4::{actual_repl_retains_macros_and_named_origins_across_separate_submissions,structured_format_edits_the_script_and_stdout_preview_remains_machine_text,a_quoted_readonly_destination_has_a_token_diagnostic_and_never_writes}`; `language_v4::diagnostics_point_at_precise_utf8_tokens_and_collect_independent_errors`; `source_v4`, `ux_031`, `repl_terminal`, `runtime_task_telemetry_v4`; cross-input native program and physical EOF/stop tests | Programs, macros, bindings, origins and owned definition/call-argument sources survive inputs. Actual terminal journeys distinguish syntax/help ANSI from plain piped text. Formatting edits a named script unless an explicit preview/check is selected. Exact UTF-8 token spans and constructive repairs are checked. One flow's EOF does not cancel an unrelated flow; expected cancellation and real cleanup failure differ. |
+| Engineering/research basis and crate organization | `architecture-v4.md`, `transactions-v4.md`, `planning.md`, `windows-resource-view-v4.md`; `language`, `compiler/structured`, `hir`, `preparation`, `execution`, `transaction` module boundaries | Parser/expansion, metadata preparation/proofs, scheduling, version store and native adapters have separate ownership. Primary references and counterexamples are recorded in those focused notes; adding a multi-crate workspace is not itself a required result. |
+| Post-integration component, asynchronous and millisecond performance work | `performance-v4.md`; release `planner_v4`, `store_v4`, `latency_v4` harnesses; saved baseline `5cafd34` and identified candidate binaries/rlibs | Actual native-ext4 baseline/candidate methods, compiler allocations and Store candidate costs are recorded. Limits, filesystem aliases, cache/loader scope and retained-history caveats remain part of the result. Correctness-test durations are not benchmark cells. |
+
+### Remaining gates and scope decisions
+
+1. **Committed named-frontier integration is accepted at `6631f28`.**
+   [Run 40642774605](https://github.com/kleedaisuki/msync/actions/runs/40642774605)
+   at `5d4d99d` completed successfully: both ordinary OS jobs and the actual
+   signed Windows provider gate passed. The Ubuntu job also runs the explicit
+   native view/program/macro/workspace journeys selected by the shared runtime
+   changes. This includes Windows control-pipe cancellation handling, the strict
+   test-module placement fix and State-cache optimization. It does not certify
+   later work by itself. Sparse enrollment and its actual held-TCP, nested-source,
+   cross-cwd native-view and metadata controls subsequently passed both ordinary
+   OS jobs and the actual native gates at
+   [a3d3508](https://github.com/kleedaisuki/msync/actions/runs/40648300741).
+   Hierarchical sparse/outer-FIFO normalization and fresh scratch-ancestor
+   metadata subsequently passed
+   [181221e](https://github.com/kleedaisuki/msync/actions/runs/40651887259).
+   [Run 40658354002](https://github.com/kleedaisuki/msync/actions/runs/40658354002)
+   then accepted the committed continuation frames and bounded literal jobs at
+   exact head `6631f28205a58440d22f97f9f6138b14ff671c7e`. Both ordinary jobs
+   passed their selected-area strict lint/tests, including `named_execution_v4`.
+   The signed Windows job passed all four actual native sections. Ubuntu passed
+   actual program execution, four-mode native macros, physical consumer closure,
+   REPL provenance and native workspace sections; its unchanged standalone
+   process-view section and doctests were **skipped**, not additional passes.
+   That run is scoped integration evidence, not a final all-target release
+   matrix. Final acceptance must cover the selected delivery revision.
+2. **Single-input new opaque program plus external FIFO remains a documented
+   capability boundary.** The supplied A1 example uses an ordinary prompt file;
+   its requested lifecycle is covered. Declaring the program first, then
+   submitting both FIFO halves together, is an actually tested alternative.
+   Therefore this additional combination need not independently block a bounded
+   v0.4 release, provided the limitation is visible and fails before unsupported
+   snapshot/IO effects. It does block an unqualified claim that every stream and
+   newly spawned program compose in one input. It is an implementation/bootstrap
+   proof limitation, not evidence that a readonly mount prevents FIFO byte IO.
+3. **The named-region integration defect is closed, not waived.**
+   `execution/frontier.rs` preserves the latest authoritative submission plan
+   while settling an older boundary. Its deterministic regression checks that
+   a later sibling retains its owner bindings and waits for its own producer's
+   `LogicalComplete`, not its own enclosing transaction's `Committed` event.
+   `named_execution_v4::finishing_a_fast_scope_does_not_unbind_another_scopes_pending_producer`
+   exercises the corresponding actual fast-A/large-B/dependent-file journey.
+   The cloud native lifecycle sections above also passed after this repair.
+   Capture/publication and Manager mutation remain serialized; the delivered
+   overlap concerns admitted independent IO, not simultaneous unsynchronized
+   version-store mutation. A second negative test keeps future stdin from being
+   hoisted across a checkpoint merely to let its earlier process complete.
+4. **The bounded performance and delivery gates are closed.** Component, sparse-enrollment and named-frame latency
+   evidence is substantive. The last single-file worker experiment was rejected:
+   swapping executable labels and fixture directories reversed the small-case
+   direction, while the large case won only 16/31 paired comparisons. A smaller
+   number of Tokio pool submissions alone is not proof of lower user-visible
+   latency. The selected `345d455` production source passed the final versioned
+   Windows/Linux all-target/doctest/native matrix. The selected Windows release
+   and installed `D:\SystemScripts\msync.exe` report `0.4.0`, have identical hashes,
+   and passed the actual CLI/terminal acceptance described below. No hosted
+   release or Git tag was created; those are separate user-authorized actions.
+
+This note retains successive verification checkpoints; older counts and
+limitations describe their recorded revision, not the current branch.
+The v0.4 semantic contract is in [language-v4.md](language-v4.md), with current
+integration boundaries in [architecture-v4.md](architecture-v4.md). The supplied
+`docs/dsl/spread.msync` and [implementation.md](implementation.md) remain the legacy
+language reference. Independent CLI tests live in `tests/cli.rs`; they invoke the
+built binary, with each journey isolated beneath repository-local `.temp/`.
+Tests set environment variables on child processes only, so parallel tests do not
+race over process-wide environment or working directory.
+
+## Final v0.4.0 delivery
+
+The selected source is `345d455dcbf2e7d3d47fc25e10e3a4caf91f78d0`.
+[Actions run 40665582429](https://github.com/kleedaisuki/msync/actions/runs/40665582429)
+completed successfully with `FULL: true`, not the incremental selector's narrow
+test list. Both OS jobs passed rustfmt, strict all-target Clippy, all-target tests
+and the README doctest. The ordinary suite reported **700 Windows** and **671
+Linux** passing tests; 54/42 environment-dependent cases were explicitly ignored
+in those default runs, not counted as passes. Separate actual native sections
+then exercised the selected providers:
+
+| Actual native gate | Windows | Linux |
+| --- | ---: | ---: |
+| Process-resource views | 4 passed | 6 passed |
+| Transactional programs and checkpoint/origin lifecycle | 14 passed | 14 passed |
+| Whole-program macro argument, all four isolation modes | 1 passed | 1 passed |
+| Shared workspace/native mutation | 4 passed | 4 passed |
+| Physical-stream consumer closure | No separate native gate | 2 passed |
+| REPL source/proof ownership across native inputs | No separate native gate | 2 passed |
+
+These counts exclude isolated child-fixture helpers from the explicit native
+runs. The signed Windows backend was installed only on its disposable Actions
+runner. No Sandboxie driver or SSH configuration was installed/modified on the
+user's host. The existing isolated WSL SSH fixture additionally passed the two
+focused upload/download/overwrite and recursive-directory/conflict journeys on
+the final source, in 38.79 and 36.84 seconds. These are correctness durations,
+not performance measurements. The fixture verifies existing client/server SSH
+and account-file fingerprints and physical daemon shutdown.
+
+`cargo build --locked --release --bin msync` produced the selected Windows/MSVC
+artifact. Both `target/release/msync.exe` and installed
+`D:\SystemScripts\msync.exe` report `msync 0.4.0` and have SHA-256:
+
+```text
+190b8c5cba8e563a9cf0e352b77df851795685a96f3a13c9b097c4cd16c4194d
+```
+
+The executable was replaced atomically after the final matrix passed. The old
+`0.3.1` image is preserved as
+`target/delivery/msync-0.3.1-windows-x86_64.exe`, verified against its previously
+recorded SHA-256 `22cdb4a0ceafce1f12936e052e6a47725efc72146f10c3d364d3b3912e331777`.
+No source, cache, secret or binary artifact is added to Git by this record.
+
+The same three selected test executables were run first against the release
+image and then against the installed path, using the established test-only
+`MSYNC_TEST_EXE` override. Each acceptance passed **six structured CLI**, **14 UX**
+and **eight Windows terminal-target tests** (the latter includes its isolated
+ConPTY host helper). Two optional WSL Bash cases remained explicitly ignored.
+The journeys prove real before-Enter syntax styling, help/color policy, Unicode
+editing, persistent macros/named undo, exact quote/path behavior, pure check/plan,
+explicit directory replacement, in-place formatting, token diagnostics, native
+PowerShell return and Ctrl-C/physical-flow cleanup. This is installed-artifact
+acceptance, not a claim that every native provider exists on this host.
+
+The requirement table above, exact final cloud steps, measured optimization
+record and installed-artifact journeys close the requested bounded v0.4 scope.
+Documented capability limits remain explicit: opaque native effects are
+conservative; no distributed remote commit, external-service undo, universal
+metadata/crash guarantee or bounded lifetime-history collection is promised.
+Removing disposable `.temp` logs does not remove these procedures, counts,
+source identity, measurements or artifact hashes.
 
 ## Verified journeys
 
@@ -384,80 +543,66 @@ Requirement-to-evidence mapping:
 Reusable setup, interpretation and findings are in the repository. Disposable raw
 gate/installed logs use `.temp/v031-*`; removing them does not remove this record.
 
-## SSH authentication, lexical rendering and reusable IR (2026-10-30)
+## Default structured frontend: Windows UI compatibility acceptance
 
-Validated source revision: `6c83790ce48fde05b741767607d27868fd31d30e` on
-`codex/ssh-ir-repl`. Both native Linux and Windows diagnostic jobs, including the
-explicit native credential-window step, passed in
-[Actions run 41050745550](https://github.com/kleedaisuki/msync/actions/runs/41050745550).
-No required checks, branch protections or merge gates were configured.
+The default v0.4 frontend was exercised without a syntax override or executable
+redirect using the existing `ux_031`, `review_ui_031`, and `repl_terminal` targets
+in one bounded Cargo invocation (`--locked --jobs 2 --no-fail-fast`,
+`CARGO_INCREMENTAL=0`, test threads 1). The Windows result was **14 UX tests and
+seven actual ConPTY journeys passed**, plus the isolated ConPTY host helper.
+The two WSL Bash journeys were explicitly ignored by their existing platform
+requirements; the Unix-only removed-working-directory target contained zero
+Windows cases. These counts are component acceptance, not a complete v0.4 gate.
 
-### Local execution
+Observed journeys include distinct lexical colors before Enter, wide Unicode
+editing, in-memory history, viewport-only clear with retained bindings, normal
+isolated PowerShell entry/return, child and active-transfer Ctrl-C, physical
+source-peer EOF, unpublished capture cleanup, plain/color diagnostics, missing
+script recovery, expanded missing alias endpoints, exact formatter stdout,
+read-only refusal, and shell stdin ownership. Strict Clippy passed for these
+three test targets with warnings denied.
 
-Native Linux x86-64, ext4, kernel `6.12.113+deb13-amd64`, Rust `1.99.1`:
+One test expectation was adapted to the intentional transaction architecture:
+a successful v0.4 transfer leaves the shared `.temp` scratch parent, rather than
+only the three original fixture/output entries. The terminal test now checks
+all four exact entry names and additionally requires the scratch parent to be
+empty after process exit. It still rejects any persisted editor history/cache
+or retained private invocation, rather than merely permitting an extra file.
+No production changes were made for this acceptance pass.
 
-- Formatting, strict locked all-target Clippy, locked all-target tests and
-  doctests pass: **294 passed including one doctest**, 18 intentionally ignored
-  environment/performance entries in the default run.
-- Explicit `ssh_auth` and `ssh_password` execution passes **13 entries** (ten
-  auth-fixture entries including one subprocess entrypoint, three real account-
-  password journeys). Native OpenSSH exercises successful and incorrect
-  passwords, noecho, Ctrl-C after an earlier execution installed signal handling,
-  fresh retry, existing user-master survival, owned-master cleanup, real FIFO
-  cancellation, long/read-only cwd compatibility, and exact `Host 开发%机` reuse.
-  Isolated namespace account files do not modify host credentials/configuration.
-- A release executable exported relocatable IR, removed the original script,
-  rebound under a different cwd/source-file identity, previewed without creating
-  its destination, and copied the new cwd's fresh bytes through contextual IR
-  invoked from the old cwd. Byte comparison passed. An actual `strace -f -c`
-  recorded `copy_file_range` and atomic `rename`; this is path/lifecycle evidence,
-  not a throughput measurement. A real release REPL preserved the raw Unicode/
-  percent SSH configuration name in `/bindings`.
+## Structured integration cloud checkpoint at `96ab6f0`
 
-Reproduction commands (from the repository):
+[Actions run 40520881614](https://github.com/kleedaisuki/msync/actions/runs/40520881614)
+ran the integrated default grammar and runtime, not a substituted legacy CLI.
+The ordinary Windows compatibility job passed strict all-target Clippy, tests
+and doctests. On a separate disposable Windows 2022 runner the signed backend
+installed successfully and all four actual resource-view journeys passed.
+The production program gate passed seven of nine actual journeys, including the
+requested checkpoints/rollback, shared two-child view, cross-input pipeline,
+large stderr/stdin and rejected-candidate ownership. Two sealing cases failed
+in `join shared box payloads` with native `STATUS_INVALID_CID` and Win32 access
+denied. These remain failures until the handle-identity race correction passes
+the real backend; successful protocol tests do not substitute for that result.
 
-```sh
-cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked --all-targets
-cargo test --locked --doc
-cargo test --locked --test ssh_auth --test ssh_password -- --ignored --test-threads=1
-cargo build --release --locked
-```
+The ordinary Linux job stopped at strict Clippy on a `PathBuf` import used only
+by the Windows workspace fixture. It did not execute the Linux test/native
+gates. Commit `3d9cf3b` gates the import; a focused WSL Linux library, binary and
+workspace Clippy check passed afterward. This is not recorded as a successful
+full Linux cloud run. No local Sandboxie installation, SSH configuration change
+or persistent namespace/mount policy change was made for these checks.
 
-### Windows execution, not merely cross-compilation
+The subsequent [run at `bf2a623`](https://github.com/kleedaisuki/msync/actions/runs/40533733086)
+passed all four actual Windows resource-view cases and all nine production
+program cases, including the formerly failing default-cwd scratch capture.
+The view/program test durations were 0.66/1.96 seconds, not performance
+benchmarks. The ordinary Windows full compatibility job also passed.
 
-The native Windows job passes the normal suites, including IR/CLI round trips,
-real ConPTY editing and pre-Enter highlighting, process-tree cleanup, cancellation
-notification and early-helper dispatch. It additionally runs:
-
-```sh
-cargo test --locked --test windows_askpass -- --ignored --test-threads=1
-```
-
-Both actual CredUI journeys pass: the owned dialog exposes the branded caption,
-Unicode connection/task context, original request and a masked field; typing a
-Unicode fixture response and invoking its OK handler returns exactly that UTF-8
-response on the private stdout channel. Entering the same fixture then cancelling
-signals the parent's event and produces no stdout response. The tests inspect or
-message only the owned helper's windows, never global focus/keyboard/clipboard.
-This proves actual native-control interaction, not a manually reviewed screenshot
-or a full Windows password-server SSH end-to-end journey. Human focus and
-screen-reader usability remain separate release review, not an invented CI gate.
-
-The first two Windows runs exposed test-observation assumptions, not ignored
-failures: an IR test compared native contextual paths with the earlier logical
-frontend spelling, and a ConPTY test required one SGR grouping despite equivalent
-native colors. Corrections compare the same IR stage/path semantics and actual
-foreground colors; direct renderer style checks remain intact. A local long-cwd
-password fixture also assumed one prompt and mistook an earlier editor redraw
-for completion. It now waits for an actual completion/error, handles every native
-request and verifies fresh output. These discriminating checks remain in the
-suite rather than replaced by timing sleeps or unconditional skips.
-
-Design and usage: [IR](ir.md), [authentication UI/application home](ssh-auth-ui.md),
-[native SSH lifecycle](runtime.md), [lexical rendering](cli-ux-v0.3.1.md).
-Disposable local logs, release-journey fixtures and copied index-validation trees
-are under project `.temp`; removing them does not remove these results or the
-reproduction contracts. The final documentation-only update does not alter the
-source tree that the linked native matrix tested.
+The Linux full job passed lint and its unit targets, then stopped on a test-harness
+`BrokenPipe`: the invalid-argument CLI correctly exited before reading stdin,
+while the helper unconditionally unwrapped its write. The helper now accepts
+that one write error only when the actual child exit is unsuccessful; all other
+write failures and a successful premature exit still fail the test. A new
+large-stdin rejection case passed, followed by 25 repetitions of the original
+four-invalid-limit journey (100 child processes), using the exact test source
+and existing native WSL executable. No production behavior changed for this
+race correction. The remaining Linux matrix still needs a successful cloud run.

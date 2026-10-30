@@ -233,3 +233,84 @@ A real scheduler-to-runtime publication test replaces an existing file, verifies
 its contents and byte report, and checks `file.open`/`file.transfer`/`file.commit`
 events, concrete endpoint names, exact committed bytes, one trace root, and valid
 span ownership for every event.
+
+### Stateful v4 task dispatch
+
+The stateful runtime's real resource admission emits `schedule` below its current
+`execute` scope. Records report available slots and buffer bytes, then granted
+slots and reserved payload-buffer bytes only after successful permit acquisition.
+The admitted lease owns the explicit schedule context. Each physical transfer,
+program-port operation and program launch creates a completion-tracked `task`
+under that context; these are actual dispatch sites, not compatibility aliases.
+
+The task wrapper attaches its context for exactly one future poll using
+`with_context`, then detaches before returning Pending. Lower stream/file phases
+therefore retain the task ancestor after Tokio moves a future to another worker,
+without leaving a thread-local guard suspended across an await. Aborting an
+unfinished future records cancelled/incomplete through the owned linked span.
+Explicit cancellation stays cancelled; typed failures retain their causal event
+and are not rewritten as cancellation merely because sibling cleanup starts.
+No payload bytes are added to telemetry.
+
+Task completion is classified once from its result. Explicit owner-cancellation
+branches attach a private typed marker through the existing execution-error
+cause; an error message, an absent native cause or a subsequently cancelled token
+does not establish that outcome. Expected cancellation emits no `execution.task`
+error event and is not passed through a later error-completion setter. Actual IO
+failures retain their error status and causal event, even during owner cleanup.
+The owner marker also cannot hide retained journals, recovery failures or failed
+compensation: those results remain failures and must not become a successful stop.
+
+The finite-task wrapper and byte-flow owner use the same terminal classifier.
+A flow's successful `FlowEnd::Cancelled` is a cancellation outcome, but it cannot
+override a typed failure. Actual failures emit one `execution.task` error event
+on their own task span before completion, preserving the causal path even when
+the lower IO layer has already emitted its native error. Trace consumers resolve
+an admitted schedule's execution parent by span ID, not by selecting the first
+`execute` record: an earlier declarations-only REPL submission can legitimately
+have its own recovery/execution scope without admitting a task.
+
+`tests/runtime_task_telemetry_v4.rs` invokes the real CLI against native TCP peers:
+successful EOF publication, `/stop` of an idle source, and refused connection.
+It checks execute→schedule→task→io.flow ownership, real reservation metrics,
+terminal statuses, typed OS cause retention, and absence of file payloads. The
+older `repl_jobs::live_stream_keeps_repl_responsive_and_stop_joins_resources`
+trace-parent contract also passes with these actual runtime spans.
+
+## Structured frontend and failure acceptance
+
+Finite assignment `copy` spans cover immutable staging, not physical publication:
+they record `bytes.staged`, transaction/instruction IDs and
+`publication.policy=transaction-checkpoint`. The separate `transaction.publish`
+span owns final epoch and managed-reader publication scope. Tentative
+`file.publish.step` events describe backup/install progress; `file.publish` and
+`transaction.commit` appear only after all receipts and the logical store swap.
+Known commits with pending cleanup stay successful and retain their cleanup
+causes. Failed publication and compensation remain distinct events with original
+OS errors; a cancelled attempt cannot report committed bytes.
+
+The default v0.4 frontend is covered directly by
+`tests/structured_telemetry_v4.rs`; its macro/literal input cannot be replaced by
+a legacy-syntax test. Real output bytes must match before trace assertions run.
+The test follows parse, compile, prepare and execute ancestry to the submission,
+then verifies that an actual immutable-assignment copy belongs to execute.
+There must be one session root, unique span IDs, acyclic span parents and existing
+owners for every event. Events reference their owner span, not a separate parent
+field or an additional graph vertex.
+
+Failure controls distinguish a frontend error, a detailed preparation error and
+an actual HTTP runtime reset. The HTTP peer observes a real GET, sends a short
+body against a larger Content-Length and resets its socket; the CLI fails while
+the previous destination remains unchanged. This is evidence of a real runtime
+transport failure, not a claim that a particular prefix reached unpublished
+storage. Execute/submission/session are errors while parse/compile/prepare remain
+successful; typed error-chain and source-diagnostic events survive that boundary.
+Direct missing-operand preparation records the original half-open byte range
+`0..7`, with no fabricated execution span. Raw diagnostic offsets follow the
+compiler's owned provenance contract, including intentional bound-value origins.
+
+Both old CLI trace regression filters and the four structured controls passed
+on Windows with `CARGO_INCREMENTAL=0` and two Cargo jobs. The focused structured
+target passed strict Clippy. Unique literal/body payload markers and unrelated
+secret environment values are absent; useful endpoint paths and failure context
+remain observable. No privacy filter is used to hide the underlying cause.

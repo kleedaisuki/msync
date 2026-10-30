@@ -6,14 +6,18 @@ use crate::syntax::Span;
 use regex::Regex;
 use std::cell::Cell;
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
+
+mod namespace;
+pub(crate) use namespace::{native_windows_filesystem, wsl_native_file};
 
 #[derive(Clone, Debug, Default)]
 pub struct ExecutionOptions {
@@ -376,7 +380,7 @@ pub(crate) fn local_path_at(
     source: bool,
     pwd: Option<&Path>,
 ) -> Result<Option<PathBuf>> {
-    match &location.backend {
+    let path = match &location.backend {
         Backend::Local => Ok(Some(expand_home(&location.path)?)),
         Backend::Env => {
             let (name, suffix) = location
@@ -404,7 +408,7 @@ pub(crate) fn local_path_at(
                     Some(pwd) if directory.is_relative() => pwd.join(directory),
                     _ => directory,
                 };
-                let candidate = directory.join(name);
+                let candidate = native_path(directory.join(name));
                 if candidate.is_file() {
                     return Ok(Some(candidate));
                 }
@@ -412,6 +416,33 @@ pub(crate) fn local_path_at(
             Err(format!("file {:?} was not found in PATH", location.path))
         }
         _ => Ok(None),
+    }?;
+    Ok(path.map(native_path))
+}
+
+pub(crate) fn native_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        if !path.as_os_str().as_encoded_bytes().contains(&b'/') {
+            return path;
+        }
+        let native: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .map(|unit| {
+                if unit == u16::from(b'/') {
+                    u16::from(b'\\')
+                } else {
+                    unit
+                }
+            })
+            .collect();
+        PathBuf::from(std::ffi::OsString::from_wide(&native))
+    }
+    #[cfg(not(windows))]
+    {
+        path
     }
 }
 
@@ -828,8 +859,12 @@ impl Scratch {
         let root = env::current_dir()
             .map_err(|error| error.to_string())?
             .join(".temp");
-        check_ancestors(&root)?;
-        fs::create_dir_all(&root).map_err(|error| at(&root, error))?;
+        Self::new_in(&root)
+    }
+
+    fn new_in(root: &Path) -> Result<Self> {
+        check_ancestors(root)?;
+        fs::create_dir_all(root).map_err(|error| at(root, error))?;
         for _ in 0..100 {
             let path = root.join(format!(
                 "msync-{}-{}",
@@ -849,6 +884,200 @@ impl Drop for Scratch {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+#[derive(Debug)]
+pub(crate) struct ImportReceipt {
+    pub basename: Option<OsString>,
+}
+
+struct Received {
+    path: PathBuf,
+    basename: Option<OsString>,
+}
+
+const SOURCE_RECEIPT: &[u8] = b"MSYNC-SOURCE-1\0";
+
+struct SourceReceipt {
+    basename: String,
+    times: Vec<(PathBuf, SystemTime)>,
+}
+
+impl SourceReceipt {
+    fn parse(bytes: &[u8]) -> Result<Self> {
+        let bytes = bytes
+            .strip_prefix(SOURCE_RECEIPT)
+            .ok_or("unsupported source metadata receipt")?;
+        let text =
+            std::str::from_utf8(bytes).map_err(|_| "remote source contains non-UTF-8 metadata")?;
+        let fields: Vec<_> = text.split_terminator('\0').collect();
+        if !text.ends_with('\0') || fields.is_empty() || !fields.len().is_multiple_of(3) {
+            return Err("remote source metadata receipt is incomplete".into());
+        }
+        let mut times = Vec::with_capacity(fields.len() / 3);
+        let mut names = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (index, entry) in fields.as_chunks::<3>().0.iter().enumerate() {
+            let relative = source_relative(entry[0])?;
+            if relative.as_os_str().is_empty() != (index == 0) {
+                return Err("remote source metadata root must appear exactly once, first".into());
+            }
+            if !seen.insert(relative.clone()) {
+                return Err("remote source metadata contains duplicate paths".into());
+            }
+            if index != 0 && relative.file_name() != Some(OsStr::new(entry[1])) {
+                return Err("remote source metadata basename disagrees with its path".into());
+            }
+            names.extend_from_slice(entry[0].as_bytes());
+            names.push(0);
+            names.extend_from_slice(entry[1].as_bytes());
+            names.push(0);
+            times.push((relative, source_time(entry[2])?));
+        }
+        validate_remote_names(&names)?;
+        Ok(Self {
+            basename: fields[1].into(),
+            times,
+        })
+    }
+
+    fn apply_times(&self, root: &Path, context: &CopyContext<'_>) -> Result<()> {
+        for (relative, modified) in self.times.iter().rev() {
+            context.check()?;
+            let path = crate::filesystem::entry_path(root, relative);
+            check_ancestors(&path)?;
+            let metadata = metadata(&path)?
+                .ok_or_else(|| format!("captured source entry is missing: {}", path.display()))?;
+            if !metadata.is_file() && !metadata.is_dir() {
+                return Err(format!(
+                    "captured source entry is not a finite file or directory: {}",
+                    path.display()
+                ));
+            }
+            let mut metadata = crate::filesystem::NodeMetadata::capture(&metadata)
+                .map_err(|cause| at(&path, cause))?;
+            metadata.modified = *modified;
+            metadata.apply(&path).map_err(|cause| at(&path, cause))?;
+        }
+        Ok(())
+    }
+}
+
+fn source_relative(text: &str) -> Result<PathBuf> {
+    let mut path = PathBuf::new();
+    if text.is_empty() {
+        return Ok(path);
+    }
+    for name in text.split('/') {
+        if matches!(name, "" | "." | "..") {
+            return Err("remote source metadata path escapes its capture root".into());
+        }
+        validate_staging_basename(name)?;
+        path.push(name);
+    }
+    Ok(path)
+}
+
+fn source_time(text: &str) -> Result<SystemTime> {
+    let seconds: i64 = text
+        .parse()
+        .map_err(|_| "remote source timestamp is not a supported whole-second value")?;
+    let duration = Duration::from_secs(seconds.unsigned_abs());
+    if seconds < 0 {
+        UNIX_EPOCH.checked_sub(duration)
+    } else {
+        UNIX_EPOCH.checked_add(duration)
+    }
+    .ok_or_else(|| "remote source timestamp is outside the host time range".into())
+}
+
+#[derive(Clone, Copy)]
+enum SourcePermissions {
+    Filesystem,
+    Portable,
+}
+
+impl SourcePermissions {
+    fn argument(self) -> &'static str {
+        match self {
+            Self::Filesystem => "filesystem",
+            Self::Portable => "portable",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct RemoteSource<'a> {
+    path: &'a str,
+    permissions: SourcePermissions,
+}
+
+impl<'a> RemoteSource<'a> {
+    fn filesystem(path: &'a str) -> Self {
+        Self {
+            path,
+            permissions: SourcePermissions::Filesystem,
+        }
+    }
+
+    fn uploaded(path: &'a str) -> Self {
+        Self {
+            path,
+            permissions: if cfg!(windows) {
+                SourcePermissions::Portable
+            } else {
+                SourcePermissions::Filesystem
+            },
+        }
+    }
+}
+
+pub(crate) fn import_finite_source(
+    source: &Location,
+    target: &Path,
+    pattern: Option<&str>,
+    buffer_bytes: usize,
+    cancel: CancellationToken,
+    span: Span,
+) -> std::result::Result<ImportReceipt, RuntimeError> {
+    let context = CopyContext::new(buffer_bytes, &cancel);
+    let result = (|| {
+        context.check()?;
+        let parent = target
+            .parent()
+            .ok_or("private import target has no parent")?;
+        let scratch = Scratch::new_in(parent)?;
+        // Killing the Windows WSL launcher does not join its guest writer.
+        // Drain an admitted finite acquisition before retiring its owned paths.
+        let acquisition_cancel = if matches!(source.backend, Backend::Wsl) {
+            CancellationToken::new()
+        } else {
+            cancel.clone()
+        };
+        let acquisition = CopyContext::new(buffer_bytes, &acquisition_cancel);
+        let received = receive(source, &scratch, pattern, &acquisition)?;
+        adopt_received(received, target, &context)
+    })();
+    result.map_err(|message| RuntimeError { message, span })
+}
+
+fn adopt_received(
+    received: Received,
+    target: &Path,
+    context: &CopyContext<'_>,
+) -> Result<ImportReceipt> {
+    context.check()?;
+    check_ancestors(target)?;
+    if metadata(target)?.is_some() {
+        return Err(format!(
+            "private import target already exists: {}",
+            target.display()
+        ));
+    }
+    crate::filesystem::move_new(&received.path, target).map_err(|cause| at(target, cause))?;
+    Ok(ImportReceipt {
+        basename: received.basename,
+    })
 }
 
 fn run(command: &mut Command) -> Result<Output> {
@@ -1010,6 +1239,16 @@ pub(crate) fn remote_command(backend: &Backend, script: &str, args: &[&str]) -> 
     run(&mut remote_command_builder(backend, script, args)?)
 }
 
+pub(crate) fn remote_command_with_cancel(
+    backend: &Backend,
+    script: &str,
+    args: &[&str],
+    buffer: usize,
+    cancel: &CancellationToken,
+) -> Result<Output> {
+    remote_command_cancellable(backend, script, args, &CopyContext::new(buffer, cancel))
+}
+
 fn remote_command_cancellable(
     backend: &Backend,
     script: &str,
@@ -1122,7 +1361,7 @@ fn transport_copy(
     }
     let scratch = Scratch::new()?;
     let staged = receive(&op.source, &scratch, op.pattern.as_deref(), context)?;
-    let source = &staged;
+    let source = &staged.path;
     if let Some(destination) = destination {
         let pattern = if matches!(op.source.backend, Backend::Http { .. }) {
             None
@@ -1187,32 +1426,29 @@ fn receive(
     scratch: &Scratch,
     pattern: Option<&str>,
     context: &CopyContext<'_>,
-) -> Result<PathBuf> {
-    let listing = if matches!(location.backend, Backend::Ssh { .. }) {
+) -> Result<Received> {
+    if let Some(pattern) = pattern {
+        return receive_selected(location, scratch, pattern, context);
+    }
+    let receipt = if matches!(location.backend, Backend::Ssh { .. }) {
         let output = remote_command_cancellable(
             &location.backend,
             REMOTE_VALIDATE,
             &[&location.path],
             context,
         )?;
-        validate_remote_names(&output.stdout)?;
-        Some(output.stdout)
+        Some(SourceReceipt::parse(&output.stdout)?)
     } else {
         None
     };
     let fallback_name = source_basename(&location.path);
-    let name = match &listing {
-        Some(listing) => std::str::from_utf8(
-            listing
-                .split(|byte| *byte == 0)
-                .nth(1)
-                .ok_or("remote root basename is missing")?,
-        )
-        .map_err(|_| "remote root basename is not UTF-8")?,
+    let name = match &receipt {
+        Some(receipt) => receipt.basename.as_str(),
         None => fallback_name,
     };
     validate_staging_basename(name)?;
     let target = scratch.0.join(name);
+    let mut basename = Some(OsString::from(name));
     match &location.backend {
         Backend::Http { .. } => {
             if pattern.is_some() {
@@ -1229,9 +1465,9 @@ fn receive(
         Backend::Wsl => {
             let path = wsl_path_cancellable(Some(&target), "", context)?;
             let mut ignored = ExecutionReport::default();
-            remote_copy(
+            basename = remote_copy_receipt(
                 &Backend::Wsl,
-                &location.path,
+                RemoteSource::filesystem(&location.path),
                 &path,
                 false,
                 None,
@@ -1241,7 +1477,60 @@ fn receive(
         }
         _ => return Err("unsupported source endpoint".into()),
     }
-    Ok(target)
+    if let Some(receipt) = receipt {
+        receipt.apply_times(&target, context)?;
+    }
+    Ok(Received {
+        path: target,
+        basename,
+    })
+}
+
+fn receive_selected(
+    location: &Location,
+    scratch: &Scratch,
+    pattern: &str,
+    context: &CopyContext<'_>,
+) -> Result<Received> {
+    if !matches!(location.backend, Backend::Wsl | Backend::Ssh { .. }) {
+        return Err("this source endpoint cannot enumerate a regex selection".into());
+    }
+    let regex = Regex::new(&format!("\\A(?:{pattern})\\z")).map_err(|error| error.to_string())?;
+    let listing =
+        remote_command_cancellable(&location.backend, REMOTE_LIST, &[&location.path], context)?;
+    let mut names: Vec<_> = listing
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|name| std::str::from_utf8(name).ok())
+        .filter(|name| !name.is_empty() && regex.is_match(name))
+        .collect();
+    names.sort_unstable();
+    let mut selected_listing = b"\0selection\0".to_vec();
+    for name in &names {
+        selected_listing.extend_from_slice(name.as_bytes());
+        selected_listing.push(0);
+        selected_listing.extend_from_slice(name.as_bytes());
+        selected_listing.push(0);
+    }
+    validate_remote_names(&selected_listing)?;
+    let target = scratch.0.join("selection");
+    fs::create_dir(&target).map_err(|error| at(&target, error))?;
+    for name in names {
+        context.check()?;
+        let child = Location {
+            backend: location.backend.clone(),
+            path: format!("{}/{name}", location.path.trim_end_matches('/')),
+        };
+        // Only a selected child enters validation and transport. A separate
+        // scratch root keeps every valid basename distinct from our envelope.
+        let child_scratch = Scratch::new_in(&scratch.0)?;
+        let captured = receive(&child, &child_scratch, None, context)?;
+        fs::rename(&captured.path, target.join(name)).map_err(|error| at(&captured.path, error))?;
+    }
+    Ok(Received {
+        path: target,
+        basename: None,
+    })
 }
 
 pub(crate) fn http_command_builder(location: &Location) -> Result<Command> {
@@ -1318,7 +1607,7 @@ fn validate_staging_basename(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_remote_names(listing: &[u8]) -> Result<()> {
+pub(crate) fn validate_remote_names(listing: &[u8]) -> Result<()> {
     let listing =
         std::str::from_utf8(listing).map_err(|_| "remote source contains non-UTF-8 names")?;
     let mut fields = listing.split_terminator('\0');
@@ -1372,15 +1661,16 @@ fn send(
                 path: format!("{remote_root}/{name}"),
             };
             let result = scp(&staged, source, true, context).and_then(|()| {
-                remote_copy(
+                remote_copy_receipt(
                     &location.backend,
-                    &staged.path,
+                    RemoteSource::uploaded(&staged.path),
                     &location.path,
                     container,
                     pattern,
                     report,
                     context,
                 )
+                .map(|_| ())
             });
             let cleanup = remote_command(&location.backend, "rm -rf -- \"$1\"", &[&remote_root]);
             result?;
@@ -1411,7 +1701,7 @@ fn scp(location: &Location, local: &Path, upload: bool, context: &CopyContext<'_
     if let Some(context) = ssh::current() {
         context.configure_scp(&mut command, &location.backend);
     }
-    command.arg("-r");
+    command.args(["-r", "-p"]);
     if let Some(port) = port {
         command.args(["-P", &port.to_string()]);
     }
@@ -1473,6 +1763,27 @@ fn remote_copy(
     report: &mut ExecutionReport,
     context: &CopyContext<'_>,
 ) -> Result<()> {
+    remote_copy_receipt(
+        backend,
+        RemoteSource::filesystem(source),
+        destination,
+        container,
+        pattern,
+        report,
+        context,
+    )
+    .map(|_| ())
+}
+
+fn remote_copy_receipt(
+    backend: &Backend,
+    source: RemoteSource<'_>,
+    destination: &str,
+    container: bool,
+    pattern: Option<&str>,
+    report: &mut ExecutionReport,
+    context: &CopyContext<'_>,
+) -> Result<Option<OsString>> {
     context.check()?;
     if let Some(pattern) = pattern {
         if !container {
@@ -1480,7 +1791,7 @@ fn remote_copy(
         }
         let regex =
             Regex::new(&format!("\\A(?:{pattern})\\z")).map_err(|error| error.to_string())?;
-        let listing = remote_command_cancellable(backend, REMOTE_LIST, &[source], context)?;
+        let listing = remote_command_cancellable(backend, REMOTE_LIST, &[source.path], context)?;
         let mut names: Vec<&str> = std::str::from_utf8(&listing.stdout)
             .map_err(|_| "remote directory contains non-UTF-8 names")?
             .split('\0')
@@ -1488,27 +1799,45 @@ fn remote_copy(
             .collect();
         names.sort_unstable();
         for name in &names {
-            let source = format!("{}/{name}", source.trim_end_matches('/'));
+            let child = format!("{}/{name}", source.path.trim_end_matches('/'));
             remote_command_cancellable(
                 backend,
                 REMOTE_COPY,
-                &[&source, destination, "1", "1"],
+                &[&child, destination, "1", "1", source.permissions.argument()],
                 context,
             )?;
         }
         for name in names {
-            let source = format!("{}/{name}", source.trim_end_matches('/'));
-            remote_copy(backend, &source, destination, true, None, report, context)?;
+            let child = format!("{}/{name}", source.path.trim_end_matches('/'));
+            remote_copy_receipt(
+                backend,
+                RemoteSource {
+                    path: &child,
+                    permissions: source.permissions,
+                },
+                destination,
+                true,
+                None,
+                report,
+                context,
+            )?;
         }
-        return Ok(());
+        return Ok(None);
     }
     let output = remote_command_cancellable(
         backend,
         REMOTE_COPY,
-        &[source, destination, if container { "1" } else { "0" }],
+        &[
+            source.path,
+            destination,
+            if container { "1" } else { "0" },
+            "0",
+            source.permissions.argument(),
+        ],
         context,
     )?;
-    let counts = String::from_utf8_lossy(&output.stdout);
+    let (basename, counts) = remote_copy_output(&output.stdout)?;
+    let counts = String::from_utf8_lossy(counts);
     for line in counts.lines() {
         match line {
             _ if line.starts_with("file ") => {
@@ -1522,7 +1851,19 @@ fn remote_copy(
             _ => {}
         }
     }
-    Ok(())
+    Ok(Some(basename))
+}
+
+fn remote_copy_output(output: &[u8]) -> Result<(OsString, &[u8])> {
+    let mut fields = output.splitn(3, |byte| *byte == 0);
+    if fields.next() != Some(b"source".as_slice()) {
+        return Err("remote copy returned no source identity receipt".into());
+    }
+    let name = fields.next().ok_or("remote source receipt is incomplete")?;
+    let counts = fields.next().ok_or("remote source receipt is incomplete")?;
+    let name = std::str::from_utf8(name).map_err(|_| "remote source basename is not UTF-8")?;
+    validate_staging_basename(name)?;
+    Ok((OsString::from(name), counts))
 }
 
 const REMOTE_LIST: &str = r#"
@@ -1534,6 +1875,7 @@ while [ "$p" != / ] && [ "$p" != . ]; do
     [ ! -L "$p" ] || { echo 'refusing source symbolic link' >&2; exit 1; }
     p=$(dirname -- "$p")
 done
+[ -d "$s" ] || { echo 'a regex source must be a directory' >&2; exit 1; }
 find "$s" -mindepth 1 -maxdepth 1 -printf '%f\0'
 "#;
 
@@ -1550,14 +1892,19 @@ done
 s=$(realpath -e -- "$s")
 [ -z "$(find "$s" -type l -print -quit)" ] || { echo 'remote source tree contains symbolic links' >&2; exit 1; }
 [ -z "$(find "$s" ! -type f ! -type d -print -quit)" ] || { echo 'remote source tree contains special files' >&2; exit 1; }
-find "$s" -printf '%P\0%f\0'
+printf 'MSYNC-SOURCE-1\0'
+find "$s" -printf '%P\0%f\0%Ts\0'
 "#;
 
 const REMOTE_COPY: &str = r#"
 set -eu
 fail() { echo "$*" >&2; exit 1; }
 expand() { case $1 in '~') printf '%s' "$HOME";; '~/'*) printf '%s/%s' "$HOME" "${1#\~/}";; *) printf '%s' "$1";; esac; }
-s=$(expand "$1"); d=$(expand "$2"); mode=$3
+s=$(expand "$1"); d=$(expand "$2"); mode=$3; permission_policy=${5:-filesystem}
+case $permission_policy in filesystem|portable) ;; *) fail 'invalid source permission policy';; esac
+creation_mask=$(umask)
+case $creation_mask in ''|*[!0-7]*) fail 'unsupported destination umask';; esac
+portable_file_mode=$(printf '%o' "$((0666 & ~0$creation_mask))")
 case $s in /*) ;; *) s=$PWD/$s;; esac
 case $d in /*) ;; *) d=$PWD/$d;; esac
 check_parents() {
@@ -1605,21 +1952,43 @@ check() (
         [ "$mode" = 0 ] || [ ! -e "$b" ] || fail "destination file already exists: $b"
     else fail "unsupported special file: $a"; fi
 )
+posix_mode() {
+    [ "$permission_policy" = filesystem ] || return 1
+    case $(stat -f -c %t -- "$1") in
+        ef53|1021994|58465342|9123683e|794c7630) return 0;;
+        *) return 1;;
+    esac
+}
+attenuate_readonly() {
+    bits=$(stat -c %a -- "$1")
+    if [ "$((0$bits & 0222))" = 0 ]; then chmod a-w -- "$2"; fi
+}
 copy() (
     a=$1; b=$2
     if [ -d "$a" ]; then
-        if [ ! -d "$b" ]; then mkdir -p -- "$b"; echo directory; fi
+        fresh=0
+        if [ ! -d "$b" ]; then mkdir -p -- "$b"; fresh=1; echo directory; fi
         for x in "$a"/* "$a"/.[!.]* "$a"/..?*; do
             [ -e "$x" ] || continue
             copy "$x" "$b/$(basename -- "$x")"
         done
+        if [ "$fresh" = 1 ]; then
+            touch -r "$a" -- "$b"
+            if posix_mode "$a"; then chmod --reference="$a" -- "$b"
+            else attenuate_readonly "$a" "$b"; fi
+        fi
     else
         mkdir -p -- "$(dirname -- "$b")"
         part=$(mktemp "$(dirname -- "$b")/.msync.XXXXXXXXXX")
         trap 'rm -f -- "$part"' EXIT
         trap 'exit 130' HUP INT TERM
         bytes=$(stat -c %s -- "$a")
-        cp -p -- "$a" "$part"
+        if posix_mode "$a"; then cp -p -- "$a" "$part"
+        else
+            cp --preserve=timestamps -- "$a" "$part"
+            chmod "$portable_file_mode" -- "$part"
+            attenuate_readonly "$a" "$part"
+        fi
         if [ "$mode" = 1 ]; then
             ln -- "$part" "$b" || fail "cannot create destination: $b"
         else mv -fT -- "$part" "$b"; fi
@@ -1630,12 +1999,384 @@ copy() (
 )
 check "$s" "$d"
 [ "${4:-0}" = 0 ] || exit 0
+printf 'source\0%s\0' "$(basename -- "$s")"
 copy "$s" "$d"
 "#;
 
 #[cfg(test)]
 mod transport_tests {
-    use super::{escape_sftp_pattern, validate_remote_names, validate_staging_basename};
+    use super::{
+        escape_sftp_pattern, remote_copy_output, validate_remote_names, validate_staging_basename,
+    };
+
+    fn metadata_receipt(entries: &[(&str, &str, &str)]) -> Vec<u8> {
+        let mut bytes = super::SOURCE_RECEIPT.to_vec();
+        for entry in entries {
+            for field in [entry.0, entry.1, entry.2] {
+                bytes.extend_from_slice(field.as_bytes());
+                bytes.push(0);
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn source_metadata_receipt_retains_root_name_paths_and_whole_second_times() {
+        let receipt = super::SourceReceipt::parse(&metadata_receipt(&[
+            ("", "source 可莉", "0"),
+            ("nested", "nested", "1"),
+            ("nested/file", "file", "-1"),
+        ]))
+        .unwrap();
+        assert_eq!(receipt.basename, "source 可莉");
+        assert_eq!(
+            receipt.times[0],
+            (std::path::PathBuf::new(), std::time::UNIX_EPOCH)
+        );
+        assert_eq!(
+            receipt.times[1].1,
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)
+        );
+        assert_eq!(
+            receipt.times[2].1,
+            std::time::UNIX_EPOCH - std::time::Duration::from_secs(1)
+        );
+        assert_eq!(
+            receipt.times[2].0,
+            std::path::Path::new("nested").join("file")
+        );
+    }
+
+    #[test]
+    fn source_metadata_receipt_rejects_escapes_duplicates_and_ambiguous_paths() {
+        for path in [
+            "/outside",
+            "../outside",
+            "nested/../outside",
+            ".",
+            "nested//file",
+            "nested/./file",
+            "nested/file/",
+        ] {
+            let bytes = metadata_receipt(&[("", "source", "0"), (path, "file", "0")]);
+            assert!(super::SourceReceipt::parse(&bytes).is_err(), "{path:?}");
+        }
+        for entries in [
+            vec![("file", "file", "0")],
+            vec![("", "source", "0"), ("", "source", "0")],
+            vec![
+                ("", "source", "0"),
+                ("file", "file", "0"),
+                ("file", "file", "1"),
+            ],
+            vec![("", "source", "0"), ("file", "other", "0")],
+        ] {
+            assert!(super::SourceReceipt::parse(&metadata_receipt(&entries)).is_err());
+        }
+    }
+
+    #[test]
+    fn source_metadata_receipt_rejects_bad_versions_framing_and_time_bounds() {
+        for time in [
+            "",
+            "nan",
+            "1.5",
+            "9223372036854775808",
+            "-9223372036854775809",
+            "18446744073709551616",
+        ] {
+            assert!(
+                super::SourceReceipt::parse(&metadata_receipt(&[("", "source", time)])).is_err(),
+                "{time:?}"
+            );
+        }
+        let valid = metadata_receipt(&[("", "source", "0")]);
+        assert!(super::SourceReceipt::parse(&valid[1..]).is_err());
+        assert!(super::SourceReceipt::parse(&valid[..valid.len() - 1]).is_err());
+        assert!(super::SourceReceipt::parse(super::SOURCE_RECEIPT).is_err());
+        let mut invalid_utf8 = valid;
+        invalid_utf8[super::SOURCE_RECEIPT.len() + 1] = 0xff;
+        assert!(super::SourceReceipt::parse(&invalid_utf8).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn source_metadata_receipt_rejects_windows_aliases_and_case_collisions() {
+        for path in [r"C:\outside", r"\\server\outside", "file:stream", "NUL"] {
+            assert!(
+                super::SourceReceipt::parse(&metadata_receipt(&[
+                    ("", "source", "0"),
+                    (path, path, "0")
+                ]))
+                .is_err()
+            );
+        }
+        assert!(
+            super::SourceReceipt::parse(&metadata_receipt(&[
+                ("", "source", "0"),
+                ("Name", "Name", "0"),
+                ("name", "name", "0")
+            ]))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn source_metadata_repairs_a_readonly_root_file_without_changing_bytes_or_flags() {
+        let root = inspection_workspace();
+        let file = root.path().join("private-file");
+        std::fs::write(&file, b"captured readonly body").unwrap();
+        let original = std::fs::metadata(&file).unwrap().permissions();
+        let mut readonly = original.clone();
+        readonly.set_readonly(true);
+        std::fs::set_permissions(&file, readonly).unwrap();
+        let receipt =
+            super::SourceReceipt::parse(&metadata_receipt(&[("", "original-name", "978307207")]))
+                .unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        receipt
+            .apply_times(&file, &super::CopyContext::new(4096, &cancel))
+            .unwrap();
+        let metadata = std::fs::metadata(&file).unwrap();
+        assert_eq!(
+            metadata.modified().unwrap(),
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(978_307_207)
+        );
+        assert!(metadata.permissions().readonly());
+        assert_eq!(std::fs::read(&file).unwrap(), b"captured readonly body");
+        std::fs::set_permissions(&file, original).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_metadata_never_follows_a_captured_symlink_to_an_outside_entry() {
+        let root = inspection_workspace();
+        let outside = root.path().join("outside");
+        let captured = root.path().join("captured");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::create_dir(&captured).unwrap();
+        let file = outside.join("file");
+        std::fs::write(&file, b"must remain untouched").unwrap();
+        let before = std::fs::metadata(&file).unwrap().modified().unwrap();
+        std::os::unix::fs::symlink(&outside, captured.join("link")).unwrap();
+        let receipt = super::SourceReceipt::parse(&metadata_receipt(&[
+            ("", "source", "0"),
+            ("link/file", "file", "0"),
+        ]))
+        .unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        assert!(
+            receipt
+                .apply_times(&captured, &super::CopyContext::new(4096, &cancel))
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().modified().unwrap(),
+            before
+        );
+        assert_eq!(std::fs::read(file).unwrap(), b"must remain untouched");
+    }
+
+    #[test]
+    fn remote_copy_receipt_retains_acquired_name_separately_from_counts() {
+        let (name, counts) =
+            remote_copy_output("source\0root ' 可莉\0directory\nfile 7\n".as_bytes()).unwrap();
+        assert_eq!(name, std::ffi::OsStr::new("root ' 可莉"));
+        assert_eq!(counts, b"directory\nfile 7\n");
+    }
+
+    #[test]
+    fn uploaded_source_permissions_retain_origin_provenance_not_staging_filesystem() {
+        let uploaded = super::RemoteSource::uploaded("/tmp/native-ext4-staging/payload");
+        assert_eq!(uploaded.path, "/tmp/native-ext4-staging/payload");
+        assert_eq!(
+            uploaded.permissions.argument(),
+            if cfg!(windows) {
+                "portable"
+            } else {
+                "filesystem"
+            },
+        );
+        let source = super::RemoteSource::filesystem("~/source/../actual");
+        assert_eq!(source.path, "~/source/../actual");
+        assert_eq!(source.permissions.argument(), "filesystem");
+    }
+
+    #[test]
+    fn malformed_remote_copy_receipts_cannot_supply_a_private_or_escaping_name() {
+        for output in [
+            b"file 7\n".as_slice(),
+            b"source\0root".as_slice(),
+            b"source\0\0file 7\n".as_slice(),
+            b"source\0../root\0file 7\n".as_slice(),
+            b"source\0\xff\0file 7\n".as_slice(),
+        ] {
+            assert!(remote_copy_output(output).is_err(), "{output:?}");
+        }
+    }
+
+    #[test]
+    fn finite_import_scratch_and_recursive_children_stay_in_the_registered_owner() {
+        let root = inspection_workspace();
+        let invocation = crate::filesystem::InvocationRoot::create(root.path()).unwrap();
+        let mut store = crate::filesystem::SnapshotStore::new_in(
+            &invocation.path().join("assets"),
+            &invocation,
+        )
+        .unwrap();
+        std::fs::write(root.path().join("user-file"), b"user").unwrap();
+        let acquisition = super::Scratch::new_in(invocation.path()).unwrap();
+        let child = super::Scratch::new_in(&acquisition.0).unwrap();
+        std::fs::write(child.0.join("private-body"), b"private").unwrap();
+        assert!(child.0.starts_with(invocation.path()));
+        let snapshot = store.capture_in(root.path(), &invocation).unwrap();
+        assert!(
+            snapshot
+                .entries()
+                .contains_key(std::path::Path::new("user-file"))
+        );
+        assert_eq!(snapshot.entries().len(), 2);
+        let child_path = child.0.clone();
+        drop(child);
+        assert!(!child_path.exists());
+        let acquisition_path = acquisition.0.clone();
+        drop(acquisition);
+        assert!(!acquisition_path.exists());
+        drop(snapshot);
+        store.cleanup().unwrap();
+        drop(store);
+        invocation.cleanup().unwrap();
+    }
+
+    #[test]
+    fn private_import_adoption_preserves_file_tree_metadata_and_identity() {
+        for directory in [false, true] {
+            let root = inspection_workspace();
+            let source = root.path().join("received");
+            let target = root.path().join("owned-target");
+            let file = if directory {
+                std::fs::create_dir_all(source.join("nested/empty")).unwrap();
+                source.join("nested/body")
+            } else {
+                source.clone()
+            };
+            std::fs::write(&file, b"immutable body").unwrap();
+            let modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(978_307_206);
+            let mut expected =
+                crate::filesystem::NodeMetadata::capture(&std::fs::metadata(&source).unwrap())
+                    .unwrap();
+            expected.modified = modified;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                expected
+                    .permissions
+                    .set_mode(if directory { 0o550 } else { 0o440 });
+            }
+            #[cfg(windows)]
+            expected.permissions.set_readonly(true);
+            expected.apply(&source).unwrap();
+            let identity = same_file::Handle::from_path(&source).unwrap();
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let receipt = super::adopt_received(
+                super::Received {
+                    path: source.clone(),
+                    basename: Some("actual-source-name".into()),
+                },
+                &target,
+                &super::CopyContext::new(4096, &cancel),
+            )
+            .unwrap();
+            assert!(!source.exists());
+            assert_eq!(same_file::Handle::from_path(&target).unwrap(), identity);
+            assert_eq!(
+                receipt.basename.as_deref(),
+                Some(std::ffi::OsStr::new("actual-source-name"))
+            );
+            let actual = std::fs::metadata(&target).unwrap();
+            assert_eq!(actual.modified().unwrap(), modified);
+            assert_eq!(
+                actual.permissions().readonly(),
+                expected.permissions.readonly()
+            );
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    actual.permissions().mode() & 0o777,
+                    expected.permissions.mode() & 0o777
+                );
+            }
+            let target_file = if directory {
+                target.join("nested/body")
+            } else {
+                target.clone()
+            };
+            assert_eq!(std::fs::read(target_file).unwrap(), b"immutable body");
+            let original = std::fs::metadata(root.path()).unwrap().permissions();
+            std::fs::set_permissions(&target, original).unwrap();
+        }
+    }
+
+    #[test]
+    fn private_import_adoption_never_clobbers_an_existing_target_or_moves_after_cancel() {
+        let root = inspection_workspace();
+        let source = root.path().join("received");
+        let target = root.path().join("occupied");
+        std::fs::write(&source, b"received").unwrap();
+        std::fs::write(&target, b"keep target").unwrap();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        assert!(
+            super::adopt_received(
+                super::Received {
+                    path: source.clone(),
+                    basename: None
+                },
+                &target,
+                &super::CopyContext::new(4096, &cancel),
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep target");
+        assert_eq!(std::fs::read(&source).unwrap(), b"received");
+        let absent = root.path().join("absent");
+        cancel.cancel();
+        assert!(
+            super::adopt_received(
+                super::Received {
+                    path: source.clone(),
+                    basename: None
+                },
+                &absent,
+                &super::CopyContext::new(4096, &cancel),
+            )
+            .is_err()
+        );
+        assert!(!absent.exists());
+        assert_eq!(std::fs::read(&source).unwrap(), b"received");
+    }
+
+    #[test]
+    fn private_sparse_import_adopts_children_without_publishing_its_envelope_name() {
+        let root = inspection_workspace();
+        let source = root.path().join("selection");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("picked"), b"selected").unwrap();
+        let target = root.path().join("owned-target");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let receipt = super::adopt_received(
+            super::Received {
+                path: source,
+                basename: None,
+            },
+            &target,
+            &super::CopyContext::new(4096, &cancel),
+        )
+        .unwrap();
+        assert!(receipt.basename.is_none());
+        assert_eq!(std::fs::read_dir(&target).unwrap().count(), 1);
+        assert_eq!(std::fs::read(target.join("picked")).unwrap(), b"selected");
+    }
 
     fn inspection_workspace() -> tempfile::TempDir {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
@@ -2168,6 +2909,51 @@ mod transport_tests {
         eprintln!(
             "WSL metadata 16 real paths: 16 client processes {:?}, batched one process {:?}",
             serial_time, batch_time
+        );
+    }
+}
+
+#[cfg(all(test, windows))]
+mod native_path_tests {
+    use super::*;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    #[test]
+    fn verbatim_paths_keep_their_prefix_and_raw_traversal_obligations() {
+        let location = Location {
+            backend: Backend::Local,
+            path: r"\\?\D:\root/step/../future-file".into(),
+        };
+        let native = local_path(&location, false).unwrap().unwrap();
+        assert_eq!(
+            native.as_os_str(),
+            OsStr::new(r"\\?\D:\root\step\..\future-file")
+        );
+    }
+
+    #[test]
+    fn native_separator_conversion_preserves_non_unicode_windows_units() {
+        let units = [
+            u16::from(b'D'),
+            u16::from(b':'),
+            u16::from(b'/'),
+            0xd800,
+            u16::from(b'/'),
+            u16::from(b'x'),
+        ];
+        let original = PathBuf::from(std::ffi::OsString::from_wide(&units));
+        let native = native_path(original);
+        let actual: Vec<u16> = native.as_os_str().encode_wide().collect();
+        assert_eq!(
+            actual,
+            [
+                u16::from(b'D'),
+                u16::from(b':'),
+                u16::from(b'\\'),
+                0xd800,
+                u16::from(b'\\'),
+                u16::from(b'x')
+            ]
         );
     }
 }

@@ -26,9 +26,11 @@ pub const COMMANDS: &[&str] = &[
     "/plan",
     "/fmt",
     "/limits",
+    "/syntax",
     "/jobs",
     "/wait",
     "/stop",
+    "/kill",
 ];
 
 pub const BUILTINS: &[&str] = &[
@@ -50,6 +52,7 @@ pub enum TokenKind {
     Selector,
     Comment,
     Endpoint,
+    /// REPL commands and structured-language control directives.
     Command,
     Text,
 }
@@ -93,6 +96,7 @@ fn line_tokens(source: &str) -> Vec<Token> {
             ),
             '"' => (quoted_end(source, position), TokenKind::String),
             '<' => (selector_end(source, position), TokenKind::Selector),
+            '(' | ')' | ',' => (position + 1, TokenKind::Text),
             _ if operator_at(source, position) => (position + 2, TokenKind::Operator),
             _ if ch.is_whitespace() => (whitespace_end(source, position), TokenKind::Text),
             _ => {
@@ -203,7 +207,7 @@ fn selector_end(source: &str, start: usize) -> usize {
 
 fn selector_boundary(source: &str, position: usize) -> bool {
     position == source.len()
-        || source[position..].starts_with(['/', '\\'])
+        || source[position..].starts_with(['/', '\\', ',', ')'])
         || source
             .as_bytes()
             .get(position)
@@ -214,7 +218,10 @@ fn selector_boundary(source: &str, position: usize) -> bool {
 fn word_end(source: &str, start: usize) -> usize {
     for (offset, ch) in source[start..].char_indices() {
         let position = start + offset;
-        if ch.is_whitespace() || matches!(ch, '"' | '<') || operator_at(source, position) {
+        if ch.is_whitespace()
+            || matches!(ch, '"' | '<' | '(' | ')' | ',')
+            || operator_at(source, position)
+        {
             return position;
         }
     }
@@ -245,17 +252,22 @@ fn word_tokens(source: &str, start: usize, end: usize, first: bool, tokens: &mut
                     start: boundary,
                     end,
                 },
-                kind: TokenKind::Text,
+                kind: if source[end..].trim_start().starts_with('(') {
+                    TokenKind::Binding
+                } else {
+                    TokenKind::Text
+                },
             });
         }
         return;
     } else if word.starts_with('$') {
         TokenKind::Namespace
-    } else if first && is_command(word) && !operator_at(source[end..].trim_start(), 0) {
+    } else if control_word(source, word, first, end) {
         TokenKind::Command
-    } else if ["=>", ":="]
-        .iter()
-        .any(|operator| source[end..].trim_start().starts_with(operator))
+    } else if source[end..].trim_start().starts_with('(')
+        || ["=>", ":="]
+            .iter()
+            .any(|operator| source[end..].trim_start().starts_with(operator))
     {
         TokenKind::Binding
     } else {
@@ -267,13 +279,18 @@ fn word_tokens(source: &str, start: usize, end: usize, first: bool, tokens: &mut
     });
 }
 
-fn is_command(word: &str) -> bool {
-    let Some(name) = word.strip_prefix('/').or_else(|| word.strip_prefix(':')) else {
-        return false;
-    };
-    COMMANDS
-        .iter()
-        .any(|command| command.strip_prefix('/') == Some(name))
+fn control_word(source: &str, word: &str, first: bool, end: usize) -> bool {
+    let prefix = &source[..end - word.len()];
+    let scheduling = matches!(word, "async" | "await")
+        && prefix
+            .split_whitespace()
+            .all(|word| matches!(word, "async" | "await"));
+    if scheduling {
+        return true;
+    }
+    first
+        && (matches!(word, "macro" | "global")
+            || (is_command(word) && !operator_at(source[end..].trim_start(), 0)))
 }
 
 pub fn highlight(source: &str, color: bool) -> String {
@@ -345,9 +362,71 @@ fn visible(text: &str, output: &mut String) {
     }
 }
 
+fn is_command(word: &str) -> bool {
+    let Some(name) = word.strip_prefix('/').or_else(|| word.strip_prefix(':')) else {
+        return false;
+    };
+    COMMANDS
+        .iter()
+        .any(|command| command.strip_prefix('/') == Some(name))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn structured_control_and_call_tokens_reuse_stable_display_roles() {
+        for (source, word, role) in [
+            ("macro copy(.src, des):", "macro", TokenKind::Command),
+            ("macro copy(.src, des):", "copy", TokenKind::Binding),
+            (
+                "async await program => $path::bash(\"ls\")",
+                "await",
+                TokenKind::Command,
+            ),
+            ("copy($wsl::src, \"字节\")", "copy", TokenKind::Binding),
+            (
+                "program => $path::bash(\"-c\", \"cat\")",
+                "bash",
+                TokenKind::Binding,
+            ),
+            ("    await A", "await", TokenKind::Command),
+        ] {
+            assert!(
+                token_spans(source).iter().any(|token| {
+                    &source[token.span.start..token.span.end] == word && token.kind == role
+                }),
+                "{source}"
+            );
+        }
+    }
+
+    #[test]
+    fn selectors_inside_arguments_end_before_commas_and_incomplete_calls_keep_progressing() {
+        let source = "copy($wsl::dir/<[a-z]+>, \"你好\")";
+        let selectors = token_spans(source)
+            .into_iter()
+            .filter(|token| token.kind == TokenKind::Selector)
+            .map(|token| &source[token.span.start..token.span.end])
+            .collect::<Vec<_>>();
+        assert_eq!(selectors, ["<[a-z]+>"]);
+        for source in [
+            "copy(",
+            "macro copy(.codex,",
+            "async await P => f(",
+            ")",
+            ",",
+        ] {
+            let mut end = 0;
+            for token in token_spans(source) {
+                assert_eq!(token.span.start, end);
+                assert!(token.span.end > token.span.start);
+                end = token.span.end;
+            }
+            assert_eq!(end, source.len());
+        }
+    }
 
     #[test]
     fn tokens_cover_utf8_source_without_overlap_or_gaps() {

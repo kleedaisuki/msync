@@ -1,0 +1,30 @@
+{
+  "format": "msync-ir",
+  "version": 1,
+  "artifact": {
+    "stage": "relocatable",
+    "ir": {
+      "operations": [
+        {
+          "source": {
+            "backend": "Local",
+            "base": "literal",
+            "path": "source",
+            "is_file": false
+          },
+          "destination": {
+            "backend": "Local",
+            "base": "literal",
+            "path": "output",
+            "is_file": false
+          },
+          "pattern": null,
+          "span": {
+            "start": 0,
+            "end": 32
+          }
+        }
+      ]
+    }
+  }
+}

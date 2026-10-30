@@ -1,0 +1,414 @@
+# Historical v0.4 Windows resource-view bridge
+
+> Historical implementation record, superseded by the v0.5 barrier-based
+> runtime. External programs now use asynchronous native process execution in
+> the actual environment, without a transactional resource-view provider.
+> Sandboxie, bubblewrap, and a host driver are **not current prerequisites**.
+> The provider protocols, gates, and installation discussions below document
+> the removed model; they are not release instructions or current guarantees.
+> See [barrier execution](barrier-execution.md),
+> [runtime ownership](barrier-runtime.md), and
+> [statement atomicity](statement-atomicity.md) for the replacement contract.
+
+Status: implementation exists and local protocol/capability gates pass. The
+signed-driver journeys have **not** been run on the development host; no driver,
+service or Sandboxie configuration was installed or changed there. The ephemeral
+Windows Actions gate must prove native support before release acceptance.
+
+## Private backing is independent of the selected logical roots
+
+The ordinary statement owner retires its payloads without creating a Manager.
+A later native program can therefore have logical root B while the runtime's
+owned invocation is physically under A/.temp. Inferring invocation ownership
+only from B's immutable snapshot loses that proof: the read-only host fallback
+would still expose the current Manager's assets, imports and output spools.
+Read-only exposure is not isolation of unpublished data.
+
+Both providers now accept `with_invocation(InvocationRoot)` independently of
+`ManagedRoot`. Preparation verifies that scratch is inside that exact owned
+directory; an unrelated scratch path is rejected before creating a view or box.
+`Program::launch` supplies the runtime's actual proof. The view retains it until
+physical payload/cohort joins and cleanup, and launch revalidates the identity.
+No old ordinary payloads or MVCC domain enrollment are retained for this purpose.
+
+On Windows the owned box adds and verifies an exact `ClosedFilePath` directory
+rule for the invocation. Sandboxie's [blocked-access contract](https://sandboxie-plus.com/sandboxie/resourceaccesssettings/)
+denies reading as well as writing. Frozen-root seeding and export already travel
+through the authenticated pipe; they do not need the boxed worker to read parent
+backing files. The worker starts from an existing executable ancestor outside
+the managed logical roots, rather than the now-blocked owned box path. The
+payload's specified cwd and argv remain unchanged. Rules do not exempt the worker
+by executable name, which would also exempt a payload using that same binary.
+
+The Linux provider applies an inaccessible read-only tmpfs mount to the exact
+invocation only when its path is outside all managed-root overlays. Existing
+snapshot exclusions already hide an invocation inside a managed root; mounting
+another path there would incorrectly recreate logical scratch scaffolding.
+No blanket `.temp` rule is used, and ordinary user files remain visible.
+
+The new actual provider journey on each OS uses an omitted-root invocation with
+a known private payload and a neighboring user scratch sentinel. The child must
+fail to read or write the former, still read the latter, and publish its managed
+write only into the sealed snapshot. A wrong scratch proof must leave no new
+private view. Actual WSL Linux validation passed all seven provider journeys and
+all four native workspace journeys in a private project tmpfs/user/mount/network
+namespace (caller UID 1000, loopback enabled). One workspace assertion initially
+omitted Linux's legitimate `ReadOnlyFilesystem` write-refusal code; after fixing
+that assertion and surfacing child stderr, only that failing case was rerun and
+passed. These are correctness checks, not ext4 performance measurements. The new
+Windows rule still requires its actual signed-driver cloud gate; Linux success
+does not establish Windows driver behavior.
+
+## Cancellation can follow an ordinary native exit receipt
+
+[Run 40639857501](https://github.com/kleedaisuki/msync/actions/runs/40639857501)
+passed both ordinary platform jobs but exposed a worker cancellation race in the
+actual signed-driver view gate. Parent cancellation quiesces the payload tree
+independently of control-channel backpressure. The worker's native `wait` can
+therefore finish before its control reader processes `CANCEL`, producing a real
+non-cancelled exit receipt. The old reader then dropped its export oneshot on
+cancel; awaiting that dropped sender produced `channel closed` and a spurious
+worker failure. Tokio explicitly documents that sender-drop is a
+[receive error](https://docs.rs/tokio/latest/tokio/sync/oneshot/struct.Sender.html),
+not a cancellation command.
+
+The control result now distinguishes Export, Release, Cancel and a typed IO
+failure. Early cancellation retains the cancelled exit/COMPLETE protocol. A
+genuine late Cancel after a physical exit sends the existing no-export RELEASE
+receipt; it never authorizes tree export or fabricates process output. Broken
+control transport and invalid frames remain failures. Parent cancellation also
+joins the terminal output result, not merely the first EXIT, so a later real
+protocol/IO failure cannot disappear behind an earlier physical receipt.
+
+Driver-free duplex regressions force both receipt/control orders, preserve
+native error codes and dropped-sender errors, and exercise cancellation queued
+behind a closed payload stdin. These tests do not replace the actual native
+Windows cancellation gate, which must be rerun on the current source.
+
+## Native cleanup includes the service-owned registry hive
+
+[Run 40533733086](https://github.com/kleedaisuki/msync/actions/runs/40533733086)
+passed all four native resource-view journeys and all nine production program
+journeys. The expanded user-scratch gate in
+[run 40542243926](https://github.com/kleedaisuki/msync/actions/runs/40542243926)
+again passed those 4 + 9 journeys, then failed private-box deletion with Windows
+sharing violation 32. Native process exit alone was not a complete box-storage
+quiescence protocol.
+
+The pinned driver's
+[`Key_UnmountHive`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/drv/key.c)
+marks the last user's hive pending and queues `SVC_UNMOUNT_HIVE`. The service's
+[`DriverAssist::UnmountHive`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/svc/DriverAssist.cpp)
+separately waits for process termination and an empty box before `NtUnloadKey`
+releases the hive file. A signaled process handle therefore does not prove that
+the service has released `RegHive`. `SbieDll_Unmount` is not a substitute: its
+implementation in
+[`support.c`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/dll/support.c)
+requests ImDisk container unmounting, not this registry completion boundary.
+
+After joining every worker, cleanup now obtains the exact registry-root path
+from `SbieApi_QueryBoxPath`, registers a parent-name OS notification, and checks
+whether that particular hive remains. Registration precedes each absence query;
+an unrelated sibling event does not establish completion. No handle is retained
+to the target hive itself, because that would obstruct unloading. A bounded
+deadline reports the actual registry root and preserved native cause and retains
+the owned box on failure. Only after this boundary does existing owned-path
+identity validation, owned-section removal and physical deletion proceed. There
+is no repeated deletion attempt, service restart, or global configuration change.
+
+Five driver-free focused regressions cover a deletion before the query,
+unrelated notifications, a real timeout, native-root validation, and a real OS
+notification for an independently created private HKCU child. These establish
+the wait protocol, not the native service's successful unload.
+
+[Run 40619023964](https://github.com/kleedaisuki/msync/actions/runs/40619023964)
+then passed native views 4/4 and program journeys 8/9, exposing
+`ERROR_KEY_DELETED` (1018) during a cross-submission pipeline's hive query. This
+is namespace withdrawal, not proof that the service has closed the hive storage.
+A parent-name notification need not be emitted again when the last old handle
+closes, so simply retrying the registry wait can also miss the required state
+transition.
+
+The cleanup barrier now independently proves physical storage release. It derives
+`RegHive` from the driver-returned private file-root path (the pinned
+`Key_MountHive` storage contract), opens it with DELETE access and DELETE-only
+sharing, and rejects reparse/non-file storage. Windows sharing checks therefore
+exclude every extant reader/writer, including one that itself allows deletion.
+An absent backing file is also a completed physical namespace. The lease is
+closed before recursive deletion so it cannot keep its own DeleteFile name
+pending; after worker joins and registry namespace withdrawal no legitimate
+participant can remount the exclusive box.
+
+Only a real storage sharing violation after namespace withdrawal enables a
+bounded service-quiescence probe: event waits use 1, 2, 4, ... up to 32 ms,
+within the original ten-second deadline. Normal released storage performs one
+probe and no timed wait. Other native errors fail immediately; deadline failure
+retains the exact backing path, attempt count and underlying native error. This
+is not a general retry policy for box deletion. Two additional real-OS
+regressions preserve a marked-deleted HKCU key while a file reader remains and
+prove that 1018 alone cannot pass, then control a live storage reader's release
+and verify the next probe succeeds before any deletion.
+
+The expanded barrier passed the actual signed-driver gate in
+[run 40620510069](https://github.com/kleedaisuki/msync/actions/runs/40620510069)
+at `4ea7654`: native resource views **4/4**, production program journeys **9/9**,
+and native user-scratch create/copy/origin-undo **1/1**. This closes the observed
+sharing/deleted-key cleanup failures for those journeys. It does not count the
+later all-phase runtime, future-ancestor workspace or four-mode macro changes,
+which still need their current-revision native gates. The Windows ordinary job
+also passed. The Linux ordinary job at that revision exposed an independent
+FIFO identity-open hang, fixed separately in the transaction adapter.
+
+## First provisioned-driver result and path-policy correction
+
+[Actions run 40498380133](https://github.com/kleedaisuki/msync/actions/runs/40498380133)
+successfully installed and loaded the pinned signed driver/service and passed its
+ABI probe. All four native journeys then stopped before launching a worker at the
+`FileRootPath` effective-setting check. This is an adapter verification defect,
+not a failed driver installation or evidence that isolated payload IO passed.
+
+The pinned
+[`Conf_Api_Query`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/drv/conf.c)
+expands values unless `CONF_GET_NO_EXPAND` is present. Its
+[`Conf_Expand_Helper`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/drv/conf_expand.c)
+calls `File_TranslateDosToNt` for DOS paths before expanding variables. Comparing
+an expected DOS/verbatim string with the expanded NT device string is therefore
+incorrect even when the setting is exactly right. `WriteFilePath` required the
+same correction as `FileRootPath`.
+
+Directory-valued policies now resolve the driver-expanded NT path through the
+appropriate Win32 `GLOBALROOT` or DOS namespace and compare open filesystem
+identities. The independent `QueryBoxPath` confinement check is retained; raw
+readback alone is not accepted as proof of the effective policy. Scalar settings
+remain literal comparisons. Mismatches report expected, expanded and raw values
+with query flags; native query failures include section, key, index, flags and
+NTSTATUS. A driver-free Windows regression obtains a real NT device path using
+`GetFinalPathNameByHandleW(VOLUME_NAME_NT)`, proves it is textually different but
+physically identical, and rejects a different directory. The targeted native
+driver journeys still require rerunning after this correction.
+
+The next provisioned run,
+[40500527495](https://github.com/kleedaisuki/msync/actions/runs/40500527495),
+made a separate configuration-serialization issue observable: an input
+`\\?\D:\...` was stored unchanged but expanded to `\Device\Mup\?\D:\...`.
+Sandboxie's DOS configuration parser treated the Win32 verbatim prefix as a UNC
+server name. The physical-identity check correctly refused this invalid mapping;
+it must never be made valid by stripping characters from the expanded result.
+
+Directory settings now have a dedicated input serializer: canonical verbatim
+drive paths become ordinary DOS drive paths, and verbatim UNC paths become
+ordinary UNC paths before they reach `SbieDll_UpdateConf`. Unsupported device or
+volume prefixes and verbatim components whose trailing-dot/space semantics would
+change are refused. Runtime paths, argv and expected ownership identities retain
+their original canonical representation. Unit regressions cover supported prefix
+forms and ensure malformed MUP translations remain distinct, while the existing
+NT-path identity and driver confinement checks remain mandatory. Native driver
+journeys still require the next explicit gate; local unit success is not a native
+isolation acceptance result.
+
+The `e19a9b1` native gate then passed the foreign-rule rejection journey and
+reached payload cwd validation in the remaining three. The fixture supplied an
+ordinary DOS cwd while enrollment retained a canonical verbatim root; lexical
+`starts_with` incorrectly rejected the same directory. The boxed worker repeated
+the same lexical check, so normalizing only the parent check would not solve the
+actual execution path.
+
+Both ends now use one directory-containment routine: inspect raw and trimmed
+ancestors for reparse points, canonicalize the paths, and compare directory
+identities along cwd ancestry. This accepts real DOS/verbatim/case aliases without
+loosening the boundary for prefix siblings, relative paths, regular files or
+junction escapes. Driver-free regressions exercise both valid representations and
+a real NTFS junction (including slash/dot spellings); another provisioned gate is
+still required to validate the next payload-launch phase.
+
+## Quiescence after successful native execution
+
+At `96ab6f0`,
+[Actions run 40520881614](https://github.com/kleedaisuki/msync/actions/runs/40520881614)
+passed all four native resource-view journeys and seven of nine production
+transactional-program journeys, including checkpoint/rollback and cross-REPL
+pipelines. Two later shared-box joins exposed lifecycle races: a listed process
+could exit before its membership query (`STATUS_INVALID_CID`), or before
+`TerminateProcess` (`ERROR_ACCESS_DENIED`). These results do not establish a
+fully accepted Windows integration yet.
+
+The pinned
+[`Process_Api_Query`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/drv/process_api.c)
+returns invalid CID when its record is missing **or marked terminated**. That
+status is not proof that physical IO has drained. Microsoft's
+[`TerminateProcess` contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess)
+also explicitly documents access denied for an already-terminated held handle.
+
+The join now checks the owned process handle before membership and after either
+race. It accepts completion only when that same handle signals; a still-live
+foreign process is never terminated, and an unresolved real permission failure
+retains its PID, box, operation and underlying native cause. An unopenable PID
+requires both an explicit native no-process result and authoritative driver
+absence; access denied alone is never treated as disappearance. Joined handles
+remain held across cohort rescans, pinning the exact completed generations so a
+stale driver record cannot cause a busy rescan failure or be confused with PID
+reuse. No sleep or blind retry was added.
+
+Seven focused regressions cover these transitions, persistent stale enumeration,
+and a real native process deliberately exiting between validation and attempted
+termination. While unrelated live-executor edits temporarily prevented the main
+library from compiling, the unchanged native source was included directly by a
+disposable `.temp` Rust test harness linked against the existing SDK/Tokio build
+artifacts: all seven cases and strict `clippy-driver` checks passed. This direct
+same-source check does not replace the next provisioned-driver integration gate.
+
+The deployment/source investigation and pinned installer are in
+[transactions-v4.md](transactions-v4.md). The new runtime implementation is
+`src/process/view_windows.rs` with the focused `windows_view/` native ABI, bounded
+wire codec, logical-tree transport and boxed worker modules. It is not used by
+the legacy v0.3.1 CLI execution path.
+
+## Ownership and execution protocol
+
+```text
+parent: complete enrolled immutable roots
+  -> fresh owned msync_<128-bit nonce> section and private FileRootPath
+  -> driver-effective policy + actual file-root identity verification
+  -> authenticated one-instance named pipe
+  -> service-launched msync worker in exactly that box
+  -> full binary tree seed through original logical paths
+  -> native exact-argv payload and owned JobObject descendants
+  -> concurrent stdin/stdout/stderr frames; true payload PID/exit receipt
+  -> process/cohort quiescence
+  -> logical tree export (including absence/deletion)
+  -> immutable parent snapshots
+  -> verified owned-section removal and private-directory cleanup
+```
+
+`Provider::probe` detects only an existing live installation. Explicit
+`from_installation` and `MSYNC_SANDBOXIE_HOME` override conventional installation
+paths; an injected worker also discovers its already-loaded service DLL. There
+is no automatic dependency installation or native unisolated fallback.
+
+`Provider::with_worker` requires an actual msync binary with the hidden
+`WORKER_FLAG` dispatch. `prepare` is an **execution-time** operation: it creates
+private files/configuration, so a compiler/check/plan path must not call it.
+`PreparedView::effects` names a complete conservatively read/write managed
+namespace, not just paths appearing in argv. Omitted mutable managed reads cannot
+justify disjoint scheduling.
+
+Only a fresh random section is configured. Existing sections and global settings
+are never rewritten. Effective `OpenFilePath`, `OpenFilePathEx`, `NormalFilePath`
+or `ReadFilePath` overrides make this first adapter refuse certification rather
+than guess which rule wins. Required settings are read back through the driver;
+`SbieApi_QueryBoxPath` is checked by physical root/ancestor identity. Policy is
+revalidated immediately before launch. The worker also refuses seeding if the
+host's live managed root is still visible.
+
+The named pipe rejects remote clients and authenticates the kernel client PID
+against the exact service-created worker handle and its Sandboxie membership.
+The worker verifies the server PID and its own box. A nonce plus protocol-version
+HELLO precedes resource data. The worker alone creates the native payload and
+reports that `Child` PID: neither `Start.exe` nor the worker PID is mislabeled as
+the program PID. A fast payload exit is not rejected by a later recycled-PID
+membership lookup.
+
+The source-verified reason for this bridge is important:
+[`SbieDll_RunSandboxed`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/dll/callsvc.c)
+does not forward standard handles through the service request. Redirecting
+`Start.exe` does not give the target correct stdin/stdout/stderr. The boxed worker
+opens its own native pipes and multiplexes them over the authenticated channel.
+
+## Byte, path and lifecycle contracts
+
+Control frames have a one-MiB hard bound checked before allocation. Native paths
+and argv use length-checked UTF-16 rather than lossy JSON or shell serialization.
+Relative tree entries reject root/prefix/parent traversal, NUL and alternate
+streams. File data length, root order, complete export and PID/output-byte exit
+receipts are checked. The original filenames remain visible through the private
+namespace; no Sandboxie `drive/`, user-directory or tombstone layout is parsed.
+
+Worker outputs immediately drain to buffer-bounded native spools, then to parent
+spools. Combined stdout/stderr disk quota is optional and explicit; this is not a
+process-RSS bound. Scalar pid/exit/meta values are replayable. Native error codes
+and domain IO error kinds survive the binary failure protocol along with details.
+
+Cancellation terminates the owned payload/cohort independently of stdin/control
+backpressure, drains physical IO, and never exports a partial view. Export joins
+the complete owned box cohort except the trusted exporter worker, then waits for
+that worker and checks the cohort again before cleanup. PIDs are not treated as
+completion evidence. No API ever uses `terminate_all` or a null box name.
+
+Drop requests cancellation but retains unsealed private data/configuration for
+diagnosis; explicit `discard`, `cancel`, or `seal` is the normal lifecycle.
+Cleanup verifies root identity, removes only the owned section, reads back its
+absence, and then deletes private files. Once section ownership is released, a
+late destructor does not terminate a newly created section with the same name.
+Cleanup failure is visible and is not evidence that user file data was committed.
+
+This mediates registered filesystem resources. Default box virtualization also
+contains unrelated filesystem/registry writes; AFD and network-file rules deny
+external network file/socket access. It is not a universal rollback protocol for
+external services or an independently established hostile-syscall security proof.
+
+## Configuration API evidence
+
+The pinned [`SbieIni DoUpdate`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/apps/ini/update.c)
+returns zero for many update failures except its explicit wrong-password case.
+Its process exit status is therefore not a reliable successful-policy receipt.
+The implementation calls typed `SbieDll_UpdateConf` and checks the status and
+driver-effective readback instead. DLL BOOL, BOOLEAN, NTSTATUS, UTF-16 box-name
+buffers and byte capacities follow the pinned headers, not guessed C layouts.
+
+## Focused acceptance
+
+Local gates: five protocol/policy/error tests, one deterministic unavailable-
+installation test, and strict library/Windows-view target Clippy. These do not
+exercise or certify the driver.
+
+After signed installation in a disposable Windows runner:
+
+```text
+cargo test --locked --test process_view_windows_v4 -- --ignored --skip boxed_child_fixture --nocapture
+```
+
+The four real journeys cover frozen host-versus-private versions, absolute and
+relative writes, deletion, descendants and true PID; binary stdin and 768-KiB
+stderr with nonzero exit replay; cancellation without host publication; and a
+foreign direct-access rule added only to the owned fixture section invalidating
+the view before launch. Missing capability must fail this explicit gate, not
+turn into a reported native pass.
+
+## Worker scratch is a disjoint logical namespace
+
+The worker must not derive its artifact/spool root from its launch CWD. An
+invocation may place the exclusive box backing inside a managed CWD's private
+`.temp` subtree. The parent has an authenticated invocation exclusion for that
+backing; the worker's ordinary `SnapshotStore::capture` deliberately does not.
+Putting its own artifact store there makes source/store overlap, not a reason
+to weaken capture or exclude user-owned `.temp` data.
+
+After authenticating the pipe and its exact box membership, receiving all
+managed roots, and rejecting effective direct/read-through access overrides,
+the worker creates one fresh logical child of the CWD's local drive root:
+`D:\msync-worker-<authenticated-launch-nonce>-<worker-pid>`. Whole-volume roots
+are not supported, and case/verbatim aliases and both overlap directions are
+rejected. Only the boxed worker creates this path; the parent never creates a
+host drive-root directory. Normal Sandboxie copy-on-write places its backing
+under the previously verified, exclusively owned FileRootPath in project
+`.temp`.
+
+Before using the directory for either spools or snapshots, the worker opens it
+and calls pinned [`SbieDll_GetHandlePath`](https://github.com/sandboxie-plus/Sandboxie/blob/v1.18.8/Sandboxie/core/dll/file.c).
+The BOOLEAN output must identify a boxed handle, and the API-reported actual
+copy path must be strictly below `SbieApi_QueryBoxPath` for that same owned box.
+The pinned function takes an 8192-byte output buffer and returns NTSTATUS;
+passing a non-null BOOLEAN output is essential to obtain CopyPath rather than
+TruePath. No physical drive/user/tombstone layout is guessed. A cleanup guard
+is constructed only after this proof and retains the original directory handle
+and its file identity. It outlives the native process and output forwarders;
+cleanup reauthenticates membership, the current boxed copy path, and equality
+with the held directory generation before recursive removal. A replaced or
+unverifiable path is retained with a diagnostic for authoritative parent box GC.
+
+Focused regressions cover ordinary/verbatim CWDs, enrolled-volume and
+case-alias overlap, relative/UNC/device namespace refusals, malformed identity,
+and forged unboxed/outside/equal-root/traversal copy proofs. The existing real
+`default_cwd_scratch_is_hidden_but_preexisting_user_scratch_survives` journey is
+the driver acceptance test: it must preserve the original user scratch sentinel
+without publishing the worker's private logical root.

@@ -1,7 +1,6 @@
 use super::{CliResult, Issue};
 use msync::compiler::{Backend, Program};
 use msync::runtime::ssh::{self, SshContext};
-use std::io::{self, IsTerminal};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use tokio_util::sync::CancellationToken;
@@ -16,12 +15,49 @@ pub(super) struct Submission {
 }
 
 impl Submission {
-    pub(super) fn new(program: &Program, live: bool, sessions: &SshContext) -> CliResult<Self> {
-        Self::start(
-            program,
-            live,
-            sessions,
-            io::stdin().is_terminal() && io::stdout().is_terminal(),
+    pub(super) fn structured(
+        program: &msync::hir::Program,
+        sessions: &SshContext,
+        cancel: CancellationToken,
+        lease: bool,
+        label: &str,
+    ) -> CliResult<Self> {
+        use msync::hir::{Input, InstructionKind, Output};
+        let mut operations = Vec::new();
+        for node in &program.body.instructions {
+            let locations = match &node.kind {
+                InstructionKind::Transfer {
+                    source,
+                    destination,
+                } => {
+                    let source = match source {
+                        Input::File { location, .. } => Some(location),
+                        _ => None,
+                    };
+                    let destination = match destination {
+                        Output::File { location, .. } => Some(location),
+                        _ => None,
+                    };
+                    source.into_iter().chain(destination).collect::<Vec<_>>()
+                }
+                InstructionKind::Spawn { executable, .. } => vec![executable],
+                _ => Vec::new(),
+            };
+            for location in locations {
+                operations.push(msync::compiler::CopyOp {
+                    source: location.clone(),
+                    destination: location.clone(),
+                    pattern: None,
+                    span: node.span,
+                });
+            }
+        }
+        Self::start_with_cancel(
+            &Program { operations },
+            true,
+            &sessions.with_label(label),
+            lease,
+            cancel,
         )
     }
 
@@ -34,7 +70,16 @@ impl Submission {
     }
 
     fn start(program: &Program, live: bool, sessions: &SshContext, lease: bool) -> CliResult<Self> {
-        let cancel = CancellationToken::new();
+        Self::start_with_cancel(program, live, sessions, lease, CancellationToken::new())
+    }
+
+    fn start_with_cancel(
+        program: &Program,
+        live: bool,
+        sessions: &SshContext,
+        lease: bool,
+        cancel: CancellationToken,
+    ) -> CliResult<Self> {
         let done = CancellationToken::new();
         let remote = live
             && program.operations.iter().any(|operation| {
