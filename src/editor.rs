@@ -251,10 +251,11 @@ impl Completer for LineHelper {
             start,
             candidates
                 .iter()
+                .map(|candidate| completion_spelling(candidate, prefix))
                 .filter(|candidate| candidate.starts_with(prefix))
                 .map(|candidate| Pair {
-                    display: (*candidate).to_owned(),
-                    replacement: (*candidate).to_owned(),
+                    display: candidate.to_string(),
+                    replacement: candidate.into_owned(),
                 })
                 .collect(),
         ))
@@ -290,12 +291,20 @@ fn completion_prefix(line: &str, pos: usize) -> Option<(usize, &str, &'static [&
         .find(|(_, ch)| ch.is_whitespace())
         .map_or(0, |(index, ch)| index + ch.len_utf8());
     let prefix = &before[start..];
-    if prefix.starts_with('/') && before[..start].trim().is_empty() {
+    if prefix.starts_with(['/', ':']) && before[..start].trim().is_empty() {
         Some((start, prefix, COMMANDS))
     } else if prefix.starts_with('$') {
         Some((start, prefix, BUILTINS))
     } else {
         None
+    }
+}
+
+fn completion_spelling<'a>(candidate: &'a str, prefix: &str) -> Cow<'a, str> {
+    if prefix.starts_with(':') && candidate.starts_with('/') {
+        Cow::Owned(format!(":{}", &candidate[1..]))
+    } else {
+        Cow::Borrowed(candidate)
     }
 }
 
@@ -330,10 +339,11 @@ impl Hinter for LineHelper {
         if let Some((_, prefix, candidates)) = completion_prefix(line, pos) {
             let mut matches = candidates
                 .iter()
+                .map(|candidate| completion_spelling(candidate, prefix))
                 .filter(|candidate| candidate.starts_with(prefix));
             if let Some(candidate) = matches.next()
                 && matches.next().is_none()
-                && *candidate != prefix
+                && candidate != prefix
             {
                 return Some(EditorHint {
                     text: candidate[prefix.len()..].to_owned(),
@@ -480,6 +490,19 @@ mod tests {
                 .1,
             "$fi"
         );
+    }
+
+    #[test]
+    fn colon_command_completion_retains_the_typed_prefix() {
+        let (start, prefix, candidates) = completion_prefix(":hel", 4).unwrap();
+        assert_eq!(start, 0);
+        let spellings: Vec<_> = candidates
+            .iter()
+            .map(|candidate| completion_spelling(candidate, prefix))
+            .filter(|candidate| candidate.starts_with(prefix))
+            .collect();
+        assert_eq!(spellings, vec![":help"]);
+        assert!(completion_prefix(":bash echo $pw", 14).is_none());
     }
 
     #[test]

@@ -211,3 +211,34 @@ every failure.
   human feedback with composable stdout/stderr and predictable automation.
 - [PowerShell invocation documentation](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_pwsh)
   is the authority for explicit interactive versus command invocation options.
+
+## Lexical rendering follow-up (2026-10-30)
+
+The display scanner now recognizes the REPL's established colon command aliases
+(`:help`, `:pwd`, etc.), not only slash spellings. Static completion and unique
+hints retain the user's chosen colon prefix; DSL operands followed by an operator
+remain operands, and shell payloads remain outside DSL highlighting.
+
+Contextual lookup items are included in the namespace-colored span for `$pwd`,
+`$file`, and `$env`. For example, `$file::parent/assets` styles
+`$file::parent`, leaving `/assets` as a path. Ordinary endpoint paths such as
+`remote::configs/app` still style only `remote::`. This is lexical presentation,
+not binding validation: no filesystem, network, compiler, or retained alias-state
+lookup runs while typing.
+
+Quoted operands preserve their public `String` token classification. Rendering
+adds a cyan style to the grammar's recognized two-character escape pairs
+(backslash, quote, `n`, `r`, `t`), while unknown escapes and an unfinished trailing
+backslash remain ordinary green quoted text. Unquoted Windows backslashes are
+not escapes. Stripping styles preserves the same display text, and the existing
+editor control-character/width handling is unchanged. No public token enum
+variants or execution grammar changed.
+
+Verification on Linux: `cargo test --test highlight` passes three focused
+regressions; all ten `repl_terminal` journeys pass, including a new real PTY case
+that completes `:hel` with Tab, observes contextual-item and escape colors before
+Enter, discards an unfinished contextual expression, and submits a Unicode alias
+whose recognized and unknown escapes round-trip through `/bindings`. Existing
+random-edit coverage and style-removal properties pass. Strict all-target Clippy
+also passes. Windows ConPTY execution remains a separate platform check; no
+Windows execution is inferred from Linux PTY results.
