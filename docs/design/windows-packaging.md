@@ -121,7 +121,7 @@ not request elevation to install any of those components.
 pwsh packaging/windows/build.ps1 -OutputDirectory dist
 # Or, after an equivalent static-CRT release build:
 pwsh packaging/windows/build.ps1 -SkipBuild -OutputDirectory dist
-pwsh packaging/windows/test.ps1 -Installer dist/msync-0.4.0-windows-x86_64-setup.exe
+pwsh packaging/windows/test.ps1 -Installer dist/msync-0.5.0-windows-x86_64-setup.exe
 ```
 
 The build accepts `-Target x86_64-pc-windows-msvc` and `-IsccPath` for an explicitly
@@ -129,6 +129,11 @@ installed compiler. It passes `AppVersion`, `SourceDir`, `OutputDir` and
 `OutputBaseName` as Inno preprocessor definitions. The fixed application identifier
 is `{157D15D7-7899-4F94-9D69-3CCF769886E8}`; do not change it on ordinary upgrades.
 The lifecycle test reads the expected version from the checked-out Cargo package.
+Pass `-PreviousInstallerPath PATH` to additionally install the public 0.4.0
+baseline and upgrade it in place. The workflow downloads that immutable baseline
+and checks its pinned SHA-256 before executing it. Both the portable and installed
+journeys now run typed macros, native objects after source deletion, contextual
+and relocatable IR, and multiline REPL macros/exports.
 
 ## Native acceptance
 
@@ -251,3 +256,23 @@ journey with exact output bytes. Untracked working notes are absent from the
 archives. Downloaded products/inspection results are under `dist/downloads/v0.4.0`;
 disposable tool logs and fresh-copy fixtures are under project `.temp/release`.
 This evidence-only documentation update does not modify the tagged build inputs.
+
+
+## Integrated 0.5 public delivery
+
+[Main release run 41069388278](https://github.com/kleedaisuki/msync/actions/runs/41069388278)
+built and tested the final 0.5 installer and portable archive. The actual Windows
+log contains both the ordinary lifecycle PASS and the explicit
+`public 0.4.0 -> current installed macro/IR upgrade` PASS. This includes PATH
+ownership across the real version transition, retained configuration/custom
+helper files, Start Menu and fresh named-command resolution, real installed
+macro/IR execution, and uninstall. The Linux extracted-package macro/IR smoke
+also passed. Full native Rust and credential-window tests passed separately in
+[main Rust run 41069388616](https://github.com/kleedaisuki/msync/actions/runs/41069388616).
+
+The public setup, ZIP and Linux archive were downloaded again, hashed against
+`SHA256SUMS`, and compared to the actual main-run Actions artifacts: all three
+were byte-identical. Every one of the Windows ZIP's 67 manifest entries matched;
+its payload is native x86-64 and imports no VCRUNTIME/MSVCP DLL. The Inno setup
+engine itself is PE32; that is not a 32-bit msync payload. Final asset identities
+and source ancestry are recorded in [the integration audit](integration-v0.5.md).
