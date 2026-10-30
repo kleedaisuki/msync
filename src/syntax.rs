@@ -4,7 +4,7 @@ use std::fmt;
 use unicode_width::UnicodeWidthStr;
 
 /// A half-open UTF-8 byte range in the original source.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Span {
     pub start: usize,
     pub end: usize,

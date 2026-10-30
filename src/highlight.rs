@@ -6,6 +6,9 @@
 use crate::syntax::Span;
 
 pub const COMMANDS: &[&str] = &[
+    "/export-ir",
+    "/export-relocatable",
+    "/load-ir",
     "/help",
     "/?",
     "/quit",
@@ -223,7 +226,12 @@ fn word_tokens(source: &str, start: usize, end: usize, first: bool, tokens: &mut
     let kind = if word.contains("://") {
         TokenKind::Endpoint
     } else if let Some(separator) = word.find("::") {
-        let boundary = start + separator + 2;
+        let mut boundary = start + separator + 2;
+        if matches!(&word[..separator], "$pwd" | "$file" | "$env") {
+            boundary += source[boundary..end]
+                .find(['/', '\\'])
+                .unwrap_or(end - boundary);
+        }
         tokens.push(Token {
             span: Span {
                 start,
@@ -243,7 +251,7 @@ fn word_tokens(source: &str, start: usize, end: usize, first: bool, tokens: &mut
         return;
     } else if word.starts_with('$') {
         TokenKind::Namespace
-    } else if first && COMMANDS.contains(&word) && !operator_at(source[end..].trim_start(), 0) {
+    } else if first && is_command(word) && !operator_at(source[end..].trim_start(), 0) {
         TokenKind::Command
     } else if ["=>", ":="]
         .iter()
@@ -257,6 +265,15 @@ fn word_tokens(source: &str, start: usize, end: usize, first: bool, tokens: &mut
         span: Span { start, end },
         kind,
     });
+}
+
+fn is_command(word: &str) -> bool {
+    let Some(name) = word.strip_prefix('/').or_else(|| word.strip_prefix(':')) else {
+        return false;
+    };
+    COMMANDS
+        .iter()
+        .any(|command| command.strip_prefix('/') == Some(name))
 }
 
 pub fn highlight(source: &str, color: bool) -> String {
@@ -273,15 +290,47 @@ pub fn highlight(source: &str, color: bool) -> String {
             TokenKind::Command => "1;36",
             TokenKind::Text => "",
         };
-        if color && !style.is_empty() {
-            output.push_str(&format!("\x1b[{style}m"));
+        let text = &source[token.span.start..token.span.end];
+        if color && token.kind == TokenKind::String {
+            quoted_display(text, &mut output);
+            continue;
         }
-        visible(&source[token.span.start..token.span.end], &mut output);
-        if color && !style.is_empty() {
-            output.push_str("\x1b[0m");
-        }
+        styled(text, style, color, &mut output);
     }
     output
+}
+
+fn styled(text: &str, style: &str, color: bool, output: &mut String) {
+    if color && !style.is_empty() {
+        output.push_str(&format!("\x1b[{style}m"));
+    }
+    visible(text, output);
+    if color && !style.is_empty() {
+        output.push_str("\x1b[0m");
+    }
+}
+
+fn quoted_display(text: &str, output: &mut String) {
+    let mut chars = text.char_indices();
+    let mut start = 0;
+    while let Some((offset, ch)) = chars.next() {
+        if ch != '\\' {
+            continue;
+        }
+        let Some((next, escaped)) = chars.next() else {
+            break;
+        };
+        // Unknown escapes retain their backslash in the grammar. They are
+        // ordinary quoted text, not a warning or a recognized escape pair.
+        if !matches!(escaped, '\\' | '"' | 'n' | 'r' | 't') {
+            continue;
+        }
+        styled(&text[start..offset], "32", true, output);
+        let end = next + escaped.len_utf8();
+        styled(&text[offset..end], "1;36", true, output);
+        start = end;
+    }
+    styled(&text[start..], "32", true, output);
 }
 
 fn visible(text: &str, output: &mut String) {

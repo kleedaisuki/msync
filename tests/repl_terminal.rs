@@ -132,6 +132,53 @@ fn native_terminal_highlights_before_enter_and_keeps_unicode_editing_history_and
 }
 
 #[test]
+fn native_terminal_colors_colon_commands_context_items_and_quoted_escapes_before_enter() {
+    let directory = workspace();
+    let mut repl = terminal(directory.path(), "always");
+    repl.send(":hel\t");
+    repl.until_matching(|raw| foreground(raw, ":help") == Some(36));
+    repl.accept();
+    repl.until("REPL commands");
+    repl.prompt();
+    repl.mark();
+
+    repl.send("root := $file::parent/assets");
+    repl.until_matching(|raw| foreground(raw, "parent") == Some(35));
+    repl.send("\u{3}");
+    repl.prompt();
+    repl.mark();
+
+    repl.send(r#"root := "界\n\q""#);
+    let edit = repl.until_matching(|raw| {
+        foreground(raw, r"\n") == Some(36) && foreground(raw, r"\q") == Some(32)
+    });
+    assert_eq!(foreground(&edit, "界"), Some(32));
+    repl.accept();
+    let bindings = repl.submit("/bindings");
+    assert!(pty::visible(&bindings).contains(r"界\n\\q"), "{bindings:?}");
+    repl.exit();
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+}
+
+fn foreground(raw: &str, lexeme: &str) -> Option<u16> {
+    // ConPTY may split/reorder attributes ("36m", "1m") that Unix preserves
+    // as "1;36m". Observe the foreground, not the transport's SGR encoding.
+    pty::color_of(raw, lexeme)?
+        .split(';')
+        .filter_map(|part| part.parse().ok())
+        .find(|code| matches!(code, 30..=37 | 90..=97))
+}
+
+#[test]
+fn pseudoconsole_foreground_observation_accepts_equivalent_sgr_encodings() {
+    for raw in ["\x1b[1;36m:help", "\x1b[36;1m:help", "\x1b[36m\x1b[1m:help"] {
+        assert_eq!(foreground(raw, ":help"), Some(36));
+    }
+    assert_eq!(foreground("\x1b[32m\\q", r"\q"), Some(32));
+    assert_eq!(foreground("\x1b[36m\x1b[39mplain", "plain"), None);
+}
+
+#[test]
 fn monochrome_terminal_still_edits_and_ctrl_c_discards_input_without_exiting() {
     let directory = workspace();
     let mut repl = terminal(directory.path(), "never");

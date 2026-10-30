@@ -524,3 +524,53 @@ fn tcp_path_aliases_preserve_socket_marker_and_reject_suffixes() {
         assert!(report.help[0].contains("TCP has no filesystem path"));
     }
 }
+
+#[test]
+fn ssh_configuration_aliases_preserve_exact_names_and_optional_overrides() {
+    for (url, host, user, port) in [
+        ("ssh://Production_Box", "Production_Box", None, None),
+        ("ssh://Build.Host", "Build.Host", None, None),
+        ("ssh://开发机", "开发机", None, None),
+        ("ssh://开发%机", "开发%机", None, None),
+        (
+            "ssh://Alice@开发机:2222",
+            "开发机",
+            Some("Alice"),
+            Some(2222),
+        ),
+        (
+            "ssh://Alice@Production_Box:2222",
+            "Production_Box",
+            Some("Alice"),
+            Some(2222),
+        ),
+        ("ssh://alice@[::1]:2222", "[::1]", Some("alice"), Some(2222)),
+    ] {
+        let source = format!("server => {url}\nserver::input -> output\n");
+        let program = compile(&source);
+        assert_eq!(
+            program.operations[0].source.backend,
+            Backend::Ssh {
+                host: host.to_owned(),
+                user: user.map(str::to_owned),
+                port,
+            }
+        );
+        assert_eq!(program.operations[0].source.backend.to_string(), url);
+    }
+}
+
+#[test]
+fn ssh_configuration_lookup_never_silently_strips_host_controls() {
+    for endpoint in [
+        "ssh://host\nother",
+        "ssh://host\tother",
+        "ssh://host\rother",
+        "ssh:\t//host",
+    ] {
+        let source = format!("remote => {endpoint:?}\nremote::input -> output\n");
+        let errors = reports(&source);
+        assert!(!errors.is_empty());
+        assert!(errors[0].diagnostic.message.contains("control characters"));
+    }
+}

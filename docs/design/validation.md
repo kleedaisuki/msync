@@ -383,3 +383,81 @@ Requirement-to-evidence mapping:
 
 Reusable setup, interpretation and findings are in the repository. Disposable raw
 gate/installed logs use `.temp/v031-*`; removing them does not remove this record.
+
+## SSH authentication, lexical rendering and reusable IR (2026-10-30)
+
+Validated source revision: `6c83790ce48fde05b741767607d27868fd31d30e` on
+`codex/ssh-ir-repl`. Both native Linux and Windows diagnostic jobs, including the
+explicit native credential-window step, passed in
+[Actions run 41050745550](https://github.com/kleedaisuki/msync/actions/runs/41050745550).
+No required checks, branch protections or merge gates were configured.
+
+### Local execution
+
+Native Linux x86-64, ext4, kernel `6.12.113+deb13-amd64`, Rust `1.99.1`:
+
+- Formatting, strict locked all-target Clippy, locked all-target tests and
+  doctests pass: **294 passed including one doctest**, 18 intentionally ignored
+  environment/performance entries in the default run.
+- Explicit `ssh_auth` and `ssh_password` execution passes **13 entries** (ten
+  auth-fixture entries including one subprocess entrypoint, three real account-
+  password journeys). Native OpenSSH exercises successful and incorrect
+  passwords, noecho, Ctrl-C after an earlier execution installed signal handling,
+  fresh retry, existing user-master survival, owned-master cleanup, real FIFO
+  cancellation, long/read-only cwd compatibility, and exact `Host 开发%机` reuse.
+  Isolated namespace account files do not modify host credentials/configuration.
+- A release executable exported relocatable IR, removed the original script,
+  rebound under a different cwd/source-file identity, previewed without creating
+  its destination, and copied the new cwd's fresh bytes through contextual IR
+  invoked from the old cwd. Byte comparison passed. An actual `strace -f -c`
+  recorded `copy_file_range` and atomic `rename`; this is path/lifecycle evidence,
+  not a throughput measurement. A real release REPL preserved the raw Unicode/
+  percent SSH configuration name in `/bindings`.
+
+Reproduction commands (from the repository):
+
+```sh
+cargo fmt --check
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked --all-targets
+cargo test --locked --doc
+cargo test --locked --test ssh_auth --test ssh_password -- --ignored --test-threads=1
+cargo build --release --locked
+```
+
+### Windows execution, not merely cross-compilation
+
+The native Windows job passes the normal suites, including IR/CLI round trips,
+real ConPTY editing and pre-Enter highlighting, process-tree cleanup, cancellation
+notification and early-helper dispatch. It additionally runs:
+
+```sh
+cargo test --locked --test windows_askpass -- --ignored --test-threads=1
+```
+
+Both actual CredUI journeys pass: the owned dialog exposes the branded caption,
+Unicode connection/task context, original request and a masked field; typing a
+Unicode fixture response and invoking its OK handler returns exactly that UTF-8
+response on the private stdout channel. Entering the same fixture then cancelling
+signals the parent's event and produces no stdout response. The tests inspect or
+message only the owned helper's windows, never global focus/keyboard/clipboard.
+This proves actual native-control interaction, not a manually reviewed screenshot
+or a full Windows password-server SSH end-to-end journey. Human focus and
+screen-reader usability remain separate release review, not an invented CI gate.
+
+The first two Windows runs exposed test-observation assumptions, not ignored
+failures: an IR test compared native contextual paths with the earlier logical
+frontend spelling, and a ConPTY test required one SGR grouping despite equivalent
+native colors. Corrections compare the same IR stage/path semantics and actual
+foreground colors; direct renderer style checks remain intact. A local long-cwd
+password fixture also assumed one prompt and mistook an earlier editor redraw
+for completion. It now waits for an actual completion/error, handles every native
+request and verifies fresh output. These discriminating checks remain in the
+suite rather than replaced by timing sleeps or unconditional skips.
+
+Design and usage: [IR](ir.md), [authentication UI/application home](ssh-auth-ui.md),
+[native SSH lifecycle](runtime.md), [lexical rendering](cli-ux-v0.3.1.md).
+Disposable local logs, release-journey fixtures and copied index-validation trees
+are under project `.temp`; removing them does not remove these results or the
+reproduction contracts. The final documentation-only update does not alter the
+source tree that the linked native matrix tested.

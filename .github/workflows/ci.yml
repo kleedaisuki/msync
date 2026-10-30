@@ -3,10 +3,12 @@ name: Rust
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
@@ -18,4 +20,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked --all-targets
+      - name: Exercise native SSH credential windows
+        if: runner.os == 'Windows'
+        run: cargo test --locked --test windows_askpass -- --ignored --test-threads=1
       - run: cargo test --locked --doc

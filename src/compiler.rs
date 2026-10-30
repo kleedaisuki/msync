@@ -8,11 +8,13 @@ use crate::suggest::distance as edit_distance;
 use regex::Regex;
 use url::Url;
 
+pub mod ir;
+
 use crate::syntax::{
     Diagnostic, OperandSource, Operands, Report, Script, Span, Statement, StatementKind,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Backend {
     Local,
     Wsl,
@@ -32,13 +34,13 @@ pub enum Backend {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Location {
     pub backend: Backend,
     pub path: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CopyOp {
     pub source: Location,
     pub destination: Location,
@@ -46,14 +48,14 @@ pub struct CopyOp {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct Program {
     pub operations: Vec<CopyOp>,
 }
 
 /// Logical source identity and working directory, captured once per submission.
 /// Resolving a namespace never canonicalizes paths or reads filesystem metadata.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CompileContext {
     pub pwd: PathBuf,
     pub source_file: Option<PathBuf>,
@@ -335,7 +337,7 @@ impl Compiler {
                     )
                     .help("Bind 'server => ssh://user@host', then use 'server::path/to/file'."));
                 }
-                let host = url.host_str().unwrap().to_string();
+                let host = ssh_config_host(value, &url, span)?;
                 let user = (!url.username().is_empty()).then(|| url.username().to_string());
                 if host.starts_with('-') || user.as_ref().is_some_and(|user| user.starts_with('-'))
                 {
@@ -540,6 +542,37 @@ impl Compiler {
         };
         namespace_value(base, suffix, is_file, site, start + item.len(), value.len())
     }
+}
+
+fn ssh_config_host(value: &str, url: &Url, span: Span) -> Result<String, Report> {
+    // SSH resolves Host aliases itself. An opaque URL host percent-encodes
+    // Unicode, which changes the actual OpenSSH lookup key.
+    let authority = value
+        .split_once("://")
+        .ok_or_else(|| {
+            Report::new(
+                "SSH endpoints require 'ssh://' without control characters in the delimiter",
+                span,
+            )
+        })?
+        .1
+        .split('/')
+        .next()
+        .unwrap();
+    let authority = authority.rsplit('@').next().unwrap();
+    let host = if authority.starts_with('[') {
+        url.host_str().unwrap()
+    } else {
+        authority.split(':').next().unwrap()
+    };
+    if host.chars().any(|ch| ch.is_control() || ch.is_whitespace()) {
+        return Err(Report::new(
+            "SSH configuration names must not contain whitespace or control characters",
+            span,
+        )
+        .help("Use the exact non-whitespace Host name from your OpenSSH configuration."));
+    }
+    Ok(host.to_owned())
 }
 
 fn namespace_value(

@@ -27,6 +27,25 @@ Script ── compiler.rs: transactional space/value resolution ──► Progra
 
 `Compiler` owns user space/value bindings. Each submission compiles against a clone-on-write candidate; failure commits nothing, success replaces the environment. The CLI/REPL own source text, logical source identity, presentation and commands. `Program` contains resolved source operations, while `Plan` owns optimized operations, original indices, typed effects, dependency edges and rewrite provenance. The scheduler owns all ready/running/completed state and resource admission; transports own file handles/processes only for the task lifetime. There is no independent REPL interpreter or second grammar.
 
+`runtime/inspection.rs` owns metadata-only classification, remote inspection framing and the native ancestor cache. Each scheduler preparation owns an `Inspection`; its verified prefixes and probe counters are discarded with that preparation, never carried into transfer execution. The runtime retains shared path validation and transport process helpers, while the inspection module cannot publish or copy file data. Crate-level runtime entry points remain unchanged.
+
+The opt-in [IR pipeline](ir.md) adds name-resolved symbolic roots in
+`compiler/ir.rs`, then binds them into contextual physical transfers. A
+`scheduler::Prepared` retains the resolved **unoptimized** input program alongside
+the disposable plan; REPL exports save that program, never filesystem proofs or
+live resources. Existing script commands and preparation entry points retain
+their contracts. Every imported artifact is validated and freshly prepared.
+
+Authentication lifetime spans preparation and execution, not just the final
+scheduler future. The CLI's submission scope owns fresh cancellation; a retained
+`runtime::ssh::SshContext` owns only its own Unix masters and Windows GUI-cancel
+event. Background tasks carry this context explicitly. Windows client/helper
+trees are enrolled in owned jobs before their suspended primary threads run.
+The [authentication UI contract](ssh-auth-ui.md) distinguishes native credential,
+host-confirmation and notice requests; it does not persist credentials or add a
+second user SSH configuration. Transport and cancellation details remain in
+[runtime](runtime.md), rather than duplicated here.
+
 The library compiler resolves syntax-level meaning, not machine code. `check` runs the frontend only. `plan` (`compile` is its CLI alias) prepares and prints the optimized graph, allowing metadata-only remote probes but no file-data transfer. `run` prepares then executes. `--dry-run` prepares offline: local metadata is available, remote classes remain conservative, and no remote client or stream-data open occurs. Explicit telemetry output is the documented write exception.
 
 ## Syntax and diagnostics

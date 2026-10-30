@@ -35,6 +35,31 @@ cargo run -- repl --dry-run
 
 The executable is `target/release/msync` (`msync.exe` on Windows). `msync SCRIPT` means `msync run SCRIPT`; no arguments starts the REPL. `--help` lists commands and resource controls. Pass `-` to script-reading commands for UTF-8 stdin; formatting edits a named file by default.
 
+### Export and reuse intermediate representations
+
+```sh
+msync emit-ir copy.msync -o portable.json
+msync bind-ir portable.json --source-file /path/to/copy.msync -o bound.json
+msync plan-ir bound.json
+msync run-ir bound.json --dry-run
+msync run-ir bound.json
+```
+
+Relocatable IR resolves binding names but retains symbolic `$pwd`/`$file` roots;
+binding supplies a cwd and, when needed, an explicit named-source context.
+`emit-ir FILE --ir-stage contextual` exports already-bound local paths instead.
+Contextual IR retains those paths across `/cd` or another invocation. Both formats
+are versioned JSON, independent of the original source file; every execution
+re-inspects endpoints and rebuilds its dependency plan rather than trusting saved
+filesystem proofs. Credentials and connected SSH sessions are not serialized.
+The existing `compile` command remains an alias for `plan`.
+
+The REPL exports its last prepared transfer with `/export-ir FILE` or
+`/export-relocatable FILE`, and reuses an artifact with `/load-ir FILE` (foreground,
+Ctrl-C cancels pending flows). Earlier captured path aliases remain captured;
+relocation does not undo their binding-time semantics. See [IR binding and format
+contract](docs/design/ir.md) for details and API entry points.
+
 **`run` and REPL transfer statements write real data unless `--dry-run` is enabled.** The seed references personal configuration directories; inspect its plan before executing it.
 
 ## Plan, optimize, execute
@@ -88,6 +113,7 @@ One statement per nonempty line. `#` begins a comment at a whitespace boundary o
 | --- | --- |
 | `remote => $wsl` | Bind an endpoint |
 | `server => ssh://alice@host:2222` | Bind SSH |
+| `server => ssh://Production_Box` | Use a native OpenSSH `Host Production_Box` configuration entry |
 | `public => https://example.com/` | Bind a read-only HTTP(S) source |
 | `wire => tcp://127.0.0.1:9000` | Bind an active TCP stream endpoint; use `wire::/` as its operand |
 | `.config := ~/.config` | Bind a path alias |

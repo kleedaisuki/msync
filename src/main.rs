@@ -1,7 +1,11 @@
+mod artifact_cli;
+mod auth;
 mod editor;
 mod presentation;
 mod repl;
 mod shell;
+#[cfg(any(windows, test))]
+mod windows_askpass;
 
 use std::env;
 use std::fs;
@@ -26,8 +30,15 @@ USAGE
   msync compile FILE              Alias for plan (never copies file data)
   msync fmt FILE                  Format the script file in place
   msync repl [--dry-run]          Start a persistent interactive session
+  msync emit-ir FILE              Export name-resolved relocatable IR
+  msync bind-ir IR                Bind relocatable IR to the current context
+  msync plan-ir IR                Re-inspect and preview an IR artifact
+  msync run-ir IR [--dry-run]      Execute reusable IR (never stale cached proofs)
 
 OPTIONS
+  -o, --output FILE  IR export destination (default: stdout)
+  --ir-stage STAGE   relocatable (default) or contextual (emit-ir only)
+  --source-file FILE Named source context when binding relocatable IR
   -n, --dry-run       Validate and preview without writing files
   --jobs N           Maximum concurrent finite copies (default: 4)
   --max-streams N    Maximum background pipe/socket flows (default: 16)
@@ -67,6 +78,9 @@ const REPL_HELP: &str = "REPL commands
   /check FILE              Check a file without changing the environment
   /plan FILE               Print a resolved plan without executing it
   /fmt FILE                Format a script file in place (never executes it)
+  /export-ir FILE          Export the last transfer with its captured context
+  /export-relocatable FILE Export the last transfer with late-bound context roots
+  /load-ir FILE            Reuse an artifact (foreground; Ctrl-C cancels streams)
   /limits                  Show copy, stream and buffer resource limits
   /jobs                    Show the single active background plan
   /wait                    Wait for the active plan to finish
@@ -142,6 +156,9 @@ struct Args {
     color: Color,
     trace: Option<String>,
     limits: ResourceLimits,
+    output: Option<String>,
+    ir_stage: Option<String>,
+    source_file: Option<String>,
 }
 
 fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -153,6 +170,21 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
             continue;
         }
         match arg.as_str() {
+            "-o" | "--output" => {
+                options.output = Some(args.next().ok_or("--output requires a filename or '-'")?)
+            }
+            "--ir-stage" => {
+                options.ir_stage = Some(
+                    args.next()
+                        .ok_or("--ir-stage requires relocatable or contextual")?,
+                )
+            }
+            "--source-file" => {
+                options.source_file = Some(
+                    args.next()
+                        .ok_or("--source-file requires a named source path")?,
+                )
+            }
             "--" => positional = true,
             "-h" | "--help" => options.command = "help".into(),
             "-V" | "--version" => options.command = "version".into(),
@@ -238,6 +270,7 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     if options.stdout && (options.write || options.check_format) {
         return Err("--stdout cannot be combined with --write or --check".into());
     }
+    artifact_cli::validate_options(&options)?;
     options.limits.validate()?;
     Ok(options)
 }
@@ -246,7 +279,16 @@ fn add_positional(options: &mut Args, arg: String) -> Result<(), String> {
     if options.command.is_empty() {
         if matches!(
             arg.as_str(),
-            "run" | "check" | "plan" | "compile" | "fmt" | "repl"
+            "run"
+                | "check"
+                | "plan"
+                | "compile"
+                | "fmt"
+                | "repl"
+                | "emit-ir"
+                | "bind-ir"
+                | "plan-ir"
+                | "run-ir"
         ) {
             options.command = arg;
             return Ok(());
@@ -260,6 +302,10 @@ fn add_positional(options: &mut Args, arg: String) -> Result<(), String> {
 }
 
 fn main() -> ExitCode {
+    #[cfg(windows)]
+    if let Some(status) = windows_askpass::handle() {
+        return status;
+    }
     let args: Vec<_> = env::args().skip(1).collect();
     let color = requested_color(&args);
     let result = arguments(args.into_iter())
@@ -310,6 +356,7 @@ fn dispatch(options: &Args) -> CliResult {
     match options.command.as_str() {
         "help" => print_help(HELP, options.color),
         "version" => print_text(concat!("msync ", env!("CARGO_PKG_VERSION"), "\n")),
+        "emit-ir" | "bind-ir" | "plan-ir" | "run-ir" => artifact_cli::run(options),
         "repl" if options.file.is_none() => repl::run(options),
         "repl" => Err("repl does not take a file; use /load inside the REPL".into()),
         _ => run_file(options),
@@ -637,33 +684,44 @@ fn submit(
                 color,
             );
         }
-        let plan = prepare(&program, &script, !dry_run)
-            .map_err(|error| diagnostics(file, source, &[runtime_report(&script, error)], color))?;
-        *compiler = candidate;
-        if matches!(command, "plan" | "compile") {
-            return print_plan(&plan, color);
-        }
-        if dry_run {
-            print_plan(&plan, color)?;
-            return print_status(
-                &format!(
-                    "preview: {} operation(s); no files written\n",
-                    plan.nodes.len()
-                ),
+        let authentication = auth::Submission::foreground(
+            &program,
+            !dry_run,
+            &msync::runtime::ssh::SshContext::default(),
+        )?
+        .with_label(file);
+        authentication.run(|| {
+            let plan = prepare(&program, &script, !dry_run).map_err(|error| {
+                diagnostics(file, source, &[runtime_report(&script, error)], color)
+            })?;
+            *compiler = candidate;
+            if matches!(command, "plan" | "compile") {
+                return print_plan(&plan, color);
+            }
+            if dry_run {
+                print_plan(&plan, color)?;
+                return print_status(
+                    &format!(
+                        "preview: {} operation(s); no files written\n",
+                        plan.nodes.len()
+                    ),
+                    color,
+                );
+            }
+            let mut execution = msync::telemetry::span("execute");
+            let result =
+                scheduler::execute_plan_cancellable(&plan, limits, authentication.cancellation());
+            execution.finish_result(&result);
+            let summary = result.map_err(|error| {
+                diagnostics(file, source, &[runtime_report(&script, error)], color)
+            })?;
+            print_summary(
+                summary,
+                plan.removed.len(),
+                !program.operations.is_empty(),
                 color,
-            );
-        }
-        let mut execution = msync::telemetry::span("execute");
-        let result = scheduler::execute_plan(&plan, limits);
-        execution.finish_result(&result);
-        let summary = result
-            .map_err(|error| diagnostics(file, source, &[runtime_report(&script, error)], color))?;
-        print_summary(
-            summary,
-            plan.removed.len(),
-            !program.operations.is_empty(),
-            color,
-        )
+            )
+        })
     })();
     trace.finish_result(&result);
     result
@@ -674,6 +732,14 @@ fn prepare(
     script: &Script,
     live: bool,
 ) -> Result<Plan, msync::runtime::RuntimeError> {
+    prepare_snapshot(program, script, live).map(|prepared| prepared.plan)
+}
+
+fn prepare_snapshot(
+    program: &msync::compiler::Program,
+    script: &Script,
+    live: bool,
+) -> Result<scheduler::Prepared, msync::runtime::RuntimeError> {
     let operands = script
         .statements
         .iter()
@@ -686,7 +752,7 @@ fn prepare(
                 .unwrap_or((statement.span, statement.span))
         })
         .collect::<Vec<_>>();
-    scheduler::prepare_spanned(program, live, &operands)
+    scheduler::prepare_snapshot_spanned(program, live, &operands)
 }
 
 fn print_summary(
