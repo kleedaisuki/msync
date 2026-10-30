@@ -9,6 +9,12 @@ program calls, directional barriers, source maps and context relocations are
 therefore shared with ordinary 0.5 execution, not replayed through the old parser.
 The object itself keeps its independent format/language version checks.
 
+In 0.5.2, symbol calls and source directives are already expanded in this object.
+Its optional `source_modules_v1` manifest preserves child and captured `$file`
+contexts without reopening scripts. Relocatable IR retains those contextual
+bindings; contextual export resolves them just like other context anchors.
+See [source-module binding](object-context-v5.md#expanded-source-modules-in-052).
+
 `Structured.context == None` is relocatable. `bind-ir` or contextual export
 instantiates symbolic roots and freezes local cwd/HOME/ENV/PATH bindings into
 physical operands, retaining the original compile context. Unknown filesystem

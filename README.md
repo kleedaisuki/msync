@@ -87,6 +87,29 @@ String literals have explicit path-fragment overloads inside `/`; a bare quoted
 transfer source still means literal data. See the [complete operator and space/item
 definitions](docs/design/language-v4.md#-operator-evaluated-item-composition).
 
+## Compile-time functions and source composition (0.5.2)
+
+```text
+symbol home(space):
+    return space::~
+
+config := home($local) / ".codex"
+include "shared.msync"
+execute "tasks/<.+\\.msync>"
+```
+
+Symbols inline statically with independent lexical environments, generic value/
+space arguments, nested calls, explicit definition-time `global`, and a mandatory
+return. Their bodies are pure; they do not emit runtime work. `include` shares
+lexical bindings; `execute` isolates each source's bindings. Both inline before
+runtime, sort selector matches lexicographically, and add no scheduling blocks.
+Source paths are currently compiler-local files; ordinary data-path and cwd
+semantics do not change when a child file is loaded.
+
+Use **release / acquire / acqrel** for scheduling. Old async/await spellings remain
+compatibility aliases; canonical formatting uses the new names. Full rules and
+bounds are in the [language reference](docs/design/language-v4.md).
+
 ## Reusable IR commands
 
 `emit-ir`, `bind-ir`, `plan-ir` and `run-ir` remain available. New exports contain
@@ -148,37 +171,37 @@ Program::stdout -> stdout.txt
 ```
 
 The first line is shorthand for
-`async await Program => $path::bash("-c", "ls")`: launch through the asynchronous
-runtime and wait for that statement's completion. Explicit `async` permits
+`acqrel Program => $path::bash("-c", "ls")`: launch through the asynchronous
+runtime and wait for that statement's completion. Explicit `release` permits
 continued interpretation after launch:
 
 ```text
-async Program => $path::bash("-c", "ls")
+release Program => $path::bash("-c", "ls")
 Program::stdout -> stdout.txt
-await Program
+acquire Program
 ```
 
 | Form | Boundary |
 | --- | --- |
-| `async STATEMENT` | Earlier work cannot move after its start boundary |
-| `await STATEMENT` | Later work cannot move before its completion boundary |
-| `async await STATEMENT` | Both boundaries |
-| `await Program` | Wait for that program and connected port work |
-| `await` | Wait for outstanding work |
-| `async` | Standalone start-side ordering boundary |
+| `release STATEMENT` | Earlier work cannot move after its start boundary |
+| `acquire STATEMENT` | Later work cannot move before its completion boundary |
+| `acqrel STATEMENT` | Both boundaries |
+| `acquire Program` | Wait for that program and connected port work |
+| `acquire` | Wait for outstanding work |
+| `release` | Standalone start-side ordering boundary |
 
 These are directional barriers, not syntax that must be paired. The compiler
 inserts a wait at macro exit for asynchronous programs started in that macro and
 not already awaited. A macro does not silently leak an unfinished local child.
 
-`async` still allows later independent work to move into an earlier block;
-`await` still allows earlier independent work to move into a later block. The
+`release` still allows later independent work to move into an earlier block;
+`acquire` still allows earlier independent work to move into a later block. The
 compiler normalizes these one-way constraints and removes unnecessary blocks
 before building dependency graphs. Real launches and joins remain observation
 anchors; data dependencies and possible aliases still constrain execution.
 
 For a program's newly created files, wait for that program before reading them.
-`async` alone guarantees launch ordering, not file readiness:
+`release` alone guarantees launch ordering, not file readiness:
 
 ```text
 Generator => $path::bash("-c", "printf generated > generated.txt")
@@ -186,7 +209,7 @@ generated.txt -> copied.txt
 ```
 
 The implicit wait finishes `Generator` first; only then does the interpreter
-inspect `generated.txt`. With an explicit async launch, place `await Generator`
+inspect `generated.txt`. With an explicit release launch, place `acquire Generator`
 before the file read instead of relying on process timing.
 
 Program ports are `stdin`, `stdout`, `stderr`, `pid`, `exit_code`, and `meta`.

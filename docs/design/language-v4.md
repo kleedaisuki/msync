@@ -16,14 +16,105 @@ primitives are implementation components, not alternate public CLI semantics.
 A requested grammar and source header must agree, and a header cannot
 retroactively change earlier code.
 
+## 0.5.2 compile-time composition
+
+```text
+symbol home(space):
+    return space::~
+
+symbol under(space, leaf):
+    base := home(space)
+    return base / leaf
+
+config := under($local, ".codex")
+include "shared.msync"
+execute "tasks/<.+\\.msync>"
+```
+
+`symbol` defines a pure compile-time function, not a program or a macro that
+emits operations. Each invocation has its own lexical environment. Arguments
+are typed values (including spaces); no explicit generic/type declarations are
+needed. The body can use `:=`, `global`, `/`, `~`, `::`, nested symbol calls and
+one mandatory terminal `return`. It cannot transfer data, launch programs,
+schedule work, load scripts, or declare nested templates. Structural purity and
+return presence are checked at declaration; operand deduction is checked only
+when instantiated. Unused generic definitions are not speculatively executed.
+
+`global name` imports the binding from the function's definition-time snapshot;
+caller locals are not implicitly captured. Prior symbol definitions remain
+lexically callable, including a finite prior definition hidden by a later same-
+named declaration. Recursive/unbounded calls are rejected. Each compilation has
+a shared one-million-invocation allowance; symbol arguments/intermediate/results
+are bounded to 8MiB, with join growth checked before allocation. Ordinary literal
+transfer payloads do not acquire this constant-evaluation limit.
+
+Functions may return items, strings or namespace/program capabilities. Returned
+spaces can be selected directly (`identity($pwd)::pwd`); returned items compose
+normally (`home($wsl)/config`). This does not introduce a space overload of `/`.
+A program-valued result aliases its existing identity; it does not launch or join
+another process. A returned executable is launched only by an explicit outer
+program invocation. Symbol inlining itself emits no HIR instruction or barrier.
+
+### Source control vocabulary
+
+The canonical source words are `release` (formerly `async`), `acquire` (formerly
+`await`) and `acqrel` (both effects on one statement). Scheduling flags, default
+program joins, directional cuts and runtime ownership are unchanged. The old
+spellings remain accepted compatibility aliases; the formatter writes the new
+canonical words. Internal HIR/serialized operation names are not gratuitously
+renamed. Bare `release`/`acquire` preserve their existing control meanings; a
+combined `acqrel` prefix requires a statement.
+
+### Source files: `execute` and `include`
+
+Both directives resolve a path item or filename string literal and read source
+**during compilation**, before any runtime transfer/program can create it. A
+string is a filename, not inline code or a shell command. The initial provider
+accepts compiler-local ordinary files (including local ENV/PATH lookup); foreign
+source-provider/authentication policy remains an explicit integration boundary.
+It never guesses a remote path into a local mount or reuses runtime file proofs.
+
+- `include` mechanically expands statements into the caller's lexical scope;
+  declarations/templates remain visible and receive the caller's link-unit ID.
+- `execute` creates a fresh lexical scope per file, with no caller bindings,
+  templates or exported locals. It still uses the same instruction/process IDs,
+  pending effects and Region as the caller. It is not a synthetic macro call and
+  adds no implicit join or scheduling fence.
+- Both support the existing final `<regex>` selector, full entry-name matching,
+  and case-sensitive Unicode/UTF-8 lexicographic ordering. Repeating an include
+  repeats its statements; there is no hidden include-once cache.
+- Relative directive filenames resolve from the containing source directory;
+  unnamed REPL/stdin input falls back to logical cwd. Explicit absolute/anchored
+  items win; relative ENV values use logical cwd, matching ordinary environment
+  path relocation. Child `$file` context changes to that logical source file, but child
+  ordinary data paths and executable cwd keep the caller's cwd—no global chdir.
+- Active file identities detect cycles (including symlink/hardlink aliases),
+  independently of cached macro definitions. Reads reject non-regular streams,
+  limit each file to 8MiB, and bound expansion to 64 active levels, 1024 files and
+  32MiB total input. Failed expansion commits no candidate lexical environment.
+
+Expanded source content is compiled into the ordinary typed object; running an
+object does not reopen source scripts. Explicit `source_modules_v1` semantic
+bindings retain child/captured `$file` contexts. Contextual bindings can relocate
+relative to the main module, cwd, HOME or ENV; caller-provided `Context.modules`
+entries override defaults. New records use an explicit feature flag and a
+validated acyclic dependency graph. Old objects without source-module metadata
+retain their caller-binding contract. Debug source filenames are never linker
+inputs. See [object context](object-context-v5.md).
+
+Repeated relative/absolute spellings of one logical source share a module
+binding, preferring its contextual path so object relocation is retained.
+Contradictory contextual bindings for that module are diagnosed at both directive
+sites: after relocation they could otherwise refer to different source contexts.
+
 ## Static compilation boundary
 
 `check`, `compile`, `plan`, and `run --dry-run` perform parsing, typed lexical
 expansion, IR validation, block partitioning, and machine-independent graph
 optimization. They do not inspect endpoint kinds, canonicalize physical paths,
 resolve executable PATH entries, launch transport helpers, or initialize an
-executor. Reading the requested source and explicitly enabled telemetry are
-ordinary CLI IO, not endpoint discovery.
+executor. Reading the requested and transitively included/executed sources, plus explicitly
+enabled telemetry, is compiler input IO—not runtime endpoint discovery.
 
 A missing input can legitimately be created by an earlier program. An existing
 input can legitimately be deleted or replaced before its block executes.
@@ -188,37 +279,37 @@ Program => $path::bash("-c", "ls")
 This is equivalent to:
 
 ```text
-async await Program => $path::bash("-c", "ls")
+acqrel Program => $path::bash("-c", "ls")
 ```
 
 The runtime always launches asynchronously, but this default statement does not
 finish until its child completes. Explicit launch-only syntax is:
 
 ```text
-async Program => $path::bash("-c", "ls")
+release Program => $path::bash("-c", "ls")
 Program::stdout -> stdout.txt
-await Program
+acquire Program
 ```
 
 The AST represents modifiers as a scheduled statement with independent
-`asynchronous` and `awaited` flags, plus standalone `async` and
-`await [Program]` forms. They do not introduce a suite or require pairing.
+`asynchronous` and `awaited` flags, plus standalone `release` and
+`acquire [Program]` forms. They do not introduce a suite or require pairing.
 
 | Construct | Ordering obligation |
 | --- | --- |
-| `async STATEMENT` | Earlier work cannot sink past its start boundary; later independent work may hoist |
-| `await STATEMENT` | Later work cannot hoist before its completion boundary; earlier independent work may sink |
-| `async await STATEMENT` | Both obligations |
-| `async` | Standalone start-side boundary |
-| `await Program` | Wait for this program and connected port work |
-| `await` | Wait for outstanding work |
+| `release STATEMENT` | Earlier work cannot sink past its start boundary; later independent work may hoist |
+| `acquire STATEMENT` | Later work cannot hoist before its completion boundary; earlier independent work may sink |
+| `acqrel STATEMENT` | Both obligations |
+| `release` | Standalone start-side boundary |
+| `acquire Program` | Wait for this program and connected port work |
+| `acquire` | Wait for outstanding work |
 
 The compiler lowers boundaries explicitly, normalizes their original one-way
 constraints, then partitions the optimized IR and constructs each block's
 dependency graph. It can merge file-only source regions without moving IO across
 an opaque program launch or actual join. The interpreter
 finishes the previous block before contextualizing the next. A launch block's
-completion means the async process is admitted and owned, not that it has exited.
+completion means the release process is admitted and owned, not that it has exited.
 Similarly, admitting a background stream does not mean waiting for EOF.
 
 Inside a block, proven-independent finite operations may overlap or reorder.
@@ -230,7 +321,7 @@ barrier, not optimistic pre-execution metadata, orders observations that need
 those effects to be complete.
 
 Ordered block admission does not make an explicitly asynchronous child finish.
-Reading a file created by that child needs `await Program` before the read (or
+Reading a file created by that child needs `acquire Program` before the read (or
 the default unmarked synchronous call). Otherwise an absent file is a legitimate
 runtime race, not a reason to preinspect future blocks or invent a completion
 edge from opaque shell text.
@@ -244,7 +335,7 @@ completion. Exit status is data; nonzero does not itself mean transport failure.
 
 ```text
 macro generate(output):
-    async Generator => $path::bash("-c", "printf generated")
+    release Generator => $path::bash("-c", "printf generated")
     Generator::stdout -> output
 
 generate($pwd::pwd / "generated.txt")
@@ -259,10 +350,10 @@ snapshot of the visible environment. At invocation:
 4. Resolve locals there. `global x` imports only the definition-time `x`.
 5. Inline semantic operations and retain call/definition provenance.
 6. Insert a wait at macro exit for each process this expansion started
-   asynchronously and did not already await.
+   asynchronously and did not already acquire.
 
 An explicit wait discharges that pending child obligation. A macro cannot leak
-an unfinished local async program merely by dropping its binding. A macro exit
+an unfinished local release program merely by dropping its binding. A macro exit
 does not wait for unrelated caller-owned programs. Repeated expansion must not
 reuse a prior invocation's process identity. Nested macro definitions remain
 outside the current language contract.
@@ -311,7 +402,7 @@ lexical state, so commas/comments/operators inside them are not split as syntax.
 
 Formatting edits the source file by default. `--check` and `--stdout` are explicit
 read-only modes; compiled objects are rejected without modification. Comments
-and typed operand meaning survive formatting, including async/await modifiers.
+and typed operand meaning survive formatting, including release/acquire modifiers.
 
 Every lowered instruction retains its primary operation/operand and expansion
 origins. Runtime provenance is not error classification: IO failures remain
@@ -320,6 +411,23 @@ errors without a real location never fabricate `Span::default()` as line 1.
 See [runtime diagnostics](runtime-diagnostics-v4.md).
 
 ## Design references and acceptance
+
+Source expansion borrows the caller-scope distinction from
+[CMake include](https://cmake.org/cmake/help/latest/command/include.html), the
+containing-file lookup convention from
+[GCC include search](https://gcc.gnu.org/onlinedocs/cpp/Search-Path.html), and
+explicit deterministic ordering rather than filesystem enumeration (also used
+by [CMake file GLOB](https://cmake.org/cmake/help/latest/command/file.html#filesystem)).
+These are mechanism precedents, not alternative definitions of msync's syntax:
+execute isolates lexical state while sharing the instruction allocator and region.
+
+[Rust const blocks](https://doc.rust-lang.org/reference/expressions/block-expr.html#const-blocks)
+illustrate generic compile-time evaluation without runtime function machinery.
+[Clang's bounded template backtraces](https://clang.llvm.org/docs/UsersManual.html#options-to-control-error-and-warning-messages)
+and [Gradual Metaprogramming (2025)](https://arxiv.org/abs/2506.09043) inform the
+diagnostic design: preserve the originating definition and instantiation sites
+rather than blame only the final generated expression. msync uses owned source
+locations and bounded expansion frames, not those systems' type calculi.
 
 The [MLIR canonicalization contract](https://mlir.llvm.org/docs/Canonicalization/)
 provides the useful separation: rewrites should converge and correctness must

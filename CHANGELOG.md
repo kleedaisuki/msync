@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.2 — implementation candidate
+
+- Add pure, lexically isolated generic `symbol` functions with explicit global
+  capture, nested static calls, mandatory return and instantiation diagnostics.
+- Canonicalize scheduling source to `release`, `acquire` and `acqrel`; keep old
+  source aliases and serialized/runtime scheduling contracts compatible.
+- Statically inline `execute` (isolated lexical environment per file) and
+  `include` (shared lexical environment), sorting source-selector matches without
+  synthetic scheduling boundaries. Compiler-local source intake is bounded.
+- Carry explicit source-module bindings in tagged object metadata, preserving
+  `$file` and captured definition contexts without reopening source scripts or
+  guessing linker paths from debug filenames. Caller context overrides win.
+- Bound compile-time function work/intermediate values independently of ordinary
+  transfer payload sizes. CI now selects the changed frontend/object journeys;
+  a Git-proven package-version-only bump no longer forces unrelated full tests.
+
 ## 0.5.0 — 2026-10-30
 
 ### Integrated public delivery

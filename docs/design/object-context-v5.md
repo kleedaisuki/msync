@@ -54,6 +54,27 @@ creation/deletion journeys. Logs are `.temp/barrier-artifact-<target>.log` and
 the exit-code summary is `.temp/barrier-artifact-results.json`. This validates
 those compiled paths, not subsequent edits or whole-project release readiness.
 
+## Expanded source modules in 0.5.2
+
+`include`, `execute`, and pure symbol calls disappear during lowering. Expanded
+instructions still need the semantic `$file` context of their definition, even
+when the source files no longer exist. Objects therefore optionally carry
+`source_modules`, guarded by the `source_modules_v1` feature. Objects without
+these bindings retain their existing encoding and binding contract.
+
+Each entry associates an opaque module name with either an explicit absolute
+source path or a contextual path expression. Contextual paths may depend on the
+entry module or another source module. Validation requires unique non-main
+names, a closed acyclic dependency graph, valid path operands, and at most 1024
+entries. Only referenced bindings and their transitive parents are retained.
+Unknown features remain errors for readers that do not implement them.
+
+Instantiation evaluates this graph without opening source files. Explicit
+`Context.modules` bindings override defaults. Diagnostic filenames and source
+text are never used to invent missing module bindings; changing debug text must
+not change execution. Source acquisition happens only when compiling source,
+not while instantiating an object or replaying structured IR.
+
 ## Upstream design references
 
 - [Serde container attributes](https://serde.rs/container-attrs.html): unknown
