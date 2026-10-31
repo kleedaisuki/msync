@@ -1,16 +1,21 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::endpoint::{Backend, Location};
-use crate::hir::effects::{AccessKind, Effects, FileResource, Resource, Scope};
+use crate::hir::effects::{AccessKind, Effects, FileResource, Files, Resource, Resources, Scope};
 use crate::hir::graph::PlanningContext;
 use crate::plan::FileClass;
 
 #[derive(Clone, Default)]
 pub(super) struct State {
     events: Vec<Event>,
+    event_groups: HashMap<Location, Vec<usize>>,
+    event_index: Arc<Files>,
+    sequence: usize,
     unknown: bool,
     pending_writes: Vec<PendingWrite>,
+    pending_index: Arc<Resources>,
+    managed: HashSet<Location>,
     independent: Arc<HashSet<(Location, Location)>>,
 }
 
@@ -25,9 +30,16 @@ struct Event {
     resource: Arc<FileResource>,
     tree: bool,
     kind: FileClass,
+    sequence: usize,
 }
 
 impl State {
+    pub(super) fn record_metrics(&self, span: &mut crate::telemetry::SpanGuard) {
+        span.metric("postcondition_updates", self.sequence as u64);
+        span.metric("postcondition_groups", self.events.len() as u64);
+        span.metric("pending_writes", self.pending_writes.len() as u64);
+    }
+
     pub(super) fn initial(context: &PlanningContext) -> Self {
         let mut state = Self::default();
         // Process IDs establish port availability, not filesystem snapshots.
@@ -41,32 +53,33 @@ impl State {
 
     pub(super) fn invalidate_writes(&mut self, effects: &Effects) {
         self.unknown |= effects.unknown_external;
-        self.pending_writes.extend(
-            effects
-                .accesses
-                .iter()
-                .filter(|access| {
-                    access.kind == AccessKind::Write
-                        && matches!(
-                            access.resource,
-                            Resource::File(_)
-                                | Resource::DirectoryEntry(_)
-                                | Resource::DirectoryEntries(_)
-                                | Resource::DirectoryMetadata(_)
-                        )
-                })
-                .map(|access| PendingWrite {
-                    resource: access.resource.clone(),
-                    managed: false,
-                }),
-        );
+        for access in &effects.accesses {
+            if access.kind == AccessKind::Write
+                && matches!(
+                    access.resource,
+                    Resource::File(_)
+                        | Resource::DirectoryEntry(_)
+                        | Resource::DirectoryEntries(_)
+                        | Resource::DirectoryMetadata(_)
+                )
+            {
+                self.insert_pending(access.resource.clone(), false);
+            }
+        }
+    }
+
+    fn insert_pending(&mut self, resource: Resource, managed: bool) {
+        Arc::make_mut(&mut self.pending_index).insert(&resource, self.pending_writes.len());
+        self.pending_writes.push(PendingWrite { resource, managed });
     }
 
     pub(super) fn defer_write(&mut self, location: Location) {
-        self.pending_writes.push(PendingWrite {
-            resource: Resource::File(FileResource::new(location, Scope::Tree)),
-            managed: true,
-        });
+        if self.managed.insert(location.clone()) {
+            self.insert_pending(
+                Resource::File(FileResource::new(location, Scope::Tree)),
+                true,
+            );
+        }
     }
 
     pub(super) fn extend_independent(&mut self, pairs: &HashSet<(Location, Location)>) {
@@ -79,7 +92,10 @@ impl State {
         }
         let reader = Resource::File(FileResource::new(location.clone(), Scope::Exact));
         let mut candidates = Vec::new();
-        for write in &self.pending_writes {
+        let mut indices = BTreeSet::new();
+        self.pending_index.candidates(&reader, &mut indices);
+        for index in indices {
+            let write = &self.pending_writes[index];
             if !write.resource.may_overlap(&reader) {
                 continue;
             }
@@ -116,27 +132,47 @@ impl State {
             return false;
         }
         let resource = Resource::File(FileResource::new(location.clone(), Scope::Exact));
-        !self
-            .pending_writes
-            .iter()
-            .any(|write| {
-                !(write.managed && matches!(&write.resource, Resource::File(file) if self.independent(&file.location, location)))
-                    && write.resource.may_overlap(&resource)
-            })
+        let mut indices = BTreeSet::new();
+        self.pending_index.candidates(&resource, &mut indices);
+        !indices.into_iter().any(|index| {
+            let write = &self.pending_writes[index];
+            !(write.managed && matches!(&write.resource, Resource::File(file) if self.independent(&file.location, location)))
+                && write.resource.may_overlap(&resource)
+        })
     }
 
     pub(super) fn unknown(&mut self) {
         self.events.clear();
+        self.event_groups.clear();
+        self.event_index = Arc::default();
+        self.sequence = 0;
         self.independent = Arc::default();
         self.unknown = true;
     }
 
     pub(super) fn write(&mut self, location: Location, tree: bool, kind: FileClass) {
+        let groups = self.event_groups.entry(location.clone()).or_default();
+        if let Some(&index) = groups
+            .iter()
+            .find(|&&index| self.events[index].tree == tree && self.events[index].kind == kind)
+        {
+            // Identical events either return the same answer or both skip for
+            // every query. Only their most recent position can influence class.
+            self.events[index].sequence = self.sequence;
+            self.sequence += 1;
+            return;
+        }
+        let resource = Arc::new(FileResource::new(location, Scope::Exact));
+        let index = self.events.len();
+        Arc::make_mut(&mut self.event_index).insert(&resource, index);
+        groups.push(index);
         self.events.push(Event {
-            resource: Arc::new(FileResource::new(location, Scope::Exact)),
+            resource,
             tree,
             kind,
+            sequence: self.sequence,
         });
+        self.sequence += 1;
     }
 
     pub(super) fn class(
@@ -144,8 +180,21 @@ impl State {
         location: &Location,
         initial: &HashMap<Location, FileClass>,
     ) -> FileClass {
-        let mut resource = None;
-        for event in self.events.iter().rev() {
+        let resource = FileResource::new(location.clone(), Scope::Exact);
+        let mut indices = BTreeSet::new();
+        if location.path.split(['/', '\\']).any(|part| part == "..") {
+            // Classification preserves raw traversal postconditions even when
+            // normalized alias keys cancel a component (a/../b still crosses a).
+            indices.extend(0..self.events.len());
+        } else {
+            self.event_index.candidates(&resource, &mut indices);
+        }
+        let mut events = indices
+            .into_iter()
+            .map(|index| &self.events[index])
+            .collect::<Vec<_>>();
+        events.sort_unstable_by_key(|event| std::cmp::Reverse(event.sequence));
+        for event in events {
             let event_location = &event.resource.location;
             if self.independent(location, event_location) {
                 continue;
@@ -172,10 +221,7 @@ impl State {
             {
                 continue;
             }
-            if resource
-                .get_or_insert_with(|| FileResource::new(location.clone(), Scope::Exact))
-                .may_overlap(&event.resource)
-            {
+            if resource.may_overlap(&event.resource) {
                 return FileClass::Unknown;
             }
         }
@@ -270,3 +316,6 @@ mod namespace_tests {
         assert!(!state.host_is_stable(&wsl));
     }
 }
+
+#[cfg(test)]
+mod tests;

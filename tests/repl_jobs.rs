@@ -260,15 +260,59 @@ fn live_stream_keeps_repl_responsive_and_stop_joins_resources() {
             .unwrap()
     };
     let schedule = phase("schedule");
-    let execute = trace
+    let records = trace
         .lines()
-        .find(|line| {
-            line.contains("\"name\":\"execute\"")
-                && json_string(line, "span_id") == json_string(schedule, "parent_span_id")
-        })
-        .expect(
-            "the schedule must retain its actual execution parent, not an earlier empty submission",
-        );
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let spans = records
+        .iter()
+        .filter(|record| record["kind"] == "span")
+        .map(|record| (record["span_id"].as_str().unwrap(), record))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut current = spans[json_string(schedule, "span_id")];
+    let mut ancestry = Vec::new();
+    let mut visited = std::collections::BTreeSet::new();
+    loop {
+        let id = current["span_id"].as_str().unwrap();
+        assert!(visited.insert(id), "cyclic trace ancestry: {trace}");
+        assert_eq!(current["trace_id"], json_string(schedule, "trace_id"));
+        ancestry.push(current);
+        let Some(parent) = current["parent_span_id"].as_str() else {
+            break;
+        };
+        current = spans
+            .get(parent)
+            .expect("every admission ancestor must exist");
+    }
+    let names = ancestry
+        .iter()
+        .map(|record| record["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        names.starts_with(&[
+            "schedule",
+            "interpreter.instruction",
+            "interpreter.block",
+            "execute",
+            "submission"
+        ]),
+        "the schedule must retain its actual instruction/block/execution/submission ancestry: {trace}"
+    );
+    assert_eq!(ancestry[1]["attributes"]["instruction.kind"], "transfer");
+    assert!(
+        ancestry[2]["metrics"]["instructions"]
+            .as_u64()
+            .is_some_and(|count| count > 0)
+    );
+    let submission = ancestry[4]["span_id"].as_str().unwrap();
+    assert!(
+        spans.values().any(|record| record["name"] == "compile"
+            && record["parent_span_id"] == submission
+            && record["metrics"]["operations"]
+                .as_u64()
+                .is_some_and(|count| count > 0)),
+        "admission must belong to the nonempty compilation, not an earlier empty binding submission: {trace}"
+    );
     let task = trace
         .lines()
         .find(|line| {
@@ -277,19 +321,15 @@ fn live_stream_keeps_repl_responsive_and_stop_joins_resources() {
         })
         .expect("the scheduled flow must retain its actual task child");
     assert_eq!(
-        json_string(schedule, "parent_span_id"),
-        json_string(execute, "span_id")
-    );
-    assert_eq!(
         json_string(task, "parent_span_id"),
         json_string(schedule, "span_id")
     );
-    assert!(
-        trace
-            .lines()
-            .any(|line| line.contains("\"name\":\"submission\"")
-                && json_string(line, "span_id") == json_string(execute, "parent_span_id"))
+    assert_eq!(
+        json_string(schedule, "parent_span_id"),
+        ancestry[1]["span_id"].as_str().unwrap()
     );
+    assert_eq!(ancestry[0]["metrics"]["granted_slots"], 1);
+    assert_eq!(ancestry[0]["metrics"]["reserved_buffer_bytes"], 131072);
 }
 
 #[test]
@@ -560,7 +600,7 @@ fn source_load_reuses_bindings_without_a_second_compiler() {
     let (status, errors) = repl.finish();
     assert!(status.success(), "{errors}");
     assert!(errors.contains("unsupported syntax version"), "{errors}");
-    assert!(repl.output.contains("syntax: 0.5"), "{}", repl.output);
+    assert!(repl.output.contains("syntax: 0.6"), "{}", repl.output);
     assert_eq!(
         fs::read(directory.path().join("copied.txt")).unwrap(),
         b"shared path binding"

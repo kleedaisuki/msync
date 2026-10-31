@@ -34,11 +34,49 @@ impl Default for ResourceLimits {
 
 impl ResourceLimits {
     pub fn validate(&self) -> Result<(), String> {
-        if self.jobs == 0 || self.max_streams == 0 || self.buffer_bytes == 0 {
-            return Err("jobs, max-streams and buffer-size must be positive".into());
+        self.validate_keyed().map_err(|(_, message)| message)
+    }
+
+    /// Uses configuration field names while preserving the original string-error API.
+    pub fn validate_keyed(&self) -> Result<(), (&'static str, String)> {
+        for (key, value) in [
+            ("jobs", self.jobs),
+            ("max_streams", self.max_streams),
+            ("buffer_size", self.buffer_bytes),
+        ] {
+            if value == 0 {
+                return Err((
+                    key,
+                    "jobs, max-streams and buffer-size must be positive".into(),
+                ));
+            }
+        }
+        if self.buffer_bytes > isize::MAX as usize {
+            return Err((
+                "buffer_size",
+                "buffer-size exceeds the platform allocation range".into(),
+            ));
         }
         if self.memory_bytes < self.buffer_bytes {
-            return Err("memory-limit must admit at least one buffer-size".into());
+            return Err((
+                "memory_limit",
+                "memory-limit must admit at least one buffer-size".into(),
+            ));
+        }
+        for (key, permits) in [
+            ("jobs", self.jobs),
+            ("max_streams", self.max_streams),
+            ("memory_limit", self.memory_bytes / self.buffer_bytes),
+        ] {
+            if permits > tokio::sync::Semaphore::MAX_PERMITS {
+                return Err((
+                    key,
+                    format!(
+                        "{key} exceeds the platform admission range (maximum {} permit units)",
+                        tokio::sync::Semaphore::MAX_PERMITS
+                    ),
+                ));
+            }
         }
         Ok(())
     }
@@ -1143,6 +1181,63 @@ mod admission_tests {
                 bytes: 4
             }),
             Some(0)
+        );
+    }
+}
+
+#[cfg(test)]
+mod resource_limit_tests {
+    use super::ResourceLimits;
+
+    #[test]
+    fn platform_limit_errors_identify_the_configuration_field() {
+        for key in ["jobs", "max_streams", "memory_limit"] {
+            let mut limits = ResourceLimits::default();
+            let excessive = tokio::sync::Semaphore::MAX_PERMITS + 1;
+            match key {
+                "jobs" => limits.jobs = excessive,
+                "max_streams" => limits.max_streams = excessive,
+                "memory_limit" => {
+                    limits.buffer_bytes = 1;
+                    limits.memory_bytes = excessive;
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(limits.validate_keyed().unwrap_err().0, key);
+        }
+        let limits = ResourceLimits {
+            buffer_bytes: usize::MAX,
+            memory_bytes: usize::MAX,
+            ..ResourceLimits::default()
+        };
+        assert_eq!(limits.validate_keyed().unwrap_err().0, "buffer_size");
+    }
+
+    #[test]
+    fn platform_admission_boundary_and_original_error_messages_are_preserved() {
+        let maximum = tokio::sync::Semaphore::MAX_PERMITS;
+        let limits = ResourceLimits {
+            jobs: maximum,
+            max_streams: maximum,
+            buffer_bytes: 1,
+            memory_bytes: maximum,
+        };
+        assert!(limits.validate().is_ok());
+        let zero = ResourceLimits {
+            jobs: 0,
+            ..ResourceLimits::default()
+        };
+        assert_eq!(
+            zero.validate().unwrap_err(),
+            "jobs, max-streams and buffer-size must be positive"
+        );
+        let missing = ResourceLimits {
+            memory_bytes: 0,
+            ..ResourceLimits::default()
+        };
+        assert_eq!(
+            missing.validate().unwrap_err(),
+            "memory-limit must admit at least one buffer-size"
         );
     }
 }

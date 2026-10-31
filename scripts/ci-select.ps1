@@ -54,9 +54,15 @@ function Add-Targets([string[]] $Names) {
     }
 }
 
-$frontend = @('cli_v052', 'language_v052', 'symbol_v052', 'scripts_v052', 'scripts_env_v052', 'directional_barriers_v5', 'language_v4', 'language_barriers_v5', 'frontend_barriers_v5', 'join_v4', 'version_v4', 'source_v4', 'lowering_v4', 'hir_plan_v4', 'barrier_graph_v5', 'planner_optimization_v4', 'planner_proof_sharing_v4', 'pipeline_v4', 'submission_v4', 'cli_structured_v4')
-$execution = @('execution_v4', 'ordinary_execution_v4', 'runtime_guards_v4', 'block_specialization_v5', 'execution_workspace_v4', 'program_execution_v4', 'macro_native_v4', 'physical_execution_v4', 'endpoint_execution_v4', 'remote_publication_v5', 'barrier_cli_v5', 'barrier_runtime_v5', 'process_exit_observation_v5', 'recovery_concurrency_v5', 'barrier_crash_v5', 'storage_crash_v5', 'cli_structured_v4', 'runtime_task_telemetry_v4', 'structured_telemetry_v4', 'repl_jobs')
-$objects = @('cli_v052', 'symbol_v052', 'scripts_v052', 'scripts_env_v052', 'object_codec_v4', 'object_linker_v4', 'relocation_lowering_v4', 'artifact_cli_v4', 'independent_object_integrity_v4', 'independent_object_journeys_v4', 'independent_phase_journeys_v4', 'barrier_cli_v5')
+$frontend = @('cli_v060', 'integration_v060', 'compiler_functions_v060', 'compiler_mutation_v060', 'compiler_fragments_v060', 'ranges_v6', 'language_v6', 'language_presentation_v6', 'planner_control_v6', 'review_v060', 'cli_v052', 'language_v052', 'symbol_v052', 'scripts_v052', 'scripts_env_v052', 'directional_barriers_v5', 'language_v4', 'language_barriers_v5', 'frontend_barriers_v5', 'join_v4', 'version_v4', 'source_v4', 'lowering_v4', 'hir_plan_v4', 'barrier_graph_v5', 'planner_optimization_v4', 'planner_proof_sharing_v4', 'pipeline_v4', 'submission_v4', 'cli_structured_v4')
+$execution = @('control_runtime_v6', 'cli_v060', 'integration_v060', 'planner_control_v6', 'review_v060', 'execution_v4', 'ordinary_execution_v4', 'runtime_guards_v4', 'block_specialization_v5', 'execution_workspace_v4', 'program_execution_v4', 'macro_native_v4', 'physical_execution_v4', 'endpoint_execution_v4', 'remote_publication_v5', 'barrier_cli_v5', 'barrier_runtime_v5', 'process_exit_observation_v5', 'recovery_concurrency_v5', 'barrier_crash_v5', 'storage_crash_v5', 'cli_structured_v4', 'runtime_task_telemetry_v4', 'structured_telemetry_v4', 'repl_jobs')
+$objects = @('cli_v060', 'integration_v060', 'object_v6', 'review_v060', 'cli_v052', 'symbol_v052', 'scripts_v052', 'scripts_env_v052', 'object_codec_v4', 'object_linker_v4', 'relocation_lowering_v4', 'artifact_cli_v4', 'independent_object_integrity_v4', 'independent_object_journeys_v4', 'independent_phase_journeys_v4', 'barrier_cli_v5')
+$configuration = @('config_cli_v6', 'performance_journeys', 'performance_review_v6', 'telemetry_sqlite_cli')
+$tooling = @('highlight_v6', 'tooling_v6', 'source_lines_v6', 'performance_lsp_journeys', 'language_v6', 'language_presentation_v6')
+$observability = @('telemetry', 'telemetry_sqlite', 'telemetry_sqlite_cli', 'runtime_task_telemetry_v4', 'performance_journeys', 'performance_review_v6')
+$frontend += @('object_analysis_v6', 'performance_journeys', 'source_lines_v6', 'performance_lsp_journeys')
+$execution += @('runtime_activity_v6', 'latency_v6', 'performance_journeys', 'telemetry_sqlite_cli')
+$objects += @('object_analysis_v6', 'performance_journeys')
 
 foreach ($path in $Paths) {
     switch -Regex ($path.Replace('\', '/')) {
@@ -70,6 +76,7 @@ foreach ($path in $Paths) {
             }
             break
         }
+        '^\.github/workflows/editor\.yml$' { break }
         '^(build\.rs|\.github/)' {
             $full = $true
             $rust = $true
@@ -82,9 +89,29 @@ foreach ($path in $Paths) {
             Add-Targets @('repl_terminal', 'barrier_terminal_v5')
             break
         }
+        '^tests/support/(journey_process|lsp_client)\.rs$' {
+            $rust = $true
+            Add-Targets @('performance_journeys', 'performance_lsp_journeys', 'source_lines_v6')
+            break
+        }
         '^tests/([^/]+)\.rs$' {
             $rust = $true
             Add-Targets @($Matches[1])
+            break
+        }
+        '^src/config(?:\.rs|/)' {
+            $rust = $true
+            Add-Targets $configuration
+            break
+        }
+        '^src/(language_server(?:\.rs|/)|tooling\.rs)' {
+            $rust = $true
+            Add-Targets $tooling
+            break
+        }
+        '^src/telemetry(?:\.rs|/)' {
+            $rust = $true
+            Add-Targets $observability
             break
         }
         '^src/(language/|compiler/structured(?:\.rs|/)|hir[/.]|pipeline\.rs|source\.rs)' {
@@ -116,12 +143,17 @@ foreach ($path in $Paths) {
         }
         '^src/(main|structured|doctor)\.rs$|^src/structured/' {
             $rust = $true
+            Add-Targets $configuration
+            Add-Targets $observability
+            Add-Targets @('latency_v6', 'performance_lsp_journeys')
             Add-Targets @('cli_v052', 'cli', 'cli_structured_v4', 'cli_barriers_v5', 'artifact_cli_v4', 'doctor_v4', 'runtime_diagnostics_v4', 'independent_phase_journeys_v4', 'version_v4', 'ux_031', 'repl_jobs', 'repl_terminal', 'barrier_terminal_v5', 'review_ui_031', 'barrier_cli_v5', 'barrier_runtime_v5', 'process_exit_observation_v5', 'recovery_concurrency_v5', 'barrier_crash_v5', 'structured_telemetry_v4', 'runtime_task_telemetry_v4')
             break
         }
         '^src/(editor|repl|presentation|shell|highlight|suggest|progress)\.rs$' {
             $rust = $true
-            Add-Targets @('language_v052', 'cli', 'cli_structured_v4', 'ux_031', 'repl_jobs', 'repl_terminal', 'barrier_terminal_v5', 'review_ui_031', 'barrier_cli_v5', 'runtime_diagnostics_v4')
+            Add-Targets $tooling
+            Add-Targets @('latency_v6', 'config_cli_v6', 'performance_journeys')
+            Add-Targets @('language_presentation_v6', 'language_v6', 'language_v052', 'cli', 'cli_structured_v4', 'ux_031', 'repl_jobs', 'repl_terminal', 'barrier_terminal_v5', 'review_ui_031', 'barrier_cli_v5', 'runtime_diagnostics_v4')
             break
         }
         '^src/(compiler|syntax)\.rs$' {

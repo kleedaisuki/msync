@@ -32,6 +32,7 @@ pub(super) struct State {
     notices: Vec<String>,
     errors: Vec<CliError>,
     progress_enabled: bool,
+    progress_settings: msync::config::ProgressSettings,
     ssh: msync::runtime::ssh::SshContext,
     last: Option<LastIr>,
 }
@@ -43,6 +44,57 @@ struct LastIr {
 }
 
 impl State {
+    pub fn read_input(
+        &mut self,
+        input: &mut tokio::sync::mpsc::Receiver<Result<editor::InputEvent, String>>,
+        printer: &mut editor::NoticePrinter,
+        color: Color,
+    ) -> Result<editor::InputEvent, String> {
+        enum Wake {
+            Input(Option<Result<editor::InputEvent, String>>),
+            Work,
+        }
+        let mut notice_error = None;
+        loop {
+            if !self.active() {
+                let event = input
+                    .blocking_recv()
+                    .ok_or_else(|| "input reader exited without a result".to_owned())?;
+                return notice_error.map_or(event, Err);
+            }
+            let executor = self.executor.as_ref().expect("active execution runtime");
+            let runtime = self.runtime.as_ref().expect("active execution session");
+            let mut wait = msync::telemetry::span("repl.wait");
+            let wake = executor.block_on(async {
+                tokio::select! {
+                    event = input.recv() => Wake::Input(event),
+                    _ = runtime.wait_ready() => Wake::Work,
+                }
+            });
+            wait.attribute(
+                "cause",
+                match &wake {
+                    Wake::Input(_) => "input",
+                    Wake::Work => "completion",
+                },
+            );
+            drop(wait);
+            match wake {
+                Wake::Input(event) => {
+                    let event =
+                        event.ok_or_else(|| "input reader exited without a result".to_owned())?;
+                    return notice_error.map_or(event, Err);
+                }
+                Wake::Work => {
+                    self.poll(color);
+                    if let Err(error) = self.flush_idle_notices(printer, color) {
+                        notice_error.get_or_insert(error);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn active(&self) -> bool {
         self.runtime.as_ref().is_some_and(RuntimeSession::has_work)
     }
@@ -61,6 +113,10 @@ impl State {
     }
 
     fn reconcile(&mut self) {
+        self.reconcile_status("completed");
+    }
+
+    fn reconcile_status(&mut self, status: &str) {
         let pending = self
             .runtime
             .as_ref()
@@ -70,7 +126,7 @@ impl State {
         for mut job in std::mem::take(&mut self.jobs) {
             job.retain(&pending);
             if job.is_empty() {
-                self.notices.push(format!("job {}: completed", job.id));
+                self.notices.push(format!("job {}: {status}", job.id));
             } else {
                 retained.push(job);
             }
@@ -96,12 +152,8 @@ impl State {
         if let Err(error) =
             dispatch_located(executor, "poll", color, &self.jobs, runtime.poll_ready())
         {
-            let _ = executor.block_on(runtime.cancel_active());
-            for job in std::mem::take(&mut self.jobs) {
-                self.notices
-                    .push(format!("job {}: stopped after execution failure", job.id));
-            }
             self.errors.push(error);
+            self.reconcile_status("settled after a background failure");
             self.progress();
             return;
         }
@@ -115,6 +167,27 @@ impl State {
         }
         for error in std::mem::take(&mut self.errors) {
             print_error(&error, color);
+        }
+        Ok(())
+    }
+
+    fn flush_idle_notices(
+        &mut self,
+        printer: &mut editor::NoticePrinter,
+        color: Color,
+    ) -> Result<(), String> {
+        let had_errors = !self.errors.is_empty();
+        for error in std::mem::take(&mut self.errors) {
+            print_error(&error, color);
+        }
+        if had_errors {
+            printer.refresh()?;
+        }
+        for message in std::mem::take(&mut self.notices) {
+            printer.print(format!(
+                "{}\n",
+                presentation::human(message.trim_end(), color.stdout())
+            ))?;
         }
         Ok(())
     }
@@ -365,12 +438,15 @@ impl State {
         options: &Args,
         incremental: bool,
     ) -> CliResult {
+        self.compiler = candidate;
+        if compiled.program.body.instructions.is_empty() {
+            return Ok(());
+        }
         let compiled = Arc::new(compiled);
         let parent = msync::telemetry::context();
         let mut execution = msync::telemetry::linked_span("execute", parent.as_ref());
         execution.expect_completion();
         let execution_context = execution.context();
-        self.compiler = candidate;
         let initialized = msync::telemetry::with_context(execution_context.as_ref(), || {
             self.ensure_runtime(context, options)
         });
@@ -381,9 +457,10 @@ impl State {
         let reporter = if options.trace.as_deref() == Some("-") {
             None
         } else {
-            crate::progress::Reporter::start(options.color).map_err(|cause| {
-                Issue::new("cannot start execution progress").field("cause", cause.to_string())
-            })?
+            crate::progress::Reporter::start_with(options.color, options.settings.progress.clone())
+                .map_err(|cause| {
+                    Issue::new("cannot start execution progress").field("cause", cause.to_string())
+                })?
         };
         let started = std::time::Instant::now();
         let runtime = self
@@ -454,7 +531,17 @@ impl State {
             .collect::<BTreeSet<_>>();
         let partial = outcome.is_err().then(|| runtime.take_report());
         let job = if incremental && !added.is_empty() {
-            let admission = jobs::register(&mut self.jobs, &mut self.next_job, added, &compiled);
+            let sources = jobs::RuntimeSources {
+                instructions: runtime.work_instructions(),
+                programs: runtime.work_processes(),
+            };
+            let admission = jobs::register_with_sources(
+                &mut self.jobs,
+                &mut self.next_job,
+                added,
+                &compiled,
+                &sources,
+            );
             let id = admission.id;
             for merged in &admission.merged {
                 self.notices.push(format!(
@@ -550,7 +637,7 @@ impl State {
         let mut execution = ExecutionOptions::new(context.pwd.join(".temp"));
         execution.limits = options.limits.clone();
         execution.max_output_bytes = options.spool_limit;
-        execution.fallback_scratch_root = state_scratch_root();
+        execution.fallback_scratch_root = options.settings.execution.state_dir.clone();
         let runtime = RuntimeSession::new(&execution)
             .map_err(|error| execution_error(error, None, options.color))?;
         let executor = tokio::runtime::Builder::new_multi_thread()
@@ -564,6 +651,7 @@ impl State {
         self.runtime = Some(runtime);
         self.executor = Some(executor);
         self.progress_enabled = options.trace.as_deref() != Some("-");
+        self.progress_settings = options.settings.progress.clone();
         Ok(())
     }
 
@@ -590,9 +678,11 @@ impl State {
             )?;
         }
         let reporter = if self.progress_enabled {
-            crate::progress::Reporter::start(color).map_err(|cause| {
-                Issue::new("cannot start execution progress").field("cause", cause.to_string())
-            })?
+            crate::progress::Reporter::start_with(color, self.progress_settings.clone()).map_err(
+                |cause| {
+                    Issue::new("cannot start execution progress").field("cause", cause.to_string())
+                },
+            )?
         } else {
             None
         };
@@ -690,14 +780,6 @@ impl Drop for State {
             print_error(&error, Color::Never);
         }
     }
-}
-
-fn state_scratch_root() -> Option<std::path::PathBuf> {
-    if let Some(root) = env::var_os("MSYNC_STATE_DIR") {
-        return std::path::absolute(root).ok();
-    }
-    let home = env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })?;
-    Some(std::path::PathBuf::from(home).join(".msync/state"))
 }
 
 fn interrupt_notice(color: Color) {
@@ -834,6 +916,20 @@ fn link_error(cause: msync::context::ContextError, name: &str) -> CliError {
 }
 
 fn execution_error(
+    error: msync::execution::ExecutionError,
+    source: Option<&ExecutionUnit>,
+    color: Color,
+) -> CliError {
+    let cancelled = error.is_cancelled();
+    let presented = present_execution_error(error, source, color);
+    if cancelled {
+        presented.cancelled()
+    } else {
+        presented
+    }
+}
+
+fn present_execution_error(
     error: msync::execution::ExecutionError,
     source: Option<&ExecutionUnit>,
     color: Color,
@@ -1089,6 +1185,9 @@ fn print_block(
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            InstructionKind::Control(control) => {
+                format!("control {} (evaluated at dispatch)", control.name())
+            }
             InstructionKind::Barrier { kind } => format!("barrier {kind:?}"),
             InstructionKind::Await {
                 process: Some(process),

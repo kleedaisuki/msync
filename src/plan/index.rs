@@ -4,7 +4,7 @@ use super::Resource;
 
 /// Conservative overlap candidates. Identity and projection axes never prove equality.
 #[derive(Default)]
-pub(super) struct ResourceIndex {
+pub(crate) struct ResourceIndex {
     endpoints: BTreeMap<String, PathIndex>,
     projection: PathIndex,
     identities: BTreeMap<String, BTreeMap<u64, IdSet>>,
@@ -13,7 +13,7 @@ pub(super) struct ResourceIndex {
 }
 
 impl ResourceIndex {
-    pub(super) fn insert(&mut self, resource: &Resource, id: usize) {
+    pub(crate) fn insert(&mut self, resource: &Resource, id: usize) {
         self.all.insert(id);
         if resource.key.endpoint == "*" {
             self.wildcard.insert(id);
@@ -37,7 +37,7 @@ impl ResourceIndex {
     }
 
     /// Callers retire every resource associated with an access ID together.
-    pub(super) fn remove(&mut self, resource: &Resource, id: usize) {
+    pub(crate) fn remove(&mut self, resource: &Resource, id: usize) {
         self.all.remove(&id);
         if resource.key.endpoint == "*" {
             self.wildcard.remove(&id);
@@ -59,7 +59,7 @@ impl ResourceIndex {
         }
     }
 
-    pub(super) fn candidates(&self, resource: &Resource, result: &mut BTreeSet<usize>) {
+    pub(crate) fn candidates(&self, resource: &Resource, result: &mut BTreeSet<usize>) {
         if resource.key.endpoint == "*" {
             result.extend(&self.all);
             return;
@@ -81,11 +81,11 @@ impl ResourceIndex {
         }
     }
 
-    pub(super) fn earliest(&self, resource: &Resource) -> Option<usize> {
+    pub(crate) fn earliest(&self, resource: &Resource) -> Option<usize> {
         self.extreme(resource, false)
     }
 
-    pub(super) fn latest(&self, resource: &Resource) -> Option<usize> {
+    pub(crate) fn latest(&self, resource: &Resource) -> Option<usize> {
         self.extreme(resource, true)
     }
 
@@ -116,14 +116,14 @@ impl ResourceIndex {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct PathNode {
     children: BTreeMap<String, usize>,
     exact: IdSet,
     subtree: IdSet,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 enum IdSet {
     #[default]
     Empty,
@@ -177,7 +177,8 @@ impl IdSet {
     }
 }
 
-struct PathIndex {
+#[derive(Clone)]
+pub(crate) struct PathIndex {
     nodes: Vec<PathNode>,
 }
 
@@ -190,7 +191,7 @@ impl Default for PathIndex {
 }
 
 impl PathIndex {
-    fn insert(&mut self, path: &[String], id: usize) {
+    pub(crate) fn insert(&mut self, path: &[String], id: usize) {
         let mut node = 0;
         self.nodes[node].subtree.insert(id);
         for component in path {
@@ -222,7 +223,7 @@ impl PathIndex {
         self.nodes[node].exact.remove(id);
     }
 
-    fn candidates(&self, path: &[String], result: &mut BTreeSet<usize>) {
+    pub(crate) fn candidates(&self, path: &[String], result: &mut BTreeSet<usize>) {
         let mut node = 0;
         for component in path {
             self.nodes[node].exact.extend_to(result);

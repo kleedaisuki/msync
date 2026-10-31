@@ -4,7 +4,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use msync::highlight::{BUILTINS, COMMANDS, highlight};
+use msync::highlight::{BUILTINS, COMMANDS, KEYWORDS, RANGE_ADAPTORS, highlight};
 use rustyline::completion::{Completer, Pair};
 use rustyline::config::{Behavior, ColorMode};
 use rustyline::error::ReadlineError;
@@ -25,6 +25,34 @@ pub(super) struct Input {
     interactive: bool,
     notice: Arc<AtomicU8>,
     pending: VecDeque<String>,
+}
+
+pub(super) struct NoticePrinter {
+    external: Option<Box<dyn rustyline::ExternalPrinter + Send>>,
+}
+
+impl NoticePrinter {
+    pub(super) fn refresh(&mut self) -> Result<(), String> {
+        if let Some(printer) = &mut self.external {
+            return printer.print(String::new()).map_err(|error| {
+                format!("cannot refresh prompt after background diagnostic: {error}")
+            });
+        }
+        Ok(())
+    }
+
+    pub(super) fn print(&mut self, text: String) -> Result<(), String> {
+        if let Some(printer) = &mut self.external {
+            return printer
+                .print(text)
+                .map_err(|error| format!("cannot display background notice: {error}"));
+        }
+        let mut output = io::stdout().lock();
+        output
+            .write_all(text.as_bytes())
+            .and_then(|()| output.flush())
+            .map_err(|error| format!("cannot display background notice: {error}"))
+    }
 }
 
 pub(super) fn basic_terminal() -> bool {
@@ -100,6 +128,22 @@ impl Input {
 
     pub(super) fn editing(&self) -> bool {
         self.editor.is_some()
+    }
+
+    pub(super) fn external_printer(&mut self) -> Result<NoticePrinter, String> {
+        let external = self
+            .editor
+            .as_mut()
+            .map(|editor| {
+                editor
+                    .create_external_printer()
+                    .map(|printer| Box::new(printer) as Box<dyn rustyline::ExternalPrinter + Send>)
+            })
+            .transpose()
+            .map_err(|error| {
+                format!("cannot initialize prompt-safe background notices: {error}")
+            })?;
+        Ok(NoticePrinter { external })
     }
 
     pub(super) fn read(&mut self, prompt: &str) -> Result<InputEvent, String> {
@@ -210,6 +254,16 @@ impl Highlighter for LineHelper {
         // Unicode mode as one. Diagnostic escape expansion would move the cursor.
         // ESC cannot enter the buffer: upstream filters Unix paste, and the
         // Windows clipboard binding rejects it before insertion.
+        if !line
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t'))
+        {
+            return if self.color {
+                Cow::Owned(highlight(line, true))
+            } else {
+                Cow::Borrowed(line)
+            };
+        }
         let display = editor_display(line, self.mode);
         Cow::Owned(highlight(&display, self.color))
     }
@@ -263,7 +317,7 @@ impl Completer for LineHelper {
 }
 
 fn completion_prefix(line: &str, pos: usize) -> Option<(usize, &str, &'static [&'static str])> {
-    if !line.is_char_boundary(pos) {
+    if pos > line.len() || !line.is_char_boundary(pos) {
         return None;
     }
     let before = &line[..pos];
@@ -295,6 +349,10 @@ fn completion_prefix(line: &str, pos: usize) -> Option<(usize, &str, &'static [&
         Some((start, prefix, COMMANDS))
     } else if prefix.starts_with('$') {
         Some((start, prefix, BUILTINS))
+    } else if prefix.starts_with("views::") || prefix.starts_with("ranges::") {
+        Some((start, prefix, RANGE_ADAPTORS))
+    } else if !prefix.is_empty() && prefix.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
+        Some((start, prefix, KEYWORDS))
     } else {
         None
     }
@@ -474,6 +532,7 @@ mod tests {
         assert_eq!(prefix, "$fi");
         assert!(candidates.contains(&"$file::this"));
         assert!(completion_prefix("文件", 1).is_none());
+        assert!(completion_prefix("x", 10).is_none());
         assert!(completion_prefix("path/to/file", 12).is_none());
         for line in [
             "/bash echo $pw",
@@ -490,6 +549,22 @@ mod tests {
                 .1,
             "$fi"
         );
+    }
+
+    #[test]
+    fn v6_keyword_and_range_completion_preserves_the_typed_boundary() {
+        for (line, expected) in [
+            ("boole", "boolean"),
+            ("files | views::fi", "views::filter"),
+            ("files | ranges::any", "ranges::any_of"),
+        ] {
+            let (start, prefix, candidates) = completion_prefix(line, line.len()).unwrap();
+            assert_eq!(&line[start..], prefix);
+            assert!(candidates.contains(&expected));
+        }
+        for line in ["delete \"boole", "files/<boole", "# boole"] {
+            assert!(completion_prefix(line, line.len()).is_none());
+        }
     }
 
     #[test]
@@ -536,6 +611,10 @@ mod tests {
             mode: GraphemeClusterMode::WcWidth,
         };
         assert_eq!(helper.highlight("$pwd::pwd -> x", 0), "$pwd::pwd -> x");
+        assert!(matches!(
+            helper.highlight("$pwd::pwd -> x", 0),
+            Cow::Borrowed(_)
+        ));
         assert_eq!(helper.highlight("x\0\x07y", 0), "xy");
         for mode in [
             GraphemeClusterMode::Unicode,

@@ -687,25 +687,44 @@ fn render_help(output: &mut String, help: &str, gutter: usize, color: bool) {
     }
 }
 
+pub(crate) fn physical_lines(mut source: &str) -> impl Iterator<Item = &str> {
+    std::iter::from_fn(move || {
+        if source.is_empty() {
+            return None;
+        }
+        let end = source.find(['\r', '\n']).map_or(source.len(), |index| {
+            index
+                + 1
+                + usize::from(
+                    source.as_bytes()[index] == b'\r'
+                        && source.as_bytes().get(index + 1) == Some(&b'\n'),
+                )
+        });
+        let (line, rest) = source.split_at(end);
+        source = rest;
+        Some(line)
+    })
+}
+
 fn source_lines(source: &str) -> Vec<SourceLine<'_>> {
     let mut lines = Vec::new();
     let mut start = 0;
-    for piece in source.split_inclusive('\n') {
+    for piece in physical_lines(source) {
         let text = without_line_ending(piece);
         lines.push(SourceLine { start, text });
         start += piece.len();
     }
-    if lines.is_empty() || source.ends_with('\n') {
+    if lines.is_empty() || source.ends_with(['\r', '\n']) {
         lines.push(SourceLine { start, text: "" });
     }
     lines
 }
 
 fn without_line_ending(piece: &str) -> &str {
-    match piece.strip_suffix('\n') {
-        Some(line) => line.strip_suffix('\r').unwrap_or(line),
-        None => piece,
-    }
+    piece
+        .strip_suffix("\r\n")
+        .or_else(|| piece.strip_suffix(['\r', '\n']))
+        .unwrap_or(piece)
 }
 
 fn report_annotations<'a>(source: &str, report: &'a Report) -> Vec<Annotation<'a>> {
@@ -836,10 +855,15 @@ fn render_source_line(
 }
 
 fn line_number_at(source: &str, position: usize) -> usize {
-    source.as_bytes()[..position.min(source.len())]
-        .iter()
-        .filter(|byte| **byte == b'\n')
-        .count()
+    let position = position.min(source.len());
+    let mut start = 0;
+    for (number, line) in physical_lines(source).enumerate() {
+        start += line.len();
+        if position < start || !line.ends_with(['\r', '\n']) {
+            return number;
+        }
+    }
+    physical_lines(source).count()
 }
 
 fn paint(text: &str, style: &str, color: bool) -> String {
@@ -852,17 +876,13 @@ fn paint(text: &str, style: &str, color: bool) -> String {
 
 fn render_primary(source: &str, diagnostic: &Diagnostic, color: bool) -> String {
     let span = normalized_span(source, diagnostic.span);
-    let start = span.start;
-    let line_start = source[..start].rfind('\n').map_or(0, |index| index + 1);
-    let line_end = source[start..]
-        .find('\n')
-        .map_or(source.len(), |index| start + index);
-    let line = source[line_start..line_end].trim_end_matches('\r');
-    let number = source[..line_start]
-        .bytes()
-        .filter(|byte| *byte == b'\n')
-        .count()
-        + 1;
+    let lines = source_lines(source);
+    let number = line_number_at(source, span.start) + 1;
+    let selected = &lines[number - 1];
+    let line_start = selected.start;
+    let line_end = line_start + selected.text.len();
+    let start = span.start.min(line_end);
+    let line = selected.text;
     let column = source[line_start..start].chars().count();
     let end = span.end.min(line_end).max(start);
     let prefix = display_text(&source[line_start..start]);

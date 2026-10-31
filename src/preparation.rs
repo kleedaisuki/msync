@@ -91,6 +91,16 @@ impl PreparedProgram {
     /// Replay rewrites and graph obligations using captured metadata proofs.
     /// No filesystem or network operation is performed by verification.
     pub fn verify(&self) -> Result<(), Vec<Report>> {
+        let mut phase = crate::telemetry::span("prepare.verify");
+        phase.expect_completion();
+        phase.metric("instructions", self.original.body.instructions.len() as u64);
+        phase.metric("rewrites", self.rewrites.len() as u64);
+        let result = self.verify_inner();
+        phase.finish_result(&result);
+        result
+    }
+
+    fn verify_inner(&self) -> Result<(), Vec<Report>> {
         if !Arc::ptr_eq(&self.original, &self.witness.original)
             || self.facts != self.context.operation_facts
         {
@@ -181,22 +191,50 @@ fn prepare_observing(
     policy: ObservationPolicy,
     context: PlanningContext,
 ) -> Result<PreparedProgram, Vec<Diagnostic>> {
+    let (observed, resources) = {
+        let mut phase = crate::telemetry::span("prepare.observe");
+        phase.expect_completion();
+        phase.metric("instructions", program.body.instructions.len() as u64);
+        let result = observe_program(
+            program,
+            matches!(policy, ObservationPolicy::LocalAndRemote),
+            context,
+            true,
+        );
+        phase.finish_result(&result);
+        let observed = result?;
+        observed.observations.record_metrics(&mut phase);
+        let resources = resources(&observed.resolved, &observed.observations);
+        phase.metric("resources", resources.len() as u64);
+        (observed, resources)
+    };
     let Observation {
         resolved,
         mut context,
-        observations,
-    } = observe_program(
-        program,
-        matches!(policy, ObservationPolicy::LocalAndRemote),
-        context,
-    )?;
-    let resources = resources(&resolved, &observations);
-    let facts = rewrite_facts(&context, &resolved, &resources);
-    let (optimized, rewrites) =
-        optimize::run(&resolved, &facts, &resources, &context.host_unstable, true);
-    let original_context = context.clone();
-    context = optimize::refined_context(&context, &rewrites);
-    let graph = graph::build_with_context(&optimized, &context);
+        observations: _,
+    } = observed;
+    let (optimized, rewrites, original_context) = {
+        let mut phase = crate::telemetry::span("prepare.optimize");
+        phase.metric("instructions", resolved.body.instructions.len() as u64);
+        let facts = rewrite_facts(&context, &resolved, &resources);
+        let (optimized, rewrites) =
+            optimize::run(&resolved, &facts, &resources, &context.host_unstable, true);
+        let original_context = context.clone();
+        context = optimize::refined_context(&context, &rewrites);
+        phase.metric("rewrites", rewrites.len() as u64);
+        (optimized, rewrites, original_context)
+    };
+    let graph = {
+        let mut phase = crate::telemetry::span("prepare.graph");
+        phase.metric("instructions", optimized.body.instructions.len() as u64);
+        let graph = graph::build_with_context(&optimized, &context);
+        phase.metric("dependencies", graph.dependencies.len() as u64);
+        phase.metric("commutations", graph.commutations.len() as u64);
+        if !graph.issues.is_empty() {
+            phase.error();
+        }
+        graph
+    };
     if !graph.issues.is_empty() {
         return Err(graph
             .issues
@@ -253,7 +291,7 @@ pub fn resolve_instruction(
     let mut current = context.clone();
     current.operation_facts.remove(&instruction.id);
     current.existing_parent_frontiers.remove(&instruction.id);
-    let observed = observe_program(&program, true, current)?;
+    let observed = observe_program(&program, true, current, false)?;
     Ok((
         observed
             .resolved
@@ -286,6 +324,7 @@ fn observe_program(
     program: &hir::Program,
     live: bool,
     mut context: PlanningContext,
+    profile: bool,
 ) -> Result<Observation, Vec<Diagnostic>> {
     if program.blocks().nth(1).is_some() {
         return Err(vec![Diagnostic::general(Report::new(
@@ -296,8 +335,18 @@ fn observe_program(
     let mut resolved = program.clone();
     let mut initial = State::initial(&context);
     let mut observations = Observations::new(initial.clone(), context.host_unstable.clone(), live);
-    resolve_region(&mut resolved.body, &mut observations, &context)?;
-    observations.complete(live)?;
+    {
+        let mut phase = profile.then(|| crate::telemetry::span("prepare.observe.resolve"));
+        if let Some(phase) = &mut phase {
+            phase.expect_completion();
+        }
+        let result = resolve_region(&mut resolved.body, &mut observations, &context)
+            .and_then(|()| observations.complete(live));
+        if let Some(phase) = &mut phase {
+            phase.finish_result(&result);
+        }
+        result?;
+    }
     initial.extend_independent(&observations.independent_endpoints);
     context.host_unstable = observations.host_unstable.clone();
     let mut state = initial.clone();
@@ -307,7 +356,16 @@ fn observe_program(
         errors: Vec::new(),
         live,
     };
-    interpreter.region(&resolved.body, &mut state);
+    {
+        let mut phase = profile.then(|| crate::telemetry::span("prepare.observe.types"));
+        interpreter.region(&resolved.body, &mut state);
+        if let Some(phase) = &mut phase {
+            state.record_metrics(phase);
+            if !interpreter.errors.is_empty() {
+                phase.error();
+            }
+        }
+    }
     if !interpreter.errors.is_empty() {
         return Err(interpreter.errors);
     }
@@ -490,6 +548,7 @@ fn absolute(path: &Path) -> std::io::Result<PathBuf> {
 }
 
 fn resources(program: &hir::Program, observations: &Observations) -> HashMap<Location, Resource> {
+    let mut phase = crate::telemetry::span("prepare.observe.resources");
     fn capture(
         location: &Location,
         observations: &Observations,
@@ -543,5 +602,6 @@ fn resources(program: &hir::Program, observations: &Observations) -> HashMap<Loc
             resource.prove_disjoint(&other);
         }
     }
+    phase.metric("resources", output.len() as u64);
     output
 }

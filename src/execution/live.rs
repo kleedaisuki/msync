@@ -1,5 +1,8 @@
 //! The interpreter owns current-block specialization, children, and byte flows.
 
+#[path = "control.rs"]
+mod control;
+
 use super::blocks::BlockSchedule;
 use super::error::{ExecutionError, Result};
 use super::{ExecutionReport, Options, merge};
@@ -30,6 +33,7 @@ struct ActiveFlow {
 }
 
 struct Acquisition {
+    completion: CancellationToken,
     instruction: InstructionId,
     submission: u64,
     span: Span,
@@ -166,6 +170,8 @@ pub struct RuntimeSession {
     origins: crate::source::Origins,
     observer: Option<super::progress::Progress>,
     programs: BTreeMap<ProcessId, program::Program>,
+    program_instructions: BTreeMap<ProcessId, InstructionId>,
+    finite_signals: BTreeMap<tokio::task::Id, CancellationToken>,
     flows: Vec<ActiveFlow>,
     finite: JoinSet<FiniteResult>,
     acquisition: Option<Acquisition>,
@@ -178,6 +184,10 @@ pub struct RuntimeSession {
     flow_reservations: BTreeMap<InstructionId, super::scheduler::Lease>,
     reserved_groups: BTreeSet<Vec<InstructionId>>,
     submission: u64,
+    control_values: BTreeMap<hir::control::SlotId, control::Value>,
+    range_patterns: BTreeMap<String, regex::Regex>,
+    control_break: Option<Option<control::Value>>,
+    next_dynamic_process: usize,
     batch_mode: bool,
     stage_registration: Option<crate::filesystem::recovery::Registration>,
     executor: Option<tokio::runtime::Handle>,
@@ -252,6 +262,8 @@ impl RuntimeSession {
             origins: Default::default(),
             observer: None,
             programs: BTreeMap::new(),
+            program_instructions: BTreeMap::new(),
+            finite_signals: BTreeMap::new(),
             flows: Vec::new(),
             finite: JoinSet::new(),
             acquisition: None,
@@ -264,6 +276,10 @@ impl RuntimeSession {
             flow_reservations: BTreeMap::new(),
             reserved_groups: BTreeSet::new(),
             submission: 0,
+            control_values: BTreeMap::new(),
+            range_patterns: BTreeMap::new(),
+            control_break: None,
+            next_dynamic_process: usize::MAX,
             batch_mode: false,
             stage_registration: None,
             executor: tokio::runtime::Handle::try_current().ok(),
@@ -330,6 +346,36 @@ impl RuntimeSession {
             )
             .collect()
     }
+    /// Maps runtime identities, including fresh loop-local children, to semantic source nodes.
+    pub fn work_instructions(&self) -> BTreeMap<super::WorkId, InstructionId> {
+        self.work_ids()
+            .into_iter()
+            .filter_map(|work| {
+                let instruction = match work {
+                    super::WorkId::Program(process) => *self.program_instructions.get(&process)?,
+                    super::WorkId::Flow { instruction, .. } => instruction,
+                };
+                Some((work, instruction))
+            })
+            .collect()
+    }
+
+    /// Actual program identities connected to retained flows, not static template identities.
+    pub fn work_processes(&self) -> BTreeMap<super::WorkId, Vec<ProcessId>> {
+        self.flows
+            .iter()
+            .map(|flow| {
+                (
+                    super::WorkId::Flow {
+                        submission: flow.submission,
+                        instruction: flow.instruction,
+                    },
+                    flow.processes.iter().copied().collect(),
+                )
+            })
+            .collect()
+    }
+
     pub fn take_report(&mut self) -> ExecutionReport {
         std::mem::take(&mut self.report)
     }
@@ -339,11 +385,13 @@ impl RuntimeSession {
                 .programs
                 .values()
                 .any(|p| p.receipt().is_none() && p.is_finished())
-            || !self.finite.is_empty()
             || self
-                .acquisition
-                .as_ref()
-                .is_some_and(|acquisition| acquisition.worker.is_finished())
+                .finite_signals
+                .values()
+                .any(CancellationToken::is_cancelled)
+            || self.acquisition.as_ref().is_some_and(|acquisition| {
+                acquisition.completion.is_cancelled() || acquisition.worker.is_finished()
+            })
     }
     pub fn planning_context(&self) -> PlanningContext {
         PlanningContext {
@@ -468,133 +516,250 @@ impl RuntimeSession {
         Ok(())
     }
     async fn interpret(&mut self, program: &hir::Program) -> Result<()> {
-        for block in program.blocks() {
-            self.check(Span::default())?;
-            self.observe(
-                super::progress::Phase::Inspect,
-                None,
-                || {
-                    Some(format!(
-                        "basic block {} ({} instructions)",
-                        block.id.0,
-                        block.instructions.len()
-                    ))
-                },
-                || None,
-            );
-            // No future block is observed until this block's finite work settles.
-            let prepared =
-                crate::preparation::prepare_block(&block, self.observation_context()).ok();
-            let instructions = prepared
-                .as_ref()
-                .map(|p| p.original.body.instructions.as_slice())
-                .unwrap_or(block.instructions);
-            let mut context = prepared
-                .as_ref()
-                .map(|p| p.context.clone())
-                .unwrap_or_default();
-            context.live_processes = self.live_processes();
-            let contextual_block = hir::BasicBlock {
-                id: block.id,
-                instructions,
-            };
-            self.fifo = Some(super::fifo::FifoState::inspect(
-                contextual_block,
-                &mut context,
-            )?);
-            self.rendezvous = context
-                .physical_rendezvous
-                .iter()
-                .map(|proof| {
-                    (
-                        proof.writer().key().instruction,
-                        proof.reader().key().instruction,
-                    )
-                })
-                .collect();
-            self.reserved_groups.clear();
-            let graph = graph::build_block_with_context(contextual_block, &context);
-            let mut schedule = BlockSchedule::new(&graph).map_err(|cause| {
-                ExecutionError::caused(
-                    "invalid basic-block dependency graph",
-                    Span::default(),
-                    cause,
+        self.interpret_region(&program.body).await
+    }
+
+    async fn interpret_region(&mut self, region: &hir::Region) -> Result<()> {
+        for block in region.blocks() {
+            self.interpret_block(block).await?;
+            if self.control_break.is_some() {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn interpret_block<'a>(&'a mut self, block: hir::BasicBlock<'a>) -> super::trace::Step<'a, ()> {
+        let parent = crate::telemetry::context();
+        // Construct graph/scheduler state only for an ordinary block, not in every control future.
+        let work: super::trace::Step<'a, ()> = match block.instructions {
+            [node] if matches!(node.kind, InstructionKind::Control(_)) => {
+                Box::pin(self.interpret_control_block(node))
+            }
+            _ => Box::pin(self.interpret_ordinary_block(block)),
+        };
+        let Some(parent) = parent else {
+            return work;
+        };
+        let mut span = crate::telemetry::linked_span("interpreter.block", Some(&parent));
+        span.metric("block.id", block.id.0 as u64);
+        span.metric("instructions", block.instructions.len() as u64);
+        if let Some(first) = block.instructions.first() {
+            span.metric("first_instruction.id", first.id.0 as u64);
+        }
+        super::trace::run(span, "interpreter.block", work)
+    }
+
+    async fn interpret_control_block(&mut self, node: &Instruction) -> Result<()> {
+        self.check(node.span)?;
+        self.drain_acquisition().await?;
+        self.drain_finite().await?;
+        let InstructionKind::Control(operation) = &node.kind else {
+            unreachable!("control block selected by its instruction kind")
+        };
+        let work = self.execute_control(operation, node);
+        let result = if crate::telemetry::context().is_some() {
+            super::trace::run(
+                super::trace::instruction(node),
+                "interpreter.instruction",
+                work,
+            )
+            .await
+        } else {
+            work.await
+        };
+        result.map_err(|error| error.with_origin(self.origins.get(&node.id)))
+    }
+
+    async fn interpret_ordinary_block(&mut self, block: hir::BasicBlock<'_>) -> Result<()> {
+        self.check(Span::default())?;
+        self.observe(
+            super::progress::Phase::Inspect,
+            None,
+            || {
+                Some(format!(
+                    "basic block {} ({} instructions)",
+                    block.id.0,
+                    block.instructions.len()
+                ))
+            },
+            || None,
+        );
+        // No future block is observed until this block's finite work settles.
+        let mut preparation = crate::telemetry::linked_span(
+            "interpreter.prepare",
+            crate::telemetry::context().as_ref(),
+        );
+        preparation.metric("block.id", block.id.0 as u64);
+        let prepared = crate::telemetry::with_context(preparation.context().as_ref(), || {
+            crate::preparation::prepare_block(&block, self.observation_context())
+        });
+        if preparation.is_recording() {
+            preparation.metric("fallback", u64::from(prepared.is_err()));
+            if let Err(reports) = &prepared
+                && let Some(report) = reports.first()
+            {
+                preparation.event(
+                    "preparation.fallback",
+                    &[("reason", &report.report.diagnostic.message)],
+                    &[],
+                );
+            }
+        }
+        drop(preparation);
+        let prepared = prepared.ok();
+        let instructions = prepared
+            .as_ref()
+            .map(|p| p.original.body.instructions.as_slice())
+            .unwrap_or(block.instructions);
+        let mut context = prepared
+            .as_ref()
+            .map(|p| p.context.clone())
+            .unwrap_or_default();
+        context.live_processes = self.live_processes();
+        let contextual_block = hir::BasicBlock {
+            id: block.id,
+            instructions,
+        };
+        self.fifo = Some(super::fifo::FifoState::inspect(
+            contextual_block,
+            &mut context,
+        )?);
+        self.rendezvous = context
+            .physical_rendezvous
+            .iter()
+            .map(|proof| {
+                (
+                    proof.writer().key().instruction,
+                    proof.reader().key().instruction,
                 )
-            })?;
-            let nodes: BTreeMap<_, _> = block
-                .instructions
-                .iter()
-                .map(|node| (node.id, node))
+            })
+            .collect();
+        self.reserved_groups.clear();
+        let graph = {
+            let mut planning = crate::telemetry::span("interpreter.schedule");
+            planning.metric("block.id", block.id.0 as u64);
+            let graph = graph::build_block_with_context(contextual_block, &context);
+            planning.metric("nodes", graph.nodes.len() as u64);
+            planning.metric("dependencies", graph.dependencies.len() as u64);
+            graph
+        };
+        let mut schedule = BlockSchedule::new(&graph).map_err(|cause| {
+            ExecutionError::caused(
+                "invalid basic-block dependency graph",
+                Span::default(),
+                cause,
+            )
+        })?;
+        let nodes: BTreeMap<_, _> = block
+            .instructions
+            .iter()
+            .map(|node| (node.id, node))
+            .collect();
+        let positions: BTreeMap<_, _> = block
+            .instructions
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.id, index))
+            .collect();
+        let mut deoptimized = BTreeSet::new();
+        while !schedule.is_finished() {
+            crate::telemetry::event(
+                "scheduler.ready",
+                &[],
+                &[
+                    ("ready", schedule.ready_count() as u64),
+                    ("finite.running", self.finite.len() as u64),
+                    ("flows.running", self.flows.len() as u64),
+                ],
+            );
+            let mut reserved: Vec<_> = self
+                .flow_reservations
+                .keys()
+                .filter_map(|id| schedule.ready_position(*id).map(|position| (position, *id)))
                 .collect();
-            let positions: BTreeMap<_, _> = block
-                .instructions
-                .iter()
-                .enumerate()
-                .map(|(index, node)| (node.id, index))
-                .collect();
-            let mut deoptimized = BTreeSet::new();
-            while !schedule.is_finished() {
-                let mut ready = schedule.ready();
-                ready.sort_by_key(|id| !self.flow_reservations.contains_key(id));
-                let mut admitted = false;
-                for id in ready {
-                    if self.finite.len() >= self.copy_capacity() {
-                        break;
-                    }
-                    let node = nodes[&id];
-                    if !self.rendezvous_ready(node, &schedule) {
+            reserved.sort_unstable_by_key(|&(position, _)| position);
+            let mut reserved = reserved.into_iter();
+            let mut after = None;
+            let mut admitted = false;
+            loop {
+                if self.finite.len() >= self.copy_capacity() {
+                    break;
+                }
+                let id = if let Some((_, id)) = reserved.next() {
+                    if schedule.ready_position(id).is_none() {
                         continue;
                     }
-                    let cohort_started = self.reserve_rendezvous(node)?;
-                    if !deoptimized.contains(&id)
-                        && !self.physical_flow(node)
-                        && let Some(run) =
-                            hir::rewrite::overwrite_run(&block.instructions[positions[&id]..])
-                    {
-                        let ids: Vec<_> = run.iter().map(|node| node.id).collect();
-                        if schedule.group_ready(&ids)
-                            && self.admission.copy_availability()
-                                == super::scheduler::Availability::Ready
-                        {
-                            for node in run {
-                                self.join_conflicting_flows(node).await?;
-                            }
-                            schedule.admit_group(&ids).map_err(schedule_error)?;
-                            self.start_fold(run.to_vec(), ids)?;
-                            admitted = true;
-                            continue;
-                        }
+                    id
+                } else {
+                    let Some((position, id)) = schedule.next_ready(after) else {
+                        break;
+                    };
+                    after = Some(position);
+                    if self.flow_reservations.contains_key(&id) {
+                        continue;
                     }
-                    if matches!(
-                        node.kind,
-                        InstructionKind::Transfer {
-                            source: Input::File { .. } | Input::Literal(_),
-                            destination: Output::File { .. }
-                        }
-                    ) && !self.physical_flow(node)
+                    id
+                };
+                let node = nodes[&id];
+                if !self.rendezvous_ready(node, &schedule) {
+                    continue;
+                }
+                let cohort_started = self.reserve_rendezvous(node)?;
+                if !deoptimized.contains(&id)
+                    && !self.physical_flow(node)
+                    && let Some(run) =
+                        hir::rewrite::overwrite_run(&block.instructions[positions[&id]..])
+                {
+                    let ids: Vec<_> = run.iter().map(|node| node.id).collect();
+                    if schedule.group_ready(&ids)
                         && self.admission.copy_availability()
-                            != super::scheduler::Availability::Ready
+                            == super::scheduler::Availability::Ready
                     {
-                        if !self.finite.is_empty() {
-                            break;
+                        for node in run {
+                            self.join_conflicting_flows(node).await?;
                         }
-                        return Err(admission_error(
-                            self.admission
-                                .copy(node.span)
-                                .err()
-                                .expect("copy is unavailable"),
-                        ));
+                        schedule.admit_group(&ids).map_err(schedule_error)?;
+                        let mut span = super::trace::instruction(&run[0]);
+                        span.metric("instructions", run.len() as u64);
+                        super::trace::run(span, "interpreter.instruction", async {
+                            self.start_fold(run.to_vec(), ids)
+                        })
+                        .await?;
+                        admitted = true;
+                        continue;
                     }
-                    self.check(node.span)?;
-                    schedule.admit(id).map_err(schedule_error)?;
-                    admitted = true;
+                }
+                if matches!(
+                    node.kind,
+                    InstructionKind::Transfer {
+                        source: Input::File { .. } | Input::Literal(_),
+                        destination: Output::File { .. }
+                    }
+                ) && !self.physical_flow(node)
+                    && self.admission.copy_availability() != super::scheduler::Availability::Ready
+                {
+                    if !self.finite.is_empty() {
+                        break;
+                    }
+                    return Err(admission_error(
+                        self.admission
+                            .copy(node.span)
+                            .err()
+                            .expect("copy is unavailable"),
+                    ));
+                }
+                self.check(node.span)?;
+                schedule.admit(id).map_err(schedule_error)?;
+                admitted = true;
+                let is_flow = matches!(node.kind, InstructionKind::Transfer { .. })
+                    && self.physical_flow(node);
+                let dispatch = super::trace::instruction(node);
+                super::trace::run(dispatch, "interpreter.instruction", async {
                     match &node.kind {
-                        InstructionKind::Transfer { .. } if self.physical_flow(node) => {
+                        InstructionKind::Transfer { .. } if is_flow => {
                             if self.start_flow(node).await? {
                                 schedule.captured_input(id).map_err(schedule_error)?;
-                            }
-                            if cohort_started {
-                                break;
                             }
                         }
                         InstructionKind::Transfer { .. } => {
@@ -618,32 +783,40 @@ impl RuntimeSession {
                             }
                             schedule.complete(id).map_err(schedule_error)?;
                         }
+                        InstructionKind::Control(_) => {
+                            unreachable!("control is an isolated interpretation block")
+                        }
                         InstructionKind::Barrier { .. } => {
                             schedule.complete(id).map_err(schedule_error)?;
                         }
                     }
-                }
-                if !self.finite.is_empty() {
-                    self.finish_one(&mut schedule, &mut deoptimized).await?;
-                } else if schedule.all_admitted() {
+                    Ok(())
+                })
+                .await?;
+                if is_flow && cohort_started {
                     break;
-                } else if !admitted && !schedule.is_finished() {
-                    if let Some(index) = self.flows.iter().position(|flow| {
-                        flow.submission == self.submission && schedule.is_running(flow.instruction)
-                    }) {
-                        let id = self.flows[index].instruction;
-                        self.join_flow(index).await?;
-                        schedule.complete(id).map_err(schedule_error)?;
-                        continue;
-                    }
-                    return Err(ExecutionError::new(
-                        "basic-block scheduler has no ready work",
-                        Span::default(),
-                    ));
                 }
             }
-            self.poll_ready().await?;
+            if !self.finite.is_empty() {
+                self.finish_one(&mut schedule, &mut deoptimized).await?;
+            } else if schedule.all_admitted() {
+                break;
+            } else if !admitted && !schedule.is_finished() {
+                if let Some(index) = self.flows.iter().position(|flow| {
+                    flow.submission == self.submission && schedule.is_running(flow.instruction)
+                }) {
+                    let id = self.flows[index].instruction;
+                    self.join_flow(index).await?;
+                    schedule.complete(id).map_err(schedule_error)?;
+                    continue;
+                }
+                return Err(ExecutionError::new(
+                    "basic-block scheduler has no ready work",
+                    Span::default(),
+                ));
+            }
         }
+        self.poll_ready().await?;
         Ok(())
     }
     fn copy_capacity(&self) -> usize {
@@ -752,9 +925,12 @@ impl RuntimeSession {
         let gate = self.worker_gate.take();
         #[cfg(test)]
         let observed = gate.clone();
+        let completion = CancellationToken::new();
+        let completed = completion.clone().drop_guard();
         let handle = self
             .finite
             .spawn_blocking(crate::runtime::ssh::blocking(move || {
+                let _completed = completed;
                 #[cfg(test)]
                 if let Some(gate) = gate {
                     gate.wait();
@@ -796,6 +972,7 @@ impl RuntimeSession {
         if let Some(gate) = observed {
             *gate.handle.lock().unwrap() = Some(handle.clone());
         }
+        self.finite_signals.insert(handle.id(), completion);
         drop(handle);
         Ok(())
     }
@@ -809,8 +986,12 @@ impl RuntimeSession {
         let trace = crate::telemetry::context();
         if matches!(&node.kind,InstructionKind::Transfer {destination:Output::File {location,..},..} if matches!(location.backend,crate::endpoint::Backend::Wsl|crate::endpoint::Backend::Ssh{..}))
         {
-            self.finite
+            let completion = CancellationToken::new();
+            let completed = completion.clone().drop_guard();
+            let handle = self
+                .finite
                 .spawn(crate::runtime::ssh::scope_current(async move {
+                    let _completed = completed;
                     let task = lease.task("finite-remote-publication");
                     let _lease = lease;
                     let result = task
@@ -827,15 +1008,19 @@ impl RuntimeSession {
                         original: node,
                     }
                 }));
+            self.finite_signals.insert(handle.id(), completion);
             return Ok(());
         }
         #[cfg(test)]
         let gate = self.worker_gate.take();
         #[cfg(test)]
         let observed = gate.clone();
+        let completion = CancellationToken::new();
+        let completed = completion.clone().drop_guard();
         let handle = self
             .finite
             .spawn_blocking(crate::runtime::ssh::blocking(move || {
+                let _completed = completed;
                 #[cfg(test)]
                 if let Some(gate) = gate {
                     gate.wait();
@@ -874,6 +1059,7 @@ impl RuntimeSession {
         if let Some(gate) = observed {
             *gate.handle.lock().unwrap() = Some(handle.clone());
         }
+        self.finite_signals.insert(handle.id(), completion);
         drop(handle);
         Ok(())
     }
@@ -882,14 +1068,26 @@ impl RuntimeSession {
         schedule: &mut BlockSchedule,
         deoptimized: &mut BTreeSet<InstructionId>,
     ) -> Result<()> {
-        let finished = self
-            .finite
-            .join_next()
-            .await
-            .expect("a finite worker is retained")
-            .map_err(|cause| {
+        let mut wait =
+            crate::telemetry::linked_span("runtime.wait", crate::telemetry::context().as_ref());
+        wait.attribute("wait.kind", "finite_capacity");
+        wait.metric("finite.running", self.finite.len() as u64);
+        let finished = super::trace::run(wait, "runtime.wait", async {
+            let result = self
+                .finite
+                .join_next_with_id()
+                .await
+                .expect("a finite worker is retained");
+            let id = match &result {
+                Ok((id, _)) => *id,
+                Err(cause) => cause.id(),
+            };
+            self.finite_signals.remove(&id);
+            result.map(|(_, result)| result).map_err(|cause| {
                 ExecutionError::caused("statement worker failed", Span::default(), cause)
-            })?;
+            })
+        })
+        .await?;
         match finished.result? {
             FiniteOutcome::Statement(ordinary::Attempt::Completed(report))
             | FiniteOutcome::Fold(ordinary::FoldAttempt::Completed(report)) => {
@@ -970,6 +1168,7 @@ impl RuntimeSession {
                 error.with_context(context)
             })?;
         self.programs.insert(id, launched);
+        self.program_instructions.insert(id, node.id);
         self.program_leases.insert(id, lease);
         Ok(())
     }
@@ -1104,7 +1303,10 @@ impl RuntimeSession {
         let gate = self.acquisition_gate.take();
         #[cfg(test)]
         let observed = gate.clone();
+        let completion = CancellationToken::new();
+        let completed = completion.clone().drop_guard();
         let worker = crate::runtime::ssh::spawn_blocking(move || {
+            let _completed = completed;
             let source = crate::telemetry::with_context(lease.context(), || {
                 flow::Source::capture(location, invocation.path(), span)
             });
@@ -1121,6 +1323,7 @@ impl RuntimeSession {
             *gate.handle.lock().unwrap() = Some(worker.abort_handle());
         }
         self.acquisition = Some(Acquisition {
+            completion,
             instruction: node.id,
             submission: self.submission,
             span,
@@ -1171,9 +1374,11 @@ impl RuntimeSession {
         );
         let active = &mut self.flows[index];
         let requested = self.cancel.is_cancelled() || active.cancel.is_cancelled();
-        let result = active
-            .task
-            .join()
+        let mut wait =
+            crate::telemetry::linked_span("runtime.wait", crate::telemetry::context().as_ref());
+        wait.attribute("wait.kind", "flow_completion");
+        wait.metric("instruction.id", active.instruction.0 as u64);
+        let result = super::trace::run(wait, "runtime.wait", active.task.join())
             .await
             .map_err(|error| error.with_origin(active.origin.as_ref()));
         self.flows.remove(index);
@@ -1303,13 +1508,21 @@ impl RuntimeSession {
                 },
                 || None,
             );
+            let mut wait =
+                crate::telemetry::linked_span("runtime.wait", crate::telemetry::context().as_ref());
+            wait.attribute("wait.kind", "program_completion");
+            wait.metric("process.id", id.0 as u64);
             record_failure(
                 &mut failure,
-                self.programs
-                    .get_mut(&id)
-                    .expect("validated program")
-                    .wait()
-                    .await,
+                super::trace::run(
+                    wait,
+                    "runtime.wait",
+                    self.programs
+                        .get_mut(&id)
+                        .expect("validated program")
+                        .wait(),
+                )
+                .await,
             );
             self.program_leases.remove(&id);
         }
@@ -1327,12 +1540,70 @@ impl RuntimeSession {
         }
         failure.map_or(Ok(()), Err)
     }
+    /// Wait for any retained completion without consuming it or acquiring other work.
+    pub async fn wait_ready(&self) {
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+
+        let mut activity =
+            crate::telemetry::linked_span("runtime.wait", crate::telemetry::context().as_ref());
+        activity.attribute("wait.kind", "activity_readiness");
+        activity.attribute("wait.scope", "subscription");
+        activity.expect_completion();
+        let signals = self
+            .flows
+            .iter()
+            .map(|flow| flow.task.completion_signal())
+            .chain(
+                self.programs
+                    .values()
+                    .filter(|program| program.receipt().is_none())
+                    .map(program::Program::completion_signal),
+            )
+            .chain(
+                self.acquisition
+                    .iter()
+                    .map(|acquisition| acquisition.completion.clone()),
+            )
+            .chain(self.finite_signals.values().cloned());
+        let mut waits: Vec<_> = signals
+            .map(|signal| Box::pin(signal.cancelled_owned()))
+            .collect();
+        poll_fn(|cx| {
+            if self.has_ready_work() {
+                return Poll::Ready(());
+            }
+            for wait in &mut waits {
+                if wait.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(());
+                }
+            }
+            Poll::Pending
+        })
+        .await;
+        activity.finish_result(&Ok::<(), ExecutionError>(()));
+    }
+
     pub async fn poll_ready(&mut self) -> Result<()> {
-        if self
-            .acquisition
-            .as_ref()
-            .is_some_and(|acquisition| acquisition.worker.is_finished())
+        let mut failure = None;
+        while self
+            .finite_signals
+            .values()
+            .any(CancellationToken::is_cancelled)
         {
+            let result = self
+                .finite
+                .join_next_with_id()
+                .await
+                .expect("completion belongs to retained finite work");
+            record_failure(&mut failure, self.retire_finite(result));
+        }
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        if self.acquisition.as_ref().is_some_and(|acquisition| {
+            acquisition.completion.is_cancelled() || acquisition.worker.is_finished()
+        }) {
             self.drain_acquisition().await?;
         }
         let mut index = 0;
@@ -1521,31 +1792,49 @@ impl RuntimeSession {
     }
     async fn drain_finite(&mut self) -> Result<()> {
         let mut failure = None;
-        while let Some(result) = self.finite.join_next().await {
-            match result {
-                Ok(FiniteResult {
+        while let Some(result) = self.finite.join_next_with_id().await {
+            record_failure(&mut failure, self.retire_finite(result));
+        }
+        failure.map_or(Ok(()), Err)
+    }
+
+    fn retire_finite(
+        &mut self,
+        result: std::result::Result<(tokio::task::Id, FiniteResult), tokio::task::JoinError>,
+    ) -> Result<()> {
+        let id = match &result {
+            Ok((id, _)) => *id,
+            Err(cause) => cause.id(),
+        };
+        self.finite_signals.remove(&id);
+        match result {
+            Ok((
+                _,
+                FiniteResult {
                     result:
                         Ok(
                             FiniteOutcome::Statement(ordinary::Attempt::Completed(report))
                             | FiniteOutcome::Fold(ordinary::FoldAttempt::Completed(report)),
                         ),
                     ..
-                }) => merge(&mut self.report, report),
-                Ok(FiniteResult {
+                },
+            )) => merge(&mut self.report, report),
+            Ok((
+                _,
+                FiniteResult {
                     result: Err(error), ..
-                }) => record_failure(&mut failure, Err::<(), _>(error)),
-                Err(cause) => record_failure(
-                    &mut failure,
-                    Err::<(), _>(ExecutionError::caused(
-                        "statement worker failed",
-                        Span::default(),
-                        cause,
-                    )),
-                ),
-                _ => {}
+                },
+            )) => return Err(error),
+            Err(cause) => {
+                return Err(ExecutionError::caused(
+                    "statement worker failed",
+                    Span::default(),
+                    cause,
+                ));
             }
+            _ => {}
         }
-        failure.map_or(Ok(()), Err)
+        Ok(())
     }
 }
 fn record_failure<T>(first: &mut Option<ExecutionError>, result: Result<T>) {
@@ -1950,6 +2239,39 @@ mod cleanup_tests {
             std::fs::read(root.path().join("next")).unwrap(),
             b"next data"
         );
+        runtime.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn idle_readiness_tracks_abandoned_finite_completion_without_spinning() {
+        let (root, mut runtime, _listener) = capture_fixture();
+        let destination = root.path().join("finite-result");
+        let program = literal(&destination, "finished bytes");
+        let gate = WorkerGate::default();
+        let _release = ReleaseOnDrop(gate.clone());
+        runtime.worker_gate = Some(gate.clone());
+        let mut submit = Box::pin(runtime.submit(&program));
+        tokio::select! {
+            result = &mut submit => panic!("worker escaped its gate: {result:?}"),
+            () = until(|| gate.entered()) => {},
+        }
+        drop(submit);
+        assert!(runtime.has_work());
+        assert!(!runtime.has_ready_work());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), runtime.wait_ready())
+                .await
+                .is_err()
+        );
+        gate.release();
+        tokio::time::timeout(std::time::Duration::from_secs(3), runtime.wait_ready())
+            .await
+            .unwrap();
+        runtime.poll_ready().await.unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"finished bytes");
+        assert!(!runtime.has_work());
+        assert!(!runtime.has_ready_work());
+        assert_eq!(runtime.take_report().assignments, 1);
         runtime.shutdown().await.unwrap();
     }
 }

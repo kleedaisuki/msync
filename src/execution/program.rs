@@ -199,6 +199,10 @@ impl Program {
         self.completed.is_some() || self.process.is_finished()
     }
 
+    pub fn completion_signal(&self) -> CancellationToken {
+        self.process.completion_signal()
+    }
+
     pub fn is_running(&self) -> bool {
         !self.is_finished()
     }

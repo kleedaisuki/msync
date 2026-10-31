@@ -1,4 +1,4 @@
-//! Opt-in, local-only JSONL spans shared by the entire language pipeline.
+//! Opt-in, local-only JSONL and SQLite spans shared by the language pipeline.
 //!
 //! Names and attribute keys use a fixed vocabulary; values describe actual paths,
 //! backends and decisions, never file payloads or credentials. Thread-scoped guards
@@ -12,10 +12,16 @@ use std::fs::OpenOptions;
 use std::hash::BuildHasher;
 use std::io::{self, BufWriter, Write};
 use std::marker::PhantomData;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+pub mod query;
+mod sqlite;
+
+pub use sqlite::Options as SqliteOptions;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static SESSION: OnceLock<RwLock<Option<Arc<Session>>>> = OnceLock::new();
@@ -180,8 +186,55 @@ pub fn record_error(stage: &'static str, error: &(dyn std::error::Error + 'stati
 }
 
 struct Sink {
-    writer: Box<dyn Write + Send>,
+    writer: Writer,
     failure: Option<String>,
+}
+
+enum Writer {
+    Jsonl(Box<dyn Write + Send>),
+    Sqlite(sqlite::Writer),
+}
+
+impl Writer {
+    fn write(&mut self, line: &str) -> Result<(), String> {
+        match self {
+            Self::Jsonl(writer) => writer
+                .write_all(line.as_bytes())
+                .map_err(|error| format!("could not write telemetry: {error}")),
+            Self::Sqlite(writer) => writer.write(line),
+        }
+    }
+
+    fn flush(&mut self) -> Result<(), String> {
+        match self {
+            Self::Jsonl(writer) => writer
+                .flush()
+                .map_err(|error| format!("could not flush telemetry: {error}")),
+            Self::Sqlite(writer) => writer.flush(),
+        }
+    }
+
+    fn close(&mut self) -> Result<(), String> {
+        match self {
+            Self::Jsonl(_) => self.flush(),
+            Self::Sqlite(writer) => writer.close(),
+        }
+    }
+
+    fn failure(&self) -> Option<String> {
+        match self {
+            Self::Jsonl(_) => None,
+            Self::Sqlite(writer) => writer.failure(),
+        }
+    }
+}
+
+fn trace_id() -> u128 {
+    let random = RandomState::new();
+    let now = unix_ns();
+    let high = random.hash_one((now, std::process::id(), 0_u8));
+    let low = random.hash_one((now, std::process::id(), 1_u8));
+    ((u128::from(high) << 64) | u128::from(low)).max(1)
 }
 
 struct Session {
@@ -192,12 +245,12 @@ struct Session {
 
 impl Session {
     fn new(writer: Box<dyn Write + Send>) -> Self {
-        let random = RandomState::new();
-        let now = unix_ns();
-        let high = random.hash_one((now, std::process::id(), 0_u8));
-        let low = random.hash_one((now, std::process::id(), 1_u8));
+        Self::with_writer(trace_id(), Writer::Jsonl(writer))
+    }
+
+    fn with_writer(trace_id: u128, writer: Writer) -> Self {
         Self {
-            trace_id: ((u128::from(high) << 64) | u128::from(low)).max(1),
+            trace_id,
             next_span: AtomicU64::new(1),
             sink: Mutex::new(Sink {
                 writer,
@@ -211,8 +264,8 @@ impl Session {
         if sink.failure.is_some() {
             return;
         }
-        if let Err(error) = sink.writer.write_all(line.as_bytes()) {
-            sink.failure = Some(format!("could not write telemetry: {error}"));
+        if let Err(error) = sink.writer.write(line) {
+            sink.failure = Some(error);
         }
     }
 
@@ -221,11 +274,18 @@ impl Session {
         if let Some(error) = &sink.failure {
             return Err(error.clone());
         }
-        sink.writer.flush().map_err(|error| {
-            let message = format!("could not flush telemetry: {error}");
+        sink.writer.flush().inspect_err(|message| {
             sink.failure = Some(message.clone());
-            message
         })
+    }
+
+    fn close(&self) -> Result<(), String> {
+        let mut sink = self.sink.lock().unwrap_or_else(|error| error.into_inner());
+        let result = sink.writer.close();
+        if sink.failure.is_none() {
+            sink.failure = result.as_ref().err().cloned();
+        }
+        sink.failure.clone().map_or(result, Err)
     }
 }
 
@@ -245,7 +305,25 @@ pub fn init(path: &str) -> Result<(), String> {
             .map_err(|error| format!("cannot open telemetry destination: {error}"))?;
         Box::new(BufWriter::new(file))
     };
-    let session = Arc::new(Session::new(writer));
+    install(Arc::new(Session::new(writer)))
+}
+
+/// Enables a normalized, batched SQLite trace. Sampling selects a whole session.
+/// Zero sampling disables the current sink without creating a database or thread.
+pub fn init_sqlite(path: &Path, options: SqliteOptions) -> Result<(), String> {
+    options.validate()?;
+    let trace_id = trace_id();
+    if (trace_id % 1_000_000) as u32 >= options.sample_per_million {
+        return disable();
+    }
+    let writer = sqlite::Writer::open(path, trace_id, &options)?;
+    install(Arc::new(Session::with_writer(
+        trace_id,
+        Writer::Sqlite(writer),
+    )))
+}
+
+fn install(session: Arc<Session>) -> Result<(), String> {
     let slot = SESSION.get_or_init(|| RwLock::new(None));
     let mut active = slot.write().unwrap_or_else(|error| error.into_inner());
     if let Some(previous) = active.as_ref() {
@@ -272,7 +350,21 @@ pub fn take_error() -> Option<String> {
         .sink
         .lock()
         .unwrap_or_else(|error| error.into_inner());
-    sink.failure.clone()
+    sink.failure.clone().or_else(|| sink.writer.failure())
+}
+
+/// Finishes the current exporter after all application work and spans settle.
+/// Unlike `disable`, this is terminal for contexts retaining the current sink.
+/// The CLI uses this boundary so database close failures are observable.
+pub fn shutdown() -> Result<(), String> {
+    let Some(slot) = SESSION.get() else {
+        return Ok(());
+    };
+    let mut active = slot.write().unwrap_or_else(|error| error.into_inner());
+    let result = active.as_ref().map_or(Ok(()), |session| session.close());
+    *active = None;
+    ENABLED.store(false, Ordering::Release);
+    result
 }
 
 /// Flushes and disables unparented future spans. Retained contexts and their
@@ -319,14 +411,20 @@ pub fn span(name: &'static str) -> SpanGuard {
 /// session is enabled; callers must capture and pass their intended context.
 pub fn linked_span(name: &'static str, parent: Option<&TraceContext>) -> LinkedSpan {
     LinkedSpan {
-        active: parent
-            .map(|parent| ActiveSpan::detached(parent.session.clone(), name, Some(parent.span_id))),
+        active: parent.map(|parent| {
+            Box::new(ActiveSpan::detached(
+                parent.session.clone(),
+                name,
+                Some(parent.span_id),
+            ))
+        }),
     }
 }
 
 #[must_use = "the guard must remain alive for the duration of the operation"]
 pub struct LinkedSpan {
-    active: Option<ActiveSpan>,
+    // Inactive spans must not inflate every containing async future with recording state.
+    active: Option<Box<ActiveSpan>>,
 }
 
 impl LinkedSpan {
@@ -1237,5 +1335,19 @@ mod tests {
         linked.expect_completion();
         thread.io_error("open", &io::Error::other("unused"));
         linked.io_error("open", &io::Error::other("unused"));
+    }
+}
+
+#[cfg(test)]
+mod linked_span_layout_tests {
+    #[test]
+    fn inactive_linked_span_is_pointer_sized_and_remains_send_sync() {
+        fn send_sync<T: Send + Sync>() {}
+        send_sync::<super::LinkedSpan>();
+        assert_eq!(
+            std::mem::size_of::<super::LinkedSpan>(),
+            std::mem::size_of::<usize>()
+        );
+        assert!(!super::linked_span("disabled", None).is_recording());
     }
 }

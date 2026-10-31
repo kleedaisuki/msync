@@ -5,6 +5,7 @@
 
 mod assignment;
 mod blocks;
+mod control_fs;
 mod domain;
 mod endpoint;
 mod error;
@@ -16,6 +17,7 @@ mod path_policy;
 mod program;
 pub mod progress;
 mod scheduler;
+mod trace;
 mod transfer;
 mod wsl_source;
 

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::compiler::{Backend, CopyOp, Location, Program};
 
 #[path = "plan/index.rs"]
-mod index;
+pub(crate) mod index;
 
 use index::ResourceIndex;
 
@@ -149,6 +149,22 @@ impl ResourceSnapshots {
         resource.require_wsl_proof = true;
         resource
     }
+}
+
+/// Resolve a comparison key without admitting filesystem access or rejecting symlink operands.
+/// Actual metadata/unlink operations retain responsibility for their own errors and link policy.
+pub(crate) fn canonical_observation_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    if crate::streams::is_named_pipe_path(&path.to_string_lossy()) {
+        return path.to_owned();
+    }
+    let mut cache = ResourceCache::default();
+    let path = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        cache.working_directory.join(path)
+    };
+    cache.canonical_existing_prefix(&path)
 }
 
 /// Construct a remote logical identity without observing a native alias. WSL
@@ -1339,5 +1355,39 @@ impl fmt::Display for Plan {
             writeln!(f, "invalid plan {:?}: {}", issue.nodes, issue.message)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod observation_path_tests {
+    use super::canonical_observation_path;
+    use std::path::Path;
+
+    #[test]
+    fn observation_keys_follow_symlinked_ancestors_for_existing_and_missing_leaves() {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        std::fs::create_dir_all(&base).unwrap();
+        let root = tempfile::tempdir_in(base).unwrap();
+        let real = root.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("file"), b"payload").unwrap();
+        let real = real.canonicalize().unwrap();
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        assert_eq!(
+            canonical_observation_path(&alias.join("file")),
+            real.join("file")
+        );
+        assert_eq!(
+            canonical_observation_path(&alias.join("missing")),
+            real.join("missing")
+        );
+        let link = root.path().join("link");
+        std::os::unix::fs::symlink(real.join("file"), &link).unwrap();
+        assert_eq!(canonical_observation_path(&link), real.join("file"));
+        assert_eq!(
+            canonical_observation_path(link.parent().unwrap()).join(link.file_name().unwrap()),
+            root.path().canonicalize().unwrap().join("link")
+        );
     }
 }

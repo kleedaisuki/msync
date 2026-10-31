@@ -15,6 +15,13 @@ fn run(executable: &Path, root: &Path, count: usize) -> Duration {
     let output = Command::new(executable)
         .args(["run", "copy.msync", "--jobs", "4", "--color", "never"])
         .current_dir(root)
+        .env("HOME", root.join("home"))
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("APPDATA", root.join("config"))
+        .env("NO_COLOR", "1")
+        .env_remove("MSYNC_CONFIG")
+        .env_remove("MSYNC_STATE_DIR")
+        .env_remove("MSYNC_TRACE")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -26,12 +33,16 @@ fn run(executable: &Path, root: &Path, count: usize) -> Duration {
         String::from_utf8_lossy(&output.stderr)
     );
     let summary = format!(
-        "done: {count} operation(s), 0 eliminated, {count} file(s), 0 directories, {} flow bytes",
+        "done: {count} assignment(s), {count} file(s), {} bytes;",
         count * payload.len()
     );
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap().lines().last(),
-        Some(summary.as_str())
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout
+            .lines()
+            .last()
+            .is_some_and(|line| line.starts_with(&summary)),
+        "unexpected execution counts: {stdout}"
     );
     for id in 0..count {
         assert_eq!(

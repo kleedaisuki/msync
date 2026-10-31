@@ -4,12 +4,16 @@
 //! rather than modifying an existing inode through another hard-link name.
 //! Native/WSL projections and unresolved contextual endpoints remain aliases.
 
+use std::sync::Arc;
+
 use crate::compiler::{Backend, Location};
 use crate::hir::{Input, Instruction, InstructionId, InstructionKind, Output, ProcessId, ReadPort};
 use crate::language::DestinationMode;
 use crate::plan::{FileClass, OperationKinds};
 
+mod index;
 mod rendezvous;
+pub(crate) use index::{CandidateIndex, Files, Resources};
 pub use rendezvous::{FifoEndpointProof, FifoRendezvousProof};
 
 /// Physical endpoint stability is independent of its logical file class.
@@ -53,12 +57,12 @@ pub enum Scope {
 pub struct FileResource {
     pub location: Location,
     pub scope: Scope,
-    path: LogicalPath,
+    path: Arc<LogicalPath>,
 }
 
 impl FileResource {
     pub fn new(location: Location, scope: Scope) -> Self {
-        let path = LogicalPath::new(&location);
+        let path = Arc::new(LogicalPath::new(&location));
         Self {
             location,
             scope,
@@ -157,7 +161,7 @@ impl FileResource {
             return None;
         }
         let mut parent = self.clone();
-        parent.path.parts.pop();
+        Arc::make_mut(&mut parent.path).parts.pop();
         parent.scope = Scope::Exact;
         let tail = parent.path.parts.join("/");
         parent.location.path = match parent.path.root.as_str() {
@@ -532,7 +536,7 @@ pub fn summarize_prepared(
             source,
             destination,
         } => transfer(source, destination, facts, existing_parent, pinned_input),
-        InstructionKind::Spawn { .. } => Effects {
+        InstructionKind::Spawn { .. } | InstructionKind::Control(_) => Effects {
             unknown_external: true,
             ..Effects::default()
         },
@@ -728,5 +732,33 @@ fn add_namespace_writes(
             resource: Resource::DirectoryEntry(entry),
             kind: AccessKind::Write,
         });
+    }
+}
+
+#[cfg(test)]
+mod sharing_tests {
+    use super::*;
+
+    #[test]
+    fn cloned_resources_share_normalized_paths_but_parent_is_independent() {
+        let child = FileResource::new(
+            Location {
+                backend: Backend::Local,
+                path: "/root/child/leaf".into(),
+            },
+            Scope::Tree,
+        );
+        let cloned = child.clone();
+        assert!(Arc::ptr_eq(&child.path, &cloned.path));
+        assert_eq!(child, cloned);
+        assert_eq!(format!("{child:?}"), format!("{cloned:?}"));
+        let parent = child.parent().expect("child has a parent");
+        assert!(!Arc::ptr_eq(&child.path, &parent.path));
+        assert_eq!(parent.location.path, "/root/child");
+        assert_eq!(parent.path.parts, ["root", "child"]);
+        assert_eq!(child.path.parts, ["root", "child", "leaf"]);
+        assert_eq!(cloned.path.parts, child.path.parts);
+        assert_eq!(child.scope, Scope::Tree);
+        assert_eq!(parent.scope, Scope::Exact);
     }
 }

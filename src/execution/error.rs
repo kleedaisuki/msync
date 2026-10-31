@@ -169,7 +169,7 @@ impl ExecutionError {
         Self::caused(message, span, OwnerCancellation)
     }
 
-    pub(super) fn is_cancelled(&self) -> bool {
+    pub fn is_cancelled(&self) -> bool {
         self.compensation.is_empty()
             && self.retained_paths.is_empty()
             && self

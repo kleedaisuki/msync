@@ -174,6 +174,7 @@ pub struct Process {
     exited: CancellationToken,
     status: watch::Receiver<Option<Result<ProcessExitStatus, ProcessError>>>,
     finished: watch::Receiver<Option<Result<ExitInfo, ProcessError>>>,
+    completion_signal: CancellationToken,
 }
 
 struct ExitObserver {
@@ -243,6 +244,8 @@ impl Process {
             pid,
         ));
         let (finished, receiver) = watch::channel(None);
+        let completion_signal = CancellationToken::new();
+        let completed = completion_signal.clone().drop_guard();
         let (status, status_receiver) = watch::channel(None);
         let worker_cancel = cancel.clone();
         let exited = CancellationToken::new();
@@ -251,6 +254,7 @@ impl Process {
             status,
         };
         tokio::spawn(async move {
+            let _completed = completed;
             let result = finish(child, tree, pid, out, err, worker_cancel, &worker_exited).await;
             let _ = finished.send(Some(result));
             worker_exited.signal.cancel();
@@ -264,6 +268,7 @@ impl Process {
             exited,
             status: status_receiver,
             finished: receiver,
+            completion_signal,
         })
     }
 
@@ -288,7 +293,12 @@ impl Process {
     }
 
     pub fn is_finished(&self) -> bool {
-        self.finished.borrow().is_some()
+        self.finished.borrow().is_some() || self.completion_signal.is_cancelled()
+    }
+
+    /// Becomes ready after child exit and both output drains, without consuming completion.
+    pub fn completion_signal(&self) -> CancellationToken {
+        self.completion_signal.clone()
     }
 
     pub fn exit_signal(&self) -> CancellationToken {

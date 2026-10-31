@@ -1,5 +1,6 @@
 //! Actual live-runtime admission and async poll telemetry, exercised via the CLI.
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Write,
     net::{TcpListener, TcpStream},
@@ -69,15 +70,59 @@ fn span<'a>(trace: &'a str, name: &str) -> &'a str {
 fn hierarchy(trace: &str) {
     let schedule = span(trace, "schedule");
     let task = span(trace, "task");
-    let execute = trace
+    let records = trace
         .lines()
-        .find(|record| {
-            record.contains("\"kind\":\"span\"")
-                && record.contains("\"name\":\"execute\"")
-                && field(record, "span_id") == field(schedule, "parent_span_id")
-        })
-        .expect("a schedule must retain its own execute parent, not an earlier empty submission");
-    assert_eq!(field(schedule, "parent_span_id"), field(execute, "span_id"));
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let spans = records
+        .iter()
+        .filter(|record| record["kind"] == "span")
+        .map(|record| (record["span_id"].as_str().unwrap(), record))
+        .collect::<BTreeMap<_, _>>();
+    let mut current = spans[field(schedule, "span_id")];
+    let mut ancestry = Vec::new();
+    let mut visited = BTreeSet::new();
+    loop {
+        let id = current["span_id"].as_str().unwrap();
+        assert!(visited.insert(id), "cyclic trace ancestry: {trace}");
+        assert_eq!(current["trace_id"], field(schedule, "trace_id"));
+        ancestry.push(current);
+        let Some(parent) = current["parent_span_id"].as_str() else {
+            break;
+        };
+        current = spans
+            .get(parent)
+            .expect("every ancestor must exist in the trace");
+    }
+    let names = ancestry
+        .iter()
+        .map(|record| record["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        names.starts_with(&[
+            "schedule",
+            "interpreter.instruction",
+            "interpreter.block",
+            "execute",
+            "submission"
+        ]),
+        "admission must retain the actual instruction/block/execute/submission chain: {trace}"
+    );
+    assert_eq!(ancestry[1]["attributes"]["instruction.kind"], "transfer");
+    assert!(
+        ancestry[2]["metrics"]["instructions"]
+            .as_u64()
+            .is_some_and(|count| count > 0)
+    );
+    let submission = ancestry[4]["span_id"].as_str().unwrap();
+    assert!(
+        spans.values().any(|record| record["name"] == "compile"
+            && record["parent_span_id"] == submission
+            && record["metrics"]["operations"]
+                .as_u64()
+                .is_some_and(|count| count > 0)),
+        "a schedule must belong to a submission that compiled actual work, not an earlier empty binding submission: {trace}"
+    );
     assert_eq!(field(task, "parent_span_id"), field(schedule, "span_id"));
     assert!(schedule.contains("\"granted_slots\":1"));
     assert!(schedule.contains("\"reserved_buffer_bytes\":131072"));

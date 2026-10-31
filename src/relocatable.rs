@@ -62,7 +62,7 @@ pub struct Relocation {
     pub path: Path,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Namespace {
     WorkingDirectory,
@@ -73,6 +73,15 @@ pub enum Namespace {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExportValue {
+    Bool {
+        value: bool,
+    },
+    Dynamic {
+        expression: crate::hir::control::Expr,
+    },
+    Range {
+        range: crate::hir::control::RangeExpr,
+    },
     Literal {
         text: String,
     },

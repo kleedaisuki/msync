@@ -44,6 +44,7 @@ impl Types<'_> {
                     }
                     state.unknown();
                 }
+                InstructionKind::Control(_) => state.unknown(),
                 InstructionKind::Barrier { .. } | InstructionKind::Await { .. } => {}
             }
         }

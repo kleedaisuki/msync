@@ -242,6 +242,7 @@ pub(super) enum Destination {
 }
 
 pub(super) struct Flow {
+    completion: CancellationToken,
     handle: Option<JoinHandle<Result<FlowReport>>>,
     span: Span,
 }
@@ -288,7 +289,10 @@ impl Flow {
             span,
         )?;
         let context = crate::telemetry::context();
+        let completion = CancellationToken::new();
+        let completed = completion.clone().drop_guard();
         let handle = crate::runtime::ssh::spawn(async move {
+            let _completed = completed;
             let mut task = crate::telemetry::linked_span("task", context.as_ref());
             task.expect_completion();
             task.attribute("operation", "byte-flow");
@@ -318,13 +322,18 @@ impl Flow {
             result
         });
         Ok(Self {
+            completion,
             handle: Some(handle),
             span,
         })
     }
 
     pub fn is_finished(&self) -> bool {
-        self.handle.as_ref().is_none_or(JoinHandle::is_finished)
+        self.completion.is_cancelled() || self.handle.as_ref().is_none_or(JoinHandle::is_finished)
+    }
+
+    pub fn completion_signal(&self) -> CancellationToken {
+        self.completion.clone()
     }
 
     pub async fn join(&mut self) -> Result<FlowReport> {

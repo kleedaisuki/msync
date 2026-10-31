@@ -36,6 +36,7 @@ fn operation_shape(program: &Program) -> Vec<String> {
         .instructions
         .iter()
         .map(|instruction| match &instruction.kind {
+            InstructionKind::Control(control) => format!("control:{}", control.name()),
             InstructionKind::Transfer { .. } => "transfer".into(),
             InstructionKind::Spawn { process, .. } => format!("spawn:{}", process.0),
             InstructionKind::Await { process } => format!("await:{process:?}"),

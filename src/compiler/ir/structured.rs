@@ -57,44 +57,76 @@ impl Structured {
             return Ok(self.clone());
         }
         let mut bound = self.contextualize(context, &mut Session::new())?;
-        for node in &mut bound.program.body.instructions {
-            let span = node.span;
-            let freeze = |location: &mut crate::endpoint::Location, source: bool| {
-                super::freeze(location, source, context, span).map_err(|reports| {
-                    reports
-                        .into_iter()
-                        .map(|report| report.diagnostic.message)
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                })
-            };
-            match &mut node.kind {
-                InstructionKind::Transfer {
-                    source,
-                    destination,
-                } => {
-                    if let Input::File { location, .. } = source {
-                        freeze(location, true)?;
-                    }
-                    if let Output::File { location, .. } = destination {
-                        freeze(location, false)?;
-                    }
-                }
-                InstructionKind::Spawn {
-                    executable,
-                    arguments,
-                    ..
-                } => {
-                    freeze(executable, true)?;
-                    for argument in arguments {
-                        if let Argument::Path(location) = argument {
+        struct Freeze<'a> {
+            context: &'a CompileContext,
+            span: crate::syntax::Span,
+        }
+        impl crate::object::control::Visitor for Freeze<'_> {
+            type Error = String;
+            fn instruction(&mut self, node: &mut crate::hir::Instruction) -> Result<(), String> {
+                self.span = node.span;
+                let span = node.span;
+                let context = self.context;
+                let freeze = |location: &mut crate::endpoint::Location, source: bool| {
+                    super::freeze(location, source, context, span).map_err(|reports| {
+                        reports
+                            .into_iter()
+                            .map(|report| report.diagnostic.message)
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    })
+                };
+                match &mut node.kind {
+                    InstructionKind::Transfer {
+                        source,
+                        destination,
+                    } => {
+                        if let Input::File { location, .. } = source {
                             freeze(location, true)?;
                         }
+                        if let Output::File { location, .. } = destination {
+                            freeze(location, false)?;
+                        }
                     }
+                    InstructionKind::Spawn {
+                        executable,
+                        arguments,
+                        ..
+                    } => {
+                        freeze(executable, true)?;
+                        for argument in arguments {
+                            if let Argument::Path(location) = argument {
+                                freeze(location, true)?;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
+                Ok(())
+            }
+            fn expression(
+                &mut self,
+                expression: &mut crate::hir::control::Expr,
+            ) -> Result<(), String> {
+                if let crate::hir::control::ExprKind::Path { location, .. } = &mut expression.kind {
+                    super::freeze(location, true, self.context, self.span).map_err(|reports| {
+                        reports
+                            .into_iter()
+                            .map(|report| report.diagnostic.message)
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    })?;
+                }
+                Ok(())
             }
         }
+        crate::object::control::visit_region(
+            &mut bound.program.body,
+            &mut Freeze {
+                context,
+                span: Default::default(),
+            },
+        )?;
         let module = ObjectModule::from_parts(
             bound.program,
             Vec::new(),

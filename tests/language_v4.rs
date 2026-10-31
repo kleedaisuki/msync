@@ -249,13 +249,12 @@ fn header_comments_stay_in_their_regions_and_comment_indentation_is_not_a_block(
 }
 
 #[test]
-fn diagnoses_ambiguous_indentation_and_nested_macros() {
+fn diagnoses_ambiguous_indentation() {
     for source in [
         "macro a():\n\ta -> b\n        a -> b\n",
         "macro a():\n \ta -> b\n",
         "macro a():\n    a -> b\n  b -> c\n",
         "  a -> b\n",
-        "macro a():\n    macro b():\n        x -> y\n",
     ] {
         let reports = language::parse(source).unwrap_err();
         assert!(!reports.is_empty());

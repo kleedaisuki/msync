@@ -902,13 +902,57 @@ fn metadata_type_validation_distinguishes_directory_modes_and_selectors() {
         "source -> file\n",
         "file -> target/.\n",
         "\"text\" -> target/\n",
-        "file/<.*> -> target/\n",
     ] {
         assert!(
             preparation::prepare(&compile(root.path(), script), true).is_err(),
             "{script}"
         );
     }
+    let context = CompileContext {
+        pwd: root.path().to_owned(),
+        source_file: None,
+    };
+    let object = msync::pipeline::compile_object_named(
+        &mut Session::new(),
+        "file/<.*> -> target/\n",
+        "selector.msync",
+        &context,
+    )
+    .unwrap();
+    let bound = msync::context::contextualize(
+        &object,
+        &msync::context::Context::new(&context),
+        &mut Session::new(),
+    )
+    .unwrap();
+    let range = preparation::prepare(&bound.program, true).unwrap();
+    assert!(matches!(
+        range.program.body.instructions[0].kind,
+        InstructionKind::Control(hir::control::ControlInstruction::For { .. })
+    ));
+    assert!(
+        range.facts.is_empty(),
+        "a lazy selector is not enumerated by preparation"
+    );
+    let missing =
+        preparation::prepare(&compile(root.path(), "missing/<.*> -> target/\n"), true).unwrap();
+    assert!(missing.facts.is_empty());
+    assert!(!root.path().join("missing").exists());
+    let error =
+        msync::execution::execute(&range.program, &msync::execution::Options::new(root.path()))
+            .unwrap_err();
+    assert!(error.to_string().contains("file"), "{error}");
+    if let Some(cause) = error
+        .native_cause()
+        .and_then(|cause| cause.downcast_ref::<std::io::Error>())
+    {
+        assert_eq!(cause.kind(), std::io::ErrorKind::NotADirectory);
+    }
+    #[cfg(unix)]
+    assert!(error.to_string().contains("directory"), "{error}");
+    assert_eq!(fs::read(root.path().join("file")).unwrap(), b"file");
+    assert_eq!(fs::read_dir(root.path().join("target")).unwrap().count(), 0);
+
     let prepared =
         preparation::prepare(&compile(root.path(), "source -> target/.\n"), true).unwrap();
     assert_eq!(

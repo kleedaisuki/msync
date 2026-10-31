@@ -21,14 +21,19 @@ use crate::source::{InstructionOrigin, LocatedReport, Origins, Source, SourceId,
 use crate::syntax::{OperandSource, Report, Span};
 
 mod diagnostics;
+mod ranges;
 mod scripts;
 mod symbols;
+mod v6;
 use diagnostics::{ExpansionMap, ExpansionTrace, Failure, Origin as ExpansionOrigin};
 
 #[derive(Clone, Debug)]
 enum Value {
     Path(PathValue),
     Literal(Arc<str>),
+    Bool(bool),
+    Dynamic(hir::control::Expr),
+    Range(hir::control::RangeExpr),
     Space(Space),
     Process(ProcessId),
     Port(ProcessId, Port),
@@ -85,11 +90,11 @@ struct Macro {
     name: Name,
     parameters: Vec<Name>,
     body: language::Block,
-    globals: Arc<BTreeMap<String, Value>>,
-    global_sites: Arc<BTreeMap<String, SourceSpan>>,
+    globals: Arc<imbl::OrdMap<String, Value>>,
+    global_sites: Arc<imbl::OrdMap<String, SourceSpan>>,
     global_expansions: Arc<ExpansionMap>,
-    macros: Arc<BTreeMap<String, Arc<Macro>>>,
-    symbols: Arc<BTreeMap<String, Arc<symbols::Symbol>>>,
+    macros: Arc<imbl::OrdMap<String, Arc<Macro>>>,
+    symbols: Arc<imbl::OrdMap<String, Arc<symbols::Symbol>>>,
     source_file: Option<PathBuf>,
     source: Arc<Source>,
 }
@@ -97,18 +102,23 @@ struct Macro {
 #[derive(Clone, Debug, Default)]
 struct Scope {
     // Macro debug sources change during expansion; the caller's link unit does not.
+    slots: Arc<std::sync::atomic::AtomicUsize>,
+    cells: imbl::OrdMap<String, hir::control::SlotId>,
     current_unit: Option<SourceId>,
     source: Option<Arc<Source>>,
-    symbols: Arc<BTreeMap<String, Arc<symbols::Symbol>>>,
+    symbols: Arc<imbl::OrdMap<String, Arc<symbols::Symbol>>>,
     symbol_calls: Vec<(Arc<symbols::Symbol>, SourceSpan)>,
     symbol_budget: symbols::Budget,
-    defined_units: Arc<BTreeMap<String, SourceId>>,
-    values: Arc<BTreeMap<String, Value>>,
-    macros: Arc<BTreeMap<String, Arc<Macro>>>,
-    globals: Option<Arc<BTreeMap<String, Value>>>,
-    imported: HashSet<String>,
-    sites: Arc<BTreeMap<String, SourceSpan>>,
-    global_sites: Option<Arc<BTreeMap<String, SourceSpan>>>,
+    defined_units: Arc<imbl::OrdMap<String, SourceId>>,
+    values: Arc<imbl::OrdMap<String, Value>>,
+    macros: Arc<imbl::OrdMap<String, Arc<Macro>>>,
+    globals: Option<Arc<imbl::OrdMap<String, Value>>>,
+    global_macros: Option<Arc<imbl::OrdMap<String, Arc<Macro>>>>,
+    global_symbols: Option<Arc<imbl::OrdMap<String, Arc<symbols::Symbol>>>>,
+    local_templates: imbl::OrdSet<String>,
+    imported: imbl::OrdSet<String>,
+    sites: Arc<imbl::OrdMap<String, SourceSpan>>,
+    global_sites: Option<Arc<imbl::OrdMap<String, SourceSpan>>>,
     expansions: Arc<ExpansionMap>,
     global_expansions: Option<Arc<ExpansionMap>>,
 }
@@ -119,7 +129,7 @@ pub struct Session {
     legacy: Compiler,
     scope: Scope,
     next_process: usize,
-    consumed: HashMap<(ProcessId, Port), SourceSpan>,
+    consumed: imbl::HashMap<(ProcessId, Port), SourceSpan>,
 }
 
 #[derive(Clone, Debug)]
@@ -133,6 +143,16 @@ pub struct Lowered {
 impl Session {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn runtime_slot_base(&self) -> usize {
+        self.scope.slots.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn reserve_runtime_slots(&mut self, next: usize) {
+        self.scope
+            .slots
+            .fetch_max(next, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn from_legacy(compiler: Compiler) -> Self {
@@ -168,6 +188,7 @@ impl Session {
         let values = Arc::make_mut(&mut self.scope.values);
         for (name, space) in compiler.spaces.iter() {
             values.insert(name.clone(), Value::Space(space.clone()));
+            self.scope.cells.remove(name);
             Arc::make_mut(&mut self.scope.sites).remove(name);
             Arc::make_mut(&mut self.scope.expansions).remove(name);
             Arc::make_mut(&mut self.scope.defined_units).remove(name);
@@ -176,6 +197,7 @@ impl Session {
             let mut path: PathValue = path.clone().into();
             path.mode = legacy_path_mode(&path.path);
             values.insert(name.clone(), Value::Path(path));
+            self.scope.cells.remove(name);
             Arc::make_mut(&mut self.scope.sites).remove(name);
             Arc::make_mut(&mut self.scope.expansions).remove(name);
             Arc::make_mut(&mut self.scope.defined_units).remove(name);
@@ -193,10 +215,12 @@ impl Session {
         // Runtime identities are never recycled while an executor might still
         // retain an older process.
         let next_process = self.next_process;
+        let slots = self.scope.slots.clone();
         *self = Self {
             next_process,
             ..Self::default()
         };
+        self.scope.slots = slots;
     }
 
     pub fn bindings(&self) -> Vec<String> {
@@ -229,6 +253,11 @@ impl Session {
                     ));
                 }
                 Value::Space(_) => {}
+                Value::Bool(value) => bindings.push(format!("{name} = {value}")),
+                Value::Dynamic(value) => {
+                    bindings.push(format!("{name} = <runtime {:?}>", value.ty))
+                }
+                Value::Range(_) => bindings.push(format!("{name} := <range>")),
             }
         }
         bindings.extend(self.scope.macros.values().map(|definition| {
@@ -288,6 +317,13 @@ impl Session {
                             },
                         }
                     }
+                    Value::Bool(value) => ExportValue::Bool { value: *value },
+                    Value::Dynamic(expression) => ExportValue::Dynamic {
+                        expression: expression.clone(),
+                    },
+                    Value::Range(range) => ExportValue::Range {
+                        range: range.clone(),
+                    },
                     Value::Process(_) | Value::Port(_, _) => return None,
                 };
                 Some(Export {
@@ -356,6 +392,7 @@ impl Session {
             } else {
                 Arc::make_mut(&mut candidate.scope.expansions).remove(&export.name);
             }
+            candidate.scope.cells.remove(&export.name);
             Arc::make_mut(&mut candidate.scope.values).insert(export.name.clone(), value);
             Arc::make_mut(&mut candidate.scope.defined_units).remove(&export.name);
             if let Some(site) = site {
@@ -432,12 +469,29 @@ impl Session {
             relocations: Vec::new(),
             pending: Default::default(),
             scripts: scripts::State::new(context.source_file.clone()),
+            loops: Vec::new(),
         };
+        let mut trace = crate::telemetry::span("compile.lower");
+        let slots_before = scope.slots.load(std::sync::atomic::Ordering::Relaxed);
         let mut body = Region::default();
         let errors = lower.block(&document.statements, &mut scope, context, &mut body);
+        trace.metric("instructions", lower.origins.len() as u64);
+        trace.metric("instruction_ids", lower.next_instruction as u64);
+        trace.metric(
+            "runtime_slots",
+            (scope.slots.load(std::sync::atomic::Ordering::Relaxed) - slots_before) as u64,
+        );
+        trace.metric(
+            "function_specializations",
+            scope.symbol_budget.used() as u64,
+        );
+        trace.metric("errors", errors.len() as u64);
         if !errors.is_empty() {
+            trace.finish_result(&Err::<(), _>(&errors));
             return Err(errors);
         }
+        trace.finish_result(&Ok::<(), ()>(()));
+        drop(trace);
         for removed in hir::rewrite::normalize_fences(&mut body) {
             lower.origins.remove(&removed);
         }
@@ -454,8 +508,11 @@ impl Session {
             relocations: lower.relocations,
             source_modules: lower.scripts.modules,
         };
+        let values_changed = !Arc::ptr_eq(&candidate.scope.values, &scope.values);
         candidate.scope = scope;
-        candidate.refresh_legacy();
+        if values_changed {
+            candidate.refresh_legacy();
+        }
         *self = candidate;
         Ok(result)
     }
@@ -485,9 +542,17 @@ fn value_expression(statement: &language::Statement) -> &Expr {
 }
 
 fn local_processes(region: &Region, processes: &mut HashSet<ProcessId>) {
-    for node in &region.instructions {
-        if let InstructionKind::Spawn { process, .. } = &node.kind {
-            processes.insert(*process);
+    let mut nodes = Vec::new();
+    crate::object::control::region_nodes(region, &mut nodes);
+    for node in nodes {
+        match &node.kind {
+            InstructionKind::Spawn { process, .. }
+            | InstructionKind::Control(hir::control::ControlInstruction::Spawn {
+                process, ..
+            }) => {
+                processes.insert(*process);
+            }
+            _ => {}
         }
     }
 }
@@ -499,35 +564,59 @@ fn defined_here(scope: &Scope, name: &str) -> bool {
 }
 
 fn import_consumptions(
-    consumed: &mut HashMap<(ProcessId, Port), SourceSpan>,
+    consumed: &mut imbl::HashMap<(ProcessId, Port), SourceSpan>,
     region: &Region,
     origins: &Origins,
 ) -> Result<(), Report> {
-    for node in &region.instructions {
-        let InstructionKind::Transfer {
-            source,
-            destination,
-        } = &node.kind
-        else {
-            continue;
-        };
-        let source = match source {
-            Input::Port {
-                process,
-                port: port @ (ReadPort::Stdout | ReadPort::Stderr),
-            } => Some(((*process, Port::Read(*port)), false)),
-            _ => None,
-        };
-        let destination = match destination {
-            Output::Stdin(process) => Some(((*process, Port::Stdin), true)),
-            _ => None,
+    let mut nodes = Vec::new();
+    crate::object::control::region_nodes(region, &mut nodes);
+    let previous_consumed = consumed.clone();
+    for node in nodes {
+        let (source, destination) = match &node.kind {
+            InstructionKind::Transfer {
+                source,
+                destination,
+            } => {
+                let source = match source {
+                    Input::Port {
+                        process,
+                        port: port @ (ReadPort::Stdout | ReadPort::Stderr),
+                    } => Some(((*process, Port::Read(*port)), false)),
+                    _ => None,
+                };
+                let destination = match destination {
+                    Output::Stdin(process) => Some(((*process, Port::Stdin), true)),
+                    _ => None,
+                };
+                (source, destination)
+            }
+            InstructionKind::Control(hir::control::ControlInstruction::Transfer {
+                source,
+                destination,
+            }) => {
+                let source = match source {
+                    hir::control::TransferInput::Port {
+                        process,
+                        port: port @ (ReadPort::Stdout | ReadPort::Stderr),
+                    } => Some(((*process, Port::Read(*port)), false)),
+                    _ => None,
+                };
+                let destination = match destination {
+                    hir::control::TransferOutput::Stdin(process) => {
+                        Some(((*process, Port::Stdin), true))
+                    }
+                    _ => None,
+                };
+                (source, destination)
+            }
+            _ => continue,
         };
         for (key, destination) in source.into_iter().chain(destination) {
             let origin = origins.get(&node.id).ok_or_else(|| {
                 Report::new("object port connection has no debug origin", node.span)
             })?;
             let site = origin.for_operand(destination).site;
-            if let Some(previous) = consumed.get(&key) {
+            if let Some(previous) = previous_consumed.get(&key) {
                 return Err(Report::new(
                     "a live program stream may have only one owner",
                     site.span,
@@ -555,6 +644,9 @@ fn namespace(space: &Space) -> Namespace {
 
 fn imported_value(value: &ExportValue) -> Value {
     match value {
+        ExportValue::Bool { value } => Value::Bool(*value),
+        ExportValue::Dynamic { expression } => Value::Dynamic(expression.clone()),
+        ExportValue::Range { range } => Value::Range(range.clone()),
         ExportValue::Literal { text } => Value::Literal(Arc::from(text.as_str())),
         ExportValue::Path {
             backend,
@@ -594,6 +686,7 @@ struct Lower<'a> {
     relocations: Vec<Relocation>,
     pending: BTreeSet<ProcessId>,
     scripts: scripts::State,
+    loops: Vec<v6::LoopFrame>,
 }
 
 impl Lower<'_> {
@@ -722,6 +815,17 @@ impl Lower<'_> {
                 parameters,
                 body,
             } => self.define_symbol(name, parameters, body, scope, context),
+            StatementKind::Boolean {
+                name,
+                parameters,
+                body,
+            } => self.define_boolean(name, parameters, body, scope, context),
+            StatementKind::Delete(_)
+            | StatementKind::Drop(_)
+            | StatementKind::If { .. }
+            | StatementKind::For { .. }
+            | StatementKind::Loop { .. }
+            | StatementKind::Break(_) => self.control(statement, scope, context, region),
             StatementKind::Return(value) => Err(self.located(Report::new(
                 "return is only allowed inside a symbol",
                 value.span,
@@ -771,6 +875,10 @@ impl Lower<'_> {
             start: name.span.start,
             end: expression.span.end,
         };
+        if self.bind_control(name, op, expression, scope, context, region)? {
+            return Ok(());
+        }
+        scope.cells.remove(&name.text);
         let mut value = match (&expression.kind, op) {
             (ExprKind::Call { .. }, _) if symbols::is_call(expression, scope) => {
                 let value = diagnostics::resolve(expression, scope, context)?;
@@ -780,39 +888,8 @@ impl Lower<'_> {
                 value
             }
 
-            (ExprKind::Call { callee, arguments }, BindingOp::Space) => {
-                let (executable, executable_relocation) = file_value(diagnostics::resolve(callee, scope, context)?, callee.span, context)?;
-                if !matches!(executable.backend, Backend::Local | Backend::Path | Backend::Wsl | Backend::Ssh { .. }) {
-                    return Err((Report::new("this endpoint cannot launch a program", callee.span)
-                        .help("Use a local, PATH, WSL or SSH executable endpoint.")).into());
-                }
-                let mut relocations = Vec::new();
-                if let Some(path) = executable_relocation { relocations.push((Slot::Executable, path)); }
-                let arguments = arguments.iter().enumerate().map(|(index, argument)| match diagnostics::resolve(argument, scope, context)? {
-                    Value::Literal(text) => {
-                        if text.contains('\0') {
-                            return Err((Report::new("program arguments cannot contain NUL", argument.span)
-                                .help("Pass these bytes through program::stdin or a file instead; native argv strings cannot contain NUL.")).into());
-                        }
-                        Ok(Argument::Text(text.to_string()))
-                    }
-                    Value::Path(path) => {
-                        let (location, relocation) = location(path, context, argument.span)?;
-                        if let Some(path) = relocation { relocations.push((Slot::Argument { index }, path)); }
-                        Ok(Argument::Path(location))
-                    },
-                    _ => Err((Report::new("program arguments must be text or file paths", argument.span)
-                        .help("Quote literal argv text; pass a path binding to retain its endpoint identity.")).into()),
-                }).collect::<Result<Vec<_>, Failure>>()?;
-                let id = ProcessId(self.session.next_process);
-                self.session.next_process += 1;
-                let instruction = self.emit(region, span, InstructionKind::Spawn { process: id, executable, arguments, cwd: context.pwd.clone() });
-                self.pending.insert(id);
-                relocations.push((Slot::Cwd, RelocPath::new(Anchor::WorkingDirectory, "")));
-                self.relocations.extend(relocations.into_iter().map(|(slot, path)| Relocation { instruction, slot, path }));
-                Value::Process(id)
-            }
-            (ExprKind::Call { .. }, BindingOp::Value) => {
+            (ExprKind::Call { callee, arguments }, BindingOp::Space) => self.spawn_call(callee, arguments, scope, context, region, span)?,
+            (ExprKind::Call { .. }, BindingOp::Value | BindingOp::Assign) => {
                 return Err((Report::new("a program call binds a program space with '=>'", expression.span)
                     .help("Use 'program => executable(arguments)' and read program::stdout or program::exit_code.")).into());
             }
@@ -821,8 +898,9 @@ impl Lower<'_> {
                 _ => return Err((Report::new("'=>' expects an endpoint namespace or a program call", expression.span)
                     .help("Use ':=' for path values, or '=>' with $local, $wsl, an endpoint URL or executable(arguments).")).into()),
             },
-            (_, BindingOp::Value) => diagnostics::resolve(expression, scope, context)?,
+            (_, BindingOp::Value | BindingOp::Assign) => diagnostics::resolve(expression, scope, context)?,
         };
+        v6::check_assignment(op, &value, expression.span)?;
         if let Value::Path(path) = &mut value
             && contextual(path.relocation.as_ref())
             && path.relocation_unit.is_none()
@@ -850,11 +928,23 @@ impl Lower<'_> {
         &mut self,
         source: &Expr,
         destination: &Expr,
-        scope: &Scope,
+        scope: &mut Scope,
         context: &CompileContext,
         span: Span,
         region: &mut Region,
     ) -> Result<(), LocatedReport> {
+        let values = self
+            .transfer_control(source, destination, scope, context, span, region)
+            .map_err(|failure| {
+                self.located(
+                    failure
+                        .with_expression(source, scope)
+                        .with_expression(destination, scope),
+                )
+            })?;
+        let Some(values) = values else {
+            return Ok(());
+        };
         let operands = (
             self.expression_site(source, scope),
             self.expression_site(destination, scope),
@@ -865,7 +955,7 @@ impl Lower<'_> {
             owned,
             relocations,
         } = self
-            .transfer_values(source, destination, scope, context)
+            .transfer_values(source, destination, values, context)
             .map_err(|failure| {
                 self.located(
                     failure
@@ -907,11 +997,10 @@ impl Lower<'_> {
         &mut self,
         source: &Expr,
         destination: &Expr,
-        scope: &Scope,
+        values: (Value, Value),
         context: &CompileContext,
     ) -> Result<TransferValues, Failure> {
-        let source_value = diagnostics::resolve(source, scope, context)?;
-        let destination_value = diagnostics::resolve(destination, scope, context)?;
+        let (source_value, destination_value) = values;
         let mut owned = Vec::new();
         let mut relocations = Vec::new();
         let source = match source_value {
@@ -1012,13 +1101,6 @@ impl Lower<'_> {
         scope: &mut Scope,
         context: &CompileContext,
     ) -> Result<(), Report> {
-        if scope.globals.is_some() {
-            return Err(
-                Report::new("a macro cannot declare another macro", name.span).help(
-                    "Declare this macro outside the enclosing macro, then call it inside the body.",
-                ),
-            );
-        }
         check_name(name)?;
         let mut names = HashSet::new();
         for parameter in parameters {
@@ -1030,20 +1112,21 @@ impl Lower<'_> {
                 ));
             }
         }
-        reject_nested_macro(body)?;
+
         let definition = Macro {
             name: name.clone(),
             parameters: parameters.to_vec(),
             body: body.to_vec(),
-            globals: scope.values.clone(),
-            global_sites: scope.sites.clone(),
-            global_expansions: scope.expansions.clone(),
+            globals: v6::visible_values(scope),
+            global_sites: v6::visible_sites(scope),
+            global_expansions: v6::visible_expansions(scope),
             macros: scope.macros.clone(),
             symbols: scope.symbols.clone(),
             source_file: context.source_file.clone(),
             source: self.source.clone(),
         };
         Arc::make_mut(&mut scope.macros).insert(name.text.clone(), Arc::new(definition));
+        scope.local_templates.insert(name.text.clone());
         Ok(())
     }
 
@@ -1123,7 +1206,7 @@ impl Lower<'_> {
                     diagnostics::resolve(argument, caller, context)?,
                 ))
             })
-            .collect::<Result<BTreeMap<_, _>, Failure>>()
+            .collect::<Result<imbl::OrdMap<_, _>, Failure>>()
             .map_err(|report| self.located(report))?;
         let sites = definition
             .parameters
@@ -1152,16 +1235,21 @@ impl Lower<'_> {
             })
             .collect();
         let mut scope = Scope {
+            slots: caller.slots.clone(),
+            cells: imbl::OrdMap::new(),
             current_unit: caller.current_unit,
             source: Some(definition.source.clone()),
             symbols: definition.symbols.clone(),
             symbol_calls: caller.symbol_calls.clone(),
             symbol_budget: caller.symbol_budget.clone(),
-            defined_units: Arc::new(BTreeMap::new()),
+            defined_units: Arc::new(imbl::OrdMap::new()),
             values: Arc::new(values),
             macros: definition.macros.clone(),
             globals: Some(definition.globals.clone()),
-            imported: HashSet::new(),
+            global_macros: Some(definition.macros.clone()),
+            global_symbols: Some(definition.symbols.clone()),
+            local_templates: imbl::OrdSet::new(),
+            imported: imbl::OrdSet::new(),
             sites: Arc::new(sites),
             global_sites: Some(definition.global_sites.clone()),
             expansions: Arc::new(expansions),
@@ -1280,13 +1368,38 @@ fn import_globals(names: &[Name], scope: &mut Scope) -> Result<(), Report> {
                 "Use another local name; an explicit global import cannot overwrite a parameter.",
             ));
         }
-        let value = globals.get(&name.text).cloned().ok_or_else(|| {
-            Report::new(
-                format!("global '{}' was not declared before this definition", name.text),
-                name.span,
-            )
-            .help("Declare the binding before the macro or symbol definition, or pass it as a parameter.")
-        })?;
+        let value = globals.get(&name.text).cloned();
+        if value.is_none() {
+            if scope.local_templates.contains(&name.text) && !scope.imported.contains(&name.text) {
+                return Err(Report::new(
+                    format!("global '{}' conflicts with a local template", name.text),
+                    name.span,
+                ));
+            }
+            if let Some(definition) = scope
+                .global_macros
+                .as_ref()
+                .and_then(|definitions| definitions.get(&name.text))
+                .cloned()
+            {
+                Arc::make_mut(&mut scope.macros).insert(name.text.clone(), definition);
+                scope.imported.insert(name.text.clone());
+                continue;
+            }
+            if let Some(definition) = scope
+                .global_symbols
+                .as_ref()
+                .and_then(|definitions| definitions.get(&name.text))
+                .cloned()
+            {
+                Arc::make_mut(&mut scope.symbols).insert(name.text.clone(), definition);
+                scope.imported.insert(name.text.clone());
+                continue;
+            }
+            return Err(Report::new(format!("global '{}' was not declared before this definition", name.text), name.span)
+                .help("Declare the binding before the macro or pure function definition, or pass it as a parameter."));
+        }
+        let value = value.expect("checked captured value");
         Arc::make_mut(&mut scope.values).insert(name.text.clone(), value);
         if let Some(site) = scope
             .global_sites
@@ -1311,6 +1424,12 @@ fn import_globals(names: &[Name], scope: &mut Scope) -> Result<(), Report> {
 
 fn resolve(expression: &Expr, scope: &Scope, context: &CompileContext) -> Result<Value, Failure> {
     let value = resolve_value(expression, scope, context)?;
+    let value = match value {
+        Value::Path(path) if path.path.contains('<') => {
+            ranges::selector(path, scope, context, expression.span)?
+        }
+        value => value,
+    };
     symbols::check_value(&value, expression.span, scope)?;
     Ok(value)
 }
@@ -1343,7 +1462,13 @@ fn resolve_value(
             item,
             operator,
         } => resolve_select(namespace, item, *operator, scope, context),
-        ExprKind::Call { .. } => symbols::evaluate(expression, scope, context),
+        ExprKind::Call { .. } => ranges::resolve_call(expression, scope, context)
+            .unwrap_or_else(|| symbols::evaluate(expression, scope, context)),
+        ExprKind::Bool(_)
+        | ExprKind::Not(_)
+        | ExprKind::Binary { .. }
+        | ExprKind::Exists(_)
+        | ExprKind::Loop { .. } => v6::resolve_expression(expression, scope, context),
     }
 }
 
@@ -1384,10 +1509,13 @@ fn resolve_join(
     scope: &Scope,
     context: &CompileContext,
 ) -> Result<Value, Failure> {
-    let base_value = resolve(base, scope, context)?;
+    let base_value = resolve_value(base, scope, context)?;
     let suffix_value = suffix
-        .map(|expression| resolve(expression, scope, context))
+        .map(|expression| resolve_value(expression, scope, context))
         .transpose()?;
+    if matches!(base_value, Value::Dynamic(_)) || matches!(suffix_value, Some(Value::Dynamic(_))) {
+        return v6::join(base_value, suffix_value, mode, context, operator);
+    }
     let suffix_site = suffix.map_or(operator, |expression| expression.source.content);
     let mut base_path = path_fragment(base_value, base.source.content)?;
     if base_path.is_file {
@@ -1532,6 +1660,14 @@ fn resolve_path(
                 return process_port(*process, &path.path, site.content).map_err(Into::into);
             }
             Some(Value::Space(space)) => Some(space.clone()),
+            Some(Value::Dynamic(value)) if value.ty == hir::control::Type::Space => {
+                return v6::select(
+                    Value::Dynamic(value.clone()),
+                    Value::Literal(Arc::from(path.path.as_str())),
+                    context,
+                    span,
+                );
+            }
             Some(_) => return Err((Report::new(
                 format!("'{}' is a value, not a namespace or program", name.text),
                 name.span,
@@ -1555,6 +1691,17 @@ fn resolve_select(
     context: &CompileContext,
 ) -> Result<Value, Failure> {
     let value = resolve(namespace, scope, context)?;
+    if matches!(value, Value::Dynamic(_)) {
+        let item = match &item.kind {
+            ExprKind::Path(path)
+                if path.qualifier.is_none() && !scope.values.contains_key(&path.path) =>
+            {
+                Value::Literal(Arc::from(path.path.as_str()))
+            }
+            _ => resolve(item, scope, context)?,
+        };
+        return v6::select(value, item, context, operator);
+    }
     if !matches!(value, Value::Space(_) | Value::Process(_)) {
         return Err(Report::new(
             "the left operand of '::' must be a space or program",
@@ -1927,21 +2074,6 @@ fn path_relocation(
     }
 }
 
-fn file_value(
-    value: Value,
-    span: Span,
-    context: &CompileContext,
-) -> Result<(Location, Option<RelocPath>), Report> {
-    match value {
-        Value::Path(path) => location(path, context, span),
-        _ => Err(Report::new(
-            "an executable must be a path, not a namespace, literal or program stream",
-            span,
-        )
-        .help("Use '$path::python', '$pwd::pwd/tool' or an explicit executable path.")),
-    }
-}
-
 fn literal_text(text: &str) -> String {
     let mut output = String::new();
     language::write_literal(&mut output, text);
@@ -2079,23 +2211,6 @@ fn selector_site(expression: &Expr) -> Span {
     expression.source.content
 }
 
-fn reject_nested_macro(body: &[language::Statement]) -> Result<(), Report> {
-    for statement in body {
-        match &statement.kind {
-            language::StatementKind::Macro { name, .. }
-            | language::StatementKind::Symbol { name, .. } => {
-                return Err(Report::new("a macro cannot declare another macro or symbol", name.span)
-                    .help("Declare the inner macro at the top level before this macro, then call it from the body."));
-            }
-            language::StatementKind::Scheduled { statement, .. } => {
-                reject_nested_macro(std::slice::from_ref(statement.as_ref()))?
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
 fn expression_mode(expression: &Expr) -> DestinationMode {
     match &expression.kind {
         ExprKind::Path(path) => path.mode,
@@ -2108,4 +2223,95 @@ fn check_name(name: &Name) -> Result<(), Report> {
     super::validate_name(&name.text).map_err(|message| {
         Report::new(message, name.span).help("Use letters, digits, '.', '_' or '-' for a binding name; built-ins begin with '$' and cannot be rebound.")
     })
+}
+
+#[cfg(test)]
+mod performance_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn context() -> CompileContext {
+        CompileContext {
+            pwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+            source_file: None,
+        }
+    }
+
+    #[test]
+    fn static_transfer_specializes_each_function_operand_once() {
+        let source = "symbol child(base):\n    return base / leaf\nchild(input) -> child(output)\n";
+        let mut session = Session::new();
+        let program = session
+            .compile(&language::parse(source).unwrap(), &context())
+            .unwrap();
+        assert_eq!(session.scope.symbol_budget.used(), 2);
+        assert_eq!(program.body.instructions.len(), 1);
+        assert!(
+            matches!(&program.body.instructions[0].kind, InstructionKind::Transfer { source: Input::File { location, .. }, .. } if location.path.ends_with("input/leaf"))
+        );
+    }
+
+    #[test]
+    fn transfer_only_submission_reuses_unchanged_legacy_tables() {
+        let mut session = Session::new();
+        let setup = "root := input\nsymbol child(base):\n    return base / leaf\n";
+        session
+            .compile(&language::parse(setup).unwrap(), &context())
+            .unwrap();
+        let aliases = session.legacy.aliases.clone();
+        let spaces = session.legacy.spaces.clone();
+        session
+            .compile(
+                &language::parse("child(root) -> output\n").unwrap(),
+                &context(),
+            )
+            .unwrap();
+        assert!(Arc::ptr_eq(&aliases, &session.legacy.aliases));
+        assert!(Arc::ptr_eq(&spaces, &session.legacy.spaces));
+    }
+
+    #[test]
+    fn lexical_capture_shares_root_maps_and_nearest_ancestors_shadow_without_mutation() {
+        let mut session = Session::new();
+        let code = "root := input\nmacro snapshot():\n    global root\n    root -> output\n";
+        session
+            .compile(&language::parse(code).unwrap(), &context())
+            .unwrap();
+        let definition = &session.scope.macros["snapshot"];
+        assert!(Arc::ptr_eq(&definition.globals, &session.scope.values));
+        assert!(Arc::ptr_eq(&definition.global_sites, &session.scope.sites));
+        assert!(Arc::ptr_eq(
+            &definition.global_expansions,
+            &session.scope.expansions
+        ));
+        let grandparents = Arc::new(
+            [("shared".to_owned(), 1usize), ("ancestor".to_owned(), 2)]
+                .into_iter()
+                .collect::<imbl::OrdMap<String, usize>>(),
+        );
+        let parents = Arc::new(
+            [("shared".to_owned(), 3usize)]
+                .into_iter()
+                .collect::<imbl::OrdMap<String, usize>>(),
+        );
+        let captured = symbols::captured::<usize>(Some(&grandparents), &parents);
+        assert_eq!(captured["shared"], 3usize);
+        assert_eq!(captured["ancestor"], 2usize);
+        assert_eq!(grandparents["shared"], 1usize);
+    }
+
+    proptest! {
+        #[test]
+        fn branch_checkpoints_keep_exactly_live_instruction_origins(prefix in 0usize..40, selected in any::<bool>()) {
+            let mut text = (0..prefix).map(|index| format!("\"prefix\" -> out{index}\n")).collect::<String>();
+            text.push_str(&format!("if exists guard:\n    if {selected}:\n        \"yes\" -> selected\n    else:\n        \"no\" -> selected\nelse:\n    if {}:\n        \"other\" -> selected\n    else:\n        \"fallback\" -> selected\n", !selected));
+            let source = Source::new("checkpoints.msync", text);
+            let document = language::parse(&source.text).unwrap();
+            let lowered = Session::new().compile_named(&document, &context(), source).unwrap();
+            let mut nodes = Vec::new();
+            crate::object::control::region_nodes(&lowered.program.body, &mut nodes);
+            let ids = nodes.into_iter().map(|node| node.id).collect::<BTreeSet<_>>();
+            prop_assert_eq!(ids, lowered.origins.keys().copied().collect::<BTreeSet<_>>());
+        }
+    }
 }

@@ -3,8 +3,8 @@
 //! composition provide explicit path context without filesystem guessing.
 
 use super::{
-    BindingOp, Block, DestinationMode, Document, Expr, ExprKind, Name, PathExpr, Statement,
-    StatementKind,
+    BinaryOp, BindingOp, Block, DestinationMode, Document, Expr, ExprKind, Name, PathExpr,
+    Statement, StatementKind,
 };
 use crate::syntax::{OperandSource, Report, Span};
 
@@ -12,7 +12,11 @@ const MAX_NESTING: usize = 128;
 
 pub(super) fn opens_block(line: &str) -> bool {
     let code = line[..comment_start(line).unwrap_or(line.len())].trim_start();
-    code.starts_with("macro ") || code.starts_with("symbol ")
+    ["macro ", "symbol ", "boolean ", "if ", "for "]
+        .iter()
+        .any(|prefix| code.starts_with(prefix))
+        || code == "loop:"
+        || code.trim_end().ends_with("loop:")
 }
 
 #[derive(Clone, Copy)]
@@ -26,6 +30,16 @@ struct Line<'a> {
 
 /// Parse a structured script without inspecting files, resolving names, or running commands.
 pub fn parse(source: &str) -> Result<Document, Vec<Report>> {
+    let (document, errors) = parse_recovering(source);
+    if errors.is_empty() {
+        Ok(document)
+    } else {
+        Err(errors)
+    }
+}
+
+/// Preserve successfully parsed statements for tooling while reporting incomplete edits.
+pub fn parse_recovering(source: &str) -> (Document, Vec<Report>) {
     let mut errors = Vec::new();
     let lines = lines(source, &mut errors);
     let mut parser = Parser {
@@ -34,17 +48,13 @@ pub fn parse(source: &str) -> Result<Document, Vec<Report>> {
         errors,
     };
     let statements = parser.block(0, 0, false, 0);
-    if parser.errors.is_empty() {
-        Ok(Document { statements })
-    } else {
-        Err(parser.errors)
-    }
+    (Document { statements }, parser.errors)
 }
 
 fn lines<'a>(source: &'a str, errors: &mut Vec<Report>) -> Vec<Line<'a>> {
     let mut result = Vec::new();
     let mut offset = 0;
-    for physical in source.split_inclusive('\n') {
+    for physical in crate::syntax::physical_lines(source) {
         let text = physical.trim_end_matches(['\r', '\n']);
         let prefix = text.len() - text.trim_start_matches([' ', '\t']).len();
         let mut indent = 0;
@@ -114,18 +124,15 @@ impl Parser<'_> {
                     "unexpected indentation or dedent to an unknown level"
                 };
                 self.errors.push(Report::new(message, span(line.offset, line.offset + line.code.len()))
-                    .help("Align this statement with its enclosing block; only macro and symbol headers introduce a block."));
+                    .help("Align this statement with its enclosing block or indent its body beneath a block header."));
                 continue;
             }
             match statement(line.code, line.offset) {
                 Ok(mut statement) => {
-                    let is_macro = matches!(statement.kind, StatementKind::Macro { .. });
-                    let nested = is_macro || matches!(statement.kind, StatementKind::Symbol { .. });
-                    if is_macro && in_macro {
-                        self.errors.push(Report::new("a macro cannot declare another macro", statement.span)
-                            .help("Move the macro declaration to the top level and call it from this body."));
-                    }
+                    let nested = statement_body(&mut statement.kind).is_some();
                     if nested {
+                        let child_start = self.cursor;
+                        let prior_errors = self.errors.len();
                         let mut child = self.child(line, in_macro || nested, depth + 1);
                         if let Some(comment) = line.comment {
                             child.insert(0, comment_statement(comment));
@@ -133,11 +140,22 @@ impl Parser<'_> {
                         if let Some(last) = child.last() {
                             statement.span.end = last.span.end;
                         }
-                        match &mut statement.kind {
-                            StatementKind::Macro { body, .. }
-                            | StatementKind::Symbol { body, .. } => *body = child,
-                            _ => unreachable!(),
+                        if self.errors.len() > prior_errors
+                            && let Some(last) = self.lines[child_start..self.cursor]
+                                .iter()
+                                .rev()
+                                .find(|child| !child.code.is_empty() && child.indent > line.indent)
+                        {
+                            statement.span.end =
+                                statement.span.end.max(last.offset + last.code.len());
                         }
+                        *statement_body(&mut statement.kind).expect("block header") = child;
+                        if let StatementKind::Binding { value, .. } = &mut statement.kind
+                            && matches!(value.kind, ExprKind::Loop { .. })
+                        {
+                            value.span.end = statement.span.end;
+                        }
+                        self.else_branch(&mut statement, line, in_macro, depth);
                     }
                     body.push(statement);
                     if !nested {
@@ -148,6 +166,51 @@ impl Parser<'_> {
             }
         }
         body
+    }
+
+    fn else_branch(
+        &mut self,
+        statement: &mut Statement,
+        header: Line<'_>,
+        in_macro: bool,
+        depth: usize,
+    ) {
+        let StatementKind::If { else_body, .. } = &mut statement.kind else {
+            return;
+        };
+        let Some(line) = self.lines.get(self.cursor).copied() else {
+            return;
+        };
+        if line.indent != header.indent || line.alternate != header.alternate {
+            return;
+        }
+        if line.code == "else:" {
+            self.cursor += 1;
+            *else_body = self.child(line, in_macro, depth + 1);
+            if let Some(comment) = line.comment {
+                else_body.insert(0, comment_statement(comment));
+            }
+        } else if let Some(tail) = line.code.strip_prefix("else if ") {
+            self.cursor += 1;
+            match statement_fn_if(tail, line.offset + 8) {
+                Ok(mut branch) => {
+                    let mut child = self.child(line, in_macro, depth + 1);
+                    if let Some(comment) = line.comment {
+                        child.insert(0, comment_statement(comment));
+                    }
+                    if let Some(last) = child.last() {
+                        branch.span.end = last.span.end;
+                    }
+                    *statement_body(&mut branch.kind).expect("if body") = child;
+                    self.else_branch(&mut branch, line, in_macro, depth);
+                    else_body.push(branch);
+                }
+                Err(error) => self.errors.push(error),
+            }
+        }
+        if let Some(last) = else_body.last() {
+            statement.span.end = last.span.end;
+        }
     }
 
     fn child(&mut self, header: Line<'_>, in_macro: bool, depth: usize) -> Block {
@@ -179,6 +242,26 @@ impl Parser<'_> {
     }
 }
 
+fn statement_body(kind: &mut StatementKind) -> Option<&mut Block> {
+    match kind {
+        StatementKind::Macro { body, .. }
+        | StatementKind::Symbol { body, .. }
+        | StatementKind::Boolean { body, .. }
+        | StatementKind::For { body, .. }
+        | StatementKind::Loop { body } => Some(body),
+        StatementKind::If { then_body, .. } => Some(then_body),
+        StatementKind::Binding {
+            value:
+                Expr {
+                    kind: ExprKind::Loop { body },
+                    ..
+                },
+            ..
+        } => Some(body),
+        _ => None,
+    }
+}
+
 fn span(start: usize, end: usize) -> Span {
     Span { start, end }
 }
@@ -200,6 +283,12 @@ fn statement(code: &str, offset: usize) -> Result<Statement, Report> {
     if let Some(scheduled) = scheduled_statement(code, offset)? {
         return Ok(scheduled);
     }
+    if code == "else:" || code.starts_with("else ") {
+        return Err(Report::new(
+            "else requires a preceding if at the same indentation",
+            span(offset, offset + code.len()),
+        ));
+    }
     let kind = if let Some(header) = code.strip_prefix("macro ") {
         let (name, parameters) = definition_header(header, offset + 6, "macro")?;
         StatementKind::Macro {
@@ -214,6 +303,38 @@ fn statement(code: &str, offset: usize) -> Result<Statement, Report> {
             parameters,
             body: Vec::new(),
         }
+    } else if let Some(header) = code.strip_prefix("boolean ") {
+        let (name, parameters) = definition_header(header, offset + 8, "boolean")?;
+        StatementKind::Boolean {
+            name,
+            parameters,
+            body: Vec::new(),
+        }
+    } else if let Some(header) = code.strip_prefix("if ") {
+        return statement_fn_if(header, offset + 3);
+    } else if let Some(header) = code.strip_prefix("for ") {
+        let header = header_body(header, offset + 4)?;
+        let (variable, range) = header.split_once(" in ").ok_or_else(|| {
+            Report::new(
+                "expected 'for name in range:'",
+                span(offset, offset + code.len()),
+            )
+        })?;
+        StatementKind::For {
+            name: name(variable, offset + 4)?,
+            range: expression(range, offset + 4 + variable.len() + 4)?,
+            body: Vec::new(),
+        }
+    } else if code == "loop:" {
+        StatementKind::Loop { body: Vec::new() }
+    } else if let Some(value) = keyword_tail(code, "break") {
+        StatementKind::Break(if value.trim().is_empty() {
+            None
+        } else {
+            Some(expression(value, offset + 5)?)
+        })
+    } else if let Some(value) = keyword_tail(code, "delete") {
+        StatementKind::Delete(expression(value, offset + 6)?)
     } else if let Some(value) = keyword_tail(code, "return") {
         StatementKind::Return(expression(value, offset + 6)?)
     } else if let Some(value) = keyword_tail(code, "execute") {
@@ -227,24 +348,43 @@ fn statement(code: &str, offset: usize) -> Result<Statement, Report> {
         let end = code.find(char::is_whitespace).unwrap_or(code.len());
         return Err(Report::new("transaction syntax has been removed", span(offset, offset + end))
             .help("Each finite file statement is atomic. Use release and acquire to express scheduling barriers (legacy async/await aliases remain accepted); there are no transaction checkpoints or rollback scopes."));
-    } else if let Some(names) = code.strip_prefix("global ") {
-        let names = split_arguments(names, offset + 7)?
+    } else if let Some((keyword, names)) = ["global", "drop"]
+        .into_iter()
+        .find_map(|keyword| keyword_tail(code, keyword).map(|tail| (keyword, tail)))
+    {
+        let names = split_arguments(names, offset + keyword.len())?
             .into_iter()
             .map(|(text, at)| name(text, at))
             .collect::<Result<Vec<_>, _>>()?;
         if names.is_empty() {
             return Err(Report::new(
-                "global requires at least one binding name",
-                span(offset + 7, offset + code.len()),
+                format!("{keyword} requires at least one binding name"),
+                span(offset + keyword.len(), offset + code.len()),
             ));
         }
-        StatementKind::Global(names)
+        if keyword == "global" {
+            StatementKind::Global(names)
+        } else {
+            StatementKind::Drop(names)
+        }
     } else {
         ordinary_statement(code, offset)?
     };
     Ok(Statement {
         kind,
         span: span(offset, offset + code.len()),
+    })
+}
+
+fn statement_fn_if(header: &str, offset: usize) -> Result<Statement, Report> {
+    let condition = header_body(header, offset)?;
+    Ok(Statement {
+        kind: StatementKind::If {
+            condition: expression(condition, offset)?,
+            then_body: Vec::new(),
+            else_body: Vec::new(),
+        },
+        span: span(offset.saturating_sub(3), offset + header.len()),
     })
 }
 
@@ -298,7 +438,13 @@ fn scheduled_statement(code: &str, offset: usize) -> Result<Option<Statement>, R
             if [
                 "macro",
                 "symbol",
+                "boolean",
+                "if",
+                "for",
+                "loop:",
                 "global",
+                "drop",
+                "break",
                 "return",
                 "execute",
                 "include",
@@ -312,10 +458,7 @@ fn scheduled_statement(code: &str, offset: usize) -> Result<Option<Statement>, R
                 return Err(Report::new("scheduling prefixes require an executable statement", span(rest_offset, rest_offset + rest.len()))
                     .help("Apply release, acquire or acqrel to a transfer, program binding, or macro call; declarations do not execute work."));
             }
-            let statement = Statement {
-                kind: ordinary_statement(rest, rest_offset)?,
-                span: span(rest_offset, rest_offset + rest.len()),
-            };
+            let statement = statement(rest, rest_offset)?;
             StatementKind::Scheduled {
                 asynchronous,
                 awaited,
@@ -328,6 +471,22 @@ fn scheduled_statement(code: &str, offset: usize) -> Result<Option<Statement>, R
 
 fn ordinary_statement(code: &str, offset: usize) -> Result<StatementKind, Report> {
     let scan = scan(code, offset)?;
+    if scan.operators.is_empty()
+        && let Some(&index) = scan.assignments.first()
+        && let Ok(name) = name(&code[..index], offset)
+    {
+        if scan.assignments.len() != 1 {
+            return Err(Report::new(
+                "expected one assignment per line",
+                span(offset + index, offset + index + 1),
+            ));
+        }
+        return Ok(StatementKind::Binding {
+            name,
+            op: BindingOp::Assign,
+            value: expression(&code[index + 1..], offset + index + 1)?,
+        });
+    }
     match scan.operators.as_slice() {
         [(index, operator)] => {
             let left = &code[..*index];
@@ -442,6 +601,15 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
         return Err(Report::new("expected an expression", range)
             .help("Insert a path, UTF-8 string literal, or program call here."));
     }
+    if text
+        .split_whitespace()
+        .take_while(|token| matches!(*token, "not" | "exists"))
+        .count()
+        > MAX_NESTING
+    {
+        return Err(Report::new("unary expression nesting is too deep", range)
+            .help("Bind an intermediate boolean; one expression supports at most 128 unary operators."));
+    }
     let scan = scan(text, offset)?;
     if let Some((index, _)) = scan.operators.first() {
         return Err(Report::new(
@@ -451,10 +619,78 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
         .help("Place each binding or transfer on its own line."));
     }
     let mut provenance = OperandSource::unmapped(range);
+    if scan.binary.len() > MAX_NESTING {
+        return Err(Report::new("expression nesting is too deep", range).help(
+            "Bind intermediate expressions; one expression supports at most 128 operators.",
+        ));
+    }
+    let binary = binary_operator(&scan.binary);
+    if let Some(tail) = unary_tail(text, "not")
+        && !tail.is_empty()
+        && !matches!(binary, Some((_, "and" | "or")))
+    {
+        return Ok(Expr {
+            kind: ExprKind::Not(Box::new(expression(tail, offset + 3)?)),
+            span: range,
+            source: provenance,
+        });
+    }
+    if let Some((index, spelling)) = binary {
+        let op = match spelling {
+            "or" => BinaryOp::Or,
+            "and" => BinaryOp::And,
+            "==" => BinaryOp::Eq,
+            "!=" => BinaryOp::Ne,
+            "<" => BinaryOp::Lt,
+            "<=" => BinaryOp::Le,
+            ">" => BinaryOp::Gt,
+            ">=" => BinaryOp::Ge,
+            "|" => BinaryOp::Pipe,
+            _ => unreachable!(),
+        };
+        return Ok(Expr {
+            kind: ExprKind::Binary {
+                left: Box::new(expression(&text[..index], offset)?),
+                op,
+                right: Box::new(expression(
+                    &text[index + spelling.len()..],
+                    offset + index + spelling.len(),
+                )?),
+                operator: span(offset + index, offset + index + spelling.len()),
+            },
+            span: range,
+            source: provenance,
+        });
+    }
+    if let Some((keyword, tail)) = ["not", "exists"].into_iter().find_map(|keyword| {
+        unary_tail(text, keyword)
+            .filter(|tail| !tail.is_empty())
+            .map(|tail| (keyword, tail))
+    }) {
+        let operand = Box::new(expression(tail, offset + keyword.len())?);
+        return Ok(Expr {
+            kind: if keyword == "not" {
+                ExprKind::Not(operand)
+            } else {
+                ExprKind::Exists(operand)
+            },
+            span: range,
+            source: provenance,
+        });
+    }
+    if matches!(scan.calls.as_slice(), [(0, close)] if *close == text.len() - 1) {
+        let mut inner = expression(&text[1..text.len() - 1], offset + 1)?;
+        inner.span = range;
+        return Ok(inner);
+    }
     let executable_call = (role == CallRole::Executable)
         .then(|| scan.calls.last().copied())
         .flatten();
-    let kind = if let Some((open, close)) = executable_call {
+    let kind = if text == "loop:" {
+        ExprKind::Loop { body: Vec::new() }
+    } else if text == "true" || text == "false" {
+        ExprKind::Bool(text == "true")
+    } else if let Some((open, close)) = executable_call {
         call_expression(text, offset, open, close)?
     } else if let Some(operator) = join_operator(text, &scan) {
         if scan.joins.len() > MAX_NESTING {
@@ -547,6 +783,29 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
         span: range,
         source: provenance,
     })
+}
+
+fn binary_operator(operators: &[(usize, &'static str)]) -> Option<(usize, &'static str)> {
+    [
+        &["or"][..],
+        &["and"][..],
+        &["|"][..],
+        &["==", "!="][..],
+        &["<", "<=", ">", ">="][..],
+    ]
+    .into_iter()
+    .find_map(|group| {
+        operators
+            .iter()
+            .rev()
+            .copied()
+            .find(|(_, op)| group.contains(op))
+    })
+}
+
+fn unary_tail<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
+    let tail = text.strip_prefix(keyword)?;
+    (tail.starts_with(char::is_whitespace) || tail.starts_with('(')).then_some(tail)
 }
 
 fn call_expression(
@@ -699,6 +958,8 @@ struct Scan {
     joins: Vec<usize>,
     selections: Vec<usize>,
     calls: Vec<(usize, usize)>,
+    assignments: Vec<usize>,
+    binary: Vec<(usize, &'static str)>,
 }
 
 fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
@@ -708,6 +969,8 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
         joins: Vec::new(),
         selections: Vec::new(),
         calls: Vec::new(),
+        assignments: Vec::new(),
+        binary: Vec::new(),
     };
     let bytes = text.as_bytes();
     let mut quote = None;
@@ -751,7 +1014,7 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
             }
             b'/' if parentheses.is_empty() => result.joins.push(index),
             b'"' => quote = Some(index),
-            b'<' => selector = Some(index),
+            b'<' if starts_selector(bytes, index) => selector = Some(index),
             b'(' => {
                 if parentheses.len() >= MAX_NESTING {
                     return Err(Report::new("call nesting is too deep", span(offset + index, offset + index + 1))
@@ -788,6 +1051,34 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
                 if let Some(operator) = operator {
                     result.operators.push((index, operator));
                     index += 1;
+                } else if let Some(operator) = match bytes.get(index..index + 2) {
+                    Some(b"==") => Some("=="),
+                    Some(b"!=") => Some("!="),
+                    Some(b"<=") => Some("<="),
+                    Some(b">=") => Some(">="),
+                    _ => None,
+                } {
+                    result.binary.push((index, operator));
+                    index += 1;
+                } else if let Some(operator) = match byte {
+                    b'<' => Some("<"),
+                    b'>' => Some(">"),
+                    b'|' => Some("|"),
+                    _ => None,
+                } {
+                    result.binary.push((index, operator));
+                } else if byte == b'=' {
+                    result.assignments.push(index);
+                } else if let Some(keyword) = ["and", "or"].into_iter().find(|keyword| {
+                    bytes[index..].starts_with(keyword.as_bytes())
+                        && index > 0
+                        && (bytes[index - 1].is_ascii_whitespace() || bytes[index - 1] == b')')
+                        && bytes
+                            .get(index + keyword.len())
+                            .is_none_or(|byte| byte.is_ascii_whitespace() || *byte == b'(')
+                }) {
+                    result.binary.push((index, keyword));
+                    index += keyword.len() - 1;
                 }
             }
             _ => {}
@@ -826,11 +1117,29 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
     Ok(result)
 }
 
+fn starts_selector(bytes: &[u8], index: usize) -> bool {
+    if bytes.get(index + 1) == Some(&b'=') {
+        return false;
+    }
+    if index == 0 || matches!(bytes[index - 1], b'/' | b'\\' | b':' | b'(' | b',') {
+        return true;
+    }
+    let prefix = std::str::from_utf8(&bytes[..index])
+        .expect("ASCII token boundary")
+        .trim_end();
+    prefix.ends_with('=')
+        || prefix.ends_with("->")
+        || prefix
+            .split_whitespace()
+            .last()
+            .is_some_and(|token| matches!(token, "in" | "return" | "delete" | "exists"))
+}
+
 fn selector_end(bytes: &[u8], index: usize) -> bool {
-    bytes
-        .get(index + 1)
-        .is_none_or(|next| next.is_ascii_whitespace() || matches!(next, b'/' | b'\\' | b',' | b')'))
-        || matches!(bytes.get(index + 1..index + 3), Some(b"->" | b"=>" | b":="))
+    bytes.get(index + 1).is_none_or(|next| {
+        next.is_ascii_whitespace()
+            || matches!(next, b'/' | b'\\' | b',' | b')' | b'|' | b'=' | b'!')
+    }) || matches!(bytes.get(index + 1..index + 3), Some(b"->" | b"=>" | b":="))
 }
 
 fn split_arguments(text: &str, offset: usize) -> Result<Vec<(&str, usize)>, Report> {
@@ -891,7 +1200,7 @@ fn comment_start(text: &str) -> Option<usize> {
         }
         match byte {
             b'"' => quoted = true,
-            b'<' => selector = true,
+            b'<' if starts_selector(bytes, index) => selector = true,
             b'#' if index == 0 || bytes[index - 1].is_ascii_whitespace() => return Some(index),
             _ => {}
         }

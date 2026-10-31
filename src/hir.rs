@@ -1,8 +1,10 @@
 //! Typed, expanded language IR. No resource inspection or execution occurs here.
 
+pub mod control;
 pub mod effects;
 pub mod graph;
 pub mod rewrite;
+pub mod walk;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,13 +23,13 @@ pub struct InstructionId(pub usize);
 )]
 pub struct ProcessId(pub usize);
 
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Program {
     pub body: Region,
 }
 
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Region {
     pub instructions: Vec<Instruction>,
@@ -74,6 +76,10 @@ impl<'a> Iterator for Blocks<'a> {
         let mut has_transfer = false;
         for (index, instruction) in self.remaining.iter().enumerate() {
             match instruction.kind {
+                InstructionKind::Control(_) => {
+                    end = if index == 0 { 1 } else { index };
+                    break;
+                }
                 InstructionKind::Transfer { .. } => has_transfer = true,
                 InstructionKind::Spawn { .. } if has_transfer => {
                     end = index;
@@ -117,7 +123,7 @@ impl<'a> Iterator for Blocks<'a> {
 
 impl std::iter::FusedIterator for Blocks<'_> {}
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Instruction {
     pub id: InstructionId,
@@ -127,7 +133,7 @@ pub struct Instruction {
     pub expansion: Vec<Span>,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -135,6 +141,7 @@ pub struct Instruction {
     deny_unknown_fields
 )]
 pub enum InstructionKind {
+    Control(control::ControlInstruction),
     Transfer {
         source: Input,
         destination: Output,
@@ -160,7 +167,7 @@ pub enum BarrierKind {
     After,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -179,7 +186,7 @@ pub enum Input {
     },
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -206,7 +213,7 @@ pub enum ReadPort {
     Meta,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(
     tag = "kind",
     content = "value",

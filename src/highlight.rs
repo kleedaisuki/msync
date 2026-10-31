@@ -43,6 +43,44 @@ pub const BUILTINS: &[&str] = &[
     "$env::",
 ];
 
+pub const KEYWORDS: &[&str] = &[
+    "macro", "symbol", "boolean", "return", "global", "drop", "delete", "exists", "include",
+    "execute", "if", "else", "for", "in", "loop", "break", "true", "false", "and", "not", "or",
+    "release", "acquire", "acqrel", "async", "await",
+];
+
+pub const RANGE_ADAPTORS: &[&str] = &[
+    "ranges::of",
+    "views::single",
+    "views::all",
+    "views::as_const",
+    "views::as_rvalue",
+    "views::common",
+    "views::filter",
+    "views::transform",
+    "views::take",
+    "views::drop",
+    "views::take_while",
+    "views::drop_while",
+    "views::stride",
+    "views::step",
+    "views::unique",
+    "views::reverse",
+    "ranges::empty",
+    "ranges::contains",
+    "ranges::any_of",
+    "ranges::any",
+    "ranges::all_of",
+    "ranges::none_of",
+    "ranges::none",
+    "ranges::front",
+    "ranges::first",
+    "ranges::back",
+    "ranges::last",
+    "ranges::find",
+    "ranges::find_if",
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TokenKind {
     Binding,
@@ -66,24 +104,30 @@ pub struct Token {
 pub fn token_spans(source: &str) -> Vec<Token> {
     let mut output = Vec::new();
     let mut offset = 0;
-    for line in source.split_inclusive('\n') {
-        output.extend(line_tokens(line).into_iter().map(|mut token| {
+    for line in crate::syntax::physical_lines(source) {
+        let begin = output.len();
+        line_tokens(line, &mut output);
+        for token in &mut output[begin..] {
             token.span.start += offset;
             token.span.end += offset;
-            token
-        }));
+        }
         offset += line.len();
     }
     output
 }
 
-fn line_tokens(source: &str) -> Vec<Token> {
-    if let Some(tokens) = shell_tokens(source) {
-        return tokens;
+fn line_tokens(source: &str, tokens: &mut Vec<Token>) {
+    if shell_tokens(source, tokens) {
+        return;
     }
-    let mut tokens = Vec::new();
     let mut position = 0;
     let first = source.len() - source.trim_start().len();
+    let mut head = true;
+    let declaration = ["macro ", "symbol ", "boolean "]
+        .iter()
+        .any(|keyword| source[first..].starts_with(keyword));
+    let mut parameters = false;
+    let mut for_name = source[first..].starts_with("for ");
     while position < source.len() {
         let start = position;
         let ch = source[position..].chars().next().unwrap();
@@ -95,13 +139,30 @@ fn line_tokens(source: &str) -> Vec<Token> {
                 TokenKind::Comment,
             ),
             '"' => (quoted_end(source, position), TokenKind::String),
-            '<' => (selector_end(source, position), TokenKind::Selector),
-            '(' | ')' | ',' => (position + 1, TokenKind::Text),
-            _ if operator_at(source, position) => (position + 2, TokenKind::Operator),
+            '<' if selector_start(source, position) => {
+                (selector_end(source, position), TokenKind::Selector)
+            }
+            '(' | ')' | ',' => {
+                if declaration && ch != ',' {
+                    parameters = ch == '(';
+                }
+                (position + 1, TokenKind::Text)
+            }
+            ':' if header_colon(source, position) => (position + 1, TokenKind::Text),
+            _ if operator_at(source, position) => (
+                position + operator_len(source, position),
+                TokenKind::Operator,
+            ),
             _ if ch.is_whitespace() => (whitespace_end(source, position), TokenKind::Text),
             _ => {
                 position = word_end(source, position);
-                word_tokens(source, start, position, start == first, &mut tokens);
+                let word = &source[start..position];
+                let parameter = parameters || for_name && start != first;
+                word_tokens(source, start, position, head, parameter, tokens);
+                if start != first && for_name {
+                    for_name = false;
+                }
+                head &= scheduling_word(word);
                 continue;
             }
         };
@@ -111,20 +172,20 @@ fn line_tokens(source: &str) -> Vec<Token> {
             kind,
         });
     }
-    tokens
 }
 
-fn shell_tokens(source: &str) -> Option<Vec<Token>> {
+fn shell_tokens(source: &str, tokens: &mut Vec<Token>) -> bool {
     let start = source.len() - source.trim_start().len();
-    let command = source[start..].split_whitespace().next()?;
+    let Some(command) = source[start..].split_whitespace().next() else {
+        return false;
+    };
     if !matches!(command, "/bash" | "/pwsh" | ":bash" | ":pwsh") {
-        return None;
+        return false;
     }
     let end = start + command.len();
     if operator_at(source[end..].trim_start(), 0) {
-        return None;
+        return false;
     }
-    let mut tokens = Vec::new();
     if start != 0 {
         tokens.push(Token {
             span: Span {
@@ -147,7 +208,7 @@ fn shell_tokens(source: &str) -> Option<Vec<Token>> {
             kind: TokenKind::Text,
         });
     }
-    Some(tokens)
+    true
 }
 
 fn whitespace_end(source: &str, start: usize) -> usize {
@@ -158,9 +219,35 @@ fn whitespace_end(source: &str, start: usize) -> usize {
 }
 
 fn operator_at(source: &str, position: usize) -> bool {
-    ["->", "=>", ":="]
-        .iter()
-        .any(|operator| source[position..].starts_with(operator))
+    operator_len(source, position) != 0
+}
+
+fn operator_len(source: &str, position: usize) -> usize {
+    match source.as_bytes().get(position..position + 2) {
+        Some(b"->" | b"=>" | b":=" | b"==" | b"!=" | b"<=" | b">=") => 2,
+        _ => usize::from(matches!(
+            source.as_bytes().get(position),
+            Some(b'=' | b'<' | b'>' | b'|')
+        )),
+    }
+}
+
+fn selector_start(source: &str, position: usize) -> bool {
+    let suffix = &source[position + 1..];
+    if suffix.starts_with('=') || suffix.starts_with(char::is_whitespace) {
+        return false;
+    }
+    // Selectors occur as path components; whitespace-separated '<' compares.
+    position == 0
+        || source
+            .as_bytes()
+            .get(position - 1)
+            .is_some_and(|byte| matches!(byte, b'/' | b'\\' | b':' | b'(' | b','))
+        || source
+            .as_bytes()
+            .get(position - 1)
+            .is_some_and(u8::is_ascii_whitespace)
+            && !suffix.starts_with('"')
 }
 
 fn comment_boundary(source: &str, position: usize) -> bool {
@@ -221,6 +308,7 @@ fn word_end(source: &str, start: usize) -> usize {
         if ch.is_whitespace()
             || matches!(ch, '"' | '<' | '(' | ')' | ',')
             || operator_at(source, position)
+            || ch == ':' && header_colon(source, position)
         {
             return position;
         }
@@ -228,7 +316,22 @@ fn word_end(source: &str, start: usize) -> usize {
     source.len()
 }
 
-fn word_tokens(source: &str, start: usize, end: usize, first: bool, tokens: &mut Vec<Token>) {
+fn header_colon(source: &str, position: usize) -> bool {
+    source.as_bytes().get(position.wrapping_sub(1)) != Some(&b':')
+        && source
+            .as_bytes()
+            .get(position + 1)
+            .is_none_or(|byte| byte.is_ascii_whitespace() || *byte == b'#')
+}
+
+fn word_tokens(
+    source: &str,
+    start: usize,
+    end: usize,
+    head: bool,
+    parameter: bool,
+    tokens: &mut Vec<Token>,
+) {
     let word = &source[start..end];
     let kind = if word.contains("://") {
         TokenKind::Endpoint
@@ -252,7 +355,9 @@ fn word_tokens(source: &str, start: usize, end: usize, first: bool, tokens: &mut
                     start: boundary,
                     end,
                 },
-                kind: if source[end..].trim_start().starts_with('(') {
+                kind: if source[end..].trim_start().starts_with('(')
+                    || matches!(&word[..separator], "views" | "ranges")
+                {
                     TokenKind::Binding
                 } else {
                     TokenKind::Text
@@ -262,10 +367,11 @@ fn word_tokens(source: &str, start: usize, end: usize, first: bool, tokens: &mut
         return;
     } else if word.starts_with('$') {
         TokenKind::Namespace
-    } else if control_word(source, word, first, end) {
+    } else if control_word(source, word, head, end) {
         TokenKind::Command
-    } else if source[end..].trim_start().starts_with('(')
-        || ["=>", ":="]
+    } else if parameter
+        || source[end..].trim_start().starts_with('(')
+        || ["=>", ":=", "="]
             .iter()
             .any(|operator| source[end..].trim_start().starts_with(operator))
     {
@@ -279,24 +385,45 @@ fn word_tokens(source: &str, start: usize, end: usize, first: bool, tokens: &mut
     });
 }
 
-fn control_word(source: &str, word: &str, first: bool, end: usize) -> bool {
-    let prefix = &source[..end - word.len()];
-    let scheduling = matches!(word, "release" | "acquire" | "acqrel" | "async" | "await")
-        && prefix
-            .split_whitespace()
-            .all(|word| matches!(word, "release" | "acquire" | "acqrel" | "async" | "await"));
-    if scheduling {
+fn scheduling_word(word: &str) -> bool {
+    matches!(word, "release" | "acquire" | "acqrel" | "async" | "await")
+}
+
+fn control_word(source: &str, word: &str, head: bool, end: usize) -> bool {
+    if head && scheduling_word(word) {
         return true;
     }
-    first
-        && (matches!(
-            word,
-            "macro" | "symbol" | "return" | "execute" | "include" | "global"
-        ) || (is_command(word) && !operator_at(source[end..].trim_start(), 0)))
+    if matches!(
+        word,
+        "true" | "false" | "and" | "not" | "or" | "exists" | "in" | "if"
+    ) {
+        return true;
+    }
+    head && (matches!(
+        word,
+        "macro"
+            | "symbol"
+            | "boolean"
+            | "return"
+            | "execute"
+            | "include"
+            | "global"
+            | "delete"
+            | "drop"
+            | "if"
+            | "else"
+            | "for"
+            | "loop"
+            | "break"
+    ) || (is_command(word) && !operator_at(source[end..].trim_start(), 0)))
 }
 
 pub fn highlight(source: &str, color: bool) -> String {
     let mut output = String::with_capacity(source.len() + 64);
+    if !color {
+        visible(source, &mut output);
+        return output;
+    }
     for token in token_spans(source) {
         let style = match token.kind {
             TokenKind::Binding => "1;34",
@@ -321,7 +448,9 @@ pub fn highlight(source: &str, color: bool) -> String {
 
 fn styled(text: &str, style: &str, color: bool, output: &mut String) {
     if color && !style.is_empty() {
-        output.push_str(&format!("\x1b[{style}m"));
+        output.push_str("\x1b[");
+        output.push_str(style);
+        output.push('m');
     }
     visible(text, output);
     if color && !style.is_empty() {
@@ -353,15 +482,20 @@ fn quoted_display(text: &str, output: &mut String) {
 }
 
 fn visible(text: &str, output: &mut String) {
-    for ch in text.chars() {
+    let mut start = 0;
+    for (index, ch) in text.char_indices() {
+        if !ch.is_control() || matches!(ch, '\n' | '\t') {
+            continue;
+        }
+        output.push_str(&text[start..index]);
         match ch {
-            '\n' | '\t' => output.push(ch),
             '\r' => output.push_str("\\r"),
             '\u{1b}' => output.push_str("\\x1b"),
-            ch if ch.is_control() => output.extend(ch.escape_unicode()),
-            ch => output.push(ch),
+            ch => output.extend(ch.escape_unicode()),
         }
+        start = index + ch.len_utf8();
     }
+    output.push_str(&text[start..]);
 }
 
 fn is_command(word: &str) -> bool {

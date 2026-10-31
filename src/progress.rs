@@ -2,15 +2,12 @@
 
 use std::io::{self, IsTerminal, Write};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use msync::execution::progress::{Progress, Snapshot};
 use unicode_width::UnicodeWidthChar;
 
 use super::{Color, editor, presentation};
-
-const DELAY: Duration = Duration::from_millis(200);
-const INTERVAL: Duration = Duration::from_millis(250);
 
 pub(super) struct Reporter {
     progress: Progress,
@@ -18,7 +15,10 @@ pub(super) struct Reporter {
 }
 
 impl Reporter {
-    pub(super) fn start(color: Color) -> io::Result<Option<Self>> {
+    pub(super) fn start_with(
+        color: Color,
+        settings: msync::config::ProgressSettings,
+    ) -> io::Result<Option<Self>> {
         if !io::stderr().is_terminal() {
             return Ok(None);
         }
@@ -27,7 +27,7 @@ impl Reporter {
         let observer = progress.clone();
         let worker = thread::Builder::new()
             .name("msync-progress".into())
-            .spawn(move || report(observer, &mut io::stderr(), inline))?;
+            .spawn(move || report_with(observer, &mut io::stderr(), inline, &settings))?;
         Ok(Some(Self {
             progress,
             worker: Some(worker),
@@ -59,8 +59,30 @@ impl Drop for Reporter {
     }
 }
 
+#[cfg(test)]
 fn report(progress: Progress, output: &mut impl Write, inline: bool) -> io::Result<()> {
-    let mut next = Instant::now() + DELAY;
+    report_with(
+        progress,
+        output,
+        inline,
+        &msync::config::ProgressSettings::default(),
+    )
+}
+
+fn report_with(
+    progress: Progress,
+    output: &mut impl Write,
+    inline: bool,
+    settings: &msync::config::ProgressSettings,
+) -> io::Result<()> {
+    let mut next = Instant::now()
+        .checked_add(settings.delay())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "progress display delay is too large",
+            )
+        })?;
     let mut visible = false;
     let mut revision = None;
     let mut second = 0;
@@ -72,7 +94,14 @@ fn report(progress: Progress, output: &mut impl Write, inline: bool) -> io::Resu
         if Instant::now() < next {
             continue;
         }
-        next = Instant::now() + INTERVAL;
+        next = Instant::now()
+            .checked_add(settings.interval())
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "progress refresh interval is too large",
+                )
+            })?;
         if inline || revision != Some(snapshot.revision) || second != snapshot.elapsed.as_secs() {
             render(output, &snapshot, inline)?;
             visible = true;

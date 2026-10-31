@@ -38,6 +38,13 @@ fn run(executable: &Path, case: &Case, workspace: &Path) -> Duration {
         .args(&case.args)
         .current_dir(workspace)
         .env("NO_COLOR", "1")
+        .env("HOME", workspace.join("home"))
+        .env("USERPROFILE", workspace.join("home"))
+        .env("XDG_CONFIG_HOME", workspace.join("config"))
+        .env("APPDATA", workspace.join("config"))
+        .env_remove("MSYNC_CONFIG")
+        .env_remove("MSYNC_STATE_DIR")
+        .env_remove("MSYNC_TRACE")
         .stdin(if case.input.is_some() {
             Stdio::piped()
         } else {
@@ -191,6 +198,16 @@ fn main() {
     }
     #[cfg(not(windows))]
     let _ = (&mut cases, remote);
+    if let Ok(selection) = std::env::var("MSYNC_STARTUP_CASES") {
+        let selected: Vec<_> = selection.split(',').collect();
+        for name in &selected {
+            assert!(
+                cases.iter().any(|case| case.name == *name),
+                "unknown startup case: {name}"
+            );
+        }
+        cases.retain(|case| selected.contains(&case.name));
+    }
     println!(
         "# paired alternating AB/BA, 5 warmups per executable, {samples} samples; wall-clock ms"
     );

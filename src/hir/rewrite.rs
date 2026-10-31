@@ -8,7 +8,7 @@ use super::{
 };
 
 /// Normalize original directional constraints without permuting IO or crossing
-/// native launch/join observations. Returned IDs belong only to redundant markers.
+/// native launch/join or structured-control observations. Returned IDs belong only to redundant markers.
 pub fn normalize_fences(region: &mut Region) -> Vec<InstructionId> {
     let mut removed = Vec::new();
     let mut result = Vec::with_capacity(region.instructions.len());
@@ -21,10 +21,13 @@ pub fn normalize_fences(region: &mut Region) -> Vec<InstructionId> {
             segment.push(instruction);
             continue;
         }
-        let before_spawn = matches!(instruction.kind, InstructionKind::Spawn { .. });
+        let before_observation = matches!(
+            instruction.kind,
+            InstructionKind::Spawn { .. } | InstructionKind::Control(_)
+        );
         result.extend(normalize_segment(
             std::mem::take(&mut segment),
-            before_spawn,
+            before_observation,
             &mut removed,
         ));
         result.push(instruction);
@@ -42,7 +45,7 @@ struct Placement {
 
 fn normalize_segment(
     instructions: Vec<Instruction>,
-    before_spawn: bool,
+    before_observation: bool,
     removed: &mut Vec<InstructionId>,
 ) -> Vec<Instruction> {
     let mut markers = Vec::new();
@@ -61,7 +64,7 @@ fn normalize_segment(
                 slot: markers.len(),
                 lower,
             }),
-            _ => unreachable!("native program controls delimit normalization segments"),
+            _ => unreachable!("observation controls delimit normalization segments"),
         }
     }
     let upper = upper_bounds(&markers);
@@ -86,7 +89,7 @@ fn normalize_segment(
         result.push(transfer.instruction);
     }
     result.extend(markers);
-    compact_markers(result, before_spawn, removed)
+    compact_markers(result, before_observation, removed)
 }
 
 fn upper_bounds(markers: &[Instruction]) -> Vec<usize> {
@@ -108,7 +111,7 @@ fn upper_bounds(markers: &[Instruction]) -> Vec<usize> {
 
 fn compact_markers(
     instructions: Vec<Instruction>,
-    before_spawn: bool,
+    before_observation: bool,
     removed: &mut Vec<InstructionId>,
 ) -> Vec<Instruction> {
     let mut result = Vec::with_capacity(instructions.len());
@@ -126,7 +129,7 @@ fn compact_markers(
         }
         result.push(instruction);
     }
-    if before_spawn {
+    if before_observation {
         result.extend(cut_markers(markers, true, removed));
     } else {
         removed.extend(markers.into_iter().map(|marker| marker.id));

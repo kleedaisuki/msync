@@ -205,7 +205,19 @@ fn semantic_document(source: &str) -> language::Document {
                     name.span = Default::default();
                 }
             }
-            ExprKind::Literal(_) => {}
+            ExprKind::Literal(_) | ExprKind::Bool(_) => {}
+            ExprKind::Not(value) | ExprKind::Exists(value) => expression(value),
+            ExprKind::Binary {
+                left,
+                right,
+                operator,
+                ..
+            } => {
+                expression(left);
+                expression(right);
+                *operator = Default::default();
+            }
+            ExprKind::Loop { body } => statements(body),
             ExprKind::Call { callee, arguments } => {
                 expression(callee);
                 for argument in arguments {
@@ -259,6 +271,11 @@ fn semantic_document(source: &str) -> language::Document {
                     name,
                     parameters,
                     body,
+                }
+                | StatementKind::Boolean {
+                    name,
+                    parameters,
+                    body,
                 } => {
                     name.span = Default::default();
                     names(parameters);
@@ -267,8 +284,26 @@ fn semantic_document(source: &str) -> language::Document {
                 StatementKind::Return(value)
                 | StatementKind::Execute(value)
                 | StatementKind::Include(value)
+                | StatementKind::Delete(value)
                 | StatementKind::Call(value) => expression(value),
-                StatementKind::Global(values) => names(values),
+                StatementKind::Global(values) | StatementKind::Drop(values) => names(values),
+                StatementKind::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } => {
+                    expression(condition);
+                    statements(then_body);
+                    statements(else_body);
+                }
+                StatementKind::For { name, range, body } => {
+                    name.span = Default::default();
+                    expression(range);
+                    statements(body);
+                }
+                StatementKind::Loop { body } => statements(body),
+                StatementKind::Break(Some(value)) => expression(value),
+                StatementKind::Break(None) => {}
                 StatementKind::Scheduled { statement, .. } => {
                     statements(std::slice::from_mut(statement.as_mut()))
                 }

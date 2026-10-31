@@ -7,10 +7,15 @@ use crate::hir::{Argument, Input, Instruction, InstructionKind, Output, ReadPort
 use crate::language::DestinationMode;
 use crate::relocatable::{ExportValue, Namespace, Slot};
 
+#[path = "validate_control.rs"]
+mod control;
+
 const MAX_OPERATIONS: usize = 100_000;
 
 pub(super) fn module(module: &ObjectModule) -> Result<(), ObjectError> {
-    if module.format_version != FORMAT_VERSION || module.language_version != "0.5" {
+    if module.format_version != FORMAT_VERSION
+        || !matches!(module.language_version.as_str(), "0.5" | "0.6")
+    {
         return Err(ObjectError::new(
             "unsupported object format or language version",
         ));
@@ -19,6 +24,9 @@ pub(super) fn module(module: &ObjectModule) -> Result<(), ObjectError> {
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<BTreeSet<_>>();
+    if module.language_version == "0.6" {
+        supported.insert(CONTROL_FEATURE.into());
+    }
     if !module.source_modules.is_empty() {
         supported.insert(SOURCE_MODULES_FEATURE.into());
     }
@@ -31,6 +39,23 @@ pub(super) fn module(module: &ObjectModule) -> Result<(), ObjectError> {
     }
     text(&module.main_module, "module symbol")?;
     source_modules(module)?;
+    if module.language_version == "0.5"
+        && (nodes(&module.program)
+            .iter()
+            .any(|node| matches!(node.kind, InstructionKind::Control(_)))
+            || module.exports.iter().any(|export| {
+                matches!(
+                    export.value,
+                    ExportValue::Bool { .. }
+                        | ExportValue::Dynamic { .. }
+                        | ExportValue::Range { .. }
+                )
+            }))
+    {
+        return Err(ObjectError::new(
+            "typed control operations require the 0.6 language feature",
+        ));
+    }
     let mut state = ProgramState::default();
     state.region(&module.program.body)?;
     let nodes = nodes(&module.program);
@@ -59,6 +84,17 @@ pub(super) fn module(module: &ObjectModule) -> Result<(), ObjectError> {
         operands(node, &relocations)?;
     }
     exports(module, &state)?;
+    for export in &module.exports {
+        match &export.value {
+            ExportValue::Dynamic { expression } => {
+                state.expression(expression)?;
+            }
+            ExportValue::Range { range } => {
+                state.range(range)?;
+            }
+            _ => {}
+        }
+    }
     debug(module, &by_id)?;
     let tables = tables::derive(module)?;
     if symbol_set(&module.symbols)? != symbol_set(&tables.symbols)?
@@ -116,12 +152,22 @@ fn constraint_set(
 struct ProgramState {
     instructions: BTreeSet<InstructionId>,
     processes: BTreeSet<ProcessId>,
+    process_definitions: BTreeSet<ProcessId>,
     consumed: HashSet<(ProcessId, u8)>,
     patterns: HashSet<String>,
+    slots: BTreeMap<crate::hir::control::SlotId, crate::hir::control::Type>,
+    loops: Vec<control::LoopResult>,
+    depth: usize,
 }
 
 impl ProgramState {
     fn region(&mut self, region: &Region) -> Result<(), ObjectError> {
+        self.depth += 1;
+        if self.depth > 128 {
+            return Err(ObjectError::new(
+                "object control nesting exceeds 128 levels",
+            ));
+        }
         for node in &region.instructions {
             if self.instructions.len() >= MAX_OPERATIONS
                 || node.id.0 > u32::MAX as usize
@@ -133,22 +179,25 @@ impl ProgramState {
             }
             self.instruction(node)?;
         }
+        self.depth -= 1;
         Ok(())
     }
 
     fn instruction(&mut self, node: &Instruction) -> Result<(), ObjectError> {
         match &node.kind {
+            InstructionKind::Control(control) => self.control(control)?,
             InstructionKind::Spawn {
                 process,
                 executable,
                 arguments,
                 ..
             } => {
-                if process.0 > u32::MAX as usize || !self.processes.insert(*process) {
+                if process.0 > u32::MAX as usize || !self.process_definitions.insert(*process) {
                     return Err(ObjectError::new(
                         "duplicate or out-of-range object process identity",
                     ));
                 }
+                self.processes.insert(*process);
                 if !matches!(
                     executable.backend,
                     Backend::Local
@@ -601,7 +650,15 @@ pub(super) fn clear_relocated_fields(
     if pending.len() != relocations.len() {
         return Err(ObjectError::new("duplicate object relocation"));
     }
-    clear_region(&mut program.body, &mut pending);
+    struct Clear<'a>(&'a mut BTreeSet<(InstructionId, Slot)>);
+    impl super::control::Visitor for Clear<'_> {
+        type Error = ObjectError;
+        fn instruction(&mut self, node: &mut Instruction) -> Result<(), ObjectError> {
+            clear_node(node, self.0);
+            Ok(())
+        }
+    }
+    super::control::visit_region(&mut program.body, &mut Clear(&mut pending))?;
     if !pending.is_empty() {
         return Err(ObjectError::new(
             "object relocation has no matching path slot",
@@ -610,38 +667,36 @@ pub(super) fn clear_relocated_fields(
     Ok(())
 }
 
-fn clear_region(region: &mut Region, pending: &mut BTreeSet<(InstructionId, Slot)>) {
-    for node in &mut region.instructions {
-        match &mut node.kind {
-            InstructionKind::Transfer {
-                source,
-                destination,
-            } => {
-                if let Input::File { location, .. } = source {
-                    clear(node.id, Slot::Source, location, pending);
-                }
-                if let Output::File { location, .. } = destination {
-                    clear(node.id, Slot::Destination, location, pending);
-                }
+fn clear_node(node: &mut Instruction, pending: &mut BTreeSet<(InstructionId, Slot)>) {
+    match &mut node.kind {
+        InstructionKind::Transfer {
+            source,
+            destination,
+        } => {
+            if let Input::File { location, .. } = source {
+                clear(node.id, Slot::Source, location, pending);
             }
-            InstructionKind::Spawn {
-                executable,
-                arguments,
-                cwd,
-                ..
-            } => {
-                clear(node.id, Slot::Executable, executable, pending);
-                for (index, argument) in arguments.iter_mut().enumerate() {
-                    if let Argument::Path(location) = argument {
-                        clear(node.id, Slot::Argument { index }, location, pending);
-                    }
-                }
-                if pending.remove(&(node.id, Slot::Cwd)) {
-                    *cwd = PathBuf::new();
-                }
+            if let Output::File { location, .. } = destination {
+                clear(node.id, Slot::Destination, location, pending);
             }
-            _ => {}
         }
+        InstructionKind::Spawn {
+            executable,
+            arguments,
+            cwd,
+            ..
+        } => {
+            clear(node.id, Slot::Executable, executable, pending);
+            for (index, argument) in arguments.iter_mut().enumerate() {
+                if let Argument::Path(location) = argument {
+                    clear(node.id, Slot::Argument { index }, location, pending);
+                }
+            }
+            if pending.remove(&(node.id, Slot::Cwd)) {
+                *cwd = PathBuf::new();
+            }
+        }
+        _ => {}
     }
 }
 

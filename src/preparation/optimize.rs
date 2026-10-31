@@ -232,6 +232,74 @@ fn flush(
     records.extend(trace);
 }
 
+/// Query one retained prefix/suffix without rescanning unrelated assignments.
+struct History<'a> {
+    index: crate::plan::index::ResourceIndex,
+    entries: Vec<Option<&'a Resource>>,
+    native: Vec<usize>,
+    wsl: Vec<usize>,
+}
+
+impl<'a> History<'a> {
+    fn new(size: usize) -> Self {
+        Self {
+            index: Default::default(),
+            entries: vec![None; size],
+            native: Vec::new(),
+            wsl: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, resource: &'a Resource, id: usize) {
+        self.index.insert(resource, id);
+        self.entries[id] = Some(resource);
+        match resource.location.backend {
+            Backend::Local => self.native.push(id),
+            Backend::Wsl => self.wsl.push(id),
+            _ => {}
+        }
+    }
+
+    fn latest(&self, resource: &Resource) -> Option<usize> {
+        self.extreme(resource, true)
+    }
+    fn earliest(&self, resource: &Resource) -> Option<usize> {
+        self.extreme(resource, false)
+    }
+
+    fn extreme(&self, resource: &Resource, latest: bool) -> Option<usize> {
+        let cross = match resource.location.backend {
+            Backend::Local => &self.wsl,
+            Backend::Wsl => &self.native,
+            _ => {
+                return if latest {
+                    self.index.latest(resource)
+                } else {
+                    self.index.earliest(resource)
+                };
+            }
+        };
+        if cross.is_empty() {
+            return if latest {
+                self.index.latest(resource)
+            } else {
+                self.index.earliest(resource)
+            };
+        }
+        // Preparation requires an explicit native/WSL separation proof; the
+        // physical planner's ordinary path/projection index does not encode it.
+        let mut candidates = BTreeSet::new();
+        self.index.candidates(resource, &mut candidates);
+        candidates.extend(cross);
+        let retained = |id: &usize| self.entries[*id].is_some_and(|entry| entry.overlaps(resource));
+        if latest {
+            candidates.into_iter().rev().find(retained)
+        } else {
+            candidates.into_iter().find(retained)
+        }
+    }
+}
+
 fn forward(
     nodes: &mut [Option<Instruction>],
     resources: &HashMap<Location, Resource>,
@@ -239,69 +307,71 @@ fn forward(
     records: &mut Vec<Rewrite>,
 ) -> bool {
     let mut changed = false;
+    let mut writes = History::new(nodes.len());
     for index in 0..nodes.len() {
-        let Some(node) = nodes[index].as_ref() else {
-            continue;
-        };
-        let Input::File { location: read, .. } = source(node) else {
-            continue;
-        };
-        let read_resource = &resources[read];
-        let producer = (0..index).rev().find(|previous| {
-            nodes[*previous]
-                .as_ref()
-                .is_some_and(|node| resources[destination(node)].overlaps(read_resource))
-        });
-        let Some(producer) = producer else { continue };
-        let producer_node = nodes[producer].as_ref().expect("retained producer");
-        if !resources[destination(producer_node)].same_path(read_resource) {
-            continue;
+        if let Some((producer, replacement)) = forwarding(nodes, index, resources, &writes) {
+            let node = nodes[index].as_ref().expect("retained consumer");
+            records.push(Rewrite {
+                instruction: node.id,
+                epoch: epoch.clone(),
+                kind: RewriteKind::Forward {
+                    producer: nodes[producer].as_ref().expect("retained producer").id,
+                    from: Box::new(value(source(node))),
+                    to: Box::new(value(&replacement)),
+                },
+            });
+            let InstructionKind::Transfer { source, .. } =
+                &mut nodes[index].as_mut().expect("retained consumer").kind
+            else {
+                unreachable!()
+            };
+            *source = replacement;
+            changed = true;
         }
-        let replacement = source(producer_node).clone();
-        // A literal stream has no file metadata. Once materialized, its file
-        // version has a creation mtime that a later file copy must preserve.
-        // Replacing that read with a fresh literal would preserve bytes only.
-        if matches!(replacement, Input::Literal(_)) {
-            continue;
+        if let Some(node) = &nodes[index] {
+            writes.insert(&resources[destination(node)], index);
         }
-        if value(&replacement) == value(source(node)) {
-            continue;
-        }
-        if let Input::File {
-            location: origin, ..
-        } = &replacement
-        {
-            let crosses_snapshot =
-                !matches!(origin.backend, Backend::Local) && origin.backend != read.backend;
-            if crosses_snapshot || resources[origin].overlaps(&resources[destination(node)]) {
-                continue;
-            }
-            if nodes[producer + 1..index]
-                .iter()
-                .flatten()
-                .any(|node| resources[destination(node)].overlaps(&resources[origin]))
-            {
-                continue;
-            }
-        }
-        records.push(Rewrite {
-            instruction: node.id,
-            epoch: epoch.clone(),
-            kind: RewriteKind::Forward {
-                producer: producer_node.id,
-                from: Box::new(value(source(node))),
-                to: Box::new(value(&replacement)),
-            },
-        });
-        let InstructionKind::Transfer { source, .. } =
-            &mut nodes[index].as_mut().expect("retained consumer").kind
-        else {
-            unreachable!()
-        };
-        *source = replacement;
-        changed = true;
     }
     changed
+}
+
+fn forwarding(
+    nodes: &[Option<Instruction>],
+    index: usize,
+    resources: &HashMap<Location, Resource>,
+    writes: &History<'_>,
+) -> Option<(usize, Input)> {
+    let node = nodes[index].as_ref()?;
+    let Input::File { location: read, .. } = source(node) else {
+        return None;
+    };
+    let read_resource = &resources[read];
+    let producer = writes.latest(read_resource)?;
+    let producer_node = nodes[producer].as_ref().expect("retained producer");
+    if !resources[destination(producer_node)].same_path(read_resource) {
+        return None;
+    }
+    let replacement = source(producer_node);
+    // A fresh literal cannot preserve the creation mtime of a materialized file.
+    if matches!(replacement, Input::Literal(_)) || value(replacement) == value(source(node)) {
+        return None;
+    }
+    if let Input::File {
+        location: origin, ..
+    } = replacement
+    {
+        let crosses_snapshot =
+            !matches!(origin.backend, Backend::Local) && origin.backend != read.backend;
+        if crosses_snapshot
+            || resources[origin].overlaps(&resources[destination(node)])
+            || writes
+                .latest(&resources[origin])
+                .is_some_and(|latest| latest > producer)
+        {
+            return None;
+        }
+    }
+    Some((producer, replacement.clone()))
 }
 
 fn remove_redundant(
@@ -312,59 +382,75 @@ fn remove_redundant(
     records: &mut Vec<Rewrite>,
 ) -> bool {
     let mut changed = false;
+    let mut writes = History::new(nodes.len());
+    let mut reads = History::new(nodes.len());
     for index in 0..nodes.len() {
-        let Some(node) = nodes[index].as_ref() else {
-            continue;
-        };
-        let Input::File {
-            location: origin, ..
-        } = source(node)
-        else {
-            continue;
-        };
-        let target = &resources[destination(node)];
-        let Some(producer) = (0..index).rev().find(|previous| {
-            nodes[*previous]
-                .as_ref()
-                .is_some_and(|previous| resources[destination(previous)].overlaps(target))
-        }) else {
-            continue;
-        };
-        let previous = nodes[producer].as_ref().expect("retained write");
-        if !permissions[&node.id].overwrite || permissions[&previous.id].result != Some(true) {
+        if let Some(producer) = redundant(nodes, index, resources, permissions, &reads, &writes) {
+            records.push(Rewrite {
+                instruction: nodes[index].as_ref().expect("retained write").id,
+                epoch: epoch.clone(),
+                kind: RewriteKind::RedundantWrite {
+                    same_as: nodes[producer].as_ref().expect("retained prior write").id,
+                },
+            });
+            nodes[index] = None;
+            changed = true;
             continue;
         }
-        let Input::File {
-            location: prior, ..
-        } = source(previous)
-        else {
+        let Some(node) = &nodes[index] else {
             continue;
         };
-        if !target.same_path(&resources[destination(previous)])
-            || !resources[origin].same_path(&resources[prior])
-        {
-            continue;
+        if let Input::File { location, .. } = source(node) {
+            reads.insert(&resources[location], index);
         }
-        let observed_or_changed = nodes[producer + 1..index].iter().flatten().any(|between| {
-            let write = &resources[destination(between)];
-            if write.overlaps(&resources[origin]) || write.overlaps(target) { return true; }
-            matches!(source(between), Input::File { location, .. }
-                if resources[location].overlaps(target) || resources[location].overlaps(&resources[origin]))
-        });
-        if observed_or_changed {
-            continue;
-        }
-        records.push(Rewrite {
-            instruction: node.id,
-            epoch: epoch.clone(),
-            kind: RewriteKind::RedundantWrite {
-                same_as: previous.id,
-            },
-        });
-        nodes[index] = None;
-        changed = true;
+        writes.insert(&resources[destination(node)], index);
     }
     changed
+}
+
+fn redundant(
+    nodes: &[Option<Instruction>],
+    index: usize,
+    resources: &HashMap<Location, Resource>,
+    permissions: &BTreeMap<InstructionId, Permission>,
+    reads: &History<'_>,
+    writes: &History<'_>,
+) -> Option<usize> {
+    let node = nodes[index].as_ref()?;
+    let Input::File {
+        location: origin, ..
+    } = source(node)
+    else {
+        return None;
+    };
+    let target = &resources[destination(node)];
+    let producer = writes.latest(target)?;
+    let previous = nodes[producer].as_ref().expect("retained prior write");
+    if !permissions[&node.id].overwrite || permissions[&previous.id].result != Some(true) {
+        return None;
+    }
+    let Input::File {
+        location: prior, ..
+    } = source(previous)
+    else {
+        return None;
+    };
+    if !target.same_path(&resources[destination(previous)])
+        || !resources[origin].same_path(&resources[prior])
+    {
+        return None;
+    }
+    if writes
+        .latest(&resources[origin])
+        .is_some_and(|latest| latest > producer)
+        || reads.latest(target).is_some_and(|latest| latest > producer)
+        || reads
+            .latest(&resources[origin])
+            .is_some_and(|latest| latest > producer)
+    {
+        return None;
+    }
+    Some(producer)
 }
 
 fn eliminate(
@@ -376,47 +462,63 @@ fn eliminate(
     records: &mut Vec<Rewrite>,
 ) -> bool {
     let mut changed = false;
+    let mut reads = History::new(nodes.len());
+    let mut writes = History::new(nodes.len());
     for index in (0..nodes.len()).rev() {
-        let Some(node) = &nodes[index] else { continue };
-        // Creation stamps its containing namespace. Keep that event until the
-        // IR can carry its metadata provenance separately from payload copying.
-        if facts[&node.id].destination == FileClass::Missing {
-            continue;
-        }
-        if !permissions[&node.id].overwrite || permissions[&node.id].result != Some(true) {
-            continue;
-        }
-        let target = &resources[destination(node)];
-        let mut overwritten_by = None;
-        for later in nodes[index + 1..].iter().flatten() {
-            if let Input::File { location, .. } = source(later)
-                && resources[location].overlaps(target)
-            {
-                break;
-            }
-            let write = &resources[destination(later)];
-            if !write.overlaps(target) {
-                continue;
-            }
-            // Literal publication replaces bytes/mtime but inherits destination
-            // permissions. It therefore observes the preceding file version;
-            // only a file-valued assignment can kill its metadata as well.
-            if write.same_path(target) && matches!(source(later), Input::File { .. }) {
-                overwritten_by = Some(later.id);
-            }
-            break;
-        }
-        if let Some(overwritten_by) = overwritten_by {
+        if let Some(overwriter) =
+            dead_write(nodes, index, resources, facts, permissions, &reads, &writes)
+        {
             records.push(Rewrite {
-                instruction: node.id,
+                instruction: nodes[index].as_ref().expect("retained write").id,
                 epoch: epoch.clone(),
-                kind: RewriteKind::DeadWrite { overwritten_by },
+                kind: RewriteKind::DeadWrite {
+                    overwritten_by: nodes[overwriter].as_ref().expect("retained overwriter").id,
+                },
             });
             nodes[index] = None;
             changed = true;
+            continue;
         }
+        let Some(node) = &nodes[index] else {
+            continue;
+        };
+        if let Input::File { location, .. } = source(node) {
+            reads.insert(&resources[location], index);
+        }
+        writes.insert(&resources[destination(node)], index);
     }
     changed
+}
+
+fn dead_write(
+    nodes: &[Option<Instruction>],
+    index: usize,
+    resources: &HashMap<Location, Resource>,
+    facts: &BTreeMap<InstructionId, OperationFacts>,
+    permissions: &BTreeMap<InstructionId, Permission>,
+    reads: &History<'_>,
+    writes: &History<'_>,
+) -> Option<usize> {
+    let node = nodes[index].as_ref()?;
+    // Creation owns a namespace timestamp until metadata provenance is explicit.
+    if facts[&node.id].destination == FileClass::Missing
+        || !permissions[&node.id].overwrite
+        || permissions[&node.id].result != Some(true)
+    {
+        return None;
+    }
+    let target = &resources[destination(node)];
+    let overwriter = writes.earliest(target)?;
+    if reads
+        .earliest(target)
+        .is_some_and(|read| read <= overwriter)
+    {
+        return None;
+    }
+    let later = nodes[overwriter].as_ref().expect("retained overwriter");
+    // A literal overwrite still observes inherited destination permissions.
+    (resources[destination(later)].same_path(target) && matches!(source(later), Input::File { .. }))
+        .then_some(overwriter)
 }
 
 #[derive(Clone, Copy)]
@@ -624,3 +726,6 @@ fn destination(node: &Instruction) -> &Location {
     };
     location
 }
+
+#[cfg(test)]
+mod tests;

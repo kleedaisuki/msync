@@ -84,6 +84,9 @@ fn display_region(
                 "spawn program[{}] {executable} argv={arguments:?} cwd={cwd:?}",
                 process.0
             )?,
+            InstructionKind::Control(control) => {
+                writeln!(f, "control {} (evaluated at dispatch)", control.name())?
+            }
             InstructionKind::Barrier { kind } => writeln!(f, "barrier {kind:?}")?,
             InstructionKind::Await { process } => writeln!(f, "await {process:?}")?,
         }

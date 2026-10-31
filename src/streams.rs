@@ -2228,3 +2228,50 @@ mod commit_tests {
         .unwrap();
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod dispatch_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn file_to_tcp_dispatch_preserves_bytes_and_eof_around_the_size_boundary() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp/io-dispatch-tests");
+        fs::create_dir_all(&root).unwrap();
+        let fixture = tempfile::tempdir_in(root).unwrap();
+        for size in [4096, 65536, 131071, 131072] {
+            let source = fixture.path().join(format!("source-{size}"));
+            let payload: Vec<u8> = (0..size).map(|index| (index % 251) as u8).collect();
+            fs::write(&source, &payload).unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let receiver = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut received = Vec::new();
+                stream.read_to_end(&mut received).await.unwrap();
+                received
+            });
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                transfer_file_to_tcp(
+                    &source,
+                    "127.0.0.1",
+                    port,
+                    65536,
+                    &CancellationToken::new(),
+                    None,
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let received = tokio::time::timeout(std::time::Duration::from_secs(3), receiver)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.end, StreamEnd::SourceClosed);
+            assert_eq!(result.bytes, payload.len() as u64);
+            assert_eq!(received, payload);
+            assert_eq!(fs::read(&source).unwrap(), payload);
+        }
+    }
+}

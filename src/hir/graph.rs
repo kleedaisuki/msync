@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use super::control::{ControlInstruction, TransferInput, TransferOutput};
 pub use super::effects::VersionReadProof;
 use super::effects::{
     self, Conflict, Effects, EndpointKey, FifoEndpointProof, FifoRendezvousProof, OperationFacts,
@@ -216,7 +217,7 @@ pub fn build_with_context(program: &Program, context: &PlanningContext) -> PlanG
                     "instruction IDs must be unique; this ID is defined more than once",
                 ));
             }
-            if let InstructionKind::Spawn { process, .. } = instruction.kind {
+            if let Some(process) = spawned_process(instruction) {
                 if !processes.insert(process) {
                     result.issues.push(issue(
                         instruction.id,
@@ -225,28 +226,14 @@ pub fn build_with_context(program: &Program, context: &PlanningContext) -> PlanG
                 }
                 active.live_processes.push(process);
             }
-            if let InstructionKind::Transfer {
-                source:
-                    Input::Port {
-                        process,
-                        port: ReadPort::Stdout | ReadPort::Stderr,
-                    },
-                ..
-            } = instruction.kind
+            if let Some((process, port)) = source_port(instruction)
+                .filter(|(_, port)| matches!(port, ReadPort::Stdout | ReadPort::Stderr))
+                && let Some(previous) = consumers.insert((process, port), instruction.id)
             {
-                let InstructionKind::Transfer {
-                    source: Input::Port { port, .. },
-                    ..
-                } = instruction.kind
-                else {
-                    unreachable!()
-                };
-                if let Some(previous) = consumers.insert((process, port), instruction.id) {
-                    result.issues.push(Issue {
-                        instructions: vec![previous, instruction.id],
-                        message: "a consuming program output port may have only one owner".into(),
-                    });
-                }
+                result.issues.push(Issue {
+                    instructions: vec![previous, instruction.id],
+                    message: "a consuming program output port may have only one owner".into(),
+                });
             }
         }
         result.blocks.extend(graph.blocks);
@@ -275,7 +262,7 @@ pub fn build_block_with_context(block: BasicBlock<'_>, context: &PlanningContext
         .copied()
         .collect::<BTreeSet<_>>();
     for instruction in block.instructions {
-        if let InstructionKind::Spawn { process, .. } = instruction.kind {
+        if let Some(process) = spawned_process(instruction) {
             known.insert(process);
         }
         validate_processes(instruction, &known, &mut graph);
@@ -287,11 +274,24 @@ pub fn build_block_with_context(block: BasicBlock<'_>, context: &PlanningContext
         });
     }
     let mut footprints: Vec<Option<Arc<Effects>>> = vec![None; graph.nodes.len()];
-    for right in 0..graph.nodes.len() {
+    let mut index = effects::CandidateIndex::default();
+    let mut candidates = BTreeSet::new();
+    let mut marked = vec![usize::MAX; graph.nodes.len()];
+    for right in 1..graph.nodes.len() {
+        index.insert(&graph.nodes[right - 1].effects, right - 1);
+        candidates.clear();
+        index.candidates(&graph.nodes[right].effects, &mut candidates);
+        for &left in &candidates {
+            marked[left] = right;
+        }
         for left in 0..right {
             let before = &graph.nodes[left];
             let after = &graph.nodes[right];
-            let conflicts = before.effects.conflicts(&after.effects);
+            let conflicts = if marked[left] == right {
+                before.effects.conflicts(&after.effects)
+            } else {
+                Vec::new()
+            };
             let boundary = matches!(
                 block.instructions[right].kind,
                 InstructionKind::Await { .. } | InstructionKind::Barrier { .. }
@@ -362,6 +362,42 @@ fn graph_context(context: &PlanningContext) -> PlanGraph {
     }
 }
 
+fn source_port(instruction: &Instruction) -> Option<(ProcessId, ReadPort)> {
+    match &instruction.kind {
+        InstructionKind::Transfer {
+            source: Input::Port { process, port },
+            ..
+        }
+        | InstructionKind::Control(ControlInstruction::Transfer {
+            source: TransferInput::Port { process, port },
+            ..
+        }) => Some((*process, *port)),
+        _ => None,
+    }
+}
+
+fn stdin_process(instruction: &Instruction) -> Option<ProcessId> {
+    match &instruction.kind {
+        InstructionKind::Transfer {
+            destination: Output::Stdin(process),
+            ..
+        }
+        | InstructionKind::Control(ControlInstruction::Transfer {
+            destination: TransferOutput::Stdin(process),
+            ..
+        }) => Some(*process),
+        _ => None,
+    }
+}
+
+fn spawned_process(instruction: &Instruction) -> Option<ProcessId> {
+    match &instruction.kind {
+        InstructionKind::Spawn { process, .. }
+        | InstructionKind::Control(ControlInstruction::Spawn { process, .. }) => Some(*process),
+        _ => None,
+    }
+}
+
 fn issue(instruction: InstructionId, message: &str) -> Issue {
     Issue {
         instructions: vec![instruction],
@@ -375,25 +411,18 @@ fn validate_processes(
     graph: &mut PlanGraph,
 ) {
     let mut requirements = Vec::new();
+    if let Some((process, port)) = source_port(instruction) {
+        let wait = if matches!(port, ReadPort::ExitCode | ReadPort::Meta) {
+            Wait::ProcessExited(process)
+        } else {
+            Wait::ProcessStarted(process)
+        };
+        requirements.push((process, wait));
+    }
+    if let Some(process) = stdin_process(instruction) {
+        requirements.push((process, Wait::ProcessStarted(process)));
+    }
     match &instruction.kind {
-        InstructionKind::Transfer {
-            source,
-            destination,
-        } => {
-            if let Input::Port { process, port } = source {
-                requirements.push((
-                    *process,
-                    if matches!(port, ReadPort::ExitCode | ReadPort::Meta) {
-                        Wait::ProcessExited(*process)
-                    } else {
-                        Wait::ProcessStarted(*process)
-                    },
-                ));
-            }
-            if let Output::Stdin(process) = destination {
-                requirements.push((*process, Wait::ProcessStarted(*process)));
-            }
-        }
         InstructionKind::Await {
             process: Some(process),
         } => requirements.push((*process, Wait::ProcessExited(*process))),
@@ -725,4 +754,229 @@ pub(crate) fn physical_groups(proofs: &[FifoRendezvousProof]) -> Vec<Vec<Instruc
         groups.push(group);
     }
     groups
+}
+
+#[cfg(test)]
+mod control_spawn_tests {
+    use super::*;
+    use crate::endpoint::{Backend, Location};
+    use crate::hir::Region;
+    use crate::hir::control::{ControlInstruction, Expr, ExprKind, Type};
+    use crate::language::DestinationMode;
+    use crate::syntax::Span;
+
+    fn node(id: usize, kind: InstructionKind) -> Instruction {
+        Instruction {
+            id: InstructionId(id),
+            kind,
+            span: Span::default(),
+            expansion: Vec::new(),
+        }
+    }
+
+    fn spawn(id: usize, process: ProcessId) -> Instruction {
+        let path = || Expr {
+            ty: Type::Path,
+            kind: ExprKind::Path {
+                location: Location {
+                    backend: Backend::Local,
+                    path: "program".into(),
+                },
+                mode: DestinationMode::Exact,
+                relocation: None,
+            },
+        };
+        node(
+            id,
+            InstructionKind::Control(ControlInstruction::Spawn {
+                process,
+                executable: path(),
+                arguments: Vec::new(),
+                cwd: path(),
+            }),
+        )
+    }
+
+    #[test]
+    fn pair_iteration_keeps_empty_and_singleton_blocks_fully_validated() {
+        let context = PlanningContext::default();
+        let empty = build_block_with_context(
+            BasicBlock {
+                id: BlockId(0),
+                instructions: &[],
+            },
+            &context,
+        );
+        assert!(empty.nodes.is_empty());
+        assert!(empty.dependencies.is_empty());
+        assert!(empty.commutations.is_empty());
+        assert!(empty.issues.is_empty());
+
+        let instructions = [node(
+            7,
+            InstructionKind::Await {
+                process: Some(ProcessId(99)),
+            },
+        )];
+        let singleton = build_block_with_context(
+            BasicBlock {
+                id: BlockId(1),
+                instructions: &instructions,
+            },
+            &context,
+        );
+        assert_eq!(singleton.nodes.len(), 1);
+        assert_eq!(singleton.nodes[0].instruction, InstructionId(7));
+        assert!(singleton.dependencies.is_empty());
+        assert!(singleton.commutations.is_empty());
+        assert!(
+            singleton
+                .issues
+                .iter()
+                .any(|issue| issue.instructions == [InstructionId(7)]
+                    && issue.message.contains("has not been launched"))
+        );
+    }
+
+    #[test]
+    fn dynamic_spawn_is_known_to_following_await_blocks() {
+        let process = ProcessId(7);
+        let program = Program {
+            body: Region {
+                instructions: vec![
+                    spawn(0, process),
+                    node(
+                        1,
+                        InstructionKind::Await {
+                            process: Some(process),
+                        },
+                    ),
+                ],
+            },
+        };
+        let graph = build(&program);
+        assert!(graph.issues.is_empty(), "{:?}", graph.issues);
+        assert!(
+            graph
+                .external_processes
+                .iter()
+                .any(|requirement| requirement.process == process
+                    && requirement.wait == Wait::ProcessExited(process))
+        );
+    }
+
+    #[test]
+    fn dynamic_spawn_is_known_in_directly_constructed_block() {
+        let process = ProcessId(7);
+        let instructions = [
+            spawn(0, process),
+            node(
+                1,
+                InstructionKind::Await {
+                    process: Some(process),
+                },
+            ),
+        ];
+        let graph = build_block_with_context(
+            BasicBlock {
+                id: BlockId(0),
+                instructions: &instructions,
+            },
+            &PlanningContext::default(),
+        );
+        assert!(graph.issues.is_empty(), "{:?}", graph.issues);
+    }
+
+    #[test]
+    fn dynamic_spawn_rejects_duplicate_process_identity() {
+        let process = ProcessId(7);
+        let program = Program {
+            body: Region {
+                instructions: vec![spawn(0, process), spawn(1, process)],
+            },
+        };
+        assert!(
+            build(&program)
+                .issues
+                .iter()
+                .any(|issue| issue.message == "program ID is defined more than once")
+        );
+    }
+
+    #[test]
+    fn dynamic_transfer_ports_retain_process_requirements() {
+        let process = ProcessId(7);
+        for port in [
+            ReadPort::Stdout,
+            ReadPort::Stderr,
+            ReadPort::Pid,
+            ReadPort::ExitCode,
+            ReadPort::Meta,
+        ] {
+            let instruction = node(
+                0,
+                InstructionKind::Control(ControlInstruction::Transfer {
+                    source: TransferInput::Port { process, port },
+                    destination: TransferOutput::Stdin(process),
+                }),
+            );
+            let program = Program {
+                body: Region {
+                    instructions: vec![instruction],
+                },
+            };
+            let graph = build_with_live_processes(&program, [process]);
+            assert!(graph.issues.is_empty(), "{:?}", graph.issues);
+            let source_wait = if matches!(port, ReadPort::ExitCode | ReadPort::Meta) {
+                Wait::ProcessExited(process)
+            } else {
+                Wait::ProcessStarted(process)
+            };
+            assert_eq!(graph.external_processes.len(), 2);
+            assert_eq!(graph.external_processes[0].wait, source_wait);
+            assert_eq!(
+                graph.external_processes[1].wait,
+                Wait::ProcessStarted(process)
+            );
+            assert!(!build(&program).issues.is_empty());
+        }
+    }
+
+    #[test]
+    fn consuming_port_cannot_be_shared_between_control_and_ordinary_transfer() {
+        let process = ProcessId(7);
+        let program = Program {
+            body: Region {
+                instructions: vec![
+                    node(
+                        0,
+                        InstructionKind::Control(ControlInstruction::Transfer {
+                            source: TransferInput::Port {
+                                process,
+                                port: ReadPort::Stdout,
+                            },
+                            destination: TransferOutput::Stdin(process),
+                        }),
+                    ),
+                    node(
+                        1,
+                        InstructionKind::Transfer {
+                            source: Input::Port {
+                                process,
+                                port: ReadPort::Stdout,
+                            },
+                            destination: Output::Stdin(process),
+                        },
+                    ),
+                ],
+            },
+        };
+        assert!(
+            build_with_live_processes(&program, [process])
+                .issues
+                .iter()
+                .any(|issue| issue.message
+                    == "a consuming program output port may have only one owner")
+        );
+    }
 }

@@ -10,6 +10,7 @@ pub(super) type CliResult<T = ()> = Result<T, CliError>;
 pub(super) enum CliError {
     Message(String),
     Presented(String),
+    Cancelled(Box<CliError>),
     Issue(Issue),
     Io {
         action: IoAction,
@@ -116,7 +117,18 @@ impl Issue {
 
 impl CliError {
     pub(super) fn is_empty(&self) -> bool {
+        if let Self::Cancelled(error) = self {
+            return error.is_empty();
+        }
         matches!(self, Self::Message(text) | Self::Presented(text) if text.is_empty())
+    }
+
+    pub(super) fn cancelled(self) -> Self {
+        Self::Cancelled(Box::new(self))
+    }
+
+    pub(super) fn is_cancelled(&self) -> bool {
+        matches!(self, Self::Cancelled(_))
     }
 
     pub(super) fn io(action: IoAction, path: Option<&Path>, cause: io::Error) -> Self {
@@ -148,6 +160,7 @@ impl CliError {
         match self {
             Self::Message(message) => Issue::new(message).render(enabled),
             Self::Presented(text) => text.clone(),
+            Self::Cancelled(error) => error.render(color),
             Self::Issue(issue) => issue.render(enabled),
             Self::Io {
                 action,
@@ -255,6 +268,7 @@ impl fmt::Display for CliError {
 impl std::error::Error for CliError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Cancelled(error) => Some(error.as_ref()),
             Self::Io { cause, .. } => Some(cause),
             _ => None,
         }

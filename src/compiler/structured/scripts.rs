@@ -93,8 +93,8 @@ impl Lower<'_> {
         region: &mut Region,
     ) -> Result<(), LocatedReport> {
         let site = self.source.at(expression.span);
-        let value = diagnostics::resolve(expression, scope, context)
-            .map_err(|failure| self.located(failure))?;
+        let value =
+            resolve_value(expression, scope, context).map_err(|failure| self.located(failure))?;
         let path = script_path(value, context)
             .map_err(|message| self.located(Report::new(message, expression.span)))?;
         let paths = script_matches(path)
@@ -181,12 +181,6 @@ impl Lower<'_> {
             .map_err(|reports| source_errors(&source, reports, site, shared))?;
         let document = language::parse(&source.text)
             .map_err(|reports| source_errors(&source, reports, site, shared))?;
-        if shared && scope.globals.is_some() {
-            reject_nested_macro(&document.statements).map_err(|report| {
-                LocatedReport::new(source.clone(), report)
-                    .label(site.clone(), "source expanded inside this macro")
-            })?;
-        }
         self.scripts.active.push(Active {
             identity,
             site: site.clone(),
@@ -203,6 +197,7 @@ impl Lower<'_> {
             errors
         } else {
             let mut isolated = Scope {
+                slots: scope.slots.clone(),
                 current_unit: scope.current_unit,
                 symbol_budget: scope.symbol_budget.clone(),
                 source: Some(source),

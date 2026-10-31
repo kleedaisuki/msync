@@ -17,29 +17,24 @@ impl ReplState {
         if !self.structured.active() {
             return input.read(prompt);
         }
+        let mut printer = input.external_printer()?;
+        let context = msync::telemetry::context();
         thread::scope(|scope| {
-            let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+            let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
             let reader = scope.spawn(move || {
-                let _ = sender.send(input.read(prompt));
+                let mut read = msync::telemetry::linked_span("repl.input", context.as_ref());
+                let context = read.context();
+                let event = msync::telemetry::with_context(context.as_ref(), || input.read(prompt));
+                read.finish_result(&event);
+                let _ = sender.blocking_send(event);
             });
-            let result = loop {
-                if !self.structured.active() {
-                    break receiver
-                        .recv()
-                        .map_err(|_| "input reader exited without a result".to_owned());
-                }
-                match receiver.recv_timeout(std::time::Duration::from_millis(20)) {
-                    Ok(event) => break Ok(event),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => self.structured.poll(color),
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                        break Err("input reader exited without a result".to_owned());
-                    }
-                }
-            };
+            let result = self
+                .structured
+                .read_input(&mut receiver, &mut printer, color);
             reader
                 .join()
                 .map_err(|_| "input reader panicked".to_owned())?;
-            result?
+            result
         })
     }
 

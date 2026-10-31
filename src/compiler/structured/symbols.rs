@@ -1,4 +1,4 @@
-//! Pure, lexical compile-time functions. No instruction or barrier is emitted.
+//! Lexically captured pure functions, inlined into constant or runtime expressions.
 
 use super::*;
 
@@ -19,6 +19,10 @@ impl Default for Budget {
 }
 
 impl Budget {
+    pub(super) fn used(&self) -> usize {
+        INVOCATION_LIMIT - self.0.load(Ordering::Relaxed)
+    }
+
     fn consume(&self, span: Span) -> Result<(), Failure> {
         self.0.try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| remaining.checked_sub(1))
             .map(|_| ())
@@ -47,15 +51,31 @@ pub(super) fn check_value(value: &Value, span: Span, scope: &Scope) -> Result<()
     check_size(bytes, span, scope)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Flavor {
+    Symbol,
+    Boolean,
+}
+
+impl Flavor {
+    fn keyword(self) -> &'static str {
+        match self {
+            Self::Symbol => "symbol",
+            Self::Boolean => "boolean",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct Symbol {
+    flavor: Flavor,
     name: Name,
     parameters: Vec<Name>,
     body: language::Block,
-    values: Arc<BTreeMap<String, Value>>,
-    sites: Arc<BTreeMap<String, SourceSpan>>,
+    values: Arc<imbl::OrdMap<String, Value>>,
+    sites: Arc<imbl::OrdMap<String, SourceSpan>>,
     expansions: Arc<ExpansionMap>,
-    symbols: Arc<BTreeMap<String, Arc<Symbol>>>,
+    symbols: Arc<imbl::OrdMap<String, Arc<Symbol>>>,
     source: Arc<Source>,
     source_file: Option<PathBuf>,
 }
@@ -63,7 +83,8 @@ pub(super) struct Symbol {
 impl Symbol {
     pub(super) fn signature(&self) -> String {
         format!(
-            "symbol {}({})",
+            "{} {}({})",
+            self.flavor.keyword(),
             self.name.text,
             self.parameters
                 .iter()
@@ -93,35 +114,94 @@ impl Lower<'_> {
         scope: &mut Scope,
         context: &CompileContext,
     ) -> Result<(), LocatedReport> {
-        if scope.globals.is_some() {
-            return Err(self.located(Report::new("a symbol declaration must be at the lexical script level", name.span).help("Nested calls are supported; declare reusable symbols outside a macro or symbol body.")));
-        }
-        check_name(name).map_err(|error| self.located(error))?;
-        let mut names = HashSet::new();
-        for parameter in parameters {
-            check_name(parameter).map_err(|error| self.located(error))?;
-            if !names.insert(&parameter.text) {
-                return Err(self.located(Report::new("duplicate symbol parameter", parameter.span)));
-            }
-        }
-        validate_body(body).map_err(|error| self.located(error))?;
-        let definition = Symbol {
-            name: name.clone(),
-            parameters: parameters.to_vec(),
-            body: body.to_vec(),
-            values: scope.values.clone(),
-            sites: scope.sites.clone(),
-            expansions: scope.expansions.clone(),
-            symbols: scope.symbols.clone(),
-            source: self.source.clone(),
-            source_file: context.source_file.clone(),
-        };
-        Arc::make_mut(&mut scope.symbols).insert(name.text.clone(), Arc::new(definition));
-        Ok(())
+        define(
+            Flavor::Symbol,
+            name,
+            parameters,
+            body,
+            scope,
+            context,
+            &self.source,
+        )
+        .map_err(|error| self.located(error))
+    }
+
+    pub(super) fn define_boolean(
+        &self,
+        name: &Name,
+        parameters: &[Name],
+        body: &[language::Statement],
+        scope: &mut Scope,
+        context: &CompileContext,
+    ) -> Result<(), LocatedReport> {
+        define(
+            Flavor::Boolean,
+            name,
+            parameters,
+            body,
+            scope,
+            context,
+            &self.source,
+        )
+        .map_err(|error| self.located(error))
     }
 }
 
-fn validate_body(body: &[language::Statement]) -> Result<(), Report> {
+pub(super) fn captured<T: Clone>(
+    parents: Option<&Arc<imbl::OrdMap<String, T>>>,
+    locals: &Arc<imbl::OrdMap<String, T>>,
+) -> Arc<imbl::OrdMap<String, T>> {
+    let Some(parents) = parents else {
+        return locals.clone();
+    };
+    let mut values = (**parents).clone();
+    values.extend(
+        locals
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone())),
+    );
+    Arc::new(values)
+}
+
+fn define(
+    flavor: Flavor,
+    name: &Name,
+    parameters: &[Name],
+    body: &[language::Statement],
+    scope: &mut Scope,
+    context: &CompileContext,
+    source: &Arc<Source>,
+) -> Result<(), Report> {
+    check_name(name)?;
+    let mut names = HashSet::new();
+    for parameter in parameters {
+        check_name(parameter)?;
+        if !names.insert(&parameter.text) {
+            return Err(Report::new(
+                format!("duplicate {} parameter", flavor.keyword()),
+                parameter.span,
+            ));
+        }
+    }
+    validate_body(body, flavor)?;
+    let definition = Symbol {
+        flavor,
+        name: name.clone(),
+        parameters: parameters.to_vec(),
+        body: body.to_vec(),
+        values: captured(scope.globals.as_ref(), &scope.values),
+        sites: captured(scope.global_sites.as_ref(), &scope.sites),
+        expansions: captured(scope.global_expansions.as_ref(), &scope.expansions),
+        symbols: scope.symbols.clone(),
+        source: source.clone(),
+        source_file: context.source_file.clone(),
+    };
+    Arc::make_mut(&mut scope.symbols).insert(name.text.clone(), Arc::new(definition));
+    scope.local_templates.insert(name.text.clone());
+    Ok(())
+}
+
+fn validate_body(body: &[language::Statement], flavor: Flavor) -> Result<(), Report> {
     let mut returned = false;
     for statement in body {
         if matches!(statement.kind, language::StatementKind::Comment(_)) {
@@ -129,23 +209,27 @@ fn validate_body(body: &[language::Statement]) -> Result<(), Report> {
         }
         if returned {
             return Err(Report::new(
-                "unreachable statement after symbol return",
+                format!("unreachable statement after {} return", flavor.keyword()),
                 statement.span,
             ));
         }
         match &statement.kind {
-            language::StatementKind::Binding { op: BindingOp::Value, .. } | language::StatementKind::Global(_) => {}
+            language::StatementKind::Binding { op: BindingOp::Value | BindingOp::Assign, .. }
+            | language::StatementKind::Global(_)
+            | language::StatementKind::Drop(_) => {}
+            language::StatementKind::Symbol { body, .. } if flavor == Flavor::Symbol => validate_body(body, flavor)?,
+            language::StatementKind::Boolean { body, .. } if flavor == Flavor::Boolean => validate_body(body, flavor)?,
             language::StatementKind::Return(_) => returned = true,
-            _ => return Err(Report::new("symbol bodies permit only ':=' bindings, global imports and return", statement.span)
-                .help("Use pure /, ~, :: expressions and nested symbol calls; transfers, program launches, scheduling and script directives are not symbol operations.")),
+            _ => return Err(Report::new(format!("{} bodies permit only pure bindings, global imports, nested {} declarations and return", flavor.keyword(), flavor.keyword()), statement.span)
+                .help("Transfers, program launches, scheduling and script directives are not pure function operations.")),
         }
     }
     if !returned {
         return Err(Report::new(
-            "a symbol must return a value",
+            format!("a {} must return a value", flavor.keyword()),
             body.last().map_or(Span::default(), |node| node.span),
         )
-        .help("End the symbol body with 'return expression'."));
+        .help("End the function body with 'return expression'."));
     }
     Ok(())
 }
@@ -170,11 +254,15 @@ pub(super) fn evaluate(
             .in_context(call_site.clone())
             .label(
                 call_site,
-                format!("while instantiating symbol '{}'", definition.name.text),
+                format!(
+                    "while instantiating {} '{}'",
+                    definition.flavor.keyword(),
+                    definition.name.text
+                ),
             )
             .label(
                 definition.source.at(definition.name.span),
-                "symbol declared here",
+                format!("{} declared here", definition.flavor.keyword()),
             );
         Failure::located(located)
     })
@@ -257,9 +345,11 @@ fn instantiate(
         .consume(call_site.span)
         .map_err(|failure| Failure::located(failure.locate(call_site.source.clone())))?;
     let mut scope = Scope {
+        slots: caller.slots.clone(),
         current_unit: caller.current_unit,
         source: Some(definition.source.clone()),
         symbols: definition.symbols.clone(),
+        global_symbols: Some(definition.symbols.clone()),
         symbol_calls: caller.symbol_calls.clone(),
         symbol_budget: caller.symbol_budget.clone(),
         globals: Some(definition.values.clone()),
@@ -270,6 +360,7 @@ fn instantiate(
     scope
         .symbol_calls
         .push((definition.clone(), call_site.clone()));
+    let mut arguments_bindings = Vec::new();
     for (parameter, argument) in definition.parameters.iter().zip(arguments) {
         let value = diagnostics::resolve(argument, caller, context)
             .map_err(|failure| Failure::located(failure.locate(call_site.source.clone())))?;
@@ -282,6 +373,7 @@ fn instantiate(
             ExpansionTrace::inputs(argument, caller),
             ExpansionOrigin::SymbolParameter,
         );
+        let value = snapshot(value, &scope, &mut arguments_bindings);
         Arc::make_mut(&mut scope.values).insert(parameter.text.clone(), value);
         Arc::make_mut(&mut scope.sites)
             .insert(parameter.text.clone(), call_site.source.at(argument.span));
@@ -291,21 +383,71 @@ fn instantiate(
         pwd: context.pwd.clone(),
         source_file: definition.source_file.clone(),
     };
-    run(definition, &mut scope, &context)
+    let value = run(definition, &mut scope, &context)?;
+    scoped(value, arguments_bindings, &context, call_site.span)
+}
+
+fn snapshot(
+    value: Value,
+    scope: &Scope,
+    bindings: &mut Vec<(hir::control::SlotId, hir::control::Expr)>,
+) -> Value {
+    let Value::Dynamic(expression) = value else {
+        return value;
+    };
+    if matches!(expression.kind, hir::control::ExprKind::Slot(_)) {
+        return Value::Dynamic(expression);
+    }
+    let slot = scope.slot();
+    let value = Value::Dynamic(hir::control::Expr {
+        ty: expression.ty.clone(),
+        kind: hir::control::ExprKind::Slot(slot),
+    });
+    bindings.push((slot, expression));
+    value
+}
+
+fn scoped(
+    value: Value,
+    bindings: Vec<(hir::control::SlotId, hir::control::Expr)>,
+    context: &CompileContext,
+    span: Span,
+) -> Result<Value, Failure> {
+    if bindings.is_empty() {
+        return Ok(value);
+    }
+    let mut body = v6::scalar(value, context, span)?;
+    for (slot, value) in bindings.into_iter().rev() {
+        body = hir::control::Expr {
+            ty: body.ty.clone(),
+            kind: hir::control::ExprKind::Let {
+                slot,
+                value: Box::new(value),
+                body: Box::new(body),
+            },
+        };
+    }
+    Ok(Value::Dynamic(body))
 }
 
 fn run(definition: &Symbol, scope: &mut Scope, context: &CompileContext) -> Result<Value, Failure> {
+    let mut bindings = Vec::new();
     for statement in &definition.body {
         match &statement.kind {
             language::StatementKind::Comment(_) => {}
             language::StatementKind::Global(names) => import_globals(names, scope)?,
+            language::StatementKind::Drop(names) => v6::drop_bindings(names, scope)?,
             language::StatementKind::Binding {
                 name,
+                op,
                 value: expression,
-                ..
             } => {
                 check_name(name)?;
                 let value = diagnostics::resolve(expression, scope, context)?;
+                v6::check_assignment(*op, &value, expression.span)?;
+                if *op == BindingOp::Assign {
+                    v6::check_reassignment(name, &value, scope, context)?;
+                }
                 let trace = ExpansionTrace::new(
                     &name.text,
                     &value,
@@ -313,13 +455,52 @@ fn run(definition: &Symbol, scope: &mut Scope, context: &CompileContext) -> Resu
                     ExpansionTrace::inputs(expression, scope),
                     ExpansionOrigin::Item,
                 );
+                let value = snapshot(value, scope, &mut bindings);
                 Arc::make_mut(&mut scope.values).insert(name.text.clone(), value);
                 Arc::make_mut(&mut scope.sites)
                     .insert(name.text.clone(), definition.source.at(expression.span));
                 Arc::make_mut(&mut scope.expansions).insert(name.text.clone(), trace);
             }
+            language::StatementKind::Symbol {
+                name,
+                parameters,
+                body,
+            } => {
+                define(
+                    Flavor::Symbol,
+                    name,
+                    parameters,
+                    body,
+                    scope,
+                    context,
+                    &definition.source,
+                )?;
+            }
+            language::StatementKind::Boolean {
+                name,
+                parameters,
+                body,
+            } => {
+                define(
+                    Flavor::Boolean,
+                    name,
+                    parameters,
+                    body,
+                    scope,
+                    context,
+                    &definition.source,
+                )?;
+            }
             language::StatementKind::Return(expression) => {
-                return diagnostics::resolve(expression, scope, context);
+                let value = diagnostics::resolve(expression, scope, context)?;
+                if definition.flavor == Flavor::Boolean && !v6::is_bool(&value) {
+                    return Err(Report::new(
+                        "a boolean function must return bool",
+                        expression.span,
+                    )
+                    .into());
+                }
+                return scoped(value, bindings, context, expression.span);
             }
             _ => unreachable!("symbol declaration validation"),
         }

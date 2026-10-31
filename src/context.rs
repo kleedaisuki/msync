@@ -152,9 +152,15 @@ pub fn contextualize(
     }
     let mut exports = module.exports.clone();
     bind_exports(&mut exports, &module.main_module, context)?;
-    let maps = IdMaps::new(&program, candidate.object_id_bases())?;
+    let maps = IdMaps::new(
+        &program,
+        &exports,
+        candidate.object_id_bases(),
+        candidate.runtime_slot_base(),
+    )?;
     maps.program(&mut program)?;
     maps.exports(&mut exports)?;
+    candidate.reserve_runtime_slots(maps.next_slot);
     collect_obligations(&program.body, &mut obligations);
     let graph = graph::build(&program);
     candidate
@@ -288,69 +294,125 @@ fn bind_program(
     origins: &Origins,
 ) -> Result<(hir::Program, Vec<Obligation>), ContextError> {
     let mut program = program.clone();
-    let paths = instruction_paths(&program.body);
     let mut obligations = Vec::new();
+    let mut relocation_map = BTreeMap::<InstructionId, Vec<&Relocation>>::new();
     for relocation in relocations {
-        let node = node_mut(
-            &mut program.body,
-            *paths
-                .get(&relocation.instruction)
-                .ok_or_else(|| ContextError::new("relocation instruction does not exist"))?,
-        )?;
-        bind_relocation(node, relocation, main_module, context, &mut obligations)
-            .map_err(|error| error.at(relocation.instruction, origins))?;
+        relocation_map
+            .entry(relocation.instruction)
+            .or_default()
+            .push(relocation);
     }
-    bind_endpoints(&mut program.body, context, &mut obligations).map_err(|error| {
-        if let Some(id) = error.instruction {
-            error.at(id, origins)
-        } else {
-            error
-        }
-    })?;
+    let mut binder = ProgramBinder {
+        relocations: relocation_map,
+        main_module,
+        context,
+        origins,
+        obligations: &mut obligations,
+        instructions: Vec::new(),
+    };
+    crate::object::control::visit_region(&mut program.body, &mut binder)?;
     Ok((program, obligations))
 }
 
-fn bind_endpoints(
-    region: &mut Region,
-    context: &Context,
-    obligations: &mut Vec<Obligation>,
-) -> Result<(), ContextError> {
-    for node in &mut region.instructions {
+struct ProgramBinder<'a> {
+    relocations: BTreeMap<InstructionId, Vec<&'a Relocation>>,
+    instructions: Vec<InstructionId>,
+    main_module: &'a str,
+    context: &'a Context,
+    origins: &'a Origins,
+    obligations: &'a mut Vec<Obligation>,
+}
+
+impl crate::object::control::Visitor for ProgramBinder<'_> {
+    type Error = ContextError;
+    fn instruction(&mut self, node: &mut Instruction) -> Result<(), ContextError> {
         let id = node.id;
-        let result = match &mut node.kind {
+        self.instructions.push(id);
+        for relocation in self.relocations.get(&id).into_iter().flatten() {
+            bind_relocation(
+                node,
+                relocation,
+                self.main_module,
+                self.context,
+                self.obligations,
+            )
+            .map_err(|error| error.at(node.id, self.origins))?;
+        }
+        let id = node.id;
+        match &mut node.kind {
             InstructionKind::Transfer {
                 source,
                 destination,
             } => {
                 if let Input::File { location, .. } = source {
-                    bind_endpoint(location, context, id, obligations)?;
+                    bind_endpoint(location, self.context, id, self.obligations)?;
                 }
                 if let Output::File { location, .. } = destination {
-                    bind_endpoint(location, context, id, obligations)?;
+                    bind_endpoint(location, self.context, id, self.obligations)?;
                 }
-                Ok(())
             }
             InstructionKind::Spawn {
                 executable,
                 arguments,
                 ..
             } => {
-                bind_endpoint(executable, context, id, obligations)?;
+                bind_endpoint(executable, self.context, id, self.obligations)?;
                 for argument in arguments {
                     if let Argument::Path(location) = argument {
-                        bind_endpoint(location, context, id, obligations)?;
+                        bind_endpoint(location, self.context, id, self.obligations)?;
                     }
                 }
-                Ok(())
             }
-            _ => Ok(()),
-        };
-        result.map_err(|mut error: ContextError| {
-            error.instruction.get_or_insert(id);
-            error
-        })?;
+            _ => {}
+        }
+        Ok(())
     }
-    Ok(())
+    fn leave_instruction(&mut self, _node: &mut Instruction) -> Result<(), ContextError> {
+        self.instructions.pop();
+        Ok(())
+    }
+    fn expression(
+        &mut self,
+        expression: &mut crate::hir::control::Expr,
+    ) -> Result<(), ContextError> {
+        use crate::hir::control::ExprKind;
+        if let ExprKind::Space(namespace) = &expression.kind {
+            expression.kind = ExprKind::ResolvedSpace {
+                namespace: namespace.clone(),
+                pwd: self.context.pwd.clone(),
+                module_file: self.context.module_file.clone(),
+            };
+        }
+        if let ExprKind::Path {
+            location,
+            relocation,
+            ..
+        } = &mut expression.kind
+        {
+            if let Some(path) = relocation.take() {
+                *location = bound_path(
+                    &path,
+                    &location.backend,
+                    self.main_module,
+                    self.context,
+                    self.instructions.last().copied(),
+                    self.obligations,
+                )
+                .map_err(|error| {
+                    if let Some(id) = self.instructions.last() {
+                        error.at(*id, self.origins)
+                    } else {
+                        error
+                    }
+                })?;
+            }
+            if let Some(id) = self.instructions.last() {
+                bind_endpoint(location, self.context, *id, self.obligations)
+                    .map_err(|error| error.at(*id, self.origins))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 fn bind_endpoint(
@@ -386,22 +448,6 @@ fn bind_endpoint(
         backend: location.backend.clone(),
     });
     Ok(())
-}
-
-fn instruction_paths(region: &Region) -> BTreeMap<InstructionId, usize> {
-    region
-        .instructions
-        .iter()
-        .enumerate()
-        .map(|(index, node)| (node.id, index))
-        .collect()
-}
-
-fn node_mut(region: &mut Region, index: usize) -> Result<&mut Instruction, ContextError> {
-    region
-        .instructions
-        .get_mut(index)
-        .ok_or_else(|| ContextError::new("invalid instruction index"))
 }
 
 fn bind_relocation(
@@ -630,6 +676,23 @@ fn bind_exports(
     context: &Context,
 ) -> Result<(), ContextError> {
     for export in exports {
+        let mut binder = ProgramBinder {
+            relocations: BTreeMap::new(),
+            main_module,
+            context,
+            origins: &Origins::default(),
+            obligations: &mut Vec::new(),
+            instructions: Vec::new(),
+        };
+        match &mut export.value {
+            ExportValue::Dynamic { expression } => {
+                crate::object::control::visit_expr(expression, &mut binder)?
+            }
+            ExportValue::Range { range } => {
+                crate::object::control::visit_range(range, &mut binder)?
+            }
+            _ => {}
+        }
         let ExportValue::Path {
             backend,
             path,
@@ -662,19 +725,33 @@ fn bind_exports(
 
 struct IdMaps {
     processes: BTreeMap<ProcessId, ProcessId>,
+    slots: BTreeMap<crate::hir::control::SlotId, crate::hir::control::SlotId>,
+    next_slot: usize,
 }
 
 impl IdMaps {
-    fn new(program: &hir::Program, base: usize) -> Result<Self, ContextError> {
-        let processes = program
-            .body
-            .instructions
-            .iter()
-            .filter_map(|node| match node.kind {
-                InstructionKind::Spawn { process, .. } => Some(process),
-                _ => None,
-            })
-            .collect::<BTreeSet<_>>()
+    fn new(
+        program: &hir::Program,
+        exports: &[Export],
+        base: usize,
+        slot_base: usize,
+    ) -> Result<Self, ContextError> {
+        let mut collector = IdentityCollector::default();
+        crate::object::control::read_region(&program.body, &mut collector)?;
+        // Exports contribute slot references, not module process definitions.
+        let processes = std::mem::take(&mut collector.processes);
+        for export in exports {
+            match &export.value {
+                ExportValue::Dynamic { expression } => {
+                    crate::object::control::read_expr(expression, &mut collector)?
+                }
+                ExportValue::Range { range } => {
+                    crate::object::control::read_range(range, &mut collector)?
+                }
+                _ => {}
+            }
+        }
+        let processes = processes
             .into_iter()
             .enumerate()
             .map(|(index, old)| {
@@ -683,7 +760,20 @@ impl IdMaps {
                     .ok_or_else(|| ContextError::new("process identity space is exhausted"))
             })
             .collect::<Result<_, _>>()?;
-        Ok(Self { processes })
+        let next_slot = slot_base
+            .checked_add(collector.slots.len())
+            .ok_or_else(|| ContextError::new("runtime slot identity space is exhausted"))?;
+        let slots = collector
+            .slots
+            .into_iter()
+            .enumerate()
+            .map(|(index, old)| (old, crate::hir::control::SlotId(slot_base + index)))
+            .collect();
+        Ok(Self {
+            processes,
+            slots,
+            next_slot,
+        })
     }
 
     fn process(&self, id: &mut ProcessId) -> Result<(), ContextError> {
@@ -699,27 +789,7 @@ impl IdMaps {
     }
 
     fn region(&self, region: &mut Region) -> Result<(), ContextError> {
-        for node in &mut region.instructions {
-            match &mut node.kind {
-                InstructionKind::Spawn { process, .. } => self.process(process)?,
-                InstructionKind::Transfer {
-                    source,
-                    destination,
-                } => {
-                    if let Input::Port { process, .. } = source {
-                        self.process(process)?;
-                    }
-                    if let Output::Stdin(process) = destination {
-                        self.process(process)?;
-                    }
-                }
-                InstructionKind::Await {
-                    process: Some(process),
-                } => self.process(process)?,
-                InstructionKind::Barrier { .. } | InstructionKind::Await { process: None } => {}
-            }
-        }
-        Ok(())
+        crate::object::control::visit_region(region, &mut IdMapper(self))
     }
 
     fn exports(&self, exports: &mut [Export]) -> Result<(), ContextError> {
@@ -727,6 +797,12 @@ impl IdMaps {
             match &mut export.value {
                 ExportValue::Process { process } | ExportValue::Port { process, .. } => {
                     self.process(process)?
+                }
+                ExportValue::Dynamic { expression } => {
+                    crate::object::control::visit_expr(expression, &mut IdMapper(self))?
+                }
+                ExportValue::Range { range } => {
+                    crate::object::control::visit_range(range, &mut IdMapper(self))?
                 }
                 _ => {}
             }
@@ -736,8 +812,23 @@ impl IdMaps {
 }
 
 fn collect_obligations(region: &Region, obligations: &mut Vec<Obligation>) {
-    for node in &region.instructions {
+    let mut nodes = Vec::new();
+    crate::object::control::region_nodes(region, &mut nodes);
+    for node in nodes {
         match &node.kind {
+            InstructionKind::Control(crate::hir::control::ControlInstruction::Spawn {
+                process,
+                executable,
+                ..
+            }) => {
+                if let crate::hir::control::ExprKind::Path { location, .. } = &executable.kind {
+                    obligations.push(Obligation::ProgramLaunch {
+                        instruction: node.id,
+                        process: *process,
+                        backend: location.backend.clone(),
+                    });
+                }
+            }
             InstructionKind::Transfer {
                 source,
                 destination,
@@ -768,5 +859,180 @@ fn collect_obligations(region: &Region, obligations: &mut Vec<Obligation>) {
             }
             _ => {}
         }
+    }
+}
+
+#[derive(Default)]
+struct IdentityCollector {
+    processes: BTreeSet<ProcessId>,
+    slots: BTreeSet<crate::hir::control::SlotId>,
+}
+
+fn control_slots(
+    control: &mut crate::hir::control::ControlInstruction,
+    mut visit: impl FnMut(&mut crate::hir::control::SlotId),
+) {
+    use crate::hir::control::ControlInstruction;
+    match control {
+        ControlInstruction::Let { slot, .. }
+        | ControlInstruction::Set { slot, .. }
+        | ControlInstruction::For { slot, .. } => visit(slot),
+        _ => {}
+    }
+}
+fn expr_slots(
+    expression: &mut crate::hir::control::Expr,
+    mut visit: impl FnMut(&mut crate::hir::control::SlotId),
+) {
+    use crate::hir::control::{ExprKind, RangeQuery};
+    match &mut expression.kind {
+        ExprKind::Slot(slot) | ExprKind::Let { slot, .. } => visit(slot),
+        ExprKind::RangeQuery {
+            query:
+                RangeQuery::Any { slot, .. }
+                | RangeQuery::All { slot, .. }
+                | RangeQuery::None { slot, .. }
+                | RangeQuery::Find { slot, .. },
+            ..
+        } => visit(slot),
+        _ => {}
+    }
+}
+fn range_slots(
+    range: &mut crate::hir::control::RangeExpr,
+    mut visit: impl FnMut(&mut crate::hir::control::SlotId),
+) {
+    use crate::hir::control::RangeStage;
+    for stage in &mut range.stages {
+        match stage {
+            RangeStage::Filter { slot, .. }
+            | RangeStage::Transform { slot, .. }
+            | RangeStage::TakeWhile { slot, .. }
+            | RangeStage::DropWhile { slot, .. } => visit(slot),
+            _ => {}
+        }
+    }
+}
+impl<'ir> crate::object::control::ReadVisitor<'ir> for IdentityCollector {
+    type Error = ContextError;
+    fn instruction(&mut self, node: &'ir Instruction) -> Result<(), ContextError> {
+        if let InstructionKind::Spawn { process, .. }
+        | InstructionKind::Control(crate::hir::control::ControlInstruction::Spawn {
+            process,
+            ..
+        }) = &node.kind
+        {
+            self.processes.insert(*process);
+        }
+        Ok(())
+    }
+    fn control(
+        &mut self,
+        control: &'ir crate::hir::control::ControlInstruction,
+    ) -> Result<(), ContextError> {
+        use crate::hir::control::ControlInstruction;
+        if let ControlInstruction::Let { slot, .. }
+        | ControlInstruction::Set { slot, .. }
+        | ControlInstruction::For { slot, .. } = control
+        {
+            self.slots.insert(*slot);
+        }
+        Ok(())
+    }
+    fn expression(
+        &mut self,
+        expression: &'ir crate::hir::control::Expr,
+    ) -> Result<(), ContextError> {
+        use crate::hir::control::{ExprKind, RangeQuery};
+        match &expression.kind {
+            ExprKind::Slot(slot)
+            | ExprKind::Let { slot, .. }
+            | ExprKind::RangeQuery {
+                query:
+                    RangeQuery::Any { slot, .. }
+                    | RangeQuery::All { slot, .. }
+                    | RangeQuery::None { slot, .. }
+                    | RangeQuery::Find { slot, .. },
+                ..
+            } => {
+                self.slots.insert(*slot);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    fn range(&mut self, range: &'ir crate::hir::control::RangeExpr) -> Result<(), ContextError> {
+        use crate::hir::control::RangeStage;
+        for stage in &range.stages {
+            match stage {
+                RangeStage::Filter { slot, .. }
+                | RangeStage::Transform { slot, .. }
+                | RangeStage::TakeWhile { slot, .. }
+                | RangeStage::DropWhile { slot, .. } => {
+                    self.slots.insert(*slot);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+struct IdMapper<'a>(&'a IdMaps);
+impl crate::object::control::Visitor for IdMapper<'_> {
+    type Error = ContextError;
+    fn instruction(&mut self, node: &mut Instruction) -> Result<(), ContextError> {
+        match &mut node.kind {
+            InstructionKind::Spawn { process, .. }
+            | InstructionKind::Control(crate::hir::control::ControlInstruction::Spawn {
+                process,
+                ..
+            })
+            | InstructionKind::Await {
+                process: Some(process),
+            } => self.0.process(process)?,
+            InstructionKind::Transfer {
+                source,
+                destination,
+            } => {
+                if let Input::Port { process, .. } = source {
+                    self.0.process(process)?;
+                }
+                if let Output::Stdin(process) = destination {
+                    self.0.process(process)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    fn control(
+        &mut self,
+        control: &mut crate::hir::control::ControlInstruction,
+    ) -> Result<(), ContextError> {
+        control_slots(control, |slot| *slot = self.0.slots[slot]);
+        if let crate::hir::control::ControlInstruction::Transfer {
+            source,
+            destination,
+        } = control
+        {
+            if let crate::hir::control::TransferInput::Port { process, .. } = source {
+                self.0.process(process)?;
+            }
+            if let crate::hir::control::TransferOutput::Stdin(process) = destination {
+                self.0.process(process)?;
+            }
+        }
+        Ok(())
+    }
+    fn expression(
+        &mut self,
+        expression: &mut crate::hir::control::Expr,
+    ) -> Result<(), ContextError> {
+        expr_slots(expression, |slot| *slot = self.0.slots[slot]);
+        Ok(())
+    }
+    fn range(&mut self, range: &mut crate::hir::control::RangeExpr) -> Result<(), ContextError> {
+        range_slots(range, |slot| *slot = self.0.slots[slot]);
+        Ok(())
     }
 }

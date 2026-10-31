@@ -1,5 +1,6 @@
 //! Versioned, untrusted relocatable modules. No host observations are encoded.
 
+pub(crate) mod control;
 mod debug;
 mod tables;
 mod validate;
@@ -20,6 +21,7 @@ pub use debug::{DebugInfo, DebugOrigin, DebugSite, DebugSource, ExportSite};
 pub const MAGIC: &[u8] = b"MSYNC-OBJECT\n";
 pub const FORMAT_VERSION: u32 = 2;
 pub const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
+pub const CONTROL_FEATURE: &str = "typed_control_v1";
 pub const SOURCE_MODULES_FEATURE: &str = "source_modules_v1";
 
 pub const FEATURES: &[&str] = &[
@@ -160,6 +162,18 @@ impl ObjectModule {
         main_module: String,
     ) -> Result<Self, ObjectError> {
         validate::clear_relocated_fields(&mut program, &relocations)?;
+        control::visit_region(&mut program.body, &mut control::ClearInlinePaths)?;
+        for export in &mut exports {
+            match &mut export.value {
+                crate::relocatable::ExportValue::Dynamic { expression } => {
+                    control::visit_expr(expression, &mut control::ClearInlinePaths)?
+                }
+                crate::relocatable::ExportValue::Range { range } => {
+                    control::visit_range(range, &mut control::ClearInlinePaths)?
+                }
+                _ => {}
+            }
+        }
         for export in &mut exports {
             if let crate::relocatable::ExportValue::Path {
                 path,
@@ -193,6 +207,21 @@ impl ObjectModule {
             constraints: Vec::new(),
             debug,
         };
+        if nodes(&module.program)
+            .iter()
+            .any(|node| matches!(node.kind, hir::InstructionKind::Control(_)))
+            || module.exports.iter().any(|export| {
+                matches!(
+                    export.value,
+                    crate::relocatable::ExportValue::Bool { .. }
+                        | crate::relocatable::ExportValue::Dynamic { .. }
+                        | crate::relocatable::ExportValue::Range { .. }
+                )
+            })
+        {
+            module.language_version = "0.6".into();
+            module.features.push(CONTROL_FEATURE.into());
+        }
         module
             .relocations
             .sort_by_key(|relocation| (relocation.instruction, relocation.slot));
@@ -213,12 +242,28 @@ impl ObjectModule {
         for relocation in &self.relocations {
             source_module_dependency(&relocation.path, &mut needed);
         }
+        let mut paths = control::InlinePaths { paths: Vec::new() };
+        control::read_region(&self.program.body, &mut paths)?;
         for export in &self.exports {
+            match &export.value {
+                crate::relocatable::ExportValue::Dynamic { expression } => {
+                    control::read_expr(expression, &mut paths)?
+                }
+                crate::relocatable::ExportValue::Range { range } => {
+                    control::read_range(range, &mut paths)?
+                }
+                _ => {}
+            }
             if let crate::relocatable::ExportValue::Path {
                 relocation: Some(path),
                 ..
             } = &export.value
             {
+                source_module_dependency(path, &mut needed);
+            }
+        }
+        for (_, path) in paths.paths {
+            if let Some(path) = path {
                 source_module_dependency(path, &mut needed);
             }
         }
@@ -284,7 +329,9 @@ impl ObjectModule {
 }
 
 pub(crate) fn nodes(program: &hir::Program) -> Vec<&hir::Instruction> {
-    program.body.instructions.iter().collect()
+    let mut nodes = Vec::new();
+    control::region_nodes(&program.body, &mut nodes);
+    nodes
 }
 
 fn source_module_dependency(

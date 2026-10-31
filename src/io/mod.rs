@@ -42,10 +42,17 @@ pub struct KernelProgress {
 #[cfg(windows)]
 pub const MIN_TRANSMIT_FILE_BYTES: u64 = 1024 * 1024;
 
+// Measured setup costs dominate smaller warm flows; see io-linux-v3.md's
+// v0.6 paired crossover. The explicit low-level capability remains unconditional.
+#[cfg(target_os = "linux")]
+pub(crate) const MIN_SENDFILE_BYTES: u64 = 128 * 1024;
+
 pub(crate) fn prefer_kernel_file_to_tcp(source: &File, offset: u64) -> io::Result<bool> {
     #[cfg(windows)]
     return Ok(source.metadata()?.len().saturating_sub(offset) >= MIN_TRANSMIT_FILE_BYTES);
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
+    return Ok(source.metadata()?.len().saturating_sub(offset) >= MIN_SENDFILE_BYTES);
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = (source, offset);
         Ok(true)
@@ -691,6 +698,60 @@ impl Drop for StagedFile {
                 ),
                 Err(error) => context.io_error("stage.cleanup", error),
             }
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod dispatch_tests {
+    use super::*;
+    use std::io::{Seek, SeekFrom};
+
+    fn fixture() -> tempfile::TempDir {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp/io-dispatch-tests");
+        fs::create_dir_all(&root).unwrap();
+        tempfile::tempdir_in(root).unwrap()
+    }
+
+    #[test]
+    fn linux_kernel_dispatch_starts_at_the_measured_size_boundary() {
+        let fixture = fixture();
+        let file = File::create(fixture.path().join("source")).unwrap();
+        for size in [
+            0,
+            1,
+            MIN_SENDFILE_BYTES - 1,
+            MIN_SENDFILE_BYTES,
+            MIN_SENDFILE_BYTES + 1,
+        ] {
+            file.set_len(size).unwrap();
+            assert_eq!(
+                prefer_kernel_file_to_tcp(&file, 0).unwrap(),
+                size >= MIN_SENDFILE_BYTES
+            );
+        }
+    }
+
+    #[test]
+    fn linux_kernel_dispatch_uses_remaining_bytes_without_moving_the_cursor() {
+        let fixture = fixture();
+        let mut file = File::create(fixture.path().join("source")).unwrap();
+        let size = MIN_SENDFILE_BYTES * 2;
+        file.set_len(size).unwrap();
+        file.seek(SeekFrom::Start(17)).unwrap();
+        for offset in [
+            0,
+            1,
+            MIN_SENDFILE_BYTES,
+            MIN_SENDFILE_BYTES + 1,
+            size,
+            u64::MAX,
+        ] {
+            assert_eq!(
+                prefer_kernel_file_to_tcp(&file, offset).unwrap(),
+                size.saturating_sub(offset) >= MIN_SENDFILE_BYTES,
+            );
+            assert_eq!(file.stream_position().unwrap(), 17);
         }
     }
 }

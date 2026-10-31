@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use msync::execution::WorkId;
-use msync::hir::{Input, InstructionId, InstructionKind, Output, ProcessId};
+use msync::hir::control::{ControlInstruction, TransferInput, TransferOutput};
+use msync::hir::{Input, Instruction, InstructionId, InstructionKind, Output, ProcessId};
 
 use super::unit::ExecutionUnit;
 
@@ -20,27 +21,89 @@ struct Work {
 }
 
 impl Work {
-    fn new(id: WorkId, source: &Arc<ExecutionUnit>) -> Self {
-        let node = source
-            .program
-            .body
+    fn new(
+        id: WorkId,
+        source: &Arc<ExecutionUnit>,
+        index: &Index<'_>,
+        runtime: &RuntimeSources,
+    ) -> Self {
+        let node = runtime
             .instructions
-            .iter()
-            .find(|node| match id {
-                WorkId::Program(process) => {
-                    matches!(node.kind, InstructionKind::Spawn { process: id, .. } if id == process)
-                }
-                WorkId::Flow { instruction, .. } => node.id == instruction,
+            .get(&id)
+            .and_then(|id| index.instructions.get(id).copied())
+            .or_else(|| match id {
+                WorkId::Program(process) => index.launches.get(&process).copied(),
+                WorkId::Flow { instruction, .. } => index.instructions.get(&instruction).copied(),
             });
+        let programs = match id {
+            WorkId::Program(process) => [process].into(),
+            WorkId::Flow { .. } => runtime
+                .programs
+                .get(&id)
+                .map(|processes| processes.iter().copied().collect())
+                .unwrap_or_else(|| node.map_or_else(BTreeSet::new, |node| programs(&node.kind))),
+        };
         Self {
             source: Arc::clone(source),
             instruction: node.map(|node| node.id),
-            programs: node.map_or_else(BTreeSet::new, |node| programs(&node.kind)),
+            programs,
+        }
+    }
+}
+
+#[derive(Default)]
+pub(super) struct RuntimeSources {
+    pub instructions: BTreeMap<WorkId, InstructionId>,
+    pub programs: BTreeMap<WorkId, Vec<ProcessId>>,
+}
+
+struct Index<'ir> {
+    instructions: BTreeMap<InstructionId, &'ir Instruction>,
+    launches: BTreeMap<ProcessId, &'ir Instruction>,
+}
+
+impl<'ir> Index<'ir> {
+    fn new(source: &'ir ExecutionUnit) -> Self {
+        let nodes = msync::hir::walk::instructions(&source.program.body);
+        let instructions = nodes.iter().map(|node| (node.id, *node)).collect();
+        let launches = nodes
+            .into_iter()
+            .filter_map(|node| match &node.kind {
+                InstructionKind::Spawn { process, .. }
+                | InstructionKind::Control(ControlInstruction::Spawn { process, .. }) => {
+                    Some((*process, node))
+                }
+                _ => None,
+            })
+            .collect();
+        Self {
+            instructions,
+            launches,
         }
     }
 }
 
 fn programs(instruction: &InstructionKind) -> BTreeSet<ProcessId> {
+    if let InstructionKind::Control(control) = instruction {
+        return match control {
+            ControlInstruction::Spawn { process, .. } => [*process].into(),
+            ControlInstruction::Transfer {
+                source,
+                destination,
+            } => {
+                let source = match source {
+                    TransferInput::Port { process, .. } => Some(*process),
+                    _ => None,
+                };
+                let target = match destination {
+                    TransferOutput::Stdin(process) => Some(*process),
+                    _ => None,
+                };
+                source.into_iter().chain(target).collect()
+            }
+            _ => BTreeSet::new(),
+        };
+    }
     let (source, target) = match instruction {
         InstructionKind::Spawn { process, .. } => return [*process].into(),
         InstructionKind::Transfer {
@@ -86,18 +149,30 @@ pub(super) struct Admission {
     pub merged: Vec<u64>,
 }
 
-pub(super) fn register(
+#[cfg(test)]
+fn register(
     jobs: &mut Vec<Job>,
     next_job: &mut u64,
     added: BTreeSet<WorkId>,
     source: &Arc<ExecutionUnit>,
 ) -> Admission {
+    register_with_sources(jobs, next_job, added, source, &RuntimeSources::default())
+}
+
+pub(super) fn register_with_sources(
+    jobs: &mut Vec<Job>,
+    next_job: &mut u64,
+    added: BTreeSet<WorkId>,
+    source: &Arc<ExecutionUnit>,
+    runtime: &RuntimeSources,
+) -> Admission {
     assert!(!added.is_empty(), "a logical job must own admitted work");
+    let index = Index::new(source);
     let mut joined = Job {
         id: u64::MAX,
         work: added
             .into_iter()
-            .map(|id| (id, Work::new(id, source)))
+            .map(|id| (id, Work::new(id, source, &index, runtime)))
             .collect(),
     };
     let mut merged = Vec::new();
@@ -301,5 +376,66 @@ mod tests {
         assert_eq!(admission.id, 2);
         assert!(admission.created);
         assert_eq!(jobs.len(), 2);
+    }
+
+    #[test]
+    fn runtime_loop_identities_keep_source_nodes_without_aliasing_other_iterations() {
+        let mut compiler = Session::new();
+        let source = compile(
+            &mut compiler,
+            "loop.msync",
+            "for arg in ranges::of(\"--version\"):\n    release child => $path::msync(arg)\n    release child::stdout -> output\n",
+        );
+        let nodes = msync::hir::walk::instructions(&source.program.body);
+        let launch = nodes
+            .iter()
+            .find(|node| {
+                matches!(
+                    node.kind,
+                    InstructionKind::Control(ControlInstruction::Spawn { .. })
+                )
+            })
+            .unwrap()
+            .id;
+        let transfer = nodes
+            .iter()
+            .find(|node| {
+                matches!(
+                    node.kind,
+                    InstructionKind::Transfer { .. }
+                        | InstructionKind::Control(ControlInstruction::Transfer { .. })
+                )
+            })
+            .unwrap()
+            .id;
+        let first = WorkId::Program(ProcessId(usize::MAX));
+        let second = WorkId::Program(ProcessId(usize::MAX - 1));
+        let wire = WorkId::Flow {
+            submission: 1,
+            instruction: transfer,
+        };
+        let runtime = RuntimeSources {
+            instructions: [(first, launch), (second, launch), (wire, transfer)].into(),
+            programs: [(wire, vec![ProcessId(usize::MAX)])].into(),
+        };
+        let mut jobs = Vec::new();
+        let mut next = 0;
+        register_with_sources(&mut jobs, &mut next, [first].into(), &source, &runtime);
+        register_with_sources(&mut jobs, &mut next, [second].into(), &source, &runtime);
+        assert_eq!(
+            jobs.len(),
+            2,
+            "different iterations are not connected by a template ID"
+        );
+        let admission =
+            register_with_sources(&mut jobs, &mut next, [wire].into(), &source, &runtime);
+        assert_eq!(admission.id, 1);
+        assert!(!admission.created);
+        assert_eq!(jobs[0].work[&first].instruction, Some(launch));
+        assert_eq!(jobs[0].work[&wire].instruction, Some(transfer));
+        assert!(std::ptr::eq(
+            super::source(&jobs, Some(launch)).unwrap(),
+            source.as_ref()
+        ));
     }
 }

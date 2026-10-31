@@ -10,6 +10,7 @@ mod structured;
 #[cfg(any(windows, test))]
 mod windows_askpass;
 
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
@@ -37,6 +38,9 @@ USAGE
   msync plan-ir IR                Preview reusable IR without executing
   msync run-ir IR [--dry-run]      Execute expanded IR or legacy 0.4 artifacts
   msync doctor                   Inspect optional transports without launching them
+  msync config                   Show effective settings and their source
+  msync telemetry COMMAND DB     Query/export a telemetry database without writing it
+  msync --language-server        Serve editor tooling over the LSP stdio protocol
 
 OPTIONS
   -n, --dry-run       Validate and preview without writing files
@@ -51,8 +55,12 @@ OPTIONS
   --check            Check formatting without modifying the file (fmt only)
   --stdout           Explicit formatting preview, never writes the file (fmt only)
   --color auto|always|never   Color policy (default: auto; honors NO_COLOR)
-  --syntax 0.5       Select grammar; must agree with '# msync: VERSION'
+  --syntax 0.6       Select grammar; must agree with '# msync: VERSION'
   --trace FILE        Write private, local JSONL telemetry ('-' = stderr)
+  --telemetry-db FILE  Record end-to-end telemetry in SQLite
+  --no-telemetry       Disable configured telemetry
+  --config FILE       Load an explicit TOML configuration file
+  --no-config         Use defaults and explicit options without a config file
   -h, --help          Show this help
   -V, --version       Show version
 
@@ -69,15 +77,23 @@ SOURCE COMPOSITION
   include \"shared.msync\"         Inline source in this lexical environment
   execute tasks/<.+\\.msync>      Inline sorted scripts with isolated environments
 
+TYPED CONTROL
+  ready = exists \"input.txt\"
+  if ready:
+      input.txt -> output.txt
+  for file in inputs/<.+> | views::take(1):
+      file -> selected/
+  delete \"obsolete.txt\"
+
 PROGRAMS
   release Program => $path::bash(\"-c\", \"ls\")
   Program::stdout -> stdout.txt
   acquire Program
 
 REPL: /help or /? for commands. No arguments starts the REPL.
-Syntax 0.5 is the only supported CLI grammar; migrate earlier scripts explicitly.
+Syntax 0.6 is the default CLI grammar; 0.5 remains a compatibility alias.
 An optional '# msync: VERSION' header makes the grammar explicit.
-In syntax 0.5 every bare quoted value is literal UTF-8 data, never an implicit file.
+In syntax 0.6 every bare quoted value is literal UTF-8 data, never an implicit file.
 Use $pwd::pwd / \"file name\" or $local::\"file name\" for paths containing spaces.
 Use $pwd::pwd/file for working-directory paths; $file::this and $file::parent identify the source script.
 Pipes and sockets end independently; Ctrl-C cancels active streams.
@@ -106,7 +122,7 @@ const REPL_HELP: &str = "REPL commands
   /export-relocatable FILE Export the last transfer with symbolic context roots
   /load-ir FILE            Execute reusable IR in the current session
   /limits                  Show execution, buffer and output-spool limits
-  /syntax [0.5]             Show or select the supported grammar
+  /syntax [0.6|0.5]         Show or select the supported grammar
   /jobs                    Show background jobs and their identifiers
   /wait                    Wait for active streams and external programs
   /stop                    Stop streams; drain already-started external programs
@@ -191,6 +207,14 @@ struct Args {
     syntax: Option<Version>,
     ir_stage: Option<String>,
     source_file: Option<String>,
+    config: Option<String>,
+    no_config: bool,
+    telemetry_db: Option<String>,
+    no_telemetry: bool,
+    explicit: BTreeSet<&'static str>,
+    settings: msync::config::Settings,
+    invocation_started: Option<std::time::Instant>,
+    argument_ns: u64,
 }
 
 fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -225,10 +249,12 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
                 options.source_file = Some(args.next().ok_or("--source-file requires a filename")?)
             }
             "--jobs" => {
+                options.explicit.insert("execution.jobs");
                 options.limits.jobs =
                     positive(&args.next().ok_or("--jobs requires a positive integer")?)?
             }
             "--max-streams" => {
+                options.explicit.insert("execution.max_streams");
                 options.limits.max_streams = positive(
                     &args
                         .next()
@@ -236,6 +262,7 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
                 )?
             }
             "--buffer-size" => {
+                options.explicit.insert("execution.buffer_size");
                 options.limits.buffer_bytes = byte_size(
                     &args
                         .next()
@@ -243,6 +270,7 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
                 )?
             }
             "--memory-limit" => {
+                options.explicit.insert("execution.memory_limit");
                 options.limits.memory_bytes = byte_size(
                     &args
                         .next()
@@ -250,6 +278,7 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
                 )?
             }
             "--spool-limit" => {
+                options.explicit.insert("execution.spool_limit");
                 options.spool_limit = Some(byte_count(
                     &args
                         .next()
@@ -257,6 +286,7 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
                 )?);
             }
             "--color" => {
+                options.explicit.insert("ui.color");
                 options.color = match args.next().as_deref() {
                     Some("auto") => Color::Auto,
                     Some("always") => Color::Always,
@@ -267,10 +297,26 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--trace" => {
                 options.trace = Some(args.next().ok_or("--trace requires a filename or '-'")?);
             }
+            "--config" => {
+                if options
+                    .config
+                    .replace(args.next().ok_or("--config requires a filename")?)
+                    .is_some()
+                {
+                    return Err("--config may be specified only once".into());
+                }
+            }
+            "--no-config" => options.no_config = true,
+            "--telemetry-db" => {
+                options.telemetry_db =
+                    Some(args.next().ok_or("--telemetry-db requires a filename")?);
+            }
+            "--no-telemetry" => options.no_telemetry = true,
             "--syntax" => {
+                options.explicit.insert("language.syntax");
                 options.syntax = Some(
                     args.next()
-                        .ok_or("--syntax requires 0.5")?
+                        .ok_or("--syntax requires 0.6 (or compatible 0.5)")?
                         .parse::<Version>()
                         .map_err(str::to_owned)?,
                 );
@@ -294,6 +340,10 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
                         "--trace",
                         "--syntax",
                         "--output",
+                        "--config",
+                        "--no-config",
+                        "--telemetry-db",
+                        "--no-telemetry",
                     ],
                 )
                 .map_or_else(
@@ -331,7 +381,17 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
         return Err("--stdout cannot be combined with --write or --check".into());
     }
     artifact_cli::validate_options(&options)?;
-    options.limits.validate()?;
+    if options.config.is_some() && options.no_config {
+        return Err("--config and --no-config are mutually exclusive".into());
+    }
+    if options.trace.is_some() && options.telemetry_db.is_some() {
+        return Err("--trace and --telemetry-db select different exporters; choose one".into());
+    }
+    if options.no_telemetry && (options.trace.is_some() || options.telemetry_db.is_some()) {
+        return Err(
+            "--no-telemetry cannot be combined with an explicit telemetry destination".into(),
+        );
+    }
     Ok(options)
 }
 
@@ -350,6 +410,7 @@ fn add_positional(options: &mut Args, arg: String) -> Result<(), String> {
                 | "bind-ir"
                 | "plan-ir"
                 | "run-ir"
+                | "config"
         ) {
             options.command = arg;
             return Ok(());
@@ -367,11 +428,24 @@ fn main() -> ExitCode {
     if let Some(status) = windows_askpass::handle() {
         return status;
     }
+    let started = std::time::Instant::now();
     let args: Vec<_> = env::args().skip(1).collect();
     let color = requested_color(&args);
-    let result = arguments(args.into_iter())
-        .map_err(CliError::argument)
-        .and_then(run);
+    let result = match args.first().map(String::as_str) {
+        Some("lsp" | "--language-server") => {
+            msync::language_server::run_stdio().map_err(CliError::from)
+        }
+        Some("telemetry") => msync::telemetry::query::run(&args[1..], &mut io::stdout().lock())
+            .map_err(CliError::from),
+        _ => arguments(args.into_iter())
+            .map_err(CliError::argument)
+            .map(|mut options| {
+                options.invocation_started = Some(started);
+                options.argument_ns = nanos(started.elapsed());
+                options
+            })
+            .and_then(run),
+    };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
@@ -383,23 +457,156 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(options: Args) -> CliResult {
+fn apply_configuration(options: &mut Args) -> CliResult<msync::config::Loaded> {
+    use msync::config::{Color as SettingColor, TelemetryBackend};
+    let mut loaded =
+        msync::config::Loaded::load(options.config.as_deref().map(Path::new), options.no_config)
+            .map_err(|error| CliError::Presented(error.render(options.color.stderr())))?;
+    for key in &options.explicit {
+        match *key {
+            "execution.jobs" => loaded.settings.execution.limits.jobs = options.limits.jobs,
+            "execution.max_streams" => {
+                loaded.settings.execution.limits.max_streams = options.limits.max_streams
+            }
+            "execution.buffer_size" => {
+                loaded.settings.execution.limits.buffer_bytes = options.limits.buffer_bytes
+            }
+            "execution.memory_limit" => {
+                loaded.settings.execution.limits.memory_bytes = options.limits.memory_bytes
+            }
+            "execution.spool_limit" => loaded.settings.execution.spool_limit = options.spool_limit,
+            "ui.color" => {
+                loaded.settings.color = match options.color {
+                    Color::Auto => SettingColor::Auto,
+                    Color::Always => SettingColor::Always,
+                    Color::Never => SettingColor::Never,
+                }
+            }
+            "language.syntax" => {
+                loaded.settings.syntax = options.syntax.expect("explicit syntax").to_string()
+            }
+            _ => unreachable!("explicit configuration key"),
+        }
+        loaded.mark_cli(key);
+    }
     if let Some(path) = &options.trace {
-        msync::telemetry::init(path).map_err(|cause| {
+        loaded.settings.telemetry.enabled = true;
+        loaded.settings.telemetry.backend = TelemetryBackend::Jsonl;
+        loaded.settings.telemetry.path = Some(path.into());
+        for key in ["telemetry.enabled", "telemetry.backend", "telemetry.path"] {
+            loaded.mark_cli(key);
+        }
+    }
+    if let Some(path) = &options.telemetry_db {
+        loaded.settings.telemetry.enabled = true;
+        loaded.settings.telemetry.backend = TelemetryBackend::Sqlite;
+        loaded.settings.telemetry.path = Some(std::path::absolute(path).map_err(|cause| {
+            CliError::io(IoAction::WorkingDirectory, Some(Path::new(path)), cause)
+        })?);
+        for key in ["telemetry.enabled", "telemetry.backend", "telemetry.path"] {
+            loaded.mark_cli(key);
+        }
+    }
+    if options.no_telemetry {
+        loaded.settings.telemetry.enabled = false;
+        loaded.mark_cli("telemetry.enabled");
+    }
+    loaded
+        .validate()
+        .map_err(|error| CliError::Presented(error.render(options.color.stderr())))?;
+    options.limits = loaded.settings.execution.limits.clone();
+    options.spool_limit = loaded.settings.execution.spool_limit;
+    options.color = match loaded.settings.color {
+        SettingColor::Auto => Color::Auto,
+        SettingColor::Always => Color::Always,
+        SettingColor::Never => Color::Never,
+    };
+    options.syntax = Some(
+        loaded
+            .settings
+            .syntax
+            .parse()
+            .expect("validated configured syntax"),
+    );
+    options.settings = loaded.settings.clone();
+    Ok(loaded)
+}
+
+fn run(mut options: Args) -> CliResult {
+    if matches!(options.command.as_str(), "help" | "version") {
+        return dispatch(&options);
+    }
+    let configured = std::time::Instant::now();
+    let loaded = apply_configuration(&mut options)?;
+    let config_ns = nanos(configured.elapsed());
+    if options.command == "config" {
+        if options.file.is_some() {
+            return Err(CliError::argument(
+                "config does not take an input file".into(),
+            ));
+        }
+        return print_text(&loaded.render());
+    }
+    let exporter_started = std::time::Instant::now();
+    let telemetry = &options.settings.telemetry;
+    let sampled_out = telemetry.backend == msync::config::TelemetryBackend::Sqlite
+        && telemetry.sample_per_million == 0;
+    if telemetry.enabled && !sampled_out {
+        let settings = &options.settings.telemetry;
+        let default_name = match settings.backend {
+            msync::config::TelemetryBackend::Sqlite => "telemetry.sqlite",
+            msync::config::TelemetryBackend::Jsonl => "telemetry.jsonl",
+        };
+        let path = settings.path.clone().or_else(|| options.settings.execution.state_dir.as_ref().map(|root| root.join(default_name)))
+            .ok_or_else(|| Issue::new("cannot determine telemetry destination").help("Set telemetry.path or --telemetry-db explicitly when no home/state directory is available."))?;
+        if settings.path.is_none()
+            && let Some(parent) = path.parent()
+        {
+            fs::create_dir_all(parent).map_err(|cause| {
+                Issue::new("cannot create the conventional telemetry directory")
+                    .field("path", parent.to_string_lossy())
+                    .field("cause", cause.to_string())
+                    .help("Choose --telemetry-db in a writable directory, or use --no-telemetry.")
+            })?;
+        }
+        let initialized = match settings.backend {
+            msync::config::TelemetryBackend::Jsonl => {
+                let path = path.to_str().ok_or_else(|| {
+                    Issue::new("JSONL telemetry path must be UTF-8")
+                        .field("path", path.to_string_lossy())
+                })?;
+                options.trace = Some(path.into());
+                msync::telemetry::init(path)
+            }
+            msync::config::TelemetryBackend::Sqlite => {
+                msync::telemetry::init_sqlite(&path, settings.sqlite_options())
+            }
+        };
+        initialized.map_err(|cause| {
             Issue::new("cannot initialize telemetry")
-            .field("path", path)
+            .field("path", path.to_string_lossy())
             .field("cause", cause)
-            .help("Choose a writable trace file or use --trace - to write JSONL to standard error.")
+            .help("Choose a writable telemetry destination or use --no-telemetry; --trace - writes JSONL to standard error.")
         })?;
     }
     let mut trace = msync::telemetry::span("session");
+    trace.metric("startup.arguments_ns", options.argument_ns);
+    trace.metric("startup.configuration_ns", config_ns);
+    trace.metric("startup.exporter_ns", nanos(exporter_started.elapsed()));
+    if let Some(started) = options.invocation_started {
+        trace.metric("startup.pre_dispatch_ns", nanos(started.elapsed()));
+    }
     let result = dispatch(&options);
-    if result.is_err() {
-        trace.error();
+    if let Err(error) = &result {
+        if error.is_cancelled() {
+            trace.cancelled();
+        } else {
+            trace.error();
+        }
     }
     drop(trace);
-    let flushed = msync::telemetry::flush().map_err(|cause| CliError::from(Issue::new("cannot finish telemetry export")
-        .field("path", options.trace.as_deref().unwrap_or("active trace sink"))
+    let flushed = msync::telemetry::shutdown().map_err(|cause| CliError::from(Issue::new("cannot finish telemetry export")
+        .field("path", options.settings.telemetry.path.as_ref().map_or_else(|| "active trace sink".into(), |path| path.to_string_lossy().into_owned()))
         .field("cause", cause)
         .help("Check the trace destination and available disk space; completed file transfers are not rolled back.")));
     match (result, flushed) {
@@ -411,6 +618,10 @@ fn run(options: Args) -> CliResult {
         (Err(error), _) => Err(error),
         (Ok(()), outcome) => outcome,
     }
+}
+
+fn nanos(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 fn dispatch(options: &Args) -> CliResult {
@@ -518,26 +729,7 @@ fn byte_size(value: &str) -> Result<usize, String> {
 }
 
 fn byte_count(value: &str) -> Result<u64, String> {
-    let end = value
-        .find(|ch: char| !ch.is_ascii_digit())
-        .unwrap_or(value.len());
-    let number = value[..end]
-        .parse::<u64>()
-        .map_err(|_| format!("'{value}' is not a nonnegative byte budget; try --help"))?;
-    let scale = match value[end..].to_ascii_lowercase().as_str() {
-        "" | "b" => 1,
-        "k" | "kb" | "kib" => 1024,
-        "m" | "mb" | "mib" => 1024 * 1024,
-        "g" | "gb" | "gib" => 1024 * 1024 * 1024,
-        _ => {
-            return Err(format!(
-                "invalid byte unit in '{value}'; use bytes, KiB, MiB or GiB"
-            ));
-        }
-    };
-    number
-        .checked_mul(scale)
-        .ok_or_else(|| "byte budget is too large".into())
+    msync::config::parse_bytes(value)
 }
 
 fn source_text(file: &str, bytes: Vec<u8>) -> CliResult<String> {

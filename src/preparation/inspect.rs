@@ -52,6 +52,15 @@ impl Observations {
         }
     }
 
+    pub(super) fn record_metrics(&self, span: &mut crate::telemetry::SpanGuard) {
+        span.metric("locations", self.classes.len() as u64);
+        span.metric("verified", self.verified.len() as u64);
+        span.metric("native.leaf_probes", self.native.leaf_probes);
+        span.metric("native.ancestor_probes", self.native.ancestor_probes);
+        span.metric("native.ancestor_hits", self.native.ancestor_hits);
+        self.host.record_metrics(span);
+    }
+
     fn resolve(
         &mut self,
         location: &mut Location,
@@ -406,7 +415,9 @@ pub(super) fn resolve_region(
                     observations.host.defer_write(location.clone());
                 }
             }
-            InstructionKind::Spawn { .. } => observations.host.unknown(),
+            InstructionKind::Spawn { .. } | InstructionKind::Control(_) => {
+                observations.host.unknown()
+            }
             _ => {}
         }
     }

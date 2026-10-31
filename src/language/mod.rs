@@ -10,7 +10,7 @@ mod writer;
 
 use crate::syntax::{OperandSource, Span};
 
-pub use parser::parse;
+pub use parser::{parse, parse_recovering};
 pub use submission::{Submission, SubmissionBuffer};
 pub use version::{Version, select_version};
 pub use writer::format;
@@ -61,6 +61,27 @@ pub enum StatementKind {
         parameters: Vec<Name>,
         body: Block,
     },
+    Boolean {
+        name: Name,
+        parameters: Vec<Name>,
+        body: Block,
+    },
+    Delete(Expr),
+    Drop(Vec<Name>),
+    If {
+        condition: Expr,
+        then_body: Block,
+        else_body: Block,
+    },
+    For {
+        name: Name,
+        range: Expr,
+        body: Block,
+    },
+    Loop {
+        body: Block,
+    },
+    Break(Option<Expr>),
     Return(Expr),
     Execute(Expr),
     Include(Expr),
@@ -84,6 +105,7 @@ pub enum StatementKind {
 pub enum BindingOp {
     Space,
     Value,
+    Assign,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,6 +120,18 @@ pub struct Expr {
 pub enum ExprKind {
     Path(PathExpr),
     Literal(String),
+    Bool(bool),
+    Not(Box<Expr>),
+    Exists(Box<Expr>),
+    Binary {
+        left: Box<Expr>,
+        op: BinaryOp,
+        right: Box<Expr>,
+        operator: Span,
+    },
+    Loop {
+        body: Block,
+    },
     Call {
         callee: Box<Expr>,
         arguments: Vec<Expr>,
@@ -113,6 +147,19 @@ pub enum ExprKind {
         operator: Span,
         mode: DestinationMode,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinaryOp {
+    And,
+    Or,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Pipe,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -1,6 +1,6 @@
 //! Canonical output changes spelling and indentation, never endpoint ownership.
 
-use super::{BindingOp, Block, Document, Expr, ExprKind, StatementKind};
+use super::{BinaryOp, BindingOp, Block, Document, Expr, ExprKind, StatementKind};
 use crate::syntax::Report;
 
 /// Canonicalize a structured script without resolving bindings or executing it.
@@ -29,16 +29,20 @@ fn write_statement(output: &mut String, kind: &StatementKind, depth: usize) {
             output.push_str(match op {
                 BindingOp::Space => " => ",
                 BindingOp::Value => " := ",
+                BindingOp::Assign => " = ",
             });
-            expression(output, value);
+            expression(output, value, depth);
+            if matches!(value.kind, ExprKind::Loop { .. }) {
+                return;
+            }
         }
         StatementKind::Transfer {
             source,
             destination,
         } => {
-            expression(output, source);
+            expression(output, source, depth);
             output.push_str(" -> ");
-            expression(output, destination);
+            expression(output, destination, depth);
         }
         StatementKind::Macro {
             name,
@@ -49,11 +53,16 @@ fn write_statement(output: &mut String, kind: &StatementKind, depth: usize) {
             name,
             parameters,
             body,
+        }
+        | StatementKind::Boolean {
+            name,
+            parameters,
+            body,
         } => {
-            output.push_str(if matches!(kind, StatementKind::Symbol { .. }) {
-                "symbol "
-            } else {
-                "macro "
+            output.push_str(match kind {
+                StatementKind::Symbol { .. } => "symbol ",
+                StatementKind::Boolean { .. } => "boolean ",
+                _ => "macro ",
             });
             output.push_str(&name.text);
             output.push('(');
@@ -69,24 +78,74 @@ fn write_statement(output: &mut String, kind: &StatementKind, depth: usize) {
         }
         StatementKind::Return(value)
         | StatementKind::Execute(value)
-        | StatementKind::Include(value) => {
+        | StatementKind::Include(value)
+        | StatementKind::Delete(value) => {
             let keyword = match kind {
                 StatementKind::Return(_) => "return ",
                 StatementKind::Execute(_) => "execute ",
                 StatementKind::Include(_) => "include ",
+                StatementKind::Delete(_) => "delete ",
                 _ => unreachable!(),
             };
             output.push_str(keyword);
-            expression(output, value);
+            expression(output, value, depth);
         }
-        StatementKind::Call(call) => expression(output, call),
-        StatementKind::Global(names) => {
-            output.push_str("global ");
+        StatementKind::Call(call) => expression(output, call, depth),
+        StatementKind::Global(names) | StatementKind::Drop(names) => {
+            output.push_str(if matches!(kind, StatementKind::Global(_)) {
+                "global "
+            } else {
+                "drop "
+            });
             for (index, name) in names.iter().enumerate() {
                 if index != 0 {
                     output.push_str(", ");
                 }
                 output.push_str(&name.text);
+            }
+        }
+        StatementKind::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            output.push_str("if ");
+            expression(output, condition, depth);
+            output.push_str(":\n");
+            block(output, then_body, depth + 1);
+            if !else_body.is_empty() {
+                output.push_str(&"    ".repeat(depth));
+                if let [branch] = else_body.as_slice()
+                    && matches!(branch.kind, StatementKind::If { .. })
+                {
+                    output.push_str("else ");
+                    write_statement(output, &branch.kind, depth);
+                } else {
+                    output.push_str("else:\n");
+                    block(output, else_body, depth + 1);
+                }
+            }
+            return;
+        }
+        StatementKind::For { name, range, body } => {
+            output.push_str("for ");
+            output.push_str(&name.text);
+            output.push_str(" in ");
+            expression(output, range, depth);
+            output.push_str(":\n");
+            block(output, body, depth + 1);
+            return;
+        }
+        StatementKind::Loop { body } => {
+            output.push_str("loop:\n");
+            block(output, body, depth + 1);
+            return;
+        }
+        StatementKind::Break(value) => {
+            output.push_str("break");
+            if let Some(value) = value {
+                output.push(' ');
+                expression(output, value, depth);
             }
         }
         StatementKind::Scheduled {
@@ -122,7 +181,7 @@ fn write_statement(output: &mut String, kind: &StatementKind, depth: usize) {
     output.push('\n');
 }
 
-fn expression(output: &mut String, value: &Expr) {
+fn expression(output: &mut String, value: &Expr, depth: usize) {
     match &value.kind {
         ExprKind::Path(path) => {
             if let Some(qualifier) = &path.qualifier {
@@ -139,28 +198,62 @@ fn expression(output: &mut String, value: &Expr) {
             }
         }
         ExprKind::Literal(text) => quoted(output, text),
+        ExprKind::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
+        ExprKind::Not(value) => {
+            output.push_str("not (");
+            expression(output, value, depth);
+            output.push(')');
+        }
+        ExprKind::Exists(value) => {
+            output.push_str("exists (");
+            expression(output, value, depth);
+            output.push(')');
+        }
+        ExprKind::Binary {
+            left, op, right, ..
+        } => {
+            output.push('(');
+            expression(output, left, depth);
+            output.push_str(match op {
+                BinaryOp::And => " and ",
+                BinaryOp::Or => " or ",
+                BinaryOp::Eq => " == ",
+                BinaryOp::Ne => " != ",
+                BinaryOp::Lt => " < ",
+                BinaryOp::Le => " <= ",
+                BinaryOp::Gt => " > ",
+                BinaryOp::Ge => " >= ",
+                BinaryOp::Pipe => " | ",
+            });
+            expression(output, right, depth);
+            output.push(')');
+        }
+        ExprKind::Loop { body } => {
+            output.push_str("loop:\n");
+            block(output, body, depth + 1);
+        }
         ExprKind::Select {
             namespace, item, ..
         } => {
-            expression(output, namespace);
+            expression(output, namespace, depth);
             output.push_str("::");
-            expression(output, item);
+            expression(output, item, depth);
         }
         ExprKind::Join { base, suffix, .. } => {
-            expression(output, base);
+            expression(output, base, depth);
             output.push('/');
             if let Some(suffix) = suffix {
-                expression(output, suffix);
+                expression(output, suffix, depth);
             }
         }
         ExprKind::Call { callee, arguments } => {
-            expression(output, callee);
+            expression(output, callee, depth);
             output.push('(');
             for (index, argument) in arguments.iter().enumerate() {
                 if index != 0 {
                     output.push_str(", ");
                 }
-                expression(output, argument);
+                expression(output, argument, depth);
             }
             output.push(')');
         }

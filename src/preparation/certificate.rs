@@ -15,6 +15,7 @@ fn same_region(left: &Region, right: &Region) -> bool {
                     return false;
                 }
                 match (&a.kind, &b.kind) {
+                    (InstructionKind::Control(a), InstructionKind::Control(b)) => a == b,
                     (
                         InstructionKind::Transfer {
                             source: a,

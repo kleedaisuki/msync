@@ -1,4 +1,4 @@
-//! Standalone, real-process v0.4 latency probe. Build with rustc -O.
+//! Standalone real-process latency probe; historical filename retained for comparison.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -34,6 +34,12 @@ fn command(executable: &Executable) -> Command {
     command
         .current_dir(&executable.work)
         .env("NO_COLOR", "1")
+        .env("HOME", executable.work.join("home"))
+        .env("USERPROFILE", executable.work.join("home"))
+        .env("XDG_CONFIG_HOME", executable.work.join("config"))
+        .env("APPDATA", executable.work.join("config"))
+        .env_remove("MSYNC_CONFIG")
+        .env_remove("MSYNC_STATE_DIR")
         .env_remove("MSYNC_TRACE")
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
@@ -41,6 +47,15 @@ fn command(executable: &Executable) -> Command {
 }
 
 fn process(executable: &Executable, args: &[&str], input: &str) -> Result<Duration> {
+    process_status(executable, args, input, true)
+}
+
+fn process_status(
+    executable: &Executable,
+    args: &[&str],
+    input: &str,
+    expected_success: bool,
+) -> Result<Duration> {
     let start = Instant::now();
     let mut child = command(executable)
         .args(args)
@@ -49,7 +64,7 @@ fn process(executable: &Executable, args: &[&str], input: &str) -> Result<Durati
     child.stdin.take().unwrap().write_all(input.as_bytes())?;
     let output = child.wait_with_output()?;
     let elapsed = start.elapsed();
-    if !output.status.success() {
+    if output.status.success() != expected_success {
         return Err(format!(
             "{} {:?}: {}",
             executable.label,
@@ -58,7 +73,137 @@ fn process(executable: &Executable, args: &[&str], input: &str) -> Result<Durati
         )
         .into());
     }
+    if !expected_success
+        && String::from_utf8_lossy(&output.stderr)
+            .matches("error:")
+            .count()
+            != 100
+    {
+        return Err(format!(
+            "expected 100 source diagnostics: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
     Ok(elapsed)
+}
+
+fn remove_file_if_present(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn telemetry_controls(executable: &Executable, count: usize, payload: &[u8]) -> Result<()> {
+    let check = (0..100)
+        .map(|index| format!("input.bin -> outputs/file-{index:04}\n"))
+        .collect::<String>();
+    let diagnostics = (0..100)
+        .map(|index| format!("invalid_{index} = true and \"not a bool\"\n"))
+        .collect::<String>();
+    for (name, action, source, copied, expected_success) in [
+        ("telemetry-check-100", "check", check.as_str(), false, true),
+        (
+            "telemetry-diagnostics-100",
+            "check",
+            diagnostics.as_str(),
+            false,
+            false,
+        ),
+        ("telemetry-copy-64k", "run", SOURCE, true, true),
+    ] {
+        for mode in ["jsonl-warm", "sqlite-warm", "sqlite-cold"] {
+            for suffix in [
+                "telemetry.jsonl",
+                "telemetry.sqlite",
+                "telemetry.sqlite-wal",
+                "telemetry.sqlite-shm",
+            ] {
+                remove_file_if_present(&executable.work.join(suffix))?;
+            }
+            let case = format!("{name}/{mode}");
+            let mut before = Vec::with_capacity(count);
+            let mut after = Vec::with_capacity(count);
+            for round in 0..count + 2 {
+                for measured in if round % 2 == 0 {
+                    [false, true]
+                } else {
+                    [true, false]
+                } {
+                    prepare(executable, false)?;
+                    if measured && mode == "sqlite-cold" {
+                        for suffix in [
+                            "telemetry.sqlite",
+                            "telemetry.sqlite-wal",
+                            "telemetry.sqlite-shm",
+                        ] {
+                            remove_file_if_present(&executable.work.join(suffix))?;
+                        }
+                    }
+                    let mut args = vec![action, "-"];
+                    if measured {
+                        args.extend(if mode == "jsonl-warm" {
+                            ["--trace", "telemetry.jsonl"]
+                        } else {
+                            ["--telemetry-db", "telemetry.sqlite"]
+                        });
+                    }
+                    let elapsed = process_status(executable, &args, source, expected_success)?;
+                    if copied && fs::read(executable.work.join("target.bin"))? != payload {
+                        return Err("telemetry mode changed finite copy bytes".into());
+                    }
+                    if !copied && executable.work.join("outputs").exists() {
+                        return Err("telemetry check executed transfer effects".into());
+                    }
+                    if measured {
+                        let sink = executable.work.join(if mode == "jsonl-warm" {
+                            "telemetry.jsonl"
+                        } else {
+                            "telemetry.sqlite"
+                        });
+                        if fs::metadata(sink)?.len() == 0 {
+                            return Err("enabled telemetry did not record output".into());
+                        }
+                    }
+                    if round >= 2 {
+                        let label = if measured { mode } else { "off" };
+                        if measured {
+                            after.push(elapsed);
+                        } else {
+                            before.push(elapsed);
+                        }
+                        record(&case, label, round - 2, elapsed);
+                    }
+                }
+            }
+            summary(&case, "off", &mut before);
+            summary(&case, mode, &mut after);
+            if mode != "jsonl-warm" {
+                let output = command(executable)
+                    .args(["telemetry", "summary", "telemetry.sqlite"])
+                    .stdout(Stdio::piped())
+                    .output()?;
+                let output_text = String::from_utf8_lossy(&output.stdout);
+                if !output.status.success()
+                    || !output_text.contains("\"spans\"")
+                    || !output_text.contains("\"sessions\"")
+                {
+                    return Err(format!(
+                        "recorded SQLite telemetry is not queryable: {output_text}; {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    )
+                    .into());
+                }
+                println!(
+                    "telemetry-validation,{case},{}",
+                    output_text.trim().replace('\n', " ")
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn record(case: &str, label: &str, sample: usize, duration: Duration) {
@@ -105,6 +250,25 @@ fn unrelated_files(executable: &Executable) -> Result<()> {
 }
 
 fn fresh_processes(executables: &[Executable], count: usize, payload: &[u8]) -> Result<()> {
+    let selected = std::env::var("MSYNC_PERF_FRESH_CASES")
+        .ok()
+        .map(|selection| selection.split(',').map(str::to_owned).collect::<Vec<_>>());
+    let names = [
+        "version",
+        "check-1",
+        "plan-1-offline",
+        "run-missing-64k",
+        "run-existing-64k",
+        "run-existing-unrelated-1000-8m",
+        "run-missing-unrelated-1000-8m",
+    ];
+    if let Some(selected) = &selected {
+        for name in selected {
+            if !names.contains(&name.as_str()) {
+                return Err(format!("unknown fresh process case: {name}").into());
+            }
+        }
+    }
     for (name, args, input, copied, missing) in [
         ("version", vec!["--version"], "", false, false),
         ("check-1", vec!["check", "-"], SOURCE, false, false),
@@ -118,6 +282,12 @@ fn fresh_processes(executables: &[Executable], count: usize, payload: &[u8]) -> 
         ("run-missing-64k", vec!["run", "-"], SOURCE, true, true),
         ("run-existing-64k", vec!["run", "-"], SOURCE, true, false),
     ] {
+        if selected
+            .as_ref()
+            .is_some_and(|selected| !selected.iter().any(|item| item == name))
+        {
+            continue;
+        }
         let mut results = vec![Vec::new(); executables.len()];
         for round in 0..count + 2 {
             for offset in 0..executables.len() {
@@ -142,6 +312,12 @@ fn fresh_processes(executables: &[Executable], count: usize, payload: &[u8]) -> 
             summary(name, executable.label, samples);
         }
     }
+    if selected
+        .as_ref()
+        .is_some_and(|selected| !selected.iter().any(|name| name.contains("unrelated")))
+    {
+        return Ok(());
+    }
     for executable in executables {
         unrelated_files(executable)?;
     }
@@ -151,6 +327,12 @@ fn fresh_processes(executables: &[Executable], count: usize, payload: &[u8]) -> 
         } else {
             "run-existing-unrelated-1000-8m"
         };
+        if selected
+            .as_ref()
+            .is_some_and(|selected| !selected.iter().any(|item| item == name))
+        {
+            continue;
+        }
         let mut results = vec![Vec::new(); executables.len()];
         for round in 0..count + 2 {
             for offset in 0..executables.len() {
@@ -176,6 +358,83 @@ fn fresh_processes(executables: &[Executable], count: usize, payload: &[u8]) -> 
     }
     for executable in executables {
         fs::remove_dir_all(executable.work.join("unrelated"))?;
+    }
+    Ok(())
+}
+
+fn v6_processes(executables: &[Executable], count: usize) -> Result<()> {
+    let values = (0..1000)
+        .map(|index| if index == 999 { "\"keep\"" } else { "\"skip\"" })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let control = format!(
+        "matched = false\nfor value in ranges::of({values}):\n    if value == \"keep\":\n        matched = true\nif matched:\n    \"v6-result\" -> control-result\n"
+    );
+    let plan_size = std::env::var("MSYNC_PERF_PLAN_SIZE")
+        .ok()
+        .map(|value| value.parse::<usize>())
+        .transpose()?
+        .unwrap_or(100);
+    if plan_size == 0 {
+        return Err("plan size must be positive".into());
+    }
+    let plan_name = format!("plan-independent-{plan_size}");
+    let plan = (0..plan_size)
+        .map(|index| format!("input.bin -> outputs/file-{index:04}\n"))
+        .collect::<String>();
+    for (name, args, source, output) in [
+        (
+            "run-pure-bindings",
+            vec!["run", "-"],
+            "ready = true\nlabel = \"pure\"\n",
+            None,
+        ),
+        (
+            "check-range-1000",
+            vec!["check", "-"],
+            control.as_str(),
+            None,
+        ),
+        (
+            "run-range-1000",
+            vec!["run", "-"],
+            control.as_str(),
+            Some("control-result"),
+        ),
+        (plan_name.as_str(), vec!["plan", "-"], plan.as_str(), None),
+    ] {
+        let mut results = vec![Vec::new(); executables.len()];
+        for round in 0..count + 2 {
+            for offset in 0..executables.len() {
+                let index = if round % 2 == 0 {
+                    offset
+                } else {
+                    executables.len() - offset - 1
+                };
+                let executable = &executables[index];
+                let target = executable.work.join("control-result");
+                if target.exists() {
+                    fs::remove_file(&target)?;
+                }
+                let elapsed = process(executable, &args, source)?;
+                if output.is_some() {
+                    if fs::read(&target)? != b"v6-result" {
+                        return Err("control loop returned incorrect output".into());
+                    }
+                } else if target.exists() {
+                    return Err(
+                        "static or empty command unexpectedly executed a control transfer".into(),
+                    );
+                }
+                if round >= 2 {
+                    results[index].push(elapsed);
+                    record(name, executable.label, round - 2, elapsed);
+                }
+            }
+        }
+        for (executable, samples) in executables.iter().zip(&mut results) {
+            summary(name, executable.label, samples);
+        }
     }
     Ok(())
 }
@@ -408,6 +667,111 @@ fn repl_overwrites(executables: &[Executable], count: usize, payload: &[u8]) -> 
     Ok(())
 }
 
+fn repl_bindings(executables: &[Executable], count: usize) -> Result<()> {
+    let mut repls = executables
+        .iter()
+        .map(Repl::start)
+        .collect::<Result<Vec<_>>>()?;
+    let mut results = vec![Vec::new(); executables.len()];
+    for round in 0..count + 2 {
+        for offset in 0..executables.len() {
+            let index = if round % 2 == 0 {
+                offset
+            } else {
+                executables.len() - offset - 1
+            };
+            let elapsed = repls[index].submit("ready = true\n")?;
+            if round >= 2 {
+                results[index].push(elapsed);
+                record(
+                    "repl-binding-with-pwd-barrier",
+                    executables[index].label,
+                    round - 2,
+                    elapsed,
+                );
+            }
+        }
+    }
+    for (executable, samples) in executables.iter().zip(&mut results) {
+        summary("repl-binding-with-pwd-barrier", executable.label, samples);
+    }
+    for repl in repls {
+        repl.finish()?;
+    }
+    Ok(())
+}
+
+fn background_notices(executables: &[Executable], count: usize) -> Result<()> {
+    let mut results = vec![Vec::new(); executables.len()];
+    for round in 0..count + 1 {
+        for offset in 0..executables.len() {
+            let index = if round % 2 == 0 {
+                offset
+            } else {
+                executables.len() - offset - 1
+            };
+            let executable = &executables[index];
+            let target = executable.work.join("notice-flow");
+            if target.exists() {
+                fs::remove_file(&target)?;
+            }
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let mut repl = Repl::start(executable)?;
+            repl.submit(&format!(
+                "wire => tcp://{}\nwire::/ -> notice-flow\n",
+                listener.local_addr()?
+            ))?;
+            let mut source = connected(&listener)?;
+            source.write_all(b"notice payload")?;
+            let start = Instant::now();
+            source.shutdown(Shutdown::Write)?;
+            let window = Duration::from_millis(150);
+            let mut notice = None;
+            while let Ok(line) = repl
+                .lines
+                .recv_timeout(window.saturating_sub(start.elapsed()))
+            {
+                if line.contains("job 1: completed") {
+                    notice = Some(start.elapsed());
+                    break;
+                }
+            }
+            observe(&target, b"notice payload", start)?;
+            if round >= 1 {
+                match notice {
+                    Some(elapsed) => {
+                        results[index].push(elapsed);
+                        record(
+                            "background-eof-to-idle-notice",
+                            executable.label,
+                            round - 1,
+                            elapsed,
+                        );
+                    }
+                    None => println!(
+                        "censored,background-eof-to-idle-notice,{},{},150.000",
+                        executable.label,
+                        round - 1
+                    ),
+                }
+            }
+            repl.submit("/jobs\n")?;
+            repl.finish()?;
+        }
+    }
+    for (executable, samples) in executables.iter().zip(&mut results) {
+        if samples.is_empty() {
+            println!(
+                "summary,background-eof-to-idle-notice,{},0,not-observed-within-150ms,not-observed-within-150ms",
+                executable.label
+            );
+        } else {
+            summary("background-eof-to-idle-notice", executable.label, samples);
+        }
+    }
+    Ok(())
+}
+
 fn connected(listener: &TcpListener) -> Result<TcpStream> {
     listener.set_nonblocking(true)?;
     let deadline = Instant::now() + DEADLINE;
@@ -434,6 +798,39 @@ fn observe(path: &Path, expected: &[u8], start: Instant) -> Result<Duration> {
         }
         thread::sleep(Duration::from_millis(1));
     }
+}
+
+#[derive(PartialEq, Eq)]
+struct LeafReceipt {
+    bytes: Vec<u8>,
+    modified: SystemTime,
+    readonly: bool,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    mode: u32,
+}
+
+fn leaf_receipt(path: &Path) -> Result<LeafReceipt> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() {
+        return Err("a published leaf is not a regular file".into());
+    }
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    Ok(LeafReceipt {
+        bytes: fs::read(path)?,
+        modified: metadata.modified()?,
+        readonly: metadata.permissions().readonly(),
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+        #[cfg(unix)]
+        mode: metadata.mode(),
+    })
 }
 
 fn flow_completion(executables: &[Executable], count: usize) -> Result<()> {
@@ -474,7 +871,7 @@ fn flow_completion(executables: &[Executable], count: usize) -> Result<()> {
             if executable.work.join("slow-flow").exists() {
                 return Err("an idle first flow published before its EOF".into());
             }
-            let parent_modified = fs::metadata(&executable.work)?.modified()?;
+            let fast_leaf = leaf_receipt(&executable.work.join("fast-flow"))?;
             slow.shutdown(Shutdown::Write)?;
             observe(
                 &executable.work.join("slow-flow"),
@@ -482,8 +879,10 @@ fn flow_completion(executables: &[Executable], count: usize) -> Result<()> {
                 Instant::now(),
             )?;
             repl.submit("")?;
-            if fs::metadata(&executable.work)?.modified()? != parent_modified {
-                return Err("earlier logical namespace receipt overrode the later receipt".into());
+            if leaf_receipt(&executable.work.join("fast-flow"))? != fast_leaf {
+                return Err(
+                    "the later physical slow publication changed the independent fast leaf".into(),
+                );
             }
             repl.submit("/wait\n")?;
             repl.finish()?;
@@ -530,6 +929,29 @@ fn capture_scope(executables: &[Executable], payload: &[u8]) -> Result<()> {
             return Err("capture-scope copy changed output".into());
         }
         let (files, bytes) = retained_bytes(&executable.work.join(".temp"))?;
+        if files >= 128 || bytes >= 1024 * 1024 {
+            return Err(format!(
+                "a single 64KiB copy retained unrelated fixture state: {files} files, {bytes} bytes"
+            )
+            .into());
+        }
+        let mut pending = vec![executable.work.join(".temp")];
+        while let Some(directory) = pending.pop() {
+            for entry in fs::read_dir(directory)? {
+                let entry = entry?;
+                if entry.file_type()?.is_dir() {
+                    pending.push(entry.path());
+                    continue;
+                }
+                let content = fs::read(entry.path())?;
+                if content
+                    .windows(128)
+                    .any(|bytes| bytes.iter().all(|byte| *byte == b'X'))
+                {
+                    return Err("the private capture contains unrelated sibling payload".into());
+                }
+            }
+        }
         println!(
             "capture-scope,{},missing-target-unrelated-1000-8m,{files},{bytes}",
             executable.label
@@ -706,6 +1128,11 @@ fn main() -> Result<()> {
         .collect::<Vec<_>>();
     let mut executables = Vec::new();
     fs::create_dir(owned.join("bin"))?;
+    for short in ["A", "B"] {
+        fs::create_dir(owned.join(short))?;
+        fs::write(owned.join(short).join("input.bin"), &payload)?;
+    }
+    let swapped = std::env::var_os("MSYNC_PERF_SWAP_WORKSPACES").is_some();
     for (label, path) in [
         ("baseline", args[1].as_str()),
         ("candidate", args[2].as_str()),
@@ -714,8 +1141,11 @@ fn main() -> Result<()> {
             continue;
         }
         let short = if label == "baseline" { "A" } else { "B" };
-        fs::create_dir(owned.join(short))?;
-        fs::write(owned.join(short).join("input.bin"), &payload)?;
+        let work = if swapped {
+            if short == "A" { "B" } else { "A" }
+        } else {
+            short
+        };
         let binary_name = if cfg!(windows) {
             format!("msync-{short}.exe")
         } else {
@@ -726,11 +1156,19 @@ fn main() -> Result<()> {
         executables.push(Executable {
             label,
             path: visible.join("bin").join(&binary_name),
-            work: visible.join(short),
+            work: visible.join(work),
         });
     }
     println!("environment,fixture_creation,{}", fixture.0.display());
     println!("environment,fixture_address,{}", visible.display());
+    println!(
+        "environment,workspace_assignment,{}",
+        if swapped {
+            "baseline=B;candidate=A"
+        } else {
+            "baseline=A;candidate=B"
+        }
+    );
     println!("environment,payload_bytes,{}", payload.len());
     println!("environment,cache,warm-source-and-loader-after-two-warmups");
     println!("environment,repl_ack,copy-submission-plus-pwd-roundtrip");
@@ -739,6 +1177,21 @@ fn main() -> Result<()> {
     }
     if std::env::var_os("MSYNC_PERF_ONLY_LITERAL").is_some() {
         return literal_processes(&executables, count);
+    }
+    if std::env::var_os("MSYNC_PERF_ONLY_FRESH").is_some() {
+        return fresh_processes(&executables, count, &payload);
+    }
+    if std::env::var_os("MSYNC_PERF_TELEMETRY").is_some() {
+        let executable = executables
+            .iter()
+            .find(|executable| executable.label == "candidate")
+            .ok_or("telemetry controls require the candidate executable")?;
+        return telemetry_controls(executable, count, &payload);
+    }
+    if std::env::var_os("MSYNC_PERF_ONLY_FLOW").is_some() {
+        flow_completion(&executables, count)?;
+        capture_scope(&executables, &payload)?;
+        return Ok(());
     }
     if let Some(profile) = std::env::var_os("MSYNC_PERF_PROFILE_DIR") {
         let profile = fs::canonicalize(profile)?;
@@ -761,6 +1214,12 @@ fn main() -> Result<()> {
         .map(|value| value.parse())
         .transpose()?
         .unwrap_or(count.max(32));
+    if std::env::var_os("MSYNC_PERF_V6").is_some() {
+        v6_processes(&executables, count)?;
+        repl_bindings(&executables, repl_rounds)?;
+        background_notices(&executables, count.min(9))?;
+        return Ok(());
+    }
     if std::env::var_os("MSYNC_PERF_ONLY_REPL").is_some() {
         for executable in &executables {
             fs::write(executable.work.join("target.bin"), &payload)?;

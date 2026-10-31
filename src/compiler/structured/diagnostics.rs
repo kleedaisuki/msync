@@ -5,7 +5,7 @@ use super::*;
 const FRAME_LIMIT: usize = 16;
 const VALUE_LIMIT: usize = 160;
 
-pub(super) type ExpansionMap = BTreeMap<String, ExpansionTrace>;
+pub(super) type ExpansionMap = imbl::OrdMap<String, ExpansionTrace>;
 
 #[derive(Clone, Debug)]
 struct Frame {
@@ -125,7 +125,12 @@ impl ExpansionTrace {
                     self.expression(argument, scope);
                 }
             }
-            ExprKind::Literal(_) => {}
+            ExprKind::Binary { left, right, .. } => {
+                self.expression(left, scope);
+                self.expression(right, scope);
+            }
+            ExprKind::Not(value) | ExprKind::Exists(value) => self.expression(value, scope),
+            ExprKind::Loop { .. } | ExprKind::Bool(_) | ExprKind::Literal(_) => {}
         }
     }
 }
@@ -249,6 +254,9 @@ fn contains(outer: Span, inner: Span) -> bool {
 
 pub(super) fn describe(value: &Value) -> String {
     match value {
+        Value::Bool(value) => format!("bool {value}"),
+        Value::Dynamic(value) => format!("runtime {:?}", value.ty),
+        Value::Range(value) => format!("range<{:?}>", value.item_type),
         Value::Path(path) => path_description(path),
         Value::Literal(text) => format!("string literal {:?}", short(text)),
         Value::Space(space) => format!("space {}", short(&space.to_string())),

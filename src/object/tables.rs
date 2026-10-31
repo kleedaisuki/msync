@@ -23,6 +23,22 @@ pub(super) fn derive(module: &ObjectModule) -> Result<Tables, ObjectError> {
     let mut table = Builder::default();
     for node in &nodes {
         match &node.kind {
+            InstructionKind::Control(control) => {
+                if let crate::hir::control::ControlInstruction::Spawn { process, .. } = control {
+                    table.symbols.insert(
+                        format!("process:{}", process.0),
+                        SymbolKind::Process { process: *process },
+                    );
+                }
+                let mut paths = super::control::InlinePaths { paths: Vec::new() };
+                super::control::read_control(control, &mut paths)?;
+                for (location, relocation) in paths.paths {
+                    table.filesystem(&location.backend, node.id)?;
+                    if let Some(path) = relocation {
+                        table.context(&path.anchor, &location.backend, Some(node.id))?;
+                    }
+                }
+            }
             InstructionKind::Spawn {
                 process,
                 executable,
@@ -66,6 +82,19 @@ pub(super) fn derive(module: &ObjectModule) -> Result<Tables, ObjectError> {
         )?;
     }
     for export in &module.exports {
+        let mut paths = super::control::InlinePaths { paths: Vec::new() };
+        match &export.value {
+            ExportValue::Dynamic { expression } => {
+                super::control::read_expr(expression, &mut paths)?
+            }
+            ExportValue::Range { range } => super::control::read_range(range, &mut paths)?,
+            _ => {}
+        }
+        for (location, relocation) in paths.paths {
+            if let Some(path) = relocation {
+                table.context(&path.anchor, &location.backend, None)?;
+            }
+        }
         if let ExportValue::Path {
             backend,
             relocation: Some(path),

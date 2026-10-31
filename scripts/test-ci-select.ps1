@@ -116,3 +116,18 @@ try {
     Remove-Item -LiteralPath $fixture -Recurse -Force
 }
 Write-Output 'CI selection: v0.5.2 compiler, object metadata, pure version normalization, and real Git version/dependency cases passed'
+Assert-Selected 'src/language/parser.rs' @('cli_v060', 'integration_v060', 'compiler_functions_v060', 'language_presentation_v6', 'ranges_v6')
+Assert-Selected 'src/execution/control.rs' @('cli_v060', 'integration_v060')
+Assert-Selected 'src/hir/control.rs' @('cli_v060', 'integration_v060', 'ranges_v6')
+Assert-Selected 'src/object/control.rs' @('cli_v060', 'integration_v060')
+Assert-Selected 'src/highlight.rs' @('language_presentation_v6')
+Assert-Selected 'src/compiler/structured/v6.rs' @('compiler_mutation_v060', 'compiler_fragments_v060', 'review_v060')
+Assert-Selected 'src/execution/control.rs' @('control_runtime_v6')
+Assert-Selected 'src/object/control.rs' @('object_v6')
+Assert-Selected 'src/config.rs' @('config_cli_v6', 'performance_journeys', 'performance_review_v6')
+Assert-Selected 'src/telemetry/sqlite.rs' @('telemetry_sqlite', 'telemetry_sqlite_cli', 'performance_review_v6')
+Assert-Selected 'src/language_server/providers.rs' @('tooling_v6', 'performance_lsp_journeys', 'source_lines_v6')
+Assert-Selected 'src/structured/jobs.rs' @('latency_v6', 'performance_journeys')
+Assert-Selected 'src/context.rs' @('object_analysis_v6')
+$editorWorkflow = Select-Changes @('.github/workflows/editor.yml')
+Assert (-not $editorWorkflow.rust -and -not $editorWorkflow.full) 'The dedicated editor workflow must not start the unrelated Rust test matrix'
