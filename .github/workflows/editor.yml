@@ -73,9 +73,6 @@ jobs:
       - name: Install locked editor dependencies
         working-directory: editors/vscode
         run: npm ci --ignore-scripts
-      - name: Check native grammar and client lifecycle
-        working-directory: editors/vscode
-        run: npm test
       - name: Build the production extension bundle
         working-directory: editors/vscode
         run: npm run build

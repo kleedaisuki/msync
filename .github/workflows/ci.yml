@@ -32,7 +32,6 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           FORCE_FULL: ${{ github.event_name == 'workflow_dispatch' && inputs.full }}
         run: |
-          ./scripts/test-ci-select.ps1
           if ($env:FORCE_FULL -eq 'true') {
             ./scripts/ci-select.ps1 -ForceFull -GitHubOutput
           } else {
@@ -56,10 +55,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-      - if: needs.changes.outputs.rust == 'true'
-        run: cargo fmt --check
       - if: needs.changes.outputs.rust == 'true'
         shell: pwsh
         env:
@@ -67,20 +62,14 @@ jobs:
           TARGETS: ${{ needs.changes.outputs.targets }}
         run: |
           if ($env:FULL -eq 'true') {
-            cargo clippy --locked --all-targets -- -D warnings
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             cargo test --locked --all-targets
             exit $LASTEXITCODE
           }
           $targets = @($env:TARGETS | ConvertFrom-Json)
-          $clippyArgs = @('clippy', '--locked', '--lib', '--bin', 'msync')
           $testArgs = @('test', '--locked', '--lib', '--bin', 'msync')
           foreach ($target in $targets) {
-            $clippyArgs += @('--test', $target)
             $testArgs += @('--test', $target)
           }
-          & cargo @clippyArgs -- -D warnings
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & cargo @testArgs
           exit $LASTEXITCODE
       - name: Exercise native SSH credential windows

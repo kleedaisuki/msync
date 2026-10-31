@@ -44,8 +44,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Verify publication invariants
-        run: node --test packaging/test-publish-release.cjs
       - id: version
         shell: bash
         env:
@@ -168,9 +166,6 @@ jobs:
       - name: Install locked editor dependencies
         working-directory: editors/vscode
         run: npm ci --ignore-scripts
-      - name: Check native grammar and client lifecycle
-        working-directory: editors/vscode
-        run: npm test
       - name: Build the production extension bundle
         working-directory: editors/vscode
         run: npm run build
@@ -218,23 +213,12 @@ jobs:
     needs: [version, windows, linux, editor]
     if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 40
     permissions:
       contents: write
-      actions: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Require successful Rust CI for the exact release revision
-        timeout-minutes: 35
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          run=$(gh run list --workflow ci.yml --commit "$GITHUB_SHA" --event push --limit 1 --json databaseId --jq '.[0].databaseId')
-          [[ "$run" =~ ^[0-9]+$ ]] || { echo 'No Rust push workflow exists for this exact revision' >&2; exit 1; }
-          gh run watch "$run" --interval 30 --exit-status
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-*

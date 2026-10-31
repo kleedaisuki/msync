@@ -60,8 +60,8 @@ $objects = @('cli_v060', 'integration_v060', 'object_v6', 'review_v060', 'cli_v0
 $configuration = @('config_cli_v6', 'performance_journeys', 'performance_review_v6', 'telemetry_sqlite_cli')
 $tooling = @('highlight_v6', 'tooling_v6', 'source_lines_v6', 'performance_lsp_journeys', 'language_v6', 'language_presentation_v6')
 $observability = @('telemetry', 'telemetry_sqlite', 'telemetry_sqlite_cli', 'runtime_task_telemetry_v4', 'performance_journeys', 'performance_review_v6')
-$frontend += @('object_analysis_v6', 'performance_journeys', 'source_lines_v6', 'performance_lsp_journeys')
-$execution += @('runtime_activity_v6', 'latency_v6', 'performance_journeys', 'telemetry_sqlite_cli')
+$frontend += @('object_analysis_v6', 'performance_journeys', 'source_lines_v6', 'performance_lsp_journeys', 'empty_recovery_v6', 'barrier_crash_v5')
+$execution += @('runtime_activity_v6', 'latency_v6', 'performance_journeys', 'telemetry_sqlite_cli', 'empty_recovery_v6')
 $objects += @('object_analysis_v6', 'performance_journeys')
 
 foreach ($path in $Paths) {
