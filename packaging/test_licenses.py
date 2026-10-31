@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -61,6 +62,17 @@ class LicenseCollectionTests(unittest.TestCase):
     def test_missing_toolchain_report_is_actionable(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "official matching rustc distribution"):
             rust_attribution(self.root / "custom-toolchain", self.root / "output")
+
+    def test_pinned_supplements_keep_exact_upstream_texts(self) -> None:
+        repository = Path(__file__).resolve().parent.parent
+        entries: dict[str, dict[str, str]] = json.loads(
+            (repository / "packaging/license-sources.json").read_text(encoding="utf-8")
+        )
+        for package, entry in entries.items():
+            with self.subTest(package=package):
+                self.assertEqual(hashlib.sha256((repository / entry["path"]).read_bytes()).hexdigest(),
+                                 entry["sha256"])
+                self.assertRegex(entry["source"], r"^https://raw\.githubusercontent\.com/[^/]+/[^/]+/[a-f0-9]{40}/")
 
 
 if __name__ == "__main__":

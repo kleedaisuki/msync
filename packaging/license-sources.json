@@ -4,5 +4,11 @@
     "source": "https://raw.githubusercontent.com/DoumanAsh/clipboard-win/ed27008ae5d1f10cfbb266de039f0fb35fd05a56/LICENSE",
     "sha256": "c9bff75738922193e67fa726fa225535870d2aa1059f91452c411736284ad566",
     "reason": "Published crate include list omits LICENSE; retained from its exact .cargo_vcs_info git commit."
+  },
+  "line-index@0.1.2": {
+    "path": "packaging/licenses/line-index-0.1.2/LICENSE-MIT",
+    "source": "https://raw.githubusercontent.com/rust-lang/rust-analyzer/3bda0cc2c07f6330b543be2c12c5e156847ba94e/LICENSE-MIT",
+    "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+    "reason": "Published crate omits license texts; use the MIT option of MIT OR Apache-2.0, retained from the exact .cargo_vcs_info git commit."
   }
 }
