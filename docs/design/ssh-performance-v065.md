@@ -15,17 +15,17 @@ The exact baseline source archive, release binary and rlib are retained under
 `dca16a83beb10131ecde492ba6ff587dd90478bfe0dc4450d41088b779fff8e8`.
 Its source is `d501fd2`, including the earlier automatic-recovery repair, not the
 published v0.6.0 tag. Diagnostic prototype elapsed values are not accepted timing
-comparisons. The integrated final image and accepted paired window are identified
+comparisons. The frozen optimization image and accepted paired window are identified
 below, separately from those discarded prototypes.
 
 ## Accepted paired result
 
-Five sequential AB/BA rounds used the exact final image SHA-256
+Five sequential AB/BA rounds used the exact optimization image SHA-256
 `e18d9f36b905630b9915cc5634e4ff4833a66ee34924650fc555913482433f7f`
 and probe SHA-256
 `38eeea3bcb7aff7d1cd6ab334c6f7eddb80670f3c3b1ee0296f4e996d299469f`.
 All 60 observations verified bytes, mode, whole-second mtime or the expected
-located failure with unchanged previous target. Image/probe hashes matched at
+named missing-source failure with unchanged previous target. Image/probe hashes matched at
 both ends, and the owned server was stopped. Root and peer builds, tests and
 filesystem writes were held during this syncfs-sensitive window. The native
 Linux loopback fixture used OpenSSH 10.0p2 / OpenSSL 3.5.7; it is not a native
@@ -131,7 +131,7 @@ No additional timer thread or global SIGCHLD handler is installed. The already
 resolved `wait-timeout` crate was not promoted to a runtime dependency: its own
 upstream documentation warns about conflicts when an application already handles
 SIGCHLD, as Tokio does.
-An additional final-image traced upload verified all five synchronous transport
+An additional traced upload of that same optimization image verified all five synchronous transport
 records actually selected `wait.strategy=pidfd` on this host and recorded one
 `ssh.session.admit` phase; the optional mechanism did not silently fall back in
 this measurement environment. That diagnostic upload ran after all timing lanes
@@ -181,3 +181,60 @@ metadata/provenance checks merely to save helper invocations.
   completion of a borrowed live process handle with bounded waits.
 - [wait-timeout upstream](https://github.com/alexcrichton/wait-timeout):
   the SIGCHLD ownership caveat explains choosing existing platform mechanisms.
+
+## Post-measurement artifact boundary
+
+The `e18d9f36` timing image is immutable evidence, not a name to reuse for later
+delivery bytes. A subsequent native Windows run exposed a shared logical-path
+normalization defect outside SSH admission: verbatim drive roots became uncertain
+UNC paths and unrelated local resources could overlap. The central fix and its
+refreshed delivery image require their own identities and focused native
+acceptance. They do not retroactively change these measured rows. The error-path
+probe asserts a nonzero exit, a diagnostic naming the missing source, and preserved
+bytes/mode/mtime; precise caret/line-column provenance is covered separately, not
+proved by this timing harness.
+
+## Delivery refresh after the Windows root repair
+
+The central normalization repair landed in source `8818d11`. Its delivery image
+is separately identified as SHA-256
+`f9162114c165da91d5336a51185e7329f25d584e4b4e465519a2e6ddec4498a0`.
+It is not a relabeling of the earlier `e18d9f36` optimization image. Four exact
+positive/pre-epoch upload/download checks passed first, with reports under
+`.temp/v065/ssh-delivery-{positive,preepoch}-metadata.json`. The unchanged probe
+then ran one final six-case, five-pair AB/BA refresh against the original `d501fd2`
+baseline, after the compiler lane released and while peer builds/tests/writes
+were held. All 60 observations passed, the fixture stopped, and executable/probe
+hashes matched again at the end.
+
+| Workload | Before → delivery p50 ms | Delivery wins | Local CPU before → delivery ms |
+| --- | ---: | ---: | ---: |
+| 4 KiB upload | 1198.946 → 472.079 | 5/5 | 232.480 → 195.027 |
+| Download | 455.398 → 273.301 | 5/5 | 104.069 → 138.035 |
+| Single `exists` | 173.319 → 166.715 | 3/5 | 44.248 → 47.158 |
+| Regex loop, five files | 2368.714 → 750.264 | 5/5 | 504.398 → 367.763 |
+| Five uploads | 5926.831 → 1710.336 | 5/5 | 1125.485 → 670.771 |
+| Missing download, old target retained | 298.760 → 213.438 | 5/5 | 64.610 → 108.282 |
+
+The final transfer controls improve by about 1.67–3.47×. Authentications remain
+8/3/16/40/2 → 1 for the corresponding multi-session cases, with unchanged remote
+session counts; single `exists` stays at one client/authentication/session. Its
+3/5 mixed pairs and −1.827 ms paired mean do not establish a stable universal
+speedup. No helpers, payload or durability work were removed by the Windows
+normalization follow-up.
+
+The explicit local CPU trade-off remains: upload/regex/bulk medians fall by
+16.1%/27.1%/40.4%, but download adds 32.6% (about 34 ms), missing-source handling
+adds 67.6% (about 44 ms), and the one-shot existence control has a retained +6.6%
+point (about 3 ms). The multi-session setup still adds five master/check clients.
+These are joined local msync/client CPU measurements, not sshd/server totals or
+a claim that every isolated command is cheaper. There is no further tuning or
+additional full timing matrix hidden behind these final-source observations.
+
+The earlier report and its two CSVs were hash-verified unchanged. The refreshed
+raw report is `target/performance-v065/ssh/paired-delivery.json`, SHA-256
+`af2d76e4ea608e0d7e3ea17fd942461f0a984edffcb600d9b1dee669c9fd1259`.
+Its independently named [delivery observations](ssh-performance-v065-delivery-observations.csv)
+and [delivery summary](ssh-performance-v065-delivery-results.csv) preserve all
+rows, paired deltas, counts and CPU ratios. Probe identity remains
+`38eeea3bcb7aff7d1cd6ab334c6f7eddb80670f3c3b1ee0296f4e996d299469f`.

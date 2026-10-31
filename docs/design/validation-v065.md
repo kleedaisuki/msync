@@ -1,5 +1,11 @@
 # v0.6.5 independent acceptance
 
+The current delivery image is `f9162114...`; the earlier `e18d9f36...` audit
+remains its own historical checkpoint. See the
+[delivery refresh audit](#delivery-refresh-independent-audit-f9162114) for current
+image, performance and native-platform evidence. Earlier measurements are not
+silently relabeled as delivery results.
+
 ## Contract and ownership
 
 This note maps the complete requested release to observable user journeys. The
@@ -176,9 +182,9 @@ This brings the classified stale-oracle closure to five functions; it does not
 reclassify the independently owned operand-diagnostic or grammar defects as
 stale contracts.
 
-## Final-image independent performance audit
+## Initial integrated-image independent performance audit (e18d9f36)
 
-The final executable is SHA-256
+The initially frozen integrated executable was SHA-256
 `e18d9f36b905630b9915cc5634e4ff4833a66ee34924650fc555913482433f7f`,
 compared with the preserved `d501fd2` baseline
 `dca16a83beb10131ecde492ba6ff587dd90478bfe0dc4450d41088b779fff8e8`.
@@ -236,3 +242,65 @@ It does not support universal CPU/latency/throughput improvements, a strict
 no-regression bound, or Linux-to-Windows/WAN extrapolation. No methodology blocker
 remains for these bounded conclusions. Native-platform functional acceptance and
 release packaging remain separate evidence, not consequences of a timing ratio.
+
+## Delivery refresh independent audit (f9162114)
+
+The Windows known-root correction changed shared production code after the e18
+checkpoint. Its delivery executable is
+`f9162114c165da91d5336a51185e7329f25d584e4b4e465519a2e6ddec4498a0`,
+with library
+`0ef4f615b02f4f8b611d4cd3d54d60d9d06cb161b9f10192aa39b543bc7c3aeb`.
+The independent refresh verified the actual frozen executable, common-source and
+batched probe/library manifests, not just matching display labels. The d501
+baseline and e18 datasets remain unchanged; in particular the original SSH JSON
+still hashes to `177611e7...`.
+
+The [delivery SSH evidence](ssh-performance-v065.md) has a separate full report,
+`target/performance-v065/ssh/paired-delivery.json`, SHA-256
+`af2d76e4ea608e0d7e3ea17fd942461f0a984edffcb600d9b1dee669c9fd1259`.
+All sixty unique cells, five complete AB/BA pairs per six cases, medians and
+delivery CSV correspondence were independently rechecked. The unchanged probe
+still verifies the same bytes/mode/whole-second times or named failure and
+retained target. SCP and remote-session counts remain identical while repeated
+authentication falls to one. Transfer p50 improvements are approximately
+1.67–3.47× in this loopback fixture, with five after-wins per transfer case.
+
+Negative points are delivery-specific: joined local CPU rises 32.6% for download,
+67.6% for the missing-source path, and 6.6% for single `exists`; the last case
+still wins only three of five wall-time pairs. No server CPU saving, universal
+client-process reduction, stable one-shot speedup or Windows/WAN throughput
+benefit is inferred. Four separate positive/pre-epoch metadata checks identify
+this f916 image and unchanged probe; they are not extra paired timing samples.
+
+The [compiler delivery refresh](compiler-performance-v065.md) retains eighty-four
+single-compilation rows and fifty-six separately identified fifty-repeat rows.
+The audit recomputed all seven AB/BA pairs for each workload/size and checked
+identities, allocation equality and unchanged 1/152/336/384-byte control/HIR
+layouts. Fifty-repeat samples are seven paired averages, not 350 independent
+pairs. Unlike the e18 checkpoint, delivery does not show the earlier consistent
+condition improvement. At N=1,000 the amortized paired-median costs are +0.303149ms
+for symbols and +0.558590ms for conditions, each slower in five pairs; paired means
+are +0.281366ms and +0.671043ms. Small cases remain mixed. Root explicitly accepts
+this bounded sub-millisecond-per-thousand lowering cost for the richer inferred
+capabilities and correctness repairs. It is not attributed causally to one
+operator, dismissed as zero cost, or reported as a compiler speedup. Old e18 CLI
+and batching data remain historical; no fresh delivery CLI cohort was claimed.
+
+The delivery public-CLI/object/IR target passed all eleven functions in
+`.temp/v065/delivery-image-acceptance.log`. Native package/install/upgrade/
+uninstall, Linux archive and actual editor-host
+[run 41239526348](https://github.com/kleedaisuki/msync/actions/runs/41239526348)
+at `8818d117...` is successful; publication was **skipped**, not performed.
+The separate native Rust
+[run 41240455544](https://github.com/kleedaisuki/msync/actions/runs/41240455544)
+at `01aef79bb65e316dd2558f985985f91b8dd8eb30` is now terminal and successful on
+both Ubuntu and Windows. Git comparison confirms no production/Cargo/README/
+editor change between those checkpoints; only the portable reset fixture and
+its explanatory runtime note changed. This closes the previously pending native
+fixture validation without pretending that the Linux measurements establish
+native Windows performance.
+
+**Delivery audit verdict:** no methodology or evidence blocker remains for the
+stated bounded results. Both measurement epochs and the delivery's CPU/compiler
+costs remain visible. This audit added no source change, build, test run or new
+measurement; it inspected existing artifacts and authoritative terminal states.

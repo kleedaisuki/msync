@@ -27,7 +27,7 @@ independently verify the resulting bytes, mode and mtime on this loopback host.
 
 Cases are one 4 KiB upload, one download, an existence condition, a five-element
 regex download, five independent uploads, and a failing missing-source download
-that must retain the previous local destination and a located diagnostic. The
+that must retain the previous local destination and a diagnostic naming the missing source. The
 default mtime is deliberately an exact whole second. An initial stricter probe
 found that the frozen baseline's upload changes `1700000000123456000` ns into
 `1700000000000000000` ns; fractional upload fidelity is a separate historical

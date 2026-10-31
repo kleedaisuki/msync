@@ -2,9 +2,12 @@
 
 ## 0.6.5 — locally accepted, unreleased
 
-The integrated source has passed local functional, compatibility, editor and
-bounded performance acceptance. Native Windows/package-workflow verification
-and publication remain separate steps; the
+The integrated source has passed local functional, compatibility and editor
+acceptance, with bounded performance costs recorded explicitly. Native package,
+Windows installer and editor workflows passed on the development branch with
+publication skipped; the final [native Rust run](https://github.com/kleedaisuki/msync/actions/runs/41240455544)
+at `01aef79` passed on Ubuntu and Windows, including terminal wake and credential
+checks. Publication is a separate step; the
 [integration workboard](docs/design/integration-v065.md) records their scope.
 
 - Make inferred semantic `Path`, `String`, `Scope`, `Bool` and `Range<T>` types
@@ -33,26 +36,39 @@ and publication remain separate steps; the
   admission, and use responsive native child completion with a bounded fallback.
   Real loopback upload/download/selection controls improve response time without
   reducing remote sessions or omitting durability work. Local CPU costs remain
-  explicit: download +20.6% and missing-source error +70.8%, versus five-upload
-  CPU −39.4%; a single `exists` query has mixed timing. Restore exact fractional
+  explicit on the refreshed delivery image: download +32.6%, missing-source error
+  +67.6% and single `exists` +6.6%, versus five-upload CPU −40.4%; single `exists`
+  response timing is mixed. Restore exact fractional
   upload/download timestamps through the existing private-staging/receipt paths.
 - Preserve compact inferred types: scalar/Expr/instruction layouts and measured
-  old-workload allocation traffic are unchanged. The 1,000-condition lowering
-  control improves 9.730→8.083ms in all seven pairs; symbol, capture and whole-CLI
-  timing remains mixed rather than a universal compiler speedup.
+  old-workload allocation traffic are unchanged, and computed values are
+  synthesized once. The actual delivery's batched 1,000-entry symbol/condition
+  controls retain +0.303ms/+0.559ms paired-median costs (each slower in five of
+  seven pairs); these bounded feature/correctness costs are accepted explicitly,
+  not advertised as a compiler speedup. Earlier faster rows retain their own
+  historical image identity.
+- Canonicalize known Windows drive/UNC resource-comparison roots without
+  rewriting IO operands. A 64-case alias/sibling property and 512-case index
+  oracle preserve alias completeness and independent-resource separation.
+  Distinguish Windows `SystemTime`'s 100ns fixture representation from actual
+  transfer-metadata precision; portable test-data corrections do not weaken
+  production timestamp behavior.
 - Repair source-owned operand diagnostics and the REPL completion-notice
   backpressure deadlock. A maintained, provenance-recorded Rustyline 19 patch
-  preserves ordered native rendering with nonblocking/coalesced wakeups instead
-  of adding sleeps, a notification thread or a replacement editor.
+  preserves complete ordered native messages, implicit per-message raw-mode
+  newlines and nonblocking/coalesced wakeups instead of adding sleeps, a
+  notification thread or a replacement editor.
 - Keep quality checks local-first and Actions limited to cross-platform behavior,
   native package/editor acceptance and publication. Published tags and asset bytes
   are immutable; version agreement, required VSIX/platform assets and checksums
   remain release invariants.
 
 Local strict all-target Clippy and formatting pass after the compatibility
-repairs. All eleven final-image public acceptance functions and all nine real
-VS Code host phases pass. The local VSIX is verified; no native Windows, WSL,
-WAN-performance or publication claim is inferred from those Linux results.
+repairs. All eleven refreshed delivery-image public acceptance functions and all
+nine real VS Code host phases pass; the verified VSIX is unchanged. Native
+package/installer acceptance and the successful native Rust matrix retain their
+separate revisions and scopes. No WSL/WAN-performance or publication claim is
+inferred from Linux results.
 
 See the [release notes](docs/releases/0.6.5.md),
 [type/operator contract](docs/design/type-system-v065.md), and

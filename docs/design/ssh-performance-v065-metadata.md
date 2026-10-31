@@ -79,7 +79,7 @@ Raw functional logs/JSON are under `.temp/v065/ssh-{fractional,preepoch}-metadat
 and `ssh-{fractional,preepoch}-upload-final*`; the useful outcomes above survive
 cleanup. The elapsed values in these diagnostic runs are not performance claims.
 
-The integrated final image SHA-256
+The frozen integrated optimization image SHA-256
 `e18d9f36b905630b9915cc5634e4ff4833a66ee34924650fc555913482433f7f`
 subsequently passed all four exact positive/pre-epoch upload/download checks,
 including the final locale handling. Raw reports are
@@ -103,3 +103,10 @@ documents 100ns intervals on Windows and nanosecond intervals on Linux. The
 shared formatting fixture now uses exactly representable `123456700ns`; Unix
 keeps an additional exact `123456789ns` assertion. Both retain the signed
 pre-epoch cases. Production timestamp formatting/repair code is unchanged.
+
+After the independent Windows logical-root normalization repair, the refreshed
+`f9162114c165da91d5336a51185e7329f25d584e4b4e465519a2e6ddec4498a0`
+delivery image also passed all four exact positive/pre-epoch upload/download
+checks. Reports `.temp/v065/ssh-delivery-positive-metadata.json` and
+`.temp/v065/ssh-delivery-preepoch-metadata.json` retain their own image/probe
+identities; these do not relabel the earlier `e18d9f36` evidence.

@@ -1,5 +1,12 @@
 # v0.6.5 compiler performance acceptance
 
+The current delivery image is `f9162114...`, not the initially accepted
+`e18d9f36...` image. The original measurements and bounded decision below remain
+attached to e18; the later Windows-root correctness repair and its narrow
+[delivery refresh](#delivery-refresh-after-windows-root-canonicalization) have
+separate identities and rows. In particular, an e18 timing improvement is not
+automatically a claim about the delivery image.
+
 ## Workload and decision boundary
 
 The type-system work must preserve practical compilation costs while making
@@ -270,3 +277,111 @@ final-image invocations completed successfully. Rust probe formatting and all
 measurement-document local links/diff checks pass. Semantic capability and
 restart/publication acceptance remain the corresponding owners' actual tests,
 not benchmark timing assertions.
+
+## Delivery refresh after Windows root canonicalization
+
+Native Windows tests subsequently exposed a shared `LogicalPath` defect: known
+verbatim drive roots were treated as uncertain (causing false global joins), and
+verbatim/ordinary UNC roots could fail to alias. The central repair in commit
+`8818d117172d67ddb9b4145ea645ccc759b20c0f` canonicalizes the known roots with
+borrowed handling for ordinary Linux paths. This changes a shared hot-path source
+file, even though the inferred type/specialization implementation is unchanged.
+
+The new delivery executable SHA-256 is
+`f9162114c165da91d5336a51185e7329f25d584e4b4e465519a2e6ddec4498a0`,
+and its library SHA-256 is
+`0ef4f615b02f4f8b611d4cd3d54d60d9d06cb161b9f10192aa39b543bc7c3aeb`.
+The unchanged common source `4a3f5621...` was linked to that exact library,
+producing delivery probe SHA-256
+`84ade265c5c295d095a603e848dab7d6c6514a7dc9b13557410472229d850564`.
+The original d501 baseline/probe was reused unchanged, not an e18-based control.
+The artifacts and digest manifests remain under `target/performance-v065`.
+
+Root granted one narrow refresh after the delivery image's 11 functional cases,
+actual editor-host acceptance and four SSH metadata checks finished. No
+Cargo/rustc was active at admission. Seven AB/BA pairs reran only the three
+primary lowering cases; candidate-only typed lowering was also refreshed.
+Image/library/probe hashes matched afterward. No real-CLI or small-batch catalog
+was repeated, and no e18 row was overwritten. The complete
+[84 delivery rows](compiler-v065-delivery-lowering.csv) are separately inspectable.
+
+All four public layouts still match the old baseline exactly: Type 1 byte,
+Expr 152, ControlInstruction 336, HIR Instruction 384. Every case/size also retains
+exactly the same allocation count and requested bytes as the old baseline and
+the e18 checkpoint.
+
+| Case | N | Before median ms | Delivery median ms | Paired mean delta ms | Delivery faster / 7 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| symbols | 100 | 0.713073 | 0.839765 | +0.181948 | 1 |
+| conditions | 100 | 0.724154 | 0.982094 | +0.198826 | 2 |
+| captures | 100 | 1.827452 | 1.999640 | -0.044137 | 3 |
+| symbols | 1,000 | 6.615947 | 9.769462 | +1.005131 | 3 |
+| conditions | 1,000 | 7.580865 | 8.064902 | -0.984294 | 3 |
+| captures | 1,000 | 64.817044 | 63.200809 | -7.954044 | 4 |
+
+The refreshed timing is weaker than the earlier e18 cohort, and remains visible:
+small symbols are slower in six pairs (paired median +0.137414ms), and small
+conditions in five (+0.210375ms). Symbols at 1,000 have paired median +2.763090ms,
+despite overlapping ranges of 6.178152–11.285696ms before and
+6.607969–10.803209ms after. Conditions at 1,000 are now mixed rather than the
+seven-of-seven improvement observed for e18; their paired median is +0.126643ms
+while the paired mean is negative because of a baseline tail. Thus neither the
+e18 condition speedup nor its small-symbol discriminator is relabeled as proof
+of a delivery-image speedup or zero-cost guarantee. Unchanged layouts/allocations
+rule out a footprint increase on these controls, but do not identify the cause
+of timing variation or prove an absence of all CPU costs. These observations
+were reported to the root before acceptance.
+
+Candidate-only typed lowering on the actual delivery image has medians
+4.244709ms at N=100 and 42.295995ms at N=1,000, with observed ranges
+4.183185–5.069388ms and 34.580554–48.489313ms. Allocation calls/requested bytes
+remain 17,044/2,621,107 and 176,979/26,449,939 respectively. These are new-capability
+absolute costs, not an old-parser speed ratio. The negative single-compilation
+observations prompted the bounded amortized control below.
+
+### Delivery amortized control and accepted cost
+
+Root authorized one follow-up covering only symbols and conditions at N=100 and
+1,000. It reuses the existing 50-repeat source
+`e2f5f906b944d339001c0b37bc06a15822f7a91f01e8f6cd596b0a78ec2eeb06`
+without edits, the original d501 batched probe `9e69f659...`, and a separately
+linked delivery probe SHA-256
+`ee0ef7d228ce0d0f3aa744fb87092a91ad7953063546ba10e72b787956f63726`.
+The binary/library identities stay f916/0ef4. Seven AB/BA pairs each measure
+50 fresh compilations and normalize by 50; these are seven paired averages,
+not 350 independent samples. All [56 amortized rows](compiler-v065-delivery-amortized.csv)
+are preserved independently of the first delivery and e18 cohorts. End hashes,
+allocation traffic and all four public layouts remained unchanged.
+
+| Case | N | Before median ms | Delivery median ms | Paired mean delta ms | Paired median delta ms | Delivery faster / 7 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| symbols | 100 | 0.765136 | 0.740543 | -0.014392 | -0.008535 | 4 |
+| conditions | 100 | 0.647579 | 0.707268 | +0.050031 | +0.014621 | 3 |
+| symbols | 1,000 | 7.911252 | 8.205301 | +0.281366 | +0.303149 | 2 |
+| conditions | 1,000 | 9.488218 | 10.137390 | +0.671043 | +0.558590 | 2 |
+
+The large-input cost persists in a modest bounded form: about +0.30ms per
+1,000-symbol compilation and +0.56ms per 1,000-condition compilation at paired
+median, each slower in five pairs. Paired mean deltas average approximately
+0.28 and 0.67 microseconds per source entry. Those averages cover complete
+lowering/destruction and are **not** a causal measurement of one operator.
+The small-input results remain mixed; the original approximately 0.1–0.2ms
+small-case penalty is not stable under this control.
+
+This is an accepted delivery trade-off, not a speedup claim. The richer inferred
+capabilities and corrected path comparison/normalization add useful semantics
+and safety, while these controls show no heap amplification or expression-layout
+growth. The phase and allocation profiles narrow the likely remaining work to
+checking, normalization and/or generated-code effects rather than growing
+environments or larger expression payloads. They do not distinguish which
+specific branch is responsible. A current `perf stat -e task-clock -- true`
+capability probe was denied with `perf_event_paranoid=3`; host security settings
+were not changed and no sampled CPU profile is claimed. The measured intervals
+are wall time for pure compiler work, not direct process-CPU counters.
+
+Root accepted this bounded, documented cost in exchange for the new functionality
+and correctness. No speculative cache, weakened checking, further measurement or
+production rewrite is justified by this result. All e18 and delivery epochs keep
+their own identities and both positive and negative rows; final delivery is
+described as modest/mixed compiler cost, never the earlier e18 speedup. Compiler
+performance work is closed with no remaining owned build or measurement process.

@@ -14,6 +14,45 @@ The starting source is `d501fd26614055af7a0f77b58a7b20bbb6cadd99`, on topic bran
 local-first validation policy. User-owned untracked `docs/analysis/` is unrelated
 to this implementation and is not included in delivery changes.
 
+## Current accepted delivery
+
+The final implementation source is `8818d117172d67ddb9b4145ea645ccc759b20c0f`;
+`01aef79bb65e316dd2558f985985f91b8dd8eb30` adds only the portable real-TCP-reset
+failure fixture. Production sources/manifests/embedded README are unchanged
+between those revisions. The immutable `msync-v065-delivery` binary SHA-256 is
+`f9162114c165da91d5336a51185e7329f25d584e4b4e465519a2e6ddec4498a0`,
+matching library `0ef4f615b02f4f8b611d4cd3d54d60d9d06cb161b9f10192aa39b543bc7c3aeb`.
+The exact committed build-source archive, identity JSON and code-file hashes
+are adjacent under `target/performance-v065/baselines/`.
+
+- The delivery image passed all eleven public acceptance functions and nine real
+  VS Code host phases; the source-aligned VSIX remains 122,091 bytes / ten files,
+  SHA-256 `187f1bf25477f25b57e5b25b84499f00845cd17cb90f887892bc290efe1ff84c`.
+- [Native Rust run 41240455544](https://github.com/kleedaisuki/msync/actions/runs/41240455544)
+  passed on Windows and Ubuntu, including native terminal queue/wake and Windows
+  credential checks. The Windows path-model error is corrected centrally, not
+  hidden behind condition-specific global waits or platform skips.
+- [Package run 41239526348](https://github.com/kleedaisuki/msync/actions/runs/41239526348)
+  passed Windows install/repair/upgrade/uninstall, Linux portable archive and real
+  editor-host acceptance on the same production source. Publication was skipped.
+  Downloaded complete assets and checksums are under `dist/packages/v0.6.5-8818d11/`.
+- Current-image SSH response medians improve by 1.67–3.47x on the four transfer
+  cases, all five of five paired wins. The new 60-row dataset retains setup CPU
+  costs (+32.6% download, +67.6% error, +6.6% exists) and mixed single-exists
+  latency; bulk CPU falls 40.4%. Remote sessions are not removed. Four separate
+  exact fractional/pre-epoch metadata transfers passed. See the delivery appendix
+  in [the SSH record](ssh-performance-v065.md).
+- Current compiler data, not the old `e18` result, governs delivery claims.
+  Layouts and allocation traffic stay unchanged; amortized paired medians add
+  about 0.303ms per 1,000 symbols and 0.559ms per 1,000 conditions. This bounded
+  feature/correctness cost is accepted, with no operator-specific CPU attribution
+  or universal speedup claim. All earlier rows remain separately identified in
+  [the compiler record](compiler-performance-v065.md).
+
+The older checkpoints below retain their actual source/image scope. They do not
+replace this delivery evidence or retroactively acquire its identity. No main
+merge, new version tag, marketplace publication or GitHub Release is performed.
+
 ## Contracts and authoritative completion evidence
 
 | Requirement | Required evidence | Ownership / durable record | State |
@@ -103,7 +142,7 @@ The original complete log and compact summary are under
 requirement audit below must supersede these failures with actual evidence.
 These counts do not establish that the integrated delivery is already complete.
 
-## Frozen local delivery and completion evidence
+## Initial frozen local checkpoint (e18; superseded by delivery refresh)
 
 The integrated release-mode binary is
 `target/performance-v065/baselines/msync-v065-final`, SHA-256
@@ -170,6 +209,50 @@ checked exact image/probe/library identities and retained the negative findings.
 No published tag or release asset has been replaced. Native platform/package
 workflow results, when run on the development branch, are recorded separately
 from the local evidence and do not become an external quality-status gate.
+
+### Native test portability follow-up
+
+The first native package workflow on development commit `149195a` passed Linux,
+Windows install/repair/upgrade/uninstall, and the actual editor host; its publish
+job was skipped. The independent Windows Rust job then exposed a fixture that
+asked Windows `SystemTime` to retain 1ns rather than its 100ns representation.
+The portable case now uses 123456700ns and Unix retains the exact 123456789ns
+assertion; production timestamp code did not change. The correction is locally
+tested and linked to the standard-library contract in the metadata record.
+
+Rebuilding after this cfg(test)-only correction changes the complete binary
+hash to `b2acbce3454af4b4562f505d32d36d4a93e79d2ba31b9249ba2094b9fd8bf789`
+and library hash to
+`2edf7d0af9116e8a3ebff87c7b8cee39438a0f50a15fabc37804b28222868f4c`.
+The executable's loadable code/data image and addresses are byte-identical to
+the measured `e18d9f36` image: `objcopy -O binary` outputs compare equal, SHA-256
+`2410bb173ce33a1bd08ef1210de50b7125a95d0e5639e9f2b24e7cb222bd5282`.
+The first full-file difference is in the nonloaded string table. Original timing
+rows retain their original image identities; they are not relabeled.
+
+The first Linux Rust run reached custom benchmark executables under
+`cargo test --all-targets` and was canceled by the newer source revision while
+the 1,000-item object benchmark was still running. Cross-platform compatibility
+now uses `--tests --no-fail-fast`, keeping performance probes local/explicit and
+collecting later native failures without restarting successful targets.
+
+### Windows resource-model and portable failure-injection closure
+
+Native Windows then exposed two local-control waits and a staged-file fixture
+problem. A host-independent probe proved that the shared comparison model
+misclassified canonical extended drives as uncertain UNC roots, and also missed
+normal/extended UNC aliases. Known prefix spellings now feed the same ordinary
+drive/UNC model; IO operands are unchanged, and unknown devices/verbatim special
+components remain conservative. Four direct/property cases (64 generated alias
+and sibling cases) and the expanded 512-case candidate oracle passed locally.
+The two original no-global-acquire journeys then passed natively.
+
+Windows also correctly refused renaming the live destination owner after stage
+admission. The background-failure journey now injects a real abortive TCP reset
+through existing socket2 on every platform, preserving its unrelated-child,
+error-before-EOF and exact-byte assertions and adding partial-output refusal.
+No production share policy, timeout or platform coverage was weakened. The final
+Windows/Ubuntu run linked above verifies that last portable fixture too.
 
 ## Relevant primary prior art
 

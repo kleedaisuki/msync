@@ -19,8 +19,8 @@ Keep that recovery coverage in the 0.6.5 acceptance set.
 ## H065-01: executable pipeline adapter drops typed contextual binding (P1)
 
 **Owner:** compatibility adapter (`src/pipeline.rs`), coordinated with the
-language/type integration lead. **Status:** confirmed; adapter repair is under
-focused verification.
+language/type integration lead. **Status:** closed locally by the recursive
+contextual adapter; the initial verification sequence below is historical.
 
 At the baseline, `pipeline::compile_named` returns
 `compile_relocatable_named(...).map(|compiled| compiled.compilation)`
@@ -62,8 +62,9 @@ compiles or passes.
 ## H065-02: implicit range transfer loses statement atomicity (P1)
 
 **Owner:** typed range lowering/runtime publication, coordinated by the language
-integration lead. **Status:** confirmed in the public CLI and released 0.6.0
-Linux binary; not fixed by H065-01 alone.
+integration lead. **Status:** closed for newly compiled source/objects by the
+typed finite-cohort operation. The released 0.6.0 evidence below remains an
+immutable reproduction, not a claim that old For bytecode was rewritten.
 
 At the baseline, `compiler/structured/v6.rs:1075-1102` translates one
 `range -> container/` statement into a synthetic `For` with a per-element
@@ -74,7 +75,7 @@ item is already visible and retained after failure.
 The unchanged
 `execution_v4::a_selector_collision_does_not_publish_an_earlier_selected_file`
 asserts that neither selected file is published on a later collision. H065-01
-currently masks this failure by rejecting the unbound control operand first.
+initially masked this failure by rejecting the unbound control operand first.
 The public CLI performs contextual binding and exposes the separate publication
 defect directly.
 
@@ -120,7 +121,32 @@ the established [statement contract](statement-atomicity.md). An explicit user
 `for` loop remains multiple ordinary body statements with its own per-iteration
 semantics. Do not weaken the unchanged collision assertion.
 
-## Remaining acceptance scope
+## Accepted closure and compatibility boundary
+
+The repaired public adapter and whole-cohort publication together pass all
+twelve unchanged `execution_v4` tests. Final-image independent acceptance covers
+both regex and literal-Path cohorts, later collision with no earlier publication,
+empty selection with no destination creation, and source-free object/IR reuse.
+Existing API/context tests and new `pipeline_context_v065` cover recursive path
+binding and compiler-state rollback on binding error. Real OpenSSH cohort cases
+also preserve remote bytes/metadata, alias admission and one-journal ownership;
+see [the final validation record](validation-v065.md).
+
+An old object containing a For instruction does not record whether it came from
+an explicit loop or the faulty old implicit-selector lowering. Its established
+iteration semantics remain unchanged; recompile the original selector source to
+obtain the corrected RangeTransfer opcode. The loader never guesses from debug
+source. Published v0.6.0 tag and asset bytes remain unchanged.
+
+The wider local compatibility checkpoint subsequently found and closed precise
+operand/provenance/Pwd-member compatibility, five stale structural oracles and
+the real external-printer lifecycle deadlock. The exact managed upstream patch,
+not arbitrary timeout changes, removes the producer/reader wait cycle. The
+background failure fixture now observes destination admission before mutating
+its parent. These are recorded in [the integration workboard](integration-v065.md)
+and [runtime activity note](runtime-activity-v6.md).
+
+## Verification scope
 
 The failed Rust jobs stop at the first failing integration target, so their logs
 do not prove that every later target passes. After these repairs, select tests

@@ -21,9 +21,9 @@ checker. This uses the standard
 
 The real Extension Development Host fixture edits a Bool range, canonical
 `$view::filter`, a direct API Scope alias, the scope-qualified `codex` symbol
-example and a scheduled conditional. The integrated 0.6.5 run below passed all
-nine phases against the frozen release server; the earlier 0.6 record remains
-separately identified historical evidence.
+example and a scheduled conditional. Both identified 0.6.5 host runs below passed
+all nine phases, including the refreshed delivery image; the earlier 0.6 record
+remains separately identified historical evidence.
 
 Focused local 0.6.5 acceptance uses the real locked production crate:
 
@@ -50,9 +50,9 @@ was added. The following actual-host acceptance closes the integrated editor
 boundary on the identified frozen image.
 
 
-### Integrated 0.6.5 real-host and package acceptance
+### Initial frozen 0.6.5 real-host and package acceptance
 
-The single updated host run started at `2026-10-31T19:24:16.378Z` and exited 0.
+The first frozen-image host run started at `2026-10-31T19:24:16.378Z` and exited 0.
 It used the already managed VS Code **1.144.0** executable, product commit
 `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`, native executable SHA-256
 `d1c6fe7cec1e285f1210cd3c0472099c25bb56e94f0c8ef7384ee3229ed0b518`,
@@ -96,6 +96,32 @@ xvfb-run -a npm --prefix editors/vscode run test:integration
 Disposable detailed evidence lives in `.temp/vscode-host-x7BSOc` and
 `.temp/v065/vsix-audit.json`; the identities and observations above survive
 cleaning those temporary files.
+
+
+### Refreshed delivery-image host acceptance
+
+The shared Windows root-normalization repair produced a new delivery image
+without changing UI/parser/SSA code or the source-aligned VSIX. Its independent
+host run started at `2026-10-31T20:37:04.936Z`, using
+`target/performance-v065/baselines/msync-v065-delivery`, reported `msync 0.6.5`
+and exited 0. Start/end image SHA-256 matched
+`f9162114c165da91d5336a51185e7329f25d584e4b4e465519a2e6ddec4498a0`.
+All nine phases in the table above passed again: 16 formatting edits, canonical
+and API Scope alias completion, lexical `codex` navigation, 50 UTF-16 semantic
+tokens, diagnostic repair, and unchanged/absent DSL effect targets. This was only
+the actual host journey; no Cargo build or component-suite rerun accompanied it.
+
+The managed VS Code host, production JS and VSIX bytes are unchanged. The VSIX
+remains 122,091 bytes/10 files with SHA-256
+`187f1bf25477f25b57e5b25b84499f00845cd17cb90f887892bc290efe1ff84c`;
+it was not rewritten or repackaged. The earlier `e18d9f36...` acceptance above is
+retained as its own frozen-image result, not relabeled as this delivery image.
+
+The latest detailed evidence is `.temp/vscode-host-oJdbkn` and
+`.temp/v065/vsix-audit.json`; the previous image's audit is separately retained
+as `.temp/v065/vsix-audit-final-e18d9f36.json`. To repeat this exact incremental
+host check, use the previous command with `MSYNC_TEST_SERVER_PATH` set to
+`$PWD/target/performance-v065/baselines/msync-v065-delivery`.
 
 ## Ownership and invariants
 
