@@ -66,14 +66,14 @@ fn predicates_and_transforms_reject_wrong_result_types() {
         "{errors:?}"
     );
     let errors = compile(
-        "boolean yes(item):\n    return true\nitems := missing/<.*> | views::transform(yes)\n",
+        "symbol scope(item):\n    return $local\nitems := missing/<.*> | views::transform(scope)\n",
     )
     .unwrap_err();
     assert!(
         errors.iter().any(|report| report
             .diagnostic
             .message
-            .contains("transforms must return a path or string")),
+            .contains("transforms must return a path, string or bool")),
         "{errors:?}"
     );
 }
@@ -123,13 +123,10 @@ fn finite_ranges_and_direct_adaptor_calls_have_typed_consumers() {
 fn finite_range_element_and_search_types_are_enforced() {
     for (code, message) in [
         (
-            "items := ranges::of(\"text\", path)\n",
-            "share one static type",
+            "items := ranges::of(\"text\", $local)\n",
+            "range elements must be paths, strings or bool",
         ),
-        (
-            "items := ranges::of(true)\n",
-            "elements must be paths or strings",
-        ),
+        ("items := ranges::of(ranges::of(true))\n", "not a scalar"),
         (
             "found = views::single(\"text\") | ranges::contains(path)\n",
             "search value must match",

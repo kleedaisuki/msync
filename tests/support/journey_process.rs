@@ -26,7 +26,9 @@ pub struct Process {
 
 impl Process {
     pub fn command(root: &Path, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_msync"));
+        let executable = std::env::var_os("MSYNC_TEST_EXE")
+            .unwrap_or_else(|| env!("CARGO_BIN_EXE_msync").into());
+        let mut command = Command::new(executable);
         command
             .current_dir(root)
             .args(args)

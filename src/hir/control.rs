@@ -10,13 +10,112 @@ use crate::relocatable::{Namespace, Path as RelocPath};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SlotId(pub usize);
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Type {
     Bool,
     String,
     Path,
     Space,
+    Union(ScalarUnion),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "Vec<Type>", into = "Vec<Type>")]
+pub enum ScalarUnion {
+    BoolString,
+    BoolPath,
+    StringPath,
+    BoolStringPath,
+}
+
+impl ScalarUnion {
+    pub fn members(&self) -> &'static [Type] {
+        match self {
+            Self::BoolString => &[Type::Bool, Type::String],
+            Self::BoolPath => &[Type::Bool, Type::Path],
+            Self::StringPath => &[Type::String, Type::Path],
+            Self::BoolStringPath => &[Type::Bool, Type::String, Type::Path],
+        }
+    }
+
+    pub fn iter(&self) -> std::slice::Iter<'static, Type> {
+        self.members().iter()
+    }
+
+    fn mask(self) -> u8 {
+        match self {
+            Self::BoolString => 3,
+            Self::BoolPath => 5,
+            Self::StringPath => 6,
+            Self::BoolStringPath => 7,
+        }
+    }
+}
+
+impl From<ScalarUnion> for Vec<Type> {
+    fn from(value: ScalarUnion) -> Self {
+        value.members().to_vec()
+    }
+}
+
+impl TryFrom<Vec<Type>> for ScalarUnion {
+    type Error = &'static str;
+
+    fn try_from(types: Vec<Type>) -> Result<Self, Self::Error> {
+        match types.as_slice() {
+            [Type::Bool, Type::String] => Ok(Self::BoolString),
+            [Type::Bool, Type::Path] => Ok(Self::BoolPath),
+            [Type::String, Type::Path] => Ok(Self::StringPath),
+            [Type::Bool, Type::String, Type::Path] => Ok(Self::BoolStringPath),
+            _ => Err(
+                "a scalar union must list distinct Bool, String or Path members in canonical order",
+            ),
+        }
+    }
+}
+
+impl Type {
+    pub fn join(types: impl IntoIterator<Item = Self>) -> Option<Self> {
+        let mut mask = 0;
+        let mut scope = false;
+        for ty in types {
+            match ty {
+                Self::Bool => mask |= 1,
+                Self::String => mask |= 2,
+                Self::Path => mask |= 4,
+                Self::Space => scope = true,
+                Self::Union(types) => mask |= types.mask(),
+            }
+        }
+        if scope {
+            return (mask == 0).then_some(Self::Space);
+        }
+        match mask {
+            0 => None,
+            1 => Some(Self::Bool),
+            2 => Some(Self::String),
+            3 => Some(Self::Union(ScalarUnion::BoolString)),
+            4 => Some(Self::Path),
+            5 => Some(Self::Union(ScalarUnion::BoolPath)),
+            6 => Some(Self::Union(ScalarUnion::StringPath)),
+            _ => Some(Self::Union(ScalarUnion::BoolStringPath)),
+        }
+    }
+
+    pub fn is_range_item(&self) -> bool {
+        !matches!(self, Self::Space)
+    }
+
+    pub fn accepts(&self, candidate: &Self) -> bool {
+        match (self, candidate) {
+            (Self::Union(types), Self::Union(candidates)) => {
+                types.mask() & candidates.mask() == candidates.mask()
+            }
+            (Self::Union(types), candidate) => types.members().contains(candidate),
+            _ => self == candidate,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +147,11 @@ pub enum ExprKind {
         module_file: Option<std::path::PathBuf>,
     },
     Slot(SlotId),
+    IntoPath {
+        value: Box<Expr>,
+        #[serde(default)]
+        pwd: Option<std::path::PathBuf>,
+    },
     Let {
         slot: SlotId,
         value: Box<Expr>,
@@ -133,6 +237,11 @@ pub enum ControlInstruction {
     },
     Delete {
         path: Expr,
+    },
+    RangeTransfer {
+        range: RangeExpr,
+        destination: Expr,
+        mode: DestinationMode,
     },
     Transfer {
         source: TransferInput,
@@ -233,6 +342,7 @@ impl ControlInstruction {
             Self::Loop { .. } => "loop",
             Self::Break { .. } => "break",
             Self::Delete { .. } => "delete",
+            Self::RangeTransfer { .. } => "range_transfer",
             Self::Transfer { .. } => "transfer",
         }
     }

@@ -28,6 +28,10 @@ pub(super) enum Value {
         pwd: Option<PathBuf>,
         module_file: Option<PathBuf>,
     },
+    ComposedSpace {
+        outer: Box<Value>,
+        inner: Box<Value>,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -37,6 +41,10 @@ enum PathAccess {
 }
 
 impl Value {
+    fn is_scope(&self) -> bool {
+        matches!(self, Self::Space { .. } | Self::ComposedSpace { .. })
+    }
+
     fn boolean(self, span: Span) -> Result<bool> {
         match self {
             Self::Bool(value) => Ok(value),
@@ -128,6 +136,11 @@ impl RuntimeSession {
                         .await?;
                     crate::execution::control_fs::delete(&location, &self.cancel, span).await
                 }
+                ControlInstruction::RangeTransfer {
+                    range,
+                    destination,
+                    mode,
+                } => self.transfer_range(range, destination, *mode, node).await,
                 ControlInstruction::Spawn {
                     process,
                     executable,
@@ -276,6 +289,77 @@ impl RuntimeSession {
         Ok(())
     }
 
+    async fn transfer_range(
+        &mut self,
+        range: &RangeExpr,
+        destination: &Expr,
+        mode: DestinationMode,
+        node: &Instruction,
+    ) -> Result<()> {
+        let span = node.span;
+        let destination = self.eval(destination, span).await?.location(span)?;
+        let mut cursor = Cursor::new(range);
+        let mut nodes = Vec::new();
+        while let Some(value) = cursor.next(self, span).await? {
+            let source = match value {
+                Value::String(text) => hir::Input::Literal(Arc::from(text)),
+                Value::Path(location, _) => {
+                    self.wait_control_path(&location, PathAccess::Target, span)
+                        .await?;
+                    hir::Input::File {
+                        location,
+                        pattern: None,
+                    }
+                }
+                _ => {
+                    return Err(ExecutionError::new(
+                        "range transfer items must be paths or strings",
+                        span,
+                    ));
+                }
+            };
+            nodes.push(Instruction {
+                id: node.id,
+                kind: InstructionKind::Transfer {
+                    source,
+                    destination: hir::Output::File {
+                        location: destination.clone(),
+                        mode,
+                    },
+                },
+                span,
+                expansion: node.expansion.clone(),
+            });
+        }
+        if nodes.is_empty() {
+            return Ok(());
+        }
+        self.wait_control_path(&destination, PathAccess::Target, span)
+            .await?;
+        self.ensure_invocation()?;
+        let lease = self.admission.copy(span).map_err(super::admission_error)?;
+        let mut options = self.options.clone();
+        options.cancel = self.cancel.clone();
+        let progress = self.observer.clone();
+        let origin = self.origins.get(&node.id).cloned();
+        let trace = crate::telemetry::context();
+        let result = crate::runtime::ssh::spawn_blocking(move || {
+            crate::telemetry::with_context(trace.as_ref(), || {
+                let _lease = lease;
+                let mut owner = super::ordinary::Ordinary::new(&options);
+                owner.set_progress(progress);
+                owner.set_origin(origin.clone());
+                finish_cohort(&mut owner, &nodes, span, origin.as_ref())
+            })
+        })
+        .await
+        .map_err(|cause| {
+            ExecutionError::caused("range publication worker failed", span, cause)
+        })??;
+        crate::execution::merge(&mut self.report, result);
+        Ok(())
+    }
+
     fn control_region<'a>(&'a mut self, region: &'a hir::Region) -> Pending<'a, ()> {
         Box::pin(async move {
             self.submission = self.submission.checked_add(1).ok_or_else(|| {
@@ -401,6 +485,30 @@ impl RuntimeSession {
                     }
                     result
                 }
+                ExprKind::IntoPath { value, pwd } => match self.eval(value, span).await? {
+                    value @ Value::Path(..) => Ok(value),
+                    Value::String(path) => {
+                        let pwd = pwd.as_ref().ok_or_else(|| {
+                            ExecutionError::new("filename conversion was not contextualized", span)
+                        })?;
+                        let path = if absolute(&path) {
+                            path
+                        } else {
+                            pwd.join(path).to_string_lossy().into_owned()
+                        };
+                        Ok(Value::Path(
+                            Location {
+                                backend: Backend::Local,
+                                path,
+                            },
+                            DestinationMode::Exact,
+                        ))
+                    }
+                    _ => Err(ExecutionError::new(
+                        "filename conversion requires a path or string",
+                        span,
+                    )),
+                },
                 ExprKind::Exists(path) => {
                     let location = self.eval(path, span).await?.location(span)?;
                     self.wait_control_path(&location, PathAccess::Target, span)
@@ -625,7 +733,50 @@ impl RuntimeSession {
     }
 }
 
+fn finish_cohort(
+    owner: &mut super::ordinary::Ordinary,
+    nodes: &[Instruction],
+    span: Span,
+    origin: Option<&crate::source::InstructionOrigin>,
+) -> Result<crate::execution::ExecutionReport> {
+    let mut result = owner
+        .execute_cohort(nodes)
+        .and_then(|attempt| match attempt {
+            super::ordinary::Attempt::Completed(report) => Ok(report),
+            super::ordinary::Attempt::Unsupported => Err(ExecutionError::new(
+                "range cohort requires finite file publication",
+                span,
+            )),
+        });
+    let cleanup = owner.close();
+    match &mut result {
+        Ok(report) => report.cleanup.extend(cleanup),
+        Err(error) => {
+            for issue in cleanup {
+                error.retained_paths.extend(issue.retained_paths);
+                error.report.help.push(format!("cleanup: {}", issue.cause));
+            }
+        }
+    }
+    result.map_err(|error| error.with_origin(origin))
+}
+
 fn select(namespace: Value, item: Value, span: Span) -> Result<Value> {
+    if item.is_scope() {
+        if !namespace.is_scope() {
+            return Err(ExecutionError::new(
+                "namespace selection requires a space",
+                span,
+            ));
+        }
+        return Ok(Value::ComposedSpace {
+            outer: Box::new(namespace),
+            inner: Box::new(item),
+        });
+    }
+    if let Value::ComposedSpace { outer, inner } = namespace {
+        return select(*outer, select(*inner, item, span)?, span);
+    }
     let Value::Space {
         namespace,
         pwd,
@@ -637,6 +788,25 @@ fn select(namespace: Value, item: Value, span: Span) -> Result<Value> {
             span,
         ));
     };
+    if let Namespace::Qualified { outer, inner } = namespace {
+        let outer = Value::Space {
+            namespace: *outer,
+            pwd: pwd.clone(),
+            module_file: module_file.clone(),
+        };
+        let inner = Value::Space {
+            namespace: *inner,
+            pwd,
+            module_file,
+        };
+        return select(outer, select(inner, item, span)?, span);
+    }
+    if matches!(namespace, Namespace::Api { .. }) {
+        return Err(ExecutionError::new(
+            "builtin API scopes do not select filesystem paths",
+            span,
+        ));
+    }
     let explicit_backend = match &item {
         Value::Path(location, _) => Some(location.backend.clone()),
         _ => None,
@@ -713,7 +883,9 @@ fn select(namespace: Value, item: Value, span: Span) -> Result<Value> {
                 ));
             }
         }
-        Namespace::Endpoint { .. } => unreachable!(),
+        Namespace::Endpoint { .. } | Namespace::Qualified { .. } | Namespace::Api { .. } => {
+            unreachable!("namespace kind handled before path projection")
+        }
     };
     Ok(Value::Path(
         Location {
@@ -1074,5 +1246,176 @@ impl crate::object::control::Visitor for ProcessRemap {
             _ => {}
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod range_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn filename_conversion_preserves_paths_and_captures_only_string_context() {
+        let pwd =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".temp/v065/captured-path-context");
+        let mut session = RuntimeSession::new(&crate::execution::Options::new(&pwd)).unwrap();
+        let location = Location {
+            backend: Backend::Wsl,
+            path: "~/remote file".into(),
+        };
+        let cast = Expr {
+            ty: crate::hir::control::Type::Path,
+            kind: ExprKind::IntoPath {
+                value: Box::new(Expr {
+                    ty: crate::hir::control::Type::Path,
+                    kind: ExprKind::Path {
+                        location: location.clone(),
+                        mode: DestinationMode::Container,
+                        relocation: None,
+                    },
+                }),
+                pwd: Some(pwd.clone()),
+            },
+        };
+        assert_eq!(
+            session.eval(&cast, Span::default()).await.unwrap(),
+            Value::Path(location, DestinationMode::Container)
+        );
+        let value = Box::new(Expr {
+            ty: crate::hir::control::Type::String,
+            kind: ExprKind::String("local file".into()),
+        });
+        let cast = Expr {
+            ty: crate::hir::control::Type::Path,
+            kind: ExprKind::IntoPath {
+                value: value.clone(),
+                pwd: Some(pwd.clone()),
+            },
+        };
+        assert_eq!(
+            session.eval(&cast, Span::default()).await.unwrap(),
+            Value::Path(
+                Location {
+                    backend: Backend::Local,
+                    path: pwd.join("local file").to_string_lossy().into_owned()
+                },
+                DestinationMode::Exact
+            )
+        );
+        let unbound = Expr {
+            ty: crate::hir::control::Type::Path,
+            kind: ExprKind::IntoPath { value, pwd: None },
+        };
+        assert!(
+            session
+                .eval(&unbound, Span::default())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("not contextualized")
+        );
+    }
+
+    #[tokio::test]
+    async fn composed_scopes_retain_each_captured_context() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".temp/v065");
+        let inner = root.join("inner");
+        let outer = root.join("outer");
+        let context = |namespace, pwd| Expr {
+            ty: crate::hir::control::Type::Space,
+            kind: ExprKind::ResolvedSpace {
+                namespace,
+                pwd,
+                module_file: None,
+            },
+        };
+        let scope = Expr {
+            ty: crate::hir::control::Type::Space,
+            kind: ExprKind::Select {
+                namespace: Box::new(context(
+                    Namespace::Endpoint {
+                        backend: Backend::Local,
+                    },
+                    outer,
+                )),
+                item: Box::new(context(Namespace::WorkingDirectory, inner.clone())),
+            },
+        };
+        let selected = Expr {
+            ty: crate::hir::control::Type::Path,
+            kind: ExprKind::Select {
+                namespace: Box::new(scope),
+                item: Box::new(Expr {
+                    ty: crate::hir::control::Type::String,
+                    kind: ExprKind::String("leaf".into()),
+                }),
+            },
+        };
+        let mut session = RuntimeSession::new(&crate::execution::Options::new(root)).unwrap();
+        assert_eq!(
+            session.eval(&selected, Span::default()).await.unwrap(),
+            Value::Path(
+                Location {
+                    backend: Backend::Local,
+                    path: inner.join("leaf").to_string_lossy().into_owned()
+                },
+                DestinationMode::Exact
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn literal_cursor_preserves_the_exact_mixed_value_sequence() {
+        let location = Location {
+            backend: Backend::Local,
+            path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join(".temp/v065/cursor-unopened")
+                .to_string_lossy()
+                .into_owned(),
+        };
+        let values = vec![
+            Expr {
+                ty: crate::hir::control::Type::Bool,
+                kind: ExprKind::Bool(true),
+            },
+            Expr {
+                ty: crate::hir::control::Type::String,
+                kind: ExprKind::String("middle".into()),
+            },
+            Expr {
+                ty: crate::hir::control::Type::Path,
+                kind: ExprKind::Path {
+                    location: location.clone(),
+                    mode: DestinationMode::Exact,
+                    relocation: None,
+                },
+            },
+            Expr {
+                ty: crate::hir::control::Type::Bool,
+                kind: ExprKind::Bool(false),
+            },
+        ];
+        let range = RangeExpr {
+            item_type: crate::hir::control::Type::join(values.iter().map(|value| value.ty.clone()))
+                .unwrap(),
+            source: RangeSource::Values(values),
+            stages: Vec::new(),
+        };
+        let scratch =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".temp/v065/cursor-unused-state");
+        let mut session = RuntimeSession::new(&crate::execution::Options::new(&scratch)).unwrap();
+        let mut cursor = Cursor::new(&range);
+        let mut actual = Vec::new();
+        while let Some(value) = cursor.next(&mut session, Span::default()).await.unwrap() {
+            actual.push(value);
+        }
+        assert_eq!(
+            actual,
+            vec![
+                Value::Bool(true),
+                Value::String("middle".into()),
+                Value::Path(location, DestinationMode::Exact),
+                Value::Bool(false)
+            ]
+        );
     }
 }

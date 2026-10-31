@@ -130,6 +130,11 @@ impl ExpansionTrace {
                 self.expression(right, scope);
             }
             ExprKind::Not(value) | ExprKind::Exists(value) => self.expression(value, scope),
+            ExprKind::Range(values) => {
+                for value in values {
+                    self.expression(value, scope);
+                }
+            }
             ExprKind::Loop { .. } | ExprKind::Bool(_) | ExprKind::Literal(_) => {}
         }
     }

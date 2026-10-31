@@ -78,6 +78,13 @@ struct Assignment {
     snapshot: Snapshot,
 }
 
+#[derive(Default)]
+struct Staged {
+    assignments: Vec<Assignment>,
+    targets: Option<BTreeMap<PathBuf, usize>>,
+    report: ExecutionReport,
+}
+
 impl Ordinary {
     pub fn new(options: &Options) -> Self {
         Self {
@@ -127,20 +134,37 @@ impl Ordinary {
         let Some(ready) = Ready::inspect(node, self.origin.as_ref())? else {
             return Ok(Attempt::Unsupported);
         };
-        let mut trace = copy_trace(&ready, "ordinary-assignment");
+        self.execute_ready(&ready, None)
+    }
+
+    fn execute_ready(&mut self, ready: &Ready, cohort: Option<&[Ready]>) -> Result<Attempt> {
+        let mut trace = copy_trace(
+            ready,
+            if cohort.is_some() {
+                "ordinary-cohort"
+            } else {
+                "ordinary-assignment"
+            },
+        );
         let result = (|| {
             if self.storage.is_none() {
-                self.storage = Some(Storage::new(&self.options, node.span)?);
+                self.storage = Some(Storage::new(&self.options, ready.span)?);
             }
-            self.storage
-                .as_mut()
-                .expect("ordinary storage initialized")
-                .execute(
-                    &ready,
+            let storage = self.storage.as_mut().expect("ordinary storage initialized");
+            match cohort {
+                Some(items) => storage.execute_cohort(
+                    items,
                     &self.options,
                     self.progress.as_ref(),
                     self.origin.as_ref(),
-                )
+                ),
+                None => storage.execute(
+                    ready,
+                    &self.options,
+                    self.progress.as_ref(),
+                    self.origin.as_ref(),
+                ),
+            }
         })();
         let mut result = result.map_err(|error| error.with_operand(self.origin.as_ref(), true));
         if let Ok(Attempt::Completed(report)) = &mut result {
@@ -213,17 +237,10 @@ impl Ready {
         {
             return Ok(None);
         }
-        let (source, pattern) = match source {
-            Input::Literal(text) => (Source::Literal(text.clone()), None),
-            Input::Port { .. } => return Ok(None),
-            Input::File { location, pattern } => {
-                let Some(source) = Source::inspect(location, node.span)
-                    .map_err(|error| error.with_operand(origin, false))?
-                else {
-                    return Ok(None);
-                };
-                (source, pattern.clone())
-            }
+        let Some((source, pattern)) =
+            Source::input(source, node.span).map_err(|error| error.with_operand(origin, false))?
+        else {
+            return Ok(None);
         };
         if pattern.is_some() && *mode != DestinationMode::Container {
             return Err(ExecutionError::new(
@@ -243,6 +260,16 @@ impl Ready {
 }
 
 impl Source {
+    fn input(input: &Input, span: Span) -> Result<Option<(Self, Option<String>)>> {
+        match input {
+            Input::Literal(text) => Ok(Some((Self::Literal(text.clone()), None))),
+            Input::Port { .. } => Ok(None),
+            Input::File { location, pattern } => {
+                Ok(Self::inspect(location, span)?.map(|source| (source, pattern.clone())))
+            }
+        }
+    }
+
     fn inspect(location: &Location, span: Span) -> Result<Option<Self>> {
         match crate::runtime::local_path(location, true)
             .map_err(|message| ExecutionError::new(message, span))?
@@ -284,6 +311,15 @@ impl Storage {
             let capture_root = options.shared_invocation.as_ref().unwrap_or(&invocation);
             let mut assets = SnapshotStore::new_in(&invocation.path().join("assets"), capture_root)
                 .map_err(|cause| failure("cannot create ordinary source store", span, cause))?;
+            if let Some(context) = crate::runtime::ssh::current() {
+                context.exclude_from(&mut assets).map_err(|cause| {
+                    ExecutionError::caused(
+                        "cannot exclude owned SSH control storage from source capture",
+                        span,
+                        cause,
+                    )
+                })?;
+            }
             let registry = crate::filesystem::recovery::Registry::new(&options.scratch_root)
                 .map_err(|cause| {
                     ExecutionError::caused("cannot open statement recovery registry", span, cause)
@@ -333,40 +369,100 @@ impl Storage {
         progress: Option<&Progress>,
         origin: Option<&crate::source::InstructionOrigin>,
     ) -> Result<Attempt> {
+        let mut staged = Staged::default();
+        if !self.stage(ready, options, progress, origin, &mut staged)? {
+            return Ok(Attempt::Unsupported);
+        }
+        self.publish(
+            &staged.assignments,
+            ready,
+            options,
+            progress,
+            &mut staged.report,
+        )?;
+        staged.report.assignments = 1;
+        Ok(Attempt::Completed(staged.report))
+    }
+
+    fn stage(
+        &mut self,
+        ready: &Ready,
+        options: &Options,
+        progress: Option<&Progress>,
+        origin: Option<&crate::source::InstructionOrigin>,
+        staged: &mut Staged,
+    ) -> Result<bool> {
         observe(progress, ready, Phase::Acquire, &ExecutionReport::default());
         let mut acquire = crate::telemetry::span("ordinary.acquire");
         let selection = self.source(ready, options);
         acquire.finish_result(&selection);
         drop(acquire);
         let Some(selection) = selection.map_err(|error| error.with_operand(origin, false))? else {
-            return Ok(Attempt::Unsupported);
+            return Ok(false);
         };
         observe(progress, ready, Phase::Stage, &ExecutionReport::default());
         let selections = self
             .select(selection, ready.pattern.as_deref(), ready.span, options)
             .map_err(|error| error.with_operand(origin, false))?;
-        let mut assignments = Vec::new();
-        let mut report = ExecutionReport::default();
         for selection in selections {
             options.check(ready.span)?;
             let target = target(ready, &selection)?;
             relation(&selection, &target, ready.span)?;
-            let assigned = self.assignment(&selection.snapshot, &target, ready)?;
+            let previous = staged
+                .targets
+                .as_ref()
+                .and_then(|targets| targets.get(&target))
+                .copied();
+            let assigned = match previous {
+                Some(index) => self.assignment_over(
+                    &selection.snapshot,
+                    &staged.assignments[index].snapshot,
+                    ready,
+                )?,
+                None => self.assignment(&selection.snapshot, &target, ready)?,
+            };
             for entry in selection.snapshot.entries().values() {
                 if let Entry::File { artifact, .. } = entry {
-                    report.assigned_files += 1;
-                    report.assigned_bytes = report.assigned_bytes.saturating_add(artifact.len());
+                    staged.report.assigned_files += 1;
+                    staged.report.assigned_bytes =
+                        staged.report.assigned_bytes.saturating_add(artifact.len());
                 }
             }
-            assignments.push(Assignment {
-                target,
-                snapshot: assigned,
-            });
+            if let Some(index) = previous {
+                staged.assignments[index].snapshot = assigned;
+            } else {
+                if let Some(targets) = &mut staged.targets {
+                    targets.insert(target.clone(), staged.assignments.len());
+                }
+                staged.assignments.push(Assignment {
+                    target,
+                    snapshot: assigned,
+                });
+            }
         }
-        observe(progress, ready, Phase::Stage, &report);
-        self.publish(&assignments, ready, options, progress, &mut report)?;
-        report.assignments = 1;
-        Ok(Attempt::Completed(report))
+        observe(progress, ready, Phase::Stage, &staged.report);
+        Ok(true)
+    }
+
+    fn assignment_over(
+        &self,
+        source: &Snapshot,
+        previous: &Snapshot,
+        ready: &Ready,
+    ) -> Result<Snapshot> {
+        let target = match previous.entries().get(Path::new("")) {
+            Some(Entry::Directory { .. }) => Target::Directory(Some(previous)),
+            Some(Entry::File { metadata, .. }) => Target::File(metadata),
+            None => Target::Missing,
+        };
+        assignment::assign(
+            source,
+            target,
+            ready.mode,
+            matches!(ready.source, Source::Literal(_)),
+            ready.span,
+            |entries| self.snapshot(entries, ready.span),
+        )
     }
 
     fn source(&mut self, ready: &Ready, options: &Options) -> Result<Option<Selection>> {
@@ -1079,6 +1175,9 @@ fn cleanup(cause: FsError, root: PathBuf) -> CleanupIssue {
     }
 }
 
+#[path = "ordinary_cohort.rs"]
+mod cohort;
+
 #[path = "ordinary_fold.rs"]
 mod fold;
 pub(super) use fold::FoldAttempt;
@@ -1086,3 +1185,7 @@ pub(super) use fold::FoldAttempt;
 #[cfg(test)]
 #[path = "ordinary_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "ordinary_cohort_tests.rs"]
+mod cohort_tests;

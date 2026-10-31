@@ -27,6 +27,14 @@ pub(super) fn module(module: &ObjectModule) -> Result<(), ObjectError> {
     if module.language_version == "0.6" {
         supported.insert(CONTROL_FEATURE.into());
     }
+    if requires_typed_values(module)? {
+        if module.language_version != "0.6" {
+            return Err(ObjectError::new(
+                "typed value extensions require the 0.6 language feature",
+            ));
+        }
+        supported.insert(TYPED_VALUES_FEATURE.into());
+    }
     if !module.source_modules.is_empty() {
         supported.insert(SOURCE_MODULES_FEATURE.into());
     }
@@ -341,9 +349,7 @@ fn exports(module: &ObjectModule, state: &ProgramState) -> Result<(), ObjectErro
                     validate_backend(backend)?;
                 }
             }
-            ExportValue::Namespace {
-                namespace: Namespace::Endpoint { backend },
-            } => validate_backend(backend)?,
+            ExportValue::Namespace { namespace } => validate_namespace(namespace, 0)?,
             _ => {}
         }
     }
@@ -769,4 +775,18 @@ fn source_modules(module: &ObjectModule) -> Result<(), ObjectError> {
         }
     }
     Err(ObjectError::new("source module dependency bound exceeded"))
+}
+
+fn validate_namespace(namespace: &Namespace, depth: usize) -> Result<(), ObjectError> {
+    if depth >= 128 {
+        return Err(ObjectError::new("object scope nesting exceeds 128 levels"));
+    }
+    match namespace {
+        Namespace::Endpoint { backend } => validate_backend(backend),
+        Namespace::Qualified { outer, inner } => {
+            validate_namespace(outer, depth + 1)?;
+            validate_namespace(inner, depth + 1)
+        }
+        Namespace::WorkingDirectory | Namespace::Module | Namespace::Api { .. } => Ok(()),
+    }
 }

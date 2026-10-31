@@ -168,6 +168,15 @@ pub(super) fn filename(value: ctl::Expr, span: Span) -> Result<ctl::Expr, Report
     if value.ty == ctl::Type::Path {
         return Ok(value);
     }
+    if matches!(value.ty, ctl::Type::Union(_)) {
+        return Ok(ctl::Expr {
+            ty: ctl::Type::Path,
+            kind: ctl::ExprKind::IntoPath {
+                value: Box::new(value),
+                pwd: None,
+            },
+        });
+    }
     Ok(ctl::Expr {
         ty: ctl::Type::Path,
         kind: ctl::ExprKind::Select {
@@ -242,7 +251,13 @@ pub(super) fn require_bool(value: &Value, span: Span) -> Result<(), Report> {
 }
 
 fn require_path_or_string(value: &ctl::Expr, span: Span) -> Result<(), Report> {
-    if matches!(value.ty, ctl::Type::Path | ctl::Type::String) {
+    if crate::types::OperatorTrait::Join
+        .result(
+            &crate::types::Type::from_control(&value.ty),
+            &crate::types::Type::String,
+        )
+        .is_some()
+    {
         return Ok(());
     }
     Err(Report::new(
@@ -259,6 +274,29 @@ fn binary(
     span: Span,
 ) -> Result<Value, Failure> {
     use language::BinaryOp as B;
+    let capability = match op {
+        B::And | B::Or => crate::types::OperatorTrait::Logical,
+        B::Eq | B::Ne => crate::types::OperatorTrait::Equality,
+        B::Lt | B::Le | B::Gt | B::Ge => crate::types::OperatorTrait::Ordering,
+        B::Pipe => unreachable!("range pipe is resolved by its adaptor capability"),
+    };
+    require_operator(
+        capability,
+        match op {
+            B::And => "and",
+            B::Or => "or",
+            B::Eq => "==",
+            B::Ne => "!=",
+            B::Lt => "<",
+            B::Le => "<=",
+            B::Gt => ">",
+            B::Ge => ">=",
+            B::Pipe => unreachable!(),
+        },
+        &left,
+        &right,
+        span,
+    )?;
     if matches!(op, B::And | B::Or) {
         require_bool(&left, span)?;
         require_bool(&right, span)?;
@@ -363,14 +401,21 @@ pub(super) fn select(
     context: &CompileContext,
     span: Span,
 ) -> Result<Value, Failure> {
+    let result = require_operator(
+        crate::types::OperatorTrait::Select,
+        "::",
+        &namespace,
+        &item,
+        span,
+    )?;
     let namespace = scalar(namespace, context, span)?;
     let item = scalar(item, context, span)?;
-    if namespace.ty != ctl::Type::Space {
-        return Err(Report::new("left operand of '::' must be a space", span).into());
-    }
-    require_path_or_string(&item, span)?;
     Ok(Value::Dynamic(ctl::Expr {
-        ty: ctl::Type::Path,
+        ty: if result == crate::types::Type::Scope {
+            ctl::Type::Space
+        } else {
+            ctl::Type::Path
+        },
         kind: ctl::ExprKind::Select {
             namespace: Box::new(namespace),
             item: Box::new(item),
@@ -1082,24 +1127,24 @@ impl Lower<'_> {
                 )
                 .into());
             }
-            let slot = scope.slot();
-            let source = ctl::TransferInput::Scalar(ctl::Expr {
-                ty: range.item_type.clone(),
-                kind: ctl::ExprKind::Slot(slot),
-            });
-            let mut body = Region::default();
-            self.control_emit(
-                &mut body,
-                span,
-                ctl::ControlInstruction::Transfer {
-                    source,
-                    destination: destination_value,
-                },
-            );
+            let ctl::TransferOutput::File { path, mode } = destination_value else {
+                unreachable!("range destination checked above");
+            };
+            require_types(
+                crate::types::OperatorTrait::Transfer,
+                "->",
+                crate::types::Type::from_control(&range.item_type),
+                crate::types::Type::from_control(&path.ty),
+                source.span,
+            )?;
             self.control_emit(
                 region,
                 span,
-                ctl::ControlInstruction::For { slot, range, body },
+                ctl::ControlInstruction::RangeTransfer {
+                    range,
+                    destination: path,
+                    mode,
+                },
             );
             return Ok(None);
         }

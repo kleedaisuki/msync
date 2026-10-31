@@ -23,7 +23,7 @@ impl Submission {
         label: &str,
     ) -> CliResult<Self> {
         use msync::hir::{Input, InstructionKind, Output};
-        let mut operations = Vec::new();
+        let mut required = Vec::new();
         for node in &program.body.instructions {
             let locations = match &node.kind {
                 InstructionKind::Transfer {
@@ -44,20 +44,21 @@ impl Submission {
                 _ => Vec::new(),
             };
             for location in locations {
-                operations.push(msync::compiler::CopyOp {
-                    source: location.clone(),
-                    destination: location.clone(),
-                    pattern: None,
-                    span: node.span,
-                });
+                required.push(&location.backend);
             }
         }
+        let referenced = msync::hir::walk::backends(&program.body);
+        let reuse = msync::hir::walk::instructions(&program.body)
+            .into_iter()
+            .any(reuses_transport);
         Self::start_with_cancel(
-            &Program { operations },
+            &required,
+            &referenced,
             true,
             &sessions.with_label(label),
             lease,
             cancel,
+            reuse,
         )
     }
 
@@ -70,22 +71,36 @@ impl Submission {
     }
 
     fn start(program: &Program, live: bool, sessions: &SshContext, lease: bool) -> CliResult<Self> {
-        Self::start_with_cancel(program, live, sessions, lease, CancellationToken::new())
+        let backends: Vec<_> = program
+            .operations
+            .iter()
+            .flat_map(|operation| [&operation.source.backend, &operation.destination.backend])
+            .collect();
+        Self::start_with_cancel(
+            &backends,
+            &backends,
+            live,
+            sessions,
+            lease,
+            CancellationToken::new(),
+            true,
+        )
     }
 
     fn start_with_cancel(
-        program: &Program,
+        required: &[&Backend],
+        referenced: &[&Backend],
         live: bool,
         sessions: &SshContext,
         lease: bool,
         cancel: CancellationToken,
+        reuse: bool,
     ) -> CliResult<Self> {
         let done = CancellationToken::new();
         let remote = live
-            && program.operations.iter().any(|operation| {
-                matches!(operation.source.backend, Backend::Ssh { .. })
-                    || matches!(operation.destination.backend, Backend::Ssh { .. })
-            });
+            && referenced
+                .iter()
+                .any(|backend| matches!(backend, Backend::Ssh { .. }));
         let mut scope = Self {
             context: None,
             cancel,
@@ -93,13 +108,13 @@ impl Submission {
             watcher: None,
             foreground_reason: None,
         };
-        if !remote {
+        if !live {
             return Ok(scope);
         }
         #[allow(unused_mut)]
         let mut context = sessions.for_submission(scope.cancel.clone());
         #[cfg(windows)]
-        if lease {
+        if lease && (remote || reuse) {
             context = context
                 .with_graphical_auth(std::env::current_exe().map_err(|error| {
                     Issue::new("cannot locate the SSH authentication helper")
@@ -110,13 +125,18 @@ impl Submission {
                         .field("cause", error.to_string())
                 })?;
         }
-        scope.watcher = Some(watch(scope.cancel.clone(), scope.done.clone())?);
+        if remote || reuse {
+            scope.watcher = Some(watch(scope.cancel.clone(), scope.done.clone())?);
+        }
         if lease {
-            scope.foreground_reason = context.ensure_program_for_repl(program, &scope.cancel).map_err(|cause| {
+            scope.foreground_reason = context.ensure_backends(required.iter().copied(), &scope.cancel).map_err(|cause| {
                 Issue::new("SSH authentication did not complete")
                     .field("cause", cause)
                     .help("Retry the statement to authenticate again; Ctrl-C cancels a pending request.")
             })?;
+        }
+        if reuse {
+            context = context.with_foreground_reuse();
         }
         scope.context = Some(context);
         Ok(scope)
@@ -137,6 +157,30 @@ impl Submission {
 
     pub(super) fn cancellation(&self) -> CancellationToken {
         self.cancel.clone()
+    }
+}
+
+fn reuses_transport(node: &msync::hir::Instruction) -> bool {
+    use msync::hir::{Input, InstructionKind, Output, control::ControlInstruction as Control};
+    match &node.kind {
+        InstructionKind::Transfer {
+            source,
+            destination,
+        } => {
+            matches!(source, Input::File { location, .. } if matches!(location.backend, Backend::Ssh { .. }))
+                || matches!(destination, Output::File { location, .. } if matches!(location.backend, Backend::Ssh { .. }))
+        }
+        InstructionKind::Spawn { executable, .. } => {
+            matches!(executable.backend, Backend::Ssh { .. })
+        }
+        InstructionKind::Control(
+            Control::For { .. }
+            | Control::Loop { .. }
+            | Control::Transfer { .. }
+            | Control::RangeTransfer { .. }
+            | Control::Spawn { .. },
+        ) => true,
+        _ => false,
     }
 }
 

@@ -28,7 +28,10 @@ pub(super) fn completion(document: &mut OpenDocument, position: Position) -> Vec
     if protected(&document.text.source, offset) {
         return Vec::new();
     }
-    let start = word_start(&document.text.source, offset);
+    if let Some(items) = view_alias_completion(document, offset) {
+        return items;
+    }
+    let start = completion_start(&document.text.source, offset);
     let prefix = document.text.source[start..offset].to_owned();
     let range = document.text.range(Span { start, end: offset });
     let mut items = Vec::new();
@@ -57,7 +60,9 @@ pub(super) fn completion(document: &mut OpenDocument, position: Position) -> Vec
         if name.starts_with(&prefix) && seen.insert(((*name).to_owned(), 255)) {
             items.push(CompletionItem {
                 label: (*name).into(),
-                kind: Some(if name.contains("::") {
+                kind: Some(if name.ends_with("::") {
+                    CompletionItemKind::MODULE
+                } else if name.contains("::") {
                     CompletionItemKind::FUNCTION
                 } else {
                     CompletionItemKind::KEYWORD
@@ -316,6 +321,67 @@ fn word_start(source: &str, offset: usize) -> usize {
         .map_or(0, |(index, ch)| index + ch.len_utf8())
 }
 
+fn completion_start(source: &str, offset: usize) -> usize {
+    let start = word_start(source, offset);
+    let word = &source[start..offset];
+    if word.starts_with("$view::")
+        || word.starts_with("views::")
+        || word.starts_with("ranges::")
+        || highlight::BUILTINS
+            .iter()
+            .any(|name| name.starts_with(word))
+    {
+        return start;
+    }
+    word.rfind("::")
+        .map_or(start, |separator| start + separator + 2)
+}
+
+fn view_alias_completion(
+    document: &mut OpenDocument,
+    offset: usize,
+) -> Option<Vec<CompletionItem>> {
+    let start = word_start(&document.text.source, offset);
+    let word = document.text.source[start..offset].to_owned();
+    let (namespace, prefix) = word.rsplit_once("::")?;
+    if namespace.starts_with('$')
+        || namespace.contains("::")
+        || matches!(namespace, "views" | "ranges")
+    {
+        return None;
+    }
+    let index = &document.syntax().index;
+    if !index
+        .visible_at(offset)
+        .iter()
+        .any(|definition| definition.name == namespace && index.is_view_scope(definition.id))
+    {
+        return None;
+    }
+    let range = document.text.range(Span {
+        start: start + namespace.len() + 2,
+        end: offset,
+    });
+    Some(
+        highlight::RANGE_ADAPTORS
+            .iter()
+            .filter_map(|name| {
+                let member = name.strip_prefix("$view::")?;
+                member.starts_with(prefix).then(|| CompletionItem {
+                    label: member.into(),
+                    kind: Some(CompletionItemKind::FUNCTION),
+                    detail: Some(format!("{name} — {}", builtin_detail(name))),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
+                        range,
+                        member.into(),
+                    ))),
+                    ..CompletionItem::default()
+                })
+            })
+            .collect(),
+    )
+}
+
 fn builtin_detail(name: &str) -> String {
     let detail = match name {
         "boolean" => "boolean name(args): — bool-returning lexical function; return is mandatory",
@@ -329,20 +395,25 @@ fn builtin_detail(name: &str) -> String {
         "exists" => "exists path — execution-time path existence query returning bool",
         "and" | "or" => "short-circuit boolean operator; both operands require bool",
         "not" => "not bool — boolean negation; comparisons bind more tightly",
-        "if" | "else" => "if bool: / else if bool: / else: — indented conditional branches",
-        "for" | "in" => "for item in range: — demand-driven path/string range iteration",
+        "if" | "else" => {
+            "if bool: / if release bool: / if acquire bool: / if acqrel bool: — indented conditional branches"
+        }
+        "for" | "in" => "for item in range: — ordered, demand-driven typed range iteration",
         "loop" | "break" => {
             "loop: / break value — nearest-loop exit; value type must agree across breaks"
         }
         "true" | "false" => "bool literal",
+        _ if name.starts_with("$view::") => {
+            "typed built-in range API; use pipeline or direct application"
+        }
         _ if name.starts_with("views::") => {
-            "lazy path/string range adaptor; apply as range | adaptor(arguments)"
+            "compatibility range adaptor; canonical built-in API is $view::"
         }
         _ if name.starts_with("ranges::") => {
-            "typed range source or scalar consumer; use pipeline or direct application"
+            "compatibility range API; canonical built-in API is $view::"
         }
         _ if name.starts_with('$') => {
-            "built-in namespace capability; select an explicit path item with ::"
+            "built-in Scope; :: selects a path expression or composes another Scope"
         }
         _ => "msync language keyword",
     };
@@ -367,6 +438,49 @@ mod tests {
             completion(&mut range, end)
                 .iter()
                 .any(|item| item.label == "views::filter")
+        );
+    }
+
+    #[test]
+    fn canonical_view_and_scope_qualified_function_completion_keep_prefixes() {
+        let mut view = OpenDocument::new("items := [true] | $view::fi".into(), 1);
+        let end = view.text.end();
+        let result = completion(&mut view, end);
+        let filter = result
+            .iter()
+            .find(|item| item.label == "$view::filter")
+            .unwrap();
+        assert!(
+            filter
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("built-in range API")
+        );
+        assert!(
+            matches!(filter.text_edit.as_ref(), Some(CompletionTextEdit::Edit(edit)) if edit.new_text == "$view::filter" && edit.range.start.character == 18)
+        );
+
+        let mut scope = OpenDocument::new("root := $lo".into(), 1);
+        let end = scope.text.end();
+        assert!(completion(&mut scope, end).iter().any(|item| {
+            item.label == "$local::" && item.kind == Some(CompletionItemKind::MODULE)
+        }));
+
+        let mut alias = OpenDocument::new("api := $view\nitems := [true] | api::fi".into(), 1);
+        let end = alias.text.end();
+        assert!(completion(&mut alias, end).iter().any(|item| {
+            item.label == "filter"
+                && matches!(item.text_edit.as_ref(), Some(CompletionTextEdit::Edit(edit)) if edit.new_text == "filter" && edit.range.start.character == 23)
+        }));
+
+        let source = "symbol codex(file):\n    return ~/.codex/file\nconfig := $wsl::cod";
+        let mut qualified = OpenDocument::new(source.into(), 1);
+        let end = qualified.text.end();
+        let result = completion(&mut qualified, end);
+        let codex = result.iter().find(|item| item.label == "codex").unwrap();
+        assert!(
+            matches!(codex.text_edit.as_ref(), Some(CompletionTextEdit::Edit(edit)) if edit.new_text == "codex" && edit.range.start.character == 16)
         );
     }
 

@@ -125,6 +125,26 @@ impl ProgramState {
                 let ty = self.expression(path)?;
                 path_type(&ty)?;
             }
+            Control::RangeTransfer {
+                range,
+                destination,
+                mode,
+            } => {
+                path_type(&self.range(range)?)?;
+                self.expect(destination, Type::Path)?;
+                if *mode != DestinationMode::Container {
+                    return Err(ObjectError::new(
+                        "object range transfer requires a container destination",
+                    ));
+                }
+                if let ExprKind::Path { location, .. } = &destination.kind
+                    && matches!(location.backend, Backend::Http { .. } | Backend::Path)
+                {
+                    return Err(ObjectError::new(
+                        "object destination is a readonly namespace",
+                    ));
+                }
+            }
             Control::Transfer {
                 source,
                 destination,
@@ -231,9 +251,7 @@ impl ProgramState {
                 Type::Path
             }
             ExprKind::Space(namespace) => {
-                if let Namespace::Endpoint { backend } = namespace {
-                    validate_backend(backend)?;
-                }
+                validate_namespace(namespace, 0)?;
                 Type::Space
             }
             ExprKind::ResolvedSpace {
@@ -248,9 +266,7 @@ impl ProgramState {
                         "object resolved space context must use absolute paths",
                     ));
                 }
-                if let Namespace::Endpoint { backend } = namespace {
-                    validate_backend(backend)?;
-                }
+                validate_namespace(namespace, 0)?;
                 Type::Space
             }
             ExprKind::Slot(slot) => self.slots.get(slot).cloned().ok_or_else(|| {
@@ -262,6 +278,13 @@ impl ProgramState {
                 let result = self.expression(body)?;
                 self.slots.remove(slot);
                 result
+            }
+            ExprKind::IntoPath { value, pwd } => {
+                path_type(&self.expression(value)?)?;
+                if pwd.as_ref().is_some_and(|pwd| !pwd.is_absolute()) {
+                    return Err(ObjectError::new("object filename context must be absolute"));
+                }
+                Type::Path
             }
             ExprKind::Exists(path) => {
                 path_type(&self.expression(path)?)?;
@@ -304,9 +327,25 @@ impl ProgramState {
                 Type::Path
             }
             ExprKind::Select { namespace, item } => {
-                self.expect(namespace, Type::Space)?;
-                path_type(&self.expression(item)?)?;
-                Type::Path
+                let namespace = self.expression(namespace)?;
+                let item = self.expression(item)?;
+                let result = crate::types::OperatorTrait::Select
+                    .result(
+                        &crate::types::Type::from_control(&namespace),
+                        &crate::types::Type::from_control(&item),
+                    )
+                    .ok_or_else(|| {
+                        ObjectError::new("object scope selection has incompatible operands")
+                    })?;
+                match result {
+                    crate::types::Type::Scope => Type::Space,
+                    crate::types::Type::Path => Type::Path,
+                    _ => {
+                        return Err(ObjectError::new(
+                            "object scope selection has an invalid result type",
+                        ));
+                    }
+                }
             }
             ExprKind::Loop { body } => {
                 let slots = self.slots.clone();
@@ -318,7 +357,11 @@ impl ProgramState {
                 let item_type = self.range(range)?;
                 match query {
                     RangeQuery::Contains { value } | RangeQuery::FindValue { value } => {
-                        self.expect(value, item_type.clone())?;
+                        if !item_type.accepts(&self.expression(value)?) {
+                            return Err(ObjectError::new(
+                                "object range search value is not a member of the range item type",
+                            ));
+                        }
                         if matches!(query, RangeQuery::Contains { .. }) {
                             Type::Bool
                         } else {
@@ -365,16 +408,13 @@ impl ProgramState {
                 Type::Path
             }
             RangeSource::Values(values) => {
-                let ty = values
-                    .first()
-                    .map(|value| self.expression(value))
-                    .transpose()?
-                    .unwrap_or(range.item_type.clone());
-                path_type(&ty)?;
-                for value in values.iter().skip(1) {
-                    self.expect(value, ty.clone())?;
+                let mut types = Vec::with_capacity(values.len());
+                for value in values {
+                    let ty = self.expression(value)?;
+                    range_item_type(&ty)?;
+                    types.push(ty);
                 }
-                ty
+                Type::join(types).unwrap_or(Type::Path)
             }
         };
         for stage in &range.stages {
@@ -389,7 +429,7 @@ impl ProgramState {
                 RangeStage::Transform { slot, expression } => {
                     self.define_slot(*slot, item_type)?;
                     item_type = self.expression(expression)?;
-                    path_type(&item_type)?;
+                    range_item_type(&item_type)?;
                     self.slots.remove(slot);
                 }
                 RangeStage::Stride(0) => {
@@ -403,15 +443,35 @@ impl ProgramState {
                 "object range item type disagrees with its stages",
             ));
         }
+        range_item_type(&item_type)?;
         Ok(item_type)
     }
 }
 
 fn path_type(ty: &Type) -> Result<(), ObjectError> {
-    if !matches!(ty, Type::String | Type::Path) {
+    if !match ty {
+        Type::String | Type::Path => true,
+        Type::Union(types) => {
+            ty.is_range_item()
+                && types
+                    .iter()
+                    .all(|ty| matches!(ty, Type::String | Type::Path))
+        }
+        _ => false,
+    } {
         return Err(ObjectError::new(
             "object operation requires a path or string operand",
         ));
     }
     Ok(())
+}
+
+fn range_item_type(ty: &Type) -> Result<(), ObjectError> {
+    if ty.is_range_item() {
+        Ok(())
+    } else {
+        Err(ObjectError::new(
+            "object range requires a canonical path, string or bool item type",
+        ))
+    }
 }

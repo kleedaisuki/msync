@@ -41,6 +41,36 @@ pub(super) fn selector(
     }))
 }
 
+pub(super) fn literal(
+    elements: &[Expr],
+    scope: &Scope,
+    context: &CompileContext,
+    span: Span,
+) -> Result<Value, Failure> {
+    let mut values = Vec::with_capacity(elements.len());
+    for element in elements {
+        let value = v6::scalar(resolve(element, scope, context)?, context, element.span)?;
+        if !value.ty.is_range_item() {
+            return Err(Report::new(
+                "range elements must be paths, strings or bool values",
+                element.span,
+            )
+            .into());
+        }
+        values.push(value);
+    }
+    let item_type =
+        ctl::Type::join(values.iter().map(|value| value.ty.clone())).unwrap_or(ctl::Type::Path);
+    if !item_type.is_range_item() {
+        return Err(Report::new("invalid range element type", span).into());
+    }
+    Ok(Value::Range(ctl::RangeExpr {
+        source: ctl::RangeSource::Values(values),
+        stages: Vec::new(),
+        item_type,
+    }))
+}
+
 pub(super) fn resolve_pipe(
     left: &Expr,
     right: &Expr,
@@ -50,11 +80,8 @@ pub(super) fn resolve_pipe(
     let Value::Range(range) = resolve(left, scope, context)? else {
         return Err(Report::new("the left operand of '|' must be a range", left.span).into());
     };
-    let (callee, arguments) = match &right.kind {
-        ExprKind::Call { callee, arguments } => (&**callee, arguments.as_slice()),
-        _ => (right, &[][..]),
-    };
-    let name = adaptor_name(callee).ok_or_else(|| {
+    let (callee, arguments) = call_parts(right).unwrap_or((right, &[][..]));
+    let name = adaptor_name(callee, scope, context, true).ok_or_else(|| {
         Report::new(
             "a range pipeline requires a named range adaptor",
             right.span,
@@ -63,29 +90,28 @@ pub(super) fn resolve_pipe(
     apply(range, &name, arguments, scope, context, right.span)
 }
 
-fn adaptor_name(expression: &Expr) -> Option<String> {
+fn adaptor_name(
+    expression: &Expr,
+    scope: &Scope,
+    context: &CompileContext,
+    allow_bare: bool,
+) -> Option<String> {
     match &expression.kind {
         ExprKind::Path(path) => match &path.qualifier {
-            None => Some(path.path.clone()),
-            Some(qualifier) if matches!(qualifier.text.as_str(), "views" | "ranges") => {
-                Some(path.path.clone())
-            }
+            None if allow_bare => Some(path.path.clone()),
+            Some(qualifier) if api_name(&qualifier.text, scope) => Some(path.path.clone()),
             _ => None,
         },
         ExprKind::Select {
             namespace, item, ..
         } => {
-            let ExprKind::Path(namespace) = &namespace.kind else {
-                return None;
-            };
-            let ExprKind::Path(item) = &item.kind else {
-                return None;
-            };
-            (namespace.qualifier.is_none()
-                && matches!(namespace.path.as_str(), "views" | "ranges")
-                && item.qualifier.is_none())
-            .then(|| item.path.clone())
+            if api_namespace(namespace, scope, context) {
+                adaptor_name(item, scope, context, true)
+            } else {
+                None
+            }
         }
+        ExprKind::Call { callee, .. } => adaptor_name(callee, scope, context, allow_bare),
         _ => None,
     }
 }
@@ -128,8 +154,8 @@ fn apply(
             let (slot, expression) = callback(&arguments[0], &range.item_type, scope, context)?;
             let stage = match name {
                 "transform" => {
-                    if !matches!(expression.ty, ctl::Type::Path | ctl::Type::String) {
-                        return Err(Report::new("range transforms must return a path or string", arguments[0].span).into());
+                    if !expression.ty.is_range_item() {
+                        return Err(Report::new("range transforms must return a path, string or bool", arguments[0].span).into());
                     }
                     range.item_type = expression.ty.clone();
                     ctl::RangeStage::Transform { slot, expression }
@@ -175,7 +201,7 @@ fn apply(
             arity(name, arguments, 1, span)?;
             let value = resolve(&arguments[0], scope, context)?;
             let value = v6::scalar(value, context, arguments[0].span)?;
-            if value.ty != range.item_type {
+            if !range.item_type.accepts(&value.ty) {
                 return Err(Report::new("a range search value must match the range element type", arguments[0].span).into());
             }
             let (query, ty) = if name == "contains" {
@@ -293,13 +319,8 @@ pub(super) fn resolve_call(
     scope: &Scope,
     context: &CompileContext,
 ) -> Option<Result<Value, Failure>> {
-    let ExprKind::Call { callee, arguments } = &expression.kind else {
-        return None;
-    };
-    if !qualified_adaptor(callee) {
-        return None;
-    }
-    let name = adaptor_name(callee)?;
+    let (callee, arguments) = call_parts(expression)?;
+    let name = adaptor_name(callee, scope, context, false)?;
     Some(resolve_named_call(
         &name,
         arguments,
@@ -309,16 +330,68 @@ pub(super) fn resolve_call(
     ))
 }
 
-fn qualified_adaptor(callee: &Expr) -> bool {
-    match &callee.kind {
-        ExprKind::Path(path) => path
-            .qualifier
-            .as_ref()
-            .is_some_and(|qualifier| matches!(qualifier.text.as_str(), "views" | "ranges")),
-        ExprKind::Select { namespace, .. } => {
-            matches!(&namespace.kind, ExprKind::Path(path) if path.qualifier.is_none() && matches!(path.path.as_str(), "views" | "ranges"))
+pub(super) fn resolve_legacy_selection(
+    namespace: &Expr,
+    item: &Expr,
+    scope: &Scope,
+    context: &CompileContext,
+) -> Option<Result<Value, Failure>> {
+    let ExprKind::Path(path) = &namespace.kind else {
+        return None;
+    };
+    if path.qualifier.is_some() || !matches!(path.path.as_str(), "views" | "ranges") {
+        return None;
+    }
+    let (name, arguments) = selected_arguments(item)?;
+    Some(resolve_named_call(
+        name, arguments, scope, context, item.span,
+    ))
+}
+
+pub(super) fn resolve_api_selection(
+    namespace: &Value,
+    item: &Expr,
+    scope: &Scope,
+    context: &CompileContext,
+) -> Option<Result<Value, Failure>> {
+    if !matches!(
+        namespace,
+        Value::Space(Space::Api(crate::relocatable::BuiltinScope::View))
+    ) {
+        return None;
+    }
+    Some(match selected_arguments(item) {
+        Some((name, arguments)) => resolve_named_call(name, arguments, scope, context, item.span),
+        None => Err(Report::new(
+            "a built-in API scope requires a named API member call",
+            item.span,
+        )
+        .into()),
+    })
+}
+
+fn selected_arguments(item: &Expr) -> Option<(&str, &[Expr])> {
+    let ExprKind::Call { callee, arguments } = &item.kind else {
+        return None;
+    };
+    let ExprKind::Path(path) = &callee.kind else {
+        return None;
+    };
+    path.qualifier
+        .is_none()
+        .then_some((path.path.as_str(), arguments))
+}
+
+fn call_parts(expression: &Expr) -> Option<(&Expr, &[Expr])> {
+    match &expression.kind {
+        ExprKind::Call { callee, arguments } => Some((callee, arguments)),
+        ExprKind::Select { item, .. } => {
+            let ExprKind::Call { arguments, .. } = &item.kind else {
+                return None;
+            };
+            Some((expression, arguments))
         }
-        _ => false,
+        _ => None,
     }
 }
 
@@ -333,32 +406,7 @@ fn resolve_named_call(
         if name == "single" {
             arity(name, arguments, 1, span)?;
         }
-        let values = arguments
-            .iter()
-            .map(|argument| {
-                let value = resolve(argument, scope, context)?;
-                let value = v6::scalar(value, context, argument.span)?;
-                if !matches!(value.ty, ctl::Type::Path | ctl::Type::String) {
-                    return Err(Report::new(
-                        "range elements must be paths or strings",
-                        argument.span,
-                    )
-                    .into());
-                }
-                Ok(value)
-            })
-            .collect::<Result<Vec<_>, Failure>>()?;
-        let item_type = values
-            .first()
-            .map_or(ctl::Type::Path, |value| value.ty.clone());
-        if values.iter().any(|value| value.ty != item_type) {
-            return Err(Report::new("range elements must share one static type", span).into());
-        }
-        return Ok(Value::Range(ctl::RangeExpr {
-            source: ctl::RangeSource::Values(values),
-            stages: Vec::new(),
-            item_type,
-        }));
+        return literal(arguments, scope, context, span);
     }
     let Some((range, arguments)) = arguments.split_first() else {
         return Err(Report::new(
@@ -371,4 +419,32 @@ fn resolve_named_call(
         return Err(Report::new("the first argument must be a range", range.span).into());
     };
     apply(range, name, arguments, scope, context, span)
+}
+
+fn api_name(name: &str, scope: &Scope) -> bool {
+    if matches!(name, "views" | "ranges") {
+        return true;
+    }
+    match scope.values.get(name) {
+        Some(Value::Space(Space::Api(crate::relocatable::BuiltinScope::View))) => true,
+        Some(_) => false,
+        None => matches!(
+            Compiler::builtin_space(name),
+            Some(Space::Api(crate::relocatable::BuiltinScope::View))
+        ),
+    }
+}
+
+fn api_namespace(expression: &Expr, scope: &Scope, context: &CompileContext) -> bool {
+    if let ExprKind::Path(path) = &expression.kind
+        && path.qualifier.is_none()
+    {
+        return api_name(&path.path, scope);
+    }
+    matches!(
+        resolve(expression, scope, context),
+        Ok(Value::Space(Space::Api(
+            crate::relocatable::BuiltinScope::View
+        )))
+    )
 }

@@ -103,6 +103,106 @@ impl Drop for Server {
 }
 
 #[test]
+fn an_unselected_dynamic_branch_never_starts_an_ssh_client() {
+    let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+    fs::create_dir_all(&parent).unwrap();
+    let root = tempfile::Builder::new()
+        .prefix("ssh-unused-")
+        .tempdir_in(parent)
+        .unwrap();
+    let clients = root.path().join("clients");
+    fs::create_dir(&clients).unwrap();
+    let ssh = clients.join("ssh");
+    fs::write(
+        &ssh,
+        "#!/bin/sh\nprintf called > \"$MSYNC_TEST_SSH_CALLED\"\nexit 91\n",
+    )
+    .unwrap();
+    fs::set_permissions(&ssh, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(root.path().join("branch.msync"),
+        "remote => ssh://must-not-be-contacted.invalid\nif exists missing:\n    remote::source -> output\nelse:\n    \"local branch\" -> output\n").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_msync"))
+        .args(["--no-config", "run", "branch.msync"])
+        .current_dir(root.path())
+        .env("PATH", &clients)
+        .env("MSYNC_TEST_SSH_CALLED", root.path().join("called"))
+        .env_remove("MSYNC_STATE_DIR")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(root.path().join("output")).unwrap(),
+        b"local branch"
+    );
+    assert!(!root.path().join("called").exists());
+}
+
+#[test]
+fn an_unselected_ssh_branch_does_not_acquire_unrelated_background_work() {
+    let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+    fs::create_dir_all(&parent).unwrap();
+    let root = tempfile::Builder::new()
+        .prefix("ssh-branch-scope-")
+        .tempdir_in(parent)
+        .unwrap();
+    fs::write(root.path().join("branch.msync"), "remote => ssh://must-not-be-contacted.invalid\nif exists missing:\n    remote::source -> output\nelse:\n    \"local branch\" -> output\n").unwrap();
+    let mut repl =
+        pty::Terminal::spawn(Path::new(env!("CARGO_BIN_EXE_msync")), root.path(), "never");
+    repl.prompt();
+    repl.submit("release child => $path::sh(\"-c\", \"printf started > started; while [ ! -e go ]; do sleep 0.01; done\")");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !root.path().join("started").exists() {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(5));
+    }
+    let output = repl.submit("/load branch.msync");
+    assert!(!root.path().join("go").exists(), "{output}");
+    assert_eq!(
+        fs::read(root.path().join("output")).unwrap(),
+        b"local branch"
+    );
+    assert!(repl.submit("/jobs").contains("running"));
+    fs::write(root.path().join("go"), b"release").unwrap();
+    repl.submit("/wait");
+    repl.exit();
+}
+
+#[test]
+#[ignore = "requires native sshd; selected dynamic SSH authenticates before released FIFO handoff"]
+fn selected_dynamic_fifo_authenticates_without_acquiring_an_unrelated_child() {
+    let server = Server::start();
+    let fifo = server.root.path().join("dynamic-fifo");
+    let path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: CString retains the NUL-terminated path throughout the syscall.
+    assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+    fs::write(server.root.path().join("selected"), b"yes").unwrap();
+    fs::write(
+        server.root.path().join("dynamic.msync"),
+        format!(
+            "if release exists selected:\n    remote::{} -> flow.bin\n",
+            fifo.display()
+        ),
+    )
+    .unwrap();
+    let mut repl = server.terminal();
+    repl.submit("release child => $path::sh(\"-c\", \"while [ ! -e go ]; do sleep 0.01; done\")");
+    repl.mark();
+    repl.send("/load dynamic.msync\r");
+    repl.until("Enter passphrase");
+    repl.send("fixture-passphrase\r");
+    let output = repl.prompt();
+    assert!(output.contains("running in background"), "{output}");
+    assert!(!server.root.path().join("go").exists());
+    fs::write(server.root.path().join("go"), b"release old child").unwrap();
+    assert!(!repl.submit("/stop").contains("Enter passphrase"));
+    repl.exit();
+}
+
+#[test]
 #[ignore = "requires native sshd and ssh-keygen; isolated encrypted-key controlling-terminal journey"]
 fn native_passphrase_prompt_cancellation_recovers_repl_then_reuses_configured_master() {
     let server = Server::start();

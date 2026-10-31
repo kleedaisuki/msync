@@ -374,6 +374,15 @@ impl Material {
     }
 
     fn populate(&mut self, input: &Input, options: &Options, span: Span) -> Result<()> {
+        if let Some(context) = crate::runtime::ssh::current() {
+            context.exclude_from(&mut self.assets).map_err(|cause| {
+                failure(
+                    "exclude owned SSH control storage from source capture",
+                    span,
+                    cause,
+                )
+            })?;
+        }
         if let Some(registry) =
             crate::filesystem::recovery::Registry::open_existing(&options.scratch_root)
                 .map_err(|cause| failure("verify local registry exclusion", span, cause))?
@@ -837,6 +846,7 @@ mod tests {
             span: Span::default(),
             pattern: Some("(?m)selected".into()),
             origin: None,
+            cohort_origins: Vec::new(),
             literal: false,
         };
         assert_eq!(spec.names(root.path(), None).unwrap(), ["selected"]);

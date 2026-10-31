@@ -67,6 +67,7 @@ impl State {
             let mut wait = msync::telemetry::span("repl.wait");
             let wake = executor.block_on(async {
                 tokio::select! {
+                    biased;
                     event = input.recv() => Wake::Input(event),
                     _ = runtime.wait_ready() => Wake::Work,
                 }
@@ -180,14 +181,15 @@ impl State {
         for error in std::mem::take(&mut self.errors) {
             print_error(&error, color);
         }
-        if had_errors {
-            printer.refresh()?;
-        }
+        let mut text = String::new();
         for message in std::mem::take(&mut self.notices) {
-            printer.print(format!(
-                "{}\n",
-                presentation::human(message.trim_end(), color.stdout())
-            ))?;
+            text.push_str(&presentation::human(message.trim_end(), color.stdout()));
+            text.push('\n');
+        }
+        if !text.is_empty() {
+            printer.print(text)?;
+        } else if had_errors {
+            printer.refresh()?;
         }
         Ok(())
     }
@@ -502,10 +504,9 @@ impl State {
                 return Err(error);
             }
         };
-        let incremental = incremental && authentication.foreground_reason().is_none();
         if let Some(reason) = authentication.foreground_reason() {
             print_status(
-                "SSH plan: running in foreground; Ctrl-C cancels authentication and transfer",
+                "SSH plan: running in foreground for selected work; Ctrl-C cancels authentication and transfer",
                 options.color,
             )?;
             print_text(&format!("  reason: {}\n", presentation::escape(reason)))?;

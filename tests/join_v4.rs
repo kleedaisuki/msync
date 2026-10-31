@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use msync::compiler::structured::Session;
 use msync::compiler::{Backend, CompileContext};
+use msync::hir::control::{ControlInstruction, ExprKind as ControlExprKind, RangeSource, Type};
 use msync::hir::{Argument, BarrierKind, Input, InstructionKind, Output};
 use msync::language::{self, DestinationMode, ExprKind, StatementKind};
 
@@ -322,14 +323,34 @@ fn composed_executable_calls_and_selector_slashes_keep_their_grammar() {
     };
     assert!(matches!(location.backend, Backend::Http { .. }));
     let program = compile("directory/<a/b> -> target/\n");
-    let InstructionKind::Transfer {
-        source: Input::File { pattern, .. },
-        ..
-    } = &program.body.instructions[0].kind
+    assert_eq!(program.body.instructions.len(), 1);
+    let InstructionKind::Control(ControlInstruction::RangeTransfer {
+        range,
+        destination,
+        mode,
+    }) = &program.body.instructions[0].kind
     else {
-        panic!()
+        panic!("a selector must retain one range-transfer statement");
     };
-    assert_eq!(pattern.as_deref(), Some("a/b"));
+    let RangeSource::Regex { root, pattern } = &range.source else {
+        panic!("a selector slash must remain inside the regex source");
+    };
+    assert_eq!(pattern, "a/b");
+    assert_eq!(range.item_type, Type::Path);
+    assert!(range.stages.is_empty());
+    assert!(matches!(
+        &root.kind,
+        ControlExprKind::Path { location, .. }
+            if location.backend == Backend::Local && location.path.ends_with("/directory/")
+    ));
+    assert_eq!(*mode, DestinationMode::Container);
+    assert!(matches!(
+        &destination.kind,
+        ControlExprKind::Path { location, mode, .. }
+            if location.backend == Backend::Local
+                && location.path.ends_with("/target/")
+                && *mode == DestinationMode::Container
+    ));
     let program = compile("server => tcp://[::1]:9000\nserver::/ -> target\n");
     assert!(
         matches!(&program.body.instructions[0].kind, InstructionKind::Transfer { source: Input::File { location, .. }, .. } if matches!(&location.backend, Backend::Tcp { host, port: 9000 } if host == "::1"))

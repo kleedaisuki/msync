@@ -383,6 +383,11 @@ impl crate::object::control::Visitor for ProgramBinder<'_> {
                 module_file: self.context.module_file.clone(),
             };
         }
+        if let ExprKind::IntoPath { pwd, .. } = &mut expression.kind
+            && pwd.is_none()
+        {
+            *pwd = Some(self.context.pwd.clone());
+        }
         if let ExprKind::Path {
             location,
             relocation,

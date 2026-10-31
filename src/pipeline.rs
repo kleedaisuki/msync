@@ -153,6 +153,8 @@ pub fn compile_with_context(
 
 /// Compile against owned named text. Macro definitions retain this source across
 /// later submissions; no file is reopened to render a foreign definition site.
+/// The returned program is contextualized for direct execution; callers that
+/// need portable operands must use `compile_relocatable_named` instead.
 pub fn compile_named(
     session: &mut Session,
     source: &str,
@@ -160,8 +162,26 @@ pub fn compile_named(
     context: &CompileContext,
     planning: &PlanningContext,
 ) -> Result<Compilation, Vec<LocatedReport>> {
-    compile_relocatable_named(session, source, name, context, planning)
-        .map(|compiled| compiled.compilation)
+    let mut candidate = session.clone();
+    let unit = compile_relocatable_named(&mut candidate, source, name, context, planning)?;
+    let bound = crate::context::contextualize_source(
+        &unit,
+        &crate::context::Context::new(context),
+        planning.clone(),
+    )
+    .map_err(|error| {
+        let site = error
+            .site
+            .unwrap_or_else(|| unit.compilation.source.at(Span::default()));
+        let mut report = Report::new(error.message, site.span);
+        report.help = error.help;
+        vec![LocatedReport::new(site.source, report)]
+    })?;
+    let mut compilation = unit.compilation;
+    compilation.program = bound.program;
+    compilation.graph = bound.graph;
+    *session = candidate;
+    Ok(compilation)
 }
 
 /// Compile one source unit while retaining the contextual path expressions that

@@ -23,6 +23,7 @@ pub const FORMAT_VERSION: u32 = 2;
 pub const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
 pub const CONTROL_FEATURE: &str = "typed_control_v1";
 pub const SOURCE_MODULES_FEATURE: &str = "source_modules_v1";
+pub const TYPED_VALUES_FEATURE: &str = "typed_values_v2";
 
 pub const FEATURES: &[&str] = &[
     "barrier_typed_ir_v2",
@@ -222,6 +223,13 @@ impl ObjectModule {
             module.language_version = "0.6".into();
             module.features.push(CONTROL_FEATURE.into());
         }
+        if requires_typed_values(&module)? {
+            if module.language_version != "0.6" {
+                module.language_version = "0.6".into();
+                module.features.push(CONTROL_FEATURE.into());
+            }
+            module.features.push(TYPED_VALUES_FEATURE.into());
+        }
         module
             .relocations
             .sort_by_key(|relocation| (relocation.instruction, relocation.slot));
@@ -341,4 +349,64 @@ fn source_module_dependency(
     if let Anchor::ModuleFile { module } | Anchor::ModuleDirectory { module } = &path.anchor {
         names.insert(module.clone());
     }
+}
+
+fn requires_typed_values(module: &ObjectModule) -> Result<bool, ObjectError> {
+    use crate::hir::control::{
+        ControlInstruction, Expr, ExprKind, RangeExpr, RangeSource, RangeStage, Type,
+    };
+    use crate::relocatable::{ExportValue, Namespace};
+    struct Required(bool);
+    impl<'ir> control::ReadVisitor<'ir> for Required {
+        type Error = ObjectError;
+        fn control(&mut self, operation: &'ir ControlInstruction) -> Result<(), ObjectError> {
+            self.0 |= matches!(operation, ControlInstruction::RangeTransfer { .. });
+            Ok(())
+        }
+        fn expression(&mut self, expression: &'ir Expr) -> Result<(), ObjectError> {
+            self.0 |= matches!(expression.ty, Type::Union(_));
+            self.0 |= matches!(expression.kind, ExprKind::IntoPath { .. });
+            if let ExprKind::Space(namespace) | ExprKind::ResolvedSpace { namespace, .. } =
+                &expression.kind
+            {
+                self.0 |= matches!(
+                    namespace,
+                    Namespace::Qualified { .. } | Namespace::Api { .. }
+                );
+            }
+            if let ExprKind::Select { item, .. } = &expression.kind {
+                self.0 |= item.ty == Type::Space;
+            }
+            Ok(())
+        }
+        fn range(&mut self, range: &'ir RangeExpr) -> Result<(), ObjectError> {
+            self.0 |= !matches!(range.item_type, Type::String | Type::Path);
+            if let RangeSource::Values(values) = &range.source {
+                self.0 |= values
+                    .iter()
+                    .any(|value| !matches!(value.ty, Type::String | Type::Path));
+            }
+            self.0 |= range.stages.iter().any(|stage| matches!(
+                stage,
+                RangeStage::Transform { expression, .. } if !matches!(expression.ty, Type::String | Type::Path)
+            ));
+            Ok(())
+        }
+    }
+    let mut required = Required(false);
+    control::read_region(&module.program.body, &mut required)?;
+    for export in &module.exports {
+        match &export.value {
+            ExportValue::Dynamic { expression } => control::read_expr(expression, &mut required)?,
+            ExportValue::Range { range } => control::read_range(range, &mut required)?,
+            ExportValue::Namespace { namespace } => {
+                required.0 |= matches!(
+                    namespace,
+                    Namespace::Qualified { .. } | Namespace::Api { .. }
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(required.0)
 }

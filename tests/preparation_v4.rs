@@ -926,10 +926,21 @@ fn metadata_type_validation_distinguishes_directory_modes_and_selectors() {
     )
     .unwrap();
     let range = preparation::prepare(&bound.program, true).unwrap();
+    let InstructionKind::Control(hir::control::ControlInstruction::RangeTransfer {
+        range: selection,
+        mode,
+        ..
+    }) = &range.program.body.instructions[0].kind
+    else {
+        panic!("a lazy selector must retain one range-transfer statement");
+    };
+    assert_eq!(selection.item_type, hir::control::Type::Path);
     assert!(matches!(
-        range.program.body.instructions[0].kind,
-        InstructionKind::Control(hir::control::ControlInstruction::For { .. })
+        &selection.source,
+        hir::control::RangeSource::Regex { root, pattern }
+            if root.ty == hir::control::Type::Path && pattern == ".*"
     ));
+    assert_eq!(*mode, language::DestinationMode::Container);
     assert!(
         range.facts.is_empty(),
         "a lazy selector is not enumerated by preparation"

@@ -281,6 +281,18 @@ impl SnapshotStore {
     /// The caller has already established ownership of this control directory.
     /// Exclusion retains its exact physical identity, never a name pattern.
     pub(crate) fn exclude_owned_directory(&mut self, path: &Path) -> Result<()> {
+        self.exclude_private_directory(path, None)
+    }
+
+    pub(crate) fn exclude_directory_identity(
+        &mut self,
+        path: &Path,
+        expected: &Handle,
+    ) -> Result<()> {
+        self.exclude_private_directory(path, Some(expected))
+    }
+
+    fn exclude_private_directory(&mut self, path: &Path, expected: Option<&Handle>) -> Result<()> {
         self.ensure_open()?;
         let path = absolute(path)?;
         check_path(&path)?;
@@ -293,6 +305,13 @@ impl SnapshotStore {
         }
         let identity = Handle::from_path(&path)
             .map_err(|cause| error("identify private directory exclusion", &path, cause))?;
+        if expected.is_some_and(|expected| *expected != identity) {
+            return Err(invalid(
+                "exclude private directory",
+                &path,
+                "owned control directory identity changed",
+            ));
+        }
         if !self
             .private_directories
             .iter()

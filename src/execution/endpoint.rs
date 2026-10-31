@@ -29,6 +29,7 @@ pub(super) struct Spec {
     pub span: Span,
     pattern: Option<String>,
     origin: Option<Location>,
+    cohort_origins: Vec<(Location, String)>,
     literal: bool,
 }
 
@@ -69,11 +70,18 @@ pub(super) fn inspect(source: &Input, output: &Sink, span: Span) -> Result<Optio
             Input::File { location, .. } => Some(location.clone()),
             _ => None,
         },
+        cohort_origins: Vec::new(),
         literal: matches!(source, Input::Literal(_)),
     }))
 }
 
 impl Spec {
+    pub(super) fn with_cohort_origins(mut self, origins: Vec<(Location, String)>) -> Self {
+        self.origin = None;
+        self.cohort_origins = origins;
+        self
+    }
+
     /// `source` is an invocation-owned materialization, not a live user pathname.
     pub(super) async fn run(
         self,
@@ -119,22 +127,22 @@ impl Spec {
         }
         let backend = &self.destination.backend;
         let origin = self.remote_origin(&cancel).await?;
-        let allocated = command(
-            backend,
-            ALLOCATE,
-            &[
-                &self.destination.path,
-                origin.as_deref().unwrap_or(""),
-                if self.mode == DestinationMode::Container && self.pattern.is_none() {
-                    names.first().map(String::as_str).unwrap_or("")
-                } else {
-                    ""
-                },
-            ],
-            &cancel,
-            self.span,
-        )
-        .await?;
+        let mut arguments = vec![
+            self.destination.path.clone(),
+            origin.unwrap_or_default(),
+            if self.mode == DestinationMode::Container && self.pattern.is_none() {
+                names.first().cloned().unwrap_or_default()
+            } else {
+                String::new()
+            },
+        ];
+        for (source, basename) in &self.cohort_origins {
+            if let Some(origin) = self.resolve_origin(source, &cancel).await? {
+                arguments.extend([origin, basename.clone()]);
+            }
+        }
+        let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+        let allocated = command(backend, ALLOCATE, &arguments, &cancel, self.span).await?;
         let allocation = String::from_utf8(allocated.stdout).map_err(|cause| {
             ExecutionError::caused("remote journal returned invalid UTF-8", self.span, cause)
         })?;
@@ -226,6 +234,14 @@ impl Spec {
         let Some(origin) = &self.origin else {
             return Ok(None);
         };
+        self.resolve_origin(origin, cancel).await
+    }
+
+    async fn resolve_origin(
+        &self,
+        origin: &Location,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>> {
         if origin.backend == self.destination.backend {
             return Ok(Some(origin.path.clone()));
         }
@@ -537,16 +553,24 @@ while [ "$p" != / ]; do
 done
 d=$(realpath -m -- "$d")
 [ "$d" != / ] || { echo 'remote filesystem root is reserved' >&2; exit 1; }
-if [ -n "$2" ]; then
-    case $2 in '~') s=$HOME;; '~/'*) s=$HOME/${2#\~/};; /*) s=$2;; *) s=$PWD/$2;; esac
+check_origin() (
+    [ -n "$1" ] || return 0
+    case $1 in '~') s=$HOME;; '~/'*) s=$HOME/${1#\~/};; /*) s=$1;; *) s=$PWD/$1;; esac
     s=$(realpath -m -- "$s")
-    q=$d; [ -z "$3" ] || q=$d/$3
+    q=$d; [ -z "$2" ] || q=$d/$2
     [ "$s" != "$q" ] && { [ ! -e "$q" ] || [ ! "$s" -ef "$q" ]; } || { echo 'source and destination are identical' >&2; exit 1; }
     if [ -d "$s" ]; then
         case $q/ in "$s/"*) echo 'source and destination directory trees overlap' >&2; exit 1;; esac
         case $s/ in "$q/"*) echo 'source and destination directory trees overlap' >&2; exit 1;; esac
     fi
-fi
+)
+check_origin "$2" "$3"
+shift 3
+while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] || { echo 'incomplete source identity pair' >&2; exit 1; }
+    check_origin "$1" "$2"
+    shift 2
+done
 r=$d
 while [ ! -e "$(dirname -- "$r")" ]; do r=$(dirname -- "$r"); done
 p=$(dirname -- "$r")
@@ -829,6 +853,98 @@ mod journal_tests {
             ])
             .output()
             .is_ok_and(|output| output.status.success())
+    }
+
+    #[test]
+    fn cohort_allocation_checks_every_original_before_creating_a_journal() {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&base).unwrap();
+        let root = tempfile::Builder::new()
+            .prefix("remote-cohort-alias-")
+            .tempdir_in(base)
+            .unwrap();
+        let destination = root.path().join("destination");
+        fs::create_dir(&destination).unwrap();
+        let source = root.path().join("source");
+        fs::write(&source, b"source bytes").unwrap();
+        let victim = destination.join("victim");
+        fs::write(&victim, b"retained bytes").unwrap();
+        let alias = root.path().join("alias");
+        fs::hard_link(&victim, &alias).unwrap();
+        for (origin, basename) in [
+            (&victim, "victim"),
+            (&alias, "victim"),
+            (&destination, "nested"),
+        ] {
+            let output = Command::new("timeout")
+                .args([
+                    "--kill-after=2s",
+                    "10s",
+                    "sh",
+                    "-c",
+                    ALLOCATE,
+                    "msync-cohort",
+                ])
+                .arg(&destination)
+                .args(["", ""])
+                .arg(&source)
+                .arg("new")
+                .arg(origin)
+                .arg(basename)
+                .output()
+                .unwrap();
+            assert!(
+                !output.status.success(),
+                "overlap was admitted: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains("identical") || error.contains("overlap"),
+                "{error}"
+            );
+            assert!(fs::read_dir(root.path()).unwrap().all(|entry| {
+                !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".msync-v4.")
+            }));
+            assert_eq!(fs::read(&victim).unwrap(), b"retained bytes");
+        }
+        let output = Command::new("timeout")
+            .args([
+                "--kill-after=2s",
+                "10s",
+                "sh",
+                "-c",
+                ALLOCATE,
+                "msync-cohort",
+            ])
+            .arg(&destination)
+            .args(["", ""])
+            .arg(&source)
+            .arg("new")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let fields = stdout.lines().collect::<Vec<_>>();
+        assert_eq!(fields.len(), 3);
+        let journal = Path::new(fields[0]);
+        assert_eq!(journal.parent(), Some(root.path()));
+        assert!(
+            journal
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".msync-v4.")
+        );
+        fs::remove_dir(journal).unwrap();
     }
 
     #[test]

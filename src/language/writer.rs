@@ -109,22 +109,7 @@ fn write_statement(output: &mut String, kind: &StatementKind, depth: usize) {
             then_body,
             else_body,
         } => {
-            output.push_str("if ");
-            expression(output, condition, depth);
-            output.push_str(":\n");
-            block(output, then_body, depth + 1);
-            if !else_body.is_empty() {
-                output.push_str(&"    ".repeat(depth));
-                if let [branch] = else_body.as_slice()
-                    && matches!(branch.kind, StatementKind::If { .. })
-                {
-                    output.push_str("else ");
-                    write_statement(output, &branch.kind, depth);
-                } else {
-                    output.push_str("else:\n");
-                    block(output, else_body, depth + 1);
-                }
-            }
+            conditional(output, condition, then_body, else_body, depth, "");
             return;
         }
         StatementKind::For { name, range, body } => {
@@ -153,12 +138,17 @@ fn write_statement(output: &mut String, kind: &StatementKind, depth: usize) {
             awaited,
             statement,
         } => {
-            output.push_str(match (*asynchronous, *awaited) {
-                (true, true) => "acqrel ",
-                (true, false) => "release ",
-                (false, true) => "acquire ",
-                (false, false) => "",
-            });
+            let prefix = schedule_prefix(*asynchronous, *awaited);
+            if let StatementKind::If {
+                condition,
+                then_body,
+                else_body,
+            } = &statement.kind
+            {
+                conditional(output, condition, then_body, else_body, depth, prefix);
+                return;
+            }
+            output.push_str(prefix);
             write_statement(output, &statement.kind, depth);
             return;
         }
@@ -181,6 +171,51 @@ fn write_statement(output: &mut String, kind: &StatementKind, depth: usize) {
     output.push('\n');
 }
 
+fn schedule_prefix(asynchronous: bool, awaited: bool) -> &'static str {
+    match (asynchronous, awaited) {
+        (true, true) => "acqrel ",
+        (true, false) => "release ",
+        (false, true) => "acquire ",
+        (false, false) => "",
+    }
+}
+
+fn is_conditional(kind: &StatementKind) -> bool {
+    match kind {
+        StatementKind::If { .. } => true,
+        StatementKind::Scheduled { statement, .. } => is_conditional(&statement.kind),
+        _ => false,
+    }
+}
+
+fn conditional(
+    output: &mut String,
+    condition: &Expr,
+    then_body: &Block,
+    else_body: &Block,
+    depth: usize,
+    prefix: &str,
+) {
+    output.push_str("if ");
+    output.push_str(prefix);
+    expression(output, condition, depth);
+    output.push_str(":\n");
+    block(output, then_body, depth + 1);
+    if else_body.is_empty() {
+        return;
+    }
+    output.push_str(&"    ".repeat(depth));
+    if let [branch] = else_body.as_slice()
+        && is_conditional(&branch.kind)
+    {
+        output.push_str("else ");
+        write_statement(output, &branch.kind, depth);
+    } else {
+        output.push_str("else:\n");
+        block(output, else_body, depth + 1);
+    }
+}
+
 fn expression(output: &mut String, value: &Expr, depth: usize) {
     match &value.kind {
         ExprKind::Path(path) => {
@@ -199,6 +234,16 @@ fn expression(output: &mut String, value: &Expr, depth: usize) {
         }
         ExprKind::Literal(text) => quoted(output, text),
         ExprKind::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
+        ExprKind::Range(values) => {
+            output.push('[');
+            for (index, value) in values.iter().enumerate() {
+                if index != 0 {
+                    output.push_str(", ");
+                }
+                expression(output, value, depth);
+            }
+            output.push(']');
+        }
         ExprKind::Not(value) => {
             output.push_str("not (");
             expression(output, value, depth);

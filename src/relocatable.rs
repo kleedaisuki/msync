@@ -67,7 +67,22 @@ pub struct Relocation {
 pub enum Namespace {
     WorkingDirectory,
     Module,
-    Endpoint { backend: Backend },
+    Endpoint {
+        backend: Backend,
+    },
+    Qualified {
+        outer: Box<Namespace>,
+        inner: Box<Namespace>,
+    },
+    Api {
+        scope: BuiltinScope,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuiltinScope {
+    View,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

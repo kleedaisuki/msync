@@ -121,6 +121,7 @@ pub enum ExprKind {
     Path(PathExpr),
     Literal(String),
     Bool(bool),
+    Range(Vec<Expr>),
     Not(Box<Expr>),
     Exists(Box<Expr>),
     Binary {

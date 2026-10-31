@@ -71,6 +71,12 @@ pub(crate) fn visit_control<V: Visitor>(
             visit_range(range, visitor)?;
             visit_region(body, visitor)?;
         }
+        Control::RangeTransfer {
+            range, destination, ..
+        } => {
+            visit_range(range, visitor)?;
+            visit_expr(destination, visitor)?;
+        }
         Control::Loop { body } => visit_region(body, visitor)?,
         Control::Break { value } => {
             if let Some(value) = value {
@@ -100,7 +106,9 @@ pub(crate) fn visit_expr<V: Visitor>(
 ) -> Result<(), V::Error> {
     visitor.expression(expression)?;
     match &mut expression.kind {
-        ExprKind::Exists(value) | ExprKind::Not(value) => visit_expr(value, visitor)?,
+        ExprKind::Exists(value) | ExprKind::Not(value) | ExprKind::IntoPath { value, .. } => {
+            visit_expr(value, visitor)?
+        }
         ExprKind::Let { value, body, .. } => {
             visit_expr(value, visitor)?;
             visit_expr(body, visitor)?;

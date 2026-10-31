@@ -34,6 +34,8 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 pub struct SshContext {
     inner: Arc<Mutex<Sessions>>,
     cancel: Option<CancellationToken>,
+    #[cfg(unix)]
+    foreground: Option<Arc<Mutex<HashSet<Backend>>>>,
     #[cfg(any(windows, test))]
     graphical: Option<PathBuf>,
     #[cfg(windows)]
@@ -45,7 +47,33 @@ pub struct SshContext {
 #[derive(Default)]
 struct Sessions {
     entries: HashMap<Backend, Session>,
-    directory: Option<PathBuf>,
+    directory: Option<ControlDirectory>,
+}
+
+struct ControlDirectory {
+    path: PathBuf,
+    identity: same_file::Handle,
+}
+
+impl ControlDirectory {
+    fn verify(&self) -> std::io::Result<()> {
+        let metadata = fs::symlink_metadata(&self.path)?;
+        if !metadata.is_dir() || same_file::Handle::from_path(&self.path)? != self.identity {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "SSH control directory identity changed: {}",
+                    self.path.display()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn remove(&self) -> std::io::Result<()> {
+        self.verify()?;
+        fs::remove_dir_all(&self.path)
+    }
 }
 
 #[cfg_attr(not(unix), allow(dead_code))]
@@ -61,8 +89,10 @@ impl Drop for Sessions {
                 stop(child);
             }
         }
-        if let Some(directory) = &self.directory {
-            let _ = fs::remove_dir_all(directory);
+        if let Some(directory) = &self.directory
+            && let Err(error) = directory.remove()
+        {
+            crate::telemetry::io_error("ssh.control.cleanup", &error);
         }
     }
 }
@@ -127,6 +157,8 @@ impl SshContext {
         Self {
             inner: Arc::clone(&self.inner),
             cancel: Some(cancel),
+            #[cfg(unix)]
+            foreground: None,
             #[cfg(any(windows, test))]
             graphical: None,
             #[cfg(windows)]
@@ -172,6 +204,70 @@ impl SshContext {
         self.cancel.clone()
     }
 
+    /// Foreground execution may acquire a session on the first actual endpoint use.
+    pub fn with_foreground_reuse(self) -> Self {
+        #[cfg(unix)]
+        {
+            let mut context = self;
+            context.foreground = Some(Arc::default());
+            context
+        }
+        #[cfg(not(unix))]
+        self
+    }
+
+    pub fn prepare_backends(&self, _backends: &[Backend]) -> Result<(), String> {
+        #[cfg(unix)]
+        for backend in _backends {
+            self.reuse_foreground(backend)?;
+        }
+        Ok(())
+    }
+
+    /// Only endpoints actually admitted without a safe lease require a local join.
+    pub fn requires_foreground(&self) -> bool {
+        #[cfg(unix)]
+        {
+            let Some(foreground) = &self.foreground else {
+                return false;
+            };
+            let Ok(admitted) = foreground.lock() else {
+                return true;
+            };
+            let Ok(sessions) = self.inner.lock() else {
+                return true;
+            };
+            admitted
+                .iter()
+                .any(|backend| !sessions.entries.contains_key(backend))
+        }
+        #[cfg(not(unix))]
+        false
+    }
+
+    pub(crate) fn may_require_foreground(&self) -> bool {
+        #[cfg(unix)]
+        return self.foreground.is_some();
+        #[cfg(not(unix))]
+        false
+    }
+
+    pub(crate) fn exclude_from(
+        &self,
+        store: &mut crate::filesystem::SnapshotStore,
+    ) -> std::io::Result<()> {
+        let sessions = self
+            .inner
+            .lock()
+            .map_err(|_| std::io::Error::other("SSH session registry is poisoned"))?;
+        if let Some(directory) = &sessions.directory {
+            store
+                .exclude_directory_identity(&directory.path, &directory.identity)
+                .map_err(|cause| std::io::Error::new(cause.cause.kind(), cause))?;
+        }
+        Ok(())
+    }
+
     pub async fn scope<F: Future>(&self, future: F) -> F::Output {
         ASYNC_CONTEXT.scope(self.clone(), future).await
     }
@@ -199,14 +295,26 @@ impl SshContext {
         program: &Program,
         cancel: &CancellationToken,
     ) -> Result<Option<String>, String> {
+        self.ensure_backends(
+            program
+                .operations
+                .iter()
+                .flat_map(|operation| [&operation.source.backend, &operation.destination.backend]),
+            cancel,
+        )
+    }
+
+    pub fn ensure_backends<'a>(
+        &self,
+        backends: impl IntoIterator<Item = &'a Backend>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, String> {
         let mut seen = HashSet::new();
         let mut foreground = None;
-        for operation in &program.operations {
-            for backend in [&operation.source.backend, &operation.destination.backend] {
-                if seen.insert(backend) {
-                    let unavailable = self.ensure_optional(backend, cancel)?;
-                    foreground = foreground.or(unavailable);
-                }
+        for backend in backends {
+            if seen.insert(backend) {
+                let unavailable = self.ensure_optional(backend, cancel)?;
+                foreground = foreground.or(unavailable);
             }
         }
         Ok(foreground)
@@ -234,7 +342,29 @@ impl SshContext {
         #[cfg(not(unix))]
         return Ok(None);
         #[cfg(unix)]
-        self.ensure_unix(backend, cancel)
+        {
+            let mut trace = crate::telemetry::span("ssh.session.admit");
+            trace.expect_completion();
+            if let Backend::Ssh { host, user, port } = backend {
+                trace.attribute_lazy("endpoint.host", || host.clone());
+                if let Some(user) = user {
+                    trace.attribute_lazy("endpoint.user", || user.clone());
+                }
+                if let Some(port) = port {
+                    trace.metric("endpoint.port", *port as u64);
+                }
+            }
+            let result = self.ensure_unix(backend, cancel);
+            trace.finish_result(&result);
+            if let Ok(Some(reason)) = &result {
+                trace.event(
+                    "ssh.session.foreground_fallback",
+                    &[("reason", reason)],
+                    &[],
+                );
+            }
+            result
+        }
     }
 
     #[cfg(unix)]
@@ -247,6 +377,9 @@ impl SshContext {
             .inner
             .lock()
             .map_err(|_| "SSH session registry is poisoned")?;
+        if let Some(directory) = &sessions.directory {
+            directory.verify().map_err(|cause| cause.to_string())?;
+        }
         if let Some(Session::Owned { child, socket }) = sessions.entries.get_mut(backend)
             && child
                 .try_wait()
@@ -263,26 +396,33 @@ impl SshContext {
             sessions.entries.insert(backend.clone(), Session::Existing);
             return Ok(None);
         }
-        let new_directory = sessions.directory.is_none();
-        let directory = match &sessions.directory {
-            Some(directory) => directory.clone(),
-            None => match private_directory() {
-                Ok(directory) => directory,
+        let created = if sessions.directory.is_none() {
+            match private_directory() {
+                Ok(directory) => Some(directory),
                 Err(reason) => return Ok(Some(reason)),
-            },
+            }
+        } else {
+            None
         };
+        let directory = sessions
+            .directory
+            .as_ref()
+            .or(created.as_ref())
+            .expect("owned SSH directory")
+            .path
+            .clone();
         let socket = directory.join(format!("s{}", NEXT.fetch_add(1, Ordering::Relaxed)));
         if socket.as_os_str().len() > 95 {
-            if new_directory {
-                let _ = fs::remove_dir(&directory);
+            if let Some(created) = created {
+                let _ = created.remove();
             }
             return Ok(Some(format!(
                 "SSH control socket path is too long: {}; background authentication requires a shorter writable workspace",
                 socket.display()
             )));
         }
-        if new_directory {
-            sessions.directory = Some(directory);
+        if let Some(created) = created {
+            sessions.directory = Some(created);
         }
         let mut command = client(backend);
         command
@@ -354,25 +494,39 @@ impl SshContext {
         );
     }
 
-    pub(super) fn configure_scp(&self, command: &mut Command, backend: &Backend) {
+    pub(super) fn configure_scp(
+        &self,
+        command: &mut Command,
+        backend: &Backend,
+    ) -> Result<(), String> {
         #[cfg(windows)]
         self.configure_graphical(command, backend);
-        self.configure_client(command, backend, true);
+        self.configure_client(command, backend, true)
     }
 
-    pub(super) fn configure(&self, command: &mut Command, backend: &Backend) {
+    pub(super) fn configure(&self, command: &mut Command, backend: &Backend) -> Result<(), String> {
         #[cfg(windows)]
         self.configure_graphical(command, backend);
-        self.configure_client(command, backend, false);
+        self.configure_client(command, backend, false)
     }
 
-    fn configure_client(&self, command: &mut Command, backend: &Backend, scp: bool) {
+    fn configure_client(
+        &self,
+        command: &mut Command,
+        backend: &Backend,
+        scp: bool,
+    ) -> Result<(), String> {
+        #[cfg(unix)]
+        self.reuse_foreground(backend)?;
         let Ok(sessions) = self.inner.lock() else {
-            return;
+            return Err("SSH session registry is poisoned".into());
         };
         let Some(session) = sessions.entries.get(backend) else {
-            return;
+            return Ok(());
         };
+        if let Some(directory) = &sessions.directory {
+            directory.verify().map_err(|cause| cause.to_string())?;
+        }
         // Only authenticated leases suppress fallback prompts. Initial native
         // authentication remains interactive and owns the foreground terminal.
         command.args(["-o", "BatchMode=yes"]);
@@ -385,6 +539,29 @@ impl SshContext {
                 command.arg("-S").arg(socket);
             }
         }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn reuse_foreground(&self, backend: &Backend) -> Result<(), String> {
+        if !matches!(backend, Backend::Ssh { .. }) {
+            return Ok(());
+        }
+        let Some(foreground) = &self.foreground else {
+            return Ok(());
+        };
+        let mut admitted = foreground
+            .lock()
+            .map_err(|_| "SSH admission registry is poisoned")?;
+        if admitted.contains(backend) {
+            return Ok(());
+        }
+        let cancel = self.cancel.clone().unwrap_or_default();
+        // Storage remains optional for an ordinary foreground client. Failure to
+        // reserve a safe socket retains its native authentication path.
+        self.ensure_optional(backend, &cancel)?;
+        admitted.insert(backend.clone());
+        Ok(())
     }
 }
 
@@ -394,6 +571,7 @@ fn stop(child: &mut Child) {
     }
     #[cfg(unix)]
     {
+        let ready = super::ChildWait::new(child);
         // OpenSSH restores its controlling terminal on SIGTERM. SIGKILL alone
         // can leave echo disabled when programmatic cancellation interrupts auth.
         // SAFETY: the live owned Child supplies this process ID.
@@ -404,7 +582,7 @@ fn stop(child: &mut Child) {
             if child.try_wait().is_ok_and(|status| status.is_some()) {
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            ready.pause(child);
         }
     }
     let _ = child.kill();
@@ -451,7 +629,7 @@ fn graphical_command(
 }
 
 #[cfg(unix)]
-fn private_directory() -> Result<PathBuf, String> {
+fn private_directory() -> Result<ControlDirectory, String> {
     use std::os::unix::fs::DirBuilderExt;
     let parent = std::env::current_dir()
         .map_err(|error| error.to_string())?
@@ -465,7 +643,18 @@ fn private_directory() -> Result<PathBuf, String> {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         match fs::DirBuilder::new().mode(0o700).create(&directory) {
-            Ok(()) => return Ok(directory),
+            Ok(()) => {
+                let identity = same_file::Handle::from_path(&directory).map_err(|cause| {
+                    format!(
+                        "cannot identify SSH workspace {}: {cause}",
+                        directory.display()
+                    )
+                })?;
+                return Ok(ControlDirectory {
+                    path: directory,
+                    identity,
+                });
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
                 return Err(format!(
@@ -516,6 +705,7 @@ fn check_master(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("cannot inspect SSH master: {error}"))?;
+    let ready = super::ChildWait::new(&child);
     loop {
         if cancel.is_cancelled() {
             stop(&mut child);
@@ -523,7 +713,7 @@ fn check_master(
         }
         match child.try_wait() {
             Ok(Some(status)) => return Ok(status.success()),
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Ok(None) => ready.pause(&child),
             Err(error) => {
                 stop(&mut child);
                 return Err(format!("cannot inspect SSH master: {error}"));
@@ -535,6 +725,63 @@ fn check_master(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn private_context(path: &std::path::Path) -> SshContext {
+        let context = SshContext::default();
+        context.inner.lock().unwrap().directory = Some(ControlDirectory {
+            path: path.to_owned(),
+            identity: same_file::Handle::from_path(path).unwrap(),
+        });
+        context
+    }
+
+    #[test]
+    fn snapshot_exclusion_is_owned_identity_not_a_directory_name() {
+        let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&parent).unwrap();
+        let root = tempfile::tempdir_in(parent).unwrap();
+        let source = root.path().join("source");
+        let owned = source.join("ssh-same");
+        let user = source.join("nested/ssh-same");
+        fs::create_dir_all(&owned).unwrap();
+        fs::create_dir_all(&user).unwrap();
+        fs::write(owned.join("control"), b"private").unwrap();
+        fs::write(user.join("data"), b"user bytes").unwrap();
+        let context = private_context(&owned);
+        let mut store = crate::filesystem::SnapshotStore::new(&root.path().join("store")).unwrap();
+        context.exclude_from(&mut store).unwrap();
+        let snapshot = store.capture(&source).unwrap();
+        assert!(
+            !snapshot
+                .entries()
+                .keys()
+                .any(|path| path.starts_with("ssh-same"))
+        );
+        assert!(
+            snapshot
+                .entries()
+                .contains_key(std::path::Path::new("nested/ssh-same/data"))
+        );
+    }
+
+    #[test]
+    fn replaced_control_root_is_neither_excluded_nor_removed() {
+        let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&parent).unwrap();
+        let root = tempfile::tempdir_in(parent).unwrap();
+        let owned = root.path().join("ssh-owned");
+        fs::create_dir(&owned).unwrap();
+        let context = private_context(&owned);
+        fs::rename(&owned, root.path().join("retained-original")).unwrap();
+        fs::create_dir(&owned).unwrap();
+        fs::write(owned.join("user-data"), b"must survive").unwrap();
+        let mut store = crate::filesystem::SnapshotStore::new(&root.path().join("store")).unwrap();
+        let error = context.exclude_from(&mut store).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("identity changed"));
+        drop(context);
+        assert_eq!(fs::read(owned.join("user-data")).unwrap(), b"must survive");
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn owned_authentication_context_follows_tasks_and_blocking_workers() {

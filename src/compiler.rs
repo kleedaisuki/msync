@@ -66,6 +66,11 @@ enum Space {
     Endpoint(Backend),
     Pwd,
     File,
+    Qualified {
+        outer: Box<Space>,
+        inner: Box<Space>,
+    },
+    Api(crate::relocatable::BuiltinScope),
 }
 
 #[derive(Clone, Debug)]
@@ -253,15 +258,22 @@ impl Compiler {
         }
     }
 
-    fn space(&self, value: &str, span: Span) -> Result<Space, Report> {
+    fn builtin_space(value: &str) -> Option<Space> {
         match value {
-            "$pwd" => return Ok(Space::Pwd),
-            "$file" => return Ok(Space::File),
-            "$local" => return Ok(Space::Endpoint(Backend::Local)),
-            "$wsl" => return Ok(Space::Endpoint(Backend::Wsl)),
-            "$path" => return Ok(Space::Endpoint(Backend::Path)),
-            "$env" => return Ok(Space::Endpoint(Backend::Env)),
-            _ => {}
+            "$pwd" => Some(Space::Pwd),
+            "$file" => Some(Space::File),
+            "$local" => Some(Space::Endpoint(Backend::Local)),
+            "$wsl" => Some(Space::Endpoint(Backend::Wsl)),
+            "$path" => Some(Space::Endpoint(Backend::Path)),
+            "$env" => Some(Space::Endpoint(Backend::Env)),
+            "$view" => Some(Space::Api(crate::relocatable::BuiltinScope::View)),
+            _ => None,
+        }
+    }
+
+    fn space(&self, value: &str, span: Span) -> Result<Space, Report> {
+        if let Some(space) = Self::builtin_space(value) {
+            return Ok(space);
         }
         if let Some(space) = self.spaces.get(value) {
             return Ok(space.clone());
@@ -509,8 +521,8 @@ impl Compiler {
                     Space::File => format!(
                         "The $file namespace has items 'this' and 'parent'; use '{qualifier}::this' or '{qualifier}::parent/path'."
                     ),
-                    Space::Endpoint(_) => {
-                        unreachable!("physical endpoints do not use namespace items")
+                    Space::Endpoint(_) | Space::Qualified { .. } | Space::Api(_) => {
+                        "This scope requires the structured expression frontend.".to_owned()
                     }
                 };
                 return Err(Report::new(
@@ -589,6 +601,8 @@ impl fmt::Display for Space {
             Self::Endpoint(backend) => backend.fmt(formatter),
             Self::Pwd => formatter.write_str("$pwd"),
             Self::File => formatter.write_str("$file"),
+            Self::Qualified { outer, inner } => write!(formatter, "({outer})::({inner})"),
+            Self::Api(crate::relocatable::BuiltinScope::View) => formatter.write_str("$view"),
         }
     }
 }

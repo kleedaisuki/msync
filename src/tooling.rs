@@ -61,6 +61,7 @@ enum NamespaceShape {
     Program,
     WorkingDirectory,
     File,
+    View,
 }
 
 #[derive(Clone, Copy)]
@@ -165,6 +166,13 @@ impl SymbolIndex {
 
     pub fn references(&self) -> &[Reference] {
         &self.references
+    }
+
+    pub fn is_view_scope(&self, definition: DefinitionId) -> bool {
+        matches!(
+            self.namespace_shapes.get(&definition),
+            Some(NamespaceShape::View)
+        )
     }
 
     /// Resolve the declaration token or a reference under a byte offset.
@@ -417,7 +425,7 @@ impl SymbolIndex {
             return;
         }
         let pure_call = is_pure_call(value, environment);
-        let (kind, mut detail) = binding_detail(name, op, value, pure_call);
+        let (mut kind, mut detail) = binding_detail(name, op, value, pure_call);
         if op != BindingOp::Space
             && let ExprKind::Path(path) = &value.kind
             && path.qualifier.is_none()
@@ -429,12 +437,16 @@ impl SymbolIndex {
                 .next()
                 .unwrap_or("value");
             let known = match source {
-                "bool" | "string" | "path" | "range" | "space" | "program" => source,
+                "bool" | "string" | "path" | "range" | "scope" | "space" | "program" => source,
                 _ => "value",
             };
             detail = format!("{known} {}", name.text);
         }
         let shape = self.binding_shape(value, kind, environment);
+        if matches!(shape, Some(NamespaceShape::View)) {
+            kind = SymbolKind::Space;
+            detail = format!("scope {}", name.text);
+        }
         let id = self.definition(name, kind, span, detail, parent);
         if let Some(shape) = shape {
             self.namespace_shapes.insert(id, shape);
@@ -589,15 +601,20 @@ impl SymbolIndex {
         parent: Option<DefinitionId>,
         statement_call: bool,
     ) {
+        if let Some((callee, arguments)) = self.range_call(expression, true, environment) {
+            self.range_scope_reference(callee, environment);
+            self.range_arguments(callee, arguments, environment, scope, parent);
+            return;
+        }
+        if self.range_name(expression, true, environment).is_some() {
+            self.range_scope_reference(expression, environment);
+            return;
+        }
         match &expression.kind {
             ExprKind::Path(path) => {
                 self.path_reference(expression, path, environment, false, statement_call)
             }
             ExprKind::Call { callee, arguments } => {
-                if range_name(callee, true).is_some() {
-                    self.range_arguments(callee, arguments, environment, scope, parent);
-                    return;
-                }
                 if let ExprKind::Path(path) = &callee.kind {
                     self.path_reference(callee, path, environment, true, statement_call);
                 } else {
@@ -611,6 +628,11 @@ impl SymbolIndex {
                 self.expression(base, environment, scope, parent, false);
                 if let Some(suffix) = suffix {
                     self.expression(suffix, environment, scope, parent, false);
+                }
+            }
+            ExprKind::Range(items) => {
+                for item in items {
+                    self.expression(item, environment, scope, parent, false);
                 }
             }
             ExprKind::Select {
@@ -654,12 +676,33 @@ impl SymbolIndex {
         scope: usize,
         parent: Option<DefinitionId>,
     ) {
+        if let Some((callee, arguments)) = self.range_call(expression, false, environment) {
+            self.range_scope_reference(callee, environment);
+            self.range_arguments(callee, arguments, environment, scope, parent);
+        } else if self.range_name(expression, false, environment).is_none() {
+            self.expression(expression, environment, scope, parent, false);
+        } else {
+            self.range_scope_reference(expression, environment);
+        }
+    }
+
+    fn range_scope_reference(&mut self, expression: &Expr, environment: &Environment) {
         match &expression.kind {
-            ExprKind::Call { callee, arguments } if range_name(callee, false).is_some() => {
-                self.range_arguments(callee, arguments, environment, scope, parent);
+            ExprKind::Path(path) => {
+                if let Some(namespace) = &path.qualifier
+                    && !matches!(namespace.text.as_str(), "$view" | "views" | "ranges")
+                {
+                    self.value_reference(namespace, environment);
+                }
             }
-            _ if range_name(expression, false).is_some() => {}
-            _ => self.expression(expression, environment, scope, parent, false),
+            ExprKind::Select { namespace, .. } => {
+                if let ExprKind::Path(path) = &namespace.kind
+                    && !matches!(path.path.as_str(), "$view" | "views" | "ranges")
+                {
+                    self.path_reference(namespace, path, environment, false, false);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -672,7 +715,7 @@ impl SymbolIndex {
         parent: Option<DefinitionId>,
     ) {
         let callback = matches!(
-            range_name(callee, false),
+            self.range_name(callee, false, environment),
             Some(
                 "filter"
                     | "transform"
@@ -712,8 +755,10 @@ impl SymbolIndex {
             self.value_reference(qualifier, environment);
             let shape = self.qualifier_shape(&qualifier.text, environment);
             let component = path.path.split(['/', '\\']).next().unwrap_or(&path.path);
-            if matches!(shape, Some(NamespaceShape::Program | NamespaceShape::File))
-                || matches!(shape, Some(NamespaceShape::WorkingDirectory)) && component == "pwd"
+            if matches!(
+                shape,
+                Some(NamespaceShape::Program | NamespaceShape::File | NamespaceShape::View)
+            ) || matches!(shape, Some(NamespaceShape::WorkingDirectory)) && component == "pwd"
             {
                 return;
             }
@@ -722,13 +767,13 @@ impl SymbolIndex {
             return;
         }
         let name = path.path.split(['/', '\\']).next().unwrap_or(&path.path);
-        let target = if call && path.qualifier.is_none() {
+        let target = if call {
             environment
                 .names
                 .symbols
                 .get(name)
                 .or_else(|| {
-                    statement_call
+                    (statement_call && path.qualifier.is_none())
                         .then(|| environment.names.macros.get(name))
                         .flatten()
                 })
@@ -751,6 +796,7 @@ impl SymbolIndex {
         match name {
             "$pwd" => Some(NamespaceShape::WorkingDirectory),
             "$file" => Some(NamespaceShape::File),
+            "$view" => Some(NamespaceShape::View),
             _ => environment
                 .names
                 .values
@@ -777,6 +823,75 @@ impl SymbolIndex {
         }
         self.qualifier_shape(&path.path, environment)
     }
+
+    fn view_namespace(&self, name: &str, environment: &Environment) -> bool {
+        matches!(name, "views" | "ranges")
+            || matches!(
+                self.qualifier_shape(name, environment),
+                Some(NamespaceShape::View)
+            )
+    }
+    fn range_call<'e>(
+        &self,
+        expression: &'e Expr,
+        qualified: bool,
+        environment: &Environment,
+    ) -> Option<(&'e Expr, &'e [Expr])> {
+        match &expression.kind {
+            ExprKind::Call { callee, arguments }
+                if self.range_name(callee, qualified, environment).is_some() =>
+            {
+                Some((callee, arguments))
+            }
+            ExprKind::Select { item, .. }
+                if self
+                    .range_name(expression, qualified, environment)
+                    .is_some() =>
+            {
+                let ExprKind::Call { arguments, .. } = &item.kind else {
+                    return None;
+                };
+                Some((expression, arguments))
+            }
+            _ => None,
+        }
+    }
+
+    fn range_name<'e>(
+        &self,
+        expression: &'e Expr,
+        qualified: bool,
+        environment: &Environment,
+    ) -> Option<&'e str> {
+        match &expression.kind {
+            ExprKind::Path(path) => match &path.qualifier {
+                Some(namespace) if self.view_namespace(&namespace.text, environment) => {
+                    Some(&path.path)
+                }
+                None if !qualified => Some(&path.path),
+                _ => None,
+            },
+            ExprKind::Select {
+                namespace, item, ..
+            } => {
+                let ExprKind::Path(namespace) = &namespace.kind else {
+                    return None;
+                };
+                let item = match &item.kind {
+                    ExprKind::Call { callee, .. } => callee.as_ref(),
+                    _ => item,
+                };
+                let ExprKind::Path(item) = &item.kind else {
+                    return None;
+                };
+                (namespace.qualifier.is_none()
+                    && self.view_namespace(&namespace.path, environment)
+                    && item.qualifier.is_none())
+                .then_some(item.path.as_str())
+            }
+            _ => None,
+        }
+    }
 }
 
 fn contains(span: Span, offset: usize) -> bool {
@@ -788,33 +903,6 @@ fn bounded_end(end: usize, last: usize) -> usize {
         last.saturating_add(1)
     } else {
         end
-    }
-}
-
-fn range_name(expression: &Expr, qualified: bool) -> Option<&str> {
-    match &expression.kind {
-        ExprKind::Path(path) => match &path.qualifier {
-            Some(namespace) if matches!(namespace.text.as_str(), "views" | "ranges") => {
-                Some(&path.path)
-            }
-            None if !qualified => Some(&path.path),
-            _ => None,
-        },
-        ExprKind::Select {
-            namespace, item, ..
-        } => {
-            let ExprKind::Path(namespace) = &namespace.kind else {
-                return None;
-            };
-            let ExprKind::Path(item) = &item.kind else {
-                return None;
-            };
-            (namespace.qualifier.is_none()
-                && matches!(namespace.path.as_str(), "views" | "ranges")
-                && item.qualifier.is_none())
-            .then_some(item.path.as_str())
-        }
-        _ => None,
     }
 }
 
@@ -847,11 +935,13 @@ fn binding_detail(
     let known = match &value.kind {
         ExprKind::Literal(_) => "string",
         ExprKind::Bool(_) | ExprKind::Not(_) | ExprKind::Exists(_) => "bool",
+        ExprKind::Range(_) => "range",
         ExprKind::Binary {
             op: crate::language::BinaryOp::Pipe,
             ..
         } => "range result",
         ExprKind::Binary { .. } => "bool",
+        ExprKind::Path(path) if path.qualifier.is_none() && path.path.starts_with('$') => "scope",
         ExprKind::Path(path) if path.path.contains('<') => "range",
         ExprKind::Path(_) | ExprKind::Join { .. } | ExprKind::Select { .. } => "path",
         ExprKind::Loop { .. } | ExprKind::Call { .. } => "value",
@@ -872,5 +962,5 @@ fn is_pure_call(value: &Expr, environment: &Environment) -> bool {
     let ExprKind::Path(path) = &callee.kind else {
         return false;
     };
-    path.qualifier.is_none() && environment.names.symbols.contains_key(&path.path)
+    environment.names.symbols.contains_key(&path.path)
 }

@@ -206,6 +206,11 @@ fn semantic_document(source: &str) -> language::Document {
                 }
             }
             ExprKind::Literal(_) | ExprKind::Bool(_) => {}
+            ExprKind::Range(values) => {
+                for value in values {
+                    expression(value);
+                }
+            }
             ExprKind::Not(value) | ExprKind::Exists(value) => expression(value),
             ExprKind::Binary {
                 left,

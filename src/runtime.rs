@@ -44,7 +44,9 @@ impl fmt::Display for RuntimeError {
 }
 impl std::error::Error for RuntimeError {}
 
+mod child_wait;
 mod inspection;
+use child_wait::ChildWait;
 pub mod ssh;
 #[cfg(windows)]
 pub(crate) mod windows_auth;
@@ -689,17 +691,46 @@ fn ancestor_has_identity(root: &same_file::Handle, path: &Path) -> Result<bool> 
     Ok(false)
 }
 
-fn validate_source_tree(source: &Path, context: &CopyContext<'_>) -> Result<()> {
+fn validate_source_tree(
+    source: &Path,
+    context: &CopyContext<'_>,
+) -> Result<Vec<(PathBuf, SystemTime)>> {
+    let mut times = Vec::new();
+    validate_source_entry(source, source, context, &mut times)?;
+    Ok(times)
+}
+
+fn validate_source_entry(
+    source: &Path,
+    root: &Path,
+    context: &CopyContext<'_>,
+    times: &mut Vec<(PathBuf, SystemTime)>,
+) -> Result<()> {
     context.check()?;
     check_ancestors(source)?;
     let meta =
         metadata(source)?.ok_or_else(|| format!("source does not exist: {}", source.display()))?;
     if meta.is_dir() {
         for entry in fs::read_dir(source).map_err(|error| at(source, error))? {
-            validate_source_tree(&entry.map_err(|error| at(source, error))?.path(), context)?;
+            validate_source_entry(
+                &entry.map_err(|error| at(source, error))?.path(),
+                root,
+                context,
+                times,
+            )?;
         }
     } else if !meta.is_file() {
         return Err(format!("unsupported special file: {}", source.display()));
+    }
+    let modified = meta.modified().map_err(|error| at(source, error))?;
+    let duration = modified
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|error| error.duration());
+    if duration.subsec_nanos() != 0 {
+        let relative = source
+            .strip_prefix(root)
+            .map_err(|_| "source metadata escaped its root")?;
+        times.push((relative.to_owned(), modified));
     }
     Ok(())
 }
@@ -979,17 +1010,137 @@ fn source_relative(text: &str) -> Result<PathBuf> {
 }
 
 fn source_time(text: &str) -> Result<SystemTime> {
-    let seconds: i64 = text
+    let (seconds, fraction) = text.split_once('.').unwrap_or((text, "0"));
+    let seconds: i64 = seconds
         .parse()
-        .map_err(|_| "remote source timestamp is not a supported whole-second value")?;
+        .map_err(|_| "remote source timestamp has invalid or unsupported seconds")?;
+    if fraction.is_empty() || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("remote source timestamp has an invalid fraction".into());
+    }
+    let fraction = fraction.trim_end_matches('0');
+    if fraction.len() > 9 {
+        return Err("remote source timestamp exceeds nanosecond precision".into());
+    }
+    let nanos = if fraction.is_empty() {
+        0
+    } else {
+        fraction
+            .parse::<u32>()
+            .map_err(|_| "invalid timestamp fraction")?
+            * 10_u32.pow(9 - fraction.len() as u32)
+    };
     let duration = Duration::from_secs(seconds.unsigned_abs());
-    if seconds < 0 {
+    let whole = if seconds < 0 {
         UNIX_EPOCH.checked_sub(duration)
     } else {
         UNIX_EPOCH.checked_add(duration)
-    }
-    .ok_or_else(|| "remote source timestamp is outside the host time range".into())
+    };
+    // GNU find's %T@ uses floor seconds plus a positive fractional field even
+    // before the epoch: -1.5000000000 represents epoch minus half a second.
+    whole
+        .and_then(|whole| whole.checked_add(Duration::from_nanos(nanos as u64)))
+        .ok_or_else(|| "remote source timestamp is outside the host time range".into())
 }
+
+fn touch_time(time: SystemTime) -> String {
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => format!("{}.{:09}", duration.as_secs(), duration.subsec_nanos()),
+        Err(error) => {
+            let duration = error.duration();
+            format!("-{}.{:09}", duration.as_secs(), duration.subsec_nanos())
+        }
+    }
+}
+
+struct UploadTimes<'a, 'cancel> {
+    target: &'a Location,
+    context: &'a CopyContext<'cancel>,
+    arguments: Vec<String>,
+    bytes: usize,
+}
+
+impl<'a, 'cancel> UploadTimes<'a, 'cancel> {
+    fn restore(
+        entries: &[(PathBuf, SystemTime)],
+        target: &'a Location,
+        context: &'a CopyContext<'cancel>,
+    ) -> Result<()> {
+        let mut times = Self {
+            target,
+            context,
+            arguments: Vec::new(),
+            bytes: 0,
+        };
+        for (relative, modified) in entries {
+            context.check()?;
+            let path = octal_relative(relative);
+            let time = touch_time(*modified);
+            if times.bytes + path.len() + time.len() > 8192 && !times.arguments.is_empty() {
+                times.flush()?;
+            }
+            times.bytes += path.len() + time.len();
+            times.arguments.extend([path, time]);
+        }
+        times.flush()
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if self.arguments.is_empty() {
+            return Ok(());
+        }
+        let arguments: Vec<_> = std::iter::once(self.target.path.as_str())
+            .chain(self.arguments.iter().map(String::as_str))
+            .collect();
+        remote_command_cancellable(
+            &self.target.backend,
+            RESTORE_UPLOAD_TIMES,
+            &arguments,
+            self.context,
+        )?;
+        self.arguments.clear();
+        self.bytes = 0;
+        Ok(())
+    }
+}
+
+fn octal_relative(path: &Path) -> String {
+    use std::fmt::Write;
+    let mut encoded = String::new();
+    for (index, component) in path.iter().enumerate() {
+        if index > 0 {
+            encoded.push_str("\\0057");
+        }
+        for byte in component.as_encoded_bytes() {
+            write!(&mut encoded, "\\0{byte:03o}").expect("writing a string cannot fail");
+        }
+    }
+    encoded
+}
+
+const RESTORE_UPLOAD_TIMES: &str = r#"
+set -eu
+export LC_ALL=C
+fail() { echo "$*" >&2; exit 1; }
+check() {
+    p=$1
+    while [ "$p" != / ] && [ "$p" != . ]; do
+        [ ! -L "$p" ] || fail "refusing timestamp symbolic link: $p"
+        p=$(dirname -- "$p")
+    done
+}
+root=$1; shift
+check "$root"
+[ -z "$(find "$root" ! -type f ! -type d -print -quit)" ] || fail 'upload timestamp tree contains unsupported entries'
+[ "$(( $# % 2 ))" = 0 ] || fail 'incomplete upload timestamp metadata'
+while [ "$#" -gt 0 ]; do
+    relative=$(printf '%b.' "$1"); relative=${relative%.}
+    case $relative in /*|..|../*|*/../*|*/..) fail 'upload timestamp path escapes staging';; esac
+    target=$root; [ -z "$relative" ] || target=$root/$relative
+    [ -f "$target" ] || [ -d "$target" ] || fail "missing upload timestamp entry: $target"
+    touch --no-create --no-dereference --date="@$2" -- "$target"
+    shift 2
+done
+"#;
 
 #[derive(Clone, Copy)]
 enum SourcePermissions {
@@ -1127,6 +1278,11 @@ fn run_process(
         format!("cannot start {name}: {error}")
     })?;
     trace.metric("pid", child.id() as u64);
+    let ready = ChildWait::new(&child);
+    trace.attribute("wait.strategy", ready.strategy());
+    if let Some(errno) = ready.fallback_errno() {
+        trace.metric("wait.fallback_errno", errno as u64);
+    }
     trace.event("process.open", &[], &[]);
     let stdout = child
         .stdout
@@ -1149,7 +1305,7 @@ fn run_process(
         }
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Ok(None) => ready.pause(&child),
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -1283,7 +1439,7 @@ pub(crate) fn remote_command_builder(
         Backend::Ssh { host, user, port } => {
             let mut command = ssh_client("ssh");
             if let Some(context) = ssh::current() {
-                context.configure(&mut command, backend);
+                context.configure(&mut command, backend)?;
             }
             if let Some(port) = port {
                 command.args(["-p", &port.to_string()]);
@@ -1638,7 +1794,7 @@ fn send(
     let source = source.as_path();
     match &location.backend {
         Backend::Ssh { .. } => {
-            validate_source_tree(source, context)?;
+            let times = validate_source_tree(source, context)?;
             let name = source
                 .file_name()
                 .and_then(OsStr::to_str)
@@ -1661,6 +1817,7 @@ fn send(
                 path: format!("{remote_root}/{name}"),
             };
             let result = scp(&staged, source, true, context).and_then(|()| {
+                UploadTimes::restore(&times, &staged, context)?;
                 remote_copy_receipt(
                     &location.backend,
                     RemoteSource::uploaded(&staged.path),
@@ -1699,7 +1856,7 @@ fn scp(location: &Location, local: &Path, upload: bool, context: &CopyContext<'_
     };
     let mut command = ssh_client("scp");
     if let Some(context) = ssh::current() {
-        context.configure_scp(&mut command, &location.backend);
+        context.configure_scp(&mut command, &location.backend)?;
     }
     command.args(["-r", "-p"]);
     if let Some(port) = port {
@@ -1881,6 +2038,7 @@ find "$s" -mindepth 1 -maxdepth 1 -printf '%f\0'
 
 const REMOTE_VALIDATE: &str = r#"
 set -eu
+export LC_ALL=C
 s=$1
 case $s in '~') s=$HOME;; '~/'*) s=$HOME/${s#\~/};; esac
 p=$s
@@ -1893,7 +2051,7 @@ s=$(realpath -e -- "$s")
 [ -z "$(find "$s" -type l -print -quit)" ] || { echo 'remote source tree contains symbolic links' >&2; exit 1; }
 [ -z "$(find "$s" ! -type f ! -type d -print -quit)" ] || { echo 'remote source tree contains special files' >&2; exit 1; }
 printf 'MSYNC-SOURCE-1\0'
-find "$s" -printf '%P\0%f\0%Ts\0'
+find "$s" -printf '%P\0%f\0%T@\0'
 "#;
 
 const REMOTE_COPY: &str = r#"
@@ -2047,6 +2205,105 @@ mod transport_tests {
         );
     }
 
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(96))]
+
+        #[test]
+        fn source_metadata_fractional_times_preserve_checked_floor_seconds(
+            seconds in -2_000_000_000_i64..2_000_000_000_i64,
+            nanos in 0_u32..1_000_000_000_u32,
+        ) {
+            let text = format!("{seconds}.{nanos:09}0");
+            let whole = std::time::Duration::from_secs(seconds.unsigned_abs());
+            let expected = if seconds < 0 {
+                std::time::UNIX_EPOCH - whole
+            } else {
+                std::time::UNIX_EPOCH + whole
+            } + std::time::Duration::from_nanos(nanos as u64);
+            proptest::prop_assert_eq!(super::source_time(&text).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn upload_touch_times_use_mathematical_signed_fractions() {
+        for (duration, expected) in [
+            (std::time::Duration::from_millis(500), "-0.500000000"),
+            (std::time::Duration::from_millis(1500), "-1.500000000"),
+        ] {
+            assert_eq!(
+                super::touch_time(std::time::UNIX_EPOCH - duration),
+                expected
+            );
+        }
+        assert_eq!(
+            super::touch_time(std::time::UNIX_EPOCH + std::time::Duration::from_nanos(123_456_789)),
+            "0.123456789"
+        );
+        assert_eq!(
+            super::source_time("-1.5000000000").unwrap(),
+            std::time::UNIX_EPOCH - std::time::Duration::from_millis(500)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn upload_timestamp_helper_preserves_readonly_and_literal_filename_bytes() {
+        use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
+        let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let root = tempfile::Builder::new()
+            .prefix("upload-time-")
+            .tempdir_in(scratch)
+            .unwrap();
+        let expected = std::time::UNIX_EPOCH - std::time::Duration::from_millis(500);
+        let target = root.path().join("payload");
+        std::fs::create_dir(&target).unwrap();
+        let mut arguments = vec![target.to_str().unwrap().to_owned()];
+        let mut paths = Vec::new();
+        for name in [b"line'\n".as_slice(), b"bytes-\xff".as_slice()] {
+            let name = std::ffi::OsStr::from_bytes(name);
+            let path = target.join(name);
+            std::fs::write(&path, b"unchanged payload").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
+            arguments.extend([
+                super::octal_relative(std::path::Path::new(name)),
+                super::touch_time(expected),
+            ]);
+            paths.push(path);
+        }
+        arguments.extend([String::new(), super::touch_time(expected)]);
+        let output = std::process::Command::new("sh")
+            .args(["-c", super::RESTORE_UPLOAD_TIMES, "sh"])
+            .args(&arguments)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for path in paths {
+            let meta = std::fs::metadata(&path).unwrap();
+            assert_eq!(meta.modified().unwrap(), expected);
+            assert_eq!(meta.permissions().mode() & 0o777, 0o400);
+            assert_eq!(std::fs::read(path).unwrap(), b"unchanged payload");
+        }
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().modified().unwrap(),
+            expected
+        );
+
+        let rejected = std::process::Command::new("sh")
+            .args(["-c", super::RESTORE_UPLOAD_TIMES, "sh"])
+            .arg(&target)
+            .arg(super::octal_relative(std::path::Path::new("../escape")))
+            .arg("1.123456789")
+            .output()
+            .unwrap();
+        assert!(!rejected.status.success());
+        assert!(!root.path().join("escape").exists());
+    }
+
     #[test]
     fn source_metadata_receipt_rejects_escapes_duplicates_and_ambiguous_paths() {
         for path in [
@@ -2080,7 +2337,9 @@ mod transport_tests {
         for time in [
             "",
             "nan",
-            "1.5",
+            "1.",
+            "1.0000000001",
+            "1.nan",
             "9223372036854775808",
             "-9223372036854775809",
             "18446744073709551616",

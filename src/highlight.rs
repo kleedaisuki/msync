@@ -41,6 +41,7 @@ pub const BUILTINS: &[&str] = &[
     "$wsl::",
     "$path::",
     "$env::",
+    "$view::",
 ];
 
 pub const KEYWORDS: &[&str] = &[
@@ -50,6 +51,35 @@ pub const KEYWORDS: &[&str] = &[
 ];
 
 pub const RANGE_ADAPTORS: &[&str] = &[
+    "$view::of",
+    "$view::single",
+    "$view::all",
+    "$view::as_const",
+    "$view::as_rvalue",
+    "$view::common",
+    "$view::filter",
+    "$view::transform",
+    "$view::take",
+    "$view::drop",
+    "$view::take_while",
+    "$view::drop_while",
+    "$view::stride",
+    "$view::step",
+    "$view::unique",
+    "$view::reverse",
+    "$view::empty",
+    "$view::contains",
+    "$view::any_of",
+    "$view::any",
+    "$view::all_of",
+    "$view::none_of",
+    "$view::none",
+    "$view::front",
+    "$view::first",
+    "$view::back",
+    "$view::last",
+    "$view::find",
+    "$view::find_if",
     "ranges::of",
     "views::single",
     "views::all",
@@ -142,8 +172,8 @@ fn line_tokens(source: &str, tokens: &mut Vec<Token>) {
             '<' if selector_start(source, position) => {
                 (selector_end(source, position), TokenKind::Selector)
             }
-            '(' | ')' | ',' => {
-                if declaration && ch != ',' {
+            '(' | ')' | '[' | ']' | ',' => {
+                if declaration && matches!(ch, '(' | ')') {
                     parameters = ch == '(';
                 }
                 (position + 1, TokenKind::Text)
@@ -162,7 +192,7 @@ fn line_tokens(source: &str, tokens: &mut Vec<Token>) {
                 if start != first && for_name {
                     for_name = false;
                 }
-                head &= scheduling_word(word);
+                head &= scheduling_word(word) || matches!(word, "if" | "else");
                 continue;
             }
         };
@@ -294,7 +324,7 @@ fn selector_end(source: &str, start: usize) -> usize {
 
 fn selector_boundary(source: &str, position: usize) -> bool {
     position == source.len()
-        || source[position..].starts_with(['/', '\\', ',', ')'])
+        || source[position..].starts_with(['/', '\\', ',', ')', ']'])
         || source
             .as_bytes()
             .get(position)
@@ -303,10 +333,25 @@ fn selector_boundary(source: &str, position: usize) -> bool {
 }
 
 fn word_end(source: &str, start: usize) -> usize {
+    let scheme = source[start..]
+        .bytes()
+        .take_while(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'.' | b'-'))
+        .count();
+    let endpoint = source.as_bytes()[start].is_ascii_alphabetic()
+        && source[start + scheme..].starts_with("://");
+    let mut endpoint_bracket = false;
     for (offset, ch) in source[start..].char_indices() {
         let position = start + offset;
+        if endpoint && ch == '[' {
+            endpoint_bracket = true;
+            continue;
+        }
+        if endpoint_bracket && ch == ']' {
+            endpoint_bracket = false;
+            continue;
+        }
         if ch.is_whitespace()
-            || matches!(ch, '"' | '<' | '(' | ')' | ',')
+            || matches!(ch, '"' | '<' | '(' | ')' | '[' | ']' | ',')
             || operator_at(source, position)
             || ch == ':' && header_colon(source, position)
         {
@@ -335,35 +380,8 @@ fn word_tokens(
     let word = &source[start..end];
     let kind = if word.contains("://") {
         TokenKind::Endpoint
-    } else if let Some(separator) = word.find("::") {
-        let mut boundary = start + separator + 2;
-        if matches!(&word[..separator], "$pwd" | "$file" | "$env") {
-            boundary += source[boundary..end]
-                .find(['/', '\\'])
-                .unwrap_or(end - boundary);
-        }
-        tokens.push(Token {
-            span: Span {
-                start,
-                end: boundary,
-            },
-            kind: TokenKind::Namespace,
-        });
-        if boundary < end {
-            tokens.push(Token {
-                span: Span {
-                    start: boundary,
-                    end,
-                },
-                kind: if source[end..].trim_start().starts_with('(')
-                    || matches!(&word[..separator], "views" | "ranges")
-                {
-                    TokenKind::Binding
-                } else {
-                    TokenKind::Text
-                },
-            });
-        }
+    } else if word.contains("::") {
+        namespace_tokens(source, start, end, tokens);
         return;
     } else if word.starts_with('$') {
         TokenKind::Namespace
@@ -383,6 +401,50 @@ fn word_tokens(
         span: Span { start, end },
         kind,
     });
+}
+
+fn namespace_tokens(source: &str, start: usize, end: usize, tokens: &mut Vec<Token>) {
+    let mut cursor = start;
+    let mut namespace = "";
+    while let Some(separator) = source[cursor..end].find("::") {
+        let boundary = cursor + separator + 2;
+        namespace = &source[cursor..cursor + separator];
+        tokens.push(Token {
+            span: Span {
+                start: cursor,
+                end: boundary,
+            },
+            kind: TokenKind::Namespace,
+        });
+        cursor = boundary;
+    }
+    if cursor == end {
+        return;
+    }
+    if matches!(namespace, "$pwd" | "$file" | "$env") {
+        let boundary = cursor
+            + source[cursor..end]
+                .find(['/', '\\'])
+                .unwrap_or(end - cursor);
+        if let Some(previous) = tokens.last_mut() {
+            previous.span.end = boundary;
+        }
+        cursor = boundary;
+    }
+    if cursor < end {
+        tokens.push(Token {
+            span: Span { start: cursor, end },
+            kind: if source[cursor..end].starts_with('$') {
+                TokenKind::Namespace
+            } else if source[end..].trim_start().starts_with('(')
+                || matches!(namespace, "$view" | "views" | "ranges")
+            {
+                TokenKind::Binding
+            } else {
+                TokenKind::Text
+            },
+        });
+    }
 }
 
 fn scheduling_word(word: &str) -> bool {

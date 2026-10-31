@@ -39,6 +39,48 @@ enum Value {
     Port(ProcessId, Port),
 }
 
+impl Value {
+    fn ty(&self) -> crate::types::Type {
+        use crate::types::Type;
+        match self {
+            Self::Path(_) => Type::Path,
+            Self::Literal(_) => Type::String,
+            Self::Bool(_) => Type::Bool,
+            Self::Dynamic(value) => Type::from_control(&value.ty),
+            Self::Range(range) => Type::Range(range.item_type.clone()),
+            Self::Space(_) => Type::Scope,
+            Self::Process(_) => Type::Process,
+            Self::Port(_, Port::Stdin) => Type::WritePort,
+            Self::Port(_, Port::Read(_)) => Type::ReadPort,
+        }
+    }
+}
+
+fn require_operator(
+    capability: crate::types::OperatorTrait,
+    spelling: &str,
+    left: &Value,
+    right: &Value,
+    span: Span,
+) -> Result<crate::types::Type, Report> {
+    require_types(capability, spelling, left.ty(), right.ty(), span)
+}
+
+fn require_types(
+    capability: crate::types::OperatorTrait,
+    spelling: &str,
+    left: crate::types::Type,
+    right: crate::types::Type,
+    span: Span,
+) -> Result<crate::types::Type, Report> {
+    capability.result(&left, &right).ok_or_else(|| {
+        Report::new(
+            format!("operator '{spelling}' is not implemented for {left} and {right}"),
+            span,
+        )
+    })
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Port {
     Stdin,
@@ -639,6 +681,11 @@ fn namespace(space: &Space) -> Namespace {
         Space::Endpoint(backend) => Namespace::Endpoint {
             backend: backend.clone(),
         },
+        Space::Qualified { outer, inner } => Namespace::Qualified {
+            outer: Box::new(namespace(outer)),
+            inner: Box::new(namespace(inner)),
+        },
+        Space::Api(scope) => Namespace::Api { scope: *scope },
     }
 }
 
@@ -662,15 +709,24 @@ fn imported_value(value: &ExportValue) -> Value {
             is_file: *is_file,
             mode: *mode,
         }),
-        ExportValue::Namespace { namespace } => Value::Space(match namespace {
-            Namespace::WorkingDirectory => Space::Pwd,
-            Namespace::Module => Space::File,
-            Namespace::Endpoint { backend } => Space::Endpoint(backend.clone()),
-        }),
+        ExportValue::Namespace { namespace } => Value::Space(imported_namespace(namespace)),
         ExportValue::Process { process } => Value::Process(*process),
         ExportValue::Port { process, port } => {
             Value::Port(*process, port.map_or(Port::Stdin, Port::Read))
         }
+    }
+}
+
+fn imported_namespace(namespace: &Namespace) -> Space {
+    match namespace {
+        Namespace::WorkingDirectory => Space::Pwd,
+        Namespace::Module => Space::File,
+        Namespace::Endpoint { backend } => Space::Endpoint(backend.clone()),
+        Namespace::Qualified { outer, inner } => Space::Qualified {
+            outer: Box::new(imported_namespace(outer)),
+            inner: Box::new(imported_namespace(inner)),
+        },
+        Namespace::Api { scope } => Space::Api(*scope),
     }
 }
 
@@ -1426,7 +1482,7 @@ fn resolve(expression: &Expr, scope: &Scope, context: &CompileContext) -> Result
     let value = resolve_value(expression, scope, context)?;
     let value = match value {
         Value::Path(path) if path.path.contains('<') => {
-            ranges::selector(path, scope, context, expression.span)?
+            ranges::selector(path, scope, context, selector_site(expression))?
         }
         value => value,
     };
@@ -1462,6 +1518,7 @@ fn resolve_value(
             item,
             operator,
         } => resolve_select(namespace, item, *operator, scope, context),
+        ExprKind::Range(elements) => ranges::literal(elements, scope, context, expression.span),
         ExprKind::Call { .. } => ranges::resolve_call(expression, scope, context)
             .unwrap_or_else(|| symbols::evaluate(expression, scope, context)),
         ExprKind::Bool(_)
@@ -1513,6 +1570,10 @@ fn resolve_join(
     let suffix_value = suffix
         .map(|expression| resolve_value(expression, scope, context))
         .transpose()?;
+    require_join_operand(&base_value, base.source.content)?;
+    if let (Some(suffix), Some(suffix_value)) = (suffix, &suffix_value) {
+        require_join_operand(suffix_value, suffix.source.content)?;
+    }
     if matches!(base_value, Value::Dynamic(_)) || matches!(suffix_value, Some(Value::Dynamic(_))) {
         return v6::join(base_value, suffix_value, mode, context, operator);
     }
@@ -1593,6 +1654,21 @@ fn resolve_join(
         mode
     };
     Ok(Value::Path(base_path))
+}
+
+fn require_join_operand(value: &Value, span: Span) -> Result<(), Report> {
+    if crate::types::OperatorTrait::Join
+        .result(&value.ty(), &crate::types::Type::String)
+        .is_some()
+    {
+        return Ok(());
+    }
+    let report = path_fragment(value.clone(), span)
+        .expect_err("a value outside the Join operand domain is not a path fragment");
+    Err(report.help(format!(
+        "Operator '/' has no path-fragment implementation for {}.",
+        value.ty()
+    )))
 }
 
 fn path_fragment(value: Value, span: Span) -> Result<PathValue, Report> {
@@ -1676,7 +1752,10 @@ fn resolve_path(
                 "Append path components with '/', or qualify with a namespace declared using '=>'.",
             ))
             .into()),
-            None => Some(Compiler::new().space(&name.text, name.span)?),
+            None => Some(match Compiler::builtin_space(&name.text) {
+                Some(space) => space,
+                None => Compiler::new().space(&name.text, name.span)?,
+            }),
         },
         None => None,
     };
@@ -1690,7 +1769,38 @@ fn resolve_select(
     scope: &Scope,
     context: &CompileContext,
 ) -> Result<Value, Failure> {
+    if let Some(result) = ranges::resolve_legacy_selection(namespace, item, scope, context) {
+        return result;
+    }
     let value = resolve(namespace, scope, context)?;
+    if let Some(result) = ranges::resolve_api_selection(&value, item, scope, context) {
+        return result;
+    }
+    if matches!(item.kind, ExprKind::Call { .. } | ExprKind::Select { .. }) {
+        let item = resolve(item, scope, context)?;
+        if let Value::Process(process) = value {
+            let item = path_fragment(item, operator)?;
+            if item.backend.is_some() {
+                return Err(Report::new(
+                    "a program member must not carry a physical endpoint",
+                    operator,
+                )
+                .into());
+            }
+            return process_port(process, &item.path, operator).map_err(Into::into);
+        }
+        require_operator(
+            crate::types::OperatorTrait::Select,
+            "::",
+            &value,
+            &item,
+            operator,
+        )?;
+        return match value {
+            Value::Space(space) => apply_scope_value(space, item, operator, context),
+            _ => v6::select(value, item, context, operator),
+        };
+    }
     if matches!(value, Value::Dynamic(_)) {
         let item = match &item.kind {
             ExprKind::Path(path)
@@ -1725,7 +1835,22 @@ fn resolve_select(
     if let Some(path) = path {
         return select_named(namespace, item, path, value, scope, context);
     }
-    let fragment = path_fragment(resolve(item, scope, context)?, item.span)?;
+    let item_value = resolve(item, scope, context)?;
+    require_operator(
+        crate::types::OperatorTrait::Select,
+        "::",
+        &value,
+        &item_value,
+        operator,
+    )?;
+    if let (Value::Space(outer), Value::Space(inner)) = (&value, &item_value) {
+        return Ok(Value::Space(compose_scopes(
+            outer.clone(),
+            inner.clone(),
+            operator,
+        )?));
+    }
+    let fragment = path_fragment(item_value, item.span)?;
     match value {
         Value::Space(Space::Endpoint(backend)) => qualify(Value::Path(fragment), backend, operator),
         Value::Space(Space::Pwd)
@@ -1733,6 +1858,9 @@ fn resolve_select(
                 || fragment.path.split(['/', '\\']).next() != Some("pwd") =>
         {
             contextualize_pwd_value(Value::Path(fragment), item.span, context)
+        }
+        Value::Space(space @ (Space::Qualified { .. } | Space::Api(_))) => {
+            apply_scope_value(space, Value::Path(fragment), operator, context)
         }
         Value::Space(_) | Value::Process(_) => {
             if fragment.backend.is_some() {
@@ -1799,39 +1927,15 @@ fn resolve_namespace(
 ) -> Result<Value, Failure> {
     let quoted = site.content.start > site.span.start;
     match qualifier {
-        Some(Space::Pwd) => resolve_pwd(path, span, site, scope, context),
-        Some(Space::File) => {
-            let name = path.qualifier.as_ref().expect("qualified file namespace");
-            let text = format!("{}::{}", name.text, path.path);
-            Compiler::namespace_item(
-                Space::File,
-                &path.path,
-                &text,
-                &qualified_source(name, &path.path, site, span),
-                context,
-            )
-            .map(|value| {
-                let mut value = PathValue::from(value);
-                let item = path.path.split(['/', '\\']).next().unwrap_or(&path.path);
-                let module = context
-                    .source_file
-                    .as_ref()
-                    .expect("validated file context")
-                    .to_string_lossy()
-                    .into_owned();
-                let anchor = if item == "this" {
-                    Anchor::ModuleFile { module }
-                } else {
-                    Anchor::ModuleDirectory { module }
-                };
-                value.relocation = Some(RelocPath::new(
-                    anchor,
-                    path.path[item.len()..].trim_start_matches(['/', '\\']),
-                ));
-                Value::Path(value)
-            })
-            .map_err(Into::into)
+        Some(Space::Qualified { outer, inner }) => {
+            let value = resolve_namespace(path, span, site, scope, context, Some(*inner))?;
+            apply_scope_value(*outer, value, span, context)
         }
+        Some(Space::Api(_)) => {
+            Err(Report::new("a built-in API scope requires an API member call", span).into())
+        }
+        Some(Space::Pwd) => resolve_pwd(path, span, site, scope, context),
+        Some(Space::File) => resolve_file_member(path, span, site, context),
         Some(Space::Endpoint(backend)) => qualify(
             if quoted {
                 Value::Path(PathValue {
@@ -1858,6 +1962,44 @@ fn resolve_namespace(
         })),
         None => resolve_component(&path.path, site.content, scope, context),
     }
+}
+
+fn resolve_file_member(
+    path: &PathExpr,
+    span: Span,
+    site: &OperandSource,
+    context: &CompileContext,
+) -> Result<Value, Failure> {
+    let name = path.qualifier.as_ref().expect("qualified file namespace");
+    let text = format!("{}::{}", name.text, path.path);
+    Compiler::namespace_item(
+        Space::File,
+        &path.path,
+        &text,
+        &qualified_source(name, &path.path, site, span),
+        context,
+    )
+    .map(|value| {
+        let mut value = PathValue::from(value);
+        let item = path.path.split(['/', '\\']).next().unwrap_or(&path.path);
+        let module = context
+            .source_file
+            .as_ref()
+            .expect("validated file context")
+            .to_string_lossy()
+            .into_owned();
+        let anchor = if item == "this" {
+            Anchor::ModuleFile { module }
+        } else {
+            Anchor::ModuleDirectory { module }
+        };
+        value.relocation = Some(RelocPath::new(
+            anchor,
+            path.path[item.len()..].trim_start_matches(['/', '\\']),
+        ));
+        Value::Path(value)
+    })
+    .map_err(Into::into)
 }
 
 fn resolve_component(
@@ -1898,6 +2040,9 @@ fn resolve_component(
         };
     }
     if path.starts_with('$') && !path.contains(['/', '\\']) || path.contains("://") {
+        if let Some(space) = Compiler::builtin_space(path) {
+            return Ok(Value::Space(space));
+        }
         return Compiler::new()
             .space(path, span)
             .map(Value::Space)
@@ -1919,24 +2064,7 @@ fn resolve_pwd(
     let component = path.path.split(['/', '\\']).next().unwrap_or(&path.path);
     let quoted = site.content.start > site.span.start;
     if component == "pwd" && !quoted {
-        let name = path.qualifier.as_ref().expect("qualified pwd namespace");
-        let text = format!("{}::{}", name.text, path.path);
-        return Compiler::namespace_item(
-            Space::Pwd,
-            &path.path,
-            &text,
-            &qualified_source(name, &path.path, site, span),
-            context,
-        )
-        .map(|value| {
-            let mut value = PathValue::from(value);
-            value.relocation = Some(RelocPath::new(
-                Anchor::WorkingDirectory,
-                path.path[component.len()..].trim_start_matches(['/', '\\']),
-            ));
-            Value::Path(value)
-        })
-        .map_err(Into::into);
+        return resolve_pwd_member(path, span, site, context);
     }
     let value = if quoted {
         Value::Path(PathValue {
@@ -1953,11 +2081,48 @@ fn resolve_pwd(
     contextualize_pwd_value(value, site.content, context)
 }
 
+fn resolve_pwd_member(
+    path: &PathExpr,
+    span: Span,
+    site: &OperandSource,
+    context: &CompileContext,
+) -> Result<Value, Failure> {
+    let component = path.path.split(['/', '\\']).next().unwrap_or(&path.path);
+    let name = path.qualifier.as_ref().expect("qualified pwd namespace");
+    let text = format!("{}::{}", name.text, path.path);
+    Compiler::namespace_item(
+        Space::Pwd,
+        &path.path,
+        &text,
+        &qualified_source(name, &path.path, site, span),
+        context,
+    )
+    .map(|value| {
+        let mut value = PathValue::from(value);
+        value.relocation = Some(RelocPath::new(
+            Anchor::WorkingDirectory,
+            path.path[component.len()..].trim_start_matches(['/', '\\']),
+        ));
+        Value::Path(value)
+    })
+    .map_err(Into::into)
+}
+
 fn contextualize_pwd_value(
     value: Value,
     span: Span,
     context: &CompileContext,
 ) -> Result<Value, Failure> {
+    require_types(
+        crate::types::OperatorTrait::Select,
+        "::",
+        crate::types::Type::Scope,
+        value.ty(),
+        span,
+    )?;
+    if let Value::Space(inner) = value {
+        return Ok(Value::Space(compose_scopes(Space::Pwd, inner, span)?));
+    }
     let mut value = path_fragment(value, span)?;
     if value
         .backend
@@ -1991,6 +2156,20 @@ fn qualified_source(
 }
 
 fn qualify(value: Value, backend: Backend, span: Span) -> Result<Value, Failure> {
+    require_types(
+        crate::types::OperatorTrait::Select,
+        "::",
+        crate::types::Type::Scope,
+        value.ty(),
+        span,
+    )?;
+    if let Value::Space(inner) = value {
+        return Ok(Value::Space(compose_scopes(
+            Space::Endpoint(backend),
+            inner,
+            span,
+        )?));
+    }
     let mut path = path_fragment(value, span)?;
     if path.backend.as_ref().is_some_and(|other| other != &backend) {
         return Err((Report::new("path value has a conflicting endpoint", span)
@@ -2001,6 +2180,84 @@ fn qualify(value: Value, backend: Backend, span: Span) -> Result<Value, Failure>
     }
     path.backend = Some(backend);
     Ok(Value::Path(path))
+}
+
+fn compose_scopes(outer: Space, inner: Space, span: Span) -> Result<Space, Report> {
+    fn depth(space: &Space) -> usize {
+        match space {
+            Space::Qualified { outer, inner } => 1 + depth(outer).max(depth(inner)),
+            _ => 1,
+        }
+    }
+    if depth(&outer).max(depth(&inner)) >= 128 {
+        return Err(Report::new(
+            "scope composition nesting exceeds 128 levels",
+            span,
+        ));
+    }
+    Ok(Space::Qualified {
+        outer: Box::new(outer),
+        inner: Box::new(inner),
+    })
+}
+
+fn apply_scope_value(
+    space: Space,
+    item: Value,
+    span: Span,
+    context: &CompileContext,
+) -> Result<Value, Failure> {
+    if let Value::Space(inner) = item {
+        return Ok(Value::Space(compose_scopes(space, inner, span)?));
+    }
+    match space {
+        Space::Endpoint(backend) => qualify(item, backend, span),
+        Space::Pwd => {
+            let path = path_fragment(item, span)?;
+            if path.backend.is_none() && path.path.split(['/', '\\']).next() == Some("pwd") {
+                let path = PathExpr {
+                    qualifier: Some(Name {
+                        text: "$pwd".into(),
+                        span,
+                    }),
+                    path: path.path,
+                    mode: path.mode,
+                };
+                return resolve_pwd_member(&path, span, &OperandSource::unmapped(span), context);
+            }
+            contextualize_pwd_value(Value::Path(path), span, context)
+        }
+        Space::Qualified { outer, inner } => {
+            let item = apply_scope_value(*inner, item, span, context)?;
+            apply_scope_value(*outer, item, span, context)
+        }
+        Space::File => {
+            let path = path_fragment(item, span)?;
+            if path
+                .backend
+                .as_ref()
+                .is_some_and(|backend| *backend != Backend::Local)
+            {
+                return Err(Report::new(
+                    "a remote path cannot be contextualized inside local $file",
+                    span,
+                )
+                .into());
+            }
+            let path = PathExpr {
+                qualifier: Some(Name {
+                    text: "$file".into(),
+                    span,
+                }),
+                path: path.path,
+                mode: path.mode,
+            };
+            resolve_file_member(&path, span, &OperandSource::unmapped(span), context)
+        }
+        Space::Api(_) => {
+            Err(Report::new("a built-in API scope requires an API member call", span).into())
+        }
+    }
 }
 
 fn process_port(process: ProcessId, path: &str, span: Span) -> Result<Value, Report> {

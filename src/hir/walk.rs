@@ -1,16 +1,93 @@
 //! Borrowed recursive typed-IR inspection, including expression-owned regions.
 
+use crate::endpoint::Backend;
 use crate::hir::control::{
     ControlInstruction as Control, Expr, ExprKind, RangeExpr, RangeQuery, RangeSource, RangeStage,
     TransferInput, TransferOutput,
 };
-use crate::hir::{Instruction, InstructionKind, Region};
+use crate::hir::{Argument, Input, Instruction, InstructionKind, Output, Region};
+use crate::relocatable::Namespace;
 
 /// Return instructions in lexical preorder, including control and expression bodies.
 pub fn instructions(region: &Region) -> Vec<&Instruction> {
     let mut nodes = Vec::new();
     append_instructions(region, &mut nodes);
     nodes
+}
+
+/// Referenced endpoint identities in lexical order, without observing their state.
+pub fn backends(region: &Region) -> Vec<&Backend> {
+    #[derive(Default)]
+    struct Backends<'ir> {
+        seen: std::collections::HashSet<&'ir Backend>,
+        values: Vec<&'ir Backend>,
+    }
+    impl<'ir> Backends<'ir> {
+        fn add(&mut self, backend: &'ir Backend) {
+            if self.seen.insert(backend) {
+                self.values.push(backend);
+            }
+        }
+        fn namespace(&mut self, namespace: &'ir Namespace) {
+            match namespace {
+                Namespace::Endpoint { backend } => self.add(backend),
+                Namespace::Qualified { outer, inner } => {
+                    self.namespace(outer);
+                    self.namespace(inner);
+                }
+                Namespace::WorkingDirectory | Namespace::Module | Namespace::Api { .. } => {}
+            }
+        }
+    }
+    impl<'ir> ReadVisitor<'ir> for Backends<'ir> {
+        type Error = std::convert::Infallible;
+        fn instruction(&mut self, node: &'ir Instruction) -> Result<(), Self::Error> {
+            match &node.kind {
+                InstructionKind::Transfer {
+                    source,
+                    destination,
+                } => {
+                    if let Input::File { location, .. } = source {
+                        self.add(&location.backend);
+                    }
+                    if let Output::File { location, .. } = destination {
+                        self.add(&location.backend);
+                    }
+                }
+                InstructionKind::Spawn {
+                    executable,
+                    arguments,
+                    ..
+                } => {
+                    self.add(&executable.backend);
+                    for argument in arguments {
+                        if let Argument::Path(location) = argument {
+                            self.add(&location.backend);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        fn expression(&mut self, expression: &'ir Expr) -> Result<(), Self::Error> {
+            match &expression.kind {
+                ExprKind::Path { location, .. } => self.add(&location.backend),
+                ExprKind::Space(namespace) | ExprKind::ResolvedSpace { namespace, .. } => {
+                    self.namespace(namespace)
+                }
+                ExprKind::Join {
+                    suffix_backend: Some(backend),
+                    ..
+                } => self.add(backend),
+                _ => {}
+            }
+            Ok(())
+        }
+    }
+    let mut visitor = Backends::default();
+    read_region(region, &mut visitor).unwrap();
+    visitor.values
 }
 
 pub(crate) trait ReadVisitor<'ir> {
@@ -97,6 +174,12 @@ pub(crate) fn read_control<'ir, V: ReadVisitor<'ir>>(
                 read_expr(path, visitor)?;
             }
         }
+        Control::RangeTransfer {
+            range, destination, ..
+        } => {
+            read_range(range, visitor)?;
+            read_expr(destination, visitor)?;
+        }
     }
     Ok(())
 }
@@ -107,7 +190,9 @@ pub(crate) fn read_expr<'ir, V: ReadVisitor<'ir>>(
 ) -> Result<(), V::Error> {
     visitor.expression(expression)?;
     match &expression.kind {
-        ExprKind::Exists(value) | ExprKind::Not(value) => read_expr(value, visitor)?,
+        ExprKind::Exists(value) | ExprKind::Not(value) | ExprKind::IntoPath { value, .. } => {
+            read_expr(value, visitor)?
+        }
         ExprKind::Let { value, body, .. } => {
             read_expr(value, visitor)?;
             read_expr(body, visitor)?;
@@ -187,4 +272,92 @@ pub(crate) fn append_instructions<'ir>(region: &'ir Region, nodes: &mut Vec<&'ir
         }
     }
     read_region(region, &mut Nodes(nodes)).unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hir::control::Type;
+    use crate::language::DestinationMode;
+
+    #[test]
+    fn backend_discovery_retains_qualified_and_nested_control_endpoints() {
+        let backend = |host: &str| Backend::Ssh {
+            host: host.into(),
+            user: None,
+            port: None,
+        };
+        let first = backend("first");
+        let second = backend("second");
+        let third = backend("third");
+        let instruction = |id, kind| Instruction {
+            id: crate::hir::InstructionId(id),
+            kind,
+            span: Default::default(),
+            expansion: Vec::new(),
+        };
+        let region = Region {
+            instructions: vec![
+                instruction(
+                    0,
+                    InstructionKind::Control(Control::Let {
+                        slot: crate::hir::control::SlotId(0),
+                        value: Expr {
+                            ty: Type::Space,
+                            kind: ExprKind::Space(Namespace::Qualified {
+                                outer: Box::new(Namespace::Endpoint {
+                                    backend: first.clone(),
+                                }),
+                                inner: Box::new(Namespace::Endpoint {
+                                    backend: second.clone(),
+                                }),
+                            }),
+                        },
+                    }),
+                ),
+                instruction(
+                    1,
+                    InstructionKind::Control(Control::If {
+                        condition: Expr {
+                            ty: Type::Bool,
+                            kind: ExprKind::Exists(Box::new(Expr {
+                                ty: Type::Path,
+                                kind: ExprKind::IntoPath {
+                                    value: Box::new(Expr {
+                                        ty: Type::Path,
+                                        kind: ExprKind::Path {
+                                            location: crate::endpoint::Location {
+                                                backend: first.clone(),
+                                                path: "/input".into(),
+                                            },
+                                            mode: DestinationMode::Exact,
+                                            relocation: None,
+                                        },
+                                    }),
+                                    pwd: None,
+                                },
+                            })),
+                        },
+                        then_body: Region {
+                            instructions: vec![instruction(
+                                2,
+                                InstructionKind::Transfer {
+                                    source: Input::Literal("bytes".into()),
+                                    destination: Output::File {
+                                        location: crate::endpoint::Location {
+                                            backend: third.clone(),
+                                            path: "/output".into(),
+                                        },
+                                        mode: DestinationMode::Exact,
+                                    },
+                                },
+                            )],
+                        },
+                        else_body: Region::default(),
+                    }),
+                ),
+            ],
+        };
+        assert_eq!(backends(&region), vec![&first, &second, &third]);
+    }
 }

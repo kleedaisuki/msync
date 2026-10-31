@@ -443,7 +443,26 @@ impl RuntimeSession {
             ExecutionError::new("runtime submission identity exhausted", Span::default())
         })?;
         self.initialize().await?;
-        let result = self.interpret(program).await;
+        let authentication = (!batch)
+            .then(crate::runtime::ssh::current)
+            .flatten()
+            .filter(|context| context.may_require_foreground());
+        let previous = authentication.as_ref().map(|_| self.work_ids());
+        let result = match self.interpret(program).await {
+            Ok(())
+                if authentication
+                    .as_ref()
+                    .is_some_and(|context| context.requires_foreground()) =>
+            {
+                let selected = self
+                    .work_ids()
+                    .difference(previous.as_ref().expect("interactive SSH context"))
+                    .copied()
+                    .collect();
+                self.join_selected_work(&selected).await
+            }
+            result => result,
+        };
         if let Err(mut error) = result {
             if error.context().category == super::DiagnosticCategory::Capability {
                 self.flow_reservations.clear();
@@ -465,6 +484,37 @@ impl RuntimeSession {
             self.cancel = self.options.cancel.child_token();
         }
         Ok(self.take_report())
+    }
+
+    async fn join_selected_work(&mut self, selected: &BTreeSet<super::WorkId>) -> Result<()> {
+        let programs: Vec<_> = selected
+            .iter()
+            .filter_map(|work| {
+                if let super::WorkId::Program(id) = work {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut failure = None;
+        for id in programs {
+            record_failure(&mut failure, self.await_process(Some(id)).await);
+        }
+        let mut index = 0;
+        while index < self.flows.len() {
+            let flow = &self.flows[index];
+            let work = super::WorkId::Flow {
+                submission: flow.submission,
+                instruction: flow.instruction,
+            };
+            if selected.contains(&work) {
+                record_failure(&mut failure, self.join_flow(index).await);
+            } else {
+                index += 1;
+            }
+        }
+        failure.map_or(Ok(()), Err)
     }
     /// Inspect the roots owned by this session, including after a caller changes cwd.
     pub fn recovery_required(&self) -> bool {
@@ -1197,6 +1247,36 @@ impl RuntimeSession {
         else {
             unreachable!()
         };
+        let backends: Vec<_> = [
+            match source {
+                Input::File { location, .. } => Some(&location.backend),
+                _ => None,
+            },
+            match destination {
+                Output::File { location, .. } => Some(&location.backend),
+                _ => None,
+            },
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|backend| matches!(backend, crate::endpoint::Backend::Ssh { .. }))
+        .cloned()
+        .collect();
+        if !backends.is_empty()
+            && let Some(context) = crate::runtime::ssh::current()
+        {
+            crate::runtime::ssh::spawn_blocking(move || context.prepare_backends(&backends))
+                .await
+                .map_err(|cause| {
+                    ExecutionError::caused("selected SSH admission worker failed", node.span, cause)
+                })?
+                .map_err(|message| {
+                    ExecutionError::new(
+                        format!("cannot authenticate selected SSH endpoint: {message}"),
+                        node.span,
+                    )
+                })?;
+        }
         self.join_conflicting_flows(node).await?;
         let lease = match self.flow_reservations.remove(&node.id) {
             Some(lease) => lease,

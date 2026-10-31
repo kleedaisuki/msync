@@ -342,15 +342,18 @@ fn completion_prefix(line: &str, pos: usize) -> Option<(usize, &str, &'static [&
     let start = before
         .char_indices()
         .rev()
-        .find(|(_, ch)| ch.is_whitespace() || matches!(ch, '(' | ')' | ','))
+        .find(|(_, ch)| ch.is_whitespace() || matches!(ch, '(' | ')' | '[' | ']' | ','))
         .map_or(0, |(index, ch)| index + ch.len_utf8());
     let prefix = &before[start..];
     if prefix.starts_with(['/', ':']) && before[..start].trim().is_empty() {
         Some((start, prefix, COMMANDS))
+    } else if prefix.starts_with("$view::")
+        || prefix.starts_with("views::")
+        || prefix.starts_with("ranges::")
+    {
+        Some((start, prefix, RANGE_ADAPTORS))
     } else if prefix.starts_with('$') {
         Some((start, prefix, BUILTINS))
-    } else if prefix.starts_with("views::") || prefix.starts_with("ranges::") {
-        Some((start, prefix, RANGE_ADAPTORS))
     } else if !prefix.is_empty() && prefix.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
         Some((start, prefix, KEYWORDS))
     } else {
@@ -555,6 +558,8 @@ mod tests {
     fn v6_keyword_and_range_completion_preserves_the_typed_boundary() {
         for (line, expected) in [
             ("boole", "boolean"),
+            ("files | $view::fi", "$view::filter"),
+            ("items := [true,$view::si", "$view::single"),
             ("files | views::fi", "views::filter"),
             ("files | ranges::any", "ranges::any_of"),
         ] {

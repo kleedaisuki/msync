@@ -156,6 +156,7 @@ impl Parser<'_> {
                             value.span.end = statement.span.end;
                         }
                         self.else_branch(&mut statement, line, in_macro, depth);
+                        sync_scheduled_span(&mut statement);
                     }
                     body.push(statement);
                     if !nested {
@@ -175,7 +176,7 @@ impl Parser<'_> {
         in_macro: bool,
         depth: usize,
     ) {
-        let StatementKind::If { else_body, .. } = &mut statement.kind else {
+        let Some(else_body) = conditional_else_body(&mut statement.kind) else {
             return;
         };
         let Some(line) = self.lines.get(self.cursor).copied() else {
@@ -203,6 +204,7 @@ impl Parser<'_> {
                     }
                     *statement_body(&mut branch.kind).expect("if body") = child;
                     self.else_branch(&mut branch, line, in_macro, depth);
+                    sync_scheduled_span(&mut branch);
                     else_body.push(branch);
                 }
                 Err(error) => self.errors.push(error),
@@ -211,6 +213,7 @@ impl Parser<'_> {
         if let Some(last) = else_body.last() {
             statement.span.end = last.span.end;
         }
+        sync_scheduled_span(statement);
     }
 
     fn child(&mut self, header: Line<'_>, in_macro: bool, depth: usize) -> Block {
@@ -250,6 +253,7 @@ fn statement_body(kind: &mut StatementKind) -> Option<&mut Block> {
         | StatementKind::For { body, .. }
         | StatementKind::Loop { body } => Some(body),
         StatementKind::If { then_body, .. } => Some(then_body),
+        StatementKind::Scheduled { statement, .. } => statement_body(&mut statement.kind),
         StatementKind::Binding {
             value:
                 Expr {
@@ -259,6 +263,24 @@ fn statement_body(kind: &mut StatementKind) -> Option<&mut Block> {
             ..
         } => Some(body),
         _ => None,
+    }
+}
+
+fn conditional_else_body(kind: &mut StatementKind) -> Option<&mut Block> {
+    match kind {
+        StatementKind::If { else_body, .. } => Some(else_body),
+        StatementKind::Scheduled { statement, .. } => conditional_else_body(&mut statement.kind),
+        _ => None,
+    }
+}
+
+fn sync_scheduled_span(statement: &mut Statement) {
+    if let StatementKind::Scheduled {
+        statement: inner, ..
+    } = &mut statement.kind
+    {
+        inner.span.end = statement.span.end;
+        sync_scheduled_span(inner);
     }
 }
 
@@ -378,13 +400,25 @@ fn statement(code: &str, offset: usize) -> Result<Statement, Report> {
 
 fn statement_fn_if(header: &str, offset: usize) -> Result<Statement, Report> {
     let condition = header_body(header, offset)?;
-    Ok(Statement {
+    let (asynchronous, awaited, condition, condition_offset) = scheduling_flags(condition, offset)?;
+    let statement = Statement {
         kind: StatementKind::If {
-            condition: expression(condition, offset)?,
+            condition: expression(condition, condition_offset)?,
             then_body: Vec::new(),
             else_body: Vec::new(),
         },
         span: span(offset.saturating_sub(3), offset + header.len()),
+    };
+    if !asynchronous && !awaited {
+        return Ok(statement);
+    }
+    Ok(Statement {
+        span: statement.span,
+        kind: StatementKind::Scheduled {
+            asynchronous,
+            awaited,
+            statement: Box::new(statement),
+        },
     })
 }
 
@@ -394,36 +428,11 @@ fn keyword_tail<'a>(code: &'a str, keyword: &str) -> Option<&'a str> {
 }
 
 fn scheduled_statement(code: &str, offset: usize) -> Result<Option<Statement>, Report> {
-    let mut rest = code;
-    let mut asynchronous = false;
-    let mut awaited = false;
-    while let Some((keyword, tail)) = ["release", "acquire", "acqrel", "async", "await"]
-        .into_iter()
-        .find_map(|keyword| keyword_tail(rest, keyword).map(|tail| (keyword, tail)))
-    {
-        let (releases, acquires) = match keyword {
-            "release" | "async" => (true, false),
-            "acquire" | "await" => (false, true),
-            "acqrel" => (true, true),
-            _ => unreachable!(),
-        };
-        let start = offset + code.len() - rest.len();
-        if releases && asynchronous || acquires && awaited {
-            return Err(Report::new(
-                format!("duplicate '{keyword}' scheduling prefix"),
-                span(start, start + keyword.len()),
-            )
-            .help("Use release or acquire once, or acqrel to combine both effects."));
-        }
-        asynchronous |= releases;
-        awaited |= acquires;
-        rest = tail.trim_start();
-    }
+    let (asynchronous, awaited, rest, rest_offset) = scheduling_flags(code, offset)?;
     if !asynchronous && !awaited {
         return Ok(None);
     }
     let whole = span(offset, offset + code.len());
-    let rest_offset = offset + code.len() - rest.len();
     let kind = match (asynchronous, awaited, rest.is_empty()) {
         (true, false, true) => StatementKind::Async,
         (false, true, true) => StatementKind::Await(None),
@@ -467,6 +476,36 @@ fn scheduled_statement(code: &str, offset: usize) -> Result<Option<Statement>, R
         }
     };
     Ok(Some(Statement { kind, span: whole }))
+}
+
+fn scheduling_flags(code: &str, offset: usize) -> Result<(bool, bool, &str, usize), Report> {
+    let mut rest = code.trim_start();
+    let mut asynchronous = false;
+    let mut awaited = false;
+    while let Some((keyword, tail)) = ["release", "acquire", "acqrel", "async", "await"]
+        .into_iter()
+        .find_map(|keyword| keyword_tail(rest, keyword).map(|tail| (keyword, tail)))
+    {
+        let (releases, acquires) = match keyword {
+            "release" | "async" => (true, false),
+            "acquire" | "await" => (false, true),
+            "acqrel" => (true, true),
+            _ => unreachable!(),
+        };
+        let start = offset + code.len() - rest.len();
+        if releases && asynchronous || acquires && awaited {
+            return Err(Report::new(
+                format!("duplicate '{keyword}' scheduling prefix"),
+                span(start, start + keyword.len()),
+            )
+            .help("Use release or acquire once, or acqrel to combine both effects."));
+        }
+        asynchronous |= releases;
+        awaited |= acquires;
+        rest = tail.trim_start();
+    }
+    let rest_offset = offset + code.len() - rest.len();
+    Ok((asynchronous, awaited, rest, rest_offset))
 }
 
 fn ordinary_statement(code: &str, offset: usize) -> Result<StatementKind, Report> {
@@ -588,6 +627,7 @@ fn name(raw: &str, offset: usize) -> Result<Name, Report> {
 enum CallRole {
     Value,
     Executable,
+    ExecutableCallee,
 }
 
 fn expression(raw: &str, offset: usize) -> Result<Expr, Report> {
@@ -688,10 +728,17 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
         .flatten();
     let kind = if text == "loop:" {
         ExprKind::Loop { body: Vec::new() }
-    } else if text == "true" || text == "false" {
-        ExprKind::Bool(text == "true")
+    } else if let Some(value) = boolean_literal(text) {
+        ExprKind::Bool(value)
+    } else if matches!(scan.ranges.as_slice(), [(0, close)] if *close == text.len() - 1) {
+        ExprKind::Range(
+            split_arguments(&text[1..text.len() - 1], offset + 1)?
+                .into_iter()
+                .map(|(text, at)| expression(text, at))
+                .collect::<Result<Vec<_>, _>>()?,
+        )
     } else if let Some((open, close)) = executable_call {
-        call_expression(text, offset, open, close)?
+        call_expression(text, offset, open, close, role)?
     } else if let Some(operator) = join_operator(text, &scan) {
         if scan.joins.len() > MAX_NESTING {
             return Err(Report::new(
@@ -722,13 +769,12 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
             operator: span(offset + operator, offset + operator + 1),
             mode,
         }
-    } else if let Some(operator) = scan
-        .selections
-        .iter()
-        .rev()
-        .copied()
-        .find(|operator| scan.calls.iter().any(|(_, close)| *close < *operator))
-    {
+    } else if let Some(operator) = scan.selections.iter().rev().copied().find(|operator| {
+        scan.selections.len() > 1
+            || !scan.calls.is_empty()
+            || !scan.ranges.is_empty()
+            || role == CallRole::Value && boolean_literal(&text[operator + 2..]).is_some()
+    }) {
         if scan.selections.len() > MAX_NESTING {
             return Err(Report::new("namespace expression nesting is too deep", span(offset + operator, offset + operator + 2))
                 .help("Bind an intermediate space; one expression supports at most 128 namespace operators."));
@@ -739,7 +785,12 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
             operator: span(offset + operator, offset + operator + 2),
         }
     } else if let Some((open, close)) = scan.calls.last().copied() {
-        call_expression(text, offset, open, close)?
+        call_expression(text, offset, open, close, role)?
+    } else if let Some((0, close)) = scan.ranges.first() {
+        return Err(Report::new(
+            "unexpected text after range literal",
+            span(offset + close + 1, offset + text.len()),
+        ));
     } else if text.starts_with('"') {
         let (value, source) = quoted(text, offset)?;
         provenance = source;
@@ -803,6 +854,14 @@ fn binary_operator(operators: &[(usize, &'static str)]) -> Option<(usize, &'stat
     })
 }
 
+fn boolean_literal(text: &str) -> Option<bool> {
+    match text.trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
 fn unary_tail<'a>(text: &'a str, keyword: &str) -> Option<&'a str> {
     let tail = text.strip_prefix(keyword)?;
     (tail.starts_with(char::is_whitespace) || tail.starts_with('(')).then_some(tail)
@@ -813,6 +872,7 @@ fn call_expression(
     offset: usize,
     open: usize,
     close: usize,
+    role: CallRole,
 ) -> Result<ExprKind, Report> {
     if close != text.len() - 1 {
         return Err(Report::new(
@@ -821,7 +881,15 @@ fn call_expression(
         )
         .help("Join a returned symbol value with '/', or qualify a returned space with '::'."));
     }
-    let callee = expression(&text[..open], offset)?;
+    let callee = expression_with_role(
+        &text[..open],
+        offset,
+        if role == CallRole::Executable {
+            CallRole::ExecutableCallee
+        } else {
+            CallRole::Value
+        },
+    )?;
     if matches!(callee.kind, ExprKind::Literal(_)) {
         return Err(Report::new(
             "a call requires a macro or symbol name, or an executable path",
@@ -958,6 +1026,7 @@ struct Scan {
     joins: Vec<usize>,
     selections: Vec<usize>,
     calls: Vec<(usize, usize)>,
+    ranges: Vec<(usize, usize)>,
     assignments: Vec<usize>,
     binary: Vec<(usize, &'static str)>,
 }
@@ -969,6 +1038,7 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
         joins: Vec::new(),
         selections: Vec::new(),
         calls: Vec::new(),
+        ranges: Vec::new(),
         assignments: Vec::new(),
         binary: Vec::new(),
     };
@@ -977,7 +1047,7 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
     let mut selector = None;
     let mut escaped = false;
     let mut character_class = false;
-    let mut parentheses = Vec::new();
+    let mut delimiters = Vec::new();
     let mut index = 0;
     while index < bytes.len() {
         let byte = bytes[index];
@@ -1008,40 +1078,57 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
             continue;
         }
         match byte {
-            b':' if parentheses.is_empty() && bytes.get(index + 1) == Some(&b':') => {
+            b':' if delimiters.is_empty() && bytes.get(index + 1) == Some(&b':') => {
                 result.selections.push(index);
                 index += 1;
             }
-            b'/' if parentheses.is_empty() => result.joins.push(index),
+            b'/' if delimiters.is_empty() => result.joins.push(index),
             b'"' => quote = Some(index),
             b'<' if starts_selector(bytes, index) => selector = Some(index),
-            b'(' => {
-                if parentheses.len() >= MAX_NESTING {
+            b'(' | b'[' if byte == b'(' || starts_range(bytes, index) => {
+                if delimiters.len() >= MAX_NESTING {
                     return Err(Report::new("call nesting is too deep", span(offset + index, offset + index + 1))
                         .help("Use no more than 128 nested argument lists; bind an intermediate value instead."));
                 }
-                parentheses.push(index);
+                delimiters.push((byte, index));
             }
-            b')' => {
-                let Some(open) = parentheses.pop() else {
+            b')' | b']'
+                if byte == b')' || delimiters.iter().any(|(opening, _)| *opening == b'[') =>
+            {
+                let Some((opening, open)) = delimiters.pop() else {
                     return Err(Report::new(
-                        "unmatched closing ')'",
+                        format!("unmatched closing '{}'", byte as char),
                         span(offset + index, offset + index + 1),
                     )
-                    .help("Remove this ')' or add its matching '(' before the arguments."));
+                    .help("Remove this delimiter or add its matching opening delimiter."));
                 };
-                if parentheses.is_empty() {
-                    if result.calls.len() == MAX_NESTING {
+                if !matches!((opening, byte), (b'(', b')') | (b'[', b']')) {
+                    return Err(Report::new(
+                        "mismatched expression delimiter",
+                        span(offset + index, offset + index + 1),
+                    )
+                    .label(
+                        span(offset + open, offset + open + 1),
+                        "this opening delimiter must be closed first",
+                    ));
+                }
+                if delimiters.is_empty() {
+                    let pairs = if opening == b'(' {
+                        &mut result.calls
+                    } else {
+                        &mut result.ranges
+                    };
+                    if pairs.len() == MAX_NESTING {
                         return Err(Report::new(
                             "call expression nesting is too deep",
                             span(offset + open, offset + index + 1),
                         ));
                     }
-                    result.calls.push((open, index));
+                    pairs.push((open, index));
                 }
             }
-            b',' if parentheses.is_empty() => result.commas.push(index),
-            _ if parentheses.is_empty() => {
+            b',' if delimiters.is_empty() => result.commas.push(index),
+            _ if delimiters.is_empty() => {
                 let operator = match bytes.get(index..index + 2) {
                     Some(b"=>") => Some("=>"),
                     Some(b":=") => Some(":="),
@@ -1103,16 +1190,21 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
         )
         .help("Close regex character classes with ']' and the selector with '>'."));
     }
-    if let Some(start) = parentheses.last() {
+    if let Some((opening, start)) = delimiters.last() {
+        let closing = if *opening == b'[' { ']' } else { ')' };
         return Err(Report::new(
-            "unclosed argument list",
+            if *opening == b'[' {
+                "unclosed range literal"
+            } else {
+                "unclosed argument list"
+            },
             span(offset + start, offset + start + 1),
         )
         .label(
             span(offset + text.len(), offset + text.len()),
-            "insert closing ')' here",
+            format!("insert closing '{closing}' here"),
         )
-        .help("Every call or parameter list needs a closing ')'."));
+        .help("Close each call, group or range with its matching delimiter."));
     }
     Ok(result)
 }
@@ -1121,13 +1213,15 @@ fn starts_selector(bytes: &[u8], index: usize) -> bool {
     if bytes.get(index + 1) == Some(&b'=') {
         return false;
     }
-    if index == 0 || matches!(bytes[index - 1], b'/' | b'\\' | b':' | b'(' | b',') {
+    if index == 0 || matches!(bytes[index - 1], b'/' | b'\\' | b':' | b'(' | b'[' | b',') {
         return true;
     }
     let prefix = std::str::from_utf8(&bytes[..index])
         .expect("ASCII token boundary")
         .trim_end();
-    prefix.ends_with('=')
+    prefix.is_empty()
+        || prefix.ends_with(['/', '\\', ':', '(', '[', ','])
+        || prefix.ends_with('=')
         || prefix.ends_with("->")
         || prefix
             .split_whitespace()
@@ -1135,10 +1229,31 @@ fn starts_selector(bytes: &[u8], index: usize) -> bool {
             .is_some_and(|token| matches!(token, "in" | "return" | "delete" | "exists"))
 }
 
+fn starts_range(bytes: &[u8], index: usize) -> bool {
+    if index == 0 || matches!(bytes[index - 1], b'(' | b'[' | b',' | b'=' | b'|') {
+        return true;
+    }
+    if !bytes[index - 1].is_ascii_whitespace() {
+        return false;
+    }
+    let prefix = std::str::from_utf8(&bytes[..index])
+        .expect("ASCII token boundary")
+        .trim_end();
+    prefix.is_empty()
+        || prefix.ends_with(['=', '(', '[', ',', '/', '|', '<', '>', '!'])
+        || prefix.ends_with("->")
+        || prefix.split_whitespace().last().is_some_and(|token| {
+            matches!(
+                token,
+                "in" | "return" | "delete" | "exists" | "if" | "not" | "and" | "or"
+            )
+        })
+}
+
 fn selector_end(bytes: &[u8], index: usize) -> bool {
     bytes.get(index + 1).is_none_or(|next| {
         next.is_ascii_whitespace()
-            || matches!(next, b'/' | b'\\' | b',' | b')' | b'|' | b'=' | b'!')
+            || matches!(next, b'/' | b'\\' | b',' | b')' | b']' | b'|' | b'=' | b'!')
     }) || matches!(bytes.get(index + 1..index + 3), Some(b"->" | b"=>" | b":="))
 }
 

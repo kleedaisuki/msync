@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use msync::compiler::structured::Session;
 use msync::compiler::{Backend, CompileContext};
+use msync::hir::control::{ControlInstruction, ExprKind as ControlExprKind, RangeSource, Type};
 use msync::hir::{self, Argument, Input, InstructionKind, Output, ReadPort};
 use msync::language::{self, DestinationMode};
 
@@ -369,9 +370,40 @@ fn read_only_transports_and_selector_policy_reuse_existing_compiler_rules() {
     let errors = rejected(&mut Session::new(), "source/<(> -> output/\n");
     assert!(errors[0].diagnostic.message.contains("unclosed group"));
     let program = compile(&mut Session::new(), "source/<.*\\.txt> -> output/\n");
-    assert!(
-        matches!(transfer(&program.body.instructions[0]).0, Input::File { pattern: Some(value), .. } if value == ".*\\.txt")
-    );
+    assert_eq!(program.body.instructions.len(), 1);
+    let InstructionKind::Control(ControlInstruction::RangeTransfer {
+        range,
+        destination,
+        mode,
+    }) = &program.body.instructions[0].kind
+    else {
+        panic!("a selector must remain one typed range-transfer statement");
+    };
+    assert_eq!(range.item_type, Type::Path);
+    assert!(range.stages.is_empty());
+    let RangeSource::Regex { root, pattern } = &range.source else {
+        panic!("a selector lost its regex source");
+    };
+    assert_eq!(pattern, ".*\\.txt");
+    let ControlExprKind::Path {
+        location,
+        relocation,
+        ..
+    } = &root.kind
+    else {
+        panic!("a selector root must retain its typed path");
+    };
+    assert_eq!(location.backend, Backend::Local);
+    assert!(location.path.ends_with("/source/"));
+    assert!(relocation.is_some(), "a selector must remain relocatable");
+    assert_eq!(*mode, DestinationMode::Container);
+    assert!(matches!(
+        &destination.kind,
+        ControlExprKind::Path { location, mode, .. }
+            if location.backend == Backend::Local
+                && location.path.ends_with("/output/")
+                && *mode == DestinationMode::Container
+    ));
 }
 
 #[test]
@@ -412,35 +444,89 @@ fn a_shadowing_macro_can_call_the_prior_definition_with_the_same_name() {
 }
 
 #[test]
-fn manually_constructed_nested_macro_ast_is_rejected_even_if_not_called() {
+fn manually_constructed_nested_macro_ast_captures_parents_without_leaking_locals() {
     let span = msync::syntax::Span { start: 0, end: 1 };
     let name = |text: &str| language::Name {
         text: text.to_owned(),
         span,
     };
-    let document = language::Document {
-        statements: vec![language::Statement {
-            span,
-            kind: language::StatementKind::Macro {
-                name: name("outer"),
-                parameters: vec![],
-                body: vec![language::Statement {
-                    span,
-                    kind: language::StatementKind::Macro {
-                        name: name("inner"),
-                        parameters: vec![],
-                        body: vec![],
-                    },
-                }],
-            },
-        }],
+    let statement = |kind| language::Statement { span, kind };
+    let expression = |kind| language::Expr {
+        span,
+        source: msync::syntax::OperandSource::unmapped(span),
+        kind,
     };
-    let errors = Session::new().compile(&document, &context()).unwrap_err();
+    let path = |text: &str| {
+        expression(language::ExprKind::Path(language::PathExpr {
+            qualifier: None,
+            path: text.to_owned(),
+            mode: DestinationMode::Exact,
+        }))
+    };
+    let inner_body = vec![
+        statement(language::StatementKind::Global(vec![name("base")])),
+        statement(language::StatementKind::Transfer {
+            source: expression(language::ExprKind::Join {
+                base: Box::new(path("base")),
+                suffix: Some(Box::new(path("leaf"))),
+                operator: span,
+                mode: DestinationMode::Exact,
+            }),
+            destination: path("local-output"),
+        }),
+    ];
+    let inner = statement(language::StatementKind::Macro {
+        name: name("inner"),
+        parameters: vec![name("leaf")],
+        body: inner_body,
+    });
+    let invoke_inner = statement(language::StatementKind::Call(expression(
+        language::ExprKind::Call {
+            callee: Box::new(path("inner")),
+            arguments: vec![path("file")],
+        },
+    )));
+    let outer = statement(language::StatementKind::Macro {
+        name: name("outer"),
+        parameters: vec![name("base")],
+        body: vec![inner, invoke_inner],
+    });
+    let document = language::Document {
+        statements: vec![outer],
+    };
+    let mut session = Session::new();
+    compile(
+        &mut session,
+        "macro inner(leaf):\n    leaf -> global-output\n",
+    );
+    let definition = session.compile(&document, &context()).unwrap();
+    assert!(definition.body.instructions.is_empty());
+    let program = compile(&mut session, "outer(root)\ninner(other)\n");
+    assert_eq!(program.body.instructions.len(), 2);
+    let (local_source, local_destination) = transfer(&program.body.instructions[0]);
+    assert!(input_path(local_source).path.ends_with("/root/file"));
     assert!(
-        errors[0]
-            .diagnostic
-            .message
-            .contains("cannot declare another macro")
+        output_path(local_destination)
+            .0
+            .path
+            .ends_with("/local-output")
+    );
+    assert_eq!(program.body.instructions[0].expansion.len(), 2);
+    let (global_source, global_destination) = transfer(&program.body.instructions[1]);
+    assert!(input_path(global_source).path.ends_with("/other"));
+    assert!(
+        output_path(global_destination)
+            .0
+            .path
+            .ends_with("/global-output")
+    );
+    assert_eq!(program.body.instructions[1].expansion.len(), 1);
+    assert!(
+        !session
+            .bindings()
+            .iter()
+            .any(|binding| binding.starts_with("base :=") || binding.starts_with("leaf :=")),
+        "nested invocation parameters escaped their lexical scope"
     );
 }
 

@@ -243,10 +243,34 @@ fn selectors_are_not_part_of_a_relocated_directory_path() {
         "$pwd::pwd / \"source\" / <.+\\.toml> -> $pwd::pwd / \"target\"/\n",
         &context("code.msync"),
     );
-    assert_eq!(
-        relocation(&compiled, 0, Slot::Source),
-        &RelocPath::new(Anchor::WorkingDirectory, "source/")
-    );
+    assert_eq!(compiled.program.body.instructions.len(), 1);
+    let InstructionKind::Control(msync::hir::control::ControlInstruction::RangeTransfer {
+        range,
+        destination,
+        mode,
+    }) = &compiled.program.body.instructions[0].kind
+    else {
+        panic!("a selector must remain a single typed range transfer");
+    };
+    let msync::hir::control::RangeSource::Regex { root, pattern } = &range.source else {
+        panic!("a selector lost its separate regex source");
+    };
+    let msync::hir::control::ExprKind::Path {
+        relocation: Some(source),
+        ..
+    } = &root.kind
+    else {
+        panic!("a selector root lost its contextual relocation");
+    };
+    assert_eq!(source, &RelocPath::new(Anchor::WorkingDirectory, "source/"));
+    assert_eq!(pattern, ".+\\.toml");
+    assert_eq!(*mode, msync::language::DestinationMode::Container);
+    assert!(matches!(
+        &destination.kind,
+        msync::hir::control::ExprKind::Path { relocation: Some(path), mode, .. }
+            if path == &RelocPath::new(Anchor::WorkingDirectory, "target/")
+                && *mode == msync::language::DestinationMode::Container
+    ));
 }
 
 #[test]
