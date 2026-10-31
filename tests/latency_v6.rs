@@ -323,18 +323,18 @@ fn a_background_flow_failure_does_not_wait_for_an_unrelated_held_child() {
     let mut broken_source = connected(&broken);
     broken_source.write_all(b"cannot publish").unwrap();
     // A connected source does not mean the destination has opened its stage.
-    // Mutate only after bytes reach that stage, not while parent admission races.
+    // Stage creation proves parent admission; Windows need not expose length before flush.
     let parent = root.path().join("parent");
     let deadline = Instant::now() + DEADLINE;
     while !fs::read_dir(&parent).unwrap().any(|entry| {
         entry
             .unwrap()
             .metadata()
-            .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+            .is_ok_and(|metadata| metadata.is_file())
     }) {
         assert!(
             Instant::now() < deadline,
-            "the held flow never wrote its private destination stage"
+            "the held flow never opened its private destination stage"
         );
         thread::sleep(Duration::from_millis(1));
     }

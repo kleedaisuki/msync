@@ -57,3 +57,34 @@ locally with `sh` on Linux. The journey passed regular/missing/dangling existenc
 symlink-cycle error preservation, link deletion, real-directory deletion refusal,
 and NUL-framed enumeration. This tests shell semantics, not SSH authentication,
 Windows filesystem behavior, or a remote-host transport connection.
+
+## Native Windows observation identities
+
+The v0.6.5 native Windows pass exposed an overlap-model error, not an SSH or
+recovery wait: Windows canonicalization produces extended drive paths such as
+`\\?\D:\workspace\stream`. The logical effect parser previously classified the
+drive-bearing component as an uncertain UNC path, so an unrelated existence
+query could conservatively acquire every open native flow. The inverse UNC
+case was also wrong: ordinary `\\server\share\file` and canonical
+`\\?\UNC\server\share\file` were not recognized as aliases.
+
+The shared `LogicalPath` comparison model now reshapes known extended drive and
+UNC prefixes into its existing drive/UNC roots before ordinary component
+handling. This changes comparison keys only, never the actual I/O operand.
+Unknown device namespaces, verbatim relative components, trailing dots/spaces,
+alternate streams and uncertain Unicode case remain conservative rather than
+being declared disjoint by string manipulation. SSH/WSL POSIX names do not gain
+native Windows normalization.
+
+The shape distinctions follow Rust's
+[Windows path prefixes](https://doc.rust-lang.org/std/path/enum.Prefix.html) and
+Microsoft's [file namespace contract](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file).
+In particular, stripping a verbatim prefix is not permission to normalize an
+actual Windows filename or change its special-component semantics.
+
+Host-independent checks cover ordinary/extended alias equality, independent
+sibling separation, unsafe-device conservatism and remote-name preservation;
+64 generated drive/UNC spelling cases exercise the symmetry of the comparison.
+The conflict-index oracle also includes these spellings in its generated domain.
+The three affected held-stream journeys passed locally; native Windows execution
+remains a separate platform acceptance step, not implied by these pure checks.

@@ -4,6 +4,7 @@
 //! rather than modifying an existing inode through another hard-link name.
 //! Native/WSL projections and unresolved contextual endpoints remain aliases.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::compiler::{Backend, Location};
@@ -262,6 +263,12 @@ impl LogicalPath {
         } else {
             location.path.clone()
         };
+        let verbatim = local && path.starts_with("//?/");
+        let (path, device) = if local {
+            windows_comparison_path(&path)
+        } else {
+            (Cow::Borrowed(path.as_str()), false)
+        };
         let drive = local && path.as_bytes().get(1) == Some(&b':');
         let unc = local && path.starts_with("//");
         let windows = drive || unc;
@@ -276,11 +283,16 @@ impl LogicalPath {
         } else if let Some(tail) = path.strip_prefix("~/") {
             ("~".to_owned(), tail)
         } else {
-            (String::new(), path.as_str())
+            (String::new(), path.as_ref())
         };
         let mut parts = Vec::new();
-        let mut uncertain = drive && !tail.starts_with('/');
+        let mut uncertain = device
+            || (drive && !tail.starts_with('/'))
+            || (verbatim && location.path.contains('/'));
         for part in tail.split('/') {
+            if verbatim && matches!(part, "." | "..") {
+                uncertain = true;
+            }
             match part {
                 "" | "." => {}
                 ".." => {
@@ -289,7 +301,11 @@ impl LogicalPath {
                     }
                 }
                 part => {
-                    if windows && (!part.is_ascii() || part.contains(':')) {
+                    if windows
+                        && (!part.is_ascii()
+                            || part.contains(':')
+                            || (verbatim && part.ends_with(['.', ' '])))
+                    {
                         // Unicode case folding and NTFS alternate streams need
                         // native identity evidence, not a portable string guess.
                         uncertain = true;
@@ -302,12 +318,33 @@ impl LogicalPath {
                 }
             }
         }
+        uncertain |= unc && parts.len() < 2;
         Self {
             root,
             parts,
             uncertain,
         }
     }
+}
+
+fn windows_comparison_path(path: &str) -> (Cow<'_, str>, bool) {
+    let Some(tail) = path.strip_prefix("//?/") else {
+        return (Cow::Borrowed(path), path.starts_with("//./"));
+    };
+    // Canonical Windows paths use these roots too; this key never changes an IO operand.
+    if tail
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("UNC/"))
+    {
+        return (Cow::Owned(format!("//{}", &tail[4..])), false);
+    }
+    if tail.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        && tail.as_bytes().get(1) == Some(&b':')
+        && tail.as_bytes().get(2) == Some(&b'/')
+    {
+        return (Cow::Borrowed(tail), false);
+    }
+    (Cow::Borrowed(path), true)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -732,6 +769,115 @@ fn add_namespace_writes(
             resource: Resource::DirectoryEntry(entry),
             kind: AccessKind::Write,
         });
+    }
+}
+
+#[cfg(test)]
+mod windows_path_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn file(path: impl Into<String>) -> FileResource {
+        FileResource::new(
+            Location {
+                backend: Backend::Local,
+                path: path.into(),
+            },
+            Scope::Exact,
+        )
+    }
+
+    #[test]
+    fn extended_windows_roots_share_normal_drive_and_unc_identities() {
+        for (normal, extended, sibling) in [
+            (
+                r"D:\workspace\stream",
+                r"\\?\d:\WORKSPACE\stream",
+                r"\\?\D:\workspace\gate",
+            ),
+            (
+                r"\\server\share\workspace\stream",
+                r"\\?\UNC\SERVER\share\workspace\stream",
+                r"\\?\UNC\server\share\workspace\gate",
+            ),
+        ] {
+            let normal = file(normal);
+            let extended = file(extended);
+            assert_eq!(normal.path, extended.path);
+            assert!(normal.definitely_same_path(&extended));
+            assert!(normal.may_overlap(&extended));
+            assert!(!normal.may_overlap(&file(sibling)));
+            assert!(!extended.may_overlap(&file(sibling)));
+        }
+    }
+
+    #[test]
+    fn verbatim_special_components_and_unknown_devices_stay_conservative() {
+        for path in [
+            r"\\?\Volume{unknown}\leaf",
+            r"\\.\PhysicalDrive0",
+            r"\\?\GLOBALROOT\Device\volume\leaf",
+            r"\\?\relative\leaf",
+            r"\\?\D:\parent\..\leaf",
+            r"\\?\D:\parent\.\leaf",
+            r"\\?\D:\parent.\leaf",
+            r"\\?\D:\parent \leaf",
+            r"\\?\D:\parent/leaf",
+        ] {
+            let resource = file(path);
+            assert!(resource.path.uncertain, "{path}");
+            assert!(resource.may_overlap(&file(r"D:\unrelated")), "{path}");
+            assert!(
+                resource.may_overlap(&file(r"\\server\share\unrelated")),
+                "{path}"
+            );
+        }
+        assert!(file(r"D:\parent\leaf.").may_overlap(&file(r"d:\PARENT\leaf")));
+        assert!(file(r"\\?\D:\parent\leaf:stream").path.uncertain);
+    }
+
+    #[test]
+    fn remote_posix_names_do_not_gain_native_windows_aliases() {
+        let remote = |path: &str| {
+            FileResource::new(
+                Location {
+                    backend: Backend::Ssh {
+                        host: "example.invalid".into(),
+                        user: None,
+                        port: None,
+                    },
+                    path: path.into(),
+                },
+                Scope::Exact,
+            )
+        };
+        assert!(!remote(r"D:\workspace\file").may_overlap(&remote(r"\\?\D:\workspace\file")));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn drive_and_unc_prefix_spellings_preserve_aliases_and_sibling_separation(
+            left in "[a-z]{1,10}",
+            right in "[a-z]{1,10}",
+        ) {
+            prop_assume!(left != right);
+            for (normal, extended) in [
+                (r"D:\root\", r"\\?\d:\ROOT\"),
+                (r"\\server\share\root\", r"\\?\UNC\SERVER\SHARE\ROOT\"),
+            ] {
+                let aliases = [file(format!("{normal}leaf-{left}")), file(format!("{extended}leaf-{left}"))];
+                let siblings = [file(format!("{normal}leaf-{right}")), file(format!("{extended}leaf-{right}"))];
+                prop_assert!(aliases[0].definitely_same_path(&aliases[1]));
+                for alias in &aliases {
+                    for sibling in &siblings {
+                        prop_assert!(!alias.may_overlap(sibling));
+                        prop_assert!(!sibling.may_overlap(alias));
+                    }
+                }
+            }
+        }
     }
 }
 
