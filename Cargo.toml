@@ -37,6 +37,9 @@ tempfile = "3.23"
 proptest = "1.9"
 socket2 = "0.6"
 
+[patch.crates-io]
+rustyline = { path = "vendor/rustyline" }
+
 [[bench]]
 name = "pipeline"
 harness = false

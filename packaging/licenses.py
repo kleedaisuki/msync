@@ -64,6 +64,18 @@ def license_files(package: Package, workspace: Path) -> list[Path]:
     return sorted(candidates, key=lambda path: path.relative_to(root).as_posix())
 
 
+def source_description(package: Package, workspace: Path) -> str:
+    if package["source"] is not None:
+        return package["source"]
+    directory = Path(package["manifest_path"]).parent.resolve()
+    workspace = workspace.resolve()
+    if directory == workspace:
+        return "msync workspace source (matching release)"
+    if directory.is_relative_to(workspace):
+        return f"vendored/local source (matching release): {directory.relative_to(workspace).as_posix()}"
+    return "local source package (matching release; see supplied notices)"
+
+
 def rust_attribution(sysroot: Path, destination: Path) -> list[str]:
     documentation = sysroot / "share" / "doc" / "rust"
     report = documentation / "COPYRIGHT-library.html"
@@ -117,7 +129,7 @@ def generate(root: Path, target: str, output: Path, sysroot: Path | None = None)
             f"\n{'=' * 72}\n{package['name']} {package['version']}\n",
             f"Declared license: {package['license'] or 'not specified; see supplied texts'}\n",
             f"Authors: {', '.join(package.get('authors', [])) or 'see supplied notices'}\n",
-            f"Source: {package['source'] or 'msync workspace source (matching release)'}\n",
+            f"Source: {source_description(package, root)}\n",
         ])
         for path in files:
             raw = path.read_bytes()

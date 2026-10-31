@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from licenses import Package, license_files, rust_attribution
+from licenses import Package, license_files, rust_attribution, source_description
 
 
 class LicenseCollectionTests(unittest.TestCase):
@@ -73,6 +73,18 @@ class LicenseCollectionTests(unittest.TestCase):
                 self.assertEqual(hashlib.sha256((repository / entry["path"]).read_bytes()).hexdigest(),
                                  entry["sha256"])
                 self.assertRegex(entry["source"], r"^https://raw\.githubusercontent\.com/[^/]+/[^/]+/[a-f0-9]{40}/")
+
+    def test_local_dependencies_are_not_mislabeled_as_the_msync_workspace(self) -> None:
+        self.assertEqual(source_description(self.package(self.root), self.root),
+                         "msync workspace source (matching release)")
+        dependency = self.package(self.root / "vendor/rustyline")
+        self.assertEqual(source_description(dependency, self.root),
+                         "vendored/local source (matching release): vendor/rustyline")
+        external = source_description(self.package(self.root.parent / "outside"), self.root)
+        self.assertNotIn(str(self.root.parent), external)
+        registry = self.package(self.root / "registry")
+        registry["source"] = "registry+https://github.com/rust-lang/crates.io-index"
+        self.assertEqual(source_description(registry, self.root), registry["source"])
 
 
 if __name__ == "__main__":
