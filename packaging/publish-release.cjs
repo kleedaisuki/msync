@@ -42,16 +42,12 @@ module.exports = async function publish({github, context, core, version, directo
   if (pointed !== null && pointed !== context.sha) {
     throw new Error(`${tag} already points to another revision; bump the version or resolve the tag explicitly`);
   }
-  if (pointed === null) {
-    try { await github.rest.git.createRef({...repo, ref: `refs/tags/${tag}`, sha: context.sha}); }
-    catch (error) { if (error.status !== 422) throw error; }
-  }
-  await requireMatchingTag();
 
   const files = [
     `msync-${version}-windows-x86_64-setup.exe`,
     `msync-${version}-windows-x86_64.zip`,
     `msync-${version}-linux-x86_64.tar.gz`,
+    `msync-language-${version}.vsix`,
   ].sort();
   const sums = files.map(file => {
     const bytes = read(`dist/${file}`);
@@ -61,8 +57,17 @@ module.exports = async function publish({github, context, core, version, directo
   fs.writeFileSync(path.join(directory, 'dist/SHA256SUMS'), sums.join('\n') + '\n');
   files.push('SHA256SUMS');
 
+  if (pointed === null) {
+    try { await github.rest.git.createRef({...repo, ref: `refs/tags/${tag}`, sha: context.sha}); }
+    catch (error) { if (error.status !== 422) throw error; }
+  }
+  await requireMatchingTag();
+
   if (!release) {
-    const notes = read(`docs/releases/${version}.md`).toString('utf8');
+    const notes = read(`docs/releases/${version}.md`).toString('utf8').replace(
+      /\]\((\.\.?\/[^\s)]+)\)/g,
+      (_, target) => `](${new URL(target, `https://github.com/${repo.owner}/${repo.repo}/blob/${tag}/docs/releases/`).href})`,
+    );
     release = (await github.rest.repos.createRelease({
       ...repo, tag_name: tag, target_commitish: context.sha,
       name: `msync ${tag}`, draft: true, prerelease: false,

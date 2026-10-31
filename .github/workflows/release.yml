@@ -8,6 +8,7 @@ on:
       - Cargo.lock
       - .gitattributes
       - packaging/**
+      - editors/vscode/**
       - .github/workflows/release.yml
       - docs/releases/**
   pull_request:
@@ -16,6 +17,7 @@ on:
       - Cargo.lock
       - .gitattributes
       - packaging/**
+      - editors/vscode/**
       - .github/workflows/release.yml
       - docs/releases/**
   workflow_dispatch:
@@ -135,8 +137,85 @@ jobs:
           if-no-files-found: error
           path: dist/msync-${{ needs.version.outputs.version }}-linux-x86_64.tar.gz
 
+  editor:
+    needs: [version, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      PACKAGE_VERSION: ${{ needs.version.outputs.version }}
+      NPM_CONFIG_CACHE: ${{ github.workspace }}/.temp/editor-release/npm-cache
+      MSYNC_TEST_VSCODE_VERSION: '1.144.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - name: Check editor and Cargo release versions agree
+        run: |
+          node <<'NODE'
+          const manifest = require('./editors/vscode/package.json');
+          if (manifest.version !== process.env.PACKAGE_VERSION) {
+            throw new Error(`Editor version ${manifest.version} does not match Cargo version ${process.env.PACKAGE_VERSION}`);
+          }
+          NODE
+      - name: Install locked editor dependencies
+        working-directory: editors/vscode
+        run: npm ci --ignore-scripts
+      - name: Check native grammar and client lifecycle
+        working-directory: editors/vscode
+        run: npm test
+      - name: Build the production extension bundle
+        working-directory: editors/vscode
+        run: npm run build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-linux-x86_64
+          path: .temp/editor-release/input
+      - name: Select the already verified portable release binary
+        run: |
+          mkdir -p .temp/editor-release/server
+          tar -xzf ".temp/editor-release/input/msync-$PACKAGE_VERSION-linux-x86_64.tar.gz" -C .temp/editor-release/server
+          server="$GITHUB_WORKSPACE/.temp/editor-release/server/msync-$PACKAGE_VERSION-linux-x86_64/bin/msync"
+          test "$("$server" --version)" = "msync $PACKAGE_VERSION"
+          echo "MSYNC_TEST_SERVER_PATH=$server" >> "$GITHUB_ENV"
+      - name: Exercise the real VS Code host against the release binary
+        timeout-minutes: 8
+        working-directory: editors/vscode
+        env:
+          TMPDIR: ${{ github.workspace }}/.temp/editor-release/tmp
+        run: |
+          mkdir -p "$TMPDIR"
+          timeout --signal=TERM --kill-after=20s 360s xvfb-run -a npm run test:integration
+      - name: Package the versioned release VSIX
+        working-directory: editors/vscode
+        run: |
+          mkdir -p ../../dist
+          npx --yes @vscode/vsce@4.1.0 package --allow-missing-repository --out "../../dist/msync-language-$PACKAGE_VERSION.vsix"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-vscode
+          if-no-files-found: error
+          path: dist/msync-language-${{ needs.version.outputs.version }}.vsix
+      - name: Retain focused editor release evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vscode-release-host-${{ github.sha }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            .temp/vscode-host-*/host.log
+            .temp/vscode-host-*/*.json
+
   publish:
-    needs: [version, windows, linux]
+    needs: [version, windows, linux, editor]
     if: needs.version.outputs.publish == 'true'
     runs-on: ubuntu-latest
     permissions:
