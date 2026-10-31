@@ -4,10 +4,11 @@ A typed file-synchronization DSL in Rust: a pure optimizing compiler, a
 block-at-a-time interpreter, bounded asynchronous execution, source-mapped
 errors, a script formatter, a persistent REPL, and native editor/LSP tooling.
 
-> The default source grammar is **0.6**; **0.5** remains a compatible alias.
-> See the [0.6 release notes](docs/releases/0.6.0.md),
-> [language additions](docs/design/language-v6.md), and
-> [integration contract](docs/design/integration-v0.6.md).
+> This checkout targets **0.6.5**. The source grammar remains **0.6**;
+> **0.5** remains a compatible alias. Contracts and verification evidence are
+> recorded in the [0.6.5 release notes](docs/releases/0.6.5.md) and
+> [integration workboard](docs/design/integration-v065.md). Published 0.6.0
+> artifacts and their recorded identities are not replaced by this work.
 
 An optional `# msync: 0.6` header or `--syntax 0.6` selects the current grammar;
 existing 0.5 headers and flags remain accepted. Syntax 0.3 and transactional 0.4 are
@@ -124,7 +125,7 @@ Literal content is preserved byte-for-byte. Macros expand typed values in an
 isolated lexical environment. `global name` imports a binding from the macro's
 definition-time environment; caller locals are not implicitly captured.
 
-`$pwd` is a space; `$pwd::pwd` is its working-directory **item**. For example,
+`$pwd` is a `Scope`; `$pwd::pwd` is its working-directory **Path item**. For example,
 `here => $pwd` aliases the space (use `here::pwd`), whereas
 `cwd := $pwd::pwd` captures the cwd path value. Naming a space with `=>` does not
 select its item. `/` has no space overload: select the item first. Space-related
@@ -135,6 +136,43 @@ expanded even on the right. A rooted right item cannot replace a path base.
 String literals have explicit path-fragment overloads inside `/`; a bare quoted
 transfer source still means literal data. See the [complete operator and space/item
 definitions](docs/design/language-v4.md#-operator-evaluated-item-composition).
+
+### Inferred types and operator capabilities (0.6.5)
+
+The compiler names `Path`, `String`, `Scope`, `Bool` and `Range<T>` explicitly in
+its semantic model. Source does **not** gain type annotations or user-defined
+trait declarations: types are inferred from values, operators and lexical
+function calls. Operator capabilities determine valid operands and result types:
+
+| Operation | Operand domain | Result |
+| --- | --- | --- |
+| `left / right` | Each operand is `String` or `Path` | `Path` |
+| `scope::item` | `Scope` with `Path` or `String` | `Path` |
+| `outer::inner` | `Scope` with `Scope` | `Scope` |
+| `and`, `or`, `not` | `Bool` | `Bool` |
+| `==`, `!=` | Matching `Bool` or matching `String` | `Bool` |
+| `<`, `<=`, `>`, `>=` | `String` with `String` | `Bool` |
+
+`$` introduces built-in scopes/APIs. They are typed values rather than names that
+only work in a hard-coded syntax position: for example, `api => $view` permits
+`items | api::take(1)`. Ordinary lexical functions return inferred values that can
+be composed or qualified just like other values:
+
+```text
+symbol codex(file):
+    return ~/.codex/file
+
+config := $wsl::codex(config.toml)
+```
+
+Qualification applies to the function's returned path; it is not a request to
+launch a remote program named `codex`. Home and relative path resolution remain
+deferred until the selected scope is known. Nested scopes and Scope-returning
+functions use the same `::` capability. Composition applies the inner scope and
+then the outer scope while preserving captured contexts. Conflicting explicit
+physical endpoints and rooted right-hand joins remain errors rather than
+coercions. See the
+[type/operator contract](docs/design/type-system-v065.md) for the shared rules.
 
 ## Compile-time functions and source composition (0.5.2)
 
@@ -182,6 +220,10 @@ Booleans are exactly `true` or `false`. Operators are `not`, `and`, `or`, `==`
 and `!=`, with parentheses for grouping; `and` and `or` short-circuit. Strings
 support case-sensitive lexicographic `>`, `<`, `>=`, `<=`, `==` and `!=`.
 Conditions require a boolean, never implicit string/path truthiness.
+The scheduled forms `if release CONDITION:`, `if acquire CONDITION:` and
+`if acqrel CONDITION:` apply the existing directional scheduling to the whole
+conditional, including its alternative branch. The condition still has to be
+`Bool`; these forms do not introduce a global join of unrelated background work.
 Pure expressions and function calls fold at compilation when possible.
 Assigning an existing name with `=` preserves its boolean or string type.
 Updates inside `if`, `for` or `loop` remain visible to subsequent code in the
@@ -207,9 +249,9 @@ symbol message(path):
     return "selected"
 
 files := inputs/<.+\.txt>
-for text in files | views::filter(present) | views::transform(message) | views::take(1):
+for text in files | $view::filter(present) | $view::transform(message) | $view::take(1):
     text -> result.txt
-if files | ranges::any_of(present):
+if files | $view::any_of(present):
     "nonempty" -> status.txt
 
 chosen = loop:
@@ -219,15 +261,44 @@ chosen = loop:
 chosen -> completion.txt
 ```
 
-Regex selectors construct lazy ranges of paths. Views compose with `|`;
-predicates are boolean functions and projections are symbols. Elements may
-be paths or strings, not booleans: boolean consumers such as `any_of` return
-a scalar boolean instead. Enumeration starts only at consumption; filters and
-projections execute only for demanded elements. Directory-entry ordering remains
-deterministic. `loop` and `for` nest by indentation; `break` exits the nearest
+Regex selectors construct lazy ranges of paths. `$view::` is the canonical
+built-in API namespace for constructors, adaptors and scalar consumers. Existing
+`views::` and `ranges::` spellings remain compatibility aliases. Views compose
+with `|`; predicates return Bool and projections return an allowed scalar type.
+Enumeration starts only at consumption; filters and projections execute only for
+demanded elements. Directory-entry ordering remains deterministic.
+
+User-created ranges use `[ ... ]` and retain insertion order, independently of
+directory ordering. Their elements may be String data, Bool values or scoped
+Paths; ordinary symbol/boolean calls are expanded and typed as elements:
+
+```text
+boolean flip(flag):
+    return not flag
+
+for flag in [true, false, flip(false)] | $view::transform(flip):
+    if flag:
+        "enabled" -> selected.txt
+
+files := [$pwd::"input file.txt", input.txt]
+(files | $view::front) -> first.txt
+```
+
+A bare string element is data, while `$pwd::"input file.txt"` is a Path whose
+name contains spaces. Mixed allowed elements infer a finite scalar union; an
+operation must be valid for every possible item type. There is no implicit
+String/Path truthiness, no nested Range/Scope/port element, and no conversion of
+a Bool range into a file transfer. Boolean consumers such as `$view::any_of`
+produce one Bool rather than another range.
+
+An implicit finite `range -> container/` is one file-publication statement; a
+later collision must not leave an earlier selected member published. An explicit
+`for` remains a sequence of statements, not a whole-loop transaction.
+`loop` and `for` nest by indentation; `break` exits the nearest
 loop. A value-producing `loop` requires compatible `break` values of string,
-path, boolean, or space type. See the [range contract](docs/design/ranges-v6.md)
-for the supported adaptors and domain limits.
+path, boolean, or scope type. See the
+[0.6.5 type/range contract](docs/design/type-system-v065.md) and the earlier
+[range adaptor inventory](docs/design/ranges-v6.md).
 Element consumers such as `front`/`back` require a nonempty range; `find` and
 `find_if` report an error when no element matches rather than inventing a path.
 
@@ -292,8 +363,13 @@ The REPL retains `/export-ir FILE`, `/export-relocatable FILE`, and `/load-ir FI
 Version-1 artifacts exported by 0.4 retain their original explicit execution
 semantics; they are not reinterpreted as current source. `compile FILE -o module.mobj`
 also exposes the language branch's native relocatable object format.
-New control-flow semantics carry an explicit object feature; existing 0.5 objects
-remain supported. See the [IR contract](docs/design/ir.md) and
+New typed-value constructs carry the negotiated `typed_values_v2` object feature,
+including Bool/union ranges, composed/API scopes, typed path conversion and the
+single-statement range-transfer operation. Feature detection covers exports as
+well as executable code; old scalar representations and `typed_control_v1` /
+`source_modules_v1` semantics remain intact. An older reader must reject an
+unsupported required feature rather than silently reinterpret it. Existing 0.5
+objects remain supported. See the [IR contract](docs/design/ir.md) and
 [0.6 integration](docs/design/integration-v0.6.md).
 
 ## Compile → interpret → schedule
@@ -578,7 +654,7 @@ and semantic tokens. Coloring remains available if the server cannot start.
 From this checkout, install the packaged extension in VS Code 1.91 or newer:
 
 ```sh
-code --install-extension dist/editor/msync-language-0.6.0.vsix
+code --install-extension dist/editor/msync-language-0.6.5.vsix
 ```
 
 Alternatively use **Extensions: Install from VSIX** with that file. Install
@@ -598,9 +674,11 @@ deletion, existence checks or programs. Compiler source expansion may read
 referenced `include`/`execute` files, but navigation/completion are currently
 document-local, not a project-wide include index.
 
-The production extension also passed an automated real VS Code 1.144.0/Electron
-host journey under Xvfb: activation, diagnostic repair, formatting, completion
-and Unicode semantic tokens, with no DSL file effects. This is actual editor-host
+The earlier 0.6.0 production extension passed an automated real VS Code
+1.144.0/Electron host journey under Xvfb: activation, diagnostic repair,
+formatting, completion and Unicode semantic tokens, with no DSL file effects.
+That identified snapshot does not establish acceptance of the developing 0.6.5
+bundle; its updated actual-host journey is tracked separately. This is editor-host
 integration, not human visual inspection or a claim about unexecuted platforms.
 Build/development instructions and dependency audit notes are in
 [the extension README](editors/vscode/README.md); exact bundle/VSIX identities and
@@ -680,7 +758,7 @@ not interchangeable performance environments. See
 
 ### Performance work without changing language behavior
 
-The accepted optimization work preserves the frozen 0.6 language/object baseline.
+The earlier accepted optimization work preserves the frozen 0.6 language/object baseline.
 It reduces repeated compiler specialization and lexical snapshot work, indexes
 logical graph conflicts and preparation history, borrows recursive object
 analysis, and removes periodic REPL completion polling. I/O fast paths remain
@@ -693,8 +771,8 @@ workloads and measurement boundaries live in the
 [I/O](docs/design/io-linux-v3.md), and
 [latency](docs/design/latency-v6.md) notes.
 
-Representative accepted Linux/ext4 results, with exact images and procedures in
-the linked notes:
+Representative accepted **0.6.0-era** Linux/ext4 results, with exact images and
+procedures in the linked notes (not a 0.6.5 before/after comparison):
 
 | Workload | Before → after median |
 | --- | ---: |
@@ -720,5 +798,14 @@ interval findings. The [completed requirement map](docs/design/optimization-road
 and [cross-domain functional acceptance](docs/design/performance-acceptance-v6.md)
 connect these measurements to actual configuration, SQLite, CLI/REPL and editor
 journeys. Linux results do not certify native Windows/WSL or remote CI execution.
+
+For 0.6.5, compiler costs and SSH orchestration are measured separately against
+the frozen starting source. The SSH investigation uses real authenticated
+OpenSSH and counts client/helper processes and authentications alongside small
+operations; it does not explain latency solely through payload bandwidth or
+remove recovery flushes for speed. Current methods and acceptance state are in
+[compiler performance](docs/design/compiler-performance-v065.md),
+[the real SSH fixture](docs/design/ssh-performance-v065-fixture.md), and
+[the integration workboard](docs/design/integration-v065.md).
 
 License: GPL-3.0 (see LICENSE).

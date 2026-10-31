@@ -89,6 +89,40 @@ definitions, while counts, seeds and search values retain normal value lookup.
 This does not turn all same-spelled user functions into standard-library calls;
 ordinary calls outside pipelines keep the compiler's lexical meaning.
 
+## v0.6.5 typed-expression integration
+
+The index traverses each item of the owned `ExprKind::Range` node in order, using
+the same lexical environment and call rules as an ordinary expression. Bool
+items do not introduce declarations, and symbol/boolean calls inside a list
+resolve to their original definitions. A scope-qualified pure call keeps its
+lexical function identity; applying a scope to its return value does not turn the
+function name into a filename or native process in navigation.
+
+`$view::` is the canonical built-in API namespace for both views and scalar
+consumers. The legacy `views::`/`ranges::` spellings remain reserved aliases.
+Qualified applications may have either `Call(qualified callee, arguments)` or
+`Select(scope, Call(member, arguments))` AST structure. One source-index call
+normalizer handles both before traversing arguments: an unrelated lexical value
+named `filter` must never capture `$view::filter`, while a predicate argument must
+still resolve to its lexical boolean/symbol declaration. Scheduled conditionals
+are existing `Scheduled(If)` nodes, so the established branch-scope rules apply
+without inventing another visibility model.
+
+Direct `$view` aliases reuse the index's existing syntactic namespace-shape
+tracking, including a later direct alias of that binding. The namespace token
+links to its declaration; intrinsic API members do not link to unrelated values.
+Completion uses that same fact and replaces only the member after `alias::`.
+This does not interpret generic functions returning Scope or treat physical
+nested scope composition as a lexical module import.
+
+The new compiler's inferred operator capabilities remain authoritative for
+acceptance and diagnostics. The source-only index does not separately infer a
+generic function's return type, resolve remote homes or evaluate range callbacks.
+This follows the syntax/semantic-model separation described in the
+[rust-analyzer architecture](https://rust-analyzer.github.io/book/contributing/architecture.html):
+incomplete syntax stays useful to editor requests without pretending that a
+syntactic hint is a checked semantic type.
+
 The initial nine passed in the actual-source frontend harness under
 `.temp/frontend-v6-harness` using `cargo test --manifest-path
 .temp/frontend-v6-harness/Cargo.toml --test tooling_v6`. The harness imports the

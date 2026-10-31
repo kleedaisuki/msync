@@ -40,3 +40,28 @@
 - Keep reusable findings in existing English design notes. Keep disposable
   fixtures/logs under `.temp`; never include unrelated user notes, caches or
   credentials in commits or release packages.
+
+## Typed composition, transport and prompt ownership
+
+- Infer values once, then dispatch on semantic types and operator capabilities.
+  Do not probe a computed Scope and synthesize it again on fallback: nested
+  lexical calls can multiply that work. Keep ordinary scalar types compact;
+  finite Bool/String/Path unions do not need a heap vector in every expression.
+- `$view::` is the canonical typed built-in API. Preserve working compatibility
+  aliases and source-owned operand diagnostics. New typed object operations must
+  negotiate `typed_values_v2`, including exported values and intermediate types.
+  See [the type contract](docs/design/type-system-v065.md).
+- An implicit finite Range transfer is one recoverable publication statement,
+  not an implicit `for` that commits earlier items before a later failure.
+  Explicit loops and old For bytecode retain their iteration semantics; never
+  guess executable intent from debug source.
+- Possible SSH paths are metadata, not executed effects. An unselected branch
+  must not authenticate or globally join unrelated jobs. Bind credential and
+  foreground ownership to actual selected endpoint/work admission.
+- Exclude runtime-owned SSH control directories from snapshots by retained,
+  verified filesystem identity, never by their filename. Do not hide user data
+  or external user-owned control resources under the same spelling.
+- Prompt notifications must not block interpreter progress waiting for a reader
+  that can leave its input loop in the same turn. Preserve ordered messages with
+  nonblocking/coalesced native wakeups; input priority or sleeps alone do not
+  repair a cyclic backpressure dependency.

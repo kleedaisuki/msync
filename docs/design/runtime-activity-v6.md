@@ -40,3 +40,46 @@ Nested control-body invocations advance the existing runtime execution epoch.
 simultaneously live iterations of the same static transfer site, without changing
 its public enum shape. The epoch is stable throughout each ordinary block, so
 rendezvous/admission matching retains its original ownership boundary.
+
+## Editor-reader completion and notice backpressure
+
+The v0.6.5 local compatibility pass exposed a real REPL lifecycle race in
+`barrier_terminal_v5::terminal_ctrl_c_drains_a_running_child_until_it_exits_itself`.
+The unmodified real-PTY journey can reach a 30-second `/wait` timeout even though
+the naturally exited child has already produced the complete 2 MiB capture and
+the replayed `exit-code` file contains `0`. At that point the input reader has
+returned and the REPL thread is blocked, not waiting for the child or file I/O.
+Tracing perturbs the schedule and can hide the failure.
+
+Rustyline 19.0.0 uses a blocking `sync_channel(1)` for external-printer messages
+on both Unix and Windows. The printer checks raw mode before sending, but the
+reader can leave raw mode between that check and the send. A completion wake may
+then publish both a job-status notice and a progress notice after the input
+reader has returned; the bounded queue has no consumer to release its sender.
+The upstream [Unix implementation](https://github.com/kkawakam/rustyline/blob/44c7025089debc46528fcc17b79d0e30cec0d60c/src/tty/unix.rs)
+and [Windows implementation](https://github.com/kkawakam/rustyline/blob/44c7025089debc46528fcc17b79d0e30cec0d60c/src/tty/windows.rs)
+make this ownership boundary explicit. A timeout increase or a test sleep does
+not repair that cycle. Batching notices and prioritizing completed input can
+reduce its frequency, but cannot make a blocking send safe after reader exit.
+
+The same local pass found a separate fixture race in
+`latency_v6::a_background_flow_failure_does_not_wait_for_an_unrelated_held_child`:
+a TCP connection acknowledges only source admission, not destination staging.
+The test now waits for real bytes in the private file under its initially empty
+destination parent before replacing that parent, and still asserts the public
+output is absent before EOF. This preserves the intended publication-failure
+journey instead of racing the existing parent-directory admission operation.
+
+The maintained [Rustyline source correction](../../vendor/rustyline/README.msync.md)
+removes the cyclic single-slot backpressure without replacing the editor. Its
+standard message channel is unbounded; Unix wake descriptors are nonblocking and
+drain their accumulated wake bytes, while Windows resets before a nonblocking
+queue drain. Both preserve ordered messages, per-message implicit newlines and
+the existing native rendering mechanism. The application coalesces each notice
+burst and gives already-ready input priority. No notification thread is added.
+
+Focused local acceptance on the corrected source passed two deterministic Unix
+transport tests (departed reader, saturated pipe and stale wake) plus the actual
+PTY cancellation/drain case and all six latency journeys. The background failure
+case still reports before an unrelated held child exits. The equivalent Windows
+queue/event test is present but is not reported as natively executed here.

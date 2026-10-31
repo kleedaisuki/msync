@@ -107,6 +107,16 @@ Replacing an ancestor of active backing or the recovery registry is rejected
 with an instruction to put `--scratch` outside the destination tree. Moving live
 control state along with a destination is not a safe publication optimization.
 
+An active invocation's owned SSH control directory is likewise not logical source
+data. Both ordinary capture and remote-material capture register the current
+session's retained directory identity with the snapshot owner. This is never an
+`ssh-*` name filter: similarly named user directories remain copyable, unrelated
+sockets remain visible unsupported objects, and external user masters grant no
+exclusion authority. Missing or replaced owned identities produce actionable
+typed errors instead of silently excluding a foreign replacement. Retained REPL
+authentication ownership also accompanies a later local-only submission, without
+starting new SSH clients merely to establish that capture boundary.
+
 Fresh identity and type checks protect ownership, not arbitrary external byte
 immutability. A retained file handle identifies an object; it does not establish
 that another writer cannot modify its bytes. A foreign target identity blocks
@@ -118,6 +128,39 @@ only then inspects or copies matched children. A matched directory includes its
 complete subtree. Unmatched symlinks, FIFOs, unreadable trees and payload bytes do
 not enter the capture; selected unsupported objects still fail before publication.
 No match retains a valid sparse directory capture and publishes no destination.
+
+### Finite ranges versus explicit iteration (v0.6.5)
+
+An implicit `range -> container/` is one finite statement, not an elaboration to
+an explicit user `for` loop. Its typed `RangeTransfer` consumes the selected
+finite items, admits one worker lease, captures and validates every member, and
+then makes one publication decision. A later member collision must not leave an
+earlier member installed. An empty range does not activate backing storage or
+create destination scaffolding. An explicitly written `for` retains ordinary
+per-iteration statement boundaries.
+
+`execution::ordinary::cohort` shares source capture, assignment policies and the
+existing durable sibling-set publication with scalar assignments. Its staged
+target index applies the established destination intent: container insertion
+rejects file collisions and merges disjoint directories; exact replacement keeps
+the ordered final snapshot. Duplicate names are not an independent blanket
+policy. The cohort retains the original instruction/span and counts as one
+logical assignment even when it has multiple physical publication roots.
+
+For WSL/SSH destinations, named captured inputs form an invocation-owned
+aggregate and enter the existing remote selector publication once, without an
+extra nesting directory. The aggregate is not evidence that the user sources
+are disjoint: original endpoint locations and basenames survive capture, and the
+allocator checks every applicable source identity/tree relation before creating
+its journal. The source owner remains alive through the remote receipt worker's
+settlement. Literal string data still has no invented filename for a container.
+No per-member fallback may claim statement atomicity, and no new transaction
+manager or retained history is introduced.
+
+Focused assertions live in `execution::ordinary::cohort_tests`, the owned remote
+aggregate test, the allocator's all-origin checks, and the unchanged
+`execution_v4` selector collision/no-match journeys. The established remote
+journal fixture continues to exercise publication/recovery/partial-cleanup cuts.
 The same sparse capture API is used for projected WSL sources, preserving local
 alias and private-owner exclusions rather than erasing them behind a bulk import.
 Native-ext4 WSL sources shallow-list names for the same Rust regex, then validate,

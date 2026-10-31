@@ -1,6 +1,67 @@
 # Changelog
 
-## 0.6.0 — implementation candidate
+## 0.6.5 — locally accepted, unreleased
+
+The integrated source has passed local functional, compatibility, editor and
+bounded performance acceptance. Native Windows/package-workflow verification
+and publication remain separate steps; the
+[integration workboard](docs/design/integration-v065.md) records their scope.
+
+- Make inferred semantic `Path`, `String`, `Scope`, `Bool` and `Range<T>` types
+  explicit internally. Centralize operator operand/result capabilities without
+  adding source type annotations or user-defined trait declarations.
+- Apply scope qualification to ordinary lexical function results, including
+  `$wsl::codex(config.toml)`, and retain deferred home/relative-path binding until
+  the scope is known. Support nested Scope composition through `::`.
+- Canonicalize built-in range APIs as `$view::NAME`; retain established
+  `views::` and `ranges::` spellings as compatibility aliases. The built-in API
+  Scope is an ordinary typed value and may be aliased, as in `api => $view`.
+- Add `if release`, `if acquire` and `if acqrel` using existing directional
+  scheduling and strict Bool conditions, not a new global wait.
+- Add ordered `[ ... ]` ranges of String, Bool and scoped/default-local Path
+  values. Expand ordinary symbol/boolean calls and infer finite unions for mixed
+  allowed elements; reject operations unsupported by a possible member type.
+- Negotiate new typed-value operations through `typed_values_v2`, including
+  exported values, while preserving old scalar encodings and the established
+  `typed_control_v1` / `source_modules_v1` feature contracts.
+- Repair executable pipeline contextualization for nested typed control values.
+  Restore one-statement publication for implicit finite range transfers rather
+  than committing each selected member separately; explicit `for` iterations
+  remain separate statements. Retain automatic empty-unit/repeated-session
+  recovery with live-owner protection and the no-state cold path.
+- Reuse invocation-owned authenticated SSH connections on actual selected work
+  admission, and use responsive native child completion with a bounded fallback.
+  Real loopback upload/download/selection controls improve response time without
+  reducing remote sessions or omitting durability work. Local CPU costs remain
+  explicit: download +20.6% and missing-source error +70.8%, versus five-upload
+  CPU −39.4%; a single `exists` query has mixed timing. Restore exact fractional
+  upload/download timestamps through the existing private-staging/receipt paths.
+- Preserve compact inferred types: scalar/Expr/instruction layouts and measured
+  old-workload allocation traffic are unchanged. The 1,000-condition lowering
+  control improves 9.730→8.083ms in all seven pairs; symbol, capture and whole-CLI
+  timing remains mixed rather than a universal compiler speedup.
+- Repair source-owned operand diagnostics and the REPL completion-notice
+  backpressure deadlock. A maintained, provenance-recorded Rustyline 19 patch
+  preserves ordered native rendering with nonblocking/coalesced wakeups instead
+  of adding sleeps, a notification thread or a replacement editor.
+- Keep quality checks local-first and Actions limited to cross-platform behavior,
+  native package/editor acceptance and publication. Published tags and asset bytes
+  are immutable; version agreement, required VSIX/platform assets and checksums
+  remain release invariants.
+
+Local strict all-target Clippy and formatting pass after the compatibility
+repairs. All eleven final-image public acceptance functions and all nine real
+VS Code host phases pass. The local VSIX is verified; no native Windows, WSL,
+WAN-performance or publication claim is inferred from those Linux results.
+
+See the [release notes](docs/releases/0.6.5.md),
+[type/operator contract](docs/design/type-system-v065.md), and
+[independent acceptance](docs/design/validation-v065.md). Detailed measured
+results remain in the [compiler](docs/design/compiler-performance-v065.md) and
+[SSH](docs/design/ssh-performance-v065.md) records; historical repairs and editor
+dependency provenance are linked from the release notes.
+
+## 0.6.0 — 2026-10-31
 
 - Add `bool` values (`true`/`false`), `=` boolean/string bindings, short-circuit
   `and`/`or`, `not`, boolean equality, and lexicographic string comparisons.
@@ -35,7 +96,8 @@
 
 See [0.6 release notes](docs/releases/0.6.0.md) and the
 [integration contract](docs/design/integration-v0.6.md) for semantic boundaries
-and the current acceptance status. This entry is not a publication claim.
+and the original acceptance scope. The published tag and assets remain immutable;
+historical defects and later source repairs are tracked separately for 0.6.5.
 
 ## 0.5.2 — implementation candidate
 

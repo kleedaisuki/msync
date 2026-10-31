@@ -1,5 +1,102 @@
 # Version 0.6 editor tooling
 
+## v0.6.5 expression and built-in API adaptation
+
+The shared completion vocabulary now lists canonical `$view::` sources, views
+and scalar consumers before retained `views::`/`ranges::` aliases. Rust and native
+TextMate displays recognize list brackets, Bool elements, nested scope chains and
+`if release`/`if acquire`/`if acqrel`. Native grammar rules keep regex character
+classes, quoted items and IPv6 endpoint brackets separate from Range delimiters.
+The tolerant Rust scanner splits nested namespaces iteratively rather than
+recursively, retaining complete UTF-8 byte-span coverage during incomplete edits.
+
+REPL completion treats brackets as expression boundaries and routes `$view::`
+to the API inventory rather than the smaller namespace list. LSP completion
+retains the complete canonical API spelling, but replaces only the callable
+suffix in `$wsl::cod...`; the scope prefix is never deleted. Its edit ranges use
+the existing UTF-16 conversion. Compiler diagnostics and canonical formatting
+still use the actual language frontend, not grammar regexes or a second type
+checker. This uses the standard
+[LSP completion text-edit contract](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/).
+
+The real Extension Development Host fixture edits a Bool range, canonical
+`$view::filter`, a direct API Scope alias, the scope-qualified `codex` symbol
+example and a scheduled conditional. The integrated 0.6.5 run below passed all
+nine phases against the frozen release server; the earlier 0.6 record remains
+separately identified historical evidence.
+
+Focused local 0.6.5 acceptance uses the real locked production crate:
+
+| Surface | Passing test functions | Command / boundary |
+| --- | ---: | --- |
+| New and established lexer roles | 8 | `cargo test --locked --test highlight_v065 --test highlight_v6` |
+| New and established lexical navigation | 16 | `cargo test --locked --test tooling_v065 --test tooling_v6` |
+| LSP providers | 5 | `cargo test --locked --lib language_server::providers::tests` |
+| Native REPL editor | 5 | `cargo test --locked --bin msync editor::tests` |
+| Actual stdio editor journeys | 2 | `cargo test --locked --test performance_lsp_journeys` |
+| Native grammar/client package | 14 | `npm test --prefix editors/vscode`; actual Oniguruma plus client lifecycle |
+
+These are 36 selected production Rust functions across focused windows, not a
+full-suite rerun. The IPv6 endpoint regression was reproduced before adding
+bracket shielding; the repaired `tcp://[::1]:9000` role and affected existing
+lexer cases pass. An exact arbitrary-edit span-partition property also passes in
+the existing `.temp/frontend-v6-harness`, which imports the actual language,
+highlight and index modules. During partial compiler edits that harness also
+checks the actual document/providers with only the unused compile-context data
+shape stubbed. It is component evidence, not another semantic compiler or a
+substitute for production transport tests. Its final Clippy check passes with
+harness-only unused-import/dead-code allowances; no production lint exception
+was added. The following actual-host acceptance closes the integrated editor
+boundary on the identified frozen image.
+
+
+### Integrated 0.6.5 real-host and package acceptance
+
+The single updated host run started at `2026-10-31T19:24:16.378Z` and exited 0.
+It used the already managed VS Code **1.144.0** executable, product commit
+`2c33b50b16c472efe58357d1d2a8a5414bc23fbf`, native executable SHA-256
+`d1c6fe7cec1e285f1210cd3c0472099c25bb56e94f0c8ef7384ee3229ed0b518`,
+under Xvfb. No editor download, Cargo build, mocked editor API or human visual
+assessment is included in this result. The server reported `msync 0.6.5` from
+`target/performance-v065/baselines/msync-v065-final`, with start/end SHA-256
+`e18d9f36b905630b9915cc5634e4ff4833a66ee34924650fc555913482433f7f`.
+
+| Real host phase | Observed result |
+| --- | --- |
+| Production activation | `msync.msync-language` activated the production bundled entrypoint |
+| Typed diagnostic | A String-valued scheduled condition produced the real Bool diagnostic |
+| Incremental repair | Replacing the condition with `true` cleared diagnostics |
+| Formatting | 16 real formatting edits preserved the Bool list and `if release` header |
+| Canonical API completion | `$view::filter` returned through the real language client |
+| API Scope alias completion | `view_api::` completed member `filter` without replacing its namespace |
+| Scope-qualified symbol navigation | `$wsl::codex(config.toml)` navigated to the lexical `codex` declaration |
+| Semantic tokens | 50 valid UTF-16 tokens included `"可莉🌟"`, function and parameter roles |
+| No DSL effects | Both absolute transfer targets remained absent; delete victim bytes stayed unchanged |
+
+The installable `dist/editor/msync-language-0.6.5.vsix` remains **122,091 bytes,
+10 files**, SHA-256
+`187f1bf25477f25b57e5b25b84499f00845cd17cb90f887892bc290efe1ff84c`.
+Its production JS entrypoint SHA-256 is
+`33cd1ffbd339f1c4a0ebc9fb8e10da996584c257040160c4e6778b2949089fa2`.
+After host acceptance, archive inspection compared the manifest, bundled JS,
+third-party notices, grammar, snippets, language configuration and current editor
+README byte-for-byte with the host's source assets. All match; no `node_modules`,
+managed editor or test tree is shipped. The already valid VSIX was not rewritten
+or repackaged. This is local package acceptance, not marketplace publication.
+
+Reproduce from the project root with the managed host and frozen server:
+
+```sh
+MSYNC_TEST_SERVER_PATH="$PWD/target/performance-v065/baselines/msync-v065-final" \
+MSYNC_TEST_VSCODE_EXECUTABLE="$PWD/editors/vscode/.vscode-test/vscode-linux-x64-1.144.0/code" \
+MSYNC_TEST_VSCODE_VERSION=1.144.0 \
+xvfb-run -a npm --prefix editors/vscode run test:integration
+```
+
+Disposable detailed evidence lives in `.temp/vscode-host-x7BSOc` and
+`.temp/v065/vsix-audit.json`; the identities and observations above survive
+cleaning those temporary files.
+
 ## Ownership and invariants
 
 The native REPL, diagnostics and examples share `highlight::token_spans` and
