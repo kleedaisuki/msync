@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.6.0 — implementation candidate
+
+- Add `bool` values (`true`/`false`), `=` boolean/string bindings, short-circuit
+  `and`/`or`, `not`, boolean equality, and lexicographic string comparisons.
+  Same-typed `=` reassignment carries existing state across conditions and loops;
+  fresh branch/loop-local names and function invocation state remain isolated.
+- Add pure `boolean` functions with mandatory boolean returns, nested boolean
+  declarations, and explicit definition-time `global` imports. Fold and inline
+  pure computation while retaining time-sensitive filesystem queries at runtime.
+- Add `exists` for path existence and `delete` for file removal. Both accept
+  paths or filename strings; deletion is not recursive directory removal.
+- Add statically typed lazy path/string ranges and C++-style `|` view pipelines,
+  boolean consumers, and indentation-sensitive `for`, `if`/`else if`/`else`, and
+  Rust-style `loop`/`break`. Loop expressions can yield strings, paths, booleans
+  or spaces; conditions require actual booleans.
+- Allow local macros, symbols and booleans inside macros, local symbols inside
+  symbols, and definition-time ancestor lookup through `global`. Add `drop` for
+  lexical binding removal without deleting resources.
+- Preserve static transfer execution and 0.5 source aliases. Persist new dynamic
+  semantics as feature-tagged typed control IR, not executable source text.
+  Existing objects retain their interpretation contract.
+- Add TOML application settings with platform user-directory discovery,
+  `~/.msync/config.toml` fallback, explicit selection/bypass, source provenance
+  inspection and pre-effect diagnostics. Help/version bypass configuration.
+- Add opt-in normalized SQLite telemetry and read-only session/span/event query
+  and JSONL export commands alongside the existing JSONL exporter.
+- Add the `--language-server` stdio endpoint and a packaged native VS Code
+  extension with TextMate coloring, snippets and LSP client integration.
+- Reduce repeated compiler/snapshot/graph/preparation/object-analysis work and
+  use event-driven REPL background-completion notification. Workload-specific
+  measurement and cross-domain acceptance are tracked separately from the
+  language gate; no universal speedup or GUI-session acceptance is implied.
+
+See [0.6 release notes](docs/releases/0.6.0.md) and the
+[integration contract](docs/design/integration-v0.6.md) for semantic boundaries
+and the current acceptance status. This entry is not a publication claim.
+
 ## 0.5.2 — implementation candidate
 
 - Add pure, lexically isolated generic `symbol` functions with explicit global

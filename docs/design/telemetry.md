@@ -1,11 +1,129 @@
 # Unified local telemetry
 
+## SQLite recording and operator workflow
+
+The current backend is a normalized SQLite database (`rusqlite` with bundled
+SQLite), enabled by `--telemetry-db FILE` or `[telemetry]` configuration. Existing
+`--trace FILE` / `telemetry::init` JSONL behavior remains supported. Neither backend
+is enabled by default; help, version, config inspection, and explicitly disabled
+telemetry create no database or writer thread. An explicitly enabled conventional
+destination creates its state directory; an invalid explicit path fails before
+runtime file effects.
+
+```sh
+msync run sync.msync --telemetry-db .temp/sync.sqlite
+msync telemetry sessions .temp/sync.sqlite
+msync telemetry summary .temp/sync.sqlite
+msync telemetry spans .temp/sync.sqlite --limit 20
+msync telemetry events .temp/sync.sqlite --trace-id TRACE --span-id SPAN
+msync telemetry export .temp/sync.sqlite --trace-id TRACE > .temp/trace.jsonl
+```
+
+Operator commands open an existing database read-only and validate its application
+identity/schema. They do not enable self-tracing or silently create a missing DB.
+`summary` lists counts/outcomes and the most expensive phases. Phase duration
+sums overlap and are **not** end-to-end wall time. `spans` sorts completed phases
+by duration; `events` selects lifecycle/error observations and span ownership.
+`sessions` exposes active/completed/exporter-error recording lifecycles and their trace IDs. Its separate `outcome` derives from root-span outcomes (`panic`, `error`, `cancelled`, `ok`), so a fully recorded failed command is not presented as a successful command. A recording can finish completely while its command fails; absent root completion leaves `outcome` null.
+Export rebuilds the schema-1 JSONL protocol from normalized values, including
+unsigned metrics larger than SQLite's signed integer range; it does not store an
+opaque serialized record as the primary analysis interface.
+
+The pipeline records parsing, compilation, optimization, contextualization,
+execution, resource scheduling, tasks, IO, guarded publication, and diagnostics.
+Startup before the exporter exists is represented truthfully by monotonic
+`startup.arguments_ns`, `startup.configuration_ns`, `startup.exporter_ns`, and
+`startup.pre_dispatch_ns` metrics on the session root, not invented historical
+spans. Cross-task ownership uses explicit contexts; parent spans may complete
+later than children. Backend-specific block/instruction/wait metadata is attached
+by the execution owner rather than inferred from record arrival order.
+
+### Ownership, queueing, and failure semantics
+
+Each recording session owns its sink through `Arc`; SQLite has one bounded writer
+queue and one connection-owning thread. Producers never open SQL connections or
+perform per-record fsync. The worker reuses prepared statements, commits bounded
+batches, and sleeps on a blocking receive when idle; flush timers run only with
+pending records. Queue exhaustion applies backpressure instead of silently losing
+causal records. The first exporter error remains observable through
+`flush`/`take_error`, while actual file publication continues under its independent
+owner. Normal CLI shutdown reports an exporter error rather than discarding it.
+
+`flush` is an ordered queue barrier: all previously accepted records have been
+committed before success returns. `disable` stops new global spans but preserves
+contexts retaining the old sink, as before. The CLI calls terminal `shutdown`
+after its outer span is dropped and work has settled; this closes the writer,
+marks the session complete/error, applies completed-session retention and joins
+the thread. Retained contexts must not create more records after that terminal
+boundary. Library users retaining old contexts can continue using their original
+sink across ordinary reconfiguration/disablement, and flush that context directly.
+
+A newly created database is claimed with `BEGIN IMMEDIATE`; application identity,
+version and emptiness are re-read under the lock. Two first-use processes cannot
+both decide to create the same schema from stale observations. Existing foreign
+or newer schemas are rejected, never silently migrated or overwritten.
+
+### Configuration and budgets
+
+Defaults are conventions, overridden by TOML and then explicit CLI options.
+`SqliteOptions::validate_keyed` validates policies before a database or worker is
+created, letting config diagnostics label the exact TOML key without parsing
+English messages.
+
+| SQLite policy | Default | Meaning |
+| --- | ---: | --- |
+| `queue_capacity` | 4096 | Maximum queued records; producers backpressure |
+| `batch_size` | 128 | Records per transaction, also flushed by time/barrier |
+| `flush_interval_ms` | 100 | Maximum pending-batch interval, not an idle polling period |
+| `busy_timeout_ms` | 1000 | Bounded SQLite writer-lock wait |
+| `max_sessions` | 100 | Retain this many completed sessions; active sessions are not removed |
+| `max_records_per_session` | 1000000 | Visible exporter failure at exhaustion, not hidden sampling |
+| `max_database_bytes` | 268435456 | Logical database page budget; visible `SQLITE_FULL` when exhausted |
+| `sample_per_million` | 1000000 | Whole-session head sampling; zero creates no database/thread |
+| `synchronous_full` | false | `NORMAL` WAL commits by default; opt into `FULL` commit synchronization |
+
+Sampling is decided once per trace so it never independently drops a parent or
+child. Sampled-out errors are intentionally not recorded; use full sampling when
+diagnosing a failure. Completed-session retention preserves all rows of retained
+traces through foreign-key cascading deletion. Crashed/incomplete sessions are
+not guessed dead from an ambiguous process ID; the logical page budget prevents
+unbounded database growth without deleting a live writer's trace. SQLite WAL can
+still grow while an external long-lived reader prevents checkpoint recycling.
+
+`NORMAL` WAL provides transactional consistency but is not a power-loss durability
+promise. `flush` means commit visibility; `FULL` adds per-commit synchronization.
+A passive checkpoint avoids forcibly blocking active readers. JSONL export reads
+128-record keyset pages with an initial monotonically allocated record-ID cutoff
+and releases each read transaction **before** writing to a possibly slow output
+pipe. New records are excluded; concurrent retention can remove older pages, so
+use a quiescent database when an immutable complete archive is required.
+
+### Storage and references
+
+See [SQLite storage schema and ownership](telemetry-sqlite.md) for normalized
+session/record/attribute/metric/error tables, indexes, budgets and schema details.
+Public tests live in `tests/telemetry_sqlite.rs` and
+`tests/telemetry_sqlite_cli.rs`, alongside existing JSONL regression targets.
+
+The design follows [SQLite WAL](https://sqlite.org/wal.html),
+[SQLite synchronous policy](https://sqlite.org/pragma.html#pragma_synchronous), and
+[rusqlite connection ownership](https://docs.rs/rusqlite/0.41.1/rusqlite/struct.Connection.html).
+[Dapper](https://research.google/pubs/dapper-a-large-scale-distributed-systems-tracing-infrastructure/)
+informs low-overhead common-layer instrumentation and causal trace ownership.
+[OpenTelemetry's sampling specification](https://opentelemetry.io/docs/specs/otel/trace/sdk/#sampling)
+informs trace-level sampling rather than independently dropping records. Recent
+[TraceMesh research](https://arxiv.org/abs/2406.06975) investigates adaptive streaming
+sampling, but its distributed-model machinery is not justified for this local
+CLI workload: bounded whole-session sampling and explicit backpressure are
+simpler and preserve the chosen trace's exact causal structure.
+
+
 ## Contract and integration
 
 `src/telemetry.rs` provides one trace per explicit `init` session and hierarchical
 spans shared by CLI, REPL submissions, parsing, compilation, formatting, execution,
 and individual copies. Telemetry is disabled by default. The CLI enables it with
-`--trace FILE`; `--trace -` writes JSONL to stderr. Trace metadata is intended to
+`--trace FILE`; `--trace -` writes JSONL to stderr. SQLite recording and operator commands are described above. Trace metadata is intended to
 explain real operations: source/destination paths and backends, native kernel
 selection, fallback causes, opening/publication/cleanup phases, byte progress and
 typed error causes. Paths and useful error messages are not stripped by default.
@@ -277,7 +395,7 @@ terminal statuses, typed OS cause retention, and absence of file payloads. The
 older `repl_jobs::live_stream_keeps_repl_responsive_and_stop_joins_resources`
 trace-parent contract also passes with these actual runtime spans.
 
-## Structured frontend and failure acceptance
+## Historical structured frontend and failure acceptance (v0.4)
 
 Finite assignment `copy` spans cover immutable staging, not physical publication:
 they record `bytes.staged`, transaction/instruction IDs and
@@ -314,3 +432,38 @@ on Windows with `CARGO_INCREMENTAL=0` and two Cargo jobs. The focused structured
 target passed strict Clippy. Unique literal/body payload markers and unrelated
 secret environment values are absent; useful endpoint paths and failure context
 remain observable. No privacy filter is used to hide the underlying cause.
+
+### SQLite acceptance on native Linux (2026-10-31)
+
+The root-owned targeted gate passed `telemetry_sqlite` (11 tests),
+`telemetry_sqlite_cli` (6 tests), and the established JSONL `telemetry` target
+(5 tests). Captured output is `.temp/performance-v6/storage-tooling.log`; the
+maintained test sources preserve the reproductions when logs are cleaned.
+
+The gate checks actual CLI bytes and SQL-owned causal records, source-free
+payload handling, typed OS diagnostics, exact unsigned metrics, concurrent tasks,
+retained old contexts, startup failures before effects, normal completed-session
+closure, sampling/disable laziness, capacity failures without corrupting file
+publication, logical page limits, and read-only operator queries. A writer inside
+the export output callback can update and truncate-checkpoint the same database,
+proving the exporter released its page read transaction before blocking output.
+An independent concurrent-process review test passed fresh shared-database
+initialization/closure over repeated rounds, alongside keyed limit diagnostics.
+
+The cross-domain `performance_journeys` target also passed its five actual-user
+journeys, including configuration-selected SQLite cancellation with no partial
+publication and normalized execution/query ownership. These are native Linux
+results, not a claim of native Windows execution, remote transport coverage,
+or a complete historical test-suite rerun. CLI startup/trace-on overhead remains
+owned by the root's separate quiet performance comparison window.
+
+Interpreter phase instrumentation inserts explicit owners between execution and
+resource admission: `submission -> execute -> interpreter.block ->
+interpreter.instruction -> schedule -> task -> io.flow`. The established
+`runtime_task_telemetry_v4` regression follows these real parent IDs rather than
+requiring obsolete direct `execute -> schedule` adjacency. It still requires the
+selected submission to have compiled nonempty work, checks for missing/cyclic or
+cross-trace ancestors, and retains exact `task -> schedule` / `io.flow -> task`
+ownership plus resource-reservation assertions. This preserves the original
+regression against accidentally using an earlier empty binding submission's
+context; it is not permission to attach work to an arbitrary session root.

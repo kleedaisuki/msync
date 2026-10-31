@@ -1,13 +1,14 @@
 # Typed language and barrier-based execution
 
-This filename is retained for existing links. Its current contract is the
-**v0.5 breaking update**: transactions are removed and directional synchronization
-barriers define the interpreter's basic blocks. Integration/verification status
+This filename is retained for existing links. It describes the **v0.5 foundation**,
+extended by the [v0.6 language contract](language-v6.md) and
+[typed control semantics](compiler-v6.md). Transactions are removed and directional
+synchronization barriers define the interpreter's basic blocks. Integration/verification status
 is tracked separately; a design contract is not a successful release gate.
 
-The default structured syntax is `0.5`, also selected explicitly by
-`--syntax 0.5`, REPL `/syntax 0.5`, or an initial `# msync: 0.5` header.
-This is the only CLI grammar: both `0.3` and transactional `0.4` are rejected
+The default structured syntax is `0.6`, also selected explicitly by
+`--syntax 0.6`, REPL `/syntax 0.6`, or an initial `# msync: 0.6` header.
+`0.5` remains a compatible grammar alias; both `0.3` and transactional `0.4` are rejected
 with migration guidance. An old wholly quoted filename must become an explicit
 path, for example `$pwd::pwd / "file name"` or `$local::"file name"`; bare quotes now
 always construct literal data. The CLI does not route old scripts around the
@@ -36,7 +37,7 @@ emits operations. Each invocation has its own lexical environment. Arguments
 are typed values (including spaces); no explicit generic/type declarations are
 needed. The body can use `:=`, `global`, `/`, `~`, `::`, nested symbol calls and
 one mandatory terminal `return`. It cannot transfer data, launch programs,
-schedule work, load scripts, or declare nested templates. Structural purity and
+schedule work, or load scripts. Version 0.6 additionally permits nested symbol declarations inside symbols. Structural purity and
 return presence are checked at declaration; operand deduction is checked only
 when instantiated. Unused generic definitions are not speculatively executed.
 

@@ -438,3 +438,244 @@ performance workstream.
 - [Tokio AsyncFd guards](https://docs.rs/tokio/latest/tokio/io/unix/struct.AsyncFdReadyGuard.html): generation-aware readiness clearing for an owned nonblocking descriptor.
 - [Kernel io_uring documentation](https://www.kernel.org/doc/html/latest/io_uring/index.html): submission/completion ownership is a separate model, not automatic zero-copy.
 - [io_uring networking by Jens Axboe](https://kernel.dk/io_uring%20and%20networking%20in%202023.pdf): batching and zero-copy completion/lifetime mechanisms.
+
+## v0.6 native-Linux dispatch crossover probe
+
+The new host is native Debian Linux 6.12 on ext4 (`/dev/vda4`), not the historical
+WSL environment above. Existing findings remain useful for mechanism selection,
+but their timings are not current-host results. Production code already selects
+`copy_file_range` with bounded 1MiB requests and same-descriptor buffered fallback;
+regular-file TCP output already uses worker-offloaded `sendfile` with an explicit
+source offset, retained descriptors, and generation-aware socket readiness.
+Windows already has a measured small-file buffered dispatch threshold. Linux
+currently attempts the kernel path for every nonempty regular source.
+
+The next discriminating question is whether Linux's per-flow clone/AsyncFd and
+blocking-worker setup costs justify a similar size-dependent choice for small
+configuration-file TCP flows. It is not whether a second ring reactor can win a
+synthetic interface comparison. The historical matched-depth ring matrix did
+not justify replacing the ordinary native-ext4 range-copy path, although it did
+identify a distinct large-file DrvFs specialization opportunity.
+
+`benches/io_v6.rs` is a release-only ignored probe of that crossover:
+
+```sh
+cargo test --release --bench io_v6 --no-run
+# Run the exact emitted executable when other builds and timing runs are idle.
+<exact-benchmark-test-executable> --exact linux::file_tcp_crossover \
+  --ignored --nocapture --test-threads=1
+```
+
+It compares the public kernel capability with a same-open-handle Tokio buffered
+control over real loopback sockets at 4/16/64/256KiB and 1/16MiB. Each size has
+three discarded warmups per arm and 31 alternating AB/BA pairs by default.
+`MSYNC_IO_V6_SAMPLES` and `MSYNC_IO_V6_SIZES` select explicit positive counts and
+comma-separated byte sizes. Source file creation/open and TCP connection setup
+are outside timing; native worker registration/descriptor cloning, transfer, and
+receiver EOF are inside. Full byte validation is outside timing. Kernel trials
+must complete natively and preserve the borrowed source cursor. Every JSONL
+record retains size, pair, execution order, wall time, and process CPU, including
+the receiving task. Fixtures are owned under the repository `.temp/io-v6`.
+
+This probe answers steady-state mechanism dispatch, not CLI startup, physical
+cold-disk behavior, encrypted SSH performance, or storage publication durability.
+Current-host mechanism results are recorded below; whole-CLI effects remain
+a separate integration gate.
+
+The upstream [liburing networking guide](https://github.com/axboe/liburing/wiki/io_uring-and-networking-in-2023)
+explains why batching and event-loop architecture, rather than a syscall-name
+substitution, determine ring benefits. [Stamler et al., zIO (OSDI 2022)](https://www.usenix.org/conference/osdi22/presentation/stamler)
+likewise use a per-I/O policy to avoid workloads where copy-elimination tracking
+costs exceed their benefit. Their system is not proposed as a dependency here;
+the transferable principle is to measure the actual size/workload crossover.
+
+### Current-host results and dispatch decision
+
+The root froze the optimized pre-change probe at
+`target/performance-v6/baselines/io_v6-before`, SHA-256
+`a420307e84f7e8f03a77e19fbe4d322148375a479bc86f9569dffa4fc2b1c491`.
+It was compiled against the frozen v0.6 release library rather than a changing
+debug artifact. Both runs were pinned to CPUs 0–3 during root-granted quiet
+windows without concurrent builds or other benchmarks. The six-size run passed
+in 6.73s; a subsequent 128KiB discriminating run passed in 0.10s. All 434 measured
+trials (217 paired comparisons), plus discarded warmups, verified complete bytes
+and native borrowed-cursor preservation.
+
+| Payload | Kernel p50 (us) | Buffered p50 (us) | Median paired buffered/kernel | Buffered wins / 31 |
+| --- | ---: | ---: | ---: | ---: |
+| 4KiB | 199.544 | 175.161 | 0.8893 | 21 |
+| 16KiB | 188.717 | 172.134 | 0.8974 | 24 |
+| 64KiB | 225.698 | 189.488 | 0.8913 | 22 |
+| 128KiB | 259.076 | 314.543 | 1.2040 | 1 |
+| 256KiB | 348.804 | 472.258 | 1.4082 | 2 |
+| 1MiB | 687.270 | 1558.856 | 2.3571 | 0 |
+| 16MiB | 9921.244 | 24223.467 | 2.3346 | 0 |
+
+The [durable CSV](io-linux-v6-crossover.csv) includes process-CPU medians, p90,
+and sample counts. `benches/io_v6_summary.py` reconstructs it from retained JSONL
+and rejects duplicate/missing paired arms. The raw host outputs remain disposable
+under `.temp/performance-v6/io`; the methodology and measured conclusions do not.
+
+These data support a narrow **128KiB Linux file-to-TCP dispatch threshold**:
+smaller files avoid descriptor cloning/AsyncFd setup and use the existing
+same-open-handle buffered path, while larger files retain worker-offloaded
+sendfile. This is about an approximately 11% paired mechanism-latency benefit for
+small warm loopback flows, not an 11% whole-CLI speedup. The 64KiB buffered p90
+was 308.040us versus 294.415us kernel despite its better median; no tail-latency
+SLO or universal small-file superiority is asserted. At 128KiB and above the
+kernel result is substantially better and the policy must not route those flows
+to buffering. Public capability probes remain unconditional so correctness and
+host measurements can still explicitly exercise native I/O.
+
+### Production dispatch follow-up
+
+The same bench also exposes ignored test
+`linux::file_tcp_production_dispatch`. It calls the real public
+`streams::transfer`, including endpoint resolution, source opening, TCP connection
+establishment, selected native/buffered dispatch, and receiver EOF in timing.
+Before/after binaries must link this identical harness against their respective
+frozen release libraries. Defaults are 31 samples at 4KiB/64KiB/128KiB/1MiB,
+with three discarded warmups per size. Fixture creation, listener binding, and
+complete byte validation remain outside timing. This is a whole stream path,
+not a whole CLI invocation or a filesystem-source-snapshot benchmark.
+
+Run the two exact executable paths serially in alternating order, with no
+concurrent build. `benches/io_v6_summary.py BEFORE_LOG --after AFTER_LOG` reports
+per-arm medians/CPU/p90 without mislabelling separate process runs as intra-run
+paired samples. Capture executable/library hashes and retain execution order
+alongside results. The completed runs are recorded below.
+
+### Whole-stream before/after measurements
+
+The identical latest `benches/io_v6.rs` production-dispatch harness was linked
+with `rustc --edition=2024 --test -C opt-level=3` against the frozen before and
+optimized v0.6 release libraries. Direct dependencies and compiler flags were
+identical. Before-library SHA-256 was
+`59cebec00f092f1892f90c6d731a8b898d9441a4fa6d6c8a388548c9549ea3e0`;
+optimized-library SHA-256 was
+`d51469d0c5b31d43110d99e17542a84a8813eca44aacfb6188d80481ee8e3e95`.
+The exact build script and terminal build log are retained under
+`.temp/performance-v6/io/build-production.{sh,log}`. Probe executable SHA-256:
+
+| Probe image | SHA-256 |
+| --- | --- |
+| `io-production-before` | `657bfc181cb6269daf01457f21297c898bb50b222b2efd29b78b4941d500913b` |
+| `io-production-after` | `2ff88d1d6eee4c0809507bb237d1d20d1de35dd345f2e1f24866b5af38b723f2` |
+
+Each experiment recorded those image hashes before and after execution and
+required byte-identical hashes. These are the IO probe images, not the CLI or
+other runtime-control probe hashes. Root granted an exclusive timing window;
+all runs were pinned to CPUs 0–3. The first experiment ran processes in ABBA
+order (before, after, after, before), 31 samples per size per process after three
+warmups. All 496 measured stream transfers completed with exact payload bytes
+and receiver EOF.
+
+| Payload | Before / after p50 (us) | Before / after p90 (us) | Before / after CPU p50 (us) | After/before p50 |
+| --- | ---: | ---: | ---: | ---: |
+| 4KiB | 367.522 / 304.619 | 498.637 / 407.638 | 351.350 / 297.526 | 0.8288 |
+| 64KiB | 430.718 / 377.665 | 522.857 / 463.833 | 421.374 / 381.815 | 0.8768 |
+| 128KiB | 552.185 / 505.370 | 654.263 / 634.472 | 545.661 / 513.146 | 0.9152 |
+| 1MiB | 1067.693 / 1132.481 | 1198.208 / 1269.974 | 1253.384 / 1359.617 | 1.0607 |
+
+Each cell aggregates 62 samples per image. The [production-dispatch CSV](io-linux-v6-dispatch.csv)
+retains these measurements. The 4KiB improvement was present in both ABBA halves
+(about 16–17%). The 64KiB halves ranged from essentially unchanged to about 20%
+better. The 128KiB halves reversed direction (+24% and -19%); its aggregate
+improvement must not be presented as a stable kernel-path speedup. Both images
+still select sendfile at that size. The initial 1MiB result was worse in both
+halves (+7.9% and +5.8%), which triggered a targeted discriminator rather than
+being dismissed as noise.
+
+The discriminator used the same frozen images and exclusive CPU-pinned ABBA
+process order, restricted to 1MiB with 101 samples per process. All additional
+404 transfers verified their complete payload/EOF; image hashes again matched.
+
+| 1MiB discriminator | Before / after p50 (us) | Before / after CPU p50 (us) | After/before p50 |
+| --- | ---: | ---: | ---: |
+| First ABBA half | 1381.349 / 1248.456 | 1514.925 / 1496.325 | 0.9038 |
+| Second ABBA half | 1551.873 / 1654.124 | 1750.820 / 1892.862 | 1.0659 |
+| Aggregate, 202 samples/image | 1420.753 / 1393.685 | 1588.526 / 1625.353 | 0.9809 |
+
+Aggregate p90 was 2542.829us before and 2685.151us after. The
+[discriminator CSV](io-linux-v6-dispatch-large.csv) preserves aggregate counts and
+CPU/tail data. Opposite half-directions and the changed absolute latencies do
+not establish a consistent 1MiB median regression, but CPU and p90 remain mixed;
+this is not evidence of a universal no-regression bound.
+
+**Accepted scope:** use the measured 128KiB Linux dispatch threshold to avoid
+native setup for small warm file-to-TCP flows, retaining the existing same-handle
+buffered path and unchanged large-file kernel implementation. The measured
+whole-stream 4KiB/64KiB medians improved approximately 17%/12% in the first ABBA
+experiment. Those are not whole-CLI gains and cannot all be causally attributed
+to the threshold: the two linked release libraries also contain the integration's
+other changes. The same-library kernel/buffered crossover above is the independent
+mechanism evidence for the threshold itself.
+
+No storage-copy algorithm, cancellation protocol, source cursor contract, stage
+publication logic, Windows policy, or ring runtime was changed in this workstream.
+The public low-level native capability remains available for explicit probes.
+
+The root's selected unit gate (`.temp/performance-v6/unit-gates.log`) passed both
+`io::dispatch_tests` boundary/remaining-offset tests and the real-socket
+`streams::dispatch_tests::file_to_tcp_dispatch_preserves_bytes_and_eof_around_the_size_boundary`
+journey (4KiB, 64KiB, 128KiB−1, 128KiB). These check exact bytes, EOF, unchanged
+source contents, threshold inclusivity, saturated offsets, and nonmovement of
+the policy probe's borrowed cursor. No broad suite rerun is inferred from those
+three targeted successes.
+
+### Final accepted integration image: boxed trace-state repair
+
+The integration subsequently boxed large active telemetry state to repair an
+independently measured pure-control regression. The IO algorithm/threshold did
+not change. Earlier production tables above remain evidence for their exact
+intermediate image only. The final IO harness was relinked with the identical
+source/flags/direct dependencies against saved
+`libmsync-v060-optimized-3.rlib`, SHA-256
+`b36020ff901b728f1ea9914f4704d5300ead3c49f6cb751afcb4fff043c4b9b2`.
+This is the library paired with the root's final optimized-3 CLI image
+(SHA-256 `aa4749e3759d1cb55f898077e19f32a6cb8d37e8867c0c271f37da9af9adedcf`);
+the IO results do not come from timing that CLI executable.
+The final IO probe SHA-256 is
+`0256c6928cb9ceb58ee10b42927566bf40425db9c0a25d47d172d389dc121e25`;
+the unchanged baseline probe remains `657bfc…500913b` from the earlier table.
+
+During one exclusive root-granted CPU-0–3 timing window, the final comparison
+repeated the four-size 31-sample-per-process ABBA experiment, then a targeted
+1MiB 61-sample-per-process ABBA experiment. All **740** measured production
+transfers verified complete bytes and EOF. Begin/end hashes of both probe images
+were identical. [Final four-size CSV](io-linux-v6-dispatch-final.csv):
+
+| Payload | Before / final p50 (us) | Before / final p90 (us) | Before / final CPU p50 (us) | Final/before p50 |
+| --- | ---: | ---: | ---: | ---: |
+| 4KiB | 397.727 / 351.217 | 526.822 / 506.546 | 373.538 / 335.348 | 0.8831 |
+| 64KiB | 479.280 / 416.418 | 564.158 / 537.604 | 452.685 / 417.769 | 0.8688 |
+| 128KiB | 495.237 / 443.490 | 663.166 / 588.820 | 502.135 / 463.325 | 0.8955 |
+| 1MiB | 999.607 / 973.081 | 1284.896 / 1236.994 | 1173.672 / 1217.281 | 0.9735 |
+
+Each cell aggregates 62 samples per image. The final observed small-file
+whole-stream median gains are approximately **12% at 4KiB and 13% at 64KiB**,
+not the intermediate image's 17%/12% headline. CPU and p90 for those aggregate
+small-file cells also improved. However, the 4KiB halves reversed direction
+(+17.5% then -25.8%), and the 1MiB halves did likewise (-14.9% then +16.2%).
+These short-process results exhibit substantial host drift; the aggregate gains
+must be read together with the separate same-library capability crossover, not
+as universal per-run guarantees or a causal attribution of every gain to the
+threshold.
+
+The [final 1MiB repeat](io-linux-v6-dispatch-final-large.csv), 122 samples per
+image, produced:
+
+| 1MiB final discriminator | Before / final p50 (us) | Before / final p90 (us) | Before / final CPU p50 (us) | Final/before p50 |
+| --- | ---: | ---: | ---: | ---: |
+| First half | 879.175 / 903.936 | 1155.636 / 1153.117 | 1078.621 / 1081.165 | 1.0282 |
+| Second half | 1109.093 / 1088.091 | 1325.724 / 1274.315 | 1267.372 / 1280.939 | 0.9811 |
+| Aggregate | 980.027 / 1015.708 | 1277.644 / 1248.232 | 1153.384 / 1176.991 | 1.0364 |
+
+Thus the final repeat's aggregate median was 3.6% slower and process CPU 2.0%
+higher, while p90 improved 2.3%; half medians again had opposite directions.
+Together with the four-size run's 2.7% faster 1MiB aggregate, these do not establish
+a consistent large-file median penalty. They also do not justify asserting a
+strict no-regression bound. Every half's wall/CPU/p90 measurements, including
+all four sizes, are preserved in the [final halves CSV](io-linux-v6-dispatch-final-halves.csv).
+The narrow dispatch policy remains accepted; no additional IO machinery or
+unmeasured large-file optimization was introduced to chase this variation.

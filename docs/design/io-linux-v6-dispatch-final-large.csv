@@ -1,0 +1,2 @@
+size_bytes,before_samples,after_samples,before_p50_us,after_p50_us,before_p90_us,after_p90_us,before_cpu_p50_us,after_cpu_p50_us,ratio_after_over_before_p50
+1048576,122,122,980.027,1015.708,1277.644,1248.232,1153.384,1176.991,1.0364
