@@ -46,6 +46,48 @@ test('declarations, parameters, calls and range adapters use theme-standard scop
     hasScope('files | views::filter(keep) | ranges::empty', 'filter', 'support.function.range.msync');
     hasScope('files | views::all', 'all', 'support.function.range.msync');
     hasScope('files | views::take(32)', '32', 'constant.numeric.count.msync');
+    hasScope('items | $view::filter(present)', '$view', 'entity.name.namespace.msync');
+    hasScope('items | $view::filter(present)', 'filter', 'support.function.range.msync');
+    hasScope('$view::single(true)', 'single', 'support.function.range.msync');
+});
+
+test('nested scopes and scoped calls retain native namespace and function roles', () => {
+    hasScope('config := $wsl::codex(config.toml)', '$wsl', 'entity.name.namespace.msync');
+    hasScope('config := $wsl::codex(config.toml)', 'codex', 'entity.name.function.msync');
+    hasScope('config := ($wsl::project)::codex(config.toml)', 'project', 'variable.other.readwrite.msync');
+    hasScope('config := ($wsl::project)::codex(config.toml)', 'codex', 'entity.name.function.msync');
+    hasScope('result := outer::inner::file', 'outer', 'entity.name.namespace.msync');
+    hasScope('result := outer::inner::file', 'inner', 'entity.name.namespace.msync');
+});
+
+test('ordered range punctuation does not absorb booleans, calls, paths or regex classes', () => {
+    const line = 'items := ["可莉🌟", true, $local::"two words", codex(config.toml), any(false)]';
+    hasScope(line, '[', 'punctuation.section.brackets.begin.msync');
+    hasScope(line, ']', 'punctuation.section.brackets.end.msync');
+    hasScope(line, '可莉🌟', 'string.quoted.double.msync');
+    hasScope(line, 'true', 'constant.language.boolean.msync');
+    hasScope(line, '$local', 'entity.name.namespace.msync');
+    hasScope(line, 'two words', 'string.quoted.double.msync');
+    hasScope(line, 'codex', 'entity.name.function.msync');
+    hasScope(line, 'any', 'entity.name.function.msync');
+    hasScope(line, 'false', 'constant.language.boolean.msync');
+    hasScope('items := [root/<[>#]+\\.txt>] | $view::take(1)', '[>#]', 'constant.other.character-class.regexp.msync');
+    hasScope('items := [root/<[>#]+\\.txt>] | $view::take(1)', 'take', 'support.function.range.msync');
+    hasScope('items := [tcp://[::1]:80]', 'tcp://', 'string.unquoted.endpoint.msync');
+    const endpoint = grammar.tokenizeLine('items := [tcp://[::1]:80]', textmate.INITIAL).tokens;
+    assert.ok(endpoint.at(-1).scopes.includes('punctuation.section.brackets.end.msync'));
+});
+
+test('scheduled conditions color each modifier without treating it as a path component', () => {
+    for (const scheduling of ['release', 'acquire', 'acqrel']) {
+        const line = `if ${scheduling} ready(true):`;
+        hasScope(line, 'if', 'keyword.control.msync');
+        hasScope(line, scheduling, 'keyword.control.msync');
+        hasScope(line, 'ready', 'entity.name.function.msync');
+        hasScope(line, 'true', 'constant.language.boolean.msync');
+        assert.ok(!scopes(`root/${scheduling}/file -> output`, scheduling)
+            .some(scope => scope.startsWith('keyword.')));
+    }
 });
 
 test('booleans, logical operators, all controls and lexical bindings are recognized', () => {
@@ -85,7 +127,9 @@ test('comparisons and reserved-looking filename components are not regexes or co
 
 test('unfinished single-line literals do not poison later lines and native spans cover UTF16 input', () => {
     let state = textmate.INITIAL;
-    for (const line of ['text = "unfinished', 'if true:', '    root/<[a-z', 'delete file']) {
+    for (const line of ['text = "unfinished', 'if true:', '    root/<[a-z', 'delete file',
+        'items := ["可莉🌟", $local::"unfinished', 'if acquire false:', '    [true, false',
+        'items | $view::filter(ready)']) {
         const result = grammar.tokenizeLine(line, state);
         let cursor = 0;
         for (const token of result.tokens) {
@@ -97,6 +141,10 @@ test('unfinished single-line literals do not poison later lines and native spans
         state = result.ruleStack;
     }
     hasScope('delete file', 'delete', 'keyword.control.msync');
+    const next = grammar.tokenizeLine('if release true:', state);
+    const modifier = next.tokens.find(token => token.startIndex <= 3 && token.endIndex > 3);
+    assert.ok(modifier.scopes.includes('keyword.control.msync'));
+    assert.ok(!modifier.scopes.some(scope => scope.startsWith('string.')));
 });
 
 test('manifest and language configuration are internally consistent', () => {
@@ -107,11 +155,21 @@ test('manifest and language configuration are internally consistent', () => {
     assert.equal(manifest.dependencies['vscode-languageclient'], '11.0.0');
     assert.equal(configuration.comments.lineComment, '#');
     const indentation = new RegExp(configuration.indentationRules.increaseIndentPattern);
-    for (const line of ['boolean ready(x):', 'if true:', 'else if false:', 'else:', 'for x in items:', 'loop:', 'result = loop:']) {
+    for (const line of ['boolean ready(x):', 'if true:', 'if release ready:', 'if acquire ready:',
+        'if acqrel ready:', 'else if acquire false:', 'else:', 'for x in items:', 'loop:', 'result = loop:']) {
         assert.ok(indentation.test(line), line);
     }
     for (const line of ['# if true:', 'file -> result', 'root := path']) {
         assert.ok(!indentation.test(line), line);
+    }
+    assert.ok(configuration.brackets.some(pair => pair[0] === '[' && pair[1] === ']'));
+    assert.ok(configuration.autoClosingPairs.some(pair => pair.open === '[' && pair.close === ']' && pair.notIn.includes('string')));
+    assert.ok(configuration.surroundingPairs.some(pair => pair[0] === '[' && pair[1] === ']'));
+    const snippets = JSON.parse(fs.readFileSync(path.join(__dirname, '../snippets/msync.code-snippets'), 'utf8'));
+    assert.equal(snippets['View pipeline'].body[0], '${1:items} | \\$view::filter(${2:predicate})');
+    assert.equal(snippets['Ordered range'].body[0], '[${1:"first"}, ${2:true}, \\$local::${3:path}]');
+    for (const scheduling of ['release', 'acquire', 'acqrel']) {
+        assert.equal(snippets[`Conditional ${scheduling}`].body[0], `if ${scheduling} \${1:true}:`);
     }
 });
 

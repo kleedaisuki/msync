@@ -73,7 +73,7 @@ async function run() {
         const output = `$local::${JSON.stringify(path.join(workspace, 'never-created.txt'))}`;
         const branchOutput = `$local::${JSON.stringify(path.join(workspace, 'never-created-branch.txt'))}`;
         const victim = `$local::${JSON.stringify(path.join(workspace, 'preserved.txt'))}`;
-        const source = `label="可莉🌟"\nboolean keep(item):\n\treturn exists item\nitems := ranges::of("a","b") | views::filter(keep)\n"must never execute" -> ${output}\ndelete ${victim}\nif "not a bool":\n    "must never execute" -> ${branchOutput}\n`;
+        const source = `label="可莉🌟"\nboolean keep(item):\n\treturn item\nsymbol codex(file):\n    return ~/.codex/file\nconfig := $wsl::codex(config.toml)\nitems := [true,false,keep(true)] | $view::filter(keep)\nview_api := $view\nalias_items := [true,false] | view_api::filter(keep)\n"must never execute" -> ${output}\ndelete ${victim}\nif release "not a bool":\n    "must never execute" -> ${branchOutput}\n`;
         const filename = path.join(workspace, 'journey.msync');
         await fs.writeFile(filename, source);
         document = await vscode.workspace.openTextDocument(vscode.Uri.file(filename));
@@ -106,13 +106,31 @@ async function run() {
         formatted.set(document.uri, formatting);
         assert.ok(await vscode.workspace.applyEdit(formatted));
         assert.ok(document.getText().includes('label = "可莉🌟"'));
-        assert.ok(document.getText().includes('    return exists'));
+        assert.ok(document.getText().includes('    return item'));
+        assert.ok(document.getText().includes('[true, false, keep(true)]'));
+        assert.ok(document.getText().includes('if release true:'));
         await record('document-formatting', { edits: formatting.length });
 
-        const cursor = document.positionAt(document.getText().indexOf('views::filter') + 'views::f'.length);
+        const cursor = document.positionAt(document.getText().indexOf('$view::filter') + '$view::f'.length);
         const completion = await bounded('completion response', vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, cursor));
-        assert.ok(completion && completion.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'views::filter'));
-        await record('range-completion', { label: 'views::filter' });
+        assert.ok(completion && completion.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === '$view::filter'));
+        await record('range-completion', { label: '$view::filter' });
+
+        const aliasCursor = document.positionAt(document.getText().indexOf('view_api::filter') + 'view_api::f'.length);
+        const aliasCompletion = await bounded('API Scope alias completion', vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, aliasCursor));
+        assert.ok(aliasCompletion && aliasCompletion.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'filter'));
+        await record('api-scope-alias-completion', { namespace: 'view_api', member: 'filter' });
+
+        const current = document.getText();
+        const qualifiedCall = document.positionAt(current.indexOf('$wsl::codex') + '$wsl::'.length);
+        const definitions = await bounded('scope-qualified symbol definition', vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, qualifiedCall));
+        const declared = document.positionAt(current.indexOf('codex(file)'));
+        assert.ok(definitions && definitions.some(target => {
+            const uri = target.targetUri || target.uri;
+            const range = target.targetSelectionRange || target.range;
+            return uri.toString() === document.uri.toString() && range.start.isEqual(declared);
+        }), 'Scope qualification must not hide the lexical symbol declaration');
+        await record('qualified-symbol-definition', { name: 'codex' });
 
         const legend = await bounded('semantic token legend', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokensLegend', document.uri));
         const tokens = await bounded('semantic tokens', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokens', document.uri));

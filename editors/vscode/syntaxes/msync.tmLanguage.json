@@ -104,12 +104,12 @@
       ]
     },
     "endpoints": {
-      "match": "[A-Za-z][A-Za-z0-9+.-]*://[^\\s(),\"]+",
+      "match": "[A-Za-z][A-Za-z0-9+.-]*://(?:\\[[^\\]\\s\"()]+\\]|[^\\s(),\"\\[\\]])+",
       "name": "string.unquoted.endpoint.msync"
     },
     "selectors": {
       "begin": "(?<![\\p{L}\\p{N}_.)\"\\]>])<(?![=\\s\"])",
-      "end": ">(?=$|[\\s/\\\\,)\\|]|->|=>|:=)|(?=$)",
+      "end": ">(?=$|[\\s/\\\\,)\\|]|\\]|:|->|=>|:=)|(?=$)",
       "name": "string.regexp.msync",
       "beginCaptures": {
         "0": {
@@ -144,7 +144,7 @@
       ]
     },
     "ranges": {
-      "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(views|ranges)(::)([\\p{L}_][\\p{L}\\p{N}_]*)",
+      "match": "(?<![\\p{L}\\p{N}_./\\\\:$-])(\\$view|views|ranges)(::)([\\p{L}_][\\p{L}\\p{N}_]*)",
       "captures": {
         "1": {
           "name": "entity.name.namespace.msync"
@@ -158,15 +158,23 @@
       }
     },
     "namespaces": {
-      "match": "(\\$?[\\p{L}\\p{N}_.-]+)(::)",
-      "captures": {
-        "1": {
-          "name": "entity.name.namespace.msync"
+      "patterns": [
+        {
+          "match": "(\\$?[\\p{L}\\p{N}_.-]+)(::)",
+          "captures": {
+            "1": {
+              "name": "entity.name.namespace.msync"
+            },
+            "2": {
+              "name": "punctuation.accessor.msync"
+            }
+          }
         },
-        "2": {
+        {
+          "match": "::",
           "name": "punctuation.accessor.msync"
         }
-      }
+      ]
     },
     "bindings": {
       "match": "[\\p{L}\\p{N}_.-]+(?=\\s*(?::=|=>|=(?!=)))",
@@ -201,11 +209,23 @@
       "name": "keyword.operator.msync"
     },
     "punctuation": {
-      "match": "[(),:]",
-      "name": "punctuation.separator.msync"
+      "patterns": [
+        {
+          "match": "\\[",
+          "name": "punctuation.section.brackets.begin.msync"
+        },
+        {
+          "match": "\\]",
+          "name": "punctuation.section.brackets.end.msync"
+        },
+        {
+          "match": "[(),:]",
+          "name": "punctuation.separator.msync"
+        }
+      ]
     },
     "paths": {
-      "match": "[^\\s\"(),<>|=]+",
+      "match": "[^\\s\"(),\\[\\]<>|=]+",
       "name": "variable.other.readwrite.msync"
     }
   }
