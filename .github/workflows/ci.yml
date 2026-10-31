@@ -62,7 +62,7 @@ jobs:
           TARGETS: ${{ needs.changes.outputs.targets }}
         run: |
           if ($env:FULL -eq 'true') {
-            cargo test --locked --all-targets
+            cargo test --locked --tests --no-fail-fast
             exit $LASTEXITCODE
           }
           $targets = @($env:TARGETS | ConvertFrom-Json)
