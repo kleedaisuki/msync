@@ -17,6 +17,31 @@ uncooperative observer sees all directory entries change at one instant during
 publication or before recovery. Ordinary existing files use an atomic replacement
 rename with a retained hard-linked before-image where supported.
 
+Recovery is also a successful-execution boundary, not merely a prerequisite for
+the next file write. An empty executable submission, declarations, a fully folded
+branch, an object or IR with no instructions must still settle existing
+interrupted state before returning success. Users must never need to remember a
+recovery command or perform a dummy transfer. Compile, check, preview and editor
+analysis remain effect-free; this requirement belongs to execution entry points.
+
+The cold path may avoid creating runtime storage or starting workers only after
+read-only discovery finds no existing recovery state in either the selected or
+configured fallback root, for both local and remote publication. Discovery is
+advisory, not cleanup authority. Present, malformed or inaccessible registries
+go through the established owner/identity/lock validation and diagnostics;
+missing or non-directory unused roots must not be created or overwritten.
+Retained sessions inspect their owned initial roots even if the REPL cwd changes.
+Initialization does not prove that another publisher cannot leave later orphaned
+state; repeated admission reuses the same recovery owner, and live record locks
+continue to protect active work from collection.
+
+This remains a file synchronization tool, not a database. Recovery uses bounded
+statement-local journals and owned private stages; it introduces no global
+transaction engine, persistent undo history or background recovery daemon.
+SQLite telemetry is not an authority for deciding or replaying file effects.
+After a process is dead, automatic settlement occurs at the next executable
+invocation using the same recovery roots, not through a user-maintained ritual.
+
 The process-crash contract is distinct from sudden power-loss durability. Unix
 syncs data and affected directories. Windows syncs file records and uses platform
 namespace primitives, but this implementation has no portable directory fsync and

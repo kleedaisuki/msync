@@ -1,5 +1,26 @@
 # Performance and maintainability workstream
 
+## Current engineering policy and lifecycle correction (2026-10-31)
+
+Local verification owns formatting, static analysis and focused correctness
+acceptance. GitHub Actions is reserved for cross-platform behavior, native
+package/editor installation tests and publishing. Publication must not wait on
+a separate GitHub quality-check status; remote results supplement, rather than
+replace, the local engineering decision. Release version agreement, required
+assets, checksums and immutable published tags remain packaging invariants.
+The project instructions in [AGENTS.md](../../AGENTS.md) carry this policy into
+future work; `scripts/check-local.sh` provides the focused local entry point.
+
+The v0.6.0 empty-HIR fast return violated an established restart contract: a
+successful empty/declarations-only execution skipped recovery of a previously
+interrupted statement. The unchanged `barrier_crash_v5` journey reproduced it on
+both Linux and Windows. Existing timing tables identify their measured artifacts;
+they do not justify keeping that lifecycle shortcut. A no-work optimization may
+skip new execution resources, never existing recovery obligations. Local
+acceptance must pair the cold/no-storage case with real crash/restart, fallback
+state, source/object/IR and invalid-registry cases. The repair reuses existing
+statement-local recovery owners rather than importing database machinery.
+
 ## Active v0.6 optimization objective (2026-10-31)
 
 This workstream now includes I/O, machine-independent compiler algorithms,

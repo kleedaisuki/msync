@@ -651,12 +651,26 @@ See [telemetry](docs/design/telemetry.md),
 [SQLite storage](docs/design/telemetry-sqlite.md), and
 [telemetry configuration](docs/design/configuration-v6.md#sqlite-telemetry-policy).
 
+Quality verification is local-first. Select affected contracts rather than
+automatically repeating the complete suite:
+
 ```sh
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
-cargo test --test ssh -- --ignored --nocapture --test-threads=1
+./scripts/check-local.sh --test barrier_crash_v5 --test empty_recovery_v6 --test latency_v6
+./scripts/check-local.sh --editor
+./scripts/check-local.sh --packaging
 ```
+
+The local entry point runs formatting and strict Clippy for selected Rust work;
+editor/packaging-only selections do not invoke Cargo. No arguments select Rust
+lib/bin unit tests. `--full` explicitly selects all Rust targets and doctests.
+Windows developers can use Git Bash; the underlying Cargo/npm commands are
+native. Optional authenticated SSH journeys remain explicit:
+`cargo test --locked --test ssh -- --ignored --nocapture --test-threads=1`.
+
+GitHub Actions supplies cross-platform behavior and native package/editor-host
+acceptance plus publishing, not a second lint/format quality gate or an external
+CI-status prerequisite for publication. Required assets, matching versions,
+checksums and published-tag immutability remain release invariants.
 
 Acceptance covers compiler→object→interpreter and CLI/REPL journeys, external
 file creation/deletion across barriers, bounded flows, and forced-crash recovery.
