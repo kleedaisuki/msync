@@ -41,6 +41,9 @@ fn script(case: &str, size: usize) -> String {
     if case == "symbols" {
         source.push_str("symbol child(base):\n    return base / leaf\n");
     }
+    if case == "typed" {
+        source.push_str("symbol config_child(file):\n    return ~/.config/file\nboolean enabled(flag):\n    return not flag\nsymbol label(value):\n    return \"ok\"\n");
+    }
     for index in 0..size {
         match case {
             "transfers" => source.push_str(&format!("input{index} -> output{index}\n")),
@@ -49,6 +52,7 @@ fn script(case: &str, size: usize) -> String {
             "captures" => source.push_str(&format!("value{index} := root{index}\nsymbol symbol{index}():\n    global value{index}\n    return value{index}\n")),
             "macro-captures" => source.push_str(&format!("value{index} := root{index}\nmacro macro{index}():\n    global value{index}\n    value{index} -> output{index}\n")),
             "bindings" => source.push_str(&format!("value{index} := root{index}\n")),
+            "typed" => source.push_str(&format!("path{index} := $wsl::config_child(config.toml)\nrange{index} := [path{index}, \"payload\", enabled(false)]\nprojected{index} := range{index} | $view::transform(label)\n")),
             _ => panic!("unknown compiler case {case}"),
         }
     }
@@ -74,8 +78,12 @@ fn main() {
         .unwrap();
     assert!(samples > 0);
     println!(
-        "compiler_v6 cwd={} profile=release samples={samples} allocations=separate-untimed-build",
-        root.display()
+        "compiler_v6 cwd={} profile=release samples={samples} allocations=separate-untimed-build type_bytes={} control_expr_bytes={} control_instruction_bytes={} hir_instruction_bytes={}",
+        root.display(),
+        std::mem::size_of::<msync::hir::control::Type>(),
+        std::mem::size_of::<msync::hir::control::Expr>(),
+        std::mem::size_of::<msync::hir::control::ControlInstruction>(),
+        std::mem::size_of::<msync::hir::Instruction>(),
     );
     for size in sizes.split(',').map(|part| part.parse::<usize>().unwrap()) {
         for case in cases.split(',') {
