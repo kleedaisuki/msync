@@ -101,6 +101,10 @@ impl Pending {
     }
 }
 
+pub(crate) fn may_need_recovery(scratch: &Path) -> bool {
+    crate::filesystem::recovery::recovery_path_present(&scratch.join(REGISTRY))
+}
+
 /// Only pending records cause transport activity. A normal local invocation has
 /// no remote dependency, and an active writer's locked record is not abandoned.
 pub(crate) async fn recover(options: &Options) -> Result<()> {

@@ -138,3 +138,36 @@ The targeted pre-integration gate passed:
 These are integration smoke checks, not additional distinct cases in the earlier
 acceptance totals or a new full-suite/performance claim. The requested integration
 is local; remote push, tagging and release publication are separate actions.
+
+## Empty-unit recovery regression repair
+
+The published v0.6.0 tag and assets remain immutable. A local reproduction of
+`barrier_crash_v5::empty_and_declarations_only_submissions_recover_before_returning`
+found that the new empty-HIR shortcut could return successfully without recovering
+an interrupted publication. Recovery is automatic startup work, not something a
+user must remember to trigger with a later effect.
+
+Execution/filesystem owners now provide a conservative read-only admission probe
+for local and remote recovery registries in both the primary and configured
+fallback roots. Absent/not-a-directory roots remain cold; present registries and
+probe errors enter the existing ownership-validation/recovery/diagnostic path.
+Empty source, object and IR units skip runtime activation only when that state is
+absent. Each recovery root is admitted separately, so fallback cleanup does not
+require allocating or modifying an unused ordinary-file primary path. Actual
+storage operations retain their existing primary/fallback allocation policy.
+
+A retained RuntimeSession checks its own initial scratch/fallback roots, not an
+arbitrary later REPL cwd. Repeated admission uses the same recovery owner and
+record locks; it neither switches roots with live work nor treats initialization
+as proof that no later orphan can exist.
+
+The unchanged crash test passed (including empty/declaration source and object
+restarts), and both latency `pure_` tests passed without changing ordinary-file
+scratch/fallback sentinels. Three focused tests cover source/object/IR fallback
+cleanup, invalid local/remote registries in either root, and repeated admission
+recovering an orphan while retaining a live owner's locked stage. The established
+read-only-workspace fallback test also passed, including its occupied-primary
+error assertion. All seven test functions passed in focused local windows; this
+is not a full-suite or new publication claim.
+Selected strict Clippy (`--lib --bin msync --test empty_recovery_v6`), full
+format checking and `git diff --check` also passed on the repaired source.

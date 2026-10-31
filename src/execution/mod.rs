@@ -38,7 +38,7 @@ pub enum WorkId {
 use crate::scheduler::ResourceLimits;
 use crate::syntax::Span;
 use error::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug)]
@@ -97,6 +97,18 @@ pub(super) fn merge(target: &mut ExecutionReport, source: ExecutionReport) {
     target.assigned_bytes = target.assigned_bytes.saturating_add(source.assigned_bytes);
     target.published_roots += source.published_roots;
     target.cleanup.extend(source.cleanup);
+}
+
+/// Read-only admission check for existing local or remote recovery state.
+/// Missing and non-directory roots stay cold; present or inaccessible registries
+/// require normal runtime recovery, including its ownership checks and diagnostics.
+pub fn recovery_required(scratch_root: &Path, fallback: Option<&Path>) -> bool {
+    root_may_need_recovery(scratch_root) || fallback.is_some_and(root_may_need_recovery)
+}
+
+fn root_may_need_recovery(scratch_root: &Path) -> bool {
+    crate::filesystem::recovery::may_need_recovery(scratch_root)
+        || endpoint::may_need_recovery(scratch_root)
 }
 
 /// Blocking convenience entry point for finite documents. Async callers use a session.

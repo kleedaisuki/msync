@@ -291,6 +291,15 @@ impl Registration {
     }
 }
 
+pub(crate) fn may_need_recovery(scratch_root: &Path) -> bool {
+    recovery_path_present(&scratch_root.join(DIRECTORY))
+}
+
+pub(crate) fn recovery_path_present(path: &Path) -> bool {
+    // Probe errors must reach the ordinary recovery owner, not look like absence.
+    !matches!(fs::symlink_metadata(path), Err(cause) if matches!(cause.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory))
+}
+
 /// Recover registered statements before admitting execution effects.
 ///
 /// A missing registry is a read-only cold start. Record schemas, parent identities

@@ -439,7 +439,17 @@ impl State {
         incremental: bool,
     ) -> CliResult {
         self.compiler = candidate;
-        if compiled.program.body.instructions.is_empty() {
+        if compiled.program.body.instructions.is_empty()
+            && !self.runtime.as_ref().map_or_else(
+                || {
+                    msync::execution::recovery_required(
+                        &context.pwd.join(".temp"),
+                        options.settings.execution.state_dir.as_deref(),
+                    )
+                },
+                RuntimeSession::recovery_required,
+            )
+        {
             return Ok(());
         }
         let compiled = Arc::new(compiled);

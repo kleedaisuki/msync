@@ -20,7 +20,7 @@ use super::error::{ExecutionError, Result};
 
 #[path = "remote.rs"]
 mod remote;
-pub(super) use remote::{execute, owned_registry, recover};
+pub(super) use remote::{execute, may_need_recovery, owned_registry, recover};
 
 #[derive(Clone, Debug)]
 pub(super) struct Spec {

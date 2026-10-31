@@ -466,8 +466,16 @@ impl RuntimeSession {
         }
         Ok(self.take_report())
     }
+    /// Inspect the roots owned by this session, including after a caller changes cwd.
+    pub fn recovery_required(&self) -> bool {
+        super::recovery_required(
+            &self.options.scratch_root,
+            self.options.fallback_scratch_root.as_deref(),
+        )
+    }
+
     async fn initialize(&mut self) -> Result<()> {
-        if self.initialized {
+        if self.initialized && !self.recovery_required() {
             return Ok(());
         }
         self.executor = tokio::runtime::Handle::try_current().ok();
@@ -477,8 +485,11 @@ impl RuntimeSession {
             || Some("recover interrupted statements".into()),
             || None,
         );
-        let scratch = self.options.scratch_root.clone();
-        crate::runtime::ssh::spawn_blocking(move || crate::filesystem::recovery::recover(&scratch))
+        if super::root_may_need_recovery(&self.options.scratch_root) {
+            let scratch = self.options.scratch_root.clone();
+            crate::runtime::ssh::spawn_blocking(move || {
+                crate::filesystem::recovery::recover(&scratch)
+            })
             .await
             .map_err(|cause| {
                 ExecutionError::caused("statement recovery worker failed", Span::default(), cause)
@@ -490,8 +501,11 @@ impl RuntimeSession {
                     cause,
                 )
             })?;
-        super::endpoint::recover(&self.options).await?;
-        if let Some(fallback) = &self.options.fallback_scratch_root {
+            super::endpoint::recover(&self.options).await?;
+        }
+        if let Some(fallback) = &self.options.fallback_scratch_root
+            && super::root_may_need_recovery(fallback)
+        {
             let scratch = fallback.clone();
             crate::runtime::ssh::spawn_blocking(move || {
                 crate::filesystem::recovery::recover(&scratch)
