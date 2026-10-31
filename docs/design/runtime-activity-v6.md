@@ -62,15 +62,19 @@ make this ownership boundary explicit. A timeout increase or a test sleep does
 not repair that cycle. Batching notices and prioritizing completed input can
 reduce its frequency, but cannot make a blocking send safe after reader exit.
 
-The same local pass found a separate fixture race in
-`latency_v6::a_background_flow_failure_does_not_wait_for_an_unrelated_held_child`:
-a TCP connection acknowledges only source admission, not destination staging.
-The test waits for a private regular-file stage under its initially empty
-destination parent before replacing that parent, and still asserts the public
-output is absent before EOF. Stage creation proves parent admission without
-depending on when Windows exposes an open writer's file length before flush.
-This preserves the intended publication-failure journey instead of racing the
-existing parent-directory admission operation.
+The same local pass found a separate fixture issue in
+`latency_v6::a_background_flow_failure_does_not_wait_for_an_unrelated_held_child`.
+A TCP connection acknowledges only source admission, not destination staging;
+Windows also need not expose the open writer's file length before flush and may
+correctly deny moving its live parent. The portable journey now waits for a
+private regular-file stage, then uses the existing `socket2` dependency to close
+the source abortively (`SO_LINGER` with zero duration). That generates a real
+stream read failure on every platform without weakening file sharing or identity
+guards. It requires an observable error and no partial published output before
+the unrelated held child receives EOF, then verifies that child's exact bytes.
+Namespace/parent-identity coverage remains in the dedicated
+[`recovery_registry_v5::renamed_parent_identity_is_not_rebound_to_an_unrelated_replacement`](../../tests/recovery_registry_v5.rs)
+journey rather than relying on moving a live Windows writer here.
 
 The maintained [Rustyline source correction](../../vendor/rustyline/README.msync.md)
 removes the cyclic single-slot backpressure without replacing the editor. Its

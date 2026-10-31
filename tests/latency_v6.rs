@@ -339,9 +339,11 @@ fn a_background_flow_failure_does_not_wait_for_an_unrelated_held_child() {
         thread::sleep(Duration::from_millis(1));
     }
     assert!(!parent.join("output").exists());
-    fs::rename(root.path().join("parent"), root.path().join("old-parent")).unwrap();
-    fs::write(root.path().join("parent"), b"not a directory").unwrap();
-    broken_source.shutdown(Shutdown::Write).unwrap();
+    // Abortive close injects a read failure without moving a live Windows file owner.
+    socket2::SockRef::from(&broken_source)
+        .set_linger(Some(Duration::ZERO))
+        .unwrap();
+    drop(broken_source);
 
     let deadline = Instant::now() + DEADLINE;
     loop {
@@ -353,6 +355,10 @@ fn a_background_flow_failure_does_not_wait_for_an_unrelated_held_child() {
             break;
         }
     }
+    assert!(
+        !parent.join("output").exists(),
+        "a reset source must not publish its partial payload"
+    );
     repl.send("/jobs\n");
     repl.until("job 1: running");
     assert!(
@@ -366,5 +372,10 @@ fn a_background_flow_failure_does_not_wait_for_an_unrelated_held_child() {
         b"independent child output"
     );
     let diagnostics = repl.finish_with_diagnostics();
-    assert!(String::from_utf8_lossy(&diagnostics).contains("error:"));
+    let diagnostics = String::from_utf8_lossy(&diagnostics);
+    assert!(diagnostics.contains("error:"));
+    assert!(
+        diagnostics.contains("cannot read stream source"),
+        "{diagnostics}"
+    );
 }
