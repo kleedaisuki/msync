@@ -72,6 +72,13 @@ jobs:
           }
           & cargo @testArgs
           exit $LASTEXITCODE
+      - name: Exercise native terminal notification wakeups
+        if: needs.changes.outputs.rust == 'true'
+        shell: pwsh
+        run: |
+          $env:CARGO_TARGET_DIR = Join-Path $PWD 'target'
+          cargo test --locked --manifest-path vendor/rustyline/Cargo.toml --no-default-features --features custom-bindings,buffer-redux --lib external_printer_
+          exit $LASTEXITCODE
       - name: Exercise native SSH credential windows
         if: runner.os == 'Windows' && needs.changes.outputs.rust == 'true'
         run: cargo test --locked --test windows_askpass -- --ignored --test-threads=1

@@ -63,6 +63,10 @@ $observability = @('telemetry', 'telemetry_sqlite', 'telemetry_sqlite_cli', 'run
 $frontend += @('object_analysis_v6', 'performance_journeys', 'source_lines_v6', 'performance_lsp_journeys', 'empty_recovery_v6', 'barrier_crash_v5')
 $execution += @('runtime_activity_v6', 'latency_v6', 'performance_journeys', 'telemetry_sqlite_cli', 'empty_recovery_v6')
 $objects += @('object_analysis_v6', 'performance_journeys')
+$frontend += @('language_v065', 'ranges_v065', 'types_v065', 'acceptance_v065', 'pipeline_context_v065')
+$execution += @('acceptance_v065', 'ranges_v065', 'pipeline_context_v065')
+$objects += @('ranges_v065', 'types_v065', 'acceptance_v065', 'pipeline_context_v065')
+$tooling += @('highlight_v065', 'tooling_v065', 'language_v065')
 
 foreach ($path in $Paths) {
     switch -Regex ($path.Replace('\', '/')) {
@@ -84,6 +88,11 @@ foreach ($path in $Paths) {
             break
         }
         '^scripts/(ci-|test-ci-)' { break }
+        '^vendor/rustyline/(src/|Cargo\.(toml|lock)$)' {
+            $rust = $true
+            Add-Targets @('barrier_terminal_v5', 'repl_terminal', 'latency_v6', 'repl_jobs')
+            break
+        }
         '^tests/support/pty' {
             $rust = $true
             Add-Targets @('repl_terminal', 'barrier_terminal_v5')
@@ -114,7 +123,7 @@ foreach ($path in $Paths) {
             Add-Targets $observability
             break
         }
-        '^src/(language/|compiler/structured(?:\.rs|/)|hir[/.]|pipeline\.rs|source\.rs)' {
+        '^src/(language/|compiler/structured(?:\.rs|/)|hir[/.]|pipeline\.rs|source\.rs|types\.rs)' {
             $rust = $true
             Add-Targets $frontend
             Add-Targets @('barrier_runtime_v5', 'barrier_cli_v5', 'ordinary_execution_v4', 'runtime_guards_v4', 'block_specialization_v5', 'preparation_v4')
@@ -158,6 +167,8 @@ foreach ($path in $Paths) {
         }
         '^src/(compiler|syntax)\.rs$' {
             $rust = $true
+            Add-Targets $frontend
+            Add-Targets $tooling
             Add-Targets @('compiler', 'syntax', 'cli', 'review_v2', 'language_v4', 'lowering_v4', 'execution_v4')
             break
         }
