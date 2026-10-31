@@ -92,3 +92,14 @@ validation already owns each metadata observation, before SCP starts. A receipt
 contains only entries needing repair and lives for one upload; there is no second
 local tree scan or global filesystem cache. The remote helper checks the private
 finite tree once per metadata batch, not with a `dirname` subprocess per entry.
+
+## Native SystemTime fixture precision
+
+The first native Windows library run exposed a test-construction assumption,
+not lost transfer precision: `UNIX_EPOCH + 123456789ns` already becomes
+`123456700ns` in Windows `SystemTime`, before the formatter receives it.
+[Rust's platform-specific SystemTime contract](https://doc.rust-lang.org/std/time/struct.SystemTime.html#platform-specific-behavior)
+documents 100ns intervals on Windows and nanosecond intervals on Linux. The
+shared formatting fixture now uses exactly representable `123456700ns`; Unix
+keeps an additional exact `123456789ns` assertion. Both retain the signed
+pre-epoch cases. Production timestamp formatting/repair code is unchanged.

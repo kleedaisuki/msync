@@ -2235,6 +2235,12 @@ mod transport_tests {
                 expected
             );
         }
+        // Windows SystemTime stores 100ns ticks; keep the shared fixture representable.
+        assert_eq!(
+            super::touch_time(std::time::UNIX_EPOCH + std::time::Duration::from_nanos(123_456_700)),
+            "0.123456700"
+        );
+        #[cfg(unix)]
         assert_eq!(
             super::touch_time(std::time::UNIX_EPOCH + std::time::Duration::from_nanos(123_456_789)),
             "0.123456789"
