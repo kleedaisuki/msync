@@ -1,0 +1,74 @@
+{
+  "name": "msync-language",
+  "displayName": "msync Language",
+  "description": "msync 0.6 syntax highlighting and language-server support",
+  "version": "0.6.0",
+  "publisher": "msync",
+  "license": "GPL-3.0-only",
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./out/extension.cjs",
+  "activationEvents": [
+    "onLanguage:msync"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "msync",
+        "aliases": [
+          "msync"
+        ],
+        "extensions": [
+          ".msync"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "msync",
+        "scopeName": "source.msync",
+        "path": "./syntaxes/msync.tmLanguage.json",
+        "unbalancedBracketScopes": [
+          "string.regexp.msync"
+        ]
+      }
+    ],
+    "snippets": [
+      {
+        "language": "msync",
+        "path": "./snippets/msync.code-snippets"
+      }
+    ],
+    "configuration": {
+      "title": "msync",
+      "properties": {
+        "msync.serverPath": {
+          "type": "string",
+          "default": "msync",
+          "scope": "machine",
+          "description": "Path to the msync 0.6+ executable. It is launched directly with --language-server; shell arguments are not accepted."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.cjs",
+    "build": "node build.cjs",
+    "vscode:prepublish": "npm run build",
+    "test:integration": "node test/integration/run.cjs"
+  },
+  "dependencies": {
+    "vscode-languageclient": "11.0.0"
+  },
+  "devDependencies": {
+    "@vscode/test-electron": "3.1.0",
+    "esbuild": "0.28.2",
+    "vscode-oniguruma": "2.0.1",
+    "vscode-textmate": "9.3.2"
+  }
+}

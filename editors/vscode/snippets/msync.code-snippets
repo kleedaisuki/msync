@@ -1,0 +1,8 @@
+{
+  "Boolean predicate": { "prefix": "boolean", "body": ["boolean ${1:predicate}(${2:item}):", "    return ${3:exists item}"], "description": "Declare a typed boolean predicate" },
+  "Symbol function": { "prefix": "symbol", "body": ["symbol ${1:identity}(${2:item}):", "    return ${3:item}"], "description": "Declare a pure symbol function" },
+  "Macro": { "prefix": "macro", "body": ["macro ${1:copy}(${2:source, destination}):", "    ${3:source -> destination}"], "description": "Declare a lexical macro" },
+  "Conditional": { "prefix": "if", "body": ["if ${1:true}:", "    $2", "else:", "    $3"], "description": "Branch on a bool value" },
+  "Range loop": { "prefix": "for", "body": ["for ${1:item} in ${2:root}/<${3:.+}>:", "    $0"], "description": "Iterate a lazy range" },
+  "Value loop": { "prefix": "loop", "body": ["${1:result} = loop:", "    break ${2:\"done\"}"], "description": "Evaluate a loop result" }
+}

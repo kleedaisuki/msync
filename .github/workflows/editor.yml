@@ -1,0 +1,115 @@
+name: Editor toolchain
+
+on:
+  push:
+    paths:
+      - .github/workflows/editor.yml
+      - editors/vscode/**
+      - src/language_server.rs
+      - src/language_server/**
+      - src/tooling.rs
+      - src/highlight.rs
+      - src/editor.rs
+      - src/language/**
+      - src/syntax.rs
+      - src/source.rs
+      - src/compiler.rs
+      - src/compiler/**
+      - src/lib.rs
+      - src/main.rs
+      - Cargo.toml
+      - Cargo.lock
+      - build.rs
+  pull_request:
+    paths:
+      - .github/workflows/editor.yml
+      - editors/vscode/**
+      - src/language_server.rs
+      - src/language_server/**
+      - src/tooling.rs
+      - src/highlight.rs
+      - src/editor.rs
+      - src/language/**
+      - src/syntax.rs
+      - src/source.rs
+      - src/compiler.rs
+      - src/compiler/**
+      - src/lib.rs
+      - src/main.rs
+      - Cargo.toml
+      - Cargo.lock
+      - build.rs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: editor-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  editor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      NPM_CONFIG_CACHE: ${{ github.workspace }}/.temp/editor-ci/npm-cache
+      MSYNC_TEST_VSCODE_VERSION: '1.144.0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install locked editor dependencies
+        working-directory: editors/vscode
+        run: npm ci --ignore-scripts
+      - name: Check native grammar and client lifecycle
+        working-directory: editors/vscode
+        run: npm test
+      - name: Build the production extension bundle
+        working-directory: editors/vscode
+        run: npm run build
+      - name: Build the real language server
+        timeout-minutes: 15
+        run: cargo build --locked --release --bin msync
+      - name: Exercise the real VS Code extension host
+        timeout-minutes: 8
+        working-directory: editors/vscode
+        env:
+          MSYNC_TEST_SERVER_PATH: ${{ github.workspace }}/target/release/msync
+          TMPDIR: ${{ github.workspace }}/.temp/editor-ci/tmp
+        run: |
+          mkdir -p "$TMPDIR"
+          timeout --signal=TERM --kill-after=20s 360s xvfb-run -a npm run test:integration
+      - name: Package the tested extension
+        working-directory: editors/vscode
+        run: |
+          mkdir -p ../../dist/editor
+          npx --yes @vscode/vsce@4.1.0 package --allow-missing-repository --out ../../dist/editor/msync-language.vsix
+      - name: Retain the installable VSIX
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msync-vscode-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: dist/editor/*.vsix
+      - name: Retain native-host evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msync-vscode-host-${{ github.sha }}
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            .temp/vscode-host-*/host.log
+            .temp/vscode-host-*/*.json
