@@ -57,6 +57,32 @@ explicit user authorization, main is fast-forwarded to this delivery and the
 release workflow publishes v0.6.5 after package/editor installation acceptance.
 Marketplace publication is not part of this release.
 
+## Published release
+
+Following explicit user authorization, the accepted branch was fast-forwarded
+into main and publication notes committed as
+`c189b0106d30261512b942c1bbdc5836987453a2`. Production sources, manifests and
+embedded README still match the accepted `8818d11` implementation.
+[Release workflow 41271582786](https://github.com/kleedaisuki/msync/actions/runs/41271582786)
+passed Linux portable acceptance, Windows installation acceptance and the actual
+VS Code host, then published the complete
+[v0.6.5 release](https://github.com/kleedaisuki/msync/releases/tag/v0.6.5)
+at 2026-11-01 04:08:41 UTC. The immutable tag points to `c189b01`; v0.6.0 remains
+at `0a7421c8959a3ad16dbb9e3be5176c1167e251c4`.
+
+All four public assets were downloaded into `dist/packages/v0.6.5-published/`
+and checked successfully against the release's `SHA256SUMS`:
+
+| Published asset | SHA-256 |
+| --- | --- |
+| `msync-0.6.5-linux-x86_64.tar.gz` | `27e6c0f84035e182201cd78fbbd118ac3de824bfbf91b5245ee0203b59dc6a57` |
+| `msync-0.6.5-windows-x86_64-setup.exe` | `a7ff027b07befd216d4fbb579d14cddfecd6297f2ba068b624a9c995ef0d1816` |
+| `msync-0.6.5-windows-x86_64.zip` | `08b0e3e9d8d9b59b3a624d251374078a0b397ca0c7b0aaf9d4ff0d0e59c7c865` |
+| `msync-language-0.6.5.vsix` | `3dc9e293fb5d4a3678101e65410d00ae6b5f9edfb1b553436126c61a7cb15a9f` |
+
+These are the public archive identities, not the earlier local/development
+archive identities above. No published bytes were replaced and no tag was moved.
+
 ## Contracts and authoritative completion evidence
 
 | Requirement | Required evidence | Ownership / durable record | State |
