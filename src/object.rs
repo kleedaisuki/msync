@@ -1,4 +1,4 @@
-//! Versioned, untrusted relocatable modules. No host observations are encoded.
+//! Versioned relocatable modules. No host observations are encoded.
 
 pub(crate) mod control;
 mod debug;
@@ -20,6 +20,7 @@ pub use debug::{DebugInfo, DebugOrigin, DebugSite, DebugSource, ExportSite};
 
 pub const MAGIC: &[u8] = b"MSYNC-OBJECT\n";
 pub const FORMAT_VERSION: u32 = 2;
+/// Legacy size hint retained for source compatibility, not an enforced limit.
 pub const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
 pub const CONTROL_FEATURE: &str = "typed_control_v1";
 pub const SOURCE_MODULES_FEATURE: &str = "source_modules_v1";
@@ -150,9 +151,66 @@ impl std::error::Error for ObjectError {
     }
 }
 
+/// A decoded or compiler-produced module kept immutable between intake and use.
+#[derive(Debug)]
+pub struct LoadedModule {
+    module: ObjectModule,
+}
+
+impl LoadedModule {
+    pub(crate) fn from_validated(module: ObjectModule) -> Self {
+        Self { module }
+    }
+
+    pub fn module(&self) -> &ObjectModule {
+        &self.module
+    }
+
+    pub fn into_module(self) -> ObjectModule {
+        self.module
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>, ObjectError> {
+        self.module.encode_payload()
+    }
+
+    pub fn contextualize(
+        &self,
+        context: &crate::context::Context,
+        session: &mut crate::compiler::structured::Session,
+    ) -> Result<crate::context::ContextualizedModule, crate::context::ContextError> {
+        crate::context::contextualize_validated(&self.module, context, session)
+    }
+}
+
 impl ObjectModule {
     #[allow(clippy::too_many_arguments)]
     pub fn from_parts(
+        program: hir::Program,
+        relocations: Vec<Relocation>,
+        exports: Vec<Export>,
+        primary: Arc<Source>,
+        sources: SourceMap,
+        origins: Origins,
+        export_sites: BTreeMap<String, SourceSpan>,
+        main_module: String,
+    ) -> Result<Self, ObjectError> {
+        let module = Self::assemble_parts(
+            program,
+            relocations,
+            exports,
+            primary,
+            sources,
+            origins,
+            export_sites,
+            main_module,
+        )?;
+        module.validate()?;
+        Ok(module)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn assemble_parts(
         mut program: hir::Program,
         relocations: Vec<Relocation>,
         mut exports: Vec<Export>,
@@ -238,14 +296,10 @@ impl ObjectModule {
         module.symbols = tables.symbols;
         module.imports = tables.imports;
         module.constraints = tables.constraints;
-        module.validate()?;
         Ok(module)
     }
 
     pub fn with_source_modules(mut self, modules: Vec<SourceModule>) -> Result<Self, ObjectError> {
-        if modules.len() > 1024 {
-            return Err(ObjectError::new("too many source module bindings"));
-        }
         let mut needed = std::collections::BTreeSet::new();
         for relocation in &self.relocations {
             source_module_dependency(&relocation.path, &mut needed);
@@ -275,17 +329,22 @@ impl ObjectModule {
                 source_module_dependency(path, &mut needed);
             }
         }
-        let mut changed = true;
-        while changed {
-            let before = needed.len();
-            for module in &modules {
-                if needed.contains(&module.name)
-                    && let SourceModulePath::Contextual { path } = &module.path
-                {
-                    source_module_dependency(path, &mut needed);
-                }
+        let by_name = modules
+            .iter()
+            .map(|module| (module.name.as_str(), module))
+            .collect::<BTreeMap<_, _>>();
+        let mut pending = needed.iter().cloned().collect::<Vec<_>>();
+        while let Some(name) = pending.pop() {
+            if let Some(SourceModule {
+                path: SourceModulePath::Contextual { path },
+                ..
+            }) = by_name.get(name.as_str())
+                && let Anchor::ModuleFile { module } | Anchor::ModuleDirectory { module } =
+                    &path.anchor
+                && needed.insert(module.clone())
+            {
+                pending.push(module.clone());
             }
-            changed = before != needed.len();
         }
         self.source_modules = modules
             .into_iter()
@@ -306,13 +365,12 @@ impl ObjectModule {
 
     pub fn encode(&self) -> Result<Vec<u8>, ObjectError> {
         self.validate()?;
+        self.encode_payload()
+    }
+
+    fn encode_payload(&self) -> Result<Vec<u8>, ObjectError> {
         let payload =
             serde_json::to_vec_pretty(self).map_err(|cause| ObjectError::json("encode", cause))?;
-        if payload.len() > MAX_OBJECT_BYTES.saturating_sub(MAGIC.len() + 1) {
-            return Err(ObjectError::new(
-                "object module exceeds the 64MiB format bound",
-            ));
-        }
         let mut bytes = Vec::with_capacity(MAGIC.len() + payload.len() + 1);
         bytes.extend_from_slice(MAGIC);
         bytes.extend_from_slice(&payload);
@@ -321,18 +379,17 @@ impl ObjectModule {
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, ObjectError> {
-        if bytes.len() > MAX_OBJECT_BYTES {
-            return Err(ObjectError::new(
-                "object module exceeds the 64MiB format bound",
-            ));
-        }
+        Self::decode_loaded(bytes).map(LoadedModule::into_module)
+    }
+
+    pub fn decode_loaded(bytes: &[u8]) -> Result<LoadedModule, ObjectError> {
         let payload = bytes
             .strip_prefix(MAGIC)
             .ok_or_else(|| ObjectError::new("invalid or truncated msync object header"))?;
         let module: Self =
             serde_json::from_slice(payload).map_err(|cause| ObjectError::json("decode", cause))?;
         module.validate()?;
-        Ok(module)
+        Ok(LoadedModule::from_validated(module))
     }
 }
 

@@ -105,6 +105,14 @@ impl Observations {
             *location = captured;
             return Ok(());
         }
+        if matches!(captured.backend, Backend::Ssh { .. }) {
+            // The transfer's native SSH channel observes its endpoint before
+            // moving bytes. Preparation must not authenticate a second client.
+            *location = captured;
+            self.classes.insert(location.clone(), FileClass::Unknown);
+            self.sites.entry(location.clone()).or_insert(site);
+            return Ok(());
+        }
         if cfg!(windows)
             && captured.backend == Backend::Local
             && crate::streams::is_named_pipe_path(&captured.path)

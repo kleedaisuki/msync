@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::env;
 use std::fmt;
 use std::fs;
-use std::io::{self, Read};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -13,28 +13,6 @@ use toml::Spanned;
 
 use crate::scheduler::ResourceLimits;
 use crate::syntax::{Report, Span};
-
-const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
-
-fn open_config(path: &Path) -> io::Result<fs::File> {
-    let metadata = fs::metadata(path)?;
-    if !metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "configuration must be an ordinary file",
-        ));
-    }
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    // A replacement between stat and open must not turn configuration loading
-    // into a wait for a FIFO peer. The opened handle is checked again below.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK);
-    }
-    options.open(path)
-}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -304,29 +282,7 @@ impl Loaded {
 
     fn read(&mut self, path: &Path) -> Result<(), Error> {
         let path = absolute(path).map_err(|cause| Error::io(path, cause))?;
-        let file = open_config(&path).map_err(|cause| Error::io(&path, cause))?;
-        let metadata = file.metadata().map_err(|cause| Error::io(&path, cause))?;
-        if !metadata.is_file() {
-            return Err(Error::io(
-                &path,
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "configuration must be an ordinary file",
-                ),
-            ));
-        }
-        let mut bytes = Vec::new();
-        file.take(MAX_CONFIG_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|cause| Error::io(&path, cause))?;
-        if bytes.len() as u64 > MAX_CONFIG_BYTES {
-            return Err(Error::io(
-                &path,
-                io::Error::new(io::ErrorKind::InvalidData, "configuration exceeds 1 MiB"),
-            ));
-        }
-        let input = String::from_utf8(bytes)
-            .map_err(|cause| Error::io(&path, io::Error::new(io::ErrorKind::InvalidData, cause)))?;
+        let input = fs::read_to_string(&path).map_err(|cause| Error::io(&path, cause))?;
         let document = toml::from_str::<Document>(&input).map_err(|cause| Error {
             path: path.clone(),
             key: None,
@@ -382,12 +338,12 @@ impl Loaded {
             "execution.max_streams"
         );
         if let Some(value) = execution.buffer_size {
-            let size = self.bytes("execution.buffer_size", value, false)?;
+            let size = self.bytes("execution.buffer_size", value)?;
             self.settings.execution.limits.buffer_bytes = usize::try_from(size)
                 .map_err(|_| self.invalid("execution.buffer_size", "byte budget is too large"))?;
         }
         if let Some(value) = execution.memory_limit {
-            let size = self.bytes("execution.memory_limit", value, false)?;
+            let size = self.bytes("execution.memory_limit", value)?;
             self.settings.execution.limits.memory_bytes = usize::try_from(size)
                 .map_err(|_| self.invalid("execution.memory_limit", "byte budget is too large"))?;
         }
@@ -397,12 +353,12 @@ impl Loaded {
                 self.settings.execution.spool_limit = None;
             } else {
                 self.settings.execution.spool_limit =
-                    Some(self.bytes("execution.spool_limit", value, true)?);
+                    Some(self.bytes("execution.spool_limit", value)?);
             }
         }
         if let Some(value) = execution.state_dir {
             let raw = self.record("execution.state_dir", value);
-            self.settings.execution.state_dir = Some(self.path_value("execution.state_dir", &raw)?);
+            self.settings.execution.state_dir = Some(self.path_value(&raw));
         }
         let ui = doc.ui.unwrap_or_default();
         set!(self.settings.color, ui.color, "ui.color");
@@ -432,7 +388,7 @@ impl Loaded {
         );
         if let Some(value) = telemetry.path {
             let raw = self.record("telemetry.path", value);
-            self.settings.telemetry.path = Some(self.path_value("telemetry.path", &raw)?);
+            self.settings.telemetry.path = Some(self.path_value(&raw));
         }
         set!(
             self.settings.telemetry.queue_capacity,
@@ -466,7 +422,7 @@ impl Loaded {
         );
         if let Some(value) = telemetry.max_database_bytes {
             self.settings.telemetry.max_database_bytes =
-                self.bytes("telemetry.max_database_bytes", value, false)?;
+                self.bytes("telemetry.max_database_bytes", value)?;
         }
         set!(
             self.settings.telemetry.synchronous_full,
@@ -478,85 +434,33 @@ impl Loaded {
             telemetry.sample_per_million,
             "telemetry.sample_per_million"
         );
-        self.validate_values()
+        Ok(())
     }
 
-    fn path_value(&self, key: &'static str, raw: &str) -> Result<PathBuf, Error> {
-        if raw.is_empty() || raw.contains('\0') {
-            return Err(self.invalid(key, "path must be nonempty and NUL-free"));
-        }
+    fn path_value(&self, raw: &str) -> PathBuf {
         let path = Path::new(raw);
         if path.is_absolute() {
-            return Ok(path.to_owned());
+            return path.to_owned();
         }
-        Ok(self
-            .path
+        self.path
             .as_ref()
             .expect("loaded path")
             .parent()
             .expect("absolute configuration path")
-            .join(path))
+            .join(path)
     }
 
-    fn bytes(
-        &mut self,
-        key: &'static str,
-        value: Spanned<Bytes>,
-        allow_zero: bool,
-    ) -> Result<u64, Error> {
+    fn bytes(&mut self, key: &'static str, value: Spanned<Bytes>) -> Result<u64, Error> {
         let value = self.record(key, value);
         let bytes = match value {
             Bytes::Number(value) => Ok(value),
             Bytes::Text(value) => parse_bytes(&value),
         }
         .map_err(|cause| self.invalid(key, cause))?;
-        if !allow_zero && bytes == 0 {
-            return Err(self.invalid(key, "byte budget must be positive"));
-        }
         Ok(bytes)
     }
 
     fn validate_values(&self) -> Result<(), Error> {
-        for (key, valid) in [
-            ("execution.jobs", self.settings.execution.limits.jobs > 0),
-            (
-                "execution.max_streams",
-                self.settings.execution.limits.max_streams > 0,
-            ),
-            (
-                "progress.interval_ms",
-                self.settings.progress.interval_ms > 0,
-            ),
-        ] {
-            if !valid {
-                return Err(self.invalid(key, "value must be positive"));
-            }
-        }
-        if let Err((key, message)) = self.settings.telemetry.sqlite_options().validate_keyed() {
-            let key = match key {
-                "queue_capacity" => "telemetry.queue_capacity",
-                "batch_size" => "telemetry.batch_size",
-                "flush_interval_ms" => "telemetry.flush_interval_ms",
-                "busy_timeout_ms" => "telemetry.busy_timeout_ms",
-                "max_sessions" => "telemetry.max_sessions",
-                "max_records_per_session" => "telemetry.max_records_per_session",
-                "max_database_bytes" => "telemetry.max_database_bytes",
-                "sample_per_million" => "telemetry.sample_per_million",
-                _ => "telemetry",
-            };
-            return Err(self.invalid(key, message));
-        }
-        for (key, value) in [
-            ("progress.delay_ms", self.settings.progress.delay_ms),
-            ("progress.interval_ms", self.settings.progress.interval_ms),
-        ] {
-            if value > 86_400_000 {
-                return Err(self.invalid(
-                    key,
-                    "duration must not exceed 86400000 milliseconds (24 hours)",
-                ));
-            }
-        }
         if self
             .settings
             .syntax

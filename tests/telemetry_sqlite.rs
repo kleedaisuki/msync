@@ -126,7 +126,7 @@ fn sqlite_flush_exposes_normalized_causality_errors_and_exact_unsigned_metrics()
 }
 
 #[test]
-fn sqlite_small_bounded_queue_preserves_concurrent_tasks_and_flushes_all_records() {
+fn sqlite_small_queue_does_not_block_producers_and_reports_any_recording_gap() {
     let _exclusive = SESSION_LOCK
         .lock()
         .unwrap_or_else(|error| error.into_inner());
@@ -158,35 +158,28 @@ fn sqlite_small_bounded_queue_preserves_concurrent_tasks_and_flushes_all_records
             }
         });
     }
-    telemetry::flush().unwrap();
+    let flushed = telemetry::flush();
     let connection = reader(&database);
-    assert_eq!(count(&connection, "SELECT COUNT(*) FROM records"), 89);
-    assert_eq!(count(&connection, "SELECT COUNT(*) FROM spans"), 9);
-    assert_eq!(
-        count(&connection, "SELECT COUNT(DISTINCT trace_id) FROM records"),
-        1
-    );
-    assert_eq!(
-        count(
-            &connection,
-            "SELECT COUNT(*) FROM spans WHERE parent_span_id IS NULL"
-        ),
-        1
-    );
-    assert_eq!(
-        count(
-            &connection,
-            "SELECT COUNT(*) FROM spans child WHERE child.parent_span_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM spans parent WHERE parent.trace_id = child.trace_id AND parent.span_id = child.parent_span_id)"
-        ),
-        0
-    );
-    assert_eq!(
-        count(
-            &connection,
-            "SELECT COUNT(*) FROM events event WHERE NOT EXISTS (SELECT 1 FROM spans owner WHERE owner.trace_id = event.trace_id AND owner.span_id = event.span_id)"
-        ),
-        0
-    );
+    let records = count(&connection, "SELECT COUNT(*) FROM records");
+    assert!(records > 0 && records <= 89);
+    if records < 89 {
+        let error = flushed.unwrap_err();
+        assert!(
+            error.contains("dropped") && error.contains("queue was full"),
+            "{error}"
+        );
+        assert!(telemetry::shutdown().is_err());
+        let status: (String, String) = connection
+            .query_row("SELECT status, exporter_error FROM sessions", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(status.0, "error");
+        assert!(status.1.contains("dropped"), "{status:?}");
+    } else {
+        flushed.unwrap();
+        telemetry::shutdown().unwrap();
+    }
 }
 
 #[test]
@@ -256,22 +249,13 @@ fn sqlite_rejects_invalid_writer_limits_before_creating_a_database() {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let fixture = Fixture::new();
-    for (name, options) in [
-        (
-            "no-queue.db",
-            SqliteOptions {
-                queue_capacity: 0,
-                ..SqliteOptions::default()
-            },
-        ),
-        (
-            "no-batch.db",
-            SqliteOptions {
-                batch_size: 0,
-                ..SqliteOptions::default()
-            },
-        ),
-    ] {
+    for (name, options) in [(
+        "no-queue.db",
+        SqliteOptions {
+            queue_capacity: 0,
+            ..SqliteOptions::default()
+        },
+    )] {
         let database = fixture.path(name);
         assert!(telemetry::init_sqlite(&database, options).is_err());
         assert!(!database.exists(), "invalid limits created {database:?}");

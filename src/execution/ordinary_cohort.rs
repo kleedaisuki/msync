@@ -1,15 +1,34 @@
-//! Finite range capture and publication share one statement decision.
+//! Finite ranges copy in selected order; local sources remain borrowed paths.
 
 use super::*;
 
-struct CapturedCohort {
-    path: PathBuf,
-    origins: Vec<(Location, String)>,
-    report: ExecutionReport,
+struct RemoteSources {
+    entries: Vec<(PathBuf, OsString)>,
+    incoming: Option<InvocationRoot>,
+}
+
+impl RemoteSources {
+    fn close(&mut self) -> Option<CleanupIssue> {
+        let incoming = self.incoming.take()?;
+        incoming
+            .cleanup()
+            .err()
+            .map(|cause| super::cleanup(cause, incoming.path().to_owned()))
+    }
+}
+
+impl Drop for RemoteSources {
+    fn drop(&mut self) {
+        if let Some(incoming) = self.incoming.take()
+            && let Err(cause) = incoming.cleanup()
+        {
+            crate::telemetry::io_error("copy.incoming.cleanup", &cause.cause);
+        }
+    }
 }
 
 impl Ordinary {
-    /// One finite source range is one publication decision, not a loop of writes.
+    /// Keep the range as one user operation without making it a disk transaction.
     pub(in crate::execution) fn execute_cohort(
         &mut self,
         nodes: &[Instruction],
@@ -31,17 +50,43 @@ impl Ordinary {
         let Some(first) = ready.first() else {
             return Ok(Attempt::Completed(ExecutionReport::default()));
         };
+        if ready
+            .iter()
+            .all(|item| !matches!(item.source, Source::Remote(_)))
+        {
+            let mut report = ExecutionReport::default();
+            let mut published = std::collections::BTreeSet::new();
+            for item in &ready {
+                let completed = if let Some(report) = self.execute_file(item)? {
+                    report
+                } else if let Some(report) = self.execute_directory(item)? {
+                    report
+                } else {
+                    let Attempt::Completed(report) = self.execute_ready(item, None)? else {
+                        return Ok(Attempt::Unsupported);
+                    };
+                    report
+                };
+                if completed.published_roots != 0 {
+                    published.insert(item.target.clone());
+                }
+                crate::execution::merge(&mut report, completed);
+            }
+            report.assignments = 1;
+            report.published_roots = published.len();
+            return Ok(Attempt::Completed(report));
+        }
         self.execute_ready(first, Some(&ready))
     }
 
     fn execute_remote_cohort(&mut self, nodes: &[Instruction]) -> Result<Attempt> {
         let first = &nodes[0];
         let InstructionKind::Transfer { destination, .. } = &first.kind else {
-            unreachable!("cohort classified by its first transfer");
+            unreachable!()
         };
         let Output::File {
+            location,
             mode: DestinationMode::Container,
-            ..
         } = destination
         else {
             return Ok(Attempt::Unsupported);
@@ -59,7 +104,7 @@ impl Ordinary {
             };
             if output != destination {
                 return Err(ExecutionError::new(
-                    "a remote finite cohort requires one destination container",
+                    "a source range needs one destination container",
                     node.span,
                 ));
             }
@@ -77,158 +122,175 @@ impl Ordinary {
                 span: node.span,
             });
         }
-        if self.storage.is_none() {
-            self.storage = Some(Storage::new(&self.options, first.span)?);
+        let remote = ready
+            .iter()
+            .map(|item| match &item.source {
+                Source::Remote(source)
+                    if item.pattern.is_none() && source.backend == location.backend =>
+                {
+                    Some(source.clone())
+                }
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(sources) = remote {
+            let mut trace = crate::telemetry::span("copy");
+            trace.expect_completion();
+            trace.attribute("copy.kind", "remote-cohort");
+            trace.attribute("publication.policy", "ordinary-copy");
+            trace.metric("instruction.id", first.id.0 as u64);
+            let result =
+                crate::runtime::ssh_channel::copy_many(&sources, location, &self.options.cancel);
+            trace.finish_result(&result);
+            let transfer = result.map_err(|message| {
+                ExecutionError::new(message, first.span).with_operand(self.origin.as_ref(), true)
+            })?;
+            return Ok(Attempt::Completed(ExecutionReport {
+                assignments: 1,
+                assigned_files: transfer.copied_files,
+                assigned_bytes: transfer.transferred_bytes,
+                published_roots: usize::from(!sources.is_empty()),
+                ..ExecutionReport::default()
+            }));
         }
-        let Some(mut captured) = self
-            .storage
-            .as_mut()
-            .expect("ordinary storage initialized")
-            .capture_cohort(&mut ready, &self.options, self.origin.as_ref())?
-        else {
+        let Some(mut sources) = self.remote_sources(&ready)? else {
             return Ok(Attempt::Unsupported);
         };
-        let source = Input::File {
-            location: Location {
-                backend: Backend::Local,
-                path: captured.path.to_string_lossy().into_owned(),
-            },
-            pattern: Some("(?s:.*)".into()),
-        };
-        let spec = crate::execution::endpoint::inspect(&source, destination, first.span)?
-            .expect("remote output inspected before acquisition")
-            .with_cohort_origins(captured.origins);
-        let executor = tokio::runtime::Handle::try_current().map_err(|cause| {
-            ExecutionError::caused(
-                "remote cohort requires the execution worker runtime",
-                first.span,
-                cause,
-            )
-        })?;
         let mut trace = crate::telemetry::span("copy");
         trace.expect_completion();
         trace.attribute("copy.kind", "remote-cohort");
-        trace.attribute("publication.policy", "statement-journal");
+        trace.attribute("publication.policy", "ordinary-copy");
         trace.metric("instruction.id", first.id.0 as u64);
-        let result = executor.block_on(spec.run(
-            captured.path,
-            None,
-            self.options.limits.buffer_bytes,
-            self.options.cancel.clone(),
-            self.options.scratch_root.clone(),
-        ));
+        let result = crate::runtime::ssh_channel::upload_many(
+            &sources.entries,
+            location,
+            self.options
+                .shared_invocation
+                .as_ref()
+                .or(sources.incoming.as_ref()),
+            &self.options.cancel,
+        )
+        .map_err(|message| {
+            ExecutionError::new(message, first.span).with_operand(self.origin.as_ref(), true)
+        });
         trace.finish_result(&result);
-        let remote = result.map_err(|error| error.with_operand(self.origin.as_ref(), true))?;
-        captured.report.assignments = 1;
-        captured.report.published_roots = 1;
-        captured.report.cleanup.extend(remote.cleanup);
-        captured.report.cleanup.extend(self.close());
-        if let Some(context) = crate::telemetry::context() {
-            context.event(
-                "remote.publication",
-                &[],
-                &[
-                    (
-                        "transport.upload.files",
-                        remote.transfer.copied_files as u64,
-                    ),
-                    ("transport.upload.bytes", remote.transfer.transferred_bytes),
-                ],
-            );
-        }
-        Ok(Attempt::Completed(captured.report))
+        let cleanup = sources.close();
+        let transfer = result?;
+        let mut report = ExecutionReport {
+            assignments: 1,
+            assigned_files: transfer.copied_files,
+            assigned_bytes: transfer.transferred_bytes,
+            published_roots: usize::from(!sources.entries.is_empty()),
+            ..ExecutionReport::default()
+        };
+        report.cleanup.extend(cleanup);
+        Ok(Attempt::Completed(report))
     }
-}
 
-impl Storage {
-    fn capture_cohort(
-        &mut self,
-        ready: &mut [Ready],
-        options: &Options,
-        origin: Option<&crate::source::InstructionOrigin>,
-    ) -> Result<Option<CapturedCohort>> {
-        let span = ready[0].span;
-        let path = self.fresh("cohort");
-        let mut children: BTreeMap<OsString, Snapshot> = BTreeMap::new();
-        let mut origins = Vec::new();
-        let mut report = ExecutionReport::default();
-        for item in ready {
-            item.target.clone_from(&path);
-            options.check(item.span)?;
-            let Some(source) = self
-                .source(item, options)
-                .map_err(|error| error.with_operand(origin, false))?
-            else {
-                return Ok(None);
-            };
-            let selections = self
-                .select(source, item.pattern.as_deref(), item.span, options)
-                .map_err(|error| error.with_operand(origin, false))?;
-            for selection in selections {
-                let basename = selection.basename.as_ref().ok_or_else(|| {
-                    ExecutionError::new(
-                        "a literal has no basename for a remote container",
+    fn remote_sources(&self, ready: &[Ready]) -> Result<Option<RemoteSources>> {
+        use super::receive::Incoming;
+        let mut sources = RemoteSources {
+            entries: Vec::new(),
+            incoming: None,
+        };
+        for (index, item) in ready.iter().enumerate() {
+            self.options.check(item.span)?;
+            match &item.source {
+                Source::Local(path) => {
+                    append_selected_sources(
+                        path,
+                        item.pattern.as_deref(),
+                        &mut sources.entries,
                         item.span,
-                    )
-                })?;
-                let name = basename.to_str().ok_or_else(|| {
-                    ExecutionError::new("remote source basename is not UTF-8", item.span)
-                })?;
-                if matches!(name, "" | "." | "..") || name.contains(['/', '\\', '\0']) {
+                    )?;
+                }
+                Source::Remote(location) => {
+                    if sources.incoming.is_none() {
+                        let scratch = self
+                            .options
+                            .shared_invocation
+                            .as_ref()
+                            .map_or(self.options.scratch_root.as_path(), InvocationRoot::path);
+                        sources.incoming =
+                            Some(InvocationRoot::create(scratch).map_err(|cause| {
+                                failure("cannot create incoming source stage", item.span, cause)
+                            })?);
+                    }
+                    let payload = sources
+                        .incoming
+                        .as_ref()
+                        .expect("incoming owner initialized")
+                        .path()
+                        .join(format!("source-{index}"));
+                    let Incoming::Captured { basename } =
+                        self.receive_source(location, &payload, item)?
+                    else {
+                        return Ok(None);
+                    };
+                    if item.pattern.is_some() {
+                        append_selected_sources(
+                            &payload,
+                            Some("(?s:.*)"),
+                            &mut sources.entries,
+                            item.span,
+                        )?;
+                    } else {
+                        sources.entries.push((
+                            payload,
+                            basename.ok_or_else(|| {
+                                ExecutionError::new(
+                                    "a container source needs a basename",
+                                    item.span,
+                                )
+                            })?,
+                        ));
+                    }
+                }
+                Source::Literal(_) => {
                     return Err(ExecutionError::new(
-                        "invalid remote source basename",
+                        "a literal has no basename for a container",
                         item.span,
                     ));
                 }
-                if let Some(location) = selection_origin(item, &selection, name) {
-                    origins.push((location, name.to_owned()));
-                }
-                let assigned = match children.get(basename) {
-                    Some(previous) => self.assignment_over(&selection.snapshot, previous, item)?,
-                    None => selection.snapshot.clone(),
-                };
-                for entry in selection.snapshot.entries().values() {
-                    if let Entry::File { artifact, .. } = entry {
-                        report.assigned_files += 1;
-                        report.assigned_bytes =
-                            report.assigned_bytes.saturating_add(artifact.len());
-                    }
-                }
-                children.insert(basename.clone(), assigned);
             }
         }
-        let metadata = NodeMetadata::capture(&fs::metadata(&self.imports).map_err(|cause| {
-            ExecutionError::caused("cannot inspect aggregate directory", span, cause)
-        })?)
-        .map_err(|cause| {
-            ExecutionError::caused("cannot capture aggregate directory metadata", span, cause)
-        })?;
-        let mut entries = BTreeMap::new();
-        entries.insert(PathBuf::new(), Entry::Directory { metadata });
-        for (name, snapshot) in children {
-            let prefix = Path::new(&name);
-            for (relative, entry) in snapshot.entries() {
-                entries.insert(prefix.join(relative), entry.clone());
-            }
-        }
-        let snapshot = self.snapshot(entries, span)?;
-        let mut publication = self
-            .assets
-            .prepare(&snapshot, &path)
-            .map_err(|cause| failure("cannot prepare owned remote aggregate", span, cause))?;
-        publication
-            .publish()
-            .map_err(|cause| failure("cannot materialize owned remote aggregate", span, cause))?;
-        publication
-            .finalize()
-            .map_err(|cause| failure("cannot retire owned aggregate staging", span, cause))?;
-        Ok(Some(CapturedCohort {
-            path,
-            origins,
-            report,
-        }))
+        Ok(Some(sources))
     }
+}
 
+fn append_selected_sources(
+    source: &Path,
+    pattern: Option<&str>,
+    entries: &mut Vec<(PathBuf, OsString)>,
+    span: Span,
+) -> Result<()> {
+    let Some(pattern) = pattern else {
+        entries.push((
+            source.to_owned(),
+            source
+                .file_name()
+                .ok_or_else(|| ExecutionError::new("a container source needs a basename", span))?
+                .to_owned(),
+        ));
+        return Ok(());
+    };
+    let regex = regex::Regex::new(&format!("\\A(?:{pattern})\\z"))
+        .map_err(|cause| ExecutionError::caused("invalid source selector", span, cause))?;
+    let mut children = fs::read_dir(source)
+        .map_err(|cause| ExecutionError::caused("cannot enumerate selected source", span, cause))?
+        .collect::<io::Result<Vec<_>>>()
+        .map_err(|cause| ExecutionError::caused("cannot read selected source", span, cause))?;
+    children.sort_by_key(fs::DirEntry::file_name);
+    for child in children {
+        let name = child.file_name();
+        if name.to_str().is_some_and(|name| regex.is_match(name)) {
+            entries.push((child.path(), name));
+        }
+    }
+    Ok(())
+}
+
+impl Storage {
     pub(super) fn execute_cohort(
         &mut self,
         ready: &[Ready],
@@ -257,41 +319,17 @@ impl Storage {
     }
 }
 
-fn selection_origin(ready: &Ready, selection: &Selection, basename: &str) -> Option<Location> {
-    if let Some(source) = &selection.source {
-        return Some(Location {
-            backend: Backend::Local,
-            path: source.to_string_lossy().into_owned(),
-        });
-    }
-    let Source::Remote(location) = &ready.source else {
-        return None;
-    };
-    let mut location = location.clone();
-    if ready.pattern.is_some() {
-        if !location.path.ends_with('/') {
-            location.path.push('/');
-        }
-        location.path.push_str(basename);
-    }
-    Some(location)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn remote_aggregate_keeps_named_payloads_and_original_alias_proofs() {
+    fn local_cohort_borrows_original_paths_without_copying_payloads_or_creating_scratch() {
         let base = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
         fs::create_dir_all(&base).unwrap();
-        let root = tempfile::Builder::new()
-            .prefix("remote-aggregate-")
-            .tempdir_in(base)
-            .unwrap();
-        let options = Options::new(root.path().join("scratch"));
-        let mut owner = Ordinary::new(&options);
-        owner.storage = Some(Storage::new(&options, Span::default()).unwrap());
+        let root = tempfile::tempdir_in(base).unwrap();
+        let scratch = root.path().join("unused-scratch");
+        let owner = Ordinary::new(&Options::new(&scratch));
         let mut inputs = Vec::new();
         for name in ["a", "b"] {
             let path = root.path().join(name);
@@ -305,42 +343,15 @@ mod tests {
                 span: Span::default(),
             });
         }
-        let aggregate = owner
-            .storage
-            .as_mut()
-            .unwrap()
-            .capture_cohort(&mut inputs, &options, None)
-            .unwrap()
-            .unwrap();
-        assert!(
-            owner
-                .storage
-                .as_ref()
-                .unwrap()
-                .invocation
-                .contains_private(&aggregate.path)
-                .unwrap()
-        );
-        assert_eq!(aggregate.report.assigned_files, 2);
-        assert_eq!(aggregate.origins.len(), 2);
-        for (index, name) in ["a", "b"].into_iter().enumerate() {
-            assert_eq!(
-                fs::read(aggregate.path.join(name)).unwrap(),
-                name.as_bytes()
-            );
-            assert_eq!(
-                aggregate.origins[index],
-                (
-                    Location {
-                        backend: Backend::Local,
-                        path: root.path().join(name).to_string_lossy().into_owned()
-                    },
-                    name.to_owned()
-                )
-            );
-            assert_eq!(fs::read(root.path().join(name)).unwrap(), name.as_bytes());
+        let mut sources = owner.remote_sources(&inputs).unwrap().unwrap();
+        assert_eq!(sources.entries.len(), 2);
+        assert!(sources.incoming.is_none());
+        for (path, name) in &sources.entries {
+            assert_eq!(path, &root.path().join(name));
+            assert!(same_file::is_same_file(path, root.path().join(name)).unwrap());
         }
-        assert!(owner.close().is_empty());
-        assert!(!aggregate.path.exists());
+        assert!(sources.close().is_none());
+        assert!(!scratch.exists());
+        assert!(owner.storage.is_none());
     }
 }

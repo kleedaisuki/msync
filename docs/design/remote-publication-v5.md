@@ -1,3 +1,10 @@
+> Historical remote-publication record. The 2026-11-01 user-directed rewrite
+> removes this journal/receipt/recovery protocol and its multi-client transport.
+> Current finite transfers use one native exec with ordinary staging and retry;
+> see [the current contract](statement-atomicity.md) and
+> [normal-user acceptance](normal-user-validation.md). Older measured metadata
+> and failure findings below remain useful history, not current requirements.
+
 # Finite remote publication acceptance
 
 The v0.5 interpreter must retain ordinary uploads, downloads, recursive trees,

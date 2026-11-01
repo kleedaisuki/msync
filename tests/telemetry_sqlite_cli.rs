@@ -304,11 +304,11 @@ fn help_version_and_explicit_disable_do_not_create_a_database() {
 }
 
 #[test]
-fn sqlite_initialization_failure_is_reported_before_transfer_effects() {
+fn sqlite_initialization_failure_warns_without_blocking_the_transfer() {
     let root = workspace();
     fs::write(
         root.path().join("entry.msync"),
-        "\"must not publish\" -> output\n",
+        "\"published despite observer failure\" -> output\n",
     )
     .unwrap();
     fs::create_dir(root.path().join("not-a-database")).unwrap();
@@ -322,9 +322,13 @@ fn sqlite_initialization_failure_is_reported_before_transfer_effects() {
             "--no-config",
         ],
     );
-    assert!(!output.status.success());
-    assert!(!root.path().join("output").exists());
+    assert!(output.status.success());
+    assert_eq!(
+        fs::read(root.path().join("output")).unwrap(),
+        b"published despite observer failure"
+    );
     let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("warning:"), "{diagnostic}");
     assert!(diagnostic.contains("telemetry"), "{diagnostic}");
     assert!(diagnostic.contains("not-a-database"), "{diagnostic}");
 }
@@ -364,6 +368,20 @@ fn read_only_operator_commands_query_and_export_the_same_records() {
     ));
     let spans: serde_json::Value = serde_json::from_slice(&spans.stdout).unwrap();
     assert_eq!(spans.as_array().unwrap().len(), 2);
+    let all = success(run(
+        root.path(),
+        &["telemetry", "spans", "trace.db", "--limit", "10001"],
+    ));
+    let all: serde_json::Value = serde_json::from_slice(&all.stdout).unwrap();
+    assert!(all.as_array().unwrap().len() >= 2);
+    let empty = success(run(
+        root.path(),
+        &["telemetry", "sessions", "trace.db", "--limit", "0"],
+    ));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&empty.stdout).unwrap(),
+        serde_json::json!([])
+    );
     let exported = success(run(root.path(), &["telemetry", "export", "trace.db"]));
     let exported = String::from_utf8(exported.stdout).unwrap();
     let decoded: Vec<serde_json::Value> = exported
@@ -410,4 +428,62 @@ fn read_only_operator_commands_query_and_export_the_same_records() {
     let missing = run(root.path(), &["telemetry", "summary", "missing.db"]);
     assert!(!missing.status.success());
     assert!(!root.path().join("missing.db").exists());
+}
+
+#[test]
+fn exhausted_observer_budget_does_not_change_a_successful_transfer_result() {
+    let root = workspace();
+    fs::write(
+        root.path().join("entry.msync"),
+        "\"copied bytes\" -> output\n",
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("settings.toml"),
+        "[telemetry]\nenabled = true\npath = \"trace.db\"\nmax_records_per_session = 1\n",
+    )
+    .unwrap();
+    let output = run(
+        root.path(),
+        &["run", "entry.msync", "--config", "settings.toml"],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read(root.path().join("output")).unwrap(),
+        b"copied bytes"
+    );
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("warning:") && error.contains("record limit"),
+        "{error}"
+    );
+    let connection = reader(&root.path().join("trace.db"));
+    let status: String = connection
+        .query_row("SELECT status FROM sessions", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(status, "error");
+}
+
+#[cfg(unix)]
+#[test]
+fn formatter_updates_the_selected_symlink_target_without_replacing_the_link() {
+    use std::os::unix::fs::symlink;
+    let root = workspace();
+    fs::write(root.path().join("actual.msync"), "a->b").unwrap();
+    symlink("actual.msync", root.path().join("alias.msync")).unwrap();
+    success(run(root.path(), &["fmt", "alias.msync", "--no-config"]));
+    assert!(
+        fs::symlink_metadata(root.path().join("alias.msync"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(
+        fs::read_to_string(root.path().join("actual.msync")).unwrap(),
+        "a -> b\n"
+    );
 }

@@ -315,7 +315,7 @@ fn a_multi_pipe_chain_forms_one_bounded_co_start_cohort() {
 }
 
 #[test]
-fn repeated_producer_consumer_waves_keep_completion_order_between_cohorts() {
+fn repeated_channel_participants_form_one_native_co_start_group() {
     let writer = OperationKinds {
         source: FileClass::Regular,
         destination: FileClass::Stream,
@@ -335,14 +335,36 @@ fn repeated_producer_consumer_waves_keep_completion_order_between_cohorts() {
         },
         &[writer, reader, writer, reader],
     );
-    assert_eq!(plan.stream_groups, vec![vec![0, 1], vec![2, 3]]);
-    assert_eq!(plan.nodes[2].dependencies, vec![0, 1]);
-    assert_eq!(plan.nodes[3].dependencies, vec![0, 1]);
+    assert_eq!(plan.stream_groups, vec![vec![0, 1, 2, 3]]);
+    assert_eq!(plan.stream_connections.len(), 4);
+    assert!(plan.nodes.iter().all(|node| node.dependencies.is_empty()));
     assert!(plan.issues.is_empty());
 }
 
 #[test]
-fn ambiguous_channel_roles_and_closed_feedback_are_diagnosed() {
+fn multiple_channel_writers_co_start_with_their_reader() {
+    let writer = OperationKinds {
+        source: FileClass::Regular,
+        destination: FileClass::Stream,
+    };
+    let reader = OperationKinds {
+        source: FileClass::Stream,
+        destination: FileClass::Missing,
+    };
+    let plan = Plan::build(
+        &Program {
+            operations: vec![op("a", "fifo"), op("b", "fifo"), op("fifo", "out")],
+        },
+        &[writer, writer, reader],
+    );
+    assert!(plan.issues.is_empty(), "{:?}", plan.issues);
+    assert_eq!(plan.stream_groups, vec![vec![0, 1, 2]]);
+    assert_eq!(plan.stream_connections.len(), 2);
+    assert!(plan.edges.is_empty(), "{:?}", plan.edges);
+}
+
+#[test]
+fn multiple_channel_readers_co_start_but_closed_feedback_is_diagnosed() {
     let writer = OperationKinds {
         source: FileClass::Regular,
         destination: FileClass::Stream,
@@ -361,12 +383,10 @@ fn ambiguous_channel_roles_and_closed_feedback_are_diagnosed() {
         },
         &[writer, reader, reader],
     );
-    assert!(
-        ambiguous
-            .issues
-            .iter()
-            .any(|issue| issue.message.contains("producer(s)"))
-    );
+    assert!(ambiguous.issues.is_empty());
+    assert_eq!(ambiguous.stream_groups, vec![vec![0, 1, 2]]);
+    assert_eq!(ambiguous.stream_connections.len(), 2);
+    assert!(ambiguous.edges.is_empty());
     let self_feedback = Plan::build(
         &Program {
             operations: vec![op("fifo", "fifo")],
@@ -394,7 +414,7 @@ fn ambiguous_channel_roles_and_closed_feedback_are_diagnosed() {
 }
 
 #[test]
-fn file_hazards_and_contracted_dependency_cycles_are_not_erased_for_co_start() {
+fn file_hazards_remain_but_multi_party_channels_do_not_create_pairing_cycles() {
     let writer = OperationKinds {
         source: FileClass::Regular,
         destination: FileClass::Stream,
@@ -427,12 +447,9 @@ fn file_hazards_and_contracted_dependency_cycles_are_not_erased_for_co_start() {
         },
         &[writer, writer, reader, reader],
     );
-    assert!(
-        crossed
-            .issues
-            .iter()
-            .any(|issue| issue.message.contains("completion-dependency cycle"))
-    );
+    assert!(crossed.issues.is_empty(), "{:?}", crossed.issues);
+    assert_eq!(crossed.stream_groups, vec![vec![0, 1, 2, 3]]);
+    assert!(crossed.edges.is_empty());
 }
 
 #[test]

@@ -19,7 +19,7 @@ impl Reporter {
         color: Color,
         settings: msync::config::ProgressSettings,
     ) -> io::Result<Option<Self>> {
-        if !io::stderr().is_terminal() {
+        if settings.interval_ms == 0 || !io::stderr().is_terminal() {
             return Ok(None);
         }
         let inline = color.stderr() && !editor::basic_terminal();
@@ -75,14 +75,9 @@ fn report_with(
     inline: bool,
     settings: &msync::config::ProgressSettings,
 ) -> io::Result<()> {
-    let mut next = Instant::now()
-        .checked_add(settings.delay())
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "progress display delay is too large",
-            )
-        })?;
+    let Some(mut next) = Instant::now().checked_add(settings.delay()) else {
+        return Ok(());
+    };
     let mut visible = false;
     let mut revision = None;
     let mut second = 0;
@@ -94,20 +89,17 @@ fn report_with(
         if Instant::now() < next {
             continue;
         }
-        next = Instant::now()
-            .checked_add(settings.interval())
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "progress refresh interval is too large",
-                )
-            })?;
+        let following = Instant::now().checked_add(settings.interval());
         if inline || revision != Some(snapshot.revision) || second != snapshot.elapsed.as_secs() {
             render(output, &snapshot, inline)?;
             visible = true;
             revision = Some(snapshot.revision);
             second = snapshot.elapsed.as_secs();
         }
+        let Some(following) = following else {
+            return clear(output, inline && visible);
+        };
+        next = following;
     }
 }
 

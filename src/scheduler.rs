@@ -289,8 +289,9 @@ impl Observations {
             self.cache_hits += 1;
             return;
         }
-        let observation = if live && matches!(location.backend, Backend::Wsl | Backend::Ssh { .. })
-        {
+        let observation = if matches!(location.backend, Backend::Ssh { .. }) {
+            Observation::Ready(Ok(FileClass::Unknown))
+        } else if live && matches!(location.backend, Backend::Wsl) {
             self.remote
                 .entry(location.backend.clone())
                 .or_default()

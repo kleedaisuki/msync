@@ -298,6 +298,34 @@ impl RuntimeSession {
     ) -> Result<()> {
         let span = node.span;
         let destination = self.eval(destination, span).await?.location(span)?;
+        if range.stages.is_empty()
+            && let RangeSource::Regex { root, pattern } = &range.source
+            && matches!(&root.kind, ExprKind::Path { location, .. } if matches!(location.backend, Backend::Ssh { .. }))
+        {
+            let location = self.eval(root, span).await?.location(span)?;
+            let instruction = Instruction {
+                id: node.id,
+                kind: InstructionKind::Transfer {
+                    source: hir::Input::File {
+                        location,
+                        pattern: Some(pattern.clone()),
+                    },
+                    destination: hir::Output::File {
+                        location: destination,
+                        mode,
+                    },
+                },
+                span,
+                expansion: node.expansion.clone(),
+            };
+            return self
+                .interpret(&hir::Program {
+                    body: hir::Region {
+                        instructions: vec![instruction],
+                    },
+                })
+                .await;
+        }
         let mut cursor = Cursor::new(range);
         let mut nodes = Vec::new();
         while let Some(value) = cursor.next(self, span).await? {
@@ -336,7 +364,6 @@ impl RuntimeSession {
         }
         self.wait_control_path(&destination, PathAccess::Target, span)
             .await?;
-        self.ensure_invocation()?;
         let lease = self.admission.copy(span).map_err(super::admission_error)?;
         let mut options = self.options.clone();
         options.cancel = self.cancel.clone();
@@ -587,10 +614,9 @@ impl RuntimeSession {
                         || suffix.contains('\0')
                         || suffix.starts_with(['/', '\\', '~'])
                         || (suffix.len() > 1 && suffix.as_bytes()[1] == b':')
-                        || crate::language::path_boundary_whitespace(&suffix)
                     {
                         return Err(ExecutionError::new(
-                            "joined path suffix must be a nonempty relative path without boundary whitespace",
+                            "joined path suffix must be a nonempty relative path",
                             span,
                         ));
                     }

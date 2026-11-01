@@ -39,23 +39,34 @@ pub(super) fn run(color: Color) -> CliResult {
             "ssh",
             "Authentication and remote filesystem capabilities are not checked; the SSH client is not executed.",
         ),
-        (
-            "SCP client",
-            "scp",
-            "SFTP-default behavior and server compatibility are not checked.",
-        ),
     ] {
-        let located = executable_path(executable);
-        let (status, detail) = match located {
+        let lookup = executable_path(executable);
+        let (status, mut detail) = match lookup.located {
             Some(path) => (
                 "located; runtime unverified",
                 format!("{}; {condition}", path.display()),
             ),
-            None => (
+            None if lookup.uninspected.is_empty() => (
                 "not located; runtime unverified",
                 format!("Cannot locate {executable} in the executable search paths. {condition}"),
             ),
+            None => (
+                "search incomplete; runtime unverified",
+                format!("No local {executable} candidate was found. {condition}"),
+            ),
         };
+        if !lookup.uninspected.is_empty() {
+            detail.push_str(" Not inspected by this passive inventory: ");
+            detail.push_str(
+                &lookup
+                    .uninspected
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            detail.push('.');
+        }
         item(&mut output, name, status, &detail, color);
     }
     output.push_str(
@@ -80,7 +91,12 @@ fn item(output: &mut String, name: &str, status: &str, detail: &str, color: Colo
     ));
 }
 
-fn executable_path(name: &str) -> Option<PathBuf> {
+struct Lookup {
+    located: Option<PathBuf>,
+    uninspected: Vec<PathBuf>,
+}
+
+fn executable_path(name: &str) -> Lookup {
     let mut directories = Vec::new();
     #[cfg(windows)]
     {
@@ -105,10 +121,22 @@ fn executable_path(name: &str) -> Option<PathBuf> {
     } else {
         name.to_owned()
     };
-    directories
+    let mut lookup = Lookup {
+        located: None,
+        uninspected: Vec::new(),
+    };
+    for path in directories
         .into_iter()
         .map(|directory| directory.join(&filename))
-        .find(|path| local_candidate(path) && ordinary_file(path))
+    {
+        if !local_candidate(&path) {
+            lookup.uninspected.push(path);
+        } else if ordinary_file(&path) {
+            lookup.located = Some(path);
+            break;
+        }
+    }
+    lookup
 }
 
 #[cfg(windows)]

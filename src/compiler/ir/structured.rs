@@ -16,6 +16,13 @@ pub struct Structured {
 }
 
 impl Structured {
+    pub fn from_loaded(module: crate::object::LoadedModule) -> Self {
+        Self {
+            module: module.into_module(),
+            context: None,
+        }
+    }
+
     pub fn relocatable(module: ObjectModule) -> Result<Self, String> {
         module.validate().map_err(|error| error.to_string())?;
         Ok(Self {
@@ -43,7 +50,7 @@ impl Structured {
         session: &mut Session,
     ) -> Result<ContextualizedModule, String> {
         self.validate()?;
-        crate::context::contextualize(
+        crate::context::contextualize_validated(
             &self.module,
             &Context::new(self.context.as_ref().unwrap_or(context)),
             session,

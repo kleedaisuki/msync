@@ -262,9 +262,9 @@ impl State {
         {
             let portable = lowered
                 .clone()
-                .into_object()
+                .into_loaded_object()
                 .map_err(|error| error.to_string())
-                .and_then(msync::ir::Structured::relocatable);
+                .map(msync::ir::Structured::from_loaded);
             Some(LastIr {
                 portable,
                 context: input.context.clone(),
@@ -275,7 +275,7 @@ impl State {
         };
         if let Some(output) = &options.output {
             let module = lowered
-                .into_object()
+                .into_loaded_object()
                 .map_err(|cause| object_error(cause, input.name, presentation::Stage::Compile))?;
             let bytes = module
                 .encode()
@@ -357,7 +357,7 @@ impl State {
     ) -> CliResult {
         let module = {
             let mut load = msync::telemetry::span("load_object");
-            let result = msync::object::ObjectModule::decode(input.bytes);
+            let result = msync::object::ObjectModule::decode_loaded(input.bytes);
             load.finish_result(&result);
             result.map_err(|cause| object_error(cause, input.name, presentation::Stage::Load))?
         };
@@ -376,8 +376,7 @@ impl State {
         let mut candidate = self.compiler.clone();
         let compiled = {
             let mut link = msync::telemetry::span("contextualize");
-            let result = msync::context::contextualize(
-                &module,
+            let result = module.contextualize(
                 &msync::context::Context::new(&input.context),
                 &mut candidate,
             );
@@ -441,17 +440,7 @@ impl State {
         incremental: bool,
     ) -> CliResult {
         self.compiler = candidate;
-        if compiled.program.body.instructions.is_empty()
-            && !self.runtime.as_ref().map_or_else(
-                || {
-                    msync::execution::recovery_required(
-                        &context.pwd.join(".temp"),
-                        options.settings.execution.state_dir.as_deref(),
-                    )
-                },
-                RuntimeSession::recovery_required,
-            )
-        {
+        if compiled.program.body.instructions.is_empty() {
             return Ok(());
         }
         let compiled = Arc::new(compiled);
@@ -469,10 +458,20 @@ impl State {
         let reporter = if options.trace.as_deref() == Some("-") {
             None
         } else {
-            crate::progress::Reporter::start_with(options.color, options.settings.progress.clone())
-                .map_err(|cause| {
-                    Issue::new("cannot start execution progress").field("cause", cause.to_string())
-                })?
+            match crate::progress::Reporter::start_with(
+                options.color,
+                options.settings.progress.clone(),
+            ) {
+                Ok(reporter) => reporter,
+                Err(cause) => {
+                    crate::print_warning(
+                        &Issue::new("cannot start execution progress")
+                            .field("cause", cause.to_string()),
+                        options.color,
+                    );
+                    None
+                }
+            }
         };
         let started = std::time::Instant::now();
         let runtime = self
@@ -504,13 +503,6 @@ impl State {
                 return Err(error);
             }
         };
-        if let Some(reason) = authentication.foreground_reason() {
-            print_status(
-                "SSH plan: running in foreground for selected work; Ctrl-C cancels authentication and transfer",
-                options.color,
-            )?;
-            print_text(&format!("  reason: {}\n", presentation::escape(reason)))?;
-        }
         let outcome = authentication.run(|| {
             executor.block_on(contextual(execution_context.clone(), async {
             let operation = async {
@@ -584,7 +576,9 @@ impl State {
                 execution_error(error, Some(&compiled), options.color)
             })
         })?;
-        observer?;
+        if let Err(issue) = observer {
+            crate::print_warning(&issue, options.color);
+        }
         for issue in std::mem::take(&mut report.cleanup)
             .into_iter()
             .filter(|issue| !issue.resolved)

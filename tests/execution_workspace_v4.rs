@@ -64,19 +64,21 @@ async fn run_live(runtime: &mut RuntimeSession, compiler: &mut Session, cwd: &Pa
 fn assert_scratch_contents(path: &Path, users: &[&str], runtime: Option<&RuntimeSession>) {
     let private = runtime.and_then(|runtime| runtime.private_root().unwrap());
     let stage_record = runtime.and_then(|runtime| runtime.private_stage_record().unwrap());
+    assert!(
+        stage_record.is_none(),
+        "persistent stage registration remains"
+    );
     let mut expected = users
         .iter()
         .map(|name| std::ffi::OsString::from(*name))
         .collect::<std::collections::BTreeSet<_>>();
+    if !path.exists() {
+        assert!(private.is_none() && expected.is_empty());
+        return;
+    }
     for entry in fs::read_dir(path).unwrap() {
         let entry = entry.unwrap();
         if expected.remove(&entry.file_name()) {
-            continue;
-        }
-        if entry.file_name() == ".msync-recovery-v1"
-            || entry.file_name() == ".msync-remote-recovery-v1"
-        {
-            statement_storage::assert_registry_metadata_with_owner(&entry.path(), stage_record);
             continue;
         }
         let private = private.unwrap_or_else(|| {

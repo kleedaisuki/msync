@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use regex::Regex;
 
@@ -15,42 +15,6 @@ pub(super) struct Selection {
     pub snapshot: Snapshot,
     pub basename: Option<OsString>,
     pub source: Option<PathBuf>,
-}
-
-pub(super) fn relation(source: &Selection, destination: &Path, span: Span) -> Result<()> {
-    let Some(path) = &source.source else {
-        return Ok(());
-    };
-    if path == destination {
-        return Err(ExecutionError::new(
-            "source and destination are the same path",
-            span,
-        ));
-    }
-    if source.snapshot.is_directory()
-        && (path.starts_with(destination) || destination.starts_with(path))
-    {
-        return Err(ExecutionError::new(
-            "source and destination directory trees must be disjoint",
-            span,
-        ));
-    }
-    if path.exists()
-        && destination.exists()
-        && same_file::is_same_file(path, destination).map_err(|cause| {
-            ExecutionError::caused(
-                "cannot compare source and destination identities",
-                span,
-                cause,
-            )
-        })?
-    {
-        return Err(ExecutionError::new(
-            "source and destination refer to the same file identity",
-            span,
-        ));
-    }
-    Ok(())
 }
 
 pub(super) fn select_snapshot(

@@ -3,7 +3,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use msync::filesystem::{Entry, PublishEvent, Recovery, SnapshotStore};
+use msync::filesystem::{Entry, PublishEvent, SnapshotStore};
 
 fn workspace() -> tempfile::TempDir {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
@@ -88,7 +88,7 @@ fn assembled_manifest_paths_have_one_canonical_node_spelling() {
 }
 
 #[test]
-fn tree_manifest_retains_empty_directories_and_exact_publication_replaces_the_root() {
+fn tree_manifest_retains_empty_directories_and_replacement_has_no_before_image() {
     let workspace = workspace();
     let source = workspace.path().join("source");
     let target = workspace.path().join("target");
@@ -99,102 +99,57 @@ fn tree_manifest_retains_empty_directories_and_exact_publication_replaces_the_ro
     let mut store = store(workspace.path());
     let snapshot = store.capture(&source).unwrap();
     assert!(snapshot.is_directory());
-    assert_eq!(
-        snapshot.entries().keys().cloned().collect::<Vec<_>>(),
-        [PathBuf::new(), "empty".into(), "file".into()]
-    );
     let mut publication = store.prepare(&snapshot, &target).unwrap();
-    assert!(target.join("old-subtree/old").exists());
-    assert!(
-        !target.join("file").exists(),
-        "preparation must not expose replacement data"
-    );
+    assert_eq!(read(&target.join("old-subtree/old")), "old");
     publication.publish().unwrap();
     assert_eq!(read(&target.join("file")), "new");
     assert!(target.join("empty").is_dir());
     assert!(!target.join("old-subtree").exists());
-    assert!(
-        !target.join("source").exists(),
-        "whole-root replacement is not container insertion"
+    assert!(!publication.journal().join("old").exists());
+    assert_eq!(
+        publication.rollback().unwrap_err().cause.kind(),
+        io::ErrorKind::Unsupported
     );
-    publication.rollback().unwrap();
-    assert_eq!(read(&target.join("old-subtree/old")), "old");
-    assert!(!target.join("file").exists());
     publication.finalize().unwrap();
     drop(snapshot);
     store.cleanup().unwrap();
 }
 
 #[test]
-fn publication_receipts_restore_previous_snapshots_without_retained_history() {
+fn publishing_an_older_captured_value_is_an_explicit_new_replacement() {
     let workspace = workspace();
     let target = workspace.path().join("target");
-    let next = workspace.path().join("next");
-    fs::create_dir(&target).unwrap();
-    fs::write(target.join("a"), "origin").unwrap();
+    fs::write(&target, "origin").unwrap();
     let mut store = store(workspace.path());
     let origin = store.capture(&target).unwrap();
-    fs::create_dir(&next).unwrap();
-    fs::write(next.join("a"), "first publication").unwrap();
-    fs::write(next.join("created"), "created by first publication").unwrap();
-    let first = store.capture(&next).unwrap();
-    let mut first_publication = store.prepare(&first, &target).unwrap();
-    first_publication.publish().unwrap();
-    first_publication.finalize().unwrap();
-    fs::write(next.join("a"), "second publication").unwrap();
-    fs::remove_file(next.join("created")).unwrap();
-    fs::write(next.join("new"), "pending").unwrap();
-    let second = store.capture(&next).unwrap();
-    let mut pending = store.prepare(&second, &target).unwrap();
-    pending.publish().unwrap();
-    assert_eq!(read(&target.join("a")), "second publication");
-    pending.rollback().unwrap();
-    assert_eq!(read(&target.join("a")), "first publication");
-    assert_eq!(
-        read(&target.join("created")),
-        "created by first publication"
-    );
-    assert!(!target.join("new").exists());
-    pending.finalize().unwrap();
-    let mut restore_snapshot = store.prepare(&origin, &target).unwrap();
-    restore_snapshot.publish().unwrap();
-    assert_eq!(read(&target.join("a")), "origin");
-    assert!(!target.join("created").exists());
-    restore_snapshot.finalize().unwrap();
-    drop((origin, first, second));
+    fs::write(&target, "later value").unwrap();
+    let mut replacement = store.prepare(&origin, &target).unwrap();
+    replacement.publish().unwrap();
+    assert_eq!(read(&target), "origin");
+    replacement.finalize().unwrap();
+    drop(origin);
     store.cleanup().unwrap();
 }
 
 #[test]
-fn absence_is_a_tombstone_not_an_empty_file_in_both_directions() {
+fn an_absent_snapshot_requests_removal_not_an_empty_file() {
     let workspace = workspace();
-    let source = workspace.path().join("source");
     let target = workspace.path().join("target");
     let mut store = store(workspace.path());
     let absent = store.capture(&target).unwrap();
     assert!(absent.is_missing());
-    fs::write(&source, "new").unwrap();
-    let file = store.capture(&source).unwrap();
-    let mut create = store.prepare(&file, &target).unwrap();
-    create.publish().unwrap();
-    assert_eq!(read(&target), "new");
-    create.rollback().unwrap();
-    assert!(!target.exists());
-    create.finalize().unwrap();
     fs::create_dir(&target).unwrap();
-    fs::write(target.join("child"), "retained").unwrap();
-    let mut remove = store.prepare(&absent, &target).unwrap();
-    remove.publish().unwrap();
+    fs::write(target.join("child"), "old").unwrap();
+    let mut replacement = store.prepare(&absent, &target).unwrap();
+    replacement.publish().unwrap();
     assert!(!target.exists());
-    remove.rollback().unwrap();
-    assert_eq!(read(&target.join("child")), "retained");
-    remove.finalize().unwrap();
-    drop((absent, file));
+    replacement.finalize().unwrap();
+    drop(absent);
     store.cleanup().unwrap();
 }
 
 #[test]
-fn publication_failures_restore_before_images_and_retain_retryable_journals() {
+fn observer_failure_preserves_the_actual_replace_outcome_and_retry_uses_a_new_stage() {
     for rejected in [PublishEvent::AfterBackup, PublishEvent::AfterInstall] {
         let workspace = workspace();
         let source = workspace.path().join("source");
@@ -203,32 +158,39 @@ fn publication_failures_restore_before_images_and_retain_retryable_journals() {
         fs::write(&target, "old").unwrap();
         let mut store = store(workspace.path());
         let snapshot = store.capture(&source).unwrap();
-        let mut publication = store.prepare(&snapshot, &target).unwrap();
-        let failure = publication
+        let mut replacement = store.prepare(&snapshot, &target).unwrap();
+        replacement
             .publish_with(|event| {
                 if event == rejected {
-                    Err(io::Error::other("injected publication failure"))
+                    Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "injected interruption",
+                    ))
                 } else {
                     Ok(())
                 }
             })
             .unwrap_err();
-        assert_eq!(failure.recovery, Recovery::Restored);
-        assert_eq!(read(&target), "old");
-        assert!(failure.journal.as_ref().unwrap().is_dir());
-        assert!(failure.recovery_error.is_none());
-        publication.publish().unwrap();
+        assert_eq!(
+            read(&target),
+            if rejected == PublishEvent::AfterBackup {
+                "old"
+            } else {
+                "new"
+            }
+        );
+        replacement.finalize().unwrap();
+        let mut retry = store.prepare(&snapshot, &target).unwrap();
+        retry.publish().unwrap();
+        retry.finalize().unwrap();
         assert_eq!(read(&target), "new");
-        publication.rollback().unwrap();
-        assert_eq!(read(&target), "old");
-        publication.finalize().unwrap();
         drop(snapshot);
         store.cleanup().unwrap();
     }
 }
 
 #[test]
-fn failed_compensation_retains_both_versions_and_requires_explicit_recovery() {
+fn dropping_an_unpublished_stage_cleans_only_that_stage() {
     let workspace = workspace();
     let source = workspace.path().join("source");
     let target = workspace.path().join("target");
@@ -236,40 +198,20 @@ fn failed_compensation_retains_both_versions_and_requires_explicit_recovery() {
     fs::write(&target, "old").unwrap();
     let mut store = store(workspace.path());
     let snapshot = store.capture(&source).unwrap();
-    let mut publication = store.prepare(&snapshot, &target).unwrap();
-    let failure = publication
-        .publish_with(|event| {
-            if event == PublishEvent::AfterBackup {
-                fs::write(&target, "foreign obstruction")?;
-                return Err(io::Error::other(
-                    "injected failure plus failed compensation",
-                ));
-            }
-            Ok(())
-        })
-        .unwrap_err();
-    assert_eq!(failure.recovery, Recovery::JournalRetained);
-    assert!(failure.recovery_error.is_some());
-    assert_eq!(read(&target), "foreign obstruction");
-    assert_eq!(read(&publication.journal().join("old")), "old");
-    assert_eq!(read(&publication.journal().join("new")), "new");
-    assert!(
-        publication.finalize().is_err(),
-        "failed recovery must never discard retained undo"
-    );
-    fs::remove_file(&target).unwrap();
-    publication.recover().unwrap();
+    let stage;
+    {
+        let replacement = store.prepare(&snapshot, &target).unwrap();
+        stage = replacement.journal().to_owned();
+        assert!(stage.exists());
+    }
+    assert!(!stage.exists());
     assert_eq!(read(&target), "old");
-    publication.publish().unwrap();
-    assert_eq!(read(&target), "new");
-    publication.rollback().unwrap();
-    publication.finalize().unwrap();
     drop(snapshot);
     store.cleanup().unwrap();
 }
 
 #[test]
-fn a_native_install_failure_restores_the_original_target_before_returning() {
+fn a_native_failure_before_replace_leaves_the_original_target() {
     let workspace = workspace();
     let source = workspace.path().join("source");
     let target = workspace.path().join("target");
@@ -277,78 +219,68 @@ fn a_native_install_failure_restores_the_original_target_before_returning() {
     fs::write(&target, "old").unwrap();
     let mut store = store(workspace.path());
     let snapshot = store.capture(&source).unwrap();
-    let mut publication = store.prepare(&snapshot, &target).unwrap();
-    fs::remove_file(publication.journal().join("new")).unwrap();
-    let failure = publication.publish().unwrap_err();
-    assert_eq!(failure.cause.kind(), io::ErrorKind::NotFound);
-    assert_eq!(failure.recovery, Recovery::Restored);
+    let mut replacement = store.prepare(&snapshot, &target).unwrap();
+    fs::remove_file(replacement.journal().join("new")).unwrap();
+    assert_eq!(
+        replacement.publish().unwrap_err().cause.kind(),
+        io::ErrorKind::NotFound
+    );
     assert_eq!(read(&target), "old");
-    assert!(failure.journal.unwrap().exists());
-    publication.finalize().unwrap();
+    replacement.finalize().unwrap();
     drop(snapshot);
     store.cleanup().unwrap();
 }
 
 #[cfg(windows)]
 #[test]
-fn cleanup_failure_is_visible_retains_the_journal_and_can_be_retried() {
+fn transient_stage_cleanup_failure_does_not_undo_a_completed_replace() {
     use std::os::windows::fs::OpenOptionsExt;
     let workspace = workspace();
     let source = workspace.path().join("source");
     let target = workspace.path().join("target");
     fs::write(&source, "new").unwrap();
-    fs::write(&target, "old").unwrap();
     let mut store = store(workspace.path());
     let snapshot = store.capture(&source).unwrap();
-    let mut publication = store.prepare(&snapshot, &target).unwrap();
-    publication.publish().unwrap();
-    let locked = fs::OpenOptions::new()
+    let mut replacement = store.prepare(&snapshot, &target).unwrap();
+    replacement.publish().unwrap();
+    let held_path = replacement.journal().join("held-private-file");
+    fs::write(&held_path, "cleanup fixture").unwrap();
+    let held = fs::OpenOptions::new()
         .read(true)
         .share_mode(3)
-        .open(publication.journal().join("old"))
+        .open(held_path)
         .unwrap();
-    let failure = publication.finalize().unwrap_err();
-    assert!(failure.journal.as_ref().unwrap().exists());
-    assert_eq!(failure.recovery, Recovery::JournalRetained);
+    assert!(replacement.finalize().is_err());
     assert_eq!(read(&target), "new");
-    assert!(
-        publication.rollback().is_err(),
-        "irreversible cleanup must not promise rollback after deleting undo entries"
-    );
-    drop(locked);
-    publication.finalize().unwrap();
+    drop(held);
+    replacement.finalize().unwrap();
     drop(snapshot);
     store.cleanup().unwrap();
 }
 
 #[test]
-fn another_owners_replacement_is_never_overwritten_during_rollback() {
+fn a_completed_replace_does_not_keep_authority_to_rewrite_the_target_again() {
     let workspace = workspace();
     let source = workspace.path().join("source");
     let target = workspace.path().join("target");
-    let moved = workspace.path().join("moved");
     fs::write(&source, "new").unwrap();
-    fs::write(&target, "old").unwrap();
     let mut store = store(workspace.path());
     let snapshot = store.capture(&source).unwrap();
-    let mut publication = store.prepare(&snapshot, &target).unwrap();
-    publication.publish().unwrap();
-    fs::rename(&target, &moved).unwrap();
-    fs::write(&target, "foreign").unwrap();
-    let failure = publication.rollback().unwrap_err();
-    assert_eq!(failure.cause.kind(), io::ErrorKind::AlreadyExists);
-    assert_eq!(read(&target), "foreign");
-    fs::remove_file(&target).unwrap();
-    fs::rename(&moved, &target).unwrap();
-    publication.rollback().unwrap();
-    assert_eq!(read(&target), "old");
-    publication.finalize().unwrap();
+    let mut replacement = store.prepare(&snapshot, &target).unwrap();
+    replacement.publish().unwrap();
+    fs::write(&target, "user changed it later").unwrap();
+    assert_eq!(
+        replacement.rollback().unwrap_err().cause.kind(),
+        io::ErrorKind::Unsupported
+    );
+    assert_eq!(read(&target), "user changed it later");
+    replacement.finalize().unwrap();
     drop(snapshot);
     store.cleanup().unwrap();
 }
 
 #[test]
-fn root_replacement_scratch_capture_and_ancestor_capture_are_rejected_before_mutation() {
+fn a_snapshot_store_does_not_recursively_capture_its_own_evolving_artifacts() {
     let workspace = workspace();
     let source = workspace.path().join("source");
     fs::write(&source, "file").unwrap();
@@ -358,36 +290,28 @@ fn root_replacement_scratch_capture_and_ancestor_capture_are_rejected_before_mut
     let snapshot = store.capture(&source).unwrap();
     let filesystem_root = workspace.path().ancestors().last().unwrap();
     assert!(store.prepare(&snapshot, filesystem_root).is_err());
-    assert!(store.prepare(&snapshot, workspace.path()).is_err());
-    assert!(
-        store
-            .prepare(&snapshot, &store.root().join("target"))
-            .is_err()
-    );
     assert_eq!(read(&source), "file");
     drop(snapshot);
     store.cleanup().unwrap();
 }
 
 #[test]
-fn cross_store_snapshots_do_not_allow_replacing_their_artifact_owners() {
+fn cross_store_snapshots_keep_their_payload_owners_alive_until_consumed() {
     let workspace = workspace();
     let source = workspace.path().join("source");
     fs::write(&source, "retained").unwrap();
     let mut first = store(workspace.path());
     let mut second = SnapshotStore::new(&workspace.path().join("other-artifacts")).unwrap();
     let snapshot = second.capture(&source).unwrap();
-    assert!(
-        first
-            .prepare(&snapshot, second.root().parent().unwrap())
-            .is_err()
+    assert_eq!(
+        second.cleanup().unwrap_err().cause.kind(),
+        io::ErrorKind::ResourceBusy
     );
     let target = workspace.path().join("target");
-    let mut publication = first.prepare(&snapshot, &target).unwrap();
-    publication.publish().unwrap();
+    let mut replacement = first.prepare(&snapshot, &target).unwrap();
+    replacement.publish().unwrap();
+    replacement.finalize().unwrap();
     assert_eq!(read(&target), "retained");
-    publication.rollback().unwrap();
-    publication.finalize().unwrap();
     drop(snapshot);
     first.cleanup().unwrap();
     second.cleanup().unwrap();
@@ -412,7 +336,6 @@ fn immutable_entry_versions_can_be_assembled_without_allowing_path_escape() {
     publication.publish().unwrap();
     assert_eq!(read(&target.join("file")), "replacement");
     assert_eq!(read(&source.join("file")), "original");
-    publication.rollback().unwrap();
     publication.finalize().unwrap();
     for key in ["../escaped", "/absolute", "missing-parent/file"] {
         let entries =
@@ -438,8 +361,7 @@ fn ordinary_windows_paths_preserve_the_file_root_without_a_trailing_separator() 
     let mut publication = store.prepare(&snapshot, &target).unwrap();
     publication.publish().unwrap();
     assert_eq!(read(&target), "ordinary file root");
-    publication.rollback().unwrap();
-    assert!(!target.exists());
+    assert!(target.exists());
     publication.finalize().unwrap();
     drop(snapshot);
     store.cleanup().unwrap();
@@ -447,7 +369,7 @@ fn ordinary_windows_paths_preserve_the_file_root_without_a_trailing_separator() 
 
 #[cfg(unix)]
 #[test]
-fn symlink_entries_and_ancestors_are_rejected_without_following_them() {
+fn selected_ancestor_aliases_work_and_recursive_links_remain_links() {
     use std::os::unix::fs::symlink;
     let workspace = workspace();
     let source = workspace.path().join("source");
@@ -455,18 +377,32 @@ fn symlink_entries_and_ancestors_are_rejected_without_following_them() {
     fs::create_dir(&source).unwrap();
     fs::write(source.join("file"), "original").unwrap();
     symlink(&source, &link).unwrap();
+    symlink("file", source.join("inside")).unwrap();
+    symlink("not-created", source.join("dangling")).unwrap();
     let mut store = store(workspace.path());
-    assert!(store.capture(&link.join("file")).is_err());
-    assert!(store.capture(&link.join("../source/file")).is_err());
-    symlink(source.join("file"), source.join("inside")).unwrap();
-    assert!(store.capture(&source).is_err());
-    store.cleanup().unwrap();
+    let selected = store.capture(&link.join("file")).unwrap();
+    let tree = store.capture(&source).unwrap();
+    let mut replacement = store
+        .prepare(&tree, &workspace.path().join("copied"))
+        .unwrap();
+    replacement.publish().unwrap();
+    replacement.finalize().unwrap();
+    assert_eq!(
+        fs::read_link(workspace.path().join("copied/inside")).unwrap(),
+        Path::new("file")
+    );
+    assert_eq!(
+        fs::read_link(workspace.path().join("copied/dangling")).unwrap(),
+        Path::new("not-created")
+    );
     assert_eq!(read(&source.join("file")), "original");
+    drop((selected, tree));
+    store.cleanup().unwrap();
 }
 
 #[cfg(unix)]
 #[test]
-fn file_and_directory_modes_survive_snapshot_publication_and_rollback() {
+fn file_and_directory_modes_survive_snapshot_replacement() {
     use std::os::unix::fs::PermissionsExt;
     let workspace = workspace();
     let source = workspace.path().join("source");
@@ -494,13 +430,17 @@ fn file_and_directory_modes_survive_snapshot_publication_and_rollback() {
             & 0o777,
         0o540
     );
-    publication.rollback().unwrap();
     assert_eq!(
-        fs::metadata(&target).unwrap().permissions().mode() & 0o777,
-        0o750
+        fs::metadata(source.join("file"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o540
     );
     publication.finalize().unwrap();
     drop(snapshot);
     store.cleanup().unwrap();
     fs::set_permissions(&source, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
 }

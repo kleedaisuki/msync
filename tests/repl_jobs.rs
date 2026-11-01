@@ -504,6 +504,51 @@ fn distinct_live_submissions_have_independent_job_ids_and_completion() {
 }
 
 #[test]
+fn busy_independent_submission_queues_without_blocking_the_repl() {
+    let directory = workspace();
+    let mut slow = HeldSource::start(b"first source");
+    let mut next = HeldSource::start(b"queued source");
+    let mut repl = Repl::start_with_options(
+        directory.path(),
+        &[
+            "--no-config",
+            "--max-streams",
+            "1",
+            "--buffer-size",
+            "4",
+            "--memory-limit",
+            "8",
+        ],
+    );
+    launch(&mut repl, &slow);
+    repl.send(&format!(
+        "queued_wire => tcp://{}\nqueued_wire::/ -> $pwd::pwd/next.bin\n/help\n",
+        next.address,
+    ));
+    repl.until("job 2: running in background");
+    repl.until("REPL commands");
+    assert!(matches!(
+        next.accepted.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+    slow.close();
+    next.connected();
+    next.close();
+    repl.send("/wait\n/quit\n");
+    let (status, errors) = repl.finish();
+    assert!(status.success(), "{errors}");
+    assert!(!errors.contains("capacity is occupied"), "{errors}");
+    assert_eq!(
+        fs::read(directory.path().join("output.bin")).unwrap(),
+        b"first source"
+    );
+    assert_eq!(
+        fs::read(directory.path().join("next.bin")).unwrap(),
+        b"queued source"
+    );
+}
+
+#[test]
 fn rejected_obsolete_source_does_not_disturb_an_active_job() {
     let directory = workspace();
     let mut source = HeldSource::start(b"owned by structured session");

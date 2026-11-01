@@ -171,7 +171,7 @@ impl Endpoint {
         }
         let root = self.roots.entry(file.path.root.clone()).or_default();
         root.members.insert(instruction);
-        root.paths.insert(&file.path.parts, instruction);
+        root.paths.insert(file.path.comparison_parts(), instruction);
     }
 
     fn candidates(&self, file: &FileResource, result: &mut Members) {
@@ -182,7 +182,7 @@ impl Endpoint {
         result.extend(&self.uncertain);
         for (name, root) in &self.roots {
             if *name == file.path.root {
-                root.paths.candidates(&file.path.parts, result);
+                root.paths.candidates(file.path.comparison_parts(), result);
             } else {
                 result.extend(&root.members);
             }
@@ -356,6 +356,33 @@ mod tests {
             index.candidates(&effect, &mut candidates);
             assert!(candidates.is_empty());
             index.insert(&effect, instruction);
+        }
+    }
+
+    #[test]
+    fn uncased_unicode_workspaces_do_not_merge_sibling_candidates() {
+        for root in [r"D:\用户\项目", r"D:\日本語\🚀"] {
+            let effect = |leaf: &str| Effects {
+                accesses: vec![Access {
+                    kind: AccessKind::Write,
+                    resource: Resource::DirectoryEntry(FileResource::new(
+                        Location {
+                            backend: Backend::Local,
+                            path: format!(r"{root}\{leaf}"),
+                        },
+                        Scope::Exact,
+                    )),
+                }],
+                unknown_external: false,
+            };
+            let mut index = CandidateIndex::default();
+            index.insert(&effect("a"), 0);
+            let mut siblings = Members::new();
+            index.candidates(&effect("b"), &mut siblings);
+            assert!(siblings.is_empty(), "{root}: {siblings:?}");
+            let mut aliases = Members::new();
+            index.candidates(&effect("A"), &mut aliases);
+            assert_eq!(aliases, Members::from([0]), "{root}");
         }
     }
 }

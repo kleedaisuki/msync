@@ -94,8 +94,15 @@ impl Issue {
         self
     }
 
+    pub(super) fn render_warning(&self, color: bool) -> String {
+        self.render_with_heading("warning:", color)
+    }
+
     fn render(&self, color: bool) -> String {
-        let heading = self.stage.map_or("error:", Stage::heading);
+        self.render_with_heading(self.stage.map_or("error:", Stage::heading), color)
+    }
+
+    fn render_with_heading(&self, heading: &str, color: bool) -> String {
         let mut output = format!("{} {}", paint(heading, "1;31", color), escape(&self.title));
         for (name, value) in &self.fields {
             output.push_str(&format!(

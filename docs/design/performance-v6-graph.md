@@ -268,3 +268,129 @@ This source change does not by itself establish that all startup regression is
 removed; the integrating owner measures the rebuilt final executable and
 attributes configuration/embedding costs separately. No new speedup percentage
 is inferred from the removed work.
+
+## Normal execution no longer materializes pair certificates (2026-11-01)
+
+### User workload and change of premise
+
+The user explicitly rejected charging successful ordinary work for defensive
+proof/persistence machinery. During removal of import-width quotas, a normal
+source selector including 1,025 modules, each writing a distinct
+`$file::parent/result-N`, exposed approximately 13 GiB and 80 seconds of planning
+work. That observation belongs to the language investigation, not a new timing
+sample here. Restoring the old 1,024-file quota would only conceal the scaling
+problem.
+
+The old representation retained either full `Conflict` access pairs or a
+`CommutationProof` for every earlier/later instruction pair. A scheduler needs
+actual ordering events, not certificates for all the pairs that need no edge.
+The earlier output-bound argument in this note still applies to the explicitly
+explained public graph, but is no longer a reason to use that representation on
+normal compilation, preparation, contextualization and execution paths.
+
+### Compact execution ordering
+
+- `build_execution[_with_context]` and `build_block_for_execution` retain nodes,
+  effects, diagnostics, refinements and necessary event dependencies without
+  `CommutationProof` output. Existing `build[_with_context]` and
+  `build_block_with_context` preserve explicitly requested full explanations.
+- Candidate indexing already determines which previous operations can conflict.
+  Compact construction visits those candidates and actual external-effect/fence
+  boundaries, not every independent pair.
+- A dependency needs at most one representative hazard for each admitted or
+  completion event class. For completion, a non-capturable witness supersedes a
+  capturable-file-read witness; the scheduler must not release a mixed conflict
+  merely because the source file has been opened.
+- Instruction candidates are considered newest first. Once an ordering edge waits
+  for a predecessor, its **non-capturable completion** ancestors are already
+  complete before that predecessor can start. Repeated direct edges to those
+  ancestors can be omitted. Captured-read and FIFO admission predecessors are
+  not silently promoted to completion. This keeps a dense write chain at N-1
+  retained edges without changing its ordering.
+- Full public verification accepts the compact reconstruction first and retains
+  the explained reconstruction as compatibility fallback. Discarding only unused
+  commutation certificates now produces a valid execution graph; changing effects
+  or required ordering is not equivalent. Fresh compiler-owned preparation does
+  not replay its own complete construction merely to validate itself again.
+
+This is a local block algorithm using the existing resource predicate and
+candidate index, not a new planner service, trust cache or proof database.
+The selected source/target/native-case meaning remains owned by the path/effect
+model. `pipeline.rs` and `context.rs` select compact construction; the interpreter
+and preparation use the same compact block/program APIs.
+
+### Discriminating checks
+
+`cargo test --locked --lib compact_execution_tests -- --nocapture` passes four
+checks: 1,025 independent nodes have no pair output; 1,025 same-target writes
+retain exactly 1,024 one-witness dependencies; a multi-writer FIFO case preserves
+its admission/capture/completion reachability; and 64 generated mixed
+file/program/fence histories preserve the full event reachability of the
+explained graph. The event model distinguishes instruction admission, source
+capture and completion, rather than comparing only final output bytes or an
+untyped dependency count.
+
+The implementation retains the ordering contract, not arbitrary pair-list
+shape, on the compact path. Explicit explanation API output stays available for
+consumers that actually request all pairs.
+
+
+### Actual compiler-CLI diagnostic result
+
+The fixture has `entry.msync` containing `include parts/<.+\\.msync>` and N
+files `parts/part-NNNN.msync`, each containing
+`"value" -> $file::parent/result-N`. Commands are ordinary, effect-free CLI checks:
+
+```sh
+BEFORE --no-config check /absolute/project/.temp/graph-proof-audit/modules-128/entry.msync
+AFTER --no-config check /absolute/project/.temp/graph-proof-audit/modules-128/entry.msync
+AFTER --no-config check /absolute/project/.temp/graph-proof-audit/modules-1025/entry.msync
+```
+
+Native Linux debug images were frozen before and after selecting compact graphs.
+This is a causal diagnostic during integration, not an isolated release/WAN
+benchmark or a claimed statistical latency distribution. Peak RSS is the actual
+CLI child's `wait4` rusage; stdout/stderr are files, and executable hashing streams
+blocks rather than reading the ~196 MB debug binary into the parent before fork.
+An initial driver did the latter, creating an artificial ~209 MB inherited RSS
+floor; its memory rows were discarded and the corrected control was rerun once.
+
+| Actual CLI workload | Before elapsed | Compact elapsed | Before peak RSS | Compact peak RSS |
+| --- | ---: | ---: | ---: | ---: |
+| 128 included output modules | 1684.4 ms | 220.8 ms | 310400 KiB | 23648 KiB |
+| 1025 included output modules | Not rerun after the earlier ~13 GiB observation | 13632.4 ms | Not remeasured | 32252 KiB |
+
+The 128-module control reduces peak memory about 13.1x and completes about 7.6x
+faster in these diagnostic samples. The large accepted source no longer retains
+GiB of pair certificates. Its remaining quadratic debug CPU work includes
+candidate/history traversal and should not be confused with a restored workload
+quota. No claim of linear overall compiler complexity follows from linear
+retained dense-frontier edges.
+
+Frozen baseline image SHA-256:
+`cea3a9264d2c6da609c0b87dbe80ae3ec26708013f9dd0abc0cb045207ab6177`.
+Frozen compact image SHA-256:
+`18eb356d9ab93abb7694c125add78750a3a0399fd873220b7da212fae8cb2621`.
+Complete observations are retained in
+`.temp/graph-proof-audit/after-streamed.json` while the temporary artifacts exist.
+The driver generates no user-file effects and does not start SSH or native user
+programs. Disposable artifacts are not required to recover the fixture definition
+or reasoning recorded above.
+
+Additional compatibility checks pass: the public explained-graph dependency /
+source tampering case, all three `pipeline_v4` compilation/state cases, and the
+five `planner_control_v6` control/fence/preparation cases. Full explanations still
+verify when explicitly built; normal execution is not forced to construct them.
+
+### Remaining work is not an admission policy
+
+The relocatable pipeline still constructs potential hazards before module path
+binding. At that point many otherwise distinct `$file` outputs are uncertain,
+so candidate/history work remains quadratic in the debug control above. One
+possible future split is an explicitly unscheduled semantic graph for unbound
+compiler-owned input, followed by real scheduling only after contextualization.
+That changes the observable `Compilation.graph` contract and was deliberately
+not added in this delivery. Another targeted optimization is avoiding repeated
+native-stream identity accesses when the same endpoint occurs in both the
+physical FIFO map and several star-shaped rendezvous proofs. Neither issue
+justifies restoring a source/module quota or rejecting valid work.

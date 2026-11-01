@@ -12,9 +12,7 @@ use lsp_types::*;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
-use crate::syntax::{Report, Span};
-
-use documents::{Documents, MAX_DOCUMENT_BYTES, OpenDocument};
+use documents::{Documents, OpenDocument};
 
 /// Serve one editor connection. Standard output is exclusively LSP framing.
 pub fn run_stdio() -> Result<(), String> {
@@ -198,12 +196,6 @@ fn opened<'a>(
         .open
         .get_mut(uri)
         .ok_or_else(|| error(ErrorCode::InvalidParams, "document is not open"))?;
-    if document.text.source.len() > MAX_DOCUMENT_BYTES {
-        return Err(error(
-            ErrorCode::InvalidParams,
-            "document exceeds the 8 MiB analysis limit",
-        ));
-    }
     Ok(document)
 }
 
@@ -315,14 +307,7 @@ fn publish(
     let Some(document) = documents.open.get_mut(uri) else {
         return Ok(());
     };
-    let reports = if document.text.source.len() > MAX_DOCUMENT_BYTES {
-        vec![Report::new(
-            "document exceeds the 8 MiB analysis limit",
-            Span::default(),
-        )]
-    } else {
-        document.syntax().reports.clone()
-    };
+    let reports = document.syntax().reports.clone();
     document.dirty = false;
     if reports.is_empty() {
         let ast = document.syntax().document.clone();

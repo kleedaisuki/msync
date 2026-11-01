@@ -1,23 +1,14 @@
-//! Statement-local publication without MVCC enrollment or retained undo history.
+//! Ordinary finite assignments use same-directory staging and replacement.
 //!
-//! The interpreter selects this owner for finite assignments. Each statement
-//! captures its source and prepares only its selected
-//! targets; unrelated cwd trees never enter a resource store. All selector
-//! members are validated and staged before publication, and their rename receipts
-//! remain reversible until the complete statement succeeds. Earlier completed
-//! statements are not part of that compensation cut.
-//!
-//! Endpoint kinds are execution-time guards. Discovering a physical stream
-//! returns `Unsupported` without opening it, so the interpreter can resume the
-//! remaining suffix through its flow scheduler instead of replaying prior IO.
+//! Simple files copy directly into their final stage. Composite views retain
+//! captured versions when composition needs them, then publish roots in order.
+//! Completed roots are not rolled back when a later operation needs retry.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-
-use same_file::Handle;
 
 use crate::endpoint::{Backend, Location};
 use crate::filesystem::{
@@ -27,13 +18,12 @@ use crate::filesystem::{
 use crate::hir::Program;
 use crate::hir::{Input, Instruction, InstructionId, InstructionKind, Output};
 use crate::language::DestinationMode;
-use crate::plan::FileClass;
 use crate::syntax::Span;
 
 use super::assignment::{self, Target};
 use super::error::{ExecutionError, Result};
 use super::progress::{Event, Phase, Progress};
-use super::transfer::{Selection, relation};
+use super::transfer::Selection;
 use super::{CleanupIssue, ExecutionReport, Options};
 
 pub(super) enum Attempt {
@@ -50,7 +40,6 @@ pub(super) struct Ordinary {
 
 struct Storage {
     assets: SnapshotStore,
-    registry: crate::filesystem::recovery::Registry,
     imports: PathBuf,
     invocation: InvocationRoot,
     capture_root: Option<InvocationRoot>,
@@ -83,6 +72,18 @@ struct Staged {
     assignments: Vec<Assignment>,
     targets: Option<BTreeMap<PathBuf, usize>>,
     report: ExecutionReport,
+}
+
+struct NativeNode {
+    relative: PathBuf,
+    metadata: NodeMetadata,
+    kind: NativeKind,
+}
+
+enum NativeKind {
+    File { bytes: u64 },
+    Directory,
+    Symlink { target: PathBuf, directory: bool },
 }
 
 impl Ordinary {
@@ -134,7 +135,360 @@ impl Ordinary {
         let Some(ready) = Ready::inspect(node, self.origin.as_ref())? else {
             return Ok(Attempt::Unsupported);
         };
+        if matches!(ready.source, Source::Remote(_)) {
+            return self.execute_remote(&ready);
+        }
+        if let Some(report) = self.execute_file(&ready)? {
+            return Ok(Attempt::Completed(report));
+        }
+        if let Some(report) = self.execute_directory(&ready)? {
+            return Ok(Attempt::Completed(report));
+        }
         self.execute_ready(&ready, None)
+    }
+
+    fn execute_file(&self, ready: &Ready) -> Result<Option<ExecutionReport>> {
+        if ready.pattern.is_some() || ready.mode == DestinationMode::ReplaceTree {
+            return Ok(None);
+        }
+        let source_metadata = match &ready.source {
+            Source::Local(path) => {
+                if fs::symlink_metadata(path)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                {
+                    return Ok(None);
+                }
+                let Some(metadata) = metadata(path, ready.span)? else {
+                    if fs::symlink_metadata(path)
+                        .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                    {
+                        return Ok(None);
+                    }
+                    return Err(ExecutionError::new(
+                        format!("source does not exist: {}", path.display()),
+                        ready.span,
+                    ));
+                };
+                if !metadata.is_file() {
+                    return Ok(None);
+                }
+                Some(NodeMetadata::capture(&metadata).map_err(|cause| {
+                    ExecutionError::caused("cannot read source metadata", ready.span, cause)
+                })?)
+            }
+            Source::Literal(_) => None,
+            Source::Remote(_) => return Ok(None),
+        };
+        let target = if ready.mode == DestinationMode::Container {
+            let Source::Local(source) = &ready.source else {
+                return Ok(None);
+            };
+            ready.target.join(source.file_name().ok_or_else(|| {
+                ExecutionError::new(
+                    "source needs a basename for container insertion",
+                    ready.span,
+                )
+            })?)
+        } else {
+            ready.target.clone()
+        };
+        if metadata(&target, ready.span)?.is_some_and(|metadata| metadata.is_dir()) {
+            return Err(ExecutionError::new(
+                "the exact destination is an existing directory",
+                ready.span,
+            )
+            .help("Append '/' for container insertion, or '/.' to replace the directory."));
+        }
+        let mut trace = copy_trace(ready, "ordinary-assignment");
+        let result = self.copy_file(ready, &target, source_metadata.as_ref());
+        trace.finish_result(&result);
+        if let Ok(report) = &result {
+            trace.metric("files.assigned", report.assigned_files as u64);
+            trace.metric("bytes.assigned", report.assigned_bytes);
+        }
+        result.map(Some)
+    }
+
+    fn copy_file(
+        &self,
+        ready: &Ready,
+        target: &Path,
+        source_metadata: Option<&NodeMetadata>,
+    ) -> Result<ExecutionReport> {
+        self.copy_file_after_acquire(ready, target, source_metadata, || {})
+    }
+
+    fn copy_file_after_acquire(
+        &self,
+        ready: &Ready,
+        target: &Path,
+        source_metadata: Option<&NodeMetadata>,
+        acquired: impl FnOnce(),
+    ) -> Result<ExecutionReport> {
+        let span = ready.span;
+        let no_clobber = false;
+        let stage = crate::io::StagedFile::new(target, no_clobber)
+            .map_err(|cause| ExecutionError::caused("cannot create file stage", span, cause))?;
+        observe(
+            self.progress.as_ref(),
+            ready,
+            Phase::Acquire,
+            &ExecutionReport::default(),
+        );
+        let mut acquire = crate::telemetry::span("ordinary.acquire");
+        let copied = match &ready.source {
+            Source::Local(source) => crate::io::copy_file(
+                source,
+                stage.path(),
+                self.options.limits.buffer_bytes,
+                &self.options.cancel,
+            ),
+            Source::Literal(text) => {
+                fs::write(stage.path(), text.as_bytes()).map(|()| text.len() as u64)
+            }
+            Source::Remote(_) => unreachable!("remote sources use acquisition"),
+        };
+        acquire.finish_result(&copied);
+        let bytes = copied.map_err(|cause| {
+            if self.options.cancel.is_cancelled() {
+                ExecutionError::cancelled("file copy cancelled", span)
+            } else {
+                ExecutionError::caused("cannot copy source", span, cause)
+            }
+        })?;
+        drop(acquire);
+        let report = ExecutionReport {
+            assignments: 1,
+            assigned_files: 1,
+            assigned_bytes: bytes,
+            published_roots: 1,
+            ..ExecutionReport::default()
+        };
+        observe(self.progress.as_ref(), ready, Phase::Stage, &report);
+        let mut prepared = crate::telemetry::span("ordinary.stage");
+        let preparation = match source_metadata {
+            Some(metadata) => metadata.apply(stage.path()),
+            None => stage.preserve_target_permissions(),
+        };
+        prepared.finish_result(&preparation);
+        preparation
+            .map_err(|cause| ExecutionError::caused("cannot apply file metadata", span, cause))?;
+        acquired();
+        self.options.check(span)?;
+        crate::filesystem::sync_file(stage.path())
+            .map_err(|cause| failure("cannot flush staged file", span, cause))?;
+        drop(prepared);
+        observe(self.progress.as_ref(), ready, Phase::Publish, &report);
+        let mut publish = crate::telemetry::span("ordinary.publish");
+        let publication = stage.commit();
+        publish.finish_result(&publication);
+        publication
+            .map_err(|cause| ExecutionError::caused("cannot replace destination", span, cause))?;
+        Ok(report)
+    }
+
+    fn execute_directory(&self, ready: &Ready) -> Result<Option<ExecutionReport>> {
+        let Source::Local(source) = &ready.source else {
+            return Ok(None);
+        };
+        let source_metadata = fs::symlink_metadata(source).map_err(|cause| {
+            ExecutionError::caused(
+                format!("cannot inspect source {}", source.display()),
+                ready.span,
+                cause,
+            )
+        })?;
+        if !source_metadata.is_dir() && !source_metadata.file_type().is_symlink() {
+            if ready.pattern.is_some() {
+                return Err(ExecutionError::new(
+                    "a selector source must be a directory",
+                    ready.span,
+                ));
+            }
+            return Ok(None);
+        }
+        if ready.mode == DestinationMode::ReplaceTree && !source_metadata.is_dir() {
+            return Err(ExecutionError::new(
+                "directory replacement needs a directory source",
+                ready.span,
+            ));
+        }
+        let mut roots = Vec::new();
+        if let Some(pattern) = &ready.pattern {
+            let regex = regex::Regex::new(&format!("\\A(?:{pattern})\\z")).map_err(|cause| {
+                ExecutionError::caused("invalid selector regex", ready.span, cause)
+            })?;
+            let mut children = fs::read_dir(source)
+                .map_err(|cause| {
+                    ExecutionError::caused("cannot enumerate source", ready.span, cause)
+                })?
+                .collect::<io::Result<Vec<_>>>()
+                .map_err(|cause| {
+                    ExecutionError::caused("cannot read source entry", ready.span, cause)
+                })?;
+            children.sort_by_key(fs::DirEntry::file_name);
+            for child in children {
+                if child
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| regex.is_match(name))
+                {
+                    roots.push((child.path(), ready.target.join(child.file_name())));
+                }
+            }
+        } else {
+            let target = if ready.mode == DestinationMode::Container {
+                ready.target.join(source.file_name().ok_or_else(|| {
+                    ExecutionError::new(
+                        "source needs a basename for container insertion",
+                        ready.span,
+                    )
+                })?)
+            } else {
+                ready.target.clone()
+            };
+            if source_metadata.is_dir()
+                && ready.mode == DestinationMode::Exact
+                && metadata(&target, ready.span)?.is_some()
+            {
+                return Err(ExecutionError::new(
+                    "a directory source needs an absent exact target or '/.'",
+                    ready.span,
+                ));
+            }
+            roots.push((source.clone(), target));
+        }
+        // The source version is genuinely needed when a destination can change
+        // an input that has not yet been read. Ordinary disjoint copies stream.
+        if roots.iter().any(|(source, target)| {
+            let source = fs::canonicalize(source).unwrap_or_else(|_| source.clone());
+            source.starts_with(target) || target.starts_with(source)
+        }) {
+            return Ok(None);
+        }
+        let mut planned = Vec::with_capacity(roots.len());
+        for (source, target) in roots {
+            let mut nodes = Vec::new();
+            collect_native(
+                &source,
+                Path::new(""),
+                &mut nodes,
+                &self.options,
+                ready.span,
+            )?;
+            planned.push((source, target, nodes));
+        }
+        let mut trace = copy_trace(ready, "ordinary-assignment");
+        let result = (|| {
+            let mut report = ExecutionReport {
+                assignments: 1,
+                ..ExecutionReport::default()
+            };
+            for (source, target, nodes) in planned {
+                self.options.check(ready.span)?;
+                if ready.mode == DestinationMode::ReplaceTree {
+                    if metadata(&target, ready.span)?.is_some_and(|metadata| !metadata.is_dir()) {
+                        return Err(ExecutionError::new(
+                            "directory replacement needs a directory target",
+                            ready.span,
+                        ));
+                    }
+                    crate::filesystem::remove_tree(&target).map_err(|cause| {
+                        failure("cannot remove replaced tree", ready.span, cause)
+                    })?;
+                }
+                self.copy_tree(ready, &source, &target, &nodes, &mut report)?;
+                report.published_roots += 1;
+            }
+            Ok(report)
+        })();
+        trace.finish_result(&result);
+        result.map(Some)
+    }
+
+    fn copy_tree(
+        &self,
+        ready: &Ready,
+        source: &Path,
+        target: &Path,
+        nodes: &[NativeNode],
+        report: &mut ExecutionReport,
+    ) -> Result<()> {
+        let mut directories = Vec::new();
+        for node in nodes {
+            self.options.check(ready.span)?;
+            let destination = crate::filesystem::entry_path(target, &node.relative);
+            match &node.kind {
+                NativeKind::Directory => {
+                    let existed = fs::metadata(&destination).is_ok();
+                    fs::create_dir_all(&destination).map_err(|cause| {
+                        ExecutionError::caused(
+                            format!("cannot create {}", destination.display()),
+                            ready.span,
+                            cause,
+                        )
+                    })?;
+                    if !existed {
+                        directories.push((&node.metadata, destination));
+                    }
+                }
+                NativeKind::File { .. } => {
+                    let item = Ready {
+                        instruction: ready.instruction,
+                        source: Source::Local(crate::filesystem::entry_path(
+                            source,
+                            &node.relative,
+                        )),
+                        target: destination.clone(),
+                        mode: DestinationMode::Exact,
+                        pattern: None,
+                        span: ready.span,
+                    };
+                    let copied = self.copy_file(&item, &destination, Some(&node.metadata))?;
+                    report.assigned_files += copied.assigned_files;
+                    report.assigned_bytes =
+                        report.assigned_bytes.saturating_add(copied.assigned_bytes);
+                }
+                NativeKind::Symlink {
+                    target: link,
+                    directory,
+                } => {
+                    let stage =
+                        crate::io::StagedFile::new(&destination, false).map_err(|cause| {
+                            ExecutionError::caused(
+                                "cannot create symbolic link stage",
+                                ready.span,
+                                cause,
+                            )
+                        })?;
+                    fs::remove_file(stage.path()).map_err(|cause| {
+                        ExecutionError::caused("cannot prepare symbolic link", ready.span, cause)
+                    })?;
+                    crate::filesystem::create_symlink(link, stage.path(), *directory).map_err(
+                        |cause| {
+                            ExecutionError::caused("cannot create symbolic link", ready.span, cause)
+                        },
+                    )?;
+                    node.metadata.apply_link(stage.path()).map_err(|cause| {
+                        ExecutionError::caused(
+                            "cannot apply symbolic link metadata",
+                            ready.span,
+                            cause,
+                        )
+                    })?;
+                    stage.commit().map_err(|cause| {
+                        ExecutionError::caused("cannot replace symbolic link", ready.span, cause)
+                    })?;
+                    report.assigned_files += 1;
+                }
+            }
+        }
+        for (metadata, path) in directories.into_iter().rev() {
+            metadata.apply(&path).map_err(|cause| {
+                ExecutionError::caused("cannot apply directory metadata", ready.span, cause)
+            })?;
+        }
+        Ok(())
     }
 
     fn execute_ready(&mut self, ready: &Ready, cohort: Option<&[Ready]>) -> Result<Attempt> {
@@ -278,22 +632,17 @@ impl Source {
                 if named_pipe(&path) {
                     return Ok(None);
                 }
-                let path = super::domain::normalize(&path, span)?;
-                if metadata(&path, span)?.is_some_and(|meta| !meta.is_file() && !meta.is_dir()) {
+                let path = crate::filesystem::source_path(&path)
+                    .map_err(|cause| failure("cannot resolve source", span, cause))?;
+                if fs::symlink_metadata(&path).is_ok_and(|metadata| {
+                    !metadata.file_type().is_symlink() && !metadata.is_file() && !metadata.is_dir()
+                }) {
                     return Ok(None);
                 }
                 Ok(Some(Self::Local(path)))
             }
             None if matches!(location.backend, Backend::Tcp { .. }) => Ok(None),
-            None if matches!(location.backend, Backend::Wsl) => {
-                Ok(Some(Self::Remote(location.clone())))
-            }
-            None => {
-                if matches!(remote_kind(location, span)?, FileClass::Stream) {
-                    return Ok(None);
-                }
-                Ok(Some(Self::Remote(location.clone())))
-            }
+            None => Ok(Some(Self::Remote(location.clone()))),
         }
     }
 }
@@ -320,30 +669,12 @@ impl Storage {
                     )
                 })?;
             }
-            let registry = crate::filesystem::recovery::Registry::new(&options.scratch_root)
-                .map_err(|cause| {
-                    ExecutionError::caused("cannot open statement recovery registry", span, cause)
-                })?;
-            assets.exclude_registry(&registry).map_err(|cause| {
-                failure("cannot retain recovery registry identity", span, cause)
-            })?;
-            if let Some(directory) = super::endpoint::owned_registry(&options.scratch_root)
-                .map_err(|cause| {
-                    ExecutionError::caused("cannot validate remote recovery registry", span, cause)
-                })?
-            {
-                assets
-                    .exclude_owned_directory(&directory)
-                    .map_err(|cause| {
-                        failure("cannot retain remote registry identity", span, cause)
-                    })?;
-            }
             fs::create_dir(&imports).map_err(|cause| {
                 ExecutionError::caused("cannot create ordinary imports", span, cause)
             })?;
-            Ok((assets, registry))
+            Ok(assets)
         })();
-        let (assets, registry) = initialized.map_err(|mut error: ExecutionError| {
+        let assets = initialized.map_err(|mut error: ExecutionError| {
             if let Err(cause) = invocation.cleanup() {
                 error.retained_paths.push(invocation.path().to_owned());
                 error.report.help.push(format!(
@@ -354,7 +685,6 @@ impl Storage {
         })?;
         Ok(Self {
             assets,
-            registry,
             imports,
             invocation,
             capture_root: options.shared_invocation.clone(),
@@ -407,7 +737,6 @@ impl Storage {
         for selection in selections {
             options.check(ready.span)?;
             let target = target(ready, &selection)?;
-            relation(&selection, &target, ready.span)?;
             let previous = staged
                 .targets
                 .as_ref()
@@ -452,7 +781,9 @@ impl Storage {
     ) -> Result<Snapshot> {
         let target = match previous.entries().get(Path::new("")) {
             Some(Entry::Directory { .. }) => Target::Directory(Some(previous)),
-            Some(Entry::File { metadata, .. }) => Target::File(metadata),
+            Some(Entry::File { metadata, .. } | Entry::Symlink { metadata, .. }) => {
+                Target::File(metadata)
+            }
             None => Target::Missing,
         };
         assignment::assign(
@@ -501,10 +832,8 @@ impl Storage {
                         Request {
                             source: location,
                             stage: &path,
-                            logical_target: &ready.target,
                             mode: ready.mode,
                             pattern: ready.pattern.as_deref(),
-                            invocation: &self.invocation,
                         },
                         options,
                         ready.span,
@@ -520,24 +849,6 @@ impl Storage {
                             }));
                         }
                         Acquisition::Stream => return Ok(None),
-                        Acquisition::Fallback => {
-                            let source =
-                                super::wsl_source::projected_source(location, options, ready.span)?;
-                            let snapshot = self
-                                .capture_source(&source, selector.as_ref())
-                                .map_err(|cause| {
-                                    failure(
-                                        "cannot capture projected WSL source",
-                                        ready.span,
-                                        cause,
-                                    )
-                                })?;
-                            return Ok(Some(Selection {
-                                snapshot,
-                                basename: source.file_name().map(OsString::from),
-                                source: Some(source),
-                            }));
-                        }
                     }
                 }
                 let receipt = crate::runtime::import_finite_source(
@@ -668,153 +979,38 @@ impl Storage {
         progress: Option<&Progress>,
         report: &mut ExecutionReport,
     ) -> Result<()> {
-        self.publish_checked(
-            assignments,
-            ready,
-            options,
-            progress,
-            report,
-            None::<fn() -> bool>,
-        )
-        .map(|published| debug_assert!(published))
-    }
-
-    fn publish_checked(
-        &self,
-        assignments: &[Assignment],
-        ready: &Ready,
-        options: &Options,
-        progress: Option<&Progress>,
-        report: &mut ExecutionReport,
-        guard: Option<impl FnOnce() -> bool>,
-    ) -> Result<bool> {
         if assignments.is_empty() {
-            return Ok(true);
+            return Ok(());
         }
         let span = ready.span;
         let assignments = self.publication_roots(assignments, span)?;
-        for assignment in &assignments {
-            self.check_private_destination(&assignment.target, span)?;
-        }
-        let lease = self.registry.enter().map_err(|cause| {
-            ExecutionError::caused("cannot enter statement recovery registry", span, cause)
-        })?;
-        let mut publications = Vec::new();
-        let mut stage_registrations = Vec::new();
+        let mut publications = Vec::with_capacity(assignments.len());
         let mut stage = crate::telemetry::span("ordinary.stage");
-        let result = self.prepare_registered(
-            &assignments,
-            span,
-            options,
-            &lease,
-            &mut publications,
-            &mut stage_registrations,
-        );
+        let result = self.prepare(&assignments, span, options, &mut publications);
         stage.finish_result(&result);
+        result?;
         drop(stage);
-        if let Err(mut error) = result {
-            compensate(&mut publications, &mut error);
-            retire_stages(stage_registrations, &mut error);
-            if guard.is_some() && error.retained_paths.is_empty() && error.compensation.is_empty() {
-                return Ok(false);
-            }
-            return Err(error);
-        }
-        // Release speculative handles after staged receipts own identity checks.
-        if guard.is_some_and(|guard| !guard()) {
-            let mut error = ExecutionError::new("runtime optimization guard was invalidated", span);
-            compensate(&mut publications, &mut error);
-            retire_stages(stage_registrations, &mut error);
-            if error.retained_paths.is_empty() && error.compensation.is_empty() {
-                return Ok(false);
-            }
-            return Err(error);
-        }
-        let count = publications.len();
-        let (mut batch, coordinator_stage) =
-            crate::filesystem::durable::Batch::prepare_registered(publications, &lease)
-                .map_err(|cause| failure("cannot prepare durable statement", span, cause))?;
-        stage_registrations.push(coordinator_stage);
-        let registration = match lease.register(batch.parent(), batch.journal_path()) {
-            Ok(registration) => registration,
-            Err(cause) => {
-                let mut error =
-                    ExecutionError::caused("cannot register durable statement", span, cause);
-                if let Err(cause) = batch.abort() {
-                    error.retained_paths.push(batch.journal_path().to_owned());
-                    error.compensation.push(cause);
-                }
-                return Err(error);
-            }
-        };
-        for stage in stage_registrations {
-            if let Err(cause) = stage.finish() {
-                let mut error = ExecutionError::caused(
-                    "cannot retire promoted stage registration",
-                    span,
-                    cause,
-                );
-                if let Err(cause) = batch.abort() {
-                    error.retained_paths.push(batch.journal_path().to_owned());
-                    error.compensation.push(cause);
-                }
-                return Err(error);
-            }
-        }
         observe(progress, ready, Phase::Publish, report);
         let mut publish = crate::telemetry::span("ordinary.publish");
-        let result = batch.publish_with(|event| {
-            if event != crate::filesystem::durable::Event::Committed
-                && options.cancel.is_cancelled()
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    CancelPublication,
-                ));
+        let result = (|| {
+            for publication in &mut publications {
+                options.check(span)?;
+                publication
+                    .publish()
+                    .map_err(|cause| publication_failure(cause, span))?;
+                report.published_roots += 1;
+                if let Err(cause) = publication.finalize() {
+                    report
+                        .cleanup
+                        .push(cleanup(cause, publication.journal().to_owned()));
+                }
             }
             Ok(())
-        });
+        })();
         publish.finish_result(&result);
-        if let Err(cause) = result {
-            let mut error = publication_failure(cause, span);
-            if !batch.is_committed() {
-                if let Err(cause) = batch.abort() {
-                    error.retained_paths.push(batch.journal_path().to_owned());
-                    error.compensation.push(cause);
-                    return Err(error);
-                }
-                registration.finish().map_err(|cause| {
-                    ExecutionError::caused(
-                        "cannot retire recovered statement registration",
-                        span,
-                        cause,
-                    )
-                })?;
-                return Err(error);
-            }
-            // A visible decision cannot be revoked, but failed durability is
-            // still an execution error. Keep recovery rather than claiming a
-            // successful durable commit or reverting installed new bytes.
-            error.retained_paths.push(batch.journal_path().to_owned());
-            error.report.help.push("The complete new statement is installed, but its durability could not be confirmed. Keep its journal and registry for startup recovery.".into());
-            return Err(error);
-        }
-        report.published_roots = count;
-        if let Err(cause) = batch.finalize() {
-            report
-                .cleanup
-                .push(cleanup(cause, batch.journal_path().to_owned()));
-        } else if let Err(cause) = registration.finish() {
-            report.cleanup.push(CleanupIssue {
-                cause: Box::new(cause),
-                retained_paths: Vec::new(),
-                resolved: false,
-            });
-        }
-        Ok(true)
+        result
     }
 
-    #[cfg(test)]
     fn prepare(
         &self,
         assignments: &[Assignment],
@@ -827,46 +1023,8 @@ impl Storage {
             publications.push(
                 self.assets
                     .prepare(&assignment.snapshot, &assignment.target)
-                    .map_err(|cause| failure("cannot prepare ordinary publication", span, cause))?,
+                    .map_err(|cause| failure("cannot stage replacement", span, cause))?,
             );
-        }
-        Ok(())
-    }
-
-    fn prepare_registered(
-        &self,
-        assignments: &[Assignment],
-        span: Span,
-        options: &Options,
-        lease: &crate::filesystem::recovery::RegistryLease,
-        publications: &mut Vec<Publication>,
-        registrations: &mut Vec<crate::filesystem::recovery::Registration>,
-    ) -> Result<()> {
-        for assignment in assignments {
-            options.check(span)?;
-            let (publication, registration) = self
-                .assets
-                .prepare_registered(&assignment.snapshot, &assignment.target, lease)
-                .map_err(|cause| failure("cannot prepare registered publication", span, cause))?;
-            publications.push(publication);
-            registrations.push(registration);
-        }
-        Ok(())
-    }
-
-    fn check_private_destination(&self, target: &Path, span: Span) -> Result<()> {
-        let backing = self.capture_root.as_ref().unwrap_or(&self.invocation);
-        let overlaps = backing
-            .contains_private(target)
-            .map_err(|cause| failure("cannot verify private destination boundary", span, cause))?
-            || contains_directory(target, backing.path(), span)?
-            || self.registry.contains_private(target).map_err(|cause| {
-                ExecutionError::caused("cannot verify recovery destination boundary", span, cause)
-            })?
-            || contains_directory(target, self.registry.directory(), span)?;
-        if overlaps {
-            return Err(ExecutionError::new("destination would replace active execution or recovery storage", span)
-                .help("Choose --scratch outside the destination tree. Active journals and program spools must not move while a statement is executing."));
         }
         Ok(())
     }
@@ -937,29 +1095,94 @@ impl Storage {
     }
 }
 
-fn contains_directory(target: &Path, protected: &Path, span: Span) -> Result<bool> {
-    if metadata(target, span)?.is_none() {
-        return Ok(false);
-    }
-    let expected = Handle::from_path(target).map_err(|cause| {
-        ExecutionError::caused("cannot identify destination boundary", span, cause)
+fn collect_native(
+    source: &Path,
+    relative: &Path,
+    nodes: &mut Vec<NativeNode>,
+    options: &Options,
+    span: Span,
+) -> Result<()> {
+    options.check(span)?;
+    let metadata = fs::symlink_metadata(source).map_err(|cause| {
+        ExecutionError::caused(format!("cannot inspect {}", source.display()), span, cause)
     })?;
-    for ancestor in protected.ancestors() {
-        let actual = Handle::from_path(ancestor).map_err(|cause| {
-            ExecutionError::caused("cannot identify private storage boundary", span, cause)
-        })?;
-        if actual == expected {
-            return Ok(true);
+    if metadata.is_dir() {
+        if let Some(invocation) = &options.shared_invocation
+            && invocation
+                .excludes(source)
+                .map_err(|cause| failure("cannot identify execution scratch", span, cause))?
+        {
+            return Ok(());
+        }
+        if let Some(context) = crate::runtime::ssh::current()
+            && context.excludes_directory(source).map_err(|cause| {
+                ExecutionError::caused("cannot identify SSH control storage", span, cause)
+            })?
+        {
+            return Ok(());
         }
     }
-    Ok(false)
+    let kind = if metadata.file_type().is_symlink() {
+        #[cfg(windows)]
+        let directory = {
+            use std::os::windows::fs::FileTypeExt;
+            metadata.file_type().is_symlink_dir()
+        };
+        #[cfg(not(windows))]
+        let directory = false;
+        NativeKind::Symlink {
+            target: fs::read_link(source).map_err(|cause| {
+                ExecutionError::caused("cannot read symbolic link", span, cause)
+            })?,
+            directory,
+        }
+    } else if metadata.is_dir() {
+        NativeKind::Directory
+    } else if metadata.is_file() {
+        NativeKind::File {
+            bytes: metadata.len(),
+        }
+    } else {
+        return Err(ExecutionError::new(
+            "a physical stream needs the stream transfer owner",
+            span,
+        ));
+    };
+    let directory = matches!(kind, NativeKind::Directory);
+    nodes.push(NativeNode {
+        relative: relative.to_owned(),
+        metadata: NodeMetadata::capture(&metadata)
+            .map_err(|cause| ExecutionError::caused("cannot read source metadata", span, cause))?,
+        kind,
+    });
+    if directory {
+        let mut children = fs::read_dir(source)
+            .map_err(|cause| {
+                ExecutionError::caused("cannot enumerate source directory", span, cause)
+            })?
+            .collect::<io::Result<Vec<_>>>()
+            .map_err(|cause| {
+                ExecutionError::caused("cannot read source directory entry", span, cause)
+            })?;
+        children.sort_by_key(fs::DirEntry::file_name);
+        for child in children {
+            collect_native(
+                &child.path(),
+                &relative.join(child.file_name()),
+                nodes,
+                options,
+                span,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn copy_trace(ready: &Ready, kind: &'static str) -> crate::telemetry::SpanGuard {
     let mut trace = crate::telemetry::span("copy");
     trace.expect_completion();
     trace.attribute("copy.kind", kind);
-    trace.attribute("publication.policy", "statement-journal");
+    trace.attribute("publication.policy", "atomic-replace");
     trace.metric("instruction.id", ready.instruction.0 as u64);
     trace.attribute("destination.backend", "local");
     trace.attribute_lazy("destination.path", || ready.target.display().to_string());
@@ -1006,74 +1229,11 @@ fn observe(progress: Option<&Progress>, ready: &Ready, phase: Phase, report: &Ex
     });
 }
 
-#[derive(Debug)]
-struct CancelPublication;
-
-impl std::fmt::Display for CancelPublication {
-    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        output.write_str("ordinary assignment cancelled")
-    }
-}
-
-impl std::error::Error for CancelPublication {}
-
 fn publication_failure(cause: FsError, span: Span) -> ExecutionError {
-    let cancelled = cause
-        .cause
-        .get_ref()
-        .is_some_and(|cause| cause.is::<CancelPublication>());
-    if cancelled && cause.recovery == crate::filesystem::Recovery::Restored {
-        let mut error =
-            ExecutionError::cancelled("ordinary assignment cancelled during publication", span);
-        error.retained_paths.extend(cause.journal);
-        return error;
+    if cause.cause.kind() == io::ErrorKind::Interrupted {
+        return ExecutionError::cancelled("ordinary assignment cancelled", span);
     }
-    failure("ordinary publication failed", span, cause)
-}
-
-fn compensate(publications: &mut [Publication], error: &mut ExecutionError) {
-    for publication in publications.iter_mut().rev() {
-        let journal = publication.journal().to_owned();
-        if let Err(cause) = publication.restore_before_image() {
-            error.retained_paths.push(publication.journal().to_owned());
-            error.compensation.push(cause);
-            continue;
-        }
-        if let Err(cause) = publication.finalize() {
-            error.retained_paths.push(publication.journal().to_owned());
-            error.compensation.push(cause);
-        } else {
-            error.retained_paths.retain(|path| path != &journal);
-            if let Some(cause) = error
-                .cause
-                .as_deref_mut()
-                .and_then(|cause| cause.downcast_mut::<FsError>())
-                && cause.journal.as_ref() == Some(&journal)
-            {
-                cause.journal = None;
-                cause.recovery = crate::filesystem::Recovery::Restored;
-                cause.recovery_error = None;
-            }
-        }
-    }
-}
-
-fn retire_stages(
-    stages: Vec<crate::filesystem::recovery::Registration>,
-    error: &mut ExecutionError,
-) {
-    if !error.compensation.is_empty() {
-        return;
-    }
-    for stage in stages {
-        let path = stage.path().to_owned();
-        if let Err(cause) = stage.finish() {
-            error.retained_paths.push(path);
-            error.report.help.push(format!(
-                "cannot retire prepared statement registration: {cause}"
-            ));
-        }
-    }
+    failure("ordinary replacement failed", span, cause)
 }
 
 fn target(ready: &Ready, selection: &Selection) -> Result<PathBuf> {
@@ -1091,25 +1251,8 @@ fn target(ready: &Ready, selection: &Selection) -> Result<PathBuf> {
 }
 
 fn metadata(path: &Path, span: Span) -> Result<Option<fs::Metadata>> {
-    match fs::symlink_metadata(path) {
-        Ok(meta) => {
-            let forbidden = meta.file_type().is_symlink();
-            #[cfg(windows)]
-            let forbidden = {
-                use std::os::windows::fs::MetadataExt;
-                forbidden || meta.file_attributes() & 0x400 != 0
-            };
-            if forbidden {
-                return Err(ExecutionError::new(
-                    format!(
-                        "symbolic links and reparse points are not supported: {}",
-                        path.display()
-                    ),
-                    span,
-                ));
-            }
-            Ok(Some(meta))
-        }
+    match fs::metadata(path) {
+        Ok(meta) => Ok(Some(meta)),
         Err(cause) if cause.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(cause) => Err(ExecutionError::caused(
             format!("cannot inspect {}", path.display()),
@@ -1144,22 +1287,6 @@ fn named_pipe(path: &Path) -> bool {
     }
 }
 
-fn remote_kind(location: &Location, span: Span) -> Result<FileClass> {
-    if matches!(location.backend, Backend::Wsl | Backend::Ssh { .. }) {
-        return crate::runtime::inspect_locations_live(
-            &location.backend,
-            std::slice::from_ref(&location.path),
-        )
-        .map_err(|message| ExecutionError::new(message, span))?
-        .into_iter()
-        .next()
-        .ok_or_else(|| ExecutionError::new("remote metadata receipt is missing", span))?
-        .map_err(|message| ExecutionError::new(message, span));
-    }
-    crate::runtime::inspect_location(location, true)
-        .map_err(|message| ExecutionError::new(message, span))
-}
-
 fn failure(action: &'static str, span: Span, cause: FsError) -> ExecutionError {
     let retained = cause.journal.clone();
     let mut error = ExecutionError::caused(action, span, cause);
@@ -1177,6 +1304,9 @@ fn cleanup(cause: FsError, root: PathBuf) -> CleanupIssue {
 
 #[path = "ordinary_cohort.rs"]
 mod cohort;
+
+#[path = "ordinary_receive.rs"]
+mod receive;
 
 #[path = "ordinary_fold.rs"]
 mod fold;

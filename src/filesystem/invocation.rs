@@ -9,77 +9,44 @@ struct CreatedDirectory {
 #[derive(Debug)]
 struct Invocation {
     root: CreatedDirectory,
-    created_parents: Vec<CreatedDirectory>,
-    parent: CreatedDirectory,
-    parent_before: NodeMetadata,
-    parent_after_creation: SystemTime,
-    cleanup: std::sync::Mutex<Cleanup>,
+    scaffolds: Vec<CreatedDirectory>,
+    closed: std::sync::Mutex<bool>,
 }
 
-#[derive(Debug)]
-enum Cleanup {
-    Open,
-    Removed(SystemTime),
-    Closed,
-}
-
-/// Proof of a directory created exclusively for this invocation. Captures may
-/// omit this exact identity, never a caller-supplied pattern or every `.temp`.
-/// Cleanup is explicit; clones retain identity and do not recursively delete.
+/// Shared ownership of one ephemeral scratch directory. Its exact identity lets
+/// source capture omit the running invocation without hiding user directories.
 #[derive(Clone, Debug)]
 pub struct InvocationRoot(Arc<Invocation>);
 
 impl InvocationRoot {
     pub fn create(scratch: &Path) -> Result<Self> {
         let scratch = absolute(scratch)?;
-        check_path(&scratch)?;
         let mut missing = Vec::new();
         let mut existing = scratch.as_path();
-        while safe_metadata(existing)?.is_none() {
-            missing.push(existing.to_owned());
-            existing = existing.parent().ok_or_else(|| {
-                invalid(
-                    "create invocation",
-                    &scratch,
-                    "scratch has no existing directory ancestor",
-                )
-            })?;
+        loop {
+            match fs::metadata(existing) {
+                Ok(_) => break,
+                Err(cause) if cause.kind() == io::ErrorKind::NotFound => {
+                    missing.push(existing.to_owned());
+                    existing = existing
+                        .parent()
+                        .ok_or_else(|| error("create invocation scratch", &scratch, cause))?;
+                }
+                Err(cause) => return Err(error("inspect invocation scratch", existing, cause)),
+            }
         }
-        let metadata = safe_metadata(existing)?.expect("existing ancestor");
-        if !metadata.is_dir() {
-            return Err(invalid(
-                "create invocation",
-                existing,
-                "scratch ancestor must be a directory",
-            ));
-        }
-        let parent_before = NodeMetadata::capture(&metadata)
-            .map_err(|cause| error("capture scratch parent metadata", existing, cause))?;
-        let parent = directory(existing)?;
-        let mut created_parents = Vec::new();
-        for path in missing.into_iter().rev() {
-            fs::create_dir(&path)
-                .map_err(|cause| error("create invocation scratch", &path, cause))?;
-            created_parents.push(directory(&path)?);
-        }
+        fs::create_dir_all(&scratch)
+            .map_err(|cause| error("create invocation scratch", &scratch, cause))?;
+        let scaffolds = missing
+            .into_iter()
+            .map(|path| directory(&path))
+            .collect::<Result<Vec<_>>>()?;
         let path = create_owned_directory(&scratch, "execute")?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&path, Permissions::from_mode(0o700))
-                .map_err(|cause| error("protect invocation", &path, cause))?;
-        }
         let root = directory(&path)?;
-        let parent_after_creation = fs::metadata(&parent.path)
-            .and_then(|metadata| metadata.modified())
-            .map_err(|cause| error("inspect scratch parent metadata", &parent.path, cause))?;
         Ok(Self(Arc::new(Invocation {
             root,
-            created_parents,
-            parent,
-            parent_before,
-            parent_after_creation,
-            cleanup: std::sync::Mutex::new(Cleanup::Open),
+            scaffolds,
+            closed: std::sync::Mutex::new(false),
         })))
     }
 
@@ -88,38 +55,25 @@ impl InvocationRoot {
     }
 
     pub fn verify(&self) -> Result<()> {
-        check_path(self.path())?;
         ensure_identity(self.path(), Some(&self.0.root.identity))
     }
 
     pub fn contains_private(&self, path: &Path) -> Result<bool> {
-        self.verify()?;
         self.contains(&absolute(path)?)
     }
 
-    /// Identify a directory created only to house this invocation. Its logical
-    /// absence does not authorize replacing the physical directory while the
-    /// invocation is live; publishers must apply user-child deltas instead.
+    /// Scratch ancestors created by this invocation are omitted only when they
+    /// contain no user data; they are not additional cleanup authorities.
     pub fn scaffold_directory(&self, path: &Path) -> Result<Option<NodeMetadata>> {
-        self.verify()?;
-        let path = absolute(path)?;
-        if !self.owns_scaffold(&path)? {
+        if !self.owns_scaffold(path)? {
             return Ok(None);
         }
-        let metadata = safe_metadata(&path)?.ok_or_else(|| {
-            invalid(
-                "inspect invocation scaffold",
-                &path,
-                "owned directory is missing",
-            )
-        })?;
-        let metadata = NodeMetadata::capture(&metadata)
-            .map_err(|cause| error("inspect invocation scaffold metadata", &path, cause))?;
-        Ok(Some(metadata))
+        fs::metadata(path)
+            .and_then(|metadata| NodeMetadata::capture(&metadata))
+            .map(Some)
+            .map_err(|cause| error("inspect scratch directory", path, cause))
     }
 
-    /// Remove only the owned invocation. Configured scratch directories remain
-    /// available to callers; no pre-existing/user directory is removed.
     pub fn cleanup(&self) -> Result<()> {
         if Arc::strong_count(&self.0) != 1 {
             return Err(error(
@@ -131,44 +85,25 @@ impl InvocationRoot {
                 ),
             ));
         }
-        let mut cleanup = self
+        let mut closed = self
             .0
-            .cleanup
+            .closed
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if matches!(*cleanup, Cleanup::Closed) {
-            return Ok(());
-        }
-        if matches!(*cleanup, Cleanup::Open) {
-            self.verify()?;
-            let stamp = self.parent_stamp()?;
+        if !*closed {
             remove_owned(self.path(), &self.0.root.identity)?;
-            *cleanup = Cleanup::Removed(stamp);
+            *closed = true;
         }
-        let Cleanup::Removed(stamp) = *cleanup else {
-            unreachable!()
-        };
-        ensure_identity(self.path(), None)?;
-        ensure_identity(&self.0.parent.path, Some(&self.0.parent.identity))?;
-        set_modified(&self.0.parent.path, stamp).map_err(|cause| {
-            error(
-                "restore scratch parent modification time",
-                &self.0.parent.path,
-                cause,
-            )
-        })?;
-        *cleanup = Cleanup::Closed;
         Ok(())
     }
 
-    pub(super) fn excludes(&self, source: &Path) -> Result<bool> {
-        self.verify()?;
-        Ok(identity_at(source)?.as_ref() == Some(&self.0.root.identity))
+    pub(crate) fn excludes(&self, source: &Path) -> Result<bool> {
+        Ok(identity(source)?.as_ref() == Some(&self.0.root.identity))
     }
 
     pub(super) fn contains(&self, source: &Path) -> Result<bool> {
         for ancestor in source.ancestors() {
-            if identity_at(ancestor)?.as_ref() == Some(&self.0.root.identity) {
+            if self.excludes(ancestor)? {
                 return Ok(true);
             }
         }
@@ -184,12 +119,11 @@ impl InvocationRoot {
     }
 
     pub(super) fn relative_to(&self, source: &Path) -> Result<Option<PathBuf>> {
-        self.verify()?;
-        let Some(identity) = identity_at(source)? else {
+        let Some(identity) = identity(source)? else {
             return Ok(None);
         };
         for ancestor in self.path().ancestors() {
-            if identity_at(ancestor)?.as_ref() == Some(&identity) {
+            if self::identity(ancestor)?.as_ref() == Some(&identity) {
                 return Ok(self.path().strip_prefix(ancestor).ok().map(Path::to_owned));
             }
         }
@@ -197,85 +131,60 @@ impl InvocationRoot {
     }
 
     pub(super) fn owns_scaffold(&self, source: &Path) -> Result<bool> {
-        let Some(identity) = identity_at(source)? else {
+        let Some(identity) = identity(source)? else {
             return Ok(false);
         };
         Ok(self
             .0
-            .created_parents
+            .scaffolds
             .iter()
             .any(|directory| directory.identity == identity))
     }
 
+    // Namespace changes keep their native timestamps. The signature remains for
+    // callers that previously projected a pre-scratch parent modification time.
     pub(crate) fn logical_metadata(
         &self,
-        source: &Path,
-        metadata: &mut NodeMetadata,
+        _source: &Path,
+        _metadata: &mut NodeMetadata,
     ) -> Result<()> {
-        if identity_at(source)?.as_ref() == Some(&self.0.parent.identity)
-            && metadata.modified == self.0.parent_after_creation
-        {
-            metadata.modified = self.0.parent_before.modified;
-        }
         Ok(())
     }
+}
 
-    fn parent_stamp(&self) -> Result<SystemTime> {
-        ensure_identity(&self.0.parent.path, Some(&self.0.parent.identity))?;
-        let current = fs::metadata(&self.0.parent.path)
-            .and_then(|metadata| metadata.modified())
-            .map_err(|cause| {
-                error(
-                    "inspect scratch parent modification time",
-                    &self.0.parent.path,
-                    cause,
-                )
-            })?;
-        Ok(if current == self.0.parent_after_creation {
-            self.0.parent_before.modified
-        } else {
-            current
-        })
+fn identity(path: &Path) -> Result<Option<Handle>> {
+    match Handle::from_path(path) {
+        Ok(identity) => Ok(Some(identity)),
+        Err(cause) if cause.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(cause) => Err(error("identify scratch directory", path, cause)),
     }
 }
 
 fn directory(path: &Path) -> Result<CreatedDirectory> {
-    let metadata = safe_metadata(path)?.ok_or_else(|| {
-        invalid(
-            "identify invocation directory",
-            path,
-            "directory is missing",
-        )
-    })?;
-    if !metadata.is_dir() {
-        return Err(invalid(
-            "identify invocation directory",
-            path,
-            "ordinary directory required",
-        ));
-    }
     Ok(CreatedDirectory {
         path: path.to_owned(),
         identity: Handle::from_path(path)
-            .map_err(|cause| error("identify invocation directory", path, cause))?,
+            .map_err(|cause| error("identify scratch directory", path, cause))?,
     })
 }
 
-fn set_modified(path: &Path, modified: SystemTime) -> io::Result<()> {
-    let mut options = fs::OpenOptions::new();
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            FILE_FLAG_BACKUP_SEMANTICS, FILE_WRITE_ATTRIBUTES,
-        };
-        options
-            .access_mode(FILE_WRITE_ATTRIBUTES)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_keeps_the_native_parent_namespace_timestamp() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        fs::create_dir_all(&root).unwrap();
+        let work = tempfile::tempdir_in(root).unwrap();
+        let scratch = work.path().join("scratch");
+        let invocation = InvocationRoot::create(&scratch).unwrap();
+        let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(12_345);
+        NodeMetadata::new(fs::metadata(&scratch).unwrap().permissions(), stamp)
+            .apply(&scratch)
+            .unwrap();
+        invocation.cleanup().unwrap();
+        assert_ne!(fs::metadata(&scratch).unwrap().modified().unwrap(), stamp);
+        assert_eq!(fs::read_dir(scratch).unwrap().count(), 0);
     }
-    #[cfg(not(windows))]
-    options.read(true);
-    options
-        .open(path)?
-        .set_times(fs::FileTimes::new().set_modified(modified))
 }

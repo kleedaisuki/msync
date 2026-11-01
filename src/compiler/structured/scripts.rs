@@ -5,9 +5,6 @@ use crate::object::{SourceModule, SourceModulePath};
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 
-const FILE_BYTES: u64 = 8 * 1024 * 1024;
-const TOTAL_BYTES: usize = 32 * 1024 * 1024;
-const FILE_COUNT: usize = 1024;
 const DEPTH: usize = 64;
 
 #[derive(Default)]
@@ -18,8 +15,6 @@ pub(super) struct State {
     started: bool,
     root: Option<same_file::Handle>,
     active: Vec<Active>,
-    bytes: usize,
-    files: usize,
 }
 
 impl State {
@@ -124,10 +119,10 @@ impl Lower<'_> {
     ) -> Result<(), LocatedReport> {
         let (path, binding) = file;
         let path = path.as_path();
-        if self.scripts.active.len() >= DEPTH || self.scripts.files >= FILE_COUNT {
+        if self.scripts.active.len() >= DEPTH {
             return Err(script_error(
                 site,
-                format!("source expansion exceeds the {DEPTH}-level/{FILE_COUNT}-file bound"),
+                format!("source expansion exceeds {DEPTH} nested includes"),
             ));
         }
         let (text, identity) = read_script(path).map_err(|cause| {
@@ -152,18 +147,6 @@ impl Lower<'_> {
             }
             return Err(error);
         }
-        self.scripts.bytes = self
-            .scripts
-            .bytes
-            .checked_add(text.len())
-            .ok_or_else(|| script_error(site, "source expansion byte count overflow"))?;
-        if self.scripts.bytes > TOTAL_BYTES {
-            return Err(script_error(
-                site,
-                "source expansion exceeds the 32MiB aggregate input bound",
-            ));
-        }
-        self.scripts.files += 1;
         let name = path.to_string_lossy().into_owned();
         let self_anchor = matches!(&binding, SourceModulePath::Contextual { path: RelocPath { anchor: Anchor::ModuleFile { module } | Anchor::ModuleDirectory { module }, .. } } if module == &name);
         let binding = if self_anchor {
@@ -199,7 +182,7 @@ impl Lower<'_> {
             let mut isolated = Scope {
                 slots: scope.slots.clone(),
                 current_unit: scope.current_unit,
-                symbol_budget: scope.symbol_budget.clone(),
+                symbol_count: scope.symbol_count.clone(),
                 source: Some(source),
                 ..Scope::default()
             };
@@ -356,11 +339,6 @@ fn script_matches(source: SourcePath) -> Result<Vec<(PathBuf, SourceModulePath)>
         };
         if regex.is_match(&name) {
             selected.push((name, entry.path()));
-            if selected.len() > FILE_COUNT {
-                return Err(format!(
-                    "source selector exceeds {FILE_COUNT} matching entries"
-                ));
-            }
         }
     }
     selected.sort_by(|left, right| left.0.cmp(&right.0));
@@ -414,20 +392,9 @@ fn open_source(path: &Path) -> std::io::Result<File> {
 }
 
 fn read_script(path: &Path) -> std::io::Result<(String, same_file::Handle)> {
-    let file = open_source(path)?;
-    let metadata = file.metadata()?;
-    if metadata.len() > FILE_BYTES {
-        return Err(std::io::Error::other(
-            "source file exceeds the 8MiB input bound",
-        ));
-    }
+    let mut file = open_source(path)?;
     let identity = same_file::Handle::from_file(file.try_clone()?)?;
     let mut text = String::new();
-    file.take(FILE_BYTES + 1).read_to_string(&mut text)?;
-    if text.len() as u64 > FILE_BYTES {
-        return Err(std::io::Error::other(
-            "source file grew beyond the 8MiB input bound",
-        ));
-    }
+    file.read_to_string(&mut text)?;
     Ok((text, identity))
 }

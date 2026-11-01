@@ -7,8 +7,8 @@ SQLite), enabled by `--telemetry-db FILE` or `[telemetry]` configuration. Existi
 `--trace FILE` / `telemetry::init` JSONL behavior remains supported. Neither backend
 is enabled by default; help, version, config inspection, and explicitly disabled
 telemetry create no database or writer thread. An explicitly enabled conventional
-destination creates its state directory; an invalid explicit path fails before
-runtime file effects.
+destination creates its state directory. An invalid observer path reports a
+structured warning and does not prevent runtime file effects.
 
 ```sh
 msync run sync.msync --telemetry-db .temp/sync.sqlite
@@ -44,10 +44,11 @@ Each recording session owns its sink through `Arc`; SQLite has one bounded write
 queue and one connection-owning thread. Producers never open SQL connections or
 perform per-record fsync. The worker reuses prepared statements, commits bounded
 batches, and sleeps on a blocking receive when idle; flush timers run only with
-pending records. Queue exhaustion applies backpressure instead of silently losing
-causal records. The first exporter error remains observable through
-`flush`/`take_error`, while actual file publication continues under its independent
-owner. Normal CLI shutdown reports an exporter error rather than discarding it.
+pending records. Queue admission is nonblocking; overflow increments an explicit
+lost-record count reported by flush/shutdown and persisted in session health.
+The first exporter error remains observable through `flush`/`take_error`.
+Normal CLI shutdown warns about incomplete recording without changing the file
+operation's outcome.
 
 `flush` is an ordered queue barrier: all previously accepted records have been
 committed before success returns. `disable` stops new global spans but preserves
@@ -72,13 +73,13 @@ English messages.
 
 | SQLite policy | Default | Meaning |
 | --- | ---: | --- |
-| `queue_capacity` | 4096 | Maximum queued records; producers backpressure |
+| `queue_capacity` | 4096 | Maximum queued records; overflow is counted, producers do not block |
 | `batch_size` | 128 | Records per transaction, also flushed by time/barrier |
 | `flush_interval_ms` | 100 | Maximum pending-batch interval, not an idle polling period |
 | `busy_timeout_ms` | 1000 | Bounded SQLite writer-lock wait |
-| `max_sessions` | 100 | Retain this many completed sessions; active sessions are not removed |
-| `max_records_per_session` | 1000000 | Visible exporter failure at exhaustion, not hidden sampling |
-| `max_database_bytes` | 268435456 | Logical database page budget; visible `SQLITE_FULL` when exhausted |
+| `max_sessions` | DB integer maximum | Optional completed-session retention budget |
+| `max_records_per_session` | DB integer maximum | Optional recording budget; never a transfer gate |
+| `max_database_bytes` | DB integer maximum | Optional logical page budget; observer-only `SQLITE_FULL` when exhausted |
 | `sample_per_million` | 1000000 | Whole-session head sampling; zero creates no database/thread |
 | `synchronous_full` | false | `NORMAL` WAL commits by default; opt into `FULL` commit synchronization |
 
@@ -86,8 +87,9 @@ Sampling is decided once per trace so it never independently drops a parent or
 child. Sampled-out errors are intentionally not recorded; use full sampling when
 diagnosing a failure. Completed-session retention preserves all rows of retained
 traces through foreign-key cascading deletion. Crashed/incomplete sessions are
-not guessed dead from an ambiguous process ID; the logical page budget prevents
-unbounded database growth without deleting a live writer's trace. SQLite WAL can
+not guessed dead from an ambiguous process ID. When a logical page budget is
+explicitly configured, it bounds database growth without deleting a live
+writer's trace. Default recorder settings impose no practical size quota. SQLite WAL can
 still grow while an external long-lived reader prevents checkpoint recycling.
 
 `NORMAL` WAL provides transactional consistency but is not a power-loss durability
@@ -114,7 +116,7 @@ informs low-overhead common-layer instrumentation and causal trace ownership.
 informs trace-level sampling rather than independently dropping records. Recent
 [TraceMesh research](https://arxiv.org/abs/2406.06975) investigates adaptive streaming
 sampling, but its distributed-model machinery is not justified for this local
-CLI workload: bounded whole-session sampling and explicit backpressure are
+CLI workload: whole-session sampling and explicit recording-health reporting are
 simpler and preserve the chosen trace's exact causal structure.
 
 
@@ -144,7 +146,8 @@ telemetry::flush()?;
 ```
 
 The final `flush` occurs after the outer span is dropped. Initialization and flush
-errors should become visible CLI errors. A failing exporter must not panic in a
+errors remain visible through the library API and structured CLI warnings. They
+do not replace the actual file-operation status. A failing exporter must not panic in a
 span destructor or interrupt an in-progress copy; its first failure is retained
 and returned by `flush`/`take_error`. Disabling tracing also flushes. Reinitializing
 first flushes the previous destination and opens the new session in append mode.
@@ -442,7 +445,7 @@ maintained test sources preserve the reproductions when logs are cleaned.
 
 The gate checks actual CLI bytes and SQL-owned causal records, source-free
 payload handling, typed OS diagnostics, exact unsigned metrics, concurrent tasks,
-retained old contexts, startup failures before effects, normal completed-session
+retained old contexts, observer startup warnings without blocked effects, normal completed-session
 closure, sampling/disable laziness, capacity failures without corrupting file
 publication, logical page limits, and read-only operator queries. A writer inside
 the export output callback can update and truncate-checkpoint the same database,
@@ -467,3 +470,146 @@ cross-trace ancestors, and retains exact `task -> schedule` / `io.flow -> task`
 ownership plus resource-reservation assertions. This preserves the original
 regression against accidentally using an earlier empty binding submission's
 context; it is not permission to attach work to an arbitrary session root.
+
+## Windows SSH latency collection (v0.6.5)
+
+A reported native Windows REPL upload of 1,795 bytes took 35,399.5 ms. That is an
+end-to-end submission observation, not a measurement of the payload network
+rate. The existing Linux loopback SSH benchmark does not establish native
+Windows behavior: `benches/ssh_v065.py` imports Unix `pwd` and `resource`, starts
+`/usr/sbin/sshd`, and counts clients using POSIX wrappers.
+
+Collect the original user journey rather than replace it with a synthetic large
+file. In the same Windows directory, terminal, account, and environment:
+
+```powershell
+New-Item -ItemType Directory -Force .temp | Out-Null
+msync --version
+msync doctor
+Get-Command msync, ssh, scp -CommandType Application -All |
+    Select-Object Name, Source
+ssh -V
+$env:MSYNC_SSH_CONFIG
+msync repl --trace .temp/ssh-windows.jsonl
+# At msync>: repeat the original transfer, then repeat it once in this REPL.
+# cmd -> (ssh://forge)::cmd
+# Exit normally after both completion notices.
+```
+
+`doctor` inventories native executable search locations without starting the
+clients. Multiple OpenSSH distributions in the inventory matter: Windows system
+OpenSSH, Git's client, and WSL OpenSSH are not interchangeable implementations,
+and invoking a PowerShell function called `ssh` is not what Rust's
+`Command::new("ssh")` does. Preserve the actual path/version when comparing with
+an independently opened SSH terminal. `MSYNC_SSH_CONFIG`, when set, is passed as
+`-F` to both SSH and SCP; a direct-shell comparison must use the same file rather
+than accidentally compare different aliases, proxy routes, keys, or users.
+
+Existing JSONL records can separate expensive client processes from local work
+without additional tooling. Span records are written at completion, so sort by
+start time, not file order:
+
+```powershell
+$spans = @(Get-Content .temp/ssh-windows.jsonl |
+    ForEach-Object { $_ | ConvertFrom-Json } |
+    Where-Object kind -eq span)
+$spans | Where-Object name -eq transport_process |
+    Sort-Object start_unix_ns |
+    Select-Object span_id, parent_span_id,
+        @{Name='ms';Expression={[math]::Round($_.duration_ns / 1e6, 2)}},
+        @{Name='program';Expression={$_.attributes.program}},
+        @{Name='pid';Expression={$_.metrics.pid}} |
+    Format-Table -AutoSize
+$spans | Sort-Object duration_ns -Descending |
+    Select-Object -First 20 name, span_id, parent_span_id,
+        @{Name='ms';Expression={[math]::Round($_.duration_ns / 1e6, 2)}} |
+    Format-Table -AutoSize
+```
+
+Use a new trace filename for another independent run: JSONL initialization
+appends. A span ID is unique within a trace, not across appended sessions. For
+SQLite instead of JSONL, use `msync repl --telemetry-db .temp/ssh-windows.sqlite`,
+then `msync telemetry sessions`, `summary`, `spans`, and `export` with that database
+and an explicit `--trace-id` if it contains multiple sessions. Do not sum nested
+phase durations as elapsed time.
+
+An independent connection control using the same alias/configuration is:
+
+```powershell
+$sshConfigArgs = @()
+if ($env:MSYNC_SSH_CONFIG) { $sshConfigArgs = @('-F', $env:MSYNC_SSH_CONFIG) }
+Measure-Command { ssh @sshConfigArgs forge true }
+ssh @sshConfigArgs -vvv -E .temp/ssh-direct.log forge true
+```
+
+`true` measures connection/authentication/remote-shell startup without a file
+transfer. The debug log explains route, selected authentication methods and
+whether the particular direct client reused a connection; it does not provide
+separate monotonic timings for every phase. A direct `scp` control should target
+a separately named disposable remote file, with the same client/configuration,
+source bytes and destination filesystem. It is not equivalent to msync's publication durability and must not be described as such.
+
+### Current attribution limits and instrumentation target
+
+At the v0.6.5 source baseline, `runtime::run_cancellable` records
+`transport_process` with program, PID, wait strategy, stdout/stderr byte counts,
+and open/exit/error events. It does not record the remote helper's phase, endpoint,
+or successful stderr. `inspect_remote_batch` already supplies backend, endpoint,
+path count and `client.invocations`; its parent relationship identifies metadata
+processes. Other successful SSH helpers are not distinguishable from one another
+by their existing process attributes. Do not infer a precise allocate/publish/
+settle split merely from an unlabeled `ssh` sequence.
+
+`ssh.session.admit` is emitted inside the Unix-only admission path. Native Windows
+returns before that span and does not acquire an authenticated registry session;
+its client durations include authentication and any askpass interaction on each
+new connection. Counting `transport_process` spans counts only clients using that generic runner,
+not all directly launched SSH clients. In particular,
+`execution::endpoint::command_output` launches publication allocate/publish/
+settle/recovery commands through its own asynchronous process runner and emits no
+transport-process span at this baseline. These controls are invisible inside
+the enclosing instruction duration. Unix master/check processes also have their
+own path outside the generic runner. SFTP subprocesses and server-authenticated
+connections are different counts again.
+
+The useful bounded extension is explicit operation identity supplied by the owner:
+instrument the asynchronous publication runner with linked spans and name
+allocate/publish/settle/recovery phases; distinguish payload and metadata
+transport, and record session strategy plus endpoint. Keep process setup,
+child lifetime, and pipe-drain durations separate if Windows process orchestration
+is implicated. Prefer semantic labels to recording or reverse-parsing whole
+remote shell scripts. This provides attribution without changing transport,
+credentials, publication or recovery ownership. Authentication internals still
+require native-client debug/server observations; a process span alone cannot
+separate DNS, proxy connection, key exchange and server execution.
+
+### Follow-up instrumentation implemented
+
+The follow-up working tree closes the missing-publication-runner gap above:
+
+| Record | Meaning |
+| --- | --- |
+| `remote_publication` | One retained finite publication owner; its explicit context follows the worker and blocking staging task. |
+| `transport_process`, `phase=allocate/publish/settle/recover/resolve_origin` | Actual async publication client, including previously invisible SSH invocations. |
+| `ssh.upload.stage`, `ssh.upload.payload`, `ssh.download.payload` | Private source staging and actual SCP byte transport, not public-destination publication. |
+| `remote_command`, `phase=source.inspect/source.list/source.timestamps/source.finalize/source.copy/remote.helper` | Semantic helper identity. Finalization is in-place normalization, not a second data copy. |
+| `spawn_ns`, `child_wait_ns`, `drain_ns` | Native process setup, child lifetime after capture readers start, and remaining reader join after child exit. Whole-span duration also includes other local orchestration. |
+| `ssh.session.strategy` | `owned_mux`, `external_mux`, `native_config`, or Windows `native_per_process`; refreshed after lazy client configuration. It describes msync policy, not a measured server-authentication count or a claim about a configured third-party client's own sharing. |
+
+In the PowerShell process table, add:
+
+```powershell
+@{Name='phase';Expression={$_.attributes.phase}},
+@{Name='spawn_ms';Expression={[math]::Round($_.metrics.spawn_ns / 1e6, 2)}},
+@{Name='child_ms';Expression={[math]::Round($_.metrics.child_wait_ns / 1e6, 2)}},
+@{Name='drain_ms';Expression={[math]::Round($_.metrics.drain_ns / 1e6, 2)}}
+```
+
+For synchronous helpers, find the `remote_command` or SCP parent by
+`parent_span_id`; its phase/endpoint belongs to the process below it. Publication
+clients carry phase/endpoint directly. Native Windows authentication is still
+inside client lifetime; a single process span cannot split its key exchange from
+remote shell startup or filesystem flushes. Unix master/check clients remain
+outside this process runner and must not be counted as authenticated sessions
+merely because a process was launched. The maintained actual-SSH acceptance
+runner checks both the phase records and their complete ancestry.

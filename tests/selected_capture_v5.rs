@@ -25,7 +25,7 @@ fn bytes(snapshot: &Snapshot) -> u64 {
         .values()
         .map(|entry| match entry {
             Entry::File { artifact, .. } => artifact.len(),
-            Entry::Directory { .. } => 0,
+            Entry::Directory { .. } | Entry::Symlink { .. } => 0,
         })
         .sum()
 }
@@ -103,15 +103,10 @@ fn missing_root_remains_missing_and_non_directory_root_never_copies_payload() {
 
 #[test]
 fn containing_source_retains_user_temp_data_but_excludes_exact_private_owners() {
-    use msync::filesystem::recovery::Registry;
-
     let root = workspace();
-    let scratch = root.path().join("scratch");
-    let registry = Registry::new(&scratch).unwrap();
     fs::create_dir_all(root.path().join("user/.temp")).unwrap();
     fs::write(root.path().join("user/.temp/keep"), b"user data").unwrap();
-    let (invocation, mut store) = owner(root.path());
-    store.exclude_registry(&registry).unwrap();
+    let (invocation, store) = owner(root.path());
     let regex = Regex::new(r"\A.*\z").unwrap();
 
     let snapshot = store
@@ -161,15 +156,17 @@ fn unselected_fifo_and_symlink_do_not_enter_metadata_or_payload_capture() {
         .unwrap();
     assert_eq!(bytes(&snapshot), 6);
     assert_eq!(snapshot.entries().len(), 2);
-    assert!(
-        store
-            .capture_selected_in(
-                &source,
-                &invocation,
-                &Regex::new(r"\Aunselected-link\z").unwrap()
-            )
-            .is_err()
-    );
+    let links = store
+        .capture_selected_in(
+            &source,
+            &invocation,
+            &Regex::new(r"\Aunselected-link\z").unwrap(),
+        )
+        .unwrap();
+    assert!(matches!(
+        links.entries().get(Path::new("unselected-link")),
+        Some(Entry::Symlink { .. })
+    ));
     assert!(
         store
             .capture_selected_in(

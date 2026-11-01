@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::compiler::{Backend, CopyOp, Location, Program};
@@ -119,7 +119,7 @@ impl Resource {
             return true;
         }
         if self.key.endpoint != other.key.endpoint
-            || !other.comparison.starts_with(&self.comparison)
+            || !other.key.components.starts_with(&self.key.components)
             || (other.identity_hint.is_some() && self.identity_hint != other.identity_hint)
         {
             return false;
@@ -220,11 +220,7 @@ pub(crate) fn logical_stream_resource(location: &Location) -> Resource {
         .collect::<Vec<_>>()
         .into();
     let comparison = if cfg!(windows) && location.backend == Backend::Local {
-        components
-            .iter()
-            .map(|part| part.to_uppercase())
-            .collect::<Vec<_>>()
-            .into()
+        windows_comparison(&components).into()
     } else {
         Arc::clone(&components)
     };
@@ -400,13 +396,22 @@ impl Plan {
         let mut consumes = ResourceIndex::default();
         let mut shared = BTreeMap::<(usize, usize), Vec<usize>>::new();
         let mut channels = BTreeSet::new();
+        let mut participants = BTreeMap::<ResourceKey, (usize, BTreeSet<usize>)>::new();
         for (index, connection) in self.stream_connections.iter().enumerate() {
-            let pair = (
-                connection.producer.min(connection.consumer),
-                connection.producer.max(connection.consumer),
-            );
-            shared.entry(pair).or_default().push(index);
+            let (_, members) = participants
+                .entry(connection.resource.key.clone())
+                .or_insert_with(|| (index, BTreeSet::new()));
+            members.extend([connection.producer, connection.consumer]);
             channels.insert(connection.resource.key.clone());
+        }
+        for (index, members) in participants.into_values() {
+            for &left in &members {
+                for &right in
+                    members.range((std::ops::Bound::Excluded(left), std::ops::Bound::Unbounded))
+                {
+                    shared.entry((left, right)).or_default().push(index);
+                }
+            }
         }
         let mut visited = vec![0_usize; self.nodes.len()];
         let mut candidate_count = 0_u64;
@@ -495,14 +500,11 @@ impl Plan {
             if channel.writers.is_empty() || channel.readers.is_empty() {
                 continue;
             }
-            if channel.writers.len() != channel.readers.len() {
-                self.issues.push(PlanIssue {
-                    nodes: channel.writers.iter().chain(&channel.readers).copied().collect(),
-                    message: format!("stream channel {} has {} producer(s) and {} consumer(s); use one producer and one consumer per channel or separate the channels explicitly", channel.resource.location, channel.writers.len(), channel.readers.len()),
-                });
-                continue;
-            }
-            for (producer, consumer) in channel.writers.into_iter().zip(channel.readers) {
+            for (producer, consumer) in channel
+                .writers
+                .iter()
+                .flat_map(|&writer| channel.readers.iter().map(move |&reader| (writer, reader)))
+            {
                 if producer == consumer {
                     self.issues.push(PlanIssue {
                         nodes: vec![producer],
@@ -1178,11 +1180,7 @@ fn resource(location: &Location, cache: &mut ResourceCache) -> Resource {
     };
     let components: Arc<[String]> = components.into();
     let comparison: Arc<[String]> = if cfg!(windows) && matches!(location.backend, Backend::Local) {
-        components
-            .iter()
-            .map(|part| part.to_uppercase())
-            .collect::<Vec<_>>()
-            .into()
+        windows_comparison(&components).into()
     } else {
         Arc::clone(&components)
     };
@@ -1252,12 +1250,29 @@ fn drive_components(components: &[String]) -> Option<Vec<String>> {
     let start = components.iter().position(|part| {
         part.len() == 2 && part.as_bytes()[0].is_ascii_alphabetic() && part.ends_with(':')
     })?;
-    Some(
-        components[start..]
-            .iter()
-            .map(|part| part.to_uppercase())
-            .collect(),
-    )
+    Some(windows_comparison(&components[start..]))
+}
+
+fn windows_comparison(components: &[String]) -> Vec<String> {
+    // This is a hazard prefix, never a native name or positive identity proof.
+    // Native Unicode case tables are not Rust's expanding Unicode uppercase map.
+    components
+        .iter()
+        .map_while(|part| windows_comparison_component(part))
+        .collect()
+}
+
+pub(crate) fn windows_comparison_component(component: &str) -> Option<String> {
+    component
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii() {
+                return Some(ch.to_ascii_lowercase());
+            }
+            (ch.to_lowercase().eq(std::iter::once(ch)) && ch.to_uppercase().eq(std::iter::once(ch)))
+                .then_some(ch)
+        })
+        .collect()
 }
 
 fn local_absolute(path: &str, working_directory: &Path, home: Option<&std::ffi::OsStr>) -> PathBuf {
@@ -1277,22 +1292,28 @@ fn local_absolute(path: &str, working_directory: &Path, home: Option<&std::ffi::
         path.to_string()
     };
     let path = Path::new(&path);
-    let absolute = if path.is_absolute() {
+    if path.is_absolute() {
         path.to_owned()
     } else {
         working_directory.join(path)
-    };
-    let mut normalized = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            part => normalized.push(part.as_os_str()),
-        }
     }
-    normalized
+}
+
+#[cfg(test)]
+mod windows_comparison_tests {
+    use super::*;
+
+    #[test]
+    fn uncased_unicode_components_keep_complete_hazard_keys() {
+        let parts = ["D:", "用户", "日本語🚀", "Project", "文件A.txt"].map(str::to_owned);
+        assert_eq!(
+            windows_comparison(&parts),
+            ["d:", "用户", "日本語🚀", "project", "文件a.txt"]
+        );
+        assert_eq!(windows_comparison_component("straße"), None);
+        assert_eq!(windows_comparison_component("Ä"), None);
+        assert_eq!(windows_comparison_component("ǅ"), None);
+    }
 }
 
 impl fmt::Display for Plan {

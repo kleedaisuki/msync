@@ -149,6 +149,10 @@ impl DebugInfo {
 
     pub fn materialize(&self) -> Result<MaterializedDebug, ObjectError> {
         self.validate()?;
+        Ok(self.materialize_validated())
+    }
+
+    pub(crate) fn materialize_validated(&self) -> MaterializedDebug {
         let sources = self
             .sources
             .iter()
@@ -182,7 +186,7 @@ impl DebugInfo {
             .iter()
             .map(|export| (export.name.clone(), site(&export.site)))
             .collect();
-        Ok((sources[self.primary].clone(), map, origins, exports))
+        (sources[self.primary].clone(), map, origins, exports)
     }
 }
 

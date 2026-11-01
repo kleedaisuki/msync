@@ -468,7 +468,7 @@ impl Workspace {
         fs::create_dir_all(root).map_err(|cause| {
             ProcessError::new("create scratch root", None, Some(root.to_owned()), cause)
         })?;
-        for _ in 0..128 {
+        loop {
             let path = root.join(format!(
                 "process-{}-{}",
                 std::process::id(),
@@ -482,15 +482,6 @@ impl Workspace {
                 }
             }
         }
-        Err(ProcessError::new(
-            "create scratch",
-            None,
-            Some(root.to_owned()),
-            io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "cannot allocate a private process workspace",
-            ),
-        ))
     }
 }
 

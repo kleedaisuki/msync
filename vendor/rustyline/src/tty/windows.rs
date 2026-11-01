@@ -286,6 +286,7 @@ pub struct ConsoleRenderer {
     utf16: Vec<u16>,
     colors_enabled: bool,
     grapheme_cluster_mode: GraphemeClusterMode,
+    tab_stop: Unit,
     bell_style: BellStyle,
 }
 
@@ -294,6 +295,7 @@ impl ConsoleRenderer {
         conout: HANDLE,
         colors_enabled: bool,
         grapheme_cluster_mode: GraphemeClusterMode,
+        tab_stop: Unit,
         bell_style: BellStyle,
     ) -> Self {
         // Multi line editing is enabled by ENABLE_WRAP_AT_EOL_OUTPUT mode
@@ -305,6 +307,7 @@ impl ConsoleRenderer {
             utf16: Vec::with_capacity(1024),
             colors_enabled,
             grapheme_cluster_mode,
+            tab_stop: tab_stop.max(1),
             bell_style,
         }
     }
@@ -349,6 +352,22 @@ impl ConsoleRenderer {
     fn wrap_at_eol(&mut self, s: &str, mut col: Unit) -> Unit {
         let mut esc_seq = 0;
         for c in s.graphemes(true) {
+            if c == "\t" {
+                if col == self.cols {
+                    self.buffer.push('\n');
+                    col = 0;
+                }
+                let cells = self.tab_stop - (col % self.tab_stop);
+                for _ in 0..cells {
+                    if col == self.cols {
+                        self.buffer.push('\n');
+                        col = 0;
+                    }
+                    self.buffer.push(' ');
+                    col += 1;
+                }
+                continue;
+            }
             if c == "\n" {
                 col = 0;
             } else {
@@ -503,12 +522,23 @@ impl Renderer for ConsoleRenderer {
 
     /// Characters with 2 column width are correctly handled (not split).
     fn calculate_position(&self, s: &str, orig: Position) -> Position {
-        debug_assert!(
-            memchr::memmem::find(s.as_bytes(), b"\x1b[").is_none(),
-            "content should not be styled directly"
-        );
         let mut pos = orig;
         for c in s.graphemes(true) {
+            if c == "\t" {
+                if pos.col == self.cols {
+                    pos.row += 1;
+                    pos.col = 0;
+                }
+                let cells = self.tab_stop - (pos.col % self.tab_stop);
+                for _ in 0..cells {
+                    if pos.col == self.cols {
+                        pos.row += 1;
+                        pos.col = 0;
+                    }
+                    pos.col += 1;
+                }
+                continue;
+            }
             if c == "\n" {
                 pos.col = 0;
                 pos.row += 1;
@@ -840,6 +870,7 @@ impl Term for Console {
             self.conout,
             self.colors_enabled(c),
             c.grapheme_cluster_mode(),
+            Unit::from(c.tab_stop()),
             c.bell_style(),
         )
     }
@@ -1018,6 +1049,34 @@ mod test {
         super::check(unsafe { super::threading::SetEvent(event) }).unwrap();
         assert_eq!(pipe.take_messages().unwrap(), None);
         assert_eq!(pipe.take_messages().unwrap(), None);
+    }
+
+    #[test]
+    fn renderer_tabs_match_layout_across_column_wraps() {
+        use super::{ConsoleRenderer, Position};
+        use crate::tty::Renderer;
+        use crate::{GraphemeClusterMode, config::BellStyle};
+        let mut renderer = ConsoleRenderer {
+            conout: std::ptr::null_mut(),
+            cols: 10,
+            buffer: String::new(),
+            utf16: Vec::new(),
+            colors_enabled: false,
+            grapheme_cluster_mode: GraphemeClusterMode::Unicode,
+            tab_stop: 8,
+            bell_style: BellStyle::None,
+        };
+        let source = "prompt\t中\t";
+        let col = renderer.wrap_at_eol(source, 0);
+        let pos = renderer.calculate_position(source, Position { col: 0, row: 0 });
+        assert_eq!(renderer.buffer, "prompt  中\n        ");
+        assert_eq!(pos, Position { col, row: 1 });
+        assert_eq!(
+            renderer
+                .calculate_position("\x1b[2J", Position { col: 0, row: 0 })
+                .col,
+            3
+        );
     }
 
     #[test]

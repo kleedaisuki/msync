@@ -1,24 +1,17 @@
-//! Adjacent-write specialization requires fresh statement-local runtime proofs.
-//!
-//! The runtime binds candidate addresses only under retained raw-operand guards.
-//! Canonical writes can then propagate types without falsely invalidating another
-//! spelling of the same target. This ephemeral bound program never replaces the
-//! semantic run: every erased raw traversal is rechecked, the final source recipe
-//! is validated again at acquisition, and deoptimization resumes the original IR.
+//! Adjacent overwritten files share the surviving value's ordinary file stage.
+//! Admission observes actual operand kinds once. After acquisition the owned
+//! bytes and metadata are the value; public paths are not repeatedly re-proved.
 
 use super::*;
 
+#[cfg(test)]
 use crate::hir::effects::EndpointRole;
+#[cfg(test)]
 use same_file::Handle;
 
 pub(in crate::execution) enum FoldAttempt {
     Completed(ExecutionReport),
     Deoptimized,
-}
-
-/// Pure shape filtering keeps unrelated copies off the metadata/preparation path.
-fn eligible(first: &Instruction, last: &Instruction) -> bool {
-    crate::hir::rewrite::AdjacentOverwrite::recognize(first, last).is_some()
 }
 
 impl Ordinary {
@@ -48,134 +41,67 @@ impl Ordinary {
             return Ok(FoldAttempt::Deoptimized);
         };
         self.options.check(first.span)?;
-        // A literal preserves destination permissions, so its metadata can
-        // depend on an erased earlier write. A file survivor replaces them.
+        // Literal writes inherit the preceding destination mode, unlike a file
+        // survivor whose captured metadata replaces that earlier value.
         if run.len() < 2
-            || !matches!(exact(last), Some((Input::File { pattern: None, .. }, _)))
-            || !run.windows(2).all(|pair| eligible(&pair[0], &pair[1]))
+            || !run.windows(2).all(|pair| {
+                crate::hir::rewrite::AdjacentOverwrite::recognize(&pair[0], &pair[1]).is_some()
+            })
         {
             return Ok(FoldAttempt::Deoptimized);
         }
+        let Some((Input::File { .. }, target)) = exact(last) else {
+            return Ok(FoldAttempt::Deoptimized);
+        };
+        let Ok(target) = local(target, false, last.span) else {
+            return Ok(FoldAttempt::Deoptimized);
+        };
+        if !ordinary_target(&target) || !discarded_sources_ready(&run[..run.len() - 1]) {
+            return Ok(FoldAttempt::Deoptimized);
+        }
+        let Some((source, _)) = exact(last) else {
+            unreachable!()
+        };
+        let Ok(Some((mut source, None))) = Source::input(source, last.span) else {
+            return Ok(FoldAttempt::Deoptimized);
+        };
+        if !independent_source(&mut source, &target) {
+            return Ok(FoldAttempt::Deoptimized);
+        }
+        let ready = Ready {
+            instruction: last.id,
+            source,
+            target,
+            mode: DestinationMode::Exact,
+            pattern: None,
+            span: last.span,
+        };
         self.inspect_progress(last);
-        let Some(guard) = Guard::capture(&run[..run.len() - 1]) else {
-            return Ok(FoldAttempt::Deoptimized);
-        };
         let mut specialization = crate::telemetry::span("runtime.specialize.adjacent");
-        if !guard.valid() {
-            return Ok(FoldAttempt::Deoptimized);
-        }
-        // The final read still validates its raw source immediately before
-        // acquisition; only its guarded destination is already bound here.
-        let mut survivor = last.clone();
-        let InstructionKind::Transfer {
-            destination: Output::File { location, .. },
-            ..
-        } = &mut survivor.kind
-        else {
-            return Ok(FoldAttempt::Deoptimized);
+        let result = match &ready.source {
+            Source::Local(path) => {
+                let Some(metadata) = regular_metadata(path) else {
+                    return Ok(FoldAttempt::Deoptimized);
+                };
+                let mut trace = copy_trace(&ready, "runtime-folded-assignment");
+                let copied =
+                    self.copy_file_after_acquire(&ready, &ready.target, Some(&metadata), acquired);
+                trace.finish_result(&copied);
+                copied.map(FoldAttempt::Completed)
+            }
+            Source::Remote(_) => self
+                .execute_remote_after_acquire(&ready, "runtime-folded-assignment", acquired)
+                .map(|attempt| match attempt {
+                    Attempt::Completed(report) => FoldAttempt::Completed(report),
+                    Attempt::Unsupported => FoldAttempt::Deoptimized,
+                }),
+            Source::Literal(_) => unreachable!("only file survivors are admitted"),
         };
-        *location = bound(&guard.target.path);
-        let Ok(Some(ready)) = Ready::inspect(&survivor, self.origin.as_ref()) else {
-            return Ok(FoldAttempt::Deoptimized);
-        };
-        if ready.target != guard.target.path {
-            return Ok(FoldAttempt::Deoptimized);
-        }
-        if self.storage.is_none() {
-            self.storage = Some(Storage::new(&self.options, last.span)?);
-        }
-        let result = self.fold_pinned(&ready, guard, acquired);
-        let cleanup = self.close();
-        let result = settle_cleanup(result, cleanup, last.span);
         specialization.finish_result(&result);
         if matches!(result, Ok(FoldAttempt::Completed(_))) {
             specialization.metric("assignments.eliminated", (run.len() - 1) as u64);
-        } else {
-            specialization.attribute("phase", "deoptimized");
         }
         result
-    }
-
-    fn fold_pinned(
-        &mut self,
-        ready: &Ready,
-        guard: Guard,
-        acquired: impl FnOnce(),
-    ) -> Result<FoldAttempt> {
-        let mut trace = copy_trace(ready, "runtime-folded-assignment");
-        let result = self.fold_snapshot(ready, guard, acquired);
-        trace.finish_result(&result);
-        match &result {
-            Ok(FoldAttempt::Completed(report)) => {
-                trace.attribute("phase", "committed");
-                trace.metric("files.assigned", report.assigned_files as u64);
-                trace.metric("bytes.assigned", report.assigned_bytes);
-            }
-            Ok(FoldAttempt::Deoptimized) => trace.attribute("phase", "guard-fallback"),
-            Err(error) => {
-                trace.attribute("phase", "failed");
-                trace.record_error("copy.runtime-fold", error);
-                if error.is_cancelled() {
-                    trace.cancelled();
-                }
-            }
-        }
-        result
-    }
-
-    fn fold_snapshot(
-        &mut self,
-        ready: &Ready,
-        guard: Guard,
-        acquired: impl FnOnce(),
-    ) -> Result<FoldAttempt> {
-        observe(
-            self.progress.as_ref(),
-            ready,
-            Phase::Acquire,
-            &ExecutionReport::default(),
-        );
-        let storage = self.storage.as_mut().expect("fold owns its source store");
-        let selection = storage.source(ready, &self.options);
-        self.options.check(ready.span)?;
-        let Ok(Some(selection)) = selection else {
-            return Ok(FoldAttempt::Deoptimized);
-        };
-        let Some(Entry::File { artifact, .. }) = selection.snapshot.entries().get(Path::new(""))
-        else {
-            return Ok(FoldAttempt::Deoptimized);
-        };
-        let bytes = artifact.len();
-        acquired();
-        if !guard.valid() || relation(&selection, &ready.target, ready.span).is_err() {
-            return Ok(FoldAttempt::Deoptimized);
-        }
-        let Ok(snapshot) = storage.assignment(&selection.snapshot, &ready.target, ready) else {
-            return Ok(FoldAttempt::Deoptimized);
-        };
-        let assignments = [Assignment {
-            target: ready.target.clone(),
-            snapshot,
-        }];
-        let mut report = ExecutionReport {
-            assigned_files: 1,
-            assigned_bytes: bytes,
-            ..ExecutionReport::default()
-        };
-        observe(self.progress.as_ref(), ready, Phase::Stage, &report);
-        let published = storage.publish_checked(
-            &assignments,
-            ready,
-            &self.options,
-            self.progress.as_ref(),
-            &mut report,
-            Some(move || guard.valid()),
-        )?;
-        if !published {
-            return Ok(FoldAttempt::Deoptimized);
-        }
-        report.assignments = 1;
-        Ok(FoldAttempt::Completed(report))
     }
 }
 
@@ -193,241 +119,75 @@ fn exact(node: &Instruction) -> Option<(&Input, &Location)> {
     }
 }
 
-struct Guard {
-    sources: Vec<SourceStamp>,
-    target: Stamp,
-    parent: Stamp,
+fn ordinary_target(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata.is_file(),
+        Err(cause) => cause.kind() == io::ErrorKind::NotFound,
+    }
 }
 
-impl Guard {
-    fn capture(discarded: &[Instruction]) -> Option<Self> {
-        let first = discarded.first()?;
-        let (_, target) = exact(first)?;
-        let target = Stamp::endpoint(target, EndpointRole::Destination, first.span)?;
-        if !matches!(target.kind, Kind::Missing | Kind::File) || target.readonly {
-            return None;
+fn discarded_sources_ready(discarded: &[Instruction]) -> bool {
+    discarded.iter().all(|node| {
+        let Some((source, _)) = exact(node) else {
+            return false;
+        };
+        let Input::File {
+            location,
+            pattern: None,
+        } = source
+        else {
+            return matches!(source, Input::Literal(_));
+        };
+        let Ok(Some(path)) = crate::runtime::local_path(location, true) else {
+            return false;
+        };
+        if !fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_file()) {
+            return false;
         }
-        let mut sources = Vec::new();
-        for node in discarded {
-            let (source, _) = exact(node)?;
-            let location = match source {
-                Input::Literal(_) => continue,
-                Input::File {
-                    location,
-                    pattern: None,
-                } => location,
-                _ => return None,
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        options
+            .open(path)
+            .and_then(|file| file.metadata())
+            .is_ok_and(|metadata| metadata.is_file())
+    })
+}
+
+fn regular_metadata(path: &Path) -> Option<NodeMetadata> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    metadata
+        .is_file()
+        .then(|| NodeMetadata::capture(&metadata).ok())
+        .flatten()
+}
+
+fn independent_source(source: &mut Source, target: &Path) -> bool {
+    match source {
+        // Reading the erased target name observes an earlier write in this same
+        // program. A different hard-link name keeps its old value after rename.
+        Source::Local(path) => path != target,
+        Source::Remote(location) if location.backend == Backend::Wsl => {
+            let target = Location {
+                backend: Backend::Local,
+                path: target.to_string_lossy().into_owned(),
             };
-            let stamp = Stamp::endpoint(location, EndpointRole::Source, node.span)?;
-            if stamp.kind != Kind::File || stamp.readonly || stamp.same_identity(&target) {
-                return None;
-            }
-            sources.push(SourceStamp { stamp });
-        }
-        let mut parent = target.path.parent()?;
-        let parent = loop {
-            let stamp = Stamp::capture(parent.to_owned(), first.span)?;
-            if stamp.kind != Kind::Missing {
-                break stamp;
-            }
-            parent = parent.parent()?;
-        };
-        if parent.kind != Kind::Directory || parent.readonly {
-            return None;
-        }
-        Some(Self {
-            sources,
-            target,
-            parent,
-        })
-    }
-
-    fn valid(&self) -> bool {
-        self.target.valid()
-            && self.parent.valid()
-            && self
-                .sources
-                .iter()
-                .all(|source| source.admissible_against(&self.target))
-    }
-}
-
-struct SourceStamp {
-    stamp: Stamp,
-}
-
-fn bound(path: &Path) -> Location {
-    Location {
-        backend: Backend::Local,
-        path: path.to_string_lossy().into_owned(),
-    }
-}
-
-impl SourceStamp {
-    fn admissible_against(&self, target: &Stamp) -> bool {
-        if !self.stamp.traversable() {
-            return false;
-        }
-        let Ok(Some(metadata)) = metadata(&self.stamp.path, Span::default()) else {
-            return false;
-        };
-        if !metadata.is_file() || metadata.permissions().readonly() {
-            return false;
-        }
-        let Ok(file) = fs::File::open(&self.stamp.path) else {
-            return false;
-        };
-        let Ok(metadata) = file.metadata() else {
-            return false;
-        };
-        if !metadata.is_file() || metadata.permissions().readonly() {
-            return false;
-        }
-        let Ok(identity) = Handle::from_file(file) else {
-            return false;
-        };
-        // The certified surviving file replaces all metadata as well as bytes.
-        // Historical source identity/mode is not observable; the intermediate
-        // assignment must still be an admissible ordinary-file overwrite.
-        target
-            .identity
-            .as_ref()
-            .is_none_or(|target| identity != *target)
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Missing,
-    File,
-    Directory,
-}
-
-struct Stamp {
-    path: PathBuf,
-    traversal: Option<Traversal>,
-    kind: Kind,
-    identity: Option<Handle>,
-    permissions: u32,
-    readonly: bool,
-}
-
-// Canonical identity alone loses erased traversal obligations: an ancestor may
-// stop being a directory or become a link while the final object remains intact.
-struct Traversal {
-    location: Location,
-    role: EndpointRole,
-}
-
-impl Stamp {
-    fn endpoint(location: &Location, role: EndpointRole, span: Span) -> Option<Self> {
-        let path = local(location, role == EndpointRole::Source, span).ok()?;
-        let mut stamp = Self::capture(path, span)?;
-        stamp.traversal = Some(Traversal {
-            location: location.clone(),
-            role,
-        });
-        Some(stamp)
-    }
-
-    fn capture(path: PathBuf, span: Span) -> Option<Self> {
-        let metadata = metadata(&path, span).ok()?;
-        let Some(metadata) = metadata else {
-            return Some(Self {
-                path,
-                traversal: None,
-                kind: Kind::Missing,
-                identity: None,
-                permissions: 0,
-                readonly: false,
-            });
-        };
-        let kind = if metadata.is_file() {
-            Kind::File
-        } else if metadata.is_dir() {
-            Kind::Directory
-        } else {
-            return None;
-        };
-        let identity = Handle::from_path(&path).ok()?;
-        Some(Self {
-            path,
-            traversal: None,
-            kind,
-            identity: Some(identity),
-            permissions: permissions(&metadata),
-            readonly: metadata.permissions().readonly(),
-        })
-    }
-
-    fn traversable(&self) -> bool {
-        if let Some(traversal) = &self.traversal {
-            let resolved = local(
-                &traversal.location,
-                traversal.role == EndpointRole::Source,
-                Span::default(),
-            );
-            if !resolved.is_ok_and(|resolved| resolved == self.path) {
+            if !crate::runtime::native_windows_filesystem(&target) {
                 return false;
             }
+            let Some((resolved, crate::plan::FileClass::Regular)) =
+                crate::runtime::wsl_native_file(location)
+            else {
+                return false;
+            };
+            *location = resolved;
+            true
         }
-        true
-    }
-
-    fn valid(&self) -> bool {
-        if !self.traversable() {
-            return false;
-        }
-        let Some(current) = Self::capture(self.path.clone(), Span::default()) else {
-            return false;
-        };
-        current.kind == self.kind
-            && current.permissions == self.permissions
-            && current.identity == self.identity
-    }
-
-    fn same_identity(&self, other: &Self) -> bool {
-        self.identity.is_some() && self.identity == other.identity
-    }
-}
-
-#[cfg(unix)]
-fn permissions(metadata: &fs::Metadata) -> u32 {
-    use std::os::unix::fs::PermissionsExt;
-    metadata.permissions().mode()
-}
-
-#[cfg(windows)]
-fn permissions(metadata: &fs::Metadata) -> u32 {
-    u32::from(metadata.permissions().readonly())
-}
-
-#[cfg(not(any(unix, windows)))]
-fn permissions(metadata: &fs::Metadata) -> u32 {
-    u32::from(metadata.permissions().readonly())
-}
-
-fn settle_cleanup(
-    result: Result<FoldAttempt>,
-    cleanup: Vec<CleanupIssue>,
-    span: Span,
-) -> Result<FoldAttempt> {
-    match result {
-        Ok(FoldAttempt::Completed(mut report)) => {
-            report.cleanup.extend(cleanup);
-            Ok(FoldAttempt::Completed(report))
-        }
-        other if cleanup.is_empty() => other,
-        other => {
-            let mut error = other.err().unwrap_or_else(|| {
-                ExecutionError::new("cannot discard invalidated runtime specialization", span)
-            });
-            for issue in cleanup {
-                error.retained_paths.extend(issue.retained_paths);
-                error.report.help.push(format!("cleanup: {}", issue.cause));
-            }
-            Err(error)
-        }
+        _ => false,
     }
 }
 
@@ -505,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn changing_the_unused_source_after_acquisition_deoptimizes_without_publication() {
+    fn removing_an_unused_source_after_acquisition_keeps_the_captured_value() {
         let root = fixture();
         fs::write(root.path().join("first"), b"first").unwrap();
         fs::write(root.path().join("last"), b"last").unwrap();
@@ -517,8 +277,8 @@ mod tests {
                 fs::remove_file(root.path().join("first")).unwrap();
             })
             .unwrap();
-        assert!(matches!(result, FoldAttempt::Deoptimized));
-        assert_eq!(fs::read(root.path().join("target")).unwrap(), b"old");
+        assert!(matches!(result, FoldAttempt::Completed(_)));
+        assert_eq!(fs::read(root.path().join("target")).unwrap(), b"last");
         assert!(owner.storage.is_none());
         assert_eq!(scratch_payload_count(root.path()), 0);
     }
@@ -604,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn source_rotation_to_a_target_alias_or_readonly_file_still_deoptimizes() {
+    fn unused_source_alias_and_readonly_changes_do_not_revalidate_public_state() {
         for alias in [false, true] {
             let root = fixture();
             fs::write(root.path().join("first"), b"first").unwrap();
@@ -634,13 +394,10 @@ mod tests {
                 })
                 .unwrap();
             assert!(acquired);
-            assert!(matches!(result, FoldAttempt::Deoptimized));
-            assert_eq!(fs::read(root.path().join("target")).unwrap(), b"old");
+            assert!(matches!(result, FoldAttempt::Completed(_)));
+            assert_eq!(fs::read(root.path().join("target")).unwrap(), b"last");
             if alias {
-                assert!(
-                    same_file::is_same_file(root.path().join("first"), root.path().join("target"))
-                        .unwrap()
-                );
+                assert_eq!(fs::read(root.path().join("first")).unwrap(), b"old");
             } else {
                 assert_eq!(
                     fs::read(root.path().join("first")).unwrap(),
@@ -660,7 +417,7 @@ mod tests {
     }
 
     #[test]
-    fn every_discarded_source_in_a_run_is_guarded_after_acquisition() {
+    fn discarded_sources_are_observed_only_at_admission() {
         let root = fixture();
         let mut text = String::new();
         for index in 0..20 {
@@ -690,14 +447,14 @@ mod tests {
                 fs::remove_file(root.path().join("source-10")).unwrap();
             })
             .unwrap();
-        assert!(matches!(result, FoldAttempt::Deoptimized));
-        assert_eq!(fs::read(root.path().join("target")).unwrap(), b"old");
+        assert!(matches!(result, FoldAttempt::Completed(_)));
+        assert_eq!(fs::read(root.path().join("target")).unwrap(), b"value 19");
         assert!(owner.storage.is_none());
         assert_eq!(scratch_payload_count(root.path()), 0);
     }
 
     #[test]
-    fn erased_operand_traversals_are_rechecked_after_acquisition() {
+    fn admitted_operand_addresses_are_not_resolved_again_after_acquisition() {
         for role in [EndpointRole::Source, EndpointRole::Destination] {
             let root = fixture();
             fs::create_dir(root.path().join("step")).unwrap();
@@ -716,7 +473,7 @@ mod tests {
                 .unwrap();
             assert!(
                 acquired,
-                "the {role:?} candidate must reach the post-acquire guard; prepared={:?}",
+                "the {role:?} candidate must acquire the surviving value; prepared={:?}",
                 crate::preparation::prepare(
                     &Program {
                         body: crate::hir::Region {
@@ -726,8 +483,8 @@ mod tests {
                     true
                 )
             );
-            assert!(matches!(result, FoldAttempt::Deoptimized));
-            assert_eq!(fs::read(root.path().join("target")).unwrap(), b"old");
+            assert!(matches!(result, FoldAttempt::Completed(_)));
+            assert_eq!(fs::read(root.path().join("target")).unwrap(), b"last");
             assert_eq!(fs::read(root.path().join("first")).unwrap(), b"first");
             assert!(owner.storage.is_none());
             assert_eq!(scratch_payload_count(root.path()), 0);
@@ -764,43 +521,160 @@ mod tests {
         nodes
     }
     #[test]
-    fn the_post_stage_guard_keeps_the_original_namespace_and_settles_journals() {
+    fn staged_bytes_and_metadata_survive_source_removal_and_target_rotation() {
         let root = fixture();
         fs::write(root.path().join("first"), b"first").unwrap();
         fs::write(root.path().join("last"), b"last").unwrap();
         let nodes = pair(root.path());
-        let guard = Guard::capture(&nodes[..1]).unwrap();
-        let ready = Ready::inspect(&nodes[1], None).unwrap().unwrap();
-        let options = Options::new(root.path().join("scratch"));
-        let mut owner = Ordinary::new(&options);
-        owner.storage = Some(Storage::new(&options, Span::default()).unwrap());
-        {
-            let storage = owner.storage.as_mut().unwrap();
-            let selection = storage.source(&ready, &options).unwrap().unwrap();
-            let assignments = [Assignment {
-                target: ready.target.clone(),
-                snapshot: selection.snapshot,
-            }];
-            let mut report = ExecutionReport::default();
-            let first = root.path().join("first");
-            let valid = move || {
-                fs::remove_file(&first).unwrap();
-                guard.valid()
-            };
-            assert!(
-                !storage
-                    .publish_checked(
-                        &assignments,
-                        &ready,
-                        &options,
-                        None,
-                        &mut report,
-                        Some(valid)
-                    )
-                    .unwrap()
-            );
+        let mut expected =
+            NodeMetadata::capture(&fs::metadata(root.path().join("last")).unwrap()).unwrap();
+        expected.modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(978307200);
+        expected.apply(&root.path().join("last")).unwrap();
+        let mut owner = Ordinary::new(&Options::new(root.path().join("scratch")));
+        let result = owner
+            .fold_after_acquire(&nodes[0], &nodes[1], || {
+                fs::remove_file(root.path().join("last")).unwrap();
+                fs::write(
+                    root.path().join("target"),
+                    b"public target changed during copy",
+                )
+                .unwrap();
+            })
+            .unwrap();
+        assert!(matches!(result, FoldAttempt::Completed(_)));
+        assert_eq!(fs::read(root.path().join("target")).unwrap(), b"last");
+        assert_eq!(
+            fs::metadata(root.path().join("target"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            expected.modified
+        );
+        assert!(!root.path().join("scratch").exists());
+    }
+
+    #[test]
+    fn a_survivor_reading_the_written_name_retains_the_same_program_dependency() {
+        let root = fixture();
+        fs::write(root.path().join("first"), b"A").unwrap();
+        fs::write(root.path().join("target"), b"old").unwrap();
+        let mut nodes = pair(root.path());
+        let InstructionKind::Transfer { source, .. } = &mut nodes[1].kind else {
+            unreachable!()
+        };
+        *source = Input::File {
+            location: Location {
+                backend: Backend::Local,
+                path: root.path().join("target").to_string_lossy().into_owned(),
+            },
+            pattern: None,
+        };
+        let mut owner = Ordinary::new(&Options::new(root.path().join("scratch")));
+        assert!(matches!(
+            owner.try_fold_run(&nodes).unwrap(),
+            FoldAttempt::Deoptimized
+        ));
+        for node in &nodes {
+            assert!(matches!(
+                owner.execute(node).unwrap(),
+                Attempt::Completed(_)
+            ));
         }
-        assert!(!root.path().join("target").exists());
-        assert!(owner.close().is_empty());
+        assert_eq!(fs::read(root.path().join("target")).unwrap(), b"A");
+        assert!(!root.path().join("scratch").exists());
+    }
+
+    #[test]
+    fn discarded_directory_assignments_are_not_erased_as_file_overwrites() {
+        let root = fixture();
+        fs::create_dir(root.path().join("first")).unwrap();
+        fs::write(root.path().join("first/child"), b"directory value").unwrap();
+        fs::write(root.path().join("last"), b"last").unwrap();
+        let nodes = pair(root.path());
+        let mut owner = Ordinary::new(&Options::new(root.path().join("scratch")));
+        assert!(matches!(
+            owner.try_fold_run(&nodes).unwrap(),
+            FoldAttempt::Deoptimized
+        ));
+        assert!(matches!(
+            owner.execute(&nodes[0]).unwrap(),
+            Attempt::Completed(_)
+        ));
+        assert!(owner.execute(&nodes[1]).is_err());
+        assert_eq!(
+            fs::read(root.path().join("target/child")).unwrap(),
+            b"directory value"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_discarded_link_can_change_the_following_target_address() {
+        let root = fixture();
+        fs::write(root.path().join("referent"), b"referent").unwrap();
+        std::os::unix::fs::symlink("referent", root.path().join("first")).unwrap();
+        fs::write(root.path().join("last"), b"last").unwrap();
+        fs::write(root.path().join("target"), b"old").unwrap();
+        let nodes = pair(root.path());
+        let mut owner = Ordinary::new(&Options::new(root.path().join("scratch")));
+        assert!(matches!(
+            owner.try_fold_run(&nodes).unwrap(),
+            FoldAttempt::Deoptimized
+        ));
+        for node in &nodes {
+            assert!(matches!(
+                owner.execute(node).unwrap(),
+                Attempt::Completed(_)
+            ));
+        }
+        assert_eq!(
+            fs::read_link(root.path().join("target")).unwrap(),
+            Path::new("referent")
+        );
+        assert_eq!(fs::read(root.path().join("referent")).unwrap(), b"last");
+    }
+
+    #[cfg(unix)]
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(32))]
+        #[test]
+        fn folded_file_chains_match_ordinary_bytes_and_metadata(
+            payloads in proptest::collection::vec(proptest::collection::vec(proptest::num::u8::ANY, 0..256), 6),
+            choices in proptest::collection::vec(0usize..8, 2..14),
+        ) {
+            use std::os::unix::fs::PermissionsExt;
+            let root = fixture();
+            for (index, payload) in payloads.iter().enumerate() {
+                let path = root.path().join(format!("value-{index}"));
+                fs::write(&path, payload).unwrap();
+                let metadata = NodeMetadata::new(fs::Permissions::from_mode([0o400, 0o600, 0o640, 0o755][index % 4]), std::time::UNIX_EPOCH + std::time::Duration::new(1_000_000 + index as u64, 123_456_789));
+                metadata.apply(&path).unwrap();
+            }
+            let mut outcomes = Vec::new();
+            for optimized in [false, true] {
+                let label = if optimized { "folded" } else { "ordinary" };
+                let target = root.path().join(format!("{label}-target"));
+                let alias = root.path().join(format!("{label}-alias"));
+                fs::write(&target, b"initial value").unwrap();
+                NodeMetadata::new(fs::Permissions::from_mode(0o640), std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_100_000)).apply(&target).unwrap();
+                fs::hard_link(&target, &alias).unwrap();
+                let nodes = choices.iter().enumerate().map(|(id, choice)| {
+                    let source = match choice { 0 => target.clone(), 1 => alias.clone(), _ => root.path().join(format!("value-{}", choice - 2)) };
+                    Instruction { id: InstructionId(id), span: Span::default(), expansion: Vec::new(), kind: InstructionKind::Transfer {
+                        source: Input::File { location: Location { backend: Backend::Local, path: source.to_string_lossy().into_owned() }, pattern: None },
+                        destination: Output::File { location: Location { backend: Backend::Local, path: target.to_string_lossy().into_owned() }, mode: DestinationMode::Exact },
+                    } }
+                }).collect::<Vec<_>>();
+                let mut owner = Ordinary::new(&Options::new(root.path().join(format!("{label}-scratch"))));
+                let folded = optimized && matches!(owner.try_fold_run(&nodes).unwrap(), FoldAttempt::Completed(_));
+                if !folded {
+                    for node in &nodes { assert!(matches!(owner.execute(node).unwrap(), Attempt::Completed(_))); }
+                }
+                let metadata = fs::metadata(&target).unwrap();
+                outcomes.push((fs::read(&target).unwrap(), metadata.permissions().mode() & 0o777, metadata.modified().unwrap()));
+                proptest::prop_assert!(owner.storage.is_none());
+            }
+            proptest::prop_assert_eq!(&outcomes[0], &outcomes[1]);
+        }
     }
 }

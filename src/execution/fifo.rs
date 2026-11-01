@@ -79,11 +79,46 @@ impl FifoState {
             if writers.is_empty() || readers.is_empty() {
                 continue;
             }
-            if writers.len() != readers.len() {
-                return Err(ExecutionError::new("a FIFO rendezvous has unequal writer and reader counts", block.instructions[0].span)
-                    .help("Use one writer and one reader per FIFO wave, or separate independent flows onto distinct FIFOs."));
+            #[cfg(unix)]
+            {
+                let first = &writers[0];
+                let _opening = state.pins[&first.key()]
+                    .opening_guard(Path::new(&first.location().path))
+                    .map_err(|cause| {
+                        ExecutionError::caused(
+                            "cannot open FIFO participant group",
+                            block.instructions[0].span,
+                            cause,
+                        )
+                    })?;
+                for endpoint in writers.iter().chain(&readers) {
+                    state
+                        .pins
+                        .get_mut(&endpoint.key())
+                        .expect("observed FIFO")
+                        .prepare(
+                            Path::new(&endpoint.location().path),
+                            endpoint.key().role == EndpointRole::Source,
+                        )
+                        .map_err(|cause| {
+                            ExecutionError::caused(
+                                "cannot open FIFO participant",
+                                block.instructions[0].span,
+                                cause,
+                            )
+                        })?;
+                }
             }
-            for (writer, reader) in writers.into_iter().zip(readers) {
+            let links = readers
+                .iter()
+                .map(|reader| (writers[0].clone(), reader.clone()))
+                .chain(
+                    writers
+                        .iter()
+                        .skip(1)
+                        .map(|writer| (writer.clone(), readers[0].clone())),
+                );
+            for (writer, reader) in links {
                 let proof = FifoRendezvousProof::connect(writer, reader)
                     .map_err(|message| ExecutionError::new(message, block.instructions[0].span))?;
                 context.physical_rendezvous.push(proof);
@@ -114,7 +149,7 @@ impl FifoState {
         #[cfg(unix)]
         {
             use std::os::unix::fs::FileTypeExt;
-            match std::fs::symlink_metadata(&location.path) {
+            match std::fs::metadata(&location.path) {
                 Ok(metadata) if metadata.file_type().is_fifo() => {}
                 _ => return Ok(()),
             }
@@ -132,13 +167,6 @@ impl FifoState {
                 ));
             }
         };
-        pin.require_generation_pin().map_err(|cause| {
-            ExecutionError::caused(
-                "cannot retain FIFO generation before co-admission",
-                span,
-                cause,
-            )
-        })?;
         let key = EndpointKey { instruction, role };
         let proof =
             FifoEndpointProof::verified_fifo(key, location.clone(), "native-fifo", pin.native_id())
@@ -206,7 +234,6 @@ mod tests {
         let native = CString::new(path.as_os_str().as_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
         let old = crate::streams::fifo_identity(&path).unwrap().unwrap();
-        old.require_generation_pin().unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
         let new = crate::streams::fifo_identity(&path).unwrap().unwrap();

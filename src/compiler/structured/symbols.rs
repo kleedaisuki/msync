@@ -5,50 +5,18 @@ use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const DEPTH_LIMIT: usize = 128;
-const INVOCATION_LIMIT: usize = 1_000_000;
-const VALUE_LIMIT: usize = 8 * 1024 * 1024;
 
-/// One allowance per compilation, shared across all lexical/script environments.
-#[derive(Clone, Debug)]
-pub(super) struct Budget(Arc<AtomicUsize>);
+#[derive(Clone, Debug, Default)]
+pub(super) struct CallCount(Arc<AtomicUsize>);
 
-impl Default for Budget {
-    fn default() -> Self {
-        Self(Arc::new(AtomicUsize::new(INVOCATION_LIMIT)))
-    }
-}
-
-impl Budget {
+impl CallCount {
     pub(super) fn used(&self) -> usize {
-        INVOCATION_LIMIT - self.0.load(Ordering::Relaxed)
+        self.0.load(Ordering::Relaxed)
     }
 
-    fn consume(&self, span: Span) -> Result<(), Failure> {
-        self.0.try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| remaining.checked_sub(1))
-            .map(|_| ())
-            .map_err(|_| Report::new("symbol expansion work budget exceeded", span)
-                .help("A compilation permits at most 1,000,000 symbol invocations, including nested calls and loaded scripts.").into())
+    fn record(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
     }
-}
-
-pub(super) fn check_size(bytes: usize, span: Span, scope: &Scope) -> Result<(), Failure> {
-    if !scope.symbol_calls.is_empty() && bytes > VALUE_LIMIT {
-        return Err(Report::new("symbol value size limit exceeded (8 MiB)", span)
-            .help("Compile-time symbol paths and strings must fit within 8 MiB; ordinary transfer payloads are not subject to this limit.").into());
-    }
-    Ok(())
-}
-
-pub(super) fn check_value(value: &Value, span: Span, scope: &Scope) -> Result<(), Failure> {
-    let bytes = match value {
-        Value::Path(path) => path
-            .path
-            .len()
-            .max(path.relocation.as_ref().map_or(0, |path| path.suffix.len())),
-        Value::Literal(text) => text.len(),
-        _ => 0,
-    };
-    check_size(bytes, span, scope)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -340,10 +308,7 @@ fn instantiate(
     context: &CompileContext,
     call_site: SourceSpan,
 ) -> Result<Value, Failure> {
-    caller
-        .symbol_budget
-        .consume(call_site.span)
-        .map_err(|failure| Failure::located(failure.locate(call_site.source.clone())))?;
+    caller.symbol_count.record();
     let mut scope = Scope {
         slots: caller.slots.clone(),
         current_unit: caller.current_unit,
@@ -351,7 +316,7 @@ fn instantiate(
         symbols: definition.symbols.clone(),
         global_symbols: Some(definition.symbols.clone()),
         symbol_calls: caller.symbol_calls.clone(),
-        symbol_budget: caller.symbol_budget.clone(),
+        symbol_count: caller.symbol_count.clone(),
         globals: Some(definition.values.clone()),
         global_sites: Some(definition.sites.clone()),
         global_expansions: Some(definition.expansions.clone()),
@@ -363,8 +328,6 @@ fn instantiate(
     let mut arguments_bindings = Vec::new();
     for (parameter, argument) in definition.parameters.iter().zip(arguments) {
         let value = diagnostics::resolve(argument, caller, context)
-            .map_err(|failure| Failure::located(failure.locate(call_site.source.clone())))?;
-        check_value(&value, argument.span, &scope)
             .map_err(|failure| Failure::located(failure.locate(call_site.source.clone())))?;
         let trace = ExpansionTrace::new(
             &parameter.text,
@@ -597,7 +560,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn acyclic_calls_share_work_allowance_and_next_compilation_resets_it() {
+    fn acyclic_calls_are_counted_without_an_admission_budget() {
         let mut session = Session::new();
         let context = CompileContext {
             pwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
@@ -614,28 +577,13 @@ mod tests {
         session
             .compile(&language::parse(&code).unwrap(), &context)
             .unwrap();
-        session.scope.symbol_budget = Budget(Arc::new(AtomicUsize::new(12)));
-        let call = language::parse("result := f7()\n").unwrap();
-        let language::StatementKind::Binding { value, .. } = &call.statements[0].kind else {
-            panic!("expected binding");
-        };
-        let error = evaluate(value, &session.scope, &context)
-            .unwrap_err()
-            .locate(Source::new("<budget>", "result := f7()\n"));
-        assert!(
-            error
-                .report
-                .diagnostic
-                .message
-                .contains("work budget exceeded")
-        );
-        assert_eq!(session.scope.symbol_budget.0.load(Ordering::Relaxed), 0);
+        session
+            .compile(&language::parse("result := f7()\n").unwrap(), &context)
+            .unwrap();
+        assert_eq!(session.scope.symbol_count.used(), 255);
         session
             .compile(&language::parse("result := f1()\n").unwrap(), &context)
             .unwrap();
-        assert_eq!(
-            session.scope.symbol_budget.0.load(Ordering::Relaxed),
-            INVOCATION_LIMIT - 3
-        );
+        assert_eq!(session.scope.symbol_count.used(), 3);
     }
 }

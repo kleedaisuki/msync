@@ -320,3 +320,67 @@ fn stdio_include_diagnostics_keep_child_uri_utf16_provenance_and_clear_after_rep
     );
     client.finish();
 }
+
+#[test]
+fn large_valid_documents_keep_diagnostics_navigation_completion_and_formatting() {
+    let root = workspace();
+    let uri = url::Url::from_file_path(root.path().join("large.msync"))
+        .unwrap()
+        .to_string();
+    let mut client = lsp_client::Client::start(root.path());
+    client.request(
+        1,
+        "initialize",
+        json!({"processId": null, "capabilities": {}}),
+    );
+    client.notify("initialized", json!({}));
+    let source = format!(
+        "# {}\nready=true\nif ready:\n    \"x\" -> output\n",
+        "x".repeat(8 * 1024 * 1024)
+    );
+    client.notify(
+        "textDocument/didOpen",
+        json!({"textDocument": {"uri": uri, "languageId": "msync", "version": 1, "text": source}}),
+    );
+    assert!(
+        diagnostics(&mut client, &uri, 1)
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let completion = client.request(
+        2,
+        "textDocument/completion",
+        json!({"textDocument": {"uri": uri}, "position": {"line": 2, "character": 3}}),
+    );
+    assert!(
+        completion
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["label"] == "ready"),
+        "{completion}"
+    );
+    let hover = client.request(
+        3,
+        "textDocument/hover",
+        json!({"textDocument": {"uri": uri}, "position": {"line": 2, "character": 4}}),
+    );
+    assert!(!hover.is_null());
+    let definition = client.request(
+        4,
+        "textDocument/definition",
+        json!({"textDocument": {"uri": uri}, "position": {"line": 2, "character": 4}}),
+    );
+    assert_eq!(definition["range"]["start"]["line"], 1);
+    let edits = client.request(
+        5,
+        "textDocument/formatting",
+        json!({"textDocument": {"uri": uri}, "options": {"tabSize": 4, "insertSpaces": true}}),
+    );
+    let formatted = apply_edits(&source, &edits);
+    assert!(formatted.contains("\nready = true\n"));
+    assert!(formatted.len() > 8 * 1024 * 1024);
+    assert!(!root.path().join("output").exists());
+    client.finish();
+}

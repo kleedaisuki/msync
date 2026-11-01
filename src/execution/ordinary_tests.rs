@@ -11,12 +11,8 @@ fn workspace() -> tempfile::TempDir {
 }
 
 fn assert_no_payload(scratch: &Path) {
-    for entry in fs::read_dir(scratch).unwrap() {
-        let entry = entry.unwrap();
-        assert_eq!(entry.file_name(), ".msync-recovery-v1");
-        for record in fs::read_dir(entry.path()).unwrap() {
-            assert_eq!(record.unwrap().file_name(), ".lock");
-        }
+    if scratch.exists() {
+        assert_eq!(fs::read_dir(scratch).unwrap().count(), 0);
     }
 }
 
@@ -95,60 +91,6 @@ fn a_shared_capture_root_excludes_other_live_workers_without_hiding_user_scratch
 }
 
 #[test]
-fn replacing_an_active_backing_ancestor_is_rejected_without_changing_user_data() {
-    let root = workspace();
-    let source = root.path().join("source");
-    let destination = root.path().join("out");
-    fs::create_dir(&source).unwrap();
-    fs::create_dir(&destination).unwrap();
-    fs::write(source.join("new"), b"new").unwrap();
-    fs::write(destination.join("old"), b"old").unwrap();
-    let scratch = destination.join(".temp");
-    let outer = InvocationRoot::create(&scratch).unwrap();
-    let mut options = Options::new(&scratch);
-    options.shared_invocation = Some(outer.clone());
-    let mut owner = Ordinary::new(&options);
-    let mut node = literal(destination.clone());
-    node.kind = InstructionKind::Transfer {
-        source: Input::File {
-            location: Location {
-                backend: Backend::Local,
-                path: source.to_string_lossy().into_owned(),
-            },
-            pattern: None,
-        },
-        destination: Output::File {
-            location: Location {
-                backend: Backend::Local,
-                path: destination.to_string_lossy().into_owned(),
-            },
-            mode: DestinationMode::ReplaceTree,
-        },
-    };
-    let error = owner.execute(&node).err().unwrap();
-    assert!(
-        error
-            .to_string()
-            .contains("active execution or recovery storage"),
-        "{error}"
-    );
-    assert!(
-        error
-            .report
-            .help
-            .iter()
-            .any(|help| help.contains("--scratch"))
-    );
-    assert_eq!(fs::read(destination.join("old")).unwrap(), b"old");
-    assert!(!destination.join("new").exists());
-    outer.verify().unwrap();
-    assert!(owner.close().is_empty());
-    drop(owner);
-    drop(options);
-    outer.cleanup().unwrap();
-}
-
-#[test]
 fn cancellation_before_dispatch_creates_no_storage_or_target() {
     let root = workspace();
     let options = Options::new(root.path().join("scratch"));
@@ -186,157 +128,159 @@ fn each_completed_statement_retires_its_captured_payload_before_the_next() {
 }
 
 #[test]
-fn a_fresh_publication_guard_rejects_foreign_replacement_before_effects() {
-    let root = workspace();
-    fs::write(root.path().join("source"), b"new").unwrap();
-    fs::write(root.path().join("first"), b"old-first").unwrap();
-    fs::write(root.path().join("second"), b"old-second").unwrap();
-    let options = Options::new(root.path().join("scratch"));
-    let mut owner = Ordinary::new(&options);
-    owner.storage = Some(Storage::new(&options, Span::default()).unwrap());
-    {
-        let storage = owner.storage.as_ref().unwrap();
-        let source = storage.assets.capture(&root.path().join("source")).unwrap();
-        let assignments = ["first", "second"].map(|name| Assignment {
-            target: root.path().join(name),
-            snapshot: source.clone(),
-        });
-        let mut journals = Vec::new();
-        storage
-            .prepare(&assignments, Span::default(), &options, &mut journals)
-            .unwrap();
-        fs::rename(
-            root.path().join("second"),
-            root.path().join("foreign-before"),
-        )
-        .unwrap();
-        fs::write(root.path().join("second"), b"foreign").unwrap();
-        assert!(Batch::prepare(journals).is_err());
-        assert_eq!(fs::read(root.path().join("first")).unwrap(), b"old-first");
-        assert_eq!(fs::read(root.path().join("second")).unwrap(), b"foreign");
-    }
-    assert!(owner.close().is_empty());
-    assert_no_payload(&options.scratch_root);
-}
-
-#[test]
-fn cancellation_after_install_restores_the_before_image_before_cleanup() {
+fn replacement_has_no_before_image_or_stale_destination_identity_gate() {
     let root = workspace();
     fs::write(root.path().join("source"), b"new").unwrap();
     fs::write(root.path().join("target"), b"old").unwrap();
-    let options = Options::new(root.path().join("scratch"));
-    let mut owner = Ordinary::new(&options);
-    owner.storage = Some(Storage::new(&options, Span::default()).unwrap());
+    let mut assets = SnapshotStore::new(&root.path().join("scratch")).unwrap();
     {
-        let storage = owner.storage.as_ref().unwrap();
-        let source = storage.assets.capture(&root.path().join("source")).unwrap();
-        let publication = storage
-            .assets
+        let source = assets.capture(&root.path().join("source")).unwrap();
+        let mut replacement = assets
             .prepare(&source, &root.path().join("target"))
             .unwrap();
-        let mut batch = Batch::prepare(vec![publication]).unwrap();
-        let cause = batch
-            .publish_with(|event| {
-                if event == Event::AfterInstall(0) {
-                    assert_eq!(fs::read(root.path().join("target")).unwrap(), b"new");
-                    options.cancel.cancel();
-                    Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        CancelPublication,
-                    ))
-                } else {
-                    Ok(())
-                }
-            })
-            .unwrap_err();
-        assert_eq!(cause.cause.kind(), io::ErrorKind::Interrupted);
-        batch.abort().unwrap();
-        assert_eq!(fs::read(root.path().join("target")).unwrap(), b"old");
-        assert!(!batch.journal_path().exists());
+        fs::write(root.path().join("target"), b"changed since staging").unwrap();
+        replacement.publish().unwrap();
+        assert_eq!(fs::read(root.path().join("target")).unwrap(), b"new");
+        assert!(!replacement.journal().join("old").exists());
+        replacement.finalize().unwrap();
     }
-    assert!(owner.close().is_empty());
+    assets.cleanup().unwrap();
 }
 
 #[test]
-fn cancelled_selector_publication_removes_shared_created_parents_without_phantom_retention() {
+fn interrupted_batch_keeps_completed_files_and_retry_finishes() {
     let root = workspace();
+    let mut assets = SnapshotStore::new(&root.path().join("scratch")).unwrap();
     fs::write(root.path().join("source"), b"new").unwrap();
-    let options = Options::new(root.path().join("scratch"));
-    let mut owner = Ordinary::new(&options);
-    owner.storage = Some(Storage::new(&options, Span::default()).unwrap());
+    for name in ["first", "second"] {
+        fs::write(root.path().join(name), b"old").unwrap();
+    }
     {
-        let storage = owner.storage.as_ref().unwrap();
-        let source = storage.assets.capture(&root.path().join("source")).unwrap();
-        let assignments = ["a", "b"].map(|name| Assignment {
-            target: root.path().join("created/deep").join(name),
-            snapshot: source.clone(),
-        });
-        let assignments = storage
-            .publication_roots(&assignments, Span::default())
-            .unwrap();
-        assert_eq!(assignments.len(), 1);
-        assert!(!root.path().join("created").exists());
-        let mut journals = Vec::new();
-        storage
-            .prepare(&assignments, Span::default(), &options, &mut journals)
-            .unwrap();
-        let mut batch = Batch::prepare(journals).unwrap();
-        let cause = batch
+        let source = assets.capture(&root.path().join("source")).unwrap();
+        let replacements = ["first", "second"]
+            .map(|name| assets.prepare(&source, &root.path().join(name)).unwrap())
+            .into();
+        let mut batch = Batch::prepare(replacements).unwrap();
+        let error = batch
             .publish_with(|event| {
                 if event == Event::AfterInstall(0) {
-                    assert!(root.path().join("created/deep/a").is_file());
-                    assert!(root.path().join("created/deep/b").is_file());
-                    options.cancel.cancel();
-                    Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        CancelPublication,
-                    ))
+                    Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
                 } else {
                     Ok(())
                 }
             })
             .unwrap_err();
-        assert_eq!(cause.cause.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(error.cause.kind(), io::ErrorKind::Interrupted);
         batch.abort().unwrap();
-        assert!(!root.path().join("created").exists());
-        assert!(!batch.journal_path().exists());
+        assert_eq!(fs::read(root.path().join("first")).unwrap(), b"new");
+        assert_eq!(fs::read(root.path().join("second")).unwrap(), b"old");
+        let replacements = ["first", "second"]
+            .map(|name| assets.prepare(&source, &root.path().join(name)).unwrap())
+            .into();
+        let mut retry = Batch::prepare(replacements).unwrap();
+        retry.publish().unwrap();
+        retry.finalize().unwrap();
+        for name in ["first", "second"] {
+            assert_eq!(fs::read(root.path().join(name)).unwrap(), b"new");
+        }
     }
-    assert!(owner.close().is_empty());
+    assets.cleanup().unwrap();
 }
 
 #[test]
-fn cancellation_inside_a_publication_is_not_misreported_as_a_native_failure() {
+fn cancellation_before_install_leaves_target_and_cleans_only_stage() {
     let root = workspace();
+    let mut assets = SnapshotStore::new(&root.path().join("scratch")).unwrap();
     fs::write(root.path().join("source"), b"new").unwrap();
     fs::write(root.path().join("target"), b"old").unwrap();
-    let options = Options::new(root.path().join("scratch"));
-    let mut owner = Ordinary::new(&options);
-    owner.storage = Some(Storage::new(&options, Span::default()).unwrap());
     {
-        let storage = owner.storage.as_ref().unwrap();
-        let source = storage.assets.capture(&root.path().join("source")).unwrap();
-        let mut journal = storage
-            .assets
+        let source = assets.capture(&root.path().join("source")).unwrap();
+        let mut replacement = assets
             .prepare(&source, &root.path().join("target"))
             .unwrap();
-        let cause = journal
-            .publish_with(|event| {
-                if event == crate::filesystem::PublishEvent::AfterInstall {
-                    Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        CancelPublication,
-                    ))
-                } else {
-                    Ok(())
-                }
-            })
+        let error = replacement
+            .publish_with(|_| Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled")))
             .unwrap_err();
-        let mut error = publication_failure(cause, Span::default());
-        compensate(std::slice::from_mut(&mut journal), &mut error);
-        assert!(error.is_cancelled(), "{error}");
+        assert!(publication_failure(error, Span::default()).is_cancelled());
+        replacement.finalize().unwrap();
         assert_eq!(fs::read(root.path().join("target")).unwrap(), b"old");
     }
-    assert!(owner.close().is_empty());
+    assets.cleanup().unwrap();
+}
+
+#[test]
+fn simple_file_and_literal_assignments_do_not_create_execution_storage() {
+    let root = workspace();
+    let scratch = root.path().join("unneeded-scratch");
+    fs::write(&scratch, b"scratch can even be an ordinary user file").unwrap();
+    let mut owner = Ordinary::new(&Options::new(&scratch));
+    let first = literal(root.path().join("source"));
+    assert!(matches!(
+        owner.execute(&first).unwrap(),
+        Attempt::Completed(_)
+    ));
+    let mut copied = literal(root.path().join("nested/copied"));
+    let InstructionKind::Transfer { source, .. } = &mut copied.kind else {
+        unreachable!()
+    };
+    *source = Input::File {
+        location: Location {
+            backend: Backend::Local,
+            path: root.path().join("source").to_string_lossy().into_owned(),
+        },
+        pattern: None,
+    };
+    assert!(matches!(
+        owner.execute(&copied).unwrap(),
+        Attempt::Completed(_)
+    ));
+    assert_eq!(
+        fs::read(root.path().join("nested/copied")).unwrap(),
+        b"value"
+    );
+    assert!(owner.storage.is_none());
+    assert_eq!(
+        fs::read(&scratch).unwrap(),
+        b"scratch can even be an ordinary user file"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn recursive_copy_preserves_links_instead_of_following_or_refusing_them() {
+    let root = workspace();
+    let source = root.path().join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(source.join("data"), b"payload").unwrap();
+    std::os::unix::fs::symlink("data", source.join("alias")).unwrap();
+    std::os::unix::fs::symlink("missing", source.join("dangling")).unwrap();
+    std::os::unix::fs::symlink(".", source.join("cycle")).unwrap();
+    let mut node = literal(root.path().join("copy"));
+    let InstructionKind::Transfer { source: input, .. } = &mut node.kind else {
+        unreachable!()
+    };
+    *input = Input::File {
+        location: Location {
+            backend: Backend::Local,
+            path: source.to_string_lossy().into_owned(),
+        },
+        pattern: None,
+    };
+    let mut owner = Ordinary::new(&Options::new(root.path().join("scratch")));
+    assert!(matches!(
+        owner.execute(&node).unwrap(),
+        Attempt::Completed(_)
+    ));
+    for (name, target) in [("alias", "data"), ("dangling", "missing"), ("cycle", ".")] {
+        assert_eq!(
+            fs::read_link(root.path().join("copy").join(name)).unwrap(),
+            Path::new(target)
+        );
+    }
+    assert_eq!(
+        fs::read(root.path().join("copy/alias")).unwrap(),
+        b"payload"
+    );
 }
 
 #[cfg(windows)]
@@ -407,4 +351,147 @@ fn environment_named_pipe_child() {
         backend: Backend::Env,
         path: "MSYNC_FINITE_PIPE_TEST_PATH".into(),
     });
+}
+
+#[cfg(unix)]
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(24))]
+    #[test]
+    fn replacing_a_file_is_atomic_for_existing_readers(payload in proptest::collection::vec(proptest::num::u8::ANY, 0..8192)) {
+        use std::io::Read;
+        let root = workspace();
+        let source = root.path().join("source");
+        let target = root.path().join("target");
+        fs::write(&source, &payload).unwrap();
+        fs::write(&target, b"old complete bytes").unwrap();
+        let mut reader = fs::File::open(&target).unwrap();
+        let mut node = literal(target.clone());
+        let InstructionKind::Transfer { source: input, .. } = &mut node.kind else { unreachable!() };
+        *input = Input::File { location: Location { backend: Backend::Local, path: source.to_string_lossy().into_owned() }, pattern: None };
+        let scratch = root.path().join("not-created");
+        let mut owner = Ordinary::new(&Options::new(&scratch));
+        let Attempt::Completed(report) = owner.execute(&node).unwrap() else { unreachable!() };
+        proptest::prop_assert_eq!(report.assigned_bytes, payload.len() as u64);
+        proptest::prop_assert_eq!(fs::read(&target).unwrap(), payload);
+        let mut observed = Vec::new();
+        reader.read_to_end(&mut observed).unwrap();
+        proptest::prop_assert_eq!(observed, b"old complete bytes");
+        proptest::prop_assert!(!scratch.exists());
+        proptest::prop_assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_replacement_uses_kernel_namespace_permissions_not_readonly_bit_guesses() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = workspace();
+    fs::write(root.path().join("source"), b"new").unwrap();
+    fs::write(root.path().join("target"), b"old").unwrap();
+    fs::set_permissions(
+        root.path().join("target"),
+        fs::Permissions::from_mode(0o400),
+    )
+    .unwrap();
+    let mut node = literal(root.path().join("target"));
+    let InstructionKind::Transfer { source, .. } = &mut node.kind else {
+        unreachable!()
+    };
+    *source = Input::File {
+        location: Location {
+            backend: Backend::Local,
+            path: root.path().join("source").to_string_lossy().into_owned(),
+        },
+        pattern: None,
+    };
+    let mut owner = Ordinary::new(&Options::new(root.path().join("scratch")));
+    assert!(matches!(
+        owner.execute(&node).unwrap(),
+        Attempt::Completed(_)
+    ));
+    assert_eq!(fs::read(root.path().join("target")).unwrap(), b"new");
+}
+
+#[test]
+fn native_directory_copy_excludes_only_the_current_invocation_and_keeps_user_temp_data() {
+    let root = workspace();
+    let source = root.path().join("source");
+    let scratch = source.join(".temp");
+    fs::create_dir_all(&scratch).unwrap();
+    fs::write(scratch.join("user-data"), b"keep").unwrap();
+    let invocation = InvocationRoot::create(&scratch).unwrap();
+    fs::write(invocation.path().join("private-spool"), b"internal").unwrap();
+    let mut options = Options::new(&scratch);
+    options.shared_invocation = Some(invocation.clone());
+    let mut node = literal(root.path().join("copied"));
+    let InstructionKind::Transfer { source: input, .. } = &mut node.kind else {
+        unreachable!()
+    };
+    *input = Input::File {
+        location: Location {
+            backend: Backend::Local,
+            path: source.to_string_lossy().into_owned(),
+        },
+        pattern: None,
+    };
+    let mut owner = Ordinary::new(&options);
+    assert!(matches!(
+        owner.execute(&node).unwrap(),
+        Attempt::Completed(_)
+    ));
+    assert_eq!(
+        fs::read(root.path().join("copied/.temp/user-data")).unwrap(),
+        b"keep"
+    );
+    assert_eq!(
+        fs::read_dir(root.path().join("copied/.temp"))
+            .unwrap()
+            .count(),
+        1
+    );
+    drop(owner);
+    drop(options);
+    invocation.cleanup().unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn standalone_relative_and_dangling_links_are_copied_as_links() {
+    let root = workspace();
+    fs::write(root.path().join("data"), b"bytes stay at target").unwrap();
+    for (name, target) in [("relative", "data"), ("dangling", "not-created")] {
+        std::os::unix::fs::symlink(target, root.path().join(name)).unwrap();
+        let modified = filetime::FileTime::from_unix_time(1_600_000_000, 123_456_789);
+        filetime::set_symlink_file_times(root.path().join(name), modified, modified).unwrap();
+        let copied = root.path().join(format!("copy-{name}"));
+        let mut node = literal(copied.clone());
+        let InstructionKind::Transfer { source, .. } = &mut node.kind else {
+            unreachable!()
+        };
+        *source = Input::File {
+            location: Location {
+                backend: Backend::Local,
+                path: root.path().join(name).to_string_lossy().into_owned(),
+            },
+            pattern: None,
+        };
+        let mut owner = Ordinary::new(&Options::new(root.path().join("unused-scratch")));
+        assert!(matches!(
+            owner.execute(&node).unwrap(),
+            Attempt::Completed(_)
+        ));
+        assert_eq!(fs::read_link(&copied).unwrap(), Path::new(target));
+        assert_eq!(
+            fs::symlink_metadata(&copied).unwrap().modified().unwrap(),
+            fs::symlink_metadata(root.path().join(name))
+                .unwrap()
+                .modified()
+                .unwrap()
+        );
+    }
+    assert!(!root.path().join("unused-scratch").exists());
+    assert_eq!(
+        fs::read(root.path().join("data")).unwrap(),
+        b"bytes stay at target"
+    );
 }

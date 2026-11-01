@@ -823,12 +823,6 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
         };
         path(qualifier, value)
     };
-    if let ExprKind::Path(path) = &kind
-        && super::path_boundary_whitespace(&path.path)
-    {
-        return Err(Report::new("path components cannot begin or end with whitespace", provenance.content)
-            .help("Keep internal spaces inside a component; boundary whitespace is ignored only outside quotes. Bare quoted sources remain literal data."));
-    }
     Ok(Expr {
         kind,
         span: range,
@@ -1118,12 +1112,6 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
                     } else {
                         &mut result.ranges
                     };
-                    if pairs.len() == MAX_NESTING {
-                        return Err(Report::new(
-                            "call expression nesting is too deep",
-                            span(offset + open, offset + index + 1),
-                        ));
-                    }
                     pairs.push((open, index));
                 }
             }

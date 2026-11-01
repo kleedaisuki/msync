@@ -126,3 +126,101 @@ Official manual pages were inspected on 2026-10-31. The GNU standalone manual
 endpoint timed out; the upstream implementation supplied the relevant evidence.
 No performance ratio or native Windows/OpenSSH acceptance is implied by this
 source audit.
+
+## Native Windows tiny-upload follow-up (2026-11-01)
+
+### User workload and causal distinction
+
+The reported retained-REPL operation is `cmd -> (ssh://forge)::cmd`: one file,
+1,795 bytes, 35,399.5 ms. Manual SSH/copy is materially faster on the same Windows
+side. This is a valid actual-workload observation; no local loopback result
+supersedes it. Current source inspected for this follow-up is `964bc4f`.
+The high-confidence source defect is **many independently authenticated native
+Windows clients for one publication**, not proof that a specific network or disk
+phase accounts for all 35 seconds. The existing accepted Linux optimization
+measured eight upload authentications becoming one; that mechanism is not active
+on Windows.
+
+- `SshContext::with_foreground_reuse` is a no-op outside Unix.
+- `SshContext::ensure_optional` returns `Ok(None)` outside Unix before admitting
+  a session. Windows never inserts an owned/existing entry in `Sessions`.
+- `configure_client` therefore finds no lease and supplies neither a control
+  socket nor the post-admission `BatchMode=yes` setting.
+- `configure_graphical` supplies `SSH_ASKPASS_REQUIRE=force` and contextual native
+  UI, not a credential cache or authenticated connection. Password/key prompts
+  may consequently recur per client. It honors an externally configured
+  `SSH_ASKPASS` rather than replacing it.
+- `runtime::send` still executes temporary allocation, SCP, generic remote copy,
+  and temporary cleanup inside `Spec`'s allocation/publication/settlement. The
+  client map above remains the relevant amplification model; fractional mtime
+  restoration can add another helper. Actual count must come from the current
+  path because planner/cohort choices affect admission.
+
+Every independent client can repeat DNS/proxy establishment, SSH key exchange,
+authentication, server session setup, and remote account shell startup. Repeated
+short session cost can dominate 1.8 KiB of payload. Server `sync -f` waits and
+local durable captures remain a separate explanation to discriminate rather
+than conflating all pre/post-byte work with SSH bandwidth.
+
+### Why a Windows ControlMaster flag is not the repair
+
+The upstream [Win32-OpenSSH project scope](https://github.com/PowerShell/Win32-OpenSSH/wiki/Project-Scope)
+explicitly excludes Client ControlMaster. The still-open upstream
+[ControlMaster request](https://github.com/PowerShell/Win32-OpenSSH/issues/1328)
+explains the missing Unix-domain ancillary-data mechanism. Inspected on
+2026-11-01, the active upstream `latestw_all`
+[Win32 descriptor compatibility implementation](https://github.com/PowerShell/openssh-portable/blob/latestw_all/contrib/win32/win32compat/w32fd.c)
+still rejects listening/binding its non-socket Unix-domain representation, and
+[descriptor passing](https://github.com/PowerShell/openssh-portable/blob/latestw_all/monitor_fdpass.c)
+retains unsupported-platform fallbacks. A parsed `ControlMaster` option or the
+mere existence of Windows AF_UNIX support does not establish working OpenSSH
+multiplexing. Do not replace `cfg(unix)` with `cfg(any(unix, windows))` or tell the
+user to set `ControlPersist` as if that delivered reuse.
+
+### Client identity and wait ownership
+
+`runtime::ssh_client` independently resolves bare `ssh` and `scp` through process
+search rules and optionally passes `MSYNC_SSH_CONFIG` through `-F`. It does not
+pin a known client pair or guarantee that PowerShell's manual command selected
+the same executable. A Windows diagnostic should show `Get-Command ssh,scp -All`,
+`where.exe ssh`, `where.exe scp`, `ssh -V`, and the active explicit-config setting;
+then compare the same endpoint and executable family, not change the user's SSH
+configuration. Git/MSYS, Cygwin, native Win32 and WSL clients have different
+configuration/path/agent contexts. Auto-switching to another family breaks the
+existing opaque `Host` alias and authentication contract.
+
+`runtime::run_cancellable` already records `transport_process` spans, requested
+program, PID, wait strategy, byte counts and process-open/exit events. Windows
+`ChildWait` uses `WaitForSingleObject` on the owned process handle. The historical
+10 ms polling-floor note above describes the old baseline, not a plausible
+35-second current timer. Windows `ProcessJob` enrolls the suspended client and
+its descendants before resume and closes the owned tree after completion;
+retain this cancellation/helper-cleanup ownership in any transport change.
+
+### Practical implementation order
+
+| Choice | Benefit for this workload | Compatibility / implementation consequence |
+| --- | --- | --- |
+| Upload directly into already owned journal staging | Removes three independent clients and one remote payload copy | Reuse statement owner; preserve Windows portable permissions, directory timestamps, fractional mtimes and receipt/report semantics |
+| Keep a native `ssh -T` subprocess for a complete finite statement, with framed commands and payload | Amortizes native connection/auth over publication phases without Win32 ControlMaster | Requires duplex framing, exact byte ownership, stderr draining, cancellation and interrupted-statement recovery; remote shell/helper is session-scoped, not a daemon |
+| Keep native subprocess for repeated helper requests | Amortizes control operations across statements | Session health and request serialization become explicit; selected endpoint admission and real-process crash/reconnect journeys are mandatory |
+| Swap in PuTTY/Plink sharing | Mature Windows named-pipe sharing exists | Not transparent: saved sessions, host keys, key/agent formats, SSH config and client CLI differ; inappropriate as an automatic replacement |
+| Require WSL/Cygwin OpenSSH | Unix multiplexing can be available there | Adds an installation/runtime boundary and changes paths/config/agents; not a native-Windows product fix |
+| Replace OpenSSH with an SSH library | Native shared channels possible | Highest integration cost: configuration, proxy/jump behavior, agents/hardware keys and native auth UX must be reconstructed; no evidence yet justifies this first |
+
+The retained-native-process design uses an ordinary SSH exec channel and the
+client's standard streams; it is application framing, not a replacement SSH
+cryptographic implementation. [RFC 4254](https://www.rfc-editor.org/rfc/rfc4254)
+distinguishes channel lifetime from transport/authentication lifetime. Keep local
+and remote existing journal owners as the only publication/recovery authorities;
+losing a connection must leave their established recovery contract intact.
+[PuTTY's upstream sharing implementation](https://git.tartarus.org/?p=simon/putty.git;a=blob;f=sshshare.c;hb=HEAD)
+is evidence that Windows connection sharing is feasible with different client
+architecture, not evidence that OpenSSH accepts a compatible control socket.
+
+The immediate discriminating journey is a traced 1.8 KiB upload plus a same-client
+manual one-shot SSH control, with per-phase duration/count attribution. Repeat the
+upload in one REPL to distinguish repeated-auth overhead from cold initialization.
+Validate the resulting bytes and metadata, then interrupt during staging and
+publication and restart against the same recovery registry. Do not strip
+settlement, durability or error diagnostics merely to match plain SCP latency.

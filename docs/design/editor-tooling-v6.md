@@ -333,3 +333,13 @@ rerun with `cargo run --release --manifest-path
 .temp/frontend-v6-harness/Cargo.toml --bin highlight-bench` while those snapshots
 are retained. The durable result is the mechanism and table above, not a claim
 that ignored temporary files are permanent project artifacts.
+
+## Normal-user document sizing (2026-11-01)
+
+The server no longer disables all language features at an arbitrary 8-MiB
+source size. Open documents use the same cached syntax/index and queued compiler
+analysis regardless of that former threshold; completion, navigation, diagnostics
+and explicit formatting remain available. UTF-16 boundary and actual line-index
+representation rules remain protocol semantics. The real stdio acceptance journey
+opens a valid document beyond 8 MiB and exercises all four feature classes,
+including a large formatting response, without executing its transfer.

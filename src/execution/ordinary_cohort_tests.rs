@@ -48,7 +48,7 @@ fn completed(owner: &mut Ordinary, nodes: &[Instruction]) -> ExecutionReport {
 }
 
 #[test]
-fn a_later_collision_prevents_all_cohort_publication() {
+fn container_merges_replace_files_and_repeating_the_same_cohort_is_idempotent() {
     let root = workspace();
     let destination = root.path().join("destination");
     fs::create_dir(&destination).unwrap();
@@ -63,10 +63,13 @@ fn a_later_collision_prevents_all_cohort_publication() {
         )
     });
     let mut owner = Ordinary::new(&Options::new(root.path().join("scratch")));
-    let error = owner.execute_cohort(&nodes).err().unwrap();
-    assert!(error.to_string().contains("already exists"));
-    assert!(!destination.join("a").exists());
-    assert_eq!(fs::read(destination.join("b")).unwrap(), b"old b");
+    for _ in 0..2 {
+        let report = completed(&mut owner, &nodes);
+        assert_eq!(report.assigned_files, 2);
+        assert_eq!(fs::read(destination.join("a")).unwrap(), b"new a");
+        assert_eq!(fs::read(destination.join("b")).unwrap(), b"new b");
+        assert!(owner.storage.is_none());
+    }
     assert!(owner.close().is_empty());
 }
 
@@ -145,7 +148,7 @@ fn exact_cohort_replacement_keeps_order_without_duplicate_publications() {
 }
 
 #[test]
-fn repeated_container_names_use_existing_directory_merge_and_collision_rules() {
+fn repeated_container_names_merge_in_selected_order() {
     let root = workspace();
     for (parent, name) in [("first", "a"), ("second", "b")] {
         let directory = root.path().join(parent).join("same");
@@ -165,4 +168,42 @@ fn repeated_container_names_use_existing_directory_merge_and_collision_rules() {
     assert_eq!(report.published_roots, 1);
     assert_eq!(fs::read(destination.join("same/a")).unwrap(), b"a");
     assert_eq!(fs::read(destination.join("same/b")).unwrap(), b"b");
+}
+
+#[test]
+fn merging_a_directory_preserves_unrelated_destination_inodes_and_avoids_scratch() {
+    let root = workspace();
+    let source = root.path().join("source/same");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("data"), b"new").unwrap();
+    let destination = root.path().join("destination");
+    fs::create_dir_all(destination.join("same")).unwrap();
+    fs::write(destination.join("same/data"), b"old").unwrap();
+    fs::write(destination.join("same/retained"), b"unrelated bytes").unwrap();
+    let directory = same_file::Handle::from_path(destination.join("same")).unwrap();
+    let retained = same_file::Handle::from_path(destination.join("same/retained")).unwrap();
+    let nodes = [transfer(
+        file(&source),
+        &destination,
+        DestinationMode::Container,
+    )];
+    let scratch = root.path().join("not-needed");
+    let mut owner = Ordinary::new(&Options::new(&scratch));
+    for _ in 0..2 {
+        completed(&mut owner, &nodes);
+        assert_eq!(fs::read(destination.join("same/data")).unwrap(), b"new");
+        assert_eq!(
+            fs::read(destination.join("same/retained")).unwrap(),
+            b"unrelated bytes"
+        );
+        assert_eq!(
+            same_file::Handle::from_path(destination.join("same")).unwrap(),
+            directory
+        );
+        assert_eq!(
+            same_file::Handle::from_path(destination.join("same/retained")).unwrap(),
+            retained
+        );
+        assert!(!scratch.exists());
+    }
 }

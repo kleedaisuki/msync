@@ -14,8 +14,9 @@ use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use msync::compiler::CompileContext;
 use msync::language::{self, Version};
@@ -511,6 +512,9 @@ fn apply_configuration(options: &mut Args) -> CliResult<msync::config::Loaded> {
         loaded.settings.telemetry.enabled = false;
         loaded.mark_cli("telemetry.enabled");
     }
+    if options.command == "config" {
+        return Ok(loaded);
+    }
     loaded
         .validate()
         .map_err(|error| CliError::Presented(error.render(options.color.stderr())))?;
@@ -548,6 +552,38 @@ fn run(mut options: Args) -> CliResult {
         return print_text(&loaded.render());
     }
     let exporter_started = std::time::Instant::now();
+    if let Err(issue) = initialize_telemetry(&mut options) {
+        print_warning(&issue, options.color);
+    }
+    let mut trace = msync::telemetry::span("session");
+    trace.metric("startup.arguments_ns", options.argument_ns);
+    trace.metric("startup.configuration_ns", config_ns);
+    trace.metric("startup.exporter_ns", nanos(exporter_started.elapsed()));
+    if let Some(started) = options.invocation_started {
+        trace.metric("startup.pre_dispatch_ns", nanos(started.elapsed()));
+    }
+    let result = dispatch(&options);
+    if let Err(error) = &result {
+        if error.is_cancelled() {
+            trace.cancelled();
+        } else {
+            trace.error();
+        }
+    }
+    drop(trace);
+    if let Err(cause) = msync::telemetry::shutdown() {
+        print_warning(
+            &Issue::new("telemetry recording is incomplete")
+                .field("path", options.settings.telemetry.path.as_ref().map_or_else(|| "active trace sink".into(), |path| path.to_string_lossy().into_owned()))
+                .field("cause", cause)
+                .help("The file operation result is unchanged; inspect the recording destination and available space."),
+            options.color,
+        );
+    }
+    result
+}
+
+fn initialize_telemetry(options: &mut Args) -> Result<(), Issue> {
     let telemetry = &options.settings.telemetry;
     let sampled_out = telemetry.backend == msync::config::TelemetryBackend::Sqlite
         && telemetry.sample_per_million == 0;
@@ -589,35 +625,7 @@ fn run(mut options: Args) -> CliResult {
             .help("Choose a writable telemetry destination or use --no-telemetry; --trace - writes JSONL to standard error.")
         })?;
     }
-    let mut trace = msync::telemetry::span("session");
-    trace.metric("startup.arguments_ns", options.argument_ns);
-    trace.metric("startup.configuration_ns", config_ns);
-    trace.metric("startup.exporter_ns", nanos(exporter_started.elapsed()));
-    if let Some(started) = options.invocation_started {
-        trace.metric("startup.pre_dispatch_ns", nanos(started.elapsed()));
-    }
-    let result = dispatch(&options);
-    if let Err(error) = &result {
-        if error.is_cancelled() {
-            trace.cancelled();
-        } else {
-            trace.error();
-        }
-    }
-    drop(trace);
-    let flushed = msync::telemetry::shutdown().map_err(|cause| CliError::from(Issue::new("cannot finish telemetry export")
-        .field("path", options.settings.telemetry.path.as_ref().map_or_else(|| "active trace sink".into(), |path| path.to_string_lossy().into_owned()))
-        .field("cause", cause)
-        .help("Check the trace destination and available disk space; completed file transfers are not rolled back.")));
-    match (result, flushed) {
-        (Err(error), Err(export_error)) => Err(CliError::Presented(format!(
-            "{}\n\n{}",
-            error.render(options.color),
-            export_error.render(options.color)
-        ))),
-        (Err(error), _) => Err(error),
-        (Ok(()), outcome) => outcome,
-    }
+    Ok(())
 }
 
 fn nanos(duration: std::time::Duration) -> u64 {
@@ -643,6 +651,14 @@ fn print_text(text: &str) -> CliResult {
     anstream::AutoStream::new(io::stdout().lock(), anstream::ColorChoice::Always)
         .write_all(text.as_bytes())
         .map_err(|error| format!("cannot write output: {error}").into())
+}
+
+fn print_warning(issue: &Issue, color: Color) {
+    let _ = writeln!(
+        anstream::AutoStream::new(io::stderr().lock(), anstream::ColorChoice::Always),
+        "{}",
+        issue.render_warning(color.stderr())
+    );
 }
 
 fn print_error(message: &CliError, color: Color) {
@@ -774,44 +790,12 @@ fn read_content(reader: &mut impl Read, file: &str) -> CliResult<Vec<u8>> {
     };
     let failure = |cause| CliError::io(action, (file != "-").then(|| Path::new(file)), cause);
     let mut source = Vec::new();
-    // Fill the signature probe even when a pipe delivers one byte per read.
-    // Only identified objects have the object-format bound; source stays source.
-    reader
-        .by_ref()
-        .take((msync::object::MAGIC.len() + 1) as u64)
-        .read_to_end(&mut source)
-        .map_err(failure)?;
-    if msync::object::is_object(&source) {
-        let remaining = msync::object::MAX_OBJECT_BYTES.saturating_sub(source.len()) + 1;
-        reader
-            .take(remaining as u64)
-            .read_to_end(&mut source)
-            .map_err(failure)?;
-        if source.len() > msync::object::MAX_OBJECT_BYTES {
-            return Err(
-                Issue::new("relocatable object exceeds the 64MiB format bound")
-                    .stage(presentation::Stage::Load)
-                    .field("object", file)
-                    .help("Split the object into smaller modules and recompile it.")
-                    .into(),
-            );
-        }
-    } else {
-        reader.read_to_end(&mut source).map_err(failure)?;
-    }
+    reader.read_to_end(&mut source).map_err(failure)?;
     Ok(source)
 }
 
 fn write_object(output: &str, input: &str, bytes: &[u8]) -> CliResult {
     if output == "-" {
-        if io::stdout().is_terminal() {
-            return Err(
-                Issue::new("object output requires a file or redirected standard output")
-                    .stage(presentation::Stage::Compile)
-                    .help("Use compile FILE -o module.mobj, or pipe --output - to another command.")
-                    .into(),
-            );
-        }
         let mut writer = io::stdout().lock();
         return writer
             .write_all(bytes)
@@ -851,12 +835,6 @@ fn write_object(output: &str, input: &str, bytes: &[u8]) -> CliResult {
                 .help("Choose an ordinary writable output file in an existing directory."),
         )
     };
-    if fs::symlink_metadata(target).is_ok_and(|metadata| metadata.permissions().readonly()) {
-        return Err(failure(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "existing object output is read-only",
-        )));
-    }
     let stage = msync::io::StagedFile::new(target, false).map_err(failure)?;
     fs::write(stage.path(), bytes).map_err(failure)?;
     stage.preserve_target_permissions().map_err(failure)?;
@@ -1006,54 +984,44 @@ fn write_formatted(file: &str, formatted: &str) -> CliResult {
     if file == "-" {
         return Err("fmt --write requires a file, not stdin".into());
     }
-    let path = Path::new(file);
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|error| CliError::io(IoAction::WriteScript, Some(path), error))?;
-    if metadata.file_type().is_symlink() {
-        return Err(Issue::new("fmt --write refuses symlinks")
-            .field("path", file)
-            .help("Name the actual script file, or use --stdout for a read-only preview.")
-            .into());
-    }
-    if metadata.permissions().readonly() {
-        return Err(Issue::new("refusing to format a read-only file")
-            .field("path", file)
-            .help("Use fmt FILE --stdout to preview, or make a writable copy of this script.")
-            .into());
-    }
-    let temporary = path.with_file_name(format!(
-        ".{}.{}.fmt.tmp",
-        path.file_name().unwrap_or_default().to_string_lossy(),
-        std::process::id()
-    ));
-    let mut output = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .map_err(|error| {
-            let hint = match error.kind() {
-                io::ErrorKind::AlreadyExists => "The existing stage is never overwritten. Inspect it before retrying; it may contain recoverable data.",
-                io::ErrorKind::PermissionDenied => "Check write permissions on the script directory, or use --stdout for a read-only preview.",
-                io::ErrorKind::StorageFull => "Free space on this volume before formatting, or use --stdout for a read-only preview.",
-                _ => "Check that the script directory is writable, or use --stdout for a read-only preview.",
-            };
-            Issue::new("cannot create formatting stage")
-            .field("path", file)
-            .field("stage", temporary.to_string_lossy())
-            .field("cause", error.to_string())
-            .help(hint)
-        })?;
+    let path = fs::canonicalize(file)
+        .map_err(|error| CliError::io(IoAction::WriteScript, Some(Path::new(file)), error))?;
+    let metadata = fs::metadata(&path)
+        .map_err(|error| CliError::io(IoAction::WriteScript, Some(&path), error))?;
+    let (temporary, mut output) = create_format_stage(&path)
+        .map_err(|error| CliError::io(IoAction::WriteScript, Some(&path), error))?;
     let result = (|| -> io::Result<()> {
         output.write_all(formatted.as_bytes())?;
-        output.sync_all()?;
         fs::set_permissions(&temporary, metadata.permissions())?;
+        output.sync_all()?;
         drop(output);
-        fs::rename(&temporary, path)
+        fs::rename(&temporary, &path)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
-    result.map_err(|error| CliError::io(IoAction::WriteScript, Some(path), error))
+    result.map_err(|error| CliError::io(IoAction::WriteScript, Some(&path), error))
+}
+
+fn create_format_stage(path: &Path) -> io::Result<(PathBuf, fs::File)> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    loop {
+        let temporary = path.with_file_name(format!(
+            ".{}.{}-{}.fmt.tmp",
+            path.file_name().unwrap_or_default().to_string_lossy(),
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+        {
+            Ok(file) => return Ok((temporary, file)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn diagnostics(file: &str, source: &str, errors: &[Report], color: Color) -> CliError {
@@ -1180,8 +1148,8 @@ mod tests {
             .path()
             .join(format!(".script.msync.{}.fmt.tmp", std::process::id()));
         fs::write(&occupied, "recoverable data").unwrap();
-        assert!(write_formatted(input.to_str().unwrap(), "a -> b\n").is_err());
+        write_formatted(input.to_str().unwrap(), "a -> b\n").unwrap();
         assert_eq!(fs::read_to_string(occupied).unwrap(), "recoverable data");
-        assert_eq!(fs::read_to_string(input).unwrap(), "a->b");
+        assert_eq!(fs::read_to_string(input).unwrap(), "a -> b\n");
     }
 }

@@ -423,41 +423,33 @@ fn export_only_symbol_items_keep_foreign_definition_modules_without_operations()
 }
 
 #[test]
-fn symbol_path_doubling_stops_before_allocating_oversized_join() {
+fn symbol_path_growth_has_no_unrelated_eight_mebibyte_cap() {
     let mut source = "symbol grow(value):\n    return value / value\nseed := x\n".to_owned();
-    // Each input remains below the bound; the final projected join exceeds it.
     for _ in 0..23 {
         source.push_str("seed := grow(seed)\n");
     }
-    let errors = Session::new()
+    source.push_str("seed -> output\n");
+    let program = Session::new()
         .compile(&language::parse(&source).unwrap(), &context("size.msync"))
-        .unwrap_err();
+        .unwrap();
     assert!(
-        errors[0]
-            .diagnostic
-            .message
-            .contains("symbol value size limit")
+        matches!(input(&program, 0), Input::File { location, .. } if location.path.len() > 8 * 1024 * 1024)
     );
 }
 
 #[test]
-fn symbol_string_limit_does_not_restrict_ordinary_payloads() {
+fn symbol_identity_preserves_the_same_large_payload_as_a_direct_literal() {
     let payload = "x".repeat(8 * 1024 * 1024 + 1);
     let literal = format!("\"{payload}\" -> output\n");
     let program = compile(&literal);
     assert!(matches!(input(&program, 0), Input::Literal(text) if text.len() == payload.len()));
     let call =
         format!("symbol identity(value):\n    return value\nidentity(\"{payload}\") -> output\n");
-    let errors = Session::new()
+    let program = Session::new()
         .compile(
             &language::parse(&call).unwrap(),
             &context("string-size.msync"),
         )
-        .unwrap_err();
-    assert!(
-        errors[0]
-            .diagnostic
-            .message
-            .contains("symbol value size limit")
-    );
+        .unwrap();
+    assert!(matches!(input(&program, 0), Input::Literal(text) if text.len() == payload.len()));
 }

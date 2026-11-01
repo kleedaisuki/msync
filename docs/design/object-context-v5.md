@@ -65,8 +65,9 @@ these bindings retain their existing encoding and binding contract.
 Each entry associates an opaque module name with either an explicit absolute
 source path or a contextual path expression. Contextual paths may depend on the
 entry module or another source module. Validation requires unique non-main
-names, a closed acyclic dependency graph, valid path operands, and at most 1024
-entries. Only referenced bindings and their transitive parents are retained.
+names, a closed acyclic dependency graph and valid path operands. There is no
+fixed source-module count ceiling. Only referenced bindings and their transitive
+parents are retained.
 Unknown features remain errors for readers that do not implement them.
 
 Instantiation evaluates this graph without opening source files. Explicit
@@ -74,6 +75,28 @@ Instantiation evaluates this graph without opening source files. Explicit
 text are never used to invent missing module bindings; changing debug text must
 not change execution. Source acquisition happens only when compiling source,
 not while instantiating an object or replaying structured IR.
+
+## Normal-user intake and immutable reuse (2026-11-01)
+
+Object bytes, instruction count and source-module count are not format quotas.
+The old 64 MiB wire, 100,000-instruction and 1,024-binding limits are removed;
+numeric ID representation and the actual executable schema remain unchanged.
+`MAX_OBJECT_BYTES` remains only an inert compatibility size hint for existing
+Rust callers; neither the codec nor CLI uses it as an acceptance limit.
+
+The public mutable `ObjectModule` APIs still interpret/validate supplied executable
+data at intake or use. `decode_loaded` instead returns a `LoadedModule` with a
+private immutable module. Its encode/contextualize methods reuse that completed
+intake rather than traversing unchanged HIR and debug spans again. Converting it
+back into a mutable module restores the ordinary public boundary. Compiler output
+is assembled with source bindings before one validation; `into_loaded_object`
+keeps it immutable through encoding. Structured IR also shares its one validation
+with lexical contextualization. There is no mutable cached validation flag.
+
+Source-module reachability uses an indexed dependency walk; closed-graph checking
+uses a root/dependent worklist, not an arbitrary iteration quota. The older wire
+representation, executable feature negotiation and public mutable APIs continue
+to work.
 
 ## Upstream design references
 

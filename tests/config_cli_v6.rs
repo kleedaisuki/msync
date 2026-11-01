@@ -341,23 +341,35 @@ fn cross_field_validation_uses_the_merged_configuration_not_unrelated_cli_defaul
 
 #[cfg(unix)]
 #[test]
-fn configuration_never_waits_for_a_named_pipe_writer() {
+fn an_explicit_configuration_can_be_read_from_a_named_pipe() {
     use std::ffi::CString;
+    use std::io::Write;
     use std::os::unix::ffi::OsStrExt;
 
     let root = workspace();
     let pipe = root.path().join("config.pipe");
     let native = CString::new(pipe.as_os_str().as_bytes()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(native.as_ptr(), 0o600) }, 0);
-    let name = pipe.to_str().unwrap();
-    success(&run(root.path(), &["--help", "--config", name]));
-    let output = run(root.path(), &["config", "--config", name]);
-    assert!(!output.status.success());
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains("config.pipe"), "{error}");
-    assert!(
-        error.contains("regular") || error.contains("file"),
-        "{error}"
+    success(&run(
+        root.path(),
+        &["--help", "--config", pipe.to_str().unwrap()],
+    ));
+    let producer = thread::spawn({
+        let pipe = pipe.clone();
+        move || {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(pipe)
+                .unwrap()
+                .write_all(b"[execution]\njobs = 3\n")
+                .unwrap()
+        }
+    });
+    let output = run(root.path(), &["config", "--config", pipe.to_str().unwrap()]);
+    producer.join().unwrap();
+    assert_eq!(
+        effective(&output)["execution"]["jobs"].as_integer(),
+        Some(3)
     );
 }
 
@@ -406,29 +418,83 @@ fn telemetry_paths_are_config_relative_and_inspection_or_disable_never_creates_t
 }
 
 #[test]
-fn pathological_telemetry_and_progress_values_report_the_exact_configuration_key() {
+fn inactive_or_large_observer_settings_do_not_gate_normal_work() {
     let root = workspace();
-    for (table, key, value) in [
-        ("telemetry", "busy_timeout_ms", "2147483648"),
-        ("telemetry", "flush_interval_ms", "86400001"),
-        ("telemetry", "queue_capacity", "1000001"),
-        ("telemetry", "max_database_bytes", "\"512KiB\""),
-        ("telemetry", "max_database_bytes", "\"8589934592GiB\""),
-        ("progress", "interval_ms", "0"),
-        ("progress", "delay_ms", "86400001"),
+    fs::write(root.path().join("entry.msync"), "\"payload\" -> output\n").unwrap();
+    for (name, contents, flags) in [
+        (
+            "disabled",
+            "[telemetry]\nenabled = false\nqueue_capacity = 0\n",
+            vec!["--no-telemetry"],
+        ),
+        (
+            "jsonl",
+            "[telemetry]\nenabled = true\nbackend = \"jsonl\"\npath = \"trace.jsonl\"\nqueue_capacity = 0\n",
+            vec![],
+        ),
+        ("no-progress", "[progress]\ninterval_ms = 0\n", vec![]),
+        (
+            "long-progress",
+            "[progress]\ndelay_ms = 86400001\ninterval_ms = 86400001\n",
+            vec![],
+        ),
     ] {
-        fs::write(
-            root.path().join("invalid.toml"),
-            format!("[{table}]\n{key} = {value}\n"),
-        )
-        .unwrap();
-        let output = run(root.path(), &["config", "--config", "invalid.toml"]);
-        assert!(!output.status.success(), "accepted {table}.{key}={value}");
-        let error = String::from_utf8_lossy(&output.stderr);
-        assert!(error.contains("invalid.toml:2:"), "{error}");
-        assert!(error.contains(&format!("{table}.{key}")), "{error}");
-        assert!(!root.path().join(".temp").exists());
+        let path = format!("{name}.toml");
+        fs::write(root.path().join(&path), contents).unwrap();
+        let mut args = vec!["run", "entry.msync", "--config", &path];
+        args.extend(flags);
+        let output = run(root.path(), &args);
+        success(&output);
+        assert_eq!(fs::read(root.path().join("output")).unwrap(), b"payload");
     }
+}
+
+#[test]
+fn cli_overrides_invalid_lower_precedence_runtime_values() {
+    let root = workspace();
+    fs::write(
+        root.path().join("entry.msync"),
+        "\"overridden\" -> output\n",
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("settings.toml"),
+        "[execution]\njobs = 0\nbuffer_size = 0\n",
+    )
+    .unwrap();
+    let output = run(
+        root.path(),
+        &[
+            "run",
+            "entry.msync",
+            "--config",
+            "settings.toml",
+            "--jobs",
+            "4",
+            "--buffer-size",
+            "64KiB",
+        ],
+    );
+    success(&output);
+    assert_eq!(fs::read(root.path().join("output")).unwrap(), b"overridden");
+    let inspected = run(root.path(), &["config", "--config", "settings.toml"]);
+    assert_eq!(
+        effective(&inspected)["execution"]["jobs"].as_integer(),
+        Some(0)
+    );
+}
+
+#[test]
+fn configuration_text_has_no_arbitrary_one_megabyte_ceiling() {
+    let root = workspace();
+    let mut text = format!("# {}\n", "x".repeat(1024 * 1024));
+    text.push_str("[execution]\njobs = 3\n");
+    fs::write(root.path().join("large.toml"), text).unwrap();
+    let output = run(root.path(), &["config", "--config", "large.toml"]);
+    assert_eq!(
+        effective(&output)["execution"]["jobs"].as_integer(),
+        Some(3)
+    );
 }
 
 #[test]
@@ -525,6 +591,7 @@ fn a_default_telemetry_destination_is_created_only_for_an_enabled_actual_command
 #[test]
 fn platform_resource_bounds_report_configuration_keys_before_any_effect() {
     let root = workspace();
+    fs::write(root.path().join("entry.msync"), "\"payload\" -> output\n").unwrap();
     let too_many_permits = (tokio::sync::Semaphore::MAX_PERMITS + 1).to_string();
     let oversized_buffer = format!("\"{}\"", isize::MAX as u128 + 1);
     for (key, value) in [
@@ -537,7 +604,10 @@ fn platform_resource_bounds_report_configuration_keys_before_any_effect() {
             format!("[execution]\n{key} = {value}\n"),
         )
         .unwrap();
-        let output = run(root.path(), &["config", "--config", "platform.toml"]);
+        let output = run(
+            root.path(),
+            &["run", "entry.msync", "--config", "platform.toml"],
+        );
         assert!(!output.status.success(), "accepted execution.{key}={value}");
         let error = String::from_utf8_lossy(&output.stderr);
         assert!(error.contains("platform.toml:2:"), "{error}");

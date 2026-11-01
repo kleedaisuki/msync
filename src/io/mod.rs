@@ -416,37 +416,8 @@ impl StagedFile {
         no_clobber: bool,
         context: Option<crate::telemetry::TraceContext>,
     ) -> io::Result<Self> {
-        let previous_permissions = match fs::symlink_metadata(target) {
-            Ok(metadata) if !metadata.is_file() => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "file destination is not an ordinary file",
-                ));
-            }
-            Ok(_) if no_clobber => {
-                return Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    "destination file already exists",
-                ));
-            }
-            Ok(metadata) => {
-                let mut options = OpenOptions::new();
-                options.write(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.custom_flags(libc::O_NOFOLLOW);
-                }
-                let probe = options.open(target)?;
-                if !probe.metadata()?.is_file() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "file destination changed type before opening",
-                    ));
-                }
-                drop(probe);
-                Some(metadata.permissions())
-            }
+        let previous_permissions = match fs::metadata(target) {
+            Ok(metadata) => Some(metadata.permissions()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(error),
         };
@@ -460,7 +431,8 @@ impl StagedFile {
                 "destination needs a file basename",
             )
         })?;
-        for _ in 0..128 {
+        fs::create_dir_all(parent)?;
+        loop {
             let temporary = OsString::from(format!(
                 ".msync-{}-{}.part",
                 std::process::id(),
@@ -483,10 +455,6 @@ impl StagedFile {
                 Err(error) => return Err(error),
             }
         }
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "cannot allocate a unique file stage",
-        ))
     }
 
     pub fn path(&self) -> &Path {
@@ -677,6 +645,18 @@ impl Drop for StagedFile {
                 )
             };
         }
+        #[cfg(windows)]
+        let result = {
+            use std::os::windows::fs::FileTypeExt;
+            if fs::symlink_metadata(&self.path)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink_dir())
+            {
+                fs::remove_dir(&self.path)
+            } else {
+                fs::remove_file(&self.path)
+            }
+        };
+        #[cfg(not(windows))]
         let result = fs::remove_file(&self.path);
         if let Some(context) = &self.context {
             match &result {

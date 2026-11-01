@@ -165,11 +165,11 @@ impl PlanGraph {
         program: &Program,
         context: &PlanningContext,
     ) -> Result<(), Vec<Issue>> {
-        let expected = build_with_context(program, context);
+        let expected = build_execution_with_context(program, context);
         if !expected.issues.is_empty() {
             return Err(expected.issues);
         }
-        if self == &expected {
+        if self == &expected || self == &build_with_context(program, context) {
             return Ok(());
         }
         Err(vec![Issue {
@@ -199,6 +199,19 @@ pub fn build_with_live_processes(
 }
 
 pub fn build_with_context(program: &Program, context: &PlanningContext) -> PlanGraph {
+    build_program(program, context, true)
+}
+
+/// Build execution ordering without materializing a certificate for every pair.
+pub fn build_execution(program: &Program) -> PlanGraph {
+    build_execution_with_context(program, &PlanningContext::default())
+}
+
+pub fn build_execution_with_context(program: &Program, context: &PlanningContext) -> PlanGraph {
+    build_program(program, context, false)
+}
+
+fn build_program(program: &Program, context: &PlanningContext, explained: bool) -> PlanGraph {
     let mut result = graph_context(context);
     let mut active = context.clone();
     let mut ids = BTreeSet::new();
@@ -209,7 +222,11 @@ pub fn build_with_context(program: &Program, context: &PlanningContext) -> PlanG
         .collect::<BTreeSet<_>>();
     let mut consumers = BTreeMap::new();
     for block in program.blocks() {
-        let graph = build_block_with_context(block, &active);
+        let graph = if explained {
+            build_block_with_context(block, &active)
+        } else {
+            build_block_for_execution(block, &active)
+        };
         for instruction in block.instructions {
             if !ids.insert(instruction.id) {
                 result.issues.push(issue(
@@ -250,6 +267,13 @@ pub fn build_with_context(program: &Program, context: &PlanningContext) -> PlanG
 
 /// Construct only the graph that may now be contextualized and admitted.
 pub fn build_block_with_context(block: BasicBlock<'_>, context: &PlanningContext) -> PlanGraph {
+    let mut graph = block_nodes(block, context);
+    build_explanations(block, context, &mut graph);
+    validate_groups(&mut graph);
+    graph
+}
+
+fn block_nodes(block: BasicBlock<'_>, context: &PlanningContext) -> PlanGraph {
     let mut graph = graph_context(context);
     validate_physical(block, context, &mut graph.issues);
     graph.blocks.push(BlockPlan {
@@ -273,6 +297,10 @@ pub fn build_block_with_context(block: BasicBlock<'_>, context: &PlanningContext
             children: None,
         });
     }
+    graph
+}
+
+fn build_explanations(block: BasicBlock<'_>, context: &PlanningContext, graph: &mut PlanGraph) {
     let mut footprints: Vec<Option<Arc<Effects>>> = vec![None; graph.nodes.len()];
     let mut index = effects::CandidateIndex::default();
     let mut candidates = BTreeSet::new();
@@ -313,13 +341,12 @@ pub fn build_block_with_context(block: BasicBlock<'_>, context: &PlanningContext
             let mut completion = Vec::new();
             let mut admission = Vec::new();
             for conflict in conflicts {
-                let paired = context.physical_rendezvous.iter().any(|proof| {
-                    proof.matches_conflict(
-                        &block.instructions[left],
-                        &block.instructions[right],
-                        &conflict,
-                    )
-                });
+                let paired = fifo_participants(
+                    context,
+                    &block.instructions[left],
+                    &block.instructions[right],
+                    &conflict,
+                );
                 let reason = Reason::Hazard(Box::new(conflict));
                 if paired {
                     admission.push(reason);
@@ -345,8 +372,137 @@ pub fn build_block_with_context(block: BasicBlock<'_>, context: &PlanningContext
             }
         }
     }
+}
+
+/// Only actual ordering constraints belong to the ready frontier. A dependency
+/// implied by a completed predecessor needs no repeated edge or copied proof.
+pub fn build_block_for_execution(block: BasicBlock<'_>, context: &PlanningContext) -> PlanGraph {
+    let mut graph = block_nodes(block, context);
+    let mut index = effects::CandidateIndex::default();
+    let mut candidates = BTreeSet::new();
+    let mut unknown = Vec::new();
+    let mut completed = vec![Vec::new(); graph.nodes.len()];
+    let mut covered = vec![usize::MAX; graph.nodes.len()];
+    let mut stack = Vec::new();
+    for right in 1..graph.nodes.len() {
+        let previous = right - 1;
+        index.insert(&graph.nodes[previous].effects, previous);
+        if graph.nodes[previous].effects.unknown_external {
+            unknown.push(previous);
+        }
+        candidates.clear();
+        index.candidates(&graph.nodes[right].effects, &mut candidates);
+        let boundary = matches!(
+            block.instructions[right].kind,
+            InstructionKind::Await { .. } | InstructionKind::Barrier { .. }
+        );
+        if boundary || graph.nodes[right].effects.unknown_external {
+            candidates.extend(0..right);
+        } else {
+            candidates.extend(unknown.iter().copied());
+        }
+        for &left in candidates.iter().rev() {
+            if covered[left] == right {
+                continue;
+            }
+            let before = &graph.nodes[left];
+            let after = &graph.nodes[right];
+            let (admission, mut completion) = execution_conflicts(
+                &before.effects,
+                &after.effects,
+                context,
+                &block.instructions[left],
+                &block.instructions[right],
+            );
+            if boundary {
+                completion.push(Reason::SynchronizationBoundary);
+            }
+            if before.effects.unknown_external || after.effects.unknown_external {
+                completion.push(Reason::UnknownExternalEffects);
+            }
+            let strong = !completion.is_empty() && !completion.iter().all(captured_read);
+            let ordered = !admission.is_empty() || !completion.is_empty();
+            for (wait, reasons) in [(Wait::Admitted, admission), (Wait::Completion, completion)] {
+                if !reasons.is_empty() {
+                    graph.dependencies.push(Dependency {
+                        before: before.instruction,
+                        after: after.instruction,
+                        wait,
+                        reasons,
+                    });
+                }
+            }
+            if strong {
+                completed[right].push(left);
+            }
+            if ordered {
+                stack.extend(completed[left].iter().copied());
+            }
+            while let Some(ancestor) = stack.pop() {
+                if covered[ancestor] != right {
+                    covered[ancestor] = right;
+                    stack.extend(completed[ancestor].iter().copied());
+                }
+            }
+        }
+    }
     validate_groups(&mut graph);
     graph
+}
+
+fn captured_read(reason: &Reason) -> bool {
+    matches!(reason, Reason::Hazard(conflict)
+        if conflict.before.kind == effects::AccessKind::Read
+            && matches!(&conflict.before.resource, effects::Resource::File(_)))
+}
+
+fn execution_conflicts(
+    before: &Effects,
+    after: &Effects,
+    context: &PlanningContext,
+    before_node: &Instruction,
+    after_node: &Instruction,
+) -> (Vec<Reason>, Vec<Reason>) {
+    use effects::{AccessKind, Hazard};
+    let mut admitted = Vec::new();
+    let mut completed = Vec::new();
+    for left in &before.accesses {
+        for right in &after.accesses {
+            let kind = match (left.kind, right.kind) {
+                (AccessKind::Read, AccessKind::Read) => continue,
+                (AccessKind::Consume, _) | (_, AccessKind::Consume) => Hazard::ConsumingRead,
+                (AccessKind::Write, AccessKind::Read) => Hazard::ReadAfterWrite,
+                (AccessKind::Read, AccessKind::Write) => Hazard::WriteAfterRead,
+                (AccessKind::Write, AccessKind::Write) => Hazard::WriteAfterWrite,
+            };
+            if !left.resource.may_overlap(&right.resource) {
+                continue;
+            }
+            let conflict = Conflict {
+                kind,
+                before: left.clone(),
+                after: right.clone(),
+            };
+            let paired = !context.physical_rendezvous.is_empty()
+                && fifo_participants(context, before_node, after_node, &conflict);
+            let reason = Reason::Hazard(Box::new(conflict));
+            if paired {
+                if admitted.is_empty() {
+                    admitted.push(reason);
+                }
+            } else if completed.is_empty() || !captured_read(&reason) {
+                completed.clear();
+                completed.push(reason);
+            }
+            if !completed.is_empty()
+                && !captured_read(&completed[0])
+                && (context.physical_rendezvous.is_empty() || !admitted.is_empty())
+            {
+                return (admitted, completed);
+            }
+        }
+    }
+    (admitted, completed)
 }
 
 fn graph_context(context: &PlanningContext) -> PlanGraph {
@@ -483,6 +639,30 @@ fn summarize(instruction: &Instruction, context: &PlanningContext) -> Effects {
         }
     }
     summary
+}
+
+fn fifo_participants(
+    context: &PlanningContext,
+    before: &Instruction,
+    after: &Instruction,
+    conflict: &Conflict,
+) -> bool {
+    let endpoints = || {
+        context
+            .physical_rendezvous
+            .iter()
+            .flat_map(|proof| [proof.writer(), proof.reader()])
+    };
+    endpoints().any(|left| {
+        left.key().instruction == before.id
+            && left.matches_access(&conflict.before)
+            && endpoints().any(|right| {
+                right.key().instruction == after.id
+                    && right.provider() == left.provider()
+                    && right.identity() == left.identity()
+                    && right.matches_access(&conflict.after)
+            })
+    })
 }
 
 fn validate_physical(block: BasicBlock<'_>, context: &PlanningContext, issues: &mut Vec<Issue>) {
@@ -730,11 +910,16 @@ fn cyclic(
 /// Connected FIFO endpoints need co-admission, never a completion-before-open edge.
 pub(crate) fn physical_groups(proofs: &[FifoRendezvousProof]) -> Vec<Vec<InstructionId>> {
     let mut adjacent = BTreeMap::<InstructionId, BTreeSet<InstructionId>>::new();
+    let mut channels = BTreeMap::new();
     for proof in proofs {
-        let left = proof.writer().key().instruction;
-        let right = proof.reader().key().instruction;
-        adjacent.entry(left).or_default().insert(right);
-        adjacent.entry(right).or_default().insert(left);
+        for endpoint in [proof.writer(), proof.reader()] {
+            let member = endpoint.key().instruction;
+            let first = *channels
+                .entry((endpoint.provider(), endpoint.identity()))
+                .or_insert(member);
+            adjacent.entry(first).or_default().insert(member);
+            adjacent.entry(member).or_default().insert(first);
+        }
     }
     let mut visited = BTreeSet::new();
     let mut groups = Vec::new();
@@ -978,5 +1163,211 @@ mod control_spawn_tests {
                 .any(|issue| issue.message
                     == "a consuming program output port may have only one owner")
         );
+    }
+}
+
+#[cfg(test)]
+mod compact_execution_tests {
+    use super::*;
+    use crate::endpoint::Backend;
+    use crate::hir::{BarrierKind, Region};
+    use crate::language::DestinationMode;
+    use crate::syntax::Span;
+    use proptest::prelude::*;
+
+    fn location(path: impl Into<String>) -> Location {
+        Location {
+            backend: Backend::Local,
+            path: path.into(),
+        }
+    }
+
+    fn node(id: usize, source: Option<String>, target: String) -> Instruction {
+        Instruction {
+            id: InstructionId(id),
+            span: Span::default(),
+            expansion: Vec::new(),
+            kind: InstructionKind::Transfer {
+                source: source.map_or_else(
+                    || Input::Literal("data".into()),
+                    |path| Input::File {
+                        location: location(path),
+                        pattern: None,
+                    },
+                ),
+                destination: Output::File {
+                    location: location(target),
+                    mode: DestinationMode::Exact,
+                },
+            },
+        }
+    }
+
+    fn closure(graph: &PlanGraph) -> Vec<Vec<bool>> {
+        let count = graph.nodes.len() * 3;
+        let mut reach = vec![vec![false; count]; count];
+        for node in 0..graph.nodes.len() {
+            reach[node * 3][node * 3 + 1] = true;
+            reach[node * 3 + 1][node * 3 + 2] = true;
+        }
+        for edge in &graph.dependencies {
+            let event = if edge.wait == Wait::Admitted {
+                0
+            } else if !edge.reasons.is_empty() && edge.reasons.iter().all(captured_read) {
+                1
+            } else {
+                2
+            };
+            reach[edge.before.0 * 3 + event][edge.after.0 * 3] = true;
+        }
+        for middle in 0..count {
+            for before in 0..count {
+                if reach[before][middle] {
+                    for after in 0..count {
+                        reach[before][after] |= reach[middle][after];
+                    }
+                }
+            }
+        }
+        reach
+    }
+
+    #[test]
+    fn independent_execution_has_no_quadratic_proof_output() {
+        let instructions = (0..1025)
+            .map(|id| node(id, None, format!("out/{id}")))
+            .collect::<Vec<_>>();
+        let context = PlanningContext {
+            operation_facts: instructions
+                .iter()
+                .map(|node| {
+                    (
+                        node.id,
+                        OperationFacts {
+                            source: FileClass::Regular,
+                            destination: FileClass::Regular,
+                        },
+                    )
+                })
+                .collect(),
+            ..PlanningContext::default()
+        };
+        let graph = build_block_for_execution(
+            BasicBlock {
+                id: BlockId(0),
+                instructions: &instructions,
+            },
+            &context,
+        );
+        assert!(graph.issues.is_empty());
+        assert!(graph.commutations.is_empty());
+        assert!(graph.dependencies.is_empty());
+    }
+
+    #[test]
+    fn dense_execution_keeps_only_the_completion_frontier() {
+        let instructions = (0..1025)
+            .map(|id| node(id, None, "same-target".into()))
+            .collect::<Vec<_>>();
+        let context = PlanningContext::default();
+        let graph = build_block_for_execution(
+            BasicBlock {
+                id: BlockId(0),
+                instructions: &instructions,
+            },
+            &context,
+        );
+        assert!(graph.issues.is_empty());
+        assert_eq!(graph.dependencies.len(), instructions.len() - 1);
+        assert!(
+            graph
+                .dependencies
+                .iter()
+                .all(|edge| edge.reasons.len() == 1)
+        );
+        assert!(graph.commutations.is_empty());
+    }
+
+    #[test]
+    fn fifo_admission_and_capture_events_keep_their_original_ordering() {
+        let instructions = vec![
+            node(0, Some("input".into()), "channel".into()),
+            node(1, None, "channel".into()),
+            node(2, Some("channel".into()), "result".into()),
+            node(3, None, "input".into()),
+        ];
+        let endpoint = |instruction, role| {
+            FifoEndpointProof::verified_fifo(
+                EndpointKey {
+                    instruction: InstructionId(instruction),
+                    role,
+                },
+                location("channel"),
+                "fixture",
+                "channel-generation",
+            )
+            .unwrap()
+        };
+        let mut context = PlanningContext::default();
+        for (id, source, destination) in [
+            (0, FileClass::Regular, FileClass::Stream),
+            (1, FileClass::Regular, FileClass::Stream),
+            (2, FileClass::Stream, FileClass::Regular),
+        ] {
+            context.operation_facts.insert(
+                InstructionId(id),
+                OperationFacts {
+                    source,
+                    destination,
+                },
+            );
+        }
+        for writer in [0, 1] {
+            context.physical_rendezvous.push(
+                FifoRendezvousProof::connect(
+                    endpoint(writer, effects::EndpointRole::Destination),
+                    endpoint(2, effects::EndpointRole::Source),
+                )
+                .unwrap(),
+            );
+        }
+        let block = BasicBlock {
+            id: BlockId(0),
+            instructions: &instructions,
+        };
+        let compact = build_block_for_execution(block, &context);
+        let explained = build_block_with_context(block, &context);
+        assert_eq!(compact.issues, explained.issues);
+        assert_eq!(closure(&compact), closure(&explained));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn compact_graph_preserves_admission_capture_and_completion(
+            operations in prop::collection::vec((0u8..6, 0u8..6, 0u8..5), 0..24),
+        ) {
+            let paths = ["a", "b", "a/child", "b/child", "alias/../a", "/absolute"];
+            let mut instructions = Vec::new();
+            for (id, (source, target, kind)) in operations.into_iter().enumerate() {
+                let mut instruction = node(id, (kind % 2 == 0).then(|| paths[source as usize].into()), paths[target as usize].into());
+                if kind == 3 {
+                    instruction.kind = InstructionKind::Spawn {
+                        process: ProcessId(id), executable: location("program"), arguments: Vec::new(), cwd: "/".into(),
+                    };
+                } else if kind == 4 {
+                    instruction.kind = InstructionKind::Barrier { kind: BarrierKind::After };
+                }
+                instructions.push(instruction);
+            }
+            let block = BasicBlock { id: BlockId(0), instructions: &instructions };
+            let context = PlanningContext::default();
+            let compact = build_block_for_execution(block, &context);
+            let explained = build_block_with_context(block, &context);
+            prop_assert_eq!(&compact.issues, &explained.issues);
+            prop_assert_eq!(closure(&compact), closure(&explained));
+            let program = Program { body: Region { instructions } };
+            prop_assert!(build_execution(&program).verify(&program).is_ok());
+        }
     }
 }

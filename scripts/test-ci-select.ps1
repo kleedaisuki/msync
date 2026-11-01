@@ -43,8 +43,8 @@ $combined = Select-Changes @('tests/ux_031.rs', 'tests/ux_031.rs', 'tests/repl_j
 Assert ($combined.targets.Count -eq 2 -and -not $combined.full) 'Selections must be deduplicated'
 $selector = Select-Changes @('scripts/ci-select.ps1', 'scripts/test-ci-select.ps1')
 Assert (-not $selector.full -and -not $selector.rust) 'Selector regression checks must not start an unrelated Rust suite'
-Assert-Selected 'src/filesystem.rs' @('filesystem_v5', 'selected_capture_v5', 'recovery_registry_v5', 'storage_crash_v5', 'storage_stage_crash_v5', 'barrier_crash_v5', 'ordinary_execution_v4', 'review_foundation_v4')
-Assert-Selected 'src/execution/live.rs' @('barrier_cli_v5', 'barrier_runtime_v5', 'barrier_crash_v5', 'program_execution_v4', 'physical_execution_v4', 'endpoint_execution_v4')
+Assert-Selected 'src/filesystem.rs' @('filesystem_v5', 'selected_capture_v5', 'normal_user_model', 'ordinary_execution_v4', 'review_foundation_v4')
+Assert-Selected 'src/execution/live.rs' @('normal_user_model', 'barrier_cli_v5', 'barrier_runtime_v5', 'program_execution_v4', 'physical_execution_v4', 'endpoint_execution_v4')
 Assert-Selected 'src/process/direct.rs' @('barrier_cli_v5', 'program_execution_v4')
 Assert-Selected 'src/hir/graph.rs' @('directional_barriers_v5', 'barrier_graph_v5', 'language_barriers_v5', 'lowering_v4', 'planner_proof_sharing_v4')
 Assert-Selected 'src/preparation.rs' @('preparation_v4', 'runtime_guards_v4', 'planner_optimization_v4')
@@ -52,10 +52,10 @@ Assert-Selected 'src/context.rs' @('object_codec_v4', 'object_linker_v4', 'artif
 Assert-Selected 'src/compiler/structured/scripts.rs' @('scripts_v052', 'scripts_env_v052', 'cli_v052')
 Assert-Selected 'src/object/validate.rs' @('scripts_env_v052')
 Assert-Selected 'src/object/validate.rs' @('object_codec_v4', 'independent_object_integrity_v4', 'artifact_cli_v4')
-Assert-Selected 'src/structured/artifact.rs' @('artifact_cli_v4', 'barrier_cli_v5', 'barrier_crash_v5')
+Assert-Selected 'src/structured/artifact.rs' @('normal_user_model', 'artifact_cli_v4', 'barrier_cli_v5')
 $deleted = Select-Changes @('tests/transaction_manager_v4.rs')
 Assert ($deleted.targets.Count -eq 0) 'Deleted tests must not become nonexistent Cargo targets'
-Write-Output 'CI selection: barrier, filesystem recovery, native-process, artifact, and focused compatibility cases passed'
+Write-Output 'CI selection: normal storage, barriers, native-process, artifact, and focused compatibility cases passed'
 
 # Load the pure normalizer without providing Git evidence for the initial selection.
 . "$PSScriptRoot/ci-select.ps1" -Paths @() | Out-Null

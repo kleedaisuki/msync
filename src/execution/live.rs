@@ -24,21 +24,12 @@ struct ActiveFlow {
     processes: BTreeSet<ProcessId>,
     destination: Option<crate::endpoint::Location>,
     origin: Option<crate::source::InstructionOrigin>,
-    _lease: super::scheduler::Lease,
+    _lease: Option<super::scheduler::Lease>,
     pins: crate::streams::FifoPins,
     cancel: CancellationToken,
     program_output: bool,
     source_label: Option<String>,
     destination_label: Option<String>,
-}
-
-struct Acquisition {
-    completion: CancellationToken,
-    instruction: InstructionId,
-    submission: u64,
-    span: Span,
-    origin: Option<crate::source::InstructionOrigin>,
-    worker: tokio::task::JoinHandle<(Result<flow::Source>, super::scheduler::Lease)>,
 }
 
 struct FiniteResult {
@@ -89,24 +80,14 @@ impl WorkerGate {
 }
 struct Retiring {
     finite: JoinSet<FiniteResult>,
-    acquisition: Option<Acquisition>,
     flows: Vec<ActiveFlow>,
     programs: BTreeMap<ProcessId, program::Program>,
     invocation: Option<crate::filesystem::InvocationRoot>,
-    registration: Option<crate::filesystem::recovery::Registration>,
     context: Option<crate::telemetry::TraceContext>,
     _leases: Vec<super::scheduler::Lease>,
 }
 impl Retiring {
     async fn run(mut self) {
-        if let Some(mut acquisition) = self.acquisition.take() {
-            let result = (&mut acquisition.worker).await;
-            match result {
-                Ok((Err(error), _lease)) => self.error(&error),
-                Err(error) => self.error(&error),
-                _ => {}
-            }
-        }
         while let Some(result) = self.finite.join_next().await {
             match result {
                 Err(error) => self.error(&error),
@@ -148,12 +129,6 @@ impl Retiring {
             && let Err(error) = invocation.cleanup()
         {
             self.error(&error);
-            return;
-        }
-        if let Some(registration) = self.registration.take()
-            && let Err(error) = registration.finish()
-        {
-            self.error(&error);
         }
     }
     fn error(&self, error: &(dyn std::error::Error + 'static)) {
@@ -174,9 +149,7 @@ pub struct RuntimeSession {
     finite_signals: BTreeMap<tokio::task::Id, CancellationToken>,
     flows: Vec<ActiveFlow>,
     finite: JoinSet<FiniteResult>,
-    acquisition: Option<Acquisition>,
     report: ExecutionReport,
-    initialized: bool,
     admission: super::scheduler::Admission,
     program_leases: BTreeMap<ProcessId, super::scheduler::Lease>,
     fifo: Option<super::fifo::FifoState>,
@@ -189,18 +162,14 @@ pub struct RuntimeSession {
     control_break: Option<Option<control::Value>>,
     next_dynamic_process: usize,
     batch_mode: bool,
-    stage_registration: Option<crate::filesystem::recovery::Registration>,
     executor: Option<tokio::runtime::Handle>,
     #[cfg(test)]
     worker_gate: Option<WorkerGate>,
-    #[cfg(test)]
-    acquisition_gate: Option<WorkerGate>,
 }
 impl Drop for RuntimeSession {
     fn drop(&mut self) {
         self.cancel.cancel();
         if self.finite.is_empty()
-            && self.acquisition.is_none()
             && self.flows.is_empty()
             && self
                 .programs
@@ -218,11 +187,9 @@ impl Drop for RuntimeSession {
         if let Some(executor) = self.executor.as_ref() {
             let retiring = Retiring {
                 finite: std::mem::take(&mut self.finite),
-                acquisition: self.acquisition.take(),
                 flows: std::mem::take(&mut self.flows),
                 programs: std::mem::take(&mut self.programs),
                 invocation: self.options.shared_invocation.take(),
-                registration: self.stage_registration.take(),
                 context: crate::telemetry::context(),
                 _leases: std::mem::take(&mut self.program_leases)
                     .into_values()
@@ -266,9 +233,7 @@ impl RuntimeSession {
             finite_signals: BTreeMap::new(),
             flows: Vec::new(),
             finite: JoinSet::new(),
-            acquisition: None,
             report: Default::default(),
-            initialized: false,
             admission: super::scheduler::Admission::new(&options.limits)?,
             program_leases: BTreeMap::new(),
             fifo: None,
@@ -281,12 +246,9 @@ impl RuntimeSession {
             control_break: None,
             next_dynamic_process: usize::MAX,
             batch_mode: false,
-            stage_registration: None,
             executor: tokio::runtime::Handle::try_current().ok(),
             #[cfg(test)]
             worker_gate: None,
-            #[cfg(test)]
-            acquisition_gate: None,
         })
     }
     pub fn set_origins(&mut self, origins: crate::source::Origins) {
@@ -312,19 +274,15 @@ impl RuntimeSession {
         })?;
         Ok(Some(invocation.path()))
     }
+    /// Legacy compatibility: live scratch has no persistent recovery record.
     pub fn private_stage_record(&self) -> Result<Option<&Path>> {
-        self.private_root()?;
-        Ok(self
-            .stage_registration
-            .as_ref()
-            .map(|registration| registration.path()))
+        Ok(None)
     }
     pub fn live_processes(&self) -> Vec<ProcessId> {
         self.programs.keys().copied().collect()
     }
     pub fn has_work(&self) -> bool {
         !self.finite.is_empty()
-            || self.acquisition.is_some()
             || !self.flows.is_empty()
             || self.programs.values().any(|p| p.receipt().is_none())
     }
@@ -336,14 +294,6 @@ impl RuntimeSession {
                 submission: flow.submission,
                 instruction: flow.instruction,
             }))
-            .chain(
-                self.acquisition
-                    .iter()
-                    .map(|acquisition| super::WorkId::Flow {
-                        submission: acquisition.submission,
-                        instruction: acquisition.instruction,
-                    }),
-            )
             .collect()
     }
     /// Maps runtime identities, including fresh loop-local children, to semantic source nodes.
@@ -389,9 +339,6 @@ impl RuntimeSession {
                 .finite_signals
                 .values()
                 .any(CancellationToken::is_cancelled)
-            || self.acquisition.as_ref().is_some_and(|acquisition| {
-                acquisition.completion.is_cancelled() || acquisition.worker.is_finished()
-            })
     }
     pub fn planning_context(&self) -> PlanningContext {
         PlanningContext {
@@ -433,7 +380,6 @@ impl RuntimeSession {
     ) -> Result<ExecutionReport> {
         self.flow_reservations.clear();
         self.reserved_groups.clear();
-        self.drain_acquisition().await?;
         if let Err(error) = self.drain_finite().await {
             self.cancel = self.options.cancel.child_token();
             return Err(error);
@@ -442,7 +388,7 @@ impl RuntimeSession {
         self.submission = self.submission.checked_add(1).ok_or_else(|| {
             ExecutionError::new("runtime submission identity exhausted", Span::default())
         })?;
-        self.initialize().await?;
+        self.executor = tokio::runtime::Handle::try_current().ok();
         let authentication = (!batch)
             .then(crate::runtime::ssh::current)
             .flatten()
@@ -516,69 +462,11 @@ impl RuntimeSession {
         }
         failure.map_or(Ok(()), Err)
     }
-    /// Inspect the roots owned by this session, including after a caller changes cwd.
+    /// Legacy compatibility: ordinary execution has no recovery prerequisite.
     pub fn recovery_required(&self) -> bool {
-        super::recovery_required(
-            &self.options.scratch_root,
-            self.options.fallback_scratch_root.as_deref(),
-        )
+        false
     }
 
-    async fn initialize(&mut self) -> Result<()> {
-        if self.initialized && !self.recovery_required() {
-            return Ok(());
-        }
-        self.executor = tokio::runtime::Handle::try_current().ok();
-        self.observe(
-            super::progress::Phase::Inspect,
-            None,
-            || Some("recover interrupted statements".into()),
-            || None,
-        );
-        if super::root_may_need_recovery(&self.options.scratch_root) {
-            let scratch = self.options.scratch_root.clone();
-            crate::runtime::ssh::spawn_blocking(move || {
-                crate::filesystem::recovery::recover(&scratch)
-            })
-            .await
-            .map_err(|cause| {
-                ExecutionError::caused("statement recovery worker failed", Span::default(), cause)
-            })?
-            .map_err(|cause| {
-                ExecutionError::caused(
-                    "cannot recover an interrupted statement before execution",
-                    Span::default(),
-                    cause,
-                )
-            })?;
-            super::endpoint::recover(&self.options).await?;
-        }
-        if let Some(fallback) = &self.options.fallback_scratch_root
-            && super::root_may_need_recovery(fallback)
-        {
-            let scratch = fallback.clone();
-            crate::runtime::ssh::spawn_blocking(move || {
-                crate::filesystem::recovery::recover(&scratch)
-            })
-            .await
-            .map_err(|cause| {
-                ExecutionError::caused("fallback recovery worker failed", Span::default(), cause)
-            })?
-            .map_err(|cause| {
-                ExecutionError::caused(
-                    "cannot recover fallback runtime state",
-                    Span::default(),
-                    cause,
-                )
-            })?;
-            let mut options = self.options.clone();
-            options.scratch_root = fallback.clone();
-            super::endpoint::recover(&options).await?;
-        }
-
-        self.initialized = true;
-        Ok(())
-    }
     async fn interpret(&mut self, program: &hir::Program) -> Result<()> {
         self.interpret_region(&program.body).await
     }
@@ -616,8 +504,6 @@ impl RuntimeSession {
 
     async fn interpret_control_block(&mut self, node: &Instruction) -> Result<()> {
         self.check(node.span)?;
-        self.drain_acquisition().await?;
-        self.drain_finite().await?;
         let InstructionKind::Control(operation) = &node.kind else {
             unreachable!("control block selected by its instruction kind")
         };
@@ -703,7 +589,7 @@ impl RuntimeSession {
         let graph = {
             let mut planning = crate::telemetry::span("interpreter.schedule");
             planning.metric("block.id", block.id.0 as u64);
-            let graph = graph::build_block_with_context(contextual_block, &context);
+            let graph = graph::build_block_for_execution(contextual_block, &context);
             planning.metric("nodes", graph.nodes.len() as u64);
             planning.metric("dependencies", graph.dependencies.len() as u64);
             graph
@@ -974,7 +860,6 @@ impl RuntimeSession {
             })
     }
     fn start_fold(&mut self, run: Vec<Instruction>, ids: Vec<InstructionId>) -> Result<()> {
-        self.ensure_invocation()?;
         let lease = self.admission.copy(run[0].span).map_err(admission_error)?;
         let mut options = self.options.clone();
         options.cancel = self.cancel.clone();
@@ -1041,7 +926,19 @@ impl RuntimeSession {
         Ok(())
     }
     fn start_finite(&mut self, node: Instruction, ids: Vec<InstructionId>) -> Result<()> {
-        self.ensure_invocation()?;
+        if let Some(context) = crate::runtime::ssh::current()
+            && let InstructionKind::Transfer {
+                source,
+                destination,
+            } = &node.kind
+        {
+            if let Input::File { location, .. } = source {
+                context.note_native_endpoint(&location.backend);
+            }
+            if let Output::File { location, .. } = destination {
+                context.note_native_endpoint(&location.backend);
+            }
+        }
         let lease = self.admission.copy(node.span).map_err(admission_error)?;
         let mut options = self.options.clone();
         options.cancel = self.cancel.clone();
@@ -1278,10 +1175,7 @@ impl RuntimeSession {
                 })?;
         }
         self.join_conflicting_flows(node).await?;
-        let lease = match self.flow_reservations.remove(&node.id) {
-            Some(lease) => lease,
-            None => self.flow_lease(node.span).await?,
-        };
+        let lease = self.flow_reservations.remove(&node.id);
         let source_label = self.observer.as_ref().map(|_| input_label(source));
         let destination_label = self.observer.as_ref().map(|_| output_label(destination));
         self.observe(
@@ -1291,11 +1185,11 @@ impl RuntimeSession {
             || destination_label.clone(),
         );
         let mut processes = BTreeSet::new();
-        let (source, lease) = match source {
+        let source = match source {
             Input::File {
                 location,
                 pattern: None,
-            } => self.acquire_source(location, node, lease).await?,
+            } => flow::Source::capture(location.clone(), &self.options.scratch_root, node.span)?,
             Input::File {
                 pattern: Some(_), ..
             } => {
@@ -1304,21 +1198,20 @@ impl RuntimeSession {
                     node.span,
                 ));
             }
-            Input::Literal(text) => (flow::Source::Literal(text.clone()), lease),
+            Input::Literal(text) => flow::Source::Literal(text.clone()),
             Input::Port { process, port } => {
                 processes.insert(*process);
                 let p = self.programs.get_mut(process).ok_or_else(|| {
                     ExecutionError::new("program has not been launched", node.span)
                 })?;
-                let source = if matches!(port, ReadPort::Stdout | ReadPort::Stderr) {
+                if matches!(port, ReadPort::Stdout | ReadPort::Stderr) {
                     flow::Source::Reader(p.take_reader(*port)?)
                 } else {
                     flow::Source::Reader(p.scalar_reader(*port)?)
-                };
-                (source, lease)
+                }
             }
         };
-        let captured = matches!(&source, flow::Source::Captured(_));
+        let captured = matches!(&source, flow::Source::File { .. });
         let target = match destination {
             Output::File { location, .. } => Some(resource_location(location, false, node.span)?),
             _ => None,
@@ -1353,15 +1246,32 @@ impl RuntimeSession {
             _ => false,
         };
         let cancel = self.cancel.child_token();
-        let task = crate::telemetry::with_context(lease.context(), || {
-            flow::Flow::start_with_pins(
-                source,
-                destination,
-                self.options.limits.buffer_bytes,
-                cancel.clone(),
-                node.span,
-                pins.clone(),
-            )
+        let parent = lease
+            .as_ref()
+            .and_then(|lease| lease.context())
+            .cloned()
+            .or_else(crate::telemetry::context);
+        let task = crate::telemetry::with_context(parent.as_ref(), || {
+            if lease.is_some() {
+                flow::Flow::start_with_pins(
+                    source,
+                    destination,
+                    self.options.limits.buffer_bytes,
+                    cancel.clone(),
+                    node.span,
+                    pins.clone(),
+                )
+            } else {
+                flow::Flow::start_queued(
+                    source,
+                    destination,
+                    self.options.limits.buffer_bytes,
+                    cancel.clone(),
+                    node.span,
+                    pins.clone(),
+                    self.admission.clone(),
+                )
+            }
         })?;
         self.flows.push(ActiveFlow {
             instruction: node.id,
@@ -1378,81 +1288,6 @@ impl RuntimeSession {
             destination_label,
         });
         Ok(captured)
-    }
-    async fn acquire_source(
-        &mut self,
-        location: &crate::endpoint::Location,
-        node: &Instruction,
-        lease: super::scheduler::Lease,
-    ) -> Result<(flow::Source, super::scheduler::Lease)> {
-        let invocation = self
-            .options
-            .shared_invocation
-            .as_ref()
-            .expect("runtime invocation")
-            .clone();
-        let location = location.clone();
-        let span = node.span;
-        #[cfg(test)]
-        let gate = self.acquisition_gate.take();
-        #[cfg(test)]
-        let observed = gate.clone();
-        let completion = CancellationToken::new();
-        let completed = completion.clone().drop_guard();
-        let worker = crate::runtime::ssh::spawn_blocking(move || {
-            let _completed = completed;
-            let source = crate::telemetry::with_context(lease.context(), || {
-                flow::Source::capture(location, invocation.path(), span)
-            });
-            #[cfg(test)]
-            if let Some(gate) = gate {
-                gate.wait();
-            }
-            // Started blocking work cannot be aborted. Its lease and backing
-            // must outlive a dropped submit future, not just its local await.
-            (source, lease)
-        });
-        #[cfg(test)]
-        if let Some(gate) = observed {
-            *gate.handle.lock().unwrap() = Some(worker.abort_handle());
-        }
-        self.acquisition = Some(Acquisition {
-            completion,
-            instruction: node.id,
-            submission: self.submission,
-            span,
-            origin: self.origins.get(&node.id).cloned(),
-            worker,
-        });
-        self.finish_acquisition().await
-    }
-    async fn finish_acquisition(&mut self) -> Result<(flow::Source, super::scheduler::Lease)> {
-        let result = (&mut self
-            .acquisition
-            .as_mut()
-            .expect("retained source acquisition")
-            .worker)
-            .await;
-        let acquisition = self.acquisition.take().expect("joined source acquisition");
-        let (source, lease) = result.map_err(|cause| {
-            ExecutionError::caused(
-                "flow-source acquisition worker failed",
-                acquisition.span,
-                cause,
-            )
-            .with_origin(acquisition.origin.as_ref())
-        })?;
-        source
-            .map(|source| (source, lease))
-            .map_err(|error| error.with_origin(acquisition.origin.as_ref()))
-    }
-    async fn drain_acquisition(&mut self) -> Result<()> {
-        if self.acquisition.is_some() {
-            // An abandoned submission has not admitted a destination yet.
-            // Join and retire its capture rather than replaying its instruction.
-            drop(self.finish_acquisition().await?);
-        }
-        Ok(())
     }
     async fn join_flow(&mut self, index: usize) -> Result<()> {
         self.observe(
@@ -1486,21 +1321,6 @@ impl RuntimeSession {
             ));
         }
         Ok(())
-    }
-    async fn flow_lease(&mut self, span: Span) -> Result<super::scheduler::Lease> {
-        let demand = super::scheduler::Demand::flows(1);
-        self.admission
-            .feasible(demand, span)
-            .map_err(admission_error)?;
-        while self.admission.availability(demand) == super::scheduler::Availability::Busy {
-            let pending = self.flows.iter().position(|flow| flow.processes.is_empty());
-            if !self.batch_mode || pending.is_none() {
-                return Err(admission_error(ExecutionError::new("background flow capacity is occupied",span).help("Use /wait to drain existing work or /stop to stop streams and drain programs; alternatively increase --max-streams/--memory-limit or reduce --buffer-size.")));
-            }
-            self.join_flow(pending.expect("a queueable independent flow"))
-                .await?;
-        }
-        self.admission.flow(span).map_err(admission_error)
     }
     async fn join_all_flows(&mut self) -> Result<()> {
         let mut failure = None;
@@ -1654,11 +1474,6 @@ impl RuntimeSession {
                     .filter(|program| program.receipt().is_none())
                     .map(program::Program::completion_signal),
             )
-            .chain(
-                self.acquisition
-                    .iter()
-                    .map(|acquisition| acquisition.completion.clone()),
-            )
             .chain(self.finite_signals.values().cloned());
         let mut waits: Vec<_> = signals
             .map(|signal| Box::pin(signal.cancelled_owned()))
@@ -1694,11 +1509,6 @@ impl RuntimeSession {
         }
         if let Some(error) = failure {
             return Err(error);
-        }
-        if self.acquisition.as_ref().is_some_and(|acquisition| {
-            acquisition.completion.is_cancelled() || acquisition.worker.is_finished()
-        }) {
-            self.drain_acquisition().await?;
         }
         let mut index = 0;
         while index < self.flows.len() {
@@ -1784,76 +1594,27 @@ impl RuntimeSession {
             })
         })?;
         self.options.shared_invocation.take();
-        if let Some(registration) = self.stage_registration.take() {
-            registration.finish().map_err(|cause| {
-                ExecutionError::caused(
-                    "cannot retire runtime recovery registration",
-                    Span::default(),
-                    cause,
-                )
-            })?;
-        }
+
         Ok(())
     }
     fn ensure_invocation(&mut self) -> Result<()> {
-        if self.options.shared_invocation.is_none() {
-            let registry =
-                match crate::filesystem::recovery::Registry::new(&self.options.scratch_root) {
-                    Err(cause)
-                        if cause.kind() == std::io::ErrorKind::PermissionDenied
-                            && self.options.fallback_scratch_root.is_some() =>
-                    {
-                        self.options.scratch_root = self
-                            .options
-                            .fallback_scratch_root
-                            .take()
-                            .expect("configured fallback");
-                        crate::filesystem::recovery::Registry::new(&self.options.scratch_root)
-                    }
-                    result => result,
-                }
-                .map_err(|cause| {
-                    ExecutionError::caused(
-                        "cannot open runtime recovery registry",
-                        Span::default(),
-                        cause,
-                    )
-                })?;
-            let lease = registry.enter().map_err(|cause| {
-                ExecutionError::caused(
-                    "cannot enter runtime recovery registry",
-                    Span::default(),
-                    cause,
-                )
-            })?;
-            let invocation = crate::filesystem::InvocationRoot::create(&self.options.scratch_root)
-                .map_err(|cause| {
-                    ExecutionError::caused(
-                        "cannot allocate runtime-private resources",
-                        Span::default(),
-                        cause,
-                    )
-                })?;
-            let registration = lease.register_stage(&self.options.scratch_root, invocation.path());
-            match registration {
-                Ok(registration) => {
-                    self.stage_registration = Some(registration);
-                    self.options.shared_invocation = Some(invocation);
-                }
-                Err(cause) => {
-                    let mut error = ExecutionError::caused(
-                        "cannot register runtime-private resources before use",
-                        Span::default(),
-                        cause,
-                    );
-                    if let Err(cleanup) = invocation.cleanup() {
-                        error.retained_paths.push(invocation.path().to_owned());
-                        error.report.help.push(format!("cleanup: {cleanup}"));
-                    }
-                    return Err(error);
-                }
-            }
+        if self.options.shared_invocation.is_some() {
+            return Ok(());
         }
+        let created = crate::filesystem::InvocationRoot::create(&self.options.scratch_root);
+        let created = match created {
+            Err(cause)
+                if cause.cause.kind() == std::io::ErrorKind::PermissionDenied
+                    && self.options.fallback_scratch_root.is_some() =>
+            {
+                self.options.scratch_root = self.options.fallback_scratch_root.take().unwrap();
+                crate::filesystem::InvocationRoot::create(&self.options.scratch_root)
+            }
+            result => result,
+        };
+        self.options.shared_invocation = Some(created.map_err(|cause| {
+            ExecutionError::caused("cannot allocate runtime scratch", Span::default(), cause)
+        })?);
         Ok(())
     }
     fn observe(
@@ -1878,7 +1639,6 @@ impl RuntimeSession {
         let mut failure = None;
         self.flow_reservations.clear();
         self.reserved_groups.clear();
-        record_failure(&mut failure, self.drain_acquisition().await);
         record_failure(&mut failure, self.drain_finite().await);
         record_failure(&mut failure, self.await_process(None).await);
         record_failure(&mut failure, self.join_all_flows().await);
@@ -2120,169 +1880,6 @@ mod cleanup_tests {
         }
     }
 
-    fn file_flow(source: &Path, port: u16) -> hir::Program {
-        let mut program = literal(Path::new("unused"), "unused");
-        program.body.instructions[0].kind = InstructionKind::Transfer {
-            source: Input::File {
-                location: crate::endpoint::Location {
-                    backend: crate::endpoint::Backend::Local,
-                    path: source.to_string_lossy().into_owned(),
-                },
-                pattern: None,
-            },
-            destination: Output::File {
-                location: crate::endpoint::Location {
-                    backend: crate::endpoint::Backend::Tcp {
-                        host: "127.0.0.1".into(),
-                        port,
-                    },
-                    path: "/".into(),
-                },
-                mode: crate::language::DestinationMode::Exact,
-            },
-        };
-        program
-    }
-
-    fn capture_fixture() -> (tempfile::TempDir, RuntimeSession, std::net::TcpListener) {
-        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
-        std::fs::create_dir_all(&base).unwrap();
-        let root = tempfile::Builder::new()
-            .prefix("capture-owner-")
-            .tempdir_in(base)
-            .unwrap();
-        std::fs::write(root.path().join("source"), b"owned capture bytes").unwrap();
-        let mut options = Options::new(root.path().join("scratch"));
-        options.limits.max_streams = 1;
-        let runtime = RuntimeSession::new(&options).unwrap();
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        (root, runtime, listener)
-    }
-
-    fn assert_unstarted(listener: &std::net::TcpListener) {
-        assert_eq!(
-            listener.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock,
-            "an abandoned acquisition must never dispatch its destination"
-        );
-    }
-
-    #[tokio::test]
-    async fn dropped_submit_retains_capture_budget_and_shutdown_joins_the_worker() {
-        let (root, mut runtime, listener) = capture_fixture();
-        let program = file_flow(
-            &root.path().join("source"),
-            listener.local_addr().unwrap().port(),
-        );
-        let gate = WorkerGate::default();
-        let _release = ReleaseOnDrop(gate.clone());
-        runtime.acquisition_gate = Some(gate.clone());
-        let mut submit = Box::pin(runtime.submit(&program));
-        tokio::select! {
-            result=&mut submit=>panic!("capture escaped its worker gate: {result:?}"),
-            ()=until(||gate.entered())=>{},
-        }
-        drop(submit);
-        let backing = runtime.private_root().unwrap().unwrap().to_owned();
-        let record = runtime.private_stage_record().unwrap().unwrap().to_owned();
-        assert!(runtime.has_work());
-        assert_eq!(runtime.work_ids().len(), 1);
-        assert_eq!(
-            runtime
-                .admission
-                .availability(super::super::scheduler::Demand::flows(1)),
-            super::super::scheduler::Availability::Busy,
-        );
-        assert_unstarted(&listener);
-        let mut shutdown = Box::pin(runtime.shutdown());
-        assert!(
-            std::future::poll_fn(|cx| std::task::Poll::Ready(
-                shutdown.as_mut().poll(cx).is_pending()
-            ))
-            .await
-        );
-        assert!(backing.is_dir());
-        assert!(record.is_file());
-        gate.release();
-        shutdown.await.unwrap();
-        assert!(!backing.exists());
-        assert!(!record.exists());
-        assert!(!runtime.has_work());
-        assert_unstarted(&listener);
-        assert_eq!(
-            std::fs::read(root.path().join("source")).unwrap(),
-            b"owned capture bytes"
-        );
-    }
-
-    #[tokio::test]
-    async fn dropped_session_retires_a_retained_capture_before_its_backing() {
-        let (root, mut runtime, listener) = capture_fixture();
-        let program = file_flow(
-            &root.path().join("source"),
-            listener.local_addr().unwrap().port(),
-        );
-        let gate = WorkerGate::default();
-        let _release = ReleaseOnDrop(gate.clone());
-        runtime.acquisition_gate = Some(gate.clone());
-        let mut submit = Box::pin(runtime.submit(&program));
-        tokio::select! {
-            result=&mut submit=>panic!("capture escaped its worker gate: {result:?}"),
-            ()=until(||gate.entered())=>{},
-        }
-        drop(submit);
-        let backing = runtime.private_root().unwrap().unwrap().to_owned();
-        let record = runtime.private_stage_record().unwrap().unwrap().to_owned();
-        drop(runtime);
-        tokio::task::yield_now().await;
-        assert!(backing.is_dir());
-        assert!(record.is_file());
-        assert!(!gate.finished());
-        gate.release();
-        until(|| !backing.exists() && !record.exists()).await;
-        assert_unstarted(&listener);
-        assert_eq!(
-            std::fs::read(root.path().join("source")).unwrap(),
-            b"owned capture bytes"
-        );
-    }
-
-    #[tokio::test]
-    async fn next_submit_joins_abandoned_capture_without_replaying_its_flow() {
-        let (root, mut runtime, listener) = capture_fixture();
-        let program = file_flow(
-            &root.path().join("source"),
-            listener.local_addr().unwrap().port(),
-        );
-        let gate = WorkerGate::default();
-        let _release = ReleaseOnDrop(gate.clone());
-        runtime.acquisition_gate = Some(gate.clone());
-        let mut submit = Box::pin(runtime.submit(&program));
-        tokio::select! {
-            result=&mut submit=>panic!("capture escaped its worker gate: {result:?}"),
-            ()=until(||gate.entered())=>{},
-        }
-        drop(submit);
-        let next = literal(&root.path().join("next"), "new statement");
-        let mut submit = Box::pin(runtime.submit(&next));
-        assert!(
-            std::future::poll_fn(|cx| std::task::Poll::Ready(
-                submit.as_mut().poll(cx).is_pending()
-            ))
-            .await
-        );
-        assert!(!root.path().join("next").exists());
-        gate.release();
-        let report = submit.await.unwrap();
-        assert_eq!(report.assignments, 1);
-        assert_eq!(
-            std::fs::read(root.path().join("next")).unwrap(),
-            b"new statement"
-        );
-        assert_unstarted(&listener);
-        runtime.shutdown().await.unwrap();
-    }
     #[tokio::test]
     async fn a_dropped_submit_cannot_complete_a_new_submission_with_reused_ids() {
         use std::task::Poll;
@@ -2338,7 +1935,13 @@ mod cleanup_tests {
 
     #[tokio::test]
     async fn idle_readiness_tracks_abandoned_finite_completion_without_spinning() {
-        let (root, mut runtime, _listener) = capture_fixture();
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+        std::fs::create_dir_all(&base).unwrap();
+        let root = tempfile::Builder::new()
+            .prefix("finite-readiness-")
+            .tempdir_in(base)
+            .unwrap();
+        let mut runtime = RuntimeSession::new(&Options::new(root.path().join("scratch"))).unwrap();
         let destination = root.path().join("finite-result");
         let program = literal(&destination, "finished bytes");
         let gate = WorkerGate::default();

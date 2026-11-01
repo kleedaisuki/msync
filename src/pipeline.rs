@@ -28,7 +28,7 @@ pub struct RelocatableCompilation {
 
 impl RelocatableCompilation {
     pub fn into_object(self) -> Result<crate::object::ObjectModule, crate::object::ObjectError> {
-        crate::object::ObjectModule::from_parts(
+        crate::object::ObjectModule::assemble_parts(
             self.compilation.program,
             self.relocations,
             self.exports,
@@ -39,6 +39,13 @@ impl RelocatableCompilation {
             self.main_module,
         )?
         .with_source_modules(self.source_modules)
+    }
+
+    pub fn into_loaded_object(
+        self,
+    ) -> Result<crate::object::LoadedModule, crate::object::ObjectError> {
+        self.into_object()
+            .map(crate::object::LoadedModule::from_validated)
     }
 }
 
@@ -262,7 +269,7 @@ fn compile_document_relocatable(
     let mut candidate = session.clone();
     let lowered = candidate.compile_named(&document, context, source.clone())?;
     let program = lowered.program;
-    let graph = graph::build_with_context(&program, planning);
+    let graph = graph::build_execution_with_context(&program, planning);
     if !graph.issues.is_empty() {
         return Err(graph
             .issues

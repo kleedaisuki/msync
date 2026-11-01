@@ -1,3 +1,9 @@
+> Historical design, superseded on 2026-11-01 by the user's explicit
+> normal-copy/retry model. The journal, before-image, parent lock, recovery
+> registration and persistence-order protocol described below are removed from
+> execution. See [the current contract](statement-atomicity.md). Retained here as
+> engineering history, not implementation requirements.
+
 # Recoverable statement publication
 
 ## Contract and scope

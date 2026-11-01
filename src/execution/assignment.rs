@@ -1,7 +1,6 @@
 //! Exact, container and whole-tree assignment policies for finite statements.
 
 use std::collections::BTreeMap;
-use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::filesystem::{Entry, NodeMetadata, Snapshot};
@@ -45,22 +44,39 @@ pub(super) fn assign(
                 return Ok(source.clone());
             }
             let Target::Directory(Some(destination)) = destination else {
-                return Err(ExecutionError::new("destination entry already exists in the container", span)
-                    .help("Container insertion never overwrites files; choose an exact target for replacement or '/.' for a complete directory replacement."));
+                if !source.is_directory() && matches!(destination, Target::File(_)) {
+                    return Ok(source.clone());
+                }
+                return Err(ExecutionError::new(
+                    "source and destination entry kinds differ",
+                    span,
+                ));
             };
             if !source.is_directory() {
-                return Err(ExecutionError::new("destination entry already exists in the container", span)
-                    .help("Container insertion never overwrites files; choose an exact target for replacement or '/.' for a complete directory replacement."));
+                return Err(ExecutionError::new(
+                    "a file cannot replace a directory",
+                    span,
+                ));
             }
             let mut entries = destination.entries().clone();
             for (path, entry) in source.entries() {
                 match entries.get(path) {
                     Some(Entry::Directory { .. }) if matches!(entry, Entry::Directory { .. }) => {}
-                    Some(_) => return Err(ExecutionError::new(format!("container collision at {}", path.display()), span)
-                        .help("No selected entry has been published. Rename the source or choose an explicit replacement target.")),
-                    None => { entries.insert(path.clone(), entry.clone()); }
+                    Some(previous)
+                        if matches!(previous, Entry::Directory { .. })
+                            != matches!(entry, Entry::Directory { .. }) =>
+                    {
+                        return Err(ExecutionError::new(
+                            format!("source and destination kinds differ at {}", path.display()),
+                            span,
+                        ));
+                    }
+                    _ => {
+                        entries.insert(path.clone(), entry.clone());
+                    }
                 }
             }
+
             build(entries)
         }
         DestinationMode::Exact => {
@@ -74,28 +90,18 @@ pub(super) fn assign(
                     span,
                 ));
             }
-            if let Target::File(metadata) = destination {
-                if metadata.permissions.readonly() {
-                    return Err(ExecutionError::caused(
-                        "the existing file is read-only",
-                        span,
-                        io::Error::new(
-                            io::ErrorKind::PermissionDenied,
-                            "immutable publication must not bypass the target's write protection",
-                        ),
-                    ));
+            if let Target::File(metadata) = destination
+                && literal
+            {
+                let mut entries = source.entries().clone();
+                if let Some(Entry::File {
+                    metadata: source_metadata,
+                    ..
+                }) = entries.get_mut(Path::new(""))
+                {
+                    source_metadata.permissions = metadata.permissions.clone();
                 }
-                if literal {
-                    let mut entries = source.entries().clone();
-                    if let Some(Entry::File {
-                        metadata: source_metadata,
-                        ..
-                    }) = entries.get_mut(Path::new(""))
-                    {
-                        source_metadata.permissions = metadata.permissions.clone();
-                    }
-                    return build(entries);
-                }
+                return build(entries);
             }
             Ok(source.clone())
         }

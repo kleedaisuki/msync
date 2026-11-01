@@ -16,11 +16,6 @@ pub use version::{Version, select_version};
 pub use writer::format;
 pub(crate) use writer::quoted as write_literal;
 
-pub(crate) fn path_boundary_whitespace(path: &str) -> bool {
-    path.split(['/', '\\'])
-        .any(|component| component.trim() != component)
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Document {
     pub statements: Vec<Statement>,

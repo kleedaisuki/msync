@@ -11,7 +11,6 @@ use serde_json::{Map, Value};
 use super::sqlite::{APPLICATION_ID, SCHEMA_VERSION};
 
 const DEFAULT_LIMIT: usize = 100;
-const MAX_LIMIT: usize = 10_000;
 
 #[derive(Debug, Serialize)]
 pub struct Summary {
@@ -85,7 +84,6 @@ fn sql_error(error: rusqlite::Error) -> String {
 
 /// Lists recent recording sessions, including incomplete and exporter-failed runs.
 pub fn sessions(path: &Path, limit: usize) -> Result<Vec<Session>, String> {
-    check_limit(limit)?;
     let limit = i64::try_from(limit).map_err(|error| format!("invalid query limit: {error}"))?;
     let connection = open(path)?;
     let mut statement = connection.prepare(
@@ -113,15 +111,6 @@ pub fn sessions(path: &Path, limit: usize) -> Result<Vec<Session>, String> {
         .map_err(sql_error)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(sql_error)
-}
-
-fn check_limit(limit: usize) -> Result<(), String> {
-    if limit == 0 || limit > MAX_LIMIT {
-        return Err(format!(
-            "telemetry query limit must be between 1 and {MAX_LIMIT}"
-        ));
-    }
-    Ok(())
 }
 
 /// Summarizes completed spans and lifecycle events without modifying the database.
@@ -322,7 +311,6 @@ fn records(
     kind: &str,
     limit: usize,
 ) -> Result<Vec<Value>, String> {
-    check_limit(limit)?;
     let connection = open(path)?;
     let mut sql = format!("SELECT {RECORD_COLUMNS} FROM records WHERE kind=?1");
     let mut values = vec![rusqlite::types::Value::Text(kind.to_owned())];

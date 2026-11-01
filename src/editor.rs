@@ -11,7 +11,7 @@ use rustyline::error::ReadlineError;
 use rustyline::highlight::{CmdKind, Highlighter};
 use rustyline::hint::{Hint, Hinter, HistoryHinter};
 use rustyline::history::MemHistory;
-use rustyline::validate::{ValidationContext, ValidationResult, Validator};
+use rustyline::validate::Validator;
 use rustyline::{Config, Context, Editor, GraphemeClusterMode, Helper};
 
 pub(super) enum InputEvent {
@@ -90,19 +90,6 @@ impl Input {
                 notice: notice.clone(),
                 mode,
             }));
-            editor.bind_sequence(
-                rustyline::KeyEvent::ctrl('Q'),
-                rustyline::EventHandler::Conditional(Box::new(QuotedControl {
-                    notice: notice.clone(),
-                })),
-            );
-            #[cfg(unix)]
-            editor.bind_sequence(
-                rustyline::KeyEvent::ctrl('V'),
-                rustyline::EventHandler::Conditional(Box::new(QuotedControl {
-                    notice: notice.clone(),
-                })),
-            );
             #[cfg(windows)]
             editor.bind_sequence(
                 rustyline::KeyEvent::ctrl('V'),
@@ -252,8 +239,8 @@ impl Highlighter for LineHelper {
     fn highlight<'l>(&self, line: &'l str, _: usize) -> Cow<'l, str> {
         // Match the editor's selected width model: WcWidth measures C0 as zero,
         // Unicode mode as one. Diagnostic escape expansion would move the cursor.
-        // ESC cannot enter the buffer: upstream filters Unix paste, and the
-        // Windows clipboard binding rejects it before insertion.
+        // Render control bytes without emitting terminal commands; source bytes
+        // remain untouched for the language parser.
         if !line
             .chars()
             .any(|ch| ch.is_control() && !matches!(ch, '\n' | '\t'))
@@ -374,20 +361,12 @@ impl Hinter for LineHelper {
 
     fn hint(&self, line: &str, pos: usize, context: &Context<'_>) -> Option<EditorHint> {
         let notice = match self.notice.load(Ordering::Relaxed) {
-            1 => Some(" [paste rejected: use spaces or quoted escapes instead of raw controls]"),
             2 => Some(" [clipboard unavailable: copy text and retry]"),
-            3 => Some(" [literal control insertion is disabled; use quoted DSL escapes]"),
             _ => None,
         };
         if let Some(notice) = notice {
             return Some(EditorHint {
                 text: notice.into(),
-                insertable: false,
-            });
-        }
-        if invalid_controls(line, false) {
-            return Some(EditorHint {
-                text: " [control characters: use quoted escapes or Ctrl-C to discard]".into(),
                 insertable: false,
             });
         }
@@ -426,25 +405,6 @@ struct EditorHint {
     insertable: bool,
 }
 
-struct QuotedControl {
-    notice: Arc<AtomicU8>,
-}
-
-impl rustyline::ConditionalEventHandler for QuotedControl {
-    fn handle(
-        &self,
-        _: &rustyline::Event,
-        _: rustyline::RepeatCount,
-        _: bool,
-        _: &rustyline::EventContext<'_>,
-    ) -> Option<rustyline::Cmd> {
-        // QuotedInsert would bypass the key decoder and put a raw ESC into the
-        // buffer. The language already provides explicit quoted escapes.
-        self.notice.store(3, Ordering::Relaxed);
-        Some(rustyline::Cmd::Repaint)
-    }
-}
-
 impl Hint for EditorHint {
     fn display(&self) -> &str {
         &self.text
@@ -454,25 +414,7 @@ impl Hint for EditorHint {
     }
 }
 
-impl Validator for LineHelper {
-    fn validate(&self, context: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
-        if invalid_controls(context.input(), false) {
-            return Ok(ValidationResult::Invalid(Some(
-                "Control characters are not source text; use quoted escapes or Ctrl-C to discard this input.".into(),
-            )));
-        }
-        Ok(ValidationResult::Valid(None))
-    }
-}
-
-fn invalid_controls(text: &str, clipboard: bool) -> bool {
-    text.char_indices().any(|(index, ch)| {
-        ch.is_control()
-            && ch != '\n'
-            && !(ch == '\t' && !clipboard)
-            && !(ch == '\r' && text[index + 1..].starts_with('\n'))
-    })
-}
+impl Validator for LineHelper {}
 
 fn editor_display(line: &str, mode: GraphemeClusterMode) -> String {
     let mut output = String::with_capacity(line.len());
@@ -502,18 +444,11 @@ impl rustyline::ConditionalEventHandler for Clipboard {
         _: bool,
         _: &rustyline::EventContext<'_>,
     ) -> Option<rustyline::Cmd> {
-        // The upstream Windows renderer assumes a buffer without embedded ANSI
-        // escapes. Reject unsupported clipboard controls before LineBuffer sees
-        // them, preserving normal Unicode/CRLF paste without rewriting source.
         match clipboard_win::get_clipboard_string() {
-            Ok(text) if !invalid_controls(&text, true) => {
+            Ok(text) => {
                 self.notice.store(0, Ordering::Relaxed);
                 // Match the upstream Unix paste path's newline convention.
                 Some(rustyline::Cmd::Insert(count, text.replace("\r\n", "\n")))
-            }
-            Ok(_) => {
-                self.notice.store(1, Ordering::Relaxed);
-                Some(rustyline::Cmd::Repaint)
             }
             Err(_) => {
                 self.notice.store(2, Ordering::Relaxed);
@@ -632,9 +567,6 @@ mod tests {
                 mode.width(&editor_display(source, mode))
             );
         }
-        assert!(invalid_controls("x\0y", false));
-        assert!(invalid_controls("x\x1b[2J", true));
-        assert!(!invalid_controls("first\r\nsecond\n中文", true));
-        assert!(invalid_controls("x\ty", true));
+        assert_eq!(editor_display("x\ty", GraphemeClusterMode::Unicode), "x\ty");
     }
 }

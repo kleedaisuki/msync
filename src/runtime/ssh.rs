@@ -4,9 +4,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::future::Future;
-#[cfg(unix)]
-use std::path::Path;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Stdio;
 use std::process::{Child, Command};
@@ -34,6 +32,7 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 pub struct SshContext {
     inner: Arc<Mutex<Sessions>>,
     cancel: Option<CancellationToken>,
+    native_clients: bool,
     #[cfg(unix)]
     foreground: Option<Arc<Mutex<HashSet<Backend>>>>,
     #[cfg(any(windows, test))]
@@ -104,6 +103,92 @@ pub fn current() -> Option<SshContext> {
         .or_else(|| CONTEXT.with(|slot| slot.borrow().clone()))
 }
 
+/// Builds one native SSH exec channel without acquiring an application master.
+/// The caller owns streaming pipes and process cancellation. Native SSH config
+/// and authentication remain authoritative, including user-configured sharing.
+pub(crate) fn single_command(
+    backend: &Backend,
+    script: &str,
+    args: &[&str],
+) -> Result<Command, String> {
+    if !matches!(backend, Backend::Ssh { .. }) {
+        return Err("a single SSH channel requires an SSH endpoint".into());
+    }
+    let mut command = client(backend);
+    command.arg("-T");
+    if let Some(context) = current() {
+        context.note_native_endpoint(backend);
+        #[cfg(windows)]
+        context.configure_graphical(&mut command, backend);
+    }
+    destination(&mut command, backend);
+    command.arg(format!(
+        "sh -c {} sh {}",
+        super::quote(script),
+        args.iter()
+            .map(|arg| super::quote(arg))
+            .collect::<Vec<_>>()
+            .join(" ")
+    ));
+    Ok(command)
+}
+
+/// Describes the selected client policy, not a measured authentication count.
+/// Reading the registry must never authenticate, probe a master or create a lease.
+pub(crate) fn client_span(name: &'static str, backend: &Backend) -> crate::telemetry::LinkedSpan {
+    let mut span = crate::telemetry::linked_span(name, crate::telemetry::context().as_ref());
+    if !span.is_recording() {
+        return span;
+    }
+    span.attribute("backend", super::backend_kind(backend));
+    if let Backend::Ssh { host, user, port } = backend {
+        span.attribute("endpoint.host", host);
+        if let Some(user) = user {
+            span.attribute("endpoint.user", user);
+        }
+        if let Some(port) = port {
+            span.metric("endpoint.port", u64::from(*port));
+        }
+    }
+    refresh_client_strategy(&mut span, backend);
+    span
+}
+
+/// Refresh after command configuration, which may lazily admit the first lease.
+pub(crate) fn refresh_client_strategy(span: &mut crate::telemetry::LinkedSpan, backend: &Backend) {
+    if span.is_recording() && matches!(backend, Backend::Ssh { .. }) {
+        span.attribute(
+            "ssh.session.strategy",
+            client_strategy(current().as_ref(), backend),
+        );
+    }
+}
+
+fn client_strategy(context: Option<&SshContext>, backend: &Backend) -> &'static str {
+    #[cfg(windows)]
+    {
+        let _ = (context, backend);
+        "native_per_process"
+    }
+    #[cfg(not(windows))]
+    {
+        let Some(context) = context else {
+            return "native_config";
+        };
+        if context.native_clients {
+            return "native_config";
+        }
+        let Ok(sessions) = context.inner.lock() else {
+            return "registry_unavailable";
+        };
+        match sessions.entries.get(backend) {
+            Some(Session::Existing) => "external_mux",
+            Some(Session::Owned { .. }) => "owned_mux",
+            None => "native_config",
+        }
+    }
+}
+
 pub fn with_context<T>(context: Option<&SshContext>, action: impl FnOnce() -> T) -> T {
     struct Restore(Option<SshContext>);
     impl Drop for Restore {
@@ -157,6 +242,7 @@ impl SshContext {
         Self {
             inner: Arc::clone(&self.inner),
             cancel: Some(cancel),
+            native_clients: self.native_clients,
             #[cfg(unix)]
             foreground: None,
             #[cfg(any(windows, test))]
@@ -204,21 +290,51 @@ impl SshContext {
         self.cancel.clone()
     }
 
-    /// Foreground execution may acquire a session on the first actual endpoint use.
-    pub fn with_foreground_reuse(self) -> Self {
+    /// Native clients own authentication; selected Unix work retains the terminal.
+    pub fn with_native_clients(mut self) -> Self {
+        self.native_clients = true;
         #[cfg(unix)]
         {
-            let mut context = self;
-            context.foreground = Some(Arc::default());
-            context
+            self.foreground = Some(Arc::default());
         }
-        #[cfg(not(unix))]
         self
     }
 
-    pub fn prepare_backends(&self, _backends: &[Backend]) -> Result<(), String> {
+    /// Explicit opt-in for callers that need an application-owned control master.
+    pub fn with_foreground_reuse(mut self) -> Self {
+        self.native_clients = false;
         #[cfg(unix)]
-        for backend in _backends {
+        {
+            self.foreground = Some(Arc::default());
+        }
+        self
+    }
+
+    /// Marks actual selected work before it can race with foreground handoff.
+    /// This does not contact the endpoint or create an authentication session.
+    pub fn note_native_endpoint(&self, backend: &Backend) {
+        #[cfg(unix)]
+        if matches!(backend, Backend::Ssh { .. })
+            && let Some(foreground) = &self.foreground
+        {
+            foreground
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(backend.clone());
+        }
+        #[cfg(not(unix))]
+        let _ = backend;
+    }
+
+    pub fn prepare_backends(&self, backends: &[Backend]) -> Result<(), String> {
+        if self.native_clients {
+            for backend in backends {
+                self.note_native_endpoint(backend);
+            }
+            return Ok(());
+        }
+        #[cfg(unix)]
+        for backend in backends {
             self.reuse_foreground(backend)?;
         }
         Ok(())
@@ -234,6 +350,9 @@ impl SshContext {
             let Ok(admitted) = foreground.lock() else {
                 return true;
             };
+            if self.native_clients {
+                return !admitted.is_empty();
+            }
             let Ok(sessions) = self.inner.lock() else {
                 return true;
             };
@@ -250,6 +369,19 @@ impl SshContext {
         return self.foreground.is_some();
         #[cfg(not(unix))]
         false
+    }
+
+    /// Transport-owned control directories are runtime resources, not payload.
+    pub(crate) fn excludes_directory(&self, path: &Path) -> std::io::Result<bool> {
+        let sessions = self
+            .inner
+            .lock()
+            .map_err(|_| std::io::Error::other("SSH session registry is poisoned"))?;
+        let Some(directory) = &sessions.directory else {
+            return Ok(false);
+        };
+        directory.verify()?;
+        Ok(same_file::Handle::from_path(path)? == directory.identity)
     }
 
     pub(crate) fn exclude_from(
@@ -494,28 +626,13 @@ impl SshContext {
         );
     }
 
-    pub(super) fn configure_scp(
-        &self,
-        command: &mut Command,
-        backend: &Backend,
-    ) -> Result<(), String> {
-        #[cfg(windows)]
-        self.configure_graphical(command, backend);
-        self.configure_client(command, backend, true)
-    }
-
     pub(super) fn configure(&self, command: &mut Command, backend: &Backend) -> Result<(), String> {
         #[cfg(windows)]
         self.configure_graphical(command, backend);
-        self.configure_client(command, backend, false)
-    }
-
-    fn configure_client(
-        &self,
-        command: &mut Command,
-        backend: &Backend,
-        scp: bool,
-    ) -> Result<(), String> {
+        if self.native_clients {
+            self.note_native_endpoint(backend);
+            return Ok(());
+        }
         #[cfg(unix)]
         self.reuse_foreground(backend)?;
         let Ok(sessions) = self.inner.lock() else {
@@ -531,13 +648,7 @@ impl SshContext {
         // authentication remains interactive and owns the foreground terminal.
         command.args(["-o", "BatchMode=yes"]);
         if let Session::Owned { socket, .. } = session {
-            if scp {
-                command
-                    .arg("-o")
-                    .arg(format!("ControlPath={}", socket.display()));
-            } else {
-                command.arg("-S").arg(socket);
-            }
+            command.arg("-S").arg(socket);
         }
         Ok(())
     }
@@ -565,7 +676,7 @@ impl SshContext {
     }
 }
 
-fn stop(child: &mut Child) {
+pub(super) fn stop(child: &mut Child) {
     if child.try_wait().is_ok_and(|status| status.is_some()) {
         return;
     }
@@ -666,7 +777,6 @@ fn private_directory() -> Result<ControlDirectory, String> {
     }
 }
 
-#[cfg(unix)]
 fn client(backend: &Backend) -> Command {
     let mut command = super::ssh_client("ssh");
     if let Backend::Ssh {
@@ -678,7 +788,6 @@ fn client(backend: &Backend) -> Command {
     command
 }
 
-#[cfg(unix)]
 fn destination(command: &mut Command, backend: &Backend) {
     if let Backend::Ssh { host, user, .. } = backend {
         command
@@ -736,6 +845,165 @@ mod tests {
     }
 
     #[test]
+    fn single_channel_keeps_native_configuration_and_skips_master_admission() {
+        let backend = Backend::Ssh {
+            host: "Production_Box".into(),
+            user: Some("fixture".into()),
+            port: Some(2222),
+        };
+        let context = SshContext::default().with_foreground_reuse();
+        context
+            .inner
+            .lock()
+            .unwrap()
+            .entries
+            .insert(backend.clone(), Session::Existing);
+        let command = with_context(Some(&context), || {
+            single_command(&backend, "printf '%s' \"$1\"", &["space ' and newline\n"]).unwrap()
+        });
+        assert_eq!(command.get_program(), "ssh");
+        let args: Vec<_> = command.get_args().collect();
+        let config = std::env::var_os("MSYNC_SSH_CONFIG");
+        let offset = if let Some(config) = config {
+            assert_eq!(args[0], "-F");
+            assert_eq!(args[1], config);
+            2
+        } else {
+            0
+        };
+        assert_eq!(
+            args[offset..offset + 5],
+            ["-p", "2222", "-T", "--", "fixture@Production_Box"]
+        );
+        assert_eq!(
+            args[offset + 5],
+            concat!(
+                r#"sh -c 'printf '\''%s'\'' "$1"' sh 'space '\'' and newline"#,
+                "\n'"
+            )
+        );
+        assert_eq!(args.len(), offset + 6);
+        assert!(context.inner.lock().unwrap().directory.is_none());
+        assert_eq!(context.inner.lock().unwrap().entries.len(), 1);
+    }
+
+    #[test]
+    fn single_channel_preserves_ipv6_and_rejects_non_ssh_backends() {
+        let command = single_command(
+            &Backend::Ssh {
+                host: "2001:db8::1".into(),
+                user: None,
+                port: None,
+            },
+            "true",
+            &[],
+        )
+        .unwrap();
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args[args.len() - 3], "--");
+        assert_eq!(args[args.len() - 2], "[2001:db8::1]");
+        assert!(single_command(&Backend::Local, "true", &[]).is_err());
+    }
+
+    #[test]
+    fn native_clients_track_only_selected_endpoints_without_application_leases() {
+        let context = SshContext::default()
+            .for_submission(CancellationToken::new())
+            .with_native_clients();
+        let backend = Backend::Ssh {
+            host: "not-contacted-for-admission".into(),
+            user: None,
+            port: None,
+        };
+        assert!(!context.requires_foreground());
+        context.note_native_endpoint(&Backend::Local);
+        assert!(!context.requires_foreground());
+        context
+            .prepare_backends(std::slice::from_ref(&backend))
+            .unwrap();
+        #[cfg(unix)]
+        assert!(context.requires_foreground());
+        #[cfg(not(unix))]
+        assert!(!context.requires_foreground());
+        assert!(context.inner.lock().unwrap().entries.is_empty());
+        assert!(context.inner.lock().unwrap().directory.is_none());
+        let mut command = Command::new("ssh");
+        context.configure(&mut command, &backend).unwrap();
+        assert_eq!(command.get_args().count(), 0);
+        let next = context
+            .for_submission(CancellationToken::new())
+            .with_native_clients();
+        assert!(!next.requires_foreground());
+    }
+
+    #[test]
+    fn native_clients_do_not_inject_prior_opt_in_master_configuration() {
+        let backend = Backend::Ssh {
+            host: "native-client".into(),
+            user: None,
+            port: None,
+        };
+        let context = SshContext::default().with_native_clients();
+        context
+            .inner
+            .lock()
+            .unwrap()
+            .entries
+            .insert(backend.clone(), Session::Existing);
+        let mut command = Command::new("ssh");
+        context.configure(&mut command, &backend).unwrap();
+        assert_eq!(command.get_args().count(), 0);
+        #[cfg(unix)]
+        assert!(context.requires_foreground());
+        #[cfg(not(windows))]
+        assert_eq!(client_strategy(Some(&context), &backend), "native_config");
+    }
+
+    #[test]
+    fn client_strategy_observes_configuration_without_admitting_an_endpoint() {
+        let context = SshContext::default();
+        let backend = Backend::Ssh {
+            host: "Production_Box".into(),
+            user: Some("fixture".into()),
+            port: Some(2222),
+        };
+        #[cfg(windows)]
+        let direct = "native_per_process";
+        #[cfg(not(windows))]
+        let direct = "native_config";
+        assert_eq!(client_strategy(None, &backend), direct);
+        assert_eq!(client_strategy(Some(&context), &backend), direct);
+        assert!(context.inner.lock().unwrap().entries.is_empty());
+        context
+            .inner
+            .lock()
+            .unwrap()
+            .entries
+            .insert(backend.clone(), Session::Existing);
+        #[cfg(not(windows))]
+        assert_eq!(client_strategy(Some(&context), &backend), "external_mux");
+        #[cfg(windows)]
+        assert_eq!(client_strategy(Some(&context), &backend), direct);
+    }
+
+    #[test]
+    fn disabled_client_span_does_not_admit_unknown_remote_hosts() {
+        let context = SshContext::default();
+        with_context(Some(&context), || {
+            drop(client_span(
+                "ssh.test.disabled",
+                &Backend::Ssh {
+                    host: "unselected-host-with-no-network".into(),
+                    user: None,
+                    port: None,
+                },
+            ));
+        });
+        assert!(context.inner.lock().unwrap().entries.is_empty());
+        assert!(context.inner.lock().unwrap().directory.is_none());
+    }
+
+    #[test]
     fn snapshot_exclusion_is_owned_identity_not_a_directory_name() {
         let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
         fs::create_dir_all(&parent).unwrap();
@@ -748,6 +1016,9 @@ mod tests {
         fs::write(owned.join("control"), b"private").unwrap();
         fs::write(user.join("data"), b"user bytes").unwrap();
         let context = private_context(&owned);
+        assert!(context.excludes_directory(&owned).unwrap());
+        assert!(!context.excludes_directory(&user).unwrap());
+        assert!(!SshContext::default().excludes_directory(&owned).unwrap());
         let mut store = crate::filesystem::SnapshotStore::new(&root.path().join("store")).unwrap();
         context.exclude_from(&mut store).unwrap();
         let snapshot = store.capture(&source).unwrap();
@@ -775,6 +1046,10 @@ mod tests {
         fs::rename(&owned, root.path().join("retained-original")).unwrap();
         fs::create_dir(&owned).unwrap();
         fs::write(owned.join("user-data"), b"must survive").unwrap();
+        assert_eq!(
+            context.excludes_directory(&owned).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
         let mut store = crate::filesystem::SnapshotStore::new(&root.path().join("store")).unwrap();
         let error = context.exclude_from(&mut store).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
@@ -841,7 +1116,7 @@ mod tests {
             environment.get(OsStr::new("MSYNC_SSH_TASK")),
             Some(&Some(OsStr::new("sync.msync")))
         );
-        let mut external = Command::new("scp");
+        let mut external = Command::new("ssh");
         graphical_command(
             &mut external,
             std::path::Path::new("msync.exe"),

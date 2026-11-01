@@ -9,7 +9,6 @@ use crate::language;
 use crate::syntax::{Report, Span};
 use crate::tooling::SymbolIndex;
 
-pub(super) const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 static NEXT_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 pub(super) struct Text {

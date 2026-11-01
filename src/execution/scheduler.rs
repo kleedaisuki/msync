@@ -10,6 +10,7 @@ use crate::syntax::Span;
 
 use super::error::{ExecutionError, Result};
 
+#[derive(Clone)]
 pub(super) struct Admission {
     copies: Arc<Semaphore>,
     programs: Arc<Semaphore>,
@@ -190,6 +191,49 @@ impl Admission {
 
     pub fn flow(&self, span: Span) -> Result<Lease> {
         self.acquire(&self.streams, 2, span, "program stream")
+    }
+
+    pub async fn wait_flow(&self, span: Span) -> Result<Lease> {
+        let mut trace =
+            crate::telemetry::linked_span("schedule", crate::telemetry::context().as_ref());
+        trace.expect_completion();
+        trace.attribute("resource", "queued byte flow");
+        trace.metric("available_slots", self.streams.available_permits() as u64);
+        trace.metric(
+            "available_buffer_bytes",
+            self.buffers
+                .available_permits()
+                .saturating_mul(self.buffer_bytes) as u64,
+        );
+        let result = async {
+            let slot = self
+                .streams
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|cause| ExecutionError::caused("stream admission closed", span, cause))?;
+            let memory = self
+                .buffers
+                .clone()
+                .acquire_many_owned(2)
+                .await
+                .map_err(|cause| ExecutionError::caused("buffer admission closed", span, cause))?;
+            Ok(Lease {
+                _slot: slot,
+                _memory: memory,
+                context: trace.context(),
+            })
+        }
+        .await;
+        if result.is_ok() {
+            trace.metric("granted_slots", 1);
+            trace.metric(
+                "reserved_buffer_bytes",
+                self.buffer_bytes.saturating_mul(2) as u64,
+            );
+        }
+        trace.finish_result(&result);
+        result
     }
 
     fn acquire(&self, slots: &Arc<Semaphore>, units: u32, span: Span, role: &str) -> Result<Lease> {

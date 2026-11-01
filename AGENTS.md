@@ -1,27 +1,29 @@
 # Project engineering knowledge
 
-## Recovery is an execution invariant
+## Normal-user transfer model (2026-11-01)
 
-- Every executable submission must settle existing interrupted statement state
-  before it reports success, including empty source, declarations, fully folded
-  branches, objects and IR. Never infer that startup recovery is unnecessary from
-  an empty instruction list. Users must not remember a recovery command or run a
-  dummy transfer.
-- Preserve the no-state fast path with read-only discovery at the owning local
-  and remote registries, including the configured fallback root. An inaccessible
-  or invalid existing registry is not absence: preserve normal owner validation
-  and actionable errors. Never scan or delete arbitrary similarly named paths.
-- A retained runtime owns its initial recovery roots across REPL cwd changes.
-  Probe those roots, not a guessed current directory. Initialization is not a
-  permanent proof of absence: later admission must notice newly abandoned state
-  while preserving live owners' locks and payloads.
-- Reuse statement-local publication and recovery ownership. Do not introduce a
-  database, global transaction manager, daemon or retained undo history to repair
-  this lifecycle error. SQLite telemetry is observation, not recovery authority.
-- Any optimization that skips work must preserve the failure/restart lifecycle,
-  not only successful output bytes. Pair cold-state latency checks with real
-  crash/restart journeys. See [the publication contract](docs/design/statement-atomicity.md)
-  and [the integration record](docs/design/integration-v0.6.md).
+- The user reconfirmed that the old recovery paragraphs in a later instruction
+  snapshot are void. The normal-copy/retry model below is authoritative.
+- Robustness must earn its normal-path cost. Do not trade 99% of ordinary work
+  for 1% exceptional cases; use real input distributions and property-based,
+  end-to-end checks rather than conservative rejection policies.
+- The user explicitly superseded the former recovery-before-success contract:
+  failed transfers can be retried. Do not charge every successful operation for
+  persistent recovery registries, before-images, commit journals, parent-wide
+  publication locks, filesystem-wide syncfs, or startup recovery of unrelated work.
+- An ordinary file uses an owned same-directory temporary file and an atomic
+  replacement, with at most one file fsync. Directory/cohort failures may leave
+  completed members in place; report the actual result and permit retransmission.
+  Do not introduce transactional rollback under another name.
+- One finite remote transfer uses one native SSH client/channel, including its
+  metadata and bytes. Preserve configured aliases, agents and native prompts;
+  do not split a transfer into separately authenticated helper invocations.
+- Keep actual language/platform semantics, useful diagnostics and resource
+  lifetimes. Remove arbitrary quotas, duplicate validation and blanket rejection
+  of ordinary filesystem features instead of inventing a hostile-user sandbox.
+- Temporary cleanup belongs to the live owner. Never scan/delete old similarly
+  named paths or change unrelated hard-link metadata. Legacy state is not an
+  execution prerequisite and must not block a normal declaration or transfer.
 
 ## Local-first validation and release
 
@@ -51,8 +53,9 @@
   aliases and source-owned operand diagnostics. New typed object operations must
   negotiate `typed_values_v2`, including exported values and intermediate types.
   See [the type contract](docs/design/type-system-v065.md).
-- An implicit finite Range transfer is one recoverable publication statement,
-  not an implicit `for` that commits earlier items before a later failure.
+- An implicit finite Range transfer is one selected transfer operation, not an
+  implicit source-level `for`. Normal collision preflight can precede writes;
+  failed multi-file work may be retried without a persistent rollback protocol.
   Explicit loops and old For bytecode retain their iteration semantics; never
   guess executable intent from debug source.
 - Possible SSH paths are metadata, not executed effects. An unselected branch

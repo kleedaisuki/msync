@@ -227,7 +227,7 @@ fn prepare_observing(
     let graph = {
         let mut phase = crate::telemetry::span("prepare.graph");
         phase.metric("instructions", optimized.body.instructions.len() as u64);
-        let graph = graph::build_with_context(&optimized, &context);
+        let graph = graph::build_execution_with_context(&optimized, &context);
         phase.metric("dependencies", graph.dependencies.len() as u64);
         phase.metric("commutations", graph.commutations.len() as u64);
         if !graph.issues.is_empty() {
@@ -262,12 +262,6 @@ fn prepare_observing(
         rewrites,
         witness,
     };
-    result.verify().map_err(|errors| {
-        errors
-            .into_iter()
-            .map(Diagnostic::general)
-            .collect::<Vec<_>>()
-    })?;
     Ok(result)
 }
 

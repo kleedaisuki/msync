@@ -1,5 +1,69 @@
 # Bounded asynchronous stream transfers
 
+## Normal-user execution model (2026-11-01)
+
+The user replaced the earlier crash-recovery contract with normal copy/retry
+semantics. The historical snapshot/transaction discussion below is not the
+current source-acquisition or remote-finalization policy.
+
+- A released regular-file input retains its open file descriptor, not a copied
+  snapshot, private store, basename hard link and cleanup worker. Later msync
+  file writes replace names atomically, so that descriptor still reads the
+  admitted inode. External in-place writers may change its contents; the tool
+  no longer pays for a full data copy to defend against that condition. The
+  original basename remains available for container output, and native
+  file-to-TCP kernel transfer remains available on the same open descriptor.
+- Independent work whose stream lane is busy waits inside its own task. The
+  interpreter can return to the prompt. The task owns its acquired permit and
+  releases it at completion; queued cancellation does not wait for another
+  transfer's permit. Actual configured buffer/slot capacity still exists.
+- An internal native FIFO channel admits all N writers and M readers as one
+  participant group. A spanning set of endpoint links describes that group;
+  same-channel writer/writer and reader/reader byte hazards await admission, not
+  EOF. Other filesystem hazards still retain their ordinary ordering. Readers
+  compete for bytes as native FIFO readers do; this is not broadcast, and
+  concurrent writer ordering is not specified beyond the native write rules.
+- Each internal FIFO participant retains its actual prepared descriptor until
+  dispatch takes ownership. A temporary read/write descriptor exists only while
+  those descriptors are opened. Pending writers therefore naturally keep the
+  channel alive even if a short first writer finishes before another dispatch.
+  There is no opening counter, timer, history or per-byte coordinator.
+  Standalone external rendezvous does not acquire group descriptors.
+- Selected stream paths follow their normal filesystem aliases. Native paths
+  resolve to their selected target; the remote Python relay uses `realpath`.
+  There is no blanket ancestor-symlink rejection or extra target-write probe
+  before an atomic file replacement.
+- Remote stream finalization is flush, shutdown and cancellable client wait.
+  The 30-second post-FINISH deadline and cancellation-ignore arbitration are
+  removed. The actual helper completion acknowledgement still distinguishes
+  completed bytes from a truncated transfer, but failure requires retry rather
+  than a journal/manual-inspection ritual.
+- WSL bulk acquisition runs one ordinary `cp -a` and returns a basename receipt.
+  A selector first lists direct names, then copies only selected children.
+  There are no pre/post full-tree manifests, hashes, comparisons, filesystem
+  allowlists or requests that the source stop changing. The copy preserves
+  timestamps, read-only modes and recursive symbolic links as supported by the
+  target filesystem. Actual copy failures and cancellation remain observable.
+
+Focused acceptance lives in `tests/fifo_participants.rs` (N:M and selected
+aliases), `execution::flow` tests (open-version/container semantics and queued
+admission), `execution::wsl_source` actual-shell tests (one-pass metadata/link
+copy and sparse selection), and remote stream completion/cancellation tests.
+
+The Linux implementation passed 33 selected tests: two actual-CLI FIFO tests
+covering five N:M shapes and native aliases, four acquisition/helper tests,
+fourteen flow ownership/queue tests, five remote completion/diagnostic tests,
+seven FIFO graph cases and one actual REPL capacity journey. That REPL journey
+holds the only stream slot, submits another independent transfer, observes a
+responsive `/help`, then releases the first peer and verifies that the second
+starts without resubmission and both targets contain the intended bytes. An
+additional actual 276,100-byte file-to-TCP transfer verified bytes/EOF and an
+`io.sendfile` trace, so removing the source copy did not discard the native fast
+path. Actual extracted shell/Python helpers also preserved nanoseconds, read-only
+modes and links through selected aliases and accepted a changing source without
+a quiescence gate. These helper observations do not claim native Windows/WSL
+execution on the Linux host.
+
 ## Endpoint model and API
 
 `io::transfer(&CopyOp, buffer_bytes, CancellationToken)` is the common one-way

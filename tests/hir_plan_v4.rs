@@ -134,7 +134,7 @@ fn fifo_pair(writer: usize, reader: usize) -> FifoRendezvousProof {
 }
 
 #[test]
-fn native_fifo_identity_preserves_alias_wave_and_unpaired_consumer_order() {
+fn native_fifo_identity_coadmits_all_alias_participants_and_keeps_unpaired_order() {
     let endpoint = |instruction, role, path| {
         FifoEndpointProof::verified_fifo(
             EndpointKey {
@@ -185,9 +185,9 @@ fn native_fifo_identity_preserves_alias_wave_and_unpaired_consumer_order() {
     for (before, after, wait) in [
         (0, 1, Wait::Admitted),
         (2, 3, Wait::Admitted),
-        (0, 2, Wait::Completion),
-        (1, 2, Wait::Completion),
-        (1, 3, Wait::Completion),
+        (0, 2, Wait::Admitted),
+        (1, 2, Wait::Admitted),
+        (1, 3, Wait::Admitted),
     ] {
         assert!(
             planned
@@ -358,7 +358,7 @@ fn fifo_rendezvous_rejects_stale_kinds_unstable_endpoints_and_mismatched_native_
 }
 
 #[test]
-fn repeated_fifo_waves_keep_same_side_order_and_reject_contracted_completion_cycles() {
+fn fifo_participant_order_does_not_create_artificial_wave_cycles() {
     for readers_first in [false, true] {
         let mut instructions = vec![
             literal(0, "/managed/fifo"),
@@ -388,34 +388,14 @@ fn repeated_fifo_waves_keep_same_side_order_and_reject_contracted_completion_cyc
         }
         context.physical_rendezvous = vec![fifo_pair(0, 1), fifo_pair(2, 3)];
         let planned = graph::build_with_context(&ir, &context);
-        if readers_first {
-            assert!(
-                planned
-                    .issues
-                    .iter()
-                    .any(|issue| issue.message.contains("completion-dependency cycle")),
-                "{:?}",
-                planned.issues
-            );
-        } else {
-            assert!(planned.issues.is_empty(), "{:?}", planned.issues);
-            assert!(
-                planned
-                    .dependencies
-                    .iter()
-                    .any(|edge| edge.before == InstructionId(0)
-                        && edge.after == InstructionId(2)
-                        && edge.wait == Wait::Completion)
-            );
-            assert!(
-                planned
-                    .dependencies
-                    .iter()
-                    .any(|edge| edge.before == InstructionId(1)
-                        && edge.after == InstructionId(3)
-                        && edge.wait == Wait::Completion)
-            );
-        }
+        assert!(planned.issues.is_empty(), "{:?}", planned.issues);
+        assert!(
+            planned
+                .dependencies
+                .iter()
+                .all(|edge| edge.wait == Wait::Admitted)
+        );
+        assert!(planned.verify_with_context(&ir, &context).is_ok());
     }
 }
 

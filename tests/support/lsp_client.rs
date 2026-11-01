@@ -156,9 +156,6 @@ fn read_message(reader: &mut impl BufRead) -> Result<Value, String> {
         }
     }
     let length = length.ok_or("missing Content-Length")?;
-    if length > 8 * 1024 * 1024 {
-        return Err("unbounded server response".into());
-    }
     let mut bytes = vec![0; length];
     reader
         .read_exact(&mut bytes)

@@ -1,9 +1,7 @@
-//! Owned disk snapshots and statement-local publication journals.
+//! Owned snapshots and ordinary same-directory replacement.
 //!
-//! Each publication replaces one destination root. Callers coordinate resource
-//! access across capture and publication; uncooperative concurrent mutation is
-//! detected where identities are retained, not isolated by this adapter.
-//! In-process failures retain an owned journal and attempt compensation.
+//! A file is staged, flushed once and atomically renamed. Directory and multi-root
+//! operations are retryable copies, not durable transactions or recovery journals.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -98,7 +96,7 @@ struct ArtifactRoot {
 /// A copied ordinary file. Cloning retains ownership of its artifact directory.
 #[derive(Clone, Debug)]
 pub struct Artifact {
-    owner: Arc<ArtifactRoot>,
+    _owner: Arc<ArtifactRoot>,
     path: PathBuf,
     length: u64,
 }
@@ -136,6 +134,11 @@ impl NodeMetadata {
         Ok(Self::new(metadata.permissions(), metadata.modified()?))
     }
 
+    pub(crate) fn apply_link(&self, path: &Path) -> io::Result<()> {
+        let modified = filetime::FileTime::from_system_time(self.modified);
+        filetime::set_symlink_file_times(path, modified, modified)
+    }
+
     /// Only call this on a privately materialized node, never a shared source.
     pub fn apply(&self, path: &Path) -> io::Result<()> {
         let mut options = fs::OpenOptions::new();
@@ -168,12 +171,19 @@ pub enum Entry {
         artifact: Artifact,
         metadata: NodeMetadata,
     },
+    Symlink {
+        target: PathBuf,
+        metadata: NodeMetadata,
+        directory: bool,
+    },
 }
 
 impl Entry {
     pub fn metadata(&self) -> &NodeMetadata {
         match self {
-            Self::Directory { metadata } | Self::File { metadata, .. } => metadata,
+            Self::Directory { metadata }
+            | Self::File { metadata, .. }
+            | Self::Symlink { metadata, .. } => metadata,
         }
     }
 }
@@ -181,7 +191,7 @@ impl Entry {
 /// Flattened relative paths; the empty path is the root, and an empty map is absence.
 #[derive(Clone, Debug)]
 pub struct Snapshot {
-    owner: Arc<ArtifactRoot>,
+    _owner: Arc<ArtifactRoot>,
     entries: BTreeMap<PathBuf, Entry>,
     exclusions: Vec<InvocationRoot>,
 }
@@ -233,7 +243,6 @@ impl Snapshot {
 #[derive(Debug)]
 pub struct SnapshotStore {
     owner: Arc<ArtifactRoot>,
-    registry: Option<recovery::Registry>,
     private_directories: Vec<(PathBuf, Handle)>,
     closed: bool,
 }
@@ -241,7 +250,6 @@ pub struct SnapshotStore {
 impl SnapshotStore {
     pub fn new(scratch: &Path) -> Result<Self> {
         let scratch = absolute(scratch)?;
-        check_path(&scratch)?;
         fs::create_dir_all(&scratch)
             .map_err(|cause| error("create snapshot scratch", &scratch, cause))?;
         let path = create_owned_directory(&scratch, ".msync-versions")?;
@@ -253,7 +261,6 @@ impl SnapshotStore {
                 identity,
                 invocation: None,
             }),
-            registry: None,
             private_directories: Vec::new(),
             closed: false,
         })
@@ -263,25 +270,9 @@ impl SnapshotStore {
         &self.owner.path
     }
 
-    /// Omit only the exact directory identity owned by this recovery registry.
-    /// A user directory with the same basename elsewhere remains ordinary data.
-    pub fn exclude_registry(&mut self, registry: &recovery::Registry) -> Result<()> {
-        self.ensure_open()?;
-        registry.verify().map_err(|cause| {
-            error(
-                "verify recovery registry exclusion",
-                registry.directory(),
-                cause,
-            )
-        })?;
-        self.registry = Some(registry.clone());
+    /// Compatibility with the retired persistent registry API.
+    pub fn exclude_registry(&mut self, _registry: &recovery::Registry) -> Result<()> {
         Ok(())
-    }
-
-    /// The caller has already established ownership of this control directory.
-    /// Exclusion retains its exact physical identity, never a name pattern.
-    pub(crate) fn exclude_owned_directory(&mut self, path: &Path) -> Result<()> {
-        self.exclude_private_directory(path, None)
     }
 
     pub(crate) fn exclude_directory_identity(
@@ -295,7 +286,6 @@ impl SnapshotStore {
     fn exclude_private_directory(&mut self, path: &Path, expected: Option<&Handle>) -> Result<()> {
         self.ensure_open()?;
         let path = absolute(path)?;
-        check_path(&path)?;
         if !safe_metadata(&path)?.is_some_and(|metadata| metadata.is_dir()) {
             return Err(invalid(
                 "exclude private directory",
@@ -340,9 +330,7 @@ impl SnapshotStore {
 
     pub fn capture(&self, source: &Path) -> Result<Snapshot> {
         self.ensure_open()?;
-        let source = absolute(source)?;
-        check_path(&source)?;
-        self.check_registry_source(&source)?;
+        let source = source_path(source)?;
         if overlaps_store(&source, &self.owner)? {
             return Err(invalid(
                 "capture snapshot",
@@ -351,7 +339,7 @@ impl SnapshotStore {
             ));
         }
         let mut snapshot = Snapshot {
-            owner: self.owner.clone(),
+            _owner: self.owner.clone(),
             entries: BTreeMap::new(),
             exclusions: Vec::new(),
         };
@@ -385,8 +373,7 @@ impl SnapshotStore {
     ) -> Result<Snapshot> {
         self.ensure_open()?;
         invocation.verify()?;
-        let source = absolute(source)?;
-        self.check_registry_source(&source)?;
+        let source = source_path(source)?;
         if invocation.contains(&source)? {
             return Err(invalid(
                 "capture logical source",
@@ -410,7 +397,7 @@ impl SnapshotStore {
         }
         let excluded = invocation.relative_to(&source)?.is_some();
         let mut snapshot = Snapshot {
-            owner: self.owner.clone(),
+            _owner: self.owner.clone(),
             entries: BTreeMap::new(),
             exclusions: Vec::new(),
         };
@@ -438,7 +425,11 @@ impl SnapshotStore {
         regex: &regex::Regex,
         entries: &mut BTreeMap<PathBuf, Entry>,
     ) -> Result<()> {
-        let Some(metadata) = safe_metadata(source)? else {
+        let Some(metadata) = (match fs::metadata(source) {
+            Ok(metadata) => Some(metadata),
+            Err(cause) if cause.kind() == io::ErrorKind::NotFound => None,
+            Err(cause) => return Err(error("inspect selector source", source, cause)),
+        }) else {
             return Ok(());
         };
         if !metadata.is_dir() {
@@ -484,7 +475,7 @@ impl SnapshotStore {
             normalized.insert(path.components().collect::<PathBuf>(), entry);
         }
         let entries = normalized;
-        for (path, entry) in &entries {
+        for path in entries.keys() {
             if !path.as_os_str().is_empty() {
                 let parent = path.parent().unwrap_or_else(|| Path::new(""));
                 if !matches!(entries.get(parent), Some(Entry::Directory { .. })) {
@@ -495,17 +486,6 @@ impl SnapshotStore {
                     ));
                 }
             }
-            if let Entry::File { artifact, .. } = entry {
-                ensure_identity(&artifact.owner.path, Some(&artifact.owner.identity))?;
-                let metadata = safe_metadata(&artifact.path)?.ok_or_else(|| {
-                    invalid(
-                        "assemble snapshot manifest",
-                        &artifact.path,
-                        "immutable file artifact is missing",
-                    )
-                })?;
-                require_file(&metadata, &artifact.path)?;
-            }
         }
         if !entries.is_empty() && !entries.contains_key(Path::new("")) {
             return Err(invalid(
@@ -515,7 +495,7 @@ impl SnapshotStore {
             ));
         }
         Ok(Snapshot {
-            owner: self.owner.clone(),
+            _owner: self.owner.clone(),
             entries,
             exclusions: Vec::new(),
         })
@@ -557,6 +537,26 @@ impl SnapshotStore {
         };
         let mut version_metadata = NodeMetadata::capture(&metadata)
             .map_err(|cause| error("capture modification time", source, cause))?;
+        if metadata.file_type().is_symlink() {
+            let target = fs::read_link(source)
+                .map_err(|cause| error("read symbolic link", source, cause))?;
+            #[cfg(windows)]
+            let directory = {
+                use std::os::windows::fs::FileTypeExt;
+                metadata.file_type().is_symlink_dir()
+            };
+            #[cfg(not(windows))]
+            let directory = false;
+            entries.insert(
+                relative.to_owned(),
+                Entry::Symlink {
+                    target,
+                    metadata: version_metadata,
+                    directory,
+                },
+            );
+            return Ok(());
+        }
         if metadata.is_dir() {
             let identity = Handle::from_path(source)
                 .map_err(|cause| error("identify source directory", source, cause))?;
@@ -564,13 +564,6 @@ impl SnapshotStore {
                 .private_directories
                 .iter()
                 .any(|(_, excluded)| *excluded == identity)
-            {
-                return Ok(());
-            }
-            if let Some(registry) = &self.registry
-                && registry
-                    .excludes(source)
-                    .map_err(|cause| error("verify recovery registry exclusion", source, cause))?
             {
                 return Ok(());
             }
@@ -614,7 +607,7 @@ impl SnapshotStore {
             relative.to_owned(),
             Entry::File {
                 artifact: Artifact {
-                    owner: self.owner.clone(),
+                    _owner: self.owner.clone(),
                     path,
                     length,
                 },
@@ -624,106 +617,54 @@ impl SnapshotStore {
         Ok(())
     }
 
-    /// Build the complete replacement privately. The destination is unchanged.
-    /// Existing parents must be directories; the caller stages missing ancestors.
+    /// Materialize a replacement beside its target, without changing the target.
     pub fn prepare(&self, snapshot: &Snapshot, target: &Path) -> Result<Publication> {
-        self.prepare_inner(snapshot, target, None)
-            .map(|(publication, _)| publication)
+        self.ensure_open()?;
+        let target = absolute(target)?;
+        let parent = target.parent().ok_or_else(|| {
+            invalid(
+                "prepare replacement",
+                &target,
+                "a filesystem root cannot be replaced",
+            )
+        })?;
+        fs::create_dir_all(parent)
+            .map_err(|cause| error("create destination parent", parent, cause))?;
+        let workspace = create_owned_directory(parent, ".msync-stage")?;
+        let identity = Handle::from_path(&workspace)
+            .map_err(|cause| error("identify replacement stage", &workspace, cause))?;
+        let mut publication = Publication {
+            target,
+            workspace,
+            identity,
+            absent: snapshot.is_missing(),
+            published: false,
+            finalized: false,
+        };
+        if let Err(failure) = materialize(snapshot, &publication.new_path()) {
+            let _ = publication.finalize();
+            return Err(failure);
+        }
+        Ok(publication)
     }
 
-    /// Register ownership before writing any replacement payload beside a target.
+    /// Compatibility adapter; staging no longer creates a persistent record.
     pub fn prepare_registered(
         &self,
         snapshot: &Snapshot,
         target: &Path,
         lease: &recovery::RegistryLease,
     ) -> Result<(Publication, recovery::Registration)> {
-        let (publication, registration) = self.prepare_inner(snapshot, target, Some(lease))?;
-        Ok((
-            publication,
-            registration.expect("registered publication has a stage receipt"),
-        ))
-    }
-
-    fn prepare_inner(
-        &self,
-        snapshot: &Snapshot,
-        target: &Path,
-        lease: Option<&recovery::RegistryLease>,
-    ) -> Result<(Publication, Option<recovery::Registration>)> {
-        self.ensure_open()?;
-        let target = absolute(target)?;
-        check_path(&target)?;
-        if target.file_name().is_none() {
-            return Err(invalid(
-                "prepare publication",
-                &target,
-                "a filesystem root cannot be replaced",
-            ));
-        }
-        if overlaps_store(&target, &self.owner)? || overlaps_store(&target, &snapshot.owner)? {
-            return Err(invalid(
-                "prepare publication",
-                &target,
-                "publication target and artifact store must be disjoint",
-            ));
-        }
-        for entry in snapshot.entries.values() {
-            if let Entry::File { artifact, .. } = entry
-                && overlaps_store(&target, &artifact.owner)?
-            {
-                return Err(invalid(
-                    "prepare publication",
-                    &target,
-                    "publication cannot replace an artifact owner retained by its manifest",
-                ));
-            }
-        }
-        validate_tree(&target)?;
-        let parent = target
-            .parent()
-            .expect("non-root absolute target has a parent");
-        let workspace = create_owned_directory(parent, ".msync-publication")?;
-        let identity = Handle::from_path(&workspace)
-            .map_err(|cause| error("identify publication journal", &workspace, cause))?;
+        let publication = self.prepare(snapshot, target)?;
         let registration = lease
-            .map(|lease| lease.register_stage(parent, &workspace))
-            .transpose()
-            .map_err(|cause| error("register publication stage", &workspace, cause))?;
-        let mut publication = Publication {
-            target,
-            workspace,
-            identity,
-            original: None,
-            installed: None,
-            absent: snapshot.is_missing(),
-            phase: Phase::Prepared,
-        };
-        publication.original = identity_at(&publication.target)?;
-        if let Err(mut failure) = materialize(
-            snapshot,
-            &publication.new_path(),
-            registration.as_ref().map(|_| publication.target.as_path()),
-        ) {
-            failure.journal = Some(publication.workspace.clone());
-            failure.recovery = Recovery::JournalRetained;
-            if let Some(registration) = registration {
-                match publication.finalize() {
-                    Ok(()) => {
-                        failure.journal = None;
-                        failure.recovery = Recovery::Unchanged;
-                        let record = registration.path().to_owned();
-                        if let Err(cause) = registration.finish() {
-                            failure.journal = Some(record);
-                            failure.recovery = Recovery::JournalRetained;
-                            failure.recovery_error = Some(cause);
-                        }
-                    }
-                    Err(cleanup) => failure.recovery_error = Some(cleanup.cause),
-                }
-            }
-            return Err(failure);
-        }
+            .register_stage(
+                publication
+                    .target
+                    .parent()
+                    .expect("staged target has a parent"),
+                &publication.workspace,
+            )
+            .map_err(|cause| error("create compatibility receipt", target, cause))?;
         Ok((publication, registration))
     }
 
@@ -755,67 +696,27 @@ impl SnapshotStore {
                 "snapshot store has already been cleaned",
             ));
         }
-        ensure_identity(&self.owner.path, Some(&self.owner.identity))
-    }
-
-    fn check_registry_source(&self, source: &Path) -> Result<()> {
-        for (path, expected) in &self.private_directories {
-            check_path(path)?;
-            ensure_identity(path, Some(expected))?;
-            for ancestor in source.ancestors() {
-                if identity_at(ancestor)?.as_ref() == Some(expected) {
-                    return Err(invalid(
-                        "capture logical source",
-                        source,
-                        "owned control directory data is not a logical source",
-                    ));
-                }
-            }
-        }
-        if let Some(registry) = &self.registry
-            && registry
-                .contains_private(source)
-                .map_err(|cause| error("verify recovery registry source", source, cause))?
-        {
-            return Err(invalid(
-                "capture logical source",
-                source,
-                "recovery registry data is not a logical source",
-            ));
-        }
         Ok(())
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Phase {
-    Prepared,
-    BackedUp,
-    Installed,
-    Published,
-    RecoveryRequired,
-    Finalizing,
-    Finalized,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PublishEvent {
+    /// Legacy name for the pre-install observation point; no backup is created.
     AfterBackup,
     AfterInstall,
 }
 
-/// Retains the destination before-image until explicit `finalize`.
-/// Dropping this object deliberately leaves its owned journal available for diagnosis.
-#[must_use = "publish or recover, then explicitly finalize the retained journal"]
+/// One transient same-filesystem replacement stage. No before-image is retained.
+#[must_use = "publish the replacement and release its transient stage"]
 #[derive(Debug)]
 pub struct Publication {
     target: PathBuf,
     workspace: PathBuf,
     identity: Handle,
-    original: Option<Handle>,
-    installed: Option<Handle>,
     absent: bool,
-    phase: Phase,
+    published: bool,
+    finalized: bool,
 }
 
 impl Publication {
@@ -830,201 +731,135 @@ impl Publication {
         self.publish_with(|_| Ok(()))
     }
 
-    /// Observers may reject a step, for example when a surrounding write-set
-    /// coordinator detects cancellation. Rejection follows the same recovery path
-    /// as native I/O failure, and is useful for deterministic failure injection.
     pub fn publish_with(
         &mut self,
         mut observe: impl FnMut(PublishEvent) -> io::Result<()>,
     ) -> Result<()> {
-        self.require_phase(Phase::Prepared)?;
-        self.check_workspace()?;
-        ensure_identity(&self.target, self.original.as_ref())
-            .map_err(|failure| self.annotate(failure))?;
-        if self.original.is_some()
-            && let Err(cause) = move_new(&self.target, &self.old_path())
-        {
-            return Err(self.compensate("retain destination before-image", cause));
-        }
-        self.phase = Phase::BackedUp;
-        if let Err(cause) = observe(PublishEvent::AfterBackup) {
-            return Err(self.compensate("publication cancelled after backup", cause));
-        }
-        if !self.absent
-            && let Err(cause) = move_new(&self.new_path(), &self.target)
-        {
-            return Err(self.compensate("install replacement", cause));
-        }
-        self.phase = Phase::Installed;
-        if let Err(cause) = observe(PublishEvent::AfterInstall) {
-            return Err(self.compensate("publication cancelled after install", cause));
-        }
-        match identity_at(&self.target) {
-            Ok(identity) => self.installed = identity,
-            Err(failure) => {
-                return Err(self.compensate("identify installed replacement", failure.cause));
+        observe(PublishEvent::AfterBackup)
+            .map_err(|cause| error("replacement cancelled before install", &self.target, cause))?;
+        let staged = self.new_path();
+        if self.absent {
+            remove_owned_entry(&self.target)?;
+        } else {
+            let metadata = fs::symlink_metadata(&staged)
+                .map_err(|cause| error("inspect replacement", &staged, cause))?;
+            if metadata.is_file() || metadata.file_type().is_symlink() {
+                if metadata.is_file() {
+                    sync_file(&staged)?;
+                }
+                crate::io::publish_file(&staged, &self.target, false)
+                    .map_err(|cause| error("replace file", &self.target, cause))?;
+            } else {
+                if fs::symlink_metadata(&self.target).is_ok() {
+                    remove_owned_entry(&self.target)?;
+                }
+                move_new(&staged, &self.target)
+                    .map_err(|cause| error("install replacement tree", &self.target, cause))?;
             }
         }
-        self.phase = Phase::Published;
-        Ok(())
+        self.published = true;
+        observe(PublishEvent::AfterInstall)
+            .map_err(|cause| error("replacement interrupted after install", &self.target, cause))
     }
 
-    /// Restore the exact previous root, including an absent root and removed children.
-    /// Another manager's replacement is not overwritten if it changed the root identity.
+    /// Legacy compensation APIs cannot undo a completed ordinary replacement.
     pub fn rollback(&mut self) -> Result<()> {
-        self.require_phase(Phase::Published)?;
-        self.check_workspace()?;
-        ensure_identity(&self.target, self.installed.as_ref())
-            .map_err(|failure| self.annotate(failure))?;
-        self.phase = Phase::Installed;
-        self.restore().map_err(|cause| {
-            self.phase = Phase::RecoveryRequired;
-            self.failure("restore destination before-image", cause)
-        })?;
-        self.installed = None;
-        self.phase = Phase::Prepared;
-        Ok(())
+        self.restore_before_image()
     }
-
-    /// Retry a failed compensation while the caller still owns the resource guard.
     pub fn recover(&mut self) -> Result<()> {
-        self.require_phase(Phase::RecoveryRequired)?;
-        self.check_workspace()?;
-        self.restore()
-            .map_err(|cause| self.failure("recover destination before-image", cause))?;
-        self.installed = None;
-        self.phase = Phase::Prepared;
-        Ok(())
+        self.restore_before_image()
     }
-
-    /// Idempotently restore an unpublished or published before-image. A manager
-    /// retains this receipt after a failed compensation and retries this method
-    /// without guessing whether rollback failed before or after a rename.
     pub fn restore_before_image(&mut self) -> Result<()> {
-        match self.phase {
-            Phase::Prepared => Ok(()),
-            Phase::Published => self.rollback(),
-            Phase::RecoveryRequired => self.recover(),
-            _ => Err(self.failure(
-                "restore publication before-image",
-                io::Error::other("publication is not recoverable after finalization starts"),
-            )),
-        }
-    }
-
-    /// Irreversibly release the journal after publication or successful recovery.
-    /// A cleanup error may be retried, but rollback is no longer available once
-    /// finalization starts. A failed publication must be recovered first.
-    pub fn finalize(&mut self) -> Result<()> {
-        if !matches!(
-            self.phase,
-            Phase::Prepared | Phase::Published | Phase::Finalizing
-        ) {
-            return Err(self.failure(
-                "finalize publication",
-                io::Error::other("recover the journal before finalizing"),
+        if self.published {
+            return Err(error(
+                "undo replacement",
+                &self.target,
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "ordinary replacements retain no before-image; retry the transfer",
+                ),
             ));
         }
-        self.phase = Phase::Finalizing;
-        remove_owned(&self.workspace, &self.identity).map_err(|failure| self.annotate(failure))?;
-        self.phase = Phase::Finalized;
         Ok(())
     }
 
-    fn compensate(&mut self, action: &'static str, cause: io::Error) -> FsError {
-        let mut failure = self.failure(action, cause);
-        match self.restore() {
-            Ok(()) => {
-                self.phase = Phase::Prepared;
-                failure.recovery = Recovery::Restored;
-            }
-            Err(error) => {
-                self.phase = Phase::RecoveryRequired;
-                failure.recovery_error = Some(error);
-            }
+    pub fn finalize(&mut self) -> Result<()> {
+        if !self.finalized {
+            remove_owned(&self.workspace, &self.identity)?;
+            self.finalized = true;
         }
-        failure
-    }
-
-    fn restore(&mut self) -> io::Result<()> {
-        // Path presence records completed rename steps even if the immediately
-        // following I/O failed. Never erase a target in order to force recovery.
-        let old = self.old_path();
-        let new = self.new_path();
-        let target_exists = safe_metadata(&self.target)
-            .map_err(|error| error.cause)?
-            .is_some();
-        let new_exists = safe_metadata(&new).map_err(|error| error.cause)?.is_some();
-        if target_exists && !new_exists && !self.absent {
-            move_new(&self.target, &new)?;
-        }
-        if self.original.is_some() && safe_metadata(&old).map_err(|error| error.cause)?.is_some() {
-            move_new(&old, &self.target)?;
-        }
-        ensure_identity(&self.target, self.original.as_ref()).map_err(|failure| failure.cause)?;
         Ok(())
     }
 
     fn new_path(&self) -> PathBuf {
         self.workspace.join("new")
     }
-    fn old_path(&self) -> PathBuf {
-        self.workspace.join("old")
-    }
+}
 
-    fn check_workspace(&self) -> Result<()> {
-        ensure_identity(&self.workspace, Some(&self.identity))
-            .map_err(|failure| self.annotate(failure))?;
-        check_path(&self.target).map_err(|failure| self.annotate(failure))
-    }
-
-    fn require_phase(&self, phase: Phase) -> Result<()> {
-        if self.phase != phase {
-            return Err(self.failure(
-                "use publication journal",
-                io::Error::other(format!("expected {phase:?}, found {:?}", self.phase)),
-            ));
+impl Drop for Publication {
+    fn drop(&mut self) {
+        if !self.finalized
+            && let Err(failure) = self.finalize()
+        {
+            crate::telemetry::io_error("file.stage.cleanup", &failure.cause);
         }
-        Ok(())
-    }
-
-    fn failure(&self, action: &'static str, cause: io::Error) -> FsError {
-        self.annotate(error(action, &self.target, cause))
-    }
-
-    fn annotate(&self, mut failure: FsError) -> FsError {
-        failure.journal = Some(self.workspace.clone());
-        failure.recovery = Recovery::JournalRetained;
-        failure
     }
 }
 
-fn materialize(snapshot: &Snapshot, root: &Path, logical_target: Option<&Path>) -> Result<()> {
-    ensure_identity(&snapshot.owner.path, Some(&snapshot.owner.identity))?;
-    let crash_midstage = logical_target.is_some_and(|target| {
-        std::env::var("MSYNC_TEST_CRASH_AT").is_ok_and(|value| value == "stage-materializing")
-            && std::env::var_os("MSYNC_TEST_CRASH_TARGET")
-                .is_some_and(|value| Path::new(&value) == target)
-    });
+pub(crate) fn sync_file(path: &Path) -> Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        options.write(true);
+        let original = fs::metadata(path)
+            .map_err(|cause| error("inspect staged file", path, cause))?
+            .permissions();
+        if original.readonly() {
+            let mut writable = original.clone();
+            #[allow(clippy::permissions_set_readonly_false)]
+            writable.set_readonly(false);
+            fs::set_permissions(path, writable)
+                .map_err(|cause| error("open staged file for flush", path, cause))?;
+        }
+        let file = options.open(path);
+        fs::set_permissions(path, original)
+            .map_err(|cause| error("restore staged file attributes", path, cause))?;
+        file.and_then(|file| file.sync_all())
+            .map_err(|cause| error("flush staged file", path, cause))
+    }
+    #[cfg(not(windows))]
+    options
+        .open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|cause| error("flush staged file", path, cause))
+}
+
+fn materialize(snapshot: &Snapshot, root: &Path) -> Result<()> {
     for (relative, entry) in &snapshot.entries {
         let target = entry_path(root, relative);
         match entry {
             Entry::Directory { .. } => fs::create_dir(&target)
-                .map_err(|cause| error("create private directory", &target, cause))?,
+                .map_err(|cause| error("create staged directory", &target, cause))?,
             Entry::File { artifact, metadata } => {
-                ensure_identity(&artifact.owner.path, Some(&artifact.owner.identity))?;
                 copy_new(&artifact.path, &target)?;
                 metadata
                     .apply(&target)
                     .map_err(|cause| error("restore file metadata", &target, cause))?;
-                if crash_midstage {
-                    std::process::exit(86);
-                }
+            }
+            Entry::Symlink {
+                target: link,
+                directory,
+                metadata,
+            } => {
+                create_symlink(link, &target, *directory)
+                    .map_err(|cause| error("create symbolic link", &target, cause))?;
+                metadata
+                    .apply_link(&target)
+                    .map_err(|cause| error("restore symbolic link metadata", &target, cause))?;
             }
         }
     }
-    // Directory permissions are applied after children, so a read-only snapshot
-    // directory does not prevent materialization of its own contents.
     for (relative, entry) in snapshot.entries.iter().rev() {
         if let Entry::Directory { metadata } = entry {
             let target = entry_path(root, relative);
@@ -1034,6 +869,30 @@ fn materialize(snapshot: &Snapshot, root: &Path, logical_target: Option<&Path>) 
         }
     }
     Ok(())
+}
+
+pub(crate) fn create_symlink(link: &Path, path: &Path, directory: bool) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let _ = directory;
+        std::os::unix::fs::symlink(link, path)
+    }
+    #[cfg(windows)]
+    {
+        if directory {
+            std::os::windows::fs::symlink_dir(link, path)
+        } else {
+            std::os::windows::fs::symlink_file(link, path)
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (link, path, directory);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "native symbolic links are unavailable",
+        ))
+    }
 }
 
 fn next_id() -> u64 {
@@ -1049,7 +908,7 @@ pub(crate) fn entry_path(root: &Path, relative: &Path) -> PathBuf {
 }
 
 fn create_owned_directory(parent: &Path, prefix: &str) -> Result<PathBuf> {
-    for _ in 0..128 {
+    loop {
         let path = parent.join(format!("{prefix}-{}-{}", std::process::id(), next_id()));
         match fs::create_dir(&path) {
             Ok(()) => return Ok(path),
@@ -1057,14 +916,6 @@ fn create_owned_directory(parent: &Path, prefix: &str) -> Result<PathBuf> {
             Err(cause) => return Err(error("create owned directory", &path, cause)),
         }
     }
-    Err(error(
-        "create owned directory",
-        parent,
-        io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "unique journal allocation exhausted",
-        ),
-    ))
 }
 
 fn copy_new(source: &Path, target: &Path) -> Result<()> {
@@ -1255,6 +1106,9 @@ pub(crate) fn identity_at(path: &Path) -> Result<Option<Handle>> {
 }
 
 fn overlaps_store(path: &Path, store: &ArtifactRoot) -> Result<bool> {
+    if safe_metadata(path)?.is_some_and(|metadata| metadata.file_type().is_symlink()) {
+        return Ok(false);
+    }
     if path.starts_with(&store.path) || store.path.starts_with(path) {
         return Ok(true);
     }
@@ -1291,65 +1145,44 @@ fn ensure_identity(path: &Path, expected: Option<&Handle>) -> Result<()> {
     Ok(())
 }
 
-fn check_path(path: &Path) -> Result<()> {
-    safe_metadata(path)?;
-    // lstat on `link/` or `link/.` follows the link. Inspect the trimmed leaf too,
-    // and preserve `..` prefixes until every original ancestor has been checked.
-    let trimmed = path.components().as_path();
-    let skip_leaf = usize::from(trimmed.as_os_str() == path.as_os_str());
-    for ancestor in trimmed.ancestors().skip(skip_leaf) {
-        safe_metadata(ancestor)?;
+pub(crate) fn source_path(path: &Path) -> Result<PathBuf> {
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        let absolute =
+            std::path::absolute(path).map_err(|cause| error("resolve source path", path, cause))?;
+        let parent = absolute.parent().unwrap_or_else(|| Path::new("."));
+        return Ok(self::absolute(parent)?.join(absolute.file_name().unwrap_or_default()));
     }
-    Ok(())
+    absolute(path)
 }
 
 fn absolute(path: &Path) -> Result<PathBuf> {
-    let raw = if path.is_absolute() {
-        path.to_owned()
-    } else {
-        std::env::current_dir()
-            .map_err(|cause| error("capture working directory", path, cause))?
-            .join(path)
-    };
-    check_path(&raw)?;
-    let raw =
-        std::path::absolute(&raw).map_err(|cause| error("resolve absolute path", path, cause))?;
-    let mut result = PathBuf::new();
-    for component in raw.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                result.pop();
+    let raw = std::path::absolute(path).map_err(|cause| error("resolve path", path, cause))?;
+    let mut existing = raw.as_path();
+    let mut suffix = Vec::new();
+    loop {
+        match fs::canonicalize(existing) {
+            Ok(mut resolved) => {
+                for component in suffix.into_iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved);
             }
-            component => result.push(component.as_os_str()),
+            Err(cause) if cause.kind() == io::ErrorKind::NotFound => {
+                if let Some(name) = existing.file_name() {
+                    suffix.push(name.to_owned());
+                }
+                existing = existing
+                    .parent()
+                    .ok_or_else(|| error("resolve path", path, cause))?;
+            }
+            Err(cause) => return Err(error("resolve path", path, cause)),
         }
     }
-    Ok(result)
 }
 
 fn safe_metadata(path: &Path) -> Result<Option<Metadata>> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() {
-                return Err(invalid(
-                    "inspect snapshot entry",
-                    path,
-                    "symbolic links are not supported in managed snapshots",
-                ));
-            }
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::MetadataExt;
-                if metadata.file_attributes() & 0x400 != 0 {
-                    return Err(invalid(
-                        "inspect snapshot entry",
-                        path,
-                        "reparse points are not supported in managed snapshots",
-                    ));
-                }
-            }
-            Ok(Some(metadata))
-        }
+        Ok(metadata) => Ok(Some(metadata)),
         Err(cause) if cause.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(cause) => Err(error("inspect snapshot entry", path, cause)),
     }
@@ -1375,29 +1208,15 @@ fn children(path: &Path) -> Result<Vec<fs::DirEntry>> {
     Ok(entries)
 }
 
-fn validate_tree(path: &Path) -> Result<()> {
-    let Some(metadata) = safe_metadata(path)? else {
+fn remove_owned(path: &Path, identity: &Handle) -> Result<()> {
+    if safe_metadata(path)?.is_none() {
         return Ok(());
-    };
-    if !metadata.is_dir() {
-        return require_file(&metadata, path);
     }
-    for entry in children(path)? {
-        validate_tree(&entry.path())?;
-    }
-    Ok(())
+    ensure_identity(path, Some(identity))?;
+    remove_owned_entry(path)
 }
 
-fn remove_owned(path: &Path, identity: &Handle) -> Result<()> {
-    if !path.is_absolute() || path.file_name().is_none() {
-        return Err(invalid(
-            "cleanup owned directory",
-            path,
-            "cleanup requires a checked absolute non-root owned directory",
-        ));
-    }
-    check_path(path)?;
-    ensure_identity(path, Some(identity))?;
+pub(crate) fn remove_tree(path: &Path) -> Result<()> {
     remove_owned_entry(path)
 }
 
@@ -1405,8 +1224,18 @@ fn remove_owned_entry(path: &Path) -> Result<()> {
     let Some(metadata) = safe_metadata(path)? else {
         return Ok(());
     };
+    if metadata.file_type().is_symlink() {
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::FileTypeExt;
+            if metadata.file_type().is_symlink_dir() {
+                return fs::remove_dir(path)
+                    .map_err(|cause| error("remove directory link", path, cause));
+            }
+        }
+        return fs::remove_file(path).map_err(|cause| error("remove symbolic link", path, cause));
+    }
     if !metadata.is_dir() {
-        require_file(&metadata, path)?;
         return remove_file(path, &metadata);
     }
     // File modes/attributes belong to the inode and may be shared by hard links

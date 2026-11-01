@@ -1,10 +1,8 @@
 //! Metadata-only preparation and preparation-scoped native inspection caching.
 
-use std::env;
 use std::fs;
-use std::path::{Path, PathBuf};
 
-use super::{Result, ancestor_guards, backend_kind, local_path, metadata, quote, remote_command};
+use super::{Result, backend_kind, local_path, quote, remote_command};
 use crate::compiler::{Backend, Location};
 use crate::plan::FileClass;
 
@@ -16,7 +14,6 @@ pub(crate) fn inspect_location(location: &Location, source: bool) -> Result<File
 /// Native metadata snapshot owned by one preparation, never by execution.
 #[derive(Default)]
 pub(crate) struct Inspection {
-    pub(super) ancestors: std::collections::HashSet<PathBuf>,
     pub(crate) leaf_probes: u64,
     pub(crate) ancestor_probes: u64,
     pub(crate) ancestor_hits: u64,
@@ -43,32 +40,15 @@ impl Inspection {
             return Ok(FileClass::Stream);
         }
         self.leaf_probes += 1;
-        let leaf = metadata(&path)?;
-        self.check_parents(&path)?;
-        classify_metadata(leaf)
-    }
-
-    fn check_parents(&mut self, path: &Path) -> Result<()> {
-        let raw = if path.is_absolute() {
-            path.to_owned()
-        } else {
-            env::current_dir()
-                .map_err(|error| error.to_string())?
-                .join(path)
-        };
-        let mut pending = Vec::new();
-        for ancestor in ancestor_guards(&raw) {
-            if self.ancestors.contains(ancestor) {
-                self.ancestor_hits += 1;
-                break;
-            }
-            self.ancestor_probes += 1;
-            metadata(ancestor)?;
-            pending.push(ancestor.to_owned());
+        if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+            return Ok(FileClass::Unknown);
         }
-        // A failed outer prefix must not bless inner prefixes that traversed it.
-        self.ancestors.extend(pending);
-        Ok(())
+        let leaf = match fs::metadata(&path) {
+            Ok(metadata) => Some(metadata),
+            Err(cause) if cause.kind() == std::io::ErrorKind::NotFound => None,
+            Err(cause) => return Err(format!("cannot inspect {}: {cause}", path.display())),
+        };
+        classify_metadata(leaf)
     }
 }
 
@@ -160,18 +140,11 @@ fn inspect_remote_batch(
         let mut budget = fixed;
         while end < paths.len() {
             let size = quote(&paths[end]).len() + 1;
-            if budget.saturating_add(size) > 8 * 1024 {
+            if end > start && budget.saturating_add(size) > 8 * 1024 {
                 break;
             }
             budget += size;
             end += 1;
-        }
-        if end == start {
-            results.push(Err(
-                "remote metadata path exceeds the bounded 8KiB command budget".into(),
-            ));
-            start += 1;
-            continue;
         }
         let args: Vec<&str> = paths[start..end].iter().map(String::as_str).collect();
         invocations += 1;
@@ -224,12 +197,6 @@ inspect_one() (
 p=$1
 case $p in '~') p=$HOME;; '~/'*) p=$HOME/${p#\~/};; esac
 case $p in /*) ;; *) p=$PWD/$p;; esac
-a=$p
-while [ "$a" != / ]; do
-    [ ! -L "$a" ] || { echo 'refusing symbolic link in metadata probe' >&2; exit 1; }
-    a=${a%/*}
-    [ -n "$a" ] || a=/
-done
 if [ -f "$p" ]; then printf regular
 elif [ -d "$p" ]; then printf directory
 elif [ -p "$p" ] || [ -S "$p" ]; then printf stream

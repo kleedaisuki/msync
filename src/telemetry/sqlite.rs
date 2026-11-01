@@ -1,7 +1,8 @@
-//! Bounded, transactional storage for the existing telemetry record vocabulary.
+//! Asynchronous local storage for the existing telemetry record vocabulary.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -33,9 +34,9 @@ impl Default for Options {
             batch_size: 128,
             flush_interval_ms: 100,
             busy_timeout_ms: 1000,
-            max_sessions: 100,
-            max_records_per_session: 1_000_000,
-            max_database_bytes: 256 * 1024 * 1024,
+            max_sessions: i64::MAX as usize,
+            max_records_per_session: i64::MAX as usize,
+            max_database_bytes: i64::MAX as u64,
             synchronous_full: false,
             sample_per_million: 1_000_000,
         }
@@ -48,27 +49,10 @@ impl Options {
     }
 
     pub fn validate_keyed(&self) -> Result<(), (&'static str, String)> {
-        if self.queue_capacity == 0 || self.queue_capacity > 1_000_000 {
+        if self.queue_capacity == 0 {
             return Err((
                 "queue_capacity",
-                "SQLite telemetry queue_capacity must be between 1 and 1000000".into(),
-            ));
-        }
-        if self.batch_size == 0 || self.batch_size > 65_536 {
-            return Err((
-                "batch_size",
-                "SQLite telemetry batch_size must be between 1 and 65536".into(),
-            ));
-        }
-        if self.flush_interval_ms == 0
-            || self.flush_interval_ms > 86_400_000
-            || Instant::now()
-                .checked_add(Duration::from_millis(self.flush_interval_ms))
-                .is_none()
-        {
-            return Err((
-                "flush_interval_ms",
-                "SQLite telemetry flush_interval_ms must be between 1 and 86400000".into(),
+                "SQLite telemetry queue_capacity must be positive".into(),
             ));
         }
         if self.busy_timeout_ms > i32::MAX as u64 {
@@ -77,20 +61,23 @@ impl Options {
                 "SQLite telemetry busy_timeout_ms must fit a signed 32-bit integer".into(),
             ));
         }
-        if self.max_sessions == 0 || self.max_sessions > i64::MAX as usize {
+        if self.max_sessions > i64::MAX as usize {
             return Err((
                 "max_sessions",
-                "SQLite telemetry max_sessions must be a positive signed integer".into(),
+                "SQLite telemetry max_sessions must fit a signed integer".into(),
             ));
         }
-        if self.max_records_per_session == 0 || self.max_records_per_session > i64::MAX as usize {
+        if self.max_records_per_session > i64::MAX as usize {
             return Err((
                 "max_records_per_session",
-                "SQLite telemetry max_records_per_session must be a positive signed integer".into(),
+                "SQLite telemetry max_records_per_session must fit a signed integer".into(),
             ));
         }
-        if self.max_database_bytes < 1024 * 1024 || self.max_database_bytes > i64::MAX as u64 {
-            return Err(("max_database_bytes", "SQLite telemetry max_database_bytes must be between 1048576 and the signed 64-bit maximum".into()));
+        if self.max_database_bytes > i64::MAX as u64 {
+            return Err((
+                "max_database_bytes",
+                "SQLite telemetry max_database_bytes must fit a signed 64-bit integer".into(),
+            ));
         }
         if self.sample_per_million > 1_000_000 {
             return Err((
@@ -115,6 +102,7 @@ pub(super) struct Writer {
     sender: mpsc::SyncSender<Message>,
     worker: Option<JoinHandle<()>>,
     failure: Failure,
+    dropped: Arc<AtomicU64>,
 }
 
 impl Writer {
@@ -127,17 +115,30 @@ impl Writer {
         let (ready, startup) = mpsc::sync_channel(1);
         let failure = Arc::new(Mutex::new(None));
         let shared = failure.clone();
+        let dropped = Arc::new(AtomicU64::new(0));
+        let worker_dropped = dropped.clone();
         let path = path.to_owned();
         let options = options.clone();
         let worker = thread::Builder::new()
             .name("msync-telemetry-sqlite".into())
-            .spawn(move || run(path, trace_id, options, receiver, ready, shared))
+            .spawn(move || {
+                run(
+                    path,
+                    trace_id,
+                    options,
+                    receiver,
+                    ready,
+                    shared,
+                    worker_dropped,
+                )
+            })
             .map_err(|error| format!("cannot start SQLite telemetry worker: {error}"))?;
         match startup.recv() {
             Ok(Ok(())) => Ok(Self {
                 sender,
                 worker: Some(worker),
                 failure,
+                dropped,
             }),
             result => {
                 let _ = worker.join();
@@ -156,9 +157,14 @@ impl Writer {
         if let Some(error) = self.failure() {
             return Err(error);
         }
-        self.sender
-            .send(Message::Record(line.to_owned()))
-            .map_err(|_| self.worker_error())
+        match self.sender.try_send(Message::Record(line.to_owned())) {
+            Ok(()) => Ok(()),
+            Err(mpsc::TrySendError::Full(_)) => {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => Err(self.worker_error()),
+        }
     }
 
     pub(super) fn flush(&self) -> Result<(), String> {
@@ -225,6 +231,7 @@ fn run(
     receiver: mpsc::Receiver<Message>,
     ready: Reply,
     failure: Failure,
+    dropped: Arc<AtomicU64>,
 ) {
     let mut store = match Store::open(path, trace_id, options) {
         Ok(store) => {
@@ -238,14 +245,15 @@ fn run(
         }
     };
     let interval = Duration::from_millis(store.options.flush_interval_ms);
-    let mut deadline = Instant::now() + interval;
+    let mut deadline = Instant::now().checked_add(interval);
     loop {
-        let message = if store.pending.is_empty() || failed(&failure) {
-            receiver
+        let message = match deadline {
+            Some(deadline) if !store.pending.is_empty() && !failed(&failure) => {
+                receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            }
+            _ => receiver
                 .recv()
-                .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
-        } else {
-            receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
         };
         match message {
             Ok(Message::Record(line)) => {
@@ -259,41 +267,36 @@ fn run(
                     remember(&failure, error);
                 }
                 if first {
-                    deadline = Instant::now() + interval;
+                    deadline = Instant::now().checked_add(interval);
                 }
             }
             Ok(Message::Flush(reply)) => {
                 flush(&mut store, &failure);
-                let result = failure
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .clone()
-                    .map_or(Ok(()), Err);
+                let result = recording_error(&failure, &dropped).map_or(Ok(()), Err);
                 let _ = reply.send(result);
-                deadline = Instant::now() + interval;
+                deadline = Instant::now().checked_add(interval);
             }
             Ok(Message::Close(reply)) => {
-                close(&mut store, &failure);
-                let result = failure
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .clone()
-                    .map_or(Ok(()), Err);
+                close(&mut store, &failure, &dropped);
+                let result = recording_error(&failure, &dropped).map_or(Ok(()), Err);
                 let _ = reply.send(result);
                 return;
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                close(&mut store, &failure);
+                close(&mut store, &failure, &dropped);
                 return;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 flush(&mut store, &failure);
-                deadline = Instant::now() + interval;
+                deadline = Instant::now().checked_add(interval);
             }
         }
-        if !store.pending.is_empty() && !failed(&failure) && Instant::now() >= deadline {
+        if !store.pending.is_empty()
+            && !failed(&failure)
+            && deadline.is_some_and(|deadline| Instant::now() >= deadline)
+        {
             flush(&mut store, &failure);
-            deadline = Instant::now() + interval;
+            deadline = Instant::now().checked_add(interval);
         }
     }
 }
@@ -311,13 +314,25 @@ fn flush(store: &mut Store, failure: &Failure) {
     }
 }
 
-fn close(store: &mut Store, failure: &Failure) {
-    flush(store, failure);
+fn recording_error(failure: &Failure, dropped: &AtomicU64) -> Option<String> {
     let error = failure
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .clone();
-    if let Err(error) = store.close(error.as_deref()) {
+    let count = dropped.load(Ordering::Relaxed);
+    match (error, count) {
+        (None, 0) => None,
+        (Some(error), 0) => Some(error),
+        (error, count) => Some(format!(
+            "{count} telemetry record(s) dropped because the recorder queue was full{}",
+            error.map_or_else(String::new, |error| format!("; {error}"))
+        )),
+    }
+}
+
+fn close(store: &mut Store, failure: &Failure, dropped: &AtomicU64) {
+    flush(store, failure);
+    if let Err(error) = store.close(recording_error(failure, dropped).as_deref()) {
         remember(failure, error);
     }
 }

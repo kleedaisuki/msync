@@ -1,8 +1,6 @@
 //! Narrow co-admission evidence for opposite sides of one native FIFO.
 
-use super::{
-    AccessKind, Conflict, EndpointKey, EndpointRole, FileResource, OperationFacts, Resource, Scope,
-};
+use super::{AccessKind, EndpointKey, EndpointRole, FileResource, OperationFacts, Resource, Scope};
 use crate::endpoint::{Backend, Location};
 use crate::hir::{Input, Instruction, InstructionKind, Output};
 use crate::language::DestinationMode;
@@ -103,6 +101,15 @@ impl FifoEndpointProof {
             _ => false,
         }
     }
+
+    pub(crate) fn matches_access(&self, access: &super::Access) -> bool {
+        let kind = match self.key.role {
+            EndpointRole::Source => AccessKind::Consume,
+            EndpointRole::Destination => AccessKind::Write,
+            EndpointRole::Executable => return false,
+        };
+        access.kind == kind && self.covers_access(&access.resource)
+    }
 }
 
 /// A write/read pair must open together, not await the other's EOF. This does
@@ -142,38 +149,5 @@ impl FifoRendezvousProof {
         reader_facts: OperationFacts,
     ) -> bool {
         self.writer.supports(writer, writer_facts) && self.reader.supports(reader, reader_facts)
-    }
-
-    pub(crate) fn matches_conflict(
-        &self,
-        before: &Instruction,
-        after: &Instruction,
-        conflict: &Conflict,
-    ) -> bool {
-        let (left, right, left_kind, right_kind) = if before.id == self.writer.key.instruction
-            && after.id == self.reader.key.instruction
-        {
-            (
-                &self.writer,
-                &self.reader,
-                AccessKind::Write,
-                AccessKind::Consume,
-            )
-        } else if before.id == self.reader.key.instruction
-            && after.id == self.writer.key.instruction
-        {
-            (
-                &self.reader,
-                &self.writer,
-                AccessKind::Consume,
-                AccessKind::Write,
-            )
-        } else {
-            return false;
-        };
-        conflict.before.kind == left_kind
-            && conflict.after.kind == right_kind
-            && left.covers_access(&conflict.before.resource)
-            && right.covers_access(&conflict.after.resource)
     }
 }

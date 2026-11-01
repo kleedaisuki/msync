@@ -233,7 +233,7 @@ fn script_directory_and_invalid_utf8_errors_offer_different_remedies() {
 }
 
 #[test]
-fn read_only_formatting_is_refused_without_changing_bytes_and_explains_preview() {
+fn read_only_formatting_uses_the_native_replace_operation() {
     struct RestorePermissions(std::path::PathBuf, fs::Permissions);
     impl Drop for RestorePermissions {
         fn drop(&mut self) {
@@ -253,17 +253,16 @@ fn read_only_formatting_is_refused_without_changing_bytes_and_explains_preview()
         &["fmt", "protected.msync", "--color", "never"],
         "",
     );
-    assert!(!output.status.success());
-    let error = text(&output.stderr);
-    assert!(
-        error.contains("protected.msync") && error.contains("read-only"),
-        "{error}"
-    );
-    assert!(
-        field_line(&error, "help:") && error.contains("--stdout"),
-        "{error}"
-    );
-    assert_eq!(fs::read_to_string(&file).unwrap(), "a->b\n");
+    if cfg!(unix) {
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        assert_eq!(fs::read_to_string(&file).unwrap(), "a -> b\n");
+    } else if output.status.success() {
+        assert_eq!(fs::read_to_string(&file).unwrap(), "a -> b\n");
+    } else {
+        let error = text(&output.stderr);
+        assert!(error.contains("protected.msync"), "{error}");
+        assert_eq!(fs::read_to_string(&file).unwrap(), "a->b\n");
+    }
     drop(restore);
 }
 

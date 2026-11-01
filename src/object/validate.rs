@@ -10,8 +10,6 @@ use crate::relocatable::{ExportValue, Namespace, Slot};
 #[path = "validate_control.rs"]
 mod control;
 
-const MAX_OPERATIONS: usize = 100_000;
-
 pub(super) fn module(module: &ObjectModule) -> Result<(), ObjectError> {
     if module.format_version != FORMAT_VERSION
         || !matches!(module.language_version.as_str(), "0.5" | "0.6")
@@ -177,12 +175,9 @@ impl ProgramState {
             ));
         }
         for node in &region.instructions {
-            if self.instructions.len() >= MAX_OPERATIONS
-                || node.id.0 > u32::MAX as usize
-                || !self.instructions.insert(node.id)
-            {
+            if node.id.0 > u32::MAX as usize || !self.instructions.insert(node.id) {
                 return Err(ObjectError::new(
-                    "object operation limit or unique instruction identity is invalid",
+                    "object instruction identity is duplicate or out of range",
                 ));
             }
             self.instruction(node)?;
@@ -717,10 +712,7 @@ fn clear(
     }
 }
 
-fn source_modules(module: &ObjectModule) -> Result<(), ObjectError> {
-    if module.source_modules.len() > 1024 {
-        return Err(ObjectError::new("too many source module bindings"));
-    }
+pub(super) fn source_modules(module: &ObjectModule) -> Result<(), ObjectError> {
     let mut names = BTreeSet::new();
     for binding in &module.source_modules {
         text(&binding.name, "source module symbol")?;
@@ -746,35 +738,34 @@ fn source_modules(module: &ObjectModule) -> Result<(), ObjectError> {
             }
         }
     }
-    let mut ready = BTreeSet::from([module.main_module.clone()]);
-    for _ in 0..=module.source_modules.len() {
-        let before = ready.len();
-        for binding in &module.source_modules {
-            let parent = match &binding.path {
-                SourceModulePath::Contextual {
-                    path:
-                        crate::relocatable::Path {
-                            anchor:
-                                Anchor::ModuleFile { module } | Anchor::ModuleDirectory { module },
-                            ..
-                        },
-                } => Some(module),
-                _ => None,
-            };
-            if parent.is_none_or(|parent| ready.contains(parent)) {
-                ready.insert(binding.name.clone());
-            }
-        }
-        if ready.len() == module.source_modules.len() + 1 {
-            return Ok(());
-        }
-        if ready.len() == before {
-            return Err(ObjectError::new(
-                "cyclic or unresolved source module binding",
-            ));
+    let mut dependents = BTreeMap::<&str, Vec<&str>>::new();
+    let mut ready = vec![module.main_module.as_str()];
+    for binding in &module.source_modules {
+        match &binding.path {
+            SourceModulePath::Contextual {
+                path:
+                    crate::relocatable::Path {
+                        anchor: Anchor::ModuleFile { module } | Anchor::ModuleDirectory { module },
+                        ..
+                    },
+            } => dependents.entry(module).or_default().push(&binding.name),
+            _ => ready.push(&binding.name),
         }
     }
-    Err(ObjectError::new("source module dependency bound exceeded"))
+    let mut resolved = 0;
+    while let Some(name) = ready.pop() {
+        resolved += 1;
+        if let Some(children) = dependents.remove(name) {
+            ready.extend(children);
+        }
+    }
+    if resolved == module.source_modules.len() + 1 {
+        Ok(())
+    } else {
+        Err(ObjectError::new(
+            "cyclic or unresolved source module binding",
+        ))
+    }
 }
 
 fn validate_namespace(namespace: &Namespace, depth: usize) -> Result<(), ObjectError> {

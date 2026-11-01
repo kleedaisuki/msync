@@ -10,10 +10,10 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs;
 use std::io::{self, Read};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
 mod namespace;
@@ -48,6 +48,7 @@ mod child_wait;
 mod inspection;
 use child_wait::ChildWait;
 pub mod ssh;
+pub(crate) mod ssh_channel;
 #[cfg(windows)]
 pub(crate) mod windows_auth;
 
@@ -284,14 +285,12 @@ fn http_to_local(
     context.check()?;
     let mut command = http_command_builder(&op.source)?;
     let name = source_basename(&op.source.path);
-    validate_staging_basename(name)?;
     let container = op.destination.path.ends_with('/');
     let target = if container {
         destination.join(name)
     } else {
         destination.to_owned()
     };
-    check_ancestors(&target)?;
     if let Some(parent) = target.parent() {
         ensure_directory(parent, report)?;
     }
@@ -471,8 +470,6 @@ fn copy_selected(
 ) -> Result<()> {
     context.check()?;
     validate_destination(destination, container)?;
-    check_ancestors(source)?;
-    check_ancestors(destination)?;
     metadata(source)?.ok_or_else(|| format!("source does not exist: {}", source.display()))?;
     let sources = match pattern {
         Some(pattern) => {
@@ -505,11 +502,11 @@ fn copy_selected(
         } else {
             destination.to_owned()
         };
-        preflight_cancellable(&source, &target, container, context)?;
+        preflight_cancellable(&source, &target, false, context)?;
         plans.push((source, target));
     }
     for (source, target) in plans {
-        copy_tree(&source, &target, container, report, context)?;
+        copy_tree(&source, &target, false, report, context)?;
     }
     Ok(())
 }
@@ -534,68 +531,20 @@ fn at(path: &Path, error: io::Error) -> String {
 }
 
 fn metadata(path: &Path) -> Result<Option<fs::Metadata>> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() {
-                return Err(format!("refusing symbolic link: {}", path.display()));
-            }
-            #[cfg(windows)]
-            {
-                use std::os::windows::fs::MetadataExt;
-                if metadata.file_attributes() & 0x400 != 0 {
-                    return Err(format!("refusing reparse point: {}", path.display()));
-                }
-            }
-            Ok(Some(metadata))
-        }
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(at(path, error)),
     }
 }
 
 fn absolute(path: &Path) -> Result<PathBuf> {
-    let path = if path.is_absolute() {
-        path.to_owned()
-    } else {
-        env::current_dir()
-            .map_err(|error| error.to_string())?
-            .join(path)
-    };
-    let mut normalized = PathBuf::new();
-    for part in path.components() {
-        match part {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            component => normalized.push(component.as_os_str()),
-        }
+    if path.is_absolute() {
+        return Ok(path.to_owned());
     }
-    Ok(normalized)
-}
-
-pub(crate) fn check_ancestors(path: &Path) -> Result<()> {
-    let raw = if path.is_absolute() {
-        path.to_owned()
-    } else {
-        env::current_dir()
-            .map_err(|error| error.to_string())?
-            .join(path)
-    };
-    metadata(&raw)?;
-    for ancestor in ancestor_guards(&raw) {
-        metadata(ancestor)?;
-    }
-    Ok(())
-}
-
-fn ancestor_guards(raw: &Path) -> impl Iterator<Item = &Path> {
-    // lstat("link/") and lstat("link/.") follow a directory link, while parent()
-    // skips that final component. Trim ignored suffixes without rebuilding the
-    // path: collecting/pushing Windows verbatim components could collapse '..'.
-    let trimmed = raw.components().as_path();
-    let checked_leaf = usize::from(trimmed.as_os_str() == raw.as_os_str());
-    trimmed.ancestors().skip(checked_leaf)
+    env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .map_err(|error| error.to_string())
 }
 
 #[cfg(all(test, windows))]
@@ -611,14 +560,14 @@ fn preflight(source: &Path, target: &Path, no_clobber: bool) -> Result<()> {
 fn preflight_cancellable(
     source: &Path,
     target: &Path,
-    no_clobber: bool,
+    _no_clobber: bool,
     context: &CopyContext<'_>,
 ) -> Result<()> {
     context.check()?;
-    check_ancestors(source)?;
-    check_ancestors(target)?;
-    let source_meta =
-        metadata(source)?.ok_or_else(|| format!("source does not exist: {}", source.display()))?;
+    let source_meta = fs::symlink_metadata(source).map_err(|cause| at(source, cause))?;
+    if source_meta.file_type().is_symlink() {
+        return Ok(());
+    }
     let target_meta = metadata(target)?;
     if target_meta.is_some()
         && same_file::is_same_file(source, target).map_err(|error| at(target, error))?
@@ -638,25 +587,10 @@ fn preflight_cancellable(
                 target.display()
             ));
         }
-        for entry in fs::read_dir(source).map_err(|error| at(source, error))? {
-            let entry = entry.map_err(|error| at(source, error))?;
-            preflight_cancellable(
-                &entry.path(),
-                &target.join(entry.file_name()),
-                no_clobber,
-                context,
-            )?;
-        }
     } else if source_meta.is_file() {
         if target_meta.as_ref().is_some_and(|meta| meta.is_dir()) {
             return Err(format!(
                 "file destination is a directory: {} (append / to preserve the source name)",
-                target.display()
-            ));
-        }
-        if no_clobber && target_meta.is_some() {
-            return Err(format!(
-                "destination file already exists: {}",
                 target.display()
             ));
         }
@@ -689,50 +623,6 @@ fn ancestor_has_identity(root: &same_file::Handle, path: &Path) -> Result<bool> 
         }
     }
     Ok(false)
-}
-
-fn validate_source_tree(
-    source: &Path,
-    context: &CopyContext<'_>,
-) -> Result<Vec<(PathBuf, SystemTime)>> {
-    let mut times = Vec::new();
-    validate_source_entry(source, source, context, &mut times)?;
-    Ok(times)
-}
-
-fn validate_source_entry(
-    source: &Path,
-    root: &Path,
-    context: &CopyContext<'_>,
-    times: &mut Vec<(PathBuf, SystemTime)>,
-) -> Result<()> {
-    context.check()?;
-    check_ancestors(source)?;
-    let meta =
-        metadata(source)?.ok_or_else(|| format!("source does not exist: {}", source.display()))?;
-    if meta.is_dir() {
-        for entry in fs::read_dir(source).map_err(|error| at(source, error))? {
-            validate_source_entry(
-                &entry.map_err(|error| at(source, error))?.path(),
-                root,
-                context,
-                times,
-            )?;
-        }
-    } else if !meta.is_file() {
-        return Err(format!("unsupported special file: {}", source.display()));
-    }
-    let modified = meta.modified().map_err(|error| at(source, error))?;
-    let duration = modified
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|error| error.duration());
-    if duration.subsec_nanos() != 0 {
-        let relative = source
-            .strip_prefix(root)
-            .map_err(|_| "source metadata escaped its root")?;
-        times.push((relative.to_owned(), modified));
-    }
-    Ok(())
 }
 
 fn ensure_directory(path: &Path, report: &mut ExecutionReport) -> Result<()> {
@@ -774,6 +664,22 @@ fn copy_tree(
     context: &CopyContext<'_>,
 ) -> Result<()> {
     context.check()?;
+    let entry = fs::symlink_metadata(source).map_err(|cause| at(source, cause))?;
+    if entry.file_type().is_symlink() {
+        if let Some(parent) = target.parent() {
+            ensure_directory(parent, report)?;
+        }
+        let link = fs::read_link(source).map_err(|cause| at(source, cause))?;
+        match fs::remove_file(target) {
+            Ok(()) => {}
+            Err(cause) if cause.kind() == io::ErrorKind::NotFound => {}
+            Err(cause) => return Err(at(target, cause)),
+        }
+        crate::filesystem::create_symlink(&link, target, source.is_dir())
+            .map_err(|cause| at(target, cause))?;
+        report.copied_files += 1;
+        return Ok(());
+    }
     let source_meta =
         metadata(source)?.ok_or_else(|| format!("source disappeared: {}", source.display()))?;
     if source_meta.is_dir() {
@@ -894,9 +800,8 @@ impl Scratch {
     }
 
     fn new_in(root: &Path) -> Result<Self> {
-        check_ancestors(root)?;
         fs::create_dir_all(root).map_err(|error| at(root, error))?;
-        for _ in 0..100 {
+        loop {
             let path = root.join(format!(
                 "msync-{}-{}",
                 std::process::id(),
@@ -908,7 +813,6 @@ impl Scratch {
                 Err(error) => return Err(at(&path, error)),
             }
         }
-        Err("could not allocate transport scratch directory".into())
     }
 }
 impl Drop for Scratch {
@@ -927,121 +831,6 @@ struct Received {
     basename: Option<OsString>,
 }
 
-const SOURCE_RECEIPT: &[u8] = b"MSYNC-SOURCE-1\0";
-
-struct SourceReceipt {
-    basename: String,
-    times: Vec<(PathBuf, SystemTime)>,
-}
-
-impl SourceReceipt {
-    fn parse(bytes: &[u8]) -> Result<Self> {
-        let bytes = bytes
-            .strip_prefix(SOURCE_RECEIPT)
-            .ok_or("unsupported source metadata receipt")?;
-        let text =
-            std::str::from_utf8(bytes).map_err(|_| "remote source contains non-UTF-8 metadata")?;
-        let fields: Vec<_> = text.split_terminator('\0').collect();
-        if !text.ends_with('\0') || fields.is_empty() || !fields.len().is_multiple_of(3) {
-            return Err("remote source metadata receipt is incomplete".into());
-        }
-        let mut times = Vec::with_capacity(fields.len() / 3);
-        let mut names = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-        for (index, entry) in fields.as_chunks::<3>().0.iter().enumerate() {
-            let relative = source_relative(entry[0])?;
-            if relative.as_os_str().is_empty() != (index == 0) {
-                return Err("remote source metadata root must appear exactly once, first".into());
-            }
-            if !seen.insert(relative.clone()) {
-                return Err("remote source metadata contains duplicate paths".into());
-            }
-            if index != 0 && relative.file_name() != Some(OsStr::new(entry[1])) {
-                return Err("remote source metadata basename disagrees with its path".into());
-            }
-            names.extend_from_slice(entry[0].as_bytes());
-            names.push(0);
-            names.extend_from_slice(entry[1].as_bytes());
-            names.push(0);
-            times.push((relative, source_time(entry[2])?));
-        }
-        validate_remote_names(&names)?;
-        Ok(Self {
-            basename: fields[1].into(),
-            times,
-        })
-    }
-
-    fn apply_times(&self, root: &Path, context: &CopyContext<'_>) -> Result<()> {
-        for (relative, modified) in self.times.iter().rev() {
-            context.check()?;
-            let path = crate::filesystem::entry_path(root, relative);
-            check_ancestors(&path)?;
-            let metadata = metadata(&path)?
-                .ok_or_else(|| format!("captured source entry is missing: {}", path.display()))?;
-            if !metadata.is_file() && !metadata.is_dir() {
-                return Err(format!(
-                    "captured source entry is not a finite file or directory: {}",
-                    path.display()
-                ));
-            }
-            let mut metadata = crate::filesystem::NodeMetadata::capture(&metadata)
-                .map_err(|cause| at(&path, cause))?;
-            metadata.modified = *modified;
-            metadata.apply(&path).map_err(|cause| at(&path, cause))?;
-        }
-        Ok(())
-    }
-}
-
-fn source_relative(text: &str) -> Result<PathBuf> {
-    let mut path = PathBuf::new();
-    if text.is_empty() {
-        return Ok(path);
-    }
-    for name in text.split('/') {
-        if matches!(name, "" | "." | "..") {
-            return Err("remote source metadata path escapes its capture root".into());
-        }
-        validate_staging_basename(name)?;
-        path.push(name);
-    }
-    Ok(path)
-}
-
-fn source_time(text: &str) -> Result<SystemTime> {
-    let (seconds, fraction) = text.split_once('.').unwrap_or((text, "0"));
-    let seconds: i64 = seconds
-        .parse()
-        .map_err(|_| "remote source timestamp has invalid or unsupported seconds")?;
-    if fraction.is_empty() || !fraction.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err("remote source timestamp has an invalid fraction".into());
-    }
-    let fraction = fraction.trim_end_matches('0');
-    if fraction.len() > 9 {
-        return Err("remote source timestamp exceeds nanosecond precision".into());
-    }
-    let nanos = if fraction.is_empty() {
-        0
-    } else {
-        fraction
-            .parse::<u32>()
-            .map_err(|_| "invalid timestamp fraction")?
-            * 10_u32.pow(9 - fraction.len() as u32)
-    };
-    let duration = Duration::from_secs(seconds.unsigned_abs());
-    let whole = if seconds < 0 {
-        UNIX_EPOCH.checked_sub(duration)
-    } else {
-        UNIX_EPOCH.checked_add(duration)
-    };
-    // GNU find's %T@ uses floor seconds plus a positive fractional field even
-    // before the epoch: -1.5000000000 represents epoch minus half a second.
-    whole
-        .and_then(|whole| whole.checked_add(Duration::from_nanos(nanos as u64)))
-        .ok_or_else(|| "remote source timestamp is outside the host time range".into())
-}
-
 fn touch_time(time: SystemTime) -> String {
     match time.duration_since(UNIX_EPOCH) {
         Ok(duration) => format!("{}.{:09}", duration.as_secs(), duration.subsec_nanos()),
@@ -1052,134 +841,14 @@ fn touch_time(time: SystemTime) -> String {
     }
 }
 
-struct UploadTimes<'a, 'cancel> {
-    target: &'a Location,
-    context: &'a CopyContext<'cancel>,
-    arguments: Vec<String>,
-    bytes: usize,
-}
-
-impl<'a, 'cancel> UploadTimes<'a, 'cancel> {
-    fn restore(
-        entries: &[(PathBuf, SystemTime)],
-        target: &'a Location,
-        context: &'a CopyContext<'cancel>,
-    ) -> Result<()> {
-        let mut times = Self {
-            target,
-            context,
-            arguments: Vec::new(),
-            bytes: 0,
-        };
-        for (relative, modified) in entries {
-            context.check()?;
-            let path = octal_relative(relative);
-            let time = touch_time(*modified);
-            if times.bytes + path.len() + time.len() > 8192 && !times.arguments.is_empty() {
-                times.flush()?;
-            }
-            times.bytes += path.len() + time.len();
-            times.arguments.extend([path, time]);
-        }
-        times.flush()
-    }
-
-    fn flush(&mut self) -> Result<()> {
-        if self.arguments.is_empty() {
-            return Ok(());
-        }
-        let arguments: Vec<_> = std::iter::once(self.target.path.as_str())
-            .chain(self.arguments.iter().map(String::as_str))
-            .collect();
-        remote_command_cancellable(
-            &self.target.backend,
-            RESTORE_UPLOAD_TIMES,
-            &arguments,
-            self.context,
-        )?;
-        self.arguments.clear();
-        self.bytes = 0;
-        Ok(())
-    }
-}
-
-fn octal_relative(path: &Path) -> String {
-    use std::fmt::Write;
-    let mut encoded = String::new();
-    for (index, component) in path.iter().enumerate() {
-        if index > 0 {
-            encoded.push_str("\\0057");
-        }
-        for byte in component.as_encoded_bytes() {
-            write!(&mut encoded, "\\0{byte:03o}").expect("writing a string cannot fail");
-        }
-    }
-    encoded
-}
-
-const RESTORE_UPLOAD_TIMES: &str = r#"
-set -eu
-export LC_ALL=C
-fail() { echo "$*" >&2; exit 1; }
-check() {
-    p=$1
-    while [ "$p" != / ] && [ "$p" != . ]; do
-        [ ! -L "$p" ] || fail "refusing timestamp symbolic link: $p"
-        p=$(dirname -- "$p")
-    done
-}
-root=$1; shift
-check "$root"
-[ -z "$(find "$root" ! -type f ! -type d -print -quit)" ] || fail 'upload timestamp tree contains unsupported entries'
-[ "$(( $# % 2 ))" = 0 ] || fail 'incomplete upload timestamp metadata'
-while [ "$#" -gt 0 ]; do
-    relative=$(printf '%b.' "$1"); relative=${relative%.}
-    case $relative in /*|..|../*|*/../*|*/..) fail 'upload timestamp path escapes staging';; esac
-    target=$root; [ -z "$relative" ] || target=$root/$relative
-    [ -f "$target" ] || [ -d "$target" ] || fail "missing upload timestamp entry: $target"
-    touch --no-create --no-dereference --date="@$2" -- "$target"
-    shift 2
-done
-"#;
-
-#[derive(Clone, Copy)]
-enum SourcePermissions {
-    Filesystem,
-    Portable,
-}
-
-impl SourcePermissions {
-    fn argument(self) -> &'static str {
-        match self {
-            Self::Filesystem => "filesystem",
-            Self::Portable => "portable",
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 struct RemoteSource<'a> {
     path: &'a str,
-    permissions: SourcePermissions,
 }
 
 impl<'a> RemoteSource<'a> {
     fn filesystem(path: &'a str) -> Self {
-        Self {
-            path,
-            permissions: SourcePermissions::Filesystem,
-        }
-    }
-
-    fn uploaded(path: &'a str) -> Self {
-        Self {
-            path,
-            permissions: if cfg!(windows) {
-                SourcePermissions::Portable
-            } else {
-                SourcePermissions::Filesystem
-            },
-        }
+        Self { path }
     }
 }
 
@@ -1191,6 +860,15 @@ pub(crate) fn import_finite_source(
     cancel: CancellationToken,
     span: Span,
 ) -> std::result::Result<ImportReceipt, RuntimeError> {
+    if matches!(source.backend, Backend::Ssh { .. }) {
+        let result = pattern
+            .map(|pattern| {
+                Regex::new(&format!("\\A(?:{pattern})\\z")).map_err(|cause| cause.to_string())
+            })
+            .transpose()
+            .and_then(|selected| ssh_channel::download(source, target, selected.as_ref(), &cancel));
+        return result.map_err(|message| RuntimeError { message, span });
+    }
     let context = CopyContext::new(buffer_bytes, &cancel);
     let result = (|| {
         context.check()?;
@@ -1198,15 +876,7 @@ pub(crate) fn import_finite_source(
             .parent()
             .ok_or("private import target has no parent")?;
         let scratch = Scratch::new_in(parent)?;
-        // Killing the Windows WSL launcher does not join its guest writer.
-        // Drain an admitted finite acquisition before retiring its owned paths.
-        let acquisition_cancel = if matches!(source.backend, Backend::Wsl) {
-            CancellationToken::new()
-        } else {
-            cancel.clone()
-        };
-        let acquisition = CopyContext::new(buffer_bytes, &acquisition_cancel);
-        let received = receive(source, &scratch, pattern, &acquisition)?;
+        let received = receive(source, &scratch, pattern, &context)?;
         adopt_received(received, target, &context)
     })();
     result.map_err(|message| RuntimeError { message, span })
@@ -1218,7 +888,6 @@ fn adopt_received(
     context: &CopyContext<'_>,
 ) -> Result<ImportReceipt> {
     context.check()?;
-    check_ancestors(target)?;
     if metadata(target)?.is_some() {
         return Err(format!(
             "private import target already exists: {}",
@@ -1229,13 +898,6 @@ fn adopt_received(
     Ok(ImportReceipt {
         basename: received.basename,
     })
-}
-
-fn run(command: &mut Command) -> Result<Output> {
-    let cancel = ssh::current()
-        .and_then(|context| context.cancellation())
-        .unwrap_or_default();
-    run_cancellable(command, &CopyContext::new(64 * 1024, &cancel))
 }
 
 fn run_cancellable(command: &mut Command, context: &CopyContext<'_>) -> Result<Output> {
@@ -1263,6 +925,7 @@ fn run_process(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let spawned_at = trace.is_recording().then(std::time::Instant::now);
     #[cfg(windows)]
     let spawned = windows_auth::spawn(command);
     #[cfg(not(windows))]
@@ -1277,6 +940,7 @@ fn run_process(
         trace.io_error("spawn", &error);
         format!("cannot start {name}: {error}")
     })?;
+    record_elapsed(trace, "spawn_ns", spawned_at);
     trace.metric("pid", child.id() as u64);
     let ready = ChildWait::new(&child);
     trace.attribute("wait.strategy", ready.strategy());
@@ -1292,9 +956,10 @@ fn run_process(
         .stderr
         .take()
         .ok_or("subprocess stderr is unavailable")?;
-    let output = std::thread::spawn(move || drain_bounded(stdout, 8 * 1024 * 1024));
-    let errors = std::thread::spawn(move || drain_bounded(stderr, 64 * 1024));
+    let output = std::thread::spawn(move || drain(stdout));
+    let errors = std::thread::spawn(move || drain(stderr));
     let mut cancelled = false;
+    let waiting_at = trace.is_recording().then(std::time::Instant::now);
     let status = loop {
         if context.cancel.is_cancelled() {
             cancelled = true;
@@ -1313,6 +978,8 @@ fn run_process(
             }
         }
     };
+    record_elapsed(trace, "child_wait_ns", waiting_at);
+    let draining_at = trace.is_recording().then(std::time::Instant::now);
     // A helper may inherit the capture pipes after its parent exits.
     #[cfg(windows)]
     let _ = process_job.terminate();
@@ -1330,8 +997,9 @@ fn run_process(
             trace.io_error("stderr_read", &error);
             error.to_string()
         })?;
-    trace.metric("stdout_bytes", stdout.0.len() as u64);
-    trace.metric("stderr_bytes", stderr.0.len() as u64);
+    record_elapsed(trace, "drain_ns", draining_at);
+    trace.metric("stdout_bytes", stdout.len() as u64);
+    trace.metric("stderr_bytes", stderr.len() as u64);
     if cancelled {
         context.interrupted.set(true);
         return Err(format!("{name} cancelled; transport process closed"));
@@ -1341,50 +1009,44 @@ fn run_process(
         format!("cannot wait for {name}: {error}")
     })?;
     trace.event("process.exit", &[("status", &status.to_string())], &[]);
-    if stdout.1 {
-        return Err(format!(
-            "{name} metadata output exceeded the 8MiB bound; split the source selection"
-        ));
-    }
     if !status.success() {
         trace.event(
             "process.error",
             &[
                 ("status", &status.to_string()),
-                ("stderr", &String::from_utf8_lossy(&stderr.0)),
+                ("stderr", &String::from_utf8_lossy(&stderr)),
             ],
             &[],
         );
         return Err(format!(
-            "{name} failed ({status}): {}{}",
-            String::from_utf8_lossy(&stderr.0).trim(),
-            if stderr.1 { " [stderr truncated]" } else { "" }
+            "{name} failed ({status}): {}",
+            String::from_utf8_lossy(&stderr).trim()
         ));
     }
     Ok(Output {
         status,
-        stdout: stdout.0,
-        stderr: stderr.0,
+        stdout,
+        stderr,
     })
 }
 
-fn drain_bounded(mut reader: impl Read, capacity: usize) -> io::Result<(Vec<u8>, bool)> {
-    let mut output = Vec::new();
-    let mut buffer = [0_u8; 8192];
-    let mut truncated = false;
-    loop {
-        let amount = match reader.read(&mut buffer) {
-            Ok(amount) => amount,
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        };
-        if amount == 0 {
-            return Ok((output, truncated));
-        }
-        let keep = amount.min(capacity.saturating_sub(output.len()));
-        output.extend_from_slice(&buffer[..keep]);
-        truncated |= keep < amount;
+fn record_elapsed(
+    trace: &mut crate::telemetry::SpanGuard,
+    metric: &'static str,
+    started: Option<std::time::Instant>,
+) {
+    if let Some(started) = started {
+        trace.metric(
+            metric,
+            started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
+        );
     }
+}
+
+fn drain(mut reader: impl Read) -> io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    reader.read_to_end(&mut output)?;
+    Ok(output)
 }
 
 fn quote(value: &str) -> String {
@@ -1392,7 +1054,10 @@ fn quote(value: &str) -> String {
 }
 
 pub(crate) fn remote_command(backend: &Backend, script: &str, args: &[&str]) -> Result<Output> {
-    run(&mut remote_command_builder(backend, script, args)?)
+    let cancel = ssh::current()
+        .and_then(|context| context.cancellation())
+        .unwrap_or_default();
+    remote_command_cancellable(backend, script, args, &CopyContext::new(64 * 1024, &cancel))
 }
 
 pub(crate) fn remote_command_with_cancel(
@@ -1411,7 +1076,25 @@ fn remote_command_cancellable(
     args: &[&str],
     context: &CopyContext<'_>,
 ) -> Result<Output> {
-    run_cancellable(&mut remote_command_builder(backend, script, args)?, context)
+    let mut trace = ssh::client_span("remote_command", backend);
+    trace.expect_completion();
+    trace.attribute("phase", remote_command_phase(script));
+    let result = crate::telemetry::with_context(trace.context().as_ref(), || {
+        run_cancellable(&mut remote_command_builder(backend, script, args)?, context)
+    });
+    ssh::refresh_client_strategy(&mut trace, backend);
+    trace.finish_result(&result);
+    result
+}
+
+fn remote_command_phase(script: &str) -> &'static str {
+    match script {
+        REMOTE_LIST => "source.list",
+        REMOTE_COPY => "source.copy",
+        "umask 077; mktemp -d /tmp/msync.XXXXXXXXXX" => "staging.allocate",
+        "rm -rf -- \"$1\"" => "staging.cleanup",
+        _ => "remote.helper",
+    }
 }
 
 pub(crate) fn remote_command_builder(
@@ -1495,15 +1178,30 @@ fn transport_copy(
     if op.source.backend == op.destination.backend
         && matches!(op.source.backend, Backend::Ssh { .. })
     {
-        return remote_copy(
-            &op.source.backend,
-            &op.source.path,
-            &op.destination.path,
-            op.destination.path.ends_with('/'),
-            op.pattern.as_deref(),
-            report,
-            context,
-        );
+        let selected = op
+            .pattern
+            .as_ref()
+            .map(|pattern| {
+                Regex::new(&format!("\\A(?:{pattern})\\z")).map_err(|cause| cause.to_string())
+            })
+            .transpose()?;
+        let copied = ssh_channel::copy_remote(
+            ssh_channel::RemoteCopy {
+                source: &op.source,
+                destination: &op.destination,
+                mode: if op.destination.path.ends_with('/') {
+                    crate::language::DestinationMode::Container
+                } else {
+                    crate::language::DestinationMode::Exact
+                },
+                selected: selected.as_ref(),
+            },
+            context.cancel,
+        )?;
+        report.copied_files += copied.copied_files;
+        report.created_directories += copied.created_directories;
+        report.transferred_bytes += copied.transferred_bytes;
+        return Ok(());
     }
     if let Some(source) = source {
         return send(
@@ -1583,59 +1281,46 @@ fn receive(
     pattern: Option<&str>,
     context: &CopyContext<'_>,
 ) -> Result<Received> {
+    if matches!(location.backend, Backend::Ssh { .. }) {
+        let selected = pattern
+            .map(|pattern| {
+                Regex::new(&format!("\\A(?:{pattern})\\z")).map_err(|cause| cause.to_string())
+            })
+            .transpose()?;
+        let target = scratch.0.join("payload");
+        let receipt = ssh_channel::download(location, &target, selected.as_ref(), context.cancel)?;
+        return Ok(Received {
+            path: target,
+            basename: receipt.basename,
+        });
+    }
     if let Some(pattern) = pattern {
         return receive_selected(location, scratch, pattern, context);
     }
-    let receipt = if matches!(location.backend, Backend::Ssh { .. }) {
-        let output = remote_command_cancellable(
-            &location.backend,
-            REMOTE_VALIDATE,
-            &[&location.path],
-            context,
-        )?;
-        Some(SourceReceipt::parse(&output.stdout)?)
-    } else {
-        None
-    };
-    let fallback_name = source_basename(&location.path);
-    let name = match &receipt {
-        Some(receipt) => receipt.basename.as_str(),
-        None => fallback_name,
-    };
-    validate_staging_basename(name)?;
+    let name = source_basename(&location.path);
     let target = scratch.0.join(name);
-    let mut basename = Some(OsString::from(name));
-    match &location.backend {
+    let basename = match &location.backend {
         Backend::Http { .. } => {
-            if pattern.is_some() {
-                return Err("HTTP sources cannot enumerate a regex selection".into());
-            }
             run_cancellable(
                 http_command_builder(location)?.arg("--output").arg(&target),
                 context,
             )?;
-        }
-        Backend::Ssh { .. } => {
-            scp(location, &target, false, context)?;
+            Some(OsString::from(name))
         }
         Backend::Wsl => {
             let path = wsl_path_cancellable(Some(&target), "", context)?;
-            let mut ignored = ExecutionReport::default();
-            basename = remote_copy_receipt(
+            remote_copy_receipt(
                 &Backend::Wsl,
                 RemoteSource::filesystem(&location.path),
                 &path,
                 false,
                 None,
-                &mut ignored,
+                &mut ExecutionReport::default(),
                 context,
-            )?;
+            )?
         }
         _ => return Err("unsupported source endpoint".into()),
-    }
-    if let Some(receipt) = receipt {
-        receipt.apply_times(&target, context)?;
-    }
+    };
     Ok(Received {
         path: target,
         basename,
@@ -1661,14 +1346,6 @@ fn receive_selected(
         .filter(|name| !name.is_empty() && regex.is_match(name))
         .collect();
     names.sort_unstable();
-    let mut selected_listing = b"\0selection\0".to_vec();
-    for name in &names {
-        selected_listing.extend_from_slice(name.as_bytes());
-        selected_listing.push(0);
-        selected_listing.extend_from_slice(name.as_bytes());
-        selected_listing.push(0);
-    }
-    validate_remote_names(&selected_listing)?;
     let target = scratch.0.join("selection");
     fs::create_dir(&target).map_err(|error| at(&target, error))?;
     for name in names {
@@ -1724,64 +1401,6 @@ pub(crate) fn http_command_builder(location: &Location) -> Result<Command> {
     Ok(command)
 }
 
-fn validate_staging_basename(name: &str) -> Result<()> {
-    let mut components = Path::new(name).components();
-    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
-        return Err("source basename cannot be represented safely on the local filesystem".into());
-    }
-    #[cfg(windows)]
-    {
-        if name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
-            || name.ends_with(['.', ' '])
-            || name.chars().any(|ch| ch.is_control())
-        {
-            return Err("source basename cannot be represented literally on Windows".into());
-        }
-        let stem = name
-            .split('.')
-            .next()
-            .unwrap_or(name)
-            .trim_end()
-            .to_uppercase();
-        let numbered_device = stem
-            .strip_prefix("COM")
-            .or_else(|| stem.strip_prefix("LPT"))
-            .is_some_and(|suffix| {
-                matches!(
-                    suffix,
-                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
-                )
-            });
-        if matches!(
-            stem.as_str(),
-            "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
-        ) || numbered_device
-        {
-            return Err("source basename is a reserved Windows device name".into());
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_remote_names(listing: &[u8]) -> Result<()> {
-    let listing =
-        std::str::from_utf8(listing).map_err(|_| "remote source contains non-UTF-8 names")?;
-    let mut fields = listing.split_terminator('\0');
-    #[cfg(windows)]
-    let mut seen = std::collections::HashSet::new();
-    while let Some(relative) = fields.next() {
-        let name = fields.next().ok_or("remote source listing is incomplete")?;
-        validate_staging_basename(name)?;
-        #[cfg(windows)]
-        if !seen.insert(relative.to_uppercase()) {
-            return Err("remote source contains case-colliding Windows paths".into());
-        }
-        #[cfg(not(windows))]
-        let _ = relative;
-    }
-    Ok(())
-}
-
 fn send(
     source: &Path,
     location: &Location,
@@ -1794,44 +1413,30 @@ fn send(
     let source = source.as_path();
     match &location.backend {
         Backend::Ssh { .. } => {
-            let times = validate_source_tree(source, context)?;
-            let name = source
-                .file_name()
-                .and_then(OsStr::to_str)
-                .ok_or("source has no UTF-8 basename")?;
-            let output = remote_command_cancellable(
-                &location.backend,
-                "umask 077; mktemp -d /tmp/msync.XXXXXXXXXX",
-                &[],
-                context,
+            let selected = pattern
+                .map(|pattern| {
+                    Regex::new(&format!("\\A(?:{pattern})\\z")).map_err(|cause| cause.to_string())
+                })
+                .transpose()?;
+            let transferred = ssh_channel::upload(
+                ssh_channel::Upload {
+                    source,
+                    destination: location,
+                    mode: if container {
+                        crate::language::DestinationMode::Container
+                    } else {
+                        crate::language::DestinationMode::Exact
+                    },
+                    basename: source.file_name(),
+                    selected: selected.as_ref(),
+                    literal: false,
+                    exclusion: None,
+                },
+                context.cancel,
             )?;
-            let remote_root = String::from_utf8(output.stdout)
-                .map_err(|_| "remote temporary directory is not UTF-8")?
-                .trim_end()
-                .to_owned();
-            if !remote_root.starts_with("/tmp/msync.") || remote_root.contains('\n') {
-                return Err("remote returned an invalid temporary directory".into());
-            }
-            let staged = Location {
-                backend: location.backend.clone(),
-                path: format!("{remote_root}/{name}"),
-            };
-            let result = scp(&staged, source, true, context).and_then(|()| {
-                UploadTimes::restore(&times, &staged, context)?;
-                remote_copy_receipt(
-                    &location.backend,
-                    RemoteSource::uploaded(&staged.path),
-                    &location.path,
-                    container,
-                    pattern,
-                    report,
-                    context,
-                )
-                .map(|_| ())
-            });
-            let cleanup = remote_command(&location.backend, "rm -rf -- \"$1\"", &[&remote_root]);
-            result?;
-            cleanup?;
+            report.copied_files += transferred.copied_files;
+            report.created_directories += transferred.created_directories;
+            report.transferred_bytes += transferred.transferred_bytes;
             Ok(())
         }
         Backend::Wsl => {
@@ -1848,59 +1453,6 @@ fn send(
         }
         _ => Err("unsupported destination endpoint".into()),
     }
-}
-
-fn scp(location: &Location, local: &Path, upload: bool, context: &CopyContext<'_>) -> Result<()> {
-    let Backend::Ssh { host, user, port } = &location.backend else {
-        return Err("SCP requires SSH endpoint".into());
-    };
-    let mut command = ssh_client("scp");
-    if let Some(context) = ssh::current() {
-        context.configure_scp(&mut command, &location.backend)?;
-    }
-    command.args(["-r", "-p"]);
-    if let Some(port) = port {
-        command.args(["-P", &port.to_string()]);
-    }
-    // SFTP downloads still apply glob(3), even though no remote shell is used.
-    #[cfg(windows)]
-    if location.path.contains('\\') {
-        return Err("native Windows SCP cannot preserve backslashes in remote paths".into());
-    }
-    let path = if upload {
-        location.path.clone()
-    } else {
-        escape_sftp_pattern(&location.path)
-    };
-    let remote = format!("{}:{}", ssh_host(host, user.as_deref()), path);
-    command.arg("--");
-    if upload {
-        let source = absolute(local)?;
-        #[cfg(windows)]
-        let source = escape_sftp_pattern(&source.to_string_lossy().replace('\\', "/"));
-        command.arg(source).arg(remote);
-    } else {
-        command.arg(remote).arg(absolute(local)?);
-    }
-    run_cancellable(&mut command, context)?;
-    Ok(())
-}
-
-fn escape_sftp_pattern(path: &str) -> String {
-    // Bracket classes survive Win32 scp's unconditional slash conversion, unlike
-    // backslash escapes. They are also literal single-character POSIX globs.
-    let mut escaped = String::with_capacity(path.len());
-    for character in path.chars() {
-        match character {
-            '*' => escaped.push_str("[*]"),
-            '?' => escaped.push_str("[?]"),
-            '[' => escaped.push_str("[[]"),
-            ']' => escaped.push_str("[]]"),
-            '\\' => escaped.push_str("\\\\"),
-            _ => escaped.push(character),
-        }
-    }
-    escaped
 }
 
 fn ssh_client(program: &str) -> Command {
@@ -1960,7 +1512,7 @@ fn remote_copy_receipt(
             remote_command_cancellable(
                 backend,
                 REMOTE_COPY,
-                &[&child, destination, "1", "1", source.permissions.argument()],
+                &[&child, destination, "1", "1", "filesystem"],
                 context,
             )?;
         }
@@ -1968,10 +1520,7 @@ fn remote_copy_receipt(
             let child = format!("{}/{name}", source.path.trim_end_matches('/'));
             remote_copy_receipt(
                 backend,
-                RemoteSource {
-                    path: &child,
-                    permissions: source.permissions,
-                },
+                RemoteSource { path: &child },
                 destination,
                 true,
                 None,
@@ -1989,11 +1538,15 @@ fn remote_copy_receipt(
             destination,
             if container { "1" } else { "0" },
             "0",
-            source.permissions.argument(),
+            "filesystem",
         ],
         context,
     )?;
-    let (basename, counts) = remote_copy_output(&output.stdout)?;
+    remote_copy_report(&output.stdout, report).map(Some)
+}
+
+fn remote_copy_report(output: &[u8], report: &mut ExecutionReport) -> Result<OsString> {
+    let (basename, counts) = remote_copy_output(output)?;
     let counts = String::from_utf8_lossy(counts);
     for line in counts.lines() {
         match line {
@@ -2008,7 +1561,7 @@ fn remote_copy_receipt(
             _ => {}
         }
     }
-    Ok(Some(basename))
+    Ok(basename)
 }
 
 fn remote_copy_output(output: &[u8]) -> Result<(OsString, &[u8])> {
@@ -2019,7 +1572,6 @@ fn remote_copy_output(output: &[u8]) -> Result<(OsString, &[u8])> {
     let name = fields.next().ok_or("remote source receipt is incomplete")?;
     let counts = fields.next().ok_or("remote source receipt is incomplete")?;
     let name = std::str::from_utf8(name).map_err(|_| "remote source basename is not UTF-8")?;
-    validate_staging_basename(name)?;
     Ok((OsString::from(name), counts))
 }
 
@@ -2027,420 +1579,40 @@ const REMOTE_LIST: &str = r#"
 set -eu
 s=$1
 case $s in '~') s=$HOME;; '~/'*) s=$HOME/${s#\~/};; esac
-p=$s
-while [ "$p" != / ] && [ "$p" != . ]; do
-    [ ! -L "$p" ] || { echo 'refusing source symbolic link' >&2; exit 1; }
-    p=$(dirname -- "$p")
-done
-[ -d "$s" ] || { echo 'a regex source must be a directory' >&2; exit 1; }
-find "$s" -mindepth 1 -maxdepth 1 -printf '%f\0'
-"#;
-
-const REMOTE_VALIDATE: &str = r#"
-set -eu
-export LC_ALL=C
-s=$1
-case $s in '~') s=$HOME;; '~/'*) s=$HOME/${s#\~/};; esac
-p=$s
-while [ "$p" != / ] && [ "$p" != . ]; do
-    [ ! -L "$p" ] || { echo 'refusing source symbolic link' >&2; exit 1; }
-    p=$(dirname -- "$p")
-done
-[ -e "$s" ] || { echo 'remote source does not exist' >&2; exit 1; }
-s=$(realpath -e -- "$s")
-[ -z "$(find "$s" -type l -print -quit)" ] || { echo 'remote source tree contains symbolic links' >&2; exit 1; }
-[ -z "$(find "$s" ! -type f ! -type d -print -quit)" ] || { echo 'remote source tree contains special files' >&2; exit 1; }
-printf 'MSYNC-SOURCE-1\0'
-find "$s" -printf '%P\0%f\0%T@\0'
+find "$s/" -mindepth 1 -maxdepth 1 -printf '%f\0'
 "#;
 
 const REMOTE_COPY: &str = r#"
 set -eu
-fail() { echo "$*" >&2; exit 1; }
-expand() { case $1 in '~') printf '%s' "$HOME";; '~/'*) printf '%s/%s' "$HOME" "${1#\~/}";; *) printf '%s' "$1";; esac; }
-s=$(expand "$1"); d=$(expand "$2"); mode=$3; permission_policy=${5:-filesystem}
-case $permission_policy in filesystem|portable) ;; *) fail 'invalid source permission policy';; esac
-creation_mask=$(umask)
-case $creation_mask in ''|*[!0-7]*) fail 'unsupported destination umask';; esac
-portable_file_mode=$(printf '%o' "$((0666 & ~0$creation_mask))")
-case $s in /*) ;; *) s=$PWD/$s;; esac
-case $d in /*) ;; *) d=$PWD/$d;; esac
-check_parents() {
-    p=$1
-    while [ "$p" != / ]; do
-        [ ! -L "$p" ] || fail "refusing symbolic link: $p"
-        p=$(dirname -- "$p")
-    done
-}
-check_parents "$s"; check_parents "$d"
-s=$(realpath -m -- "$s"); d=$(realpath -m -- "$d")
-[ "$mode" != 0 ] || [ ! -d "$d" ] || fail 'destination is an existing directory; append / to use it as a container'
-[ "$mode" = 0 ] || d=$d/$(basename -- "$s")
-check_parents "$d"
-[ "$s" != "$d" ] || fail 'source and destination are identical'
-ancestor_identity() (
-    root=$1; p=$2
-    while :; do
-        if [ "$root" -ef "$p" ]; then return 0; fi
-        [ "$p" != / ] || return 1
-        p=$(dirname -- "$p")
-    done
-)
-if [ -d "$s" ]; then
-    if ancestor_identity "$s" "$d" || ancestor_identity "$d" "$s"; then
-        fail 'source and destination directory trees overlap'
-    fi
-fi
-[ -e "$s" ] || fail "source does not exist: $s"
-[ -z "$(find "$s" -type l -print -quit)" ] || fail 'source tree contains symbolic links'
-if [ -d "$d" ]; then
-    [ -z "$(find "$d" -type l -print -quit)" ] || fail 'destination tree contains symbolic links'
-fi
-check() (
-    a=$1; b=$2
-    [ ! -e "$b" ] || [ ! "$a" -ef "$b" ] || fail 'source and destination are the same file'
-    if [ -d "$a" ]; then
-        [ ! -e "$b" ] || [ -d "$b" ] || fail "directory destination is a file: $b"
-        for x in "$a"/* "$a"/.[!.]* "$a"/..?*; do
-            [ -e "$x" ] || continue
-            check "$x" "$b/$(basename -- "$x")"
-        done
-    elif [ -f "$a" ]; then
-        [ ! -d "$b" ] || fail "file destination is a directory: $b"
-        [ "$mode" = 0 ] || [ ! -e "$b" ] || fail "destination file already exists: $b"
-    else fail "unsupported special file: $a"; fi
-)
-posix_mode() {
-    [ "$permission_policy" = filesystem ] || return 1
-    case $(stat -f -c %t -- "$1") in
-        ef53|1021994|58465342|9123683e|794c7630) return 0;;
-        *) return 1;;
-    esac
-}
-attenuate_readonly() {
-    bits=$(stat -c %a -- "$1")
-    if [ "$((0$bits & 0222))" = 0 ]; then chmod a-w -- "$2"; fi
-}
+s=$1; d=$2
+case $s in '~') s=$HOME;; '~/'*) s=$HOME/${s#\~/};; esac
+case $d in '~') d=$HOME;; '~/'*) d=$HOME/${d#\~/};; esac
+case $s in '.'|'..'|*/|*/.|*/..)
+    s=$(realpath -e -- "$s" && printf .)
+    s=${s%.}; s=${s%?}
+esac
+name=${s##*/}
+if [ "$3" = 1 ]; then d=$d/$name; fi
+[ "${4:-0}" = 0 ] || exit 0
+printf 'source\0%s\0' "$name"
 copy() (
     a=$1; b=$2
-    if [ -d "$a" ]; then
-        fresh=0
-        if [ ! -d "$b" ]; then mkdir -p -- "$b"; fresh=1; echo directory; fi
-        for x in "$a"/* "$a"/.[!.]* "$a"/..?*; do
-            [ -e "$x" ] || continue
-            copy "$x" "$b/$(basename -- "$x")"
-        done
-        if [ "$fresh" = 1 ]; then
-            touch -r "$a" -- "$b"
-            if posix_mode "$a"; then chmod --reference="$a" -- "$b"
-            else attenuate_readonly "$a" "$b"; fi
-        fi
+    if [ -d "$a" ] && [ ! -L "$a" ]; then
+        [ -d "$b" ] || { mkdir -p -- "$b"; printf 'directory\n'; }
+        for child in "$a"/* "$a"/.[!.]* "$a"/..?*; do [ -e "$child" ] || [ -L "$child" ] || continue; copy "$child" "$b/${child##*/}"; done
+        touch -r "$a" -- "$b"
     else
         mkdir -p -- "$(dirname -- "$b")"
-        part=$(mktemp "$(dirname -- "$b")/.msync.XXXXXXXXXX")
-        trap 'rm -f -- "$part"' EXIT
-        trap 'exit 130' HUP INT TERM
-        bytes=$(stat -c %s -- "$a")
-        if posix_mode "$a"; then cp -p -- "$a" "$part"
-        else
-            cp --preserve=timestamps -- "$a" "$part"
-            chmod "$portable_file_mode" -- "$part"
-            attenuate_readonly "$a" "$part"
-        fi
-        if [ "$mode" = 1 ]; then
-            ln -- "$part" "$b" || fail "cannot create destination: $b"
-        else mv -fT -- "$part" "$b"; fi
-        rm -f -- "$part"
-        trap - EXIT HUP INT TERM
-        echo "file $bytes"
+        cp -a -- "$a" "$b"
+        printf 'file %s\n' "$(stat -c %s -- "$a")"
     fi
 )
-check "$s" "$d"
-[ "${4:-0}" = 0 ] || exit 0
-printf 'source\0%s\0' "$(basename -- "$s")"
 copy "$s" "$d"
 "#;
 
 #[cfg(test)]
 mod transport_tests {
-    use super::{
-        escape_sftp_pattern, remote_copy_output, validate_remote_names, validate_staging_basename,
-    };
-
-    fn metadata_receipt(entries: &[(&str, &str, &str)]) -> Vec<u8> {
-        let mut bytes = super::SOURCE_RECEIPT.to_vec();
-        for entry in entries {
-            for field in [entry.0, entry.1, entry.2] {
-                bytes.extend_from_slice(field.as_bytes());
-                bytes.push(0);
-            }
-        }
-        bytes
-    }
-
-    #[test]
-    fn source_metadata_receipt_retains_root_name_paths_and_whole_second_times() {
-        let receipt = super::SourceReceipt::parse(&metadata_receipt(&[
-            ("", "source 可莉", "0"),
-            ("nested", "nested", "1"),
-            ("nested/file", "file", "-1"),
-        ]))
-        .unwrap();
-        assert_eq!(receipt.basename, "source 可莉");
-        assert_eq!(
-            receipt.times[0],
-            (std::path::PathBuf::new(), std::time::UNIX_EPOCH)
-        );
-        assert_eq!(
-            receipt.times[1].1,
-            std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)
-        );
-        assert_eq!(
-            receipt.times[2].1,
-            std::time::UNIX_EPOCH - std::time::Duration::from_secs(1)
-        );
-        assert_eq!(
-            receipt.times[2].0,
-            std::path::Path::new("nested").join("file")
-        );
-    }
-
-    proptest::proptest! {
-        #![proptest_config(proptest::test_runner::Config::with_cases(96))]
-
-        #[test]
-        fn source_metadata_fractional_times_preserve_checked_floor_seconds(
-            seconds in -2_000_000_000_i64..2_000_000_000_i64,
-            nanos in 0_u32..1_000_000_000_u32,
-        ) {
-            let text = format!("{seconds}.{nanos:09}0");
-            let whole = std::time::Duration::from_secs(seconds.unsigned_abs());
-            let expected = if seconds < 0 {
-                std::time::UNIX_EPOCH - whole
-            } else {
-                std::time::UNIX_EPOCH + whole
-            } + std::time::Duration::from_nanos(nanos as u64);
-            proptest::prop_assert_eq!(super::source_time(&text).unwrap(), expected);
-        }
-    }
-
-    #[test]
-    fn upload_touch_times_use_mathematical_signed_fractions() {
-        for (duration, expected) in [
-            (std::time::Duration::from_millis(500), "-0.500000000"),
-            (std::time::Duration::from_millis(1500), "-1.500000000"),
-        ] {
-            assert_eq!(
-                super::touch_time(std::time::UNIX_EPOCH - duration),
-                expected
-            );
-        }
-        // Windows SystemTime stores 100ns ticks; keep the shared fixture representable.
-        assert_eq!(
-            super::touch_time(std::time::UNIX_EPOCH + std::time::Duration::from_nanos(123_456_700)),
-            "0.123456700"
-        );
-        #[cfg(unix)]
-        assert_eq!(
-            super::touch_time(std::time::UNIX_EPOCH + std::time::Duration::from_nanos(123_456_789)),
-            "0.123456789"
-        );
-        assert_eq!(
-            super::source_time("-1.5000000000").unwrap(),
-            std::time::UNIX_EPOCH - std::time::Duration::from_millis(500)
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn upload_timestamp_helper_preserves_readonly_and_literal_filename_bytes() {
-        use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
-        let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
-        std::fs::create_dir_all(&scratch).unwrap();
-        let root = tempfile::Builder::new()
-            .prefix("upload-time-")
-            .tempdir_in(scratch)
-            .unwrap();
-        let expected = std::time::UNIX_EPOCH - std::time::Duration::from_millis(500);
-        let target = root.path().join("payload");
-        std::fs::create_dir(&target).unwrap();
-        let mut arguments = vec![target.to_str().unwrap().to_owned()];
-        let mut paths = Vec::new();
-        for name in [b"line'\n".as_slice(), b"bytes-\xff".as_slice()] {
-            let name = std::ffi::OsStr::from_bytes(name);
-            let path = target.join(name);
-            std::fs::write(&path, b"unchanged payload").unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o400)).unwrap();
-            arguments.extend([
-                super::octal_relative(std::path::Path::new(name)),
-                super::touch_time(expected),
-            ]);
-            paths.push(path);
-        }
-        arguments.extend([String::new(), super::touch_time(expected)]);
-        let output = std::process::Command::new("sh")
-            .args(["-c", super::RESTORE_UPLOAD_TIMES, "sh"])
-            .args(&arguments)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        for path in paths {
-            let meta = std::fs::metadata(&path).unwrap();
-            assert_eq!(meta.modified().unwrap(), expected);
-            assert_eq!(meta.permissions().mode() & 0o777, 0o400);
-            assert_eq!(std::fs::read(path).unwrap(), b"unchanged payload");
-        }
-        assert_eq!(
-            std::fs::metadata(&target).unwrap().modified().unwrap(),
-            expected
-        );
-
-        let rejected = std::process::Command::new("sh")
-            .args(["-c", super::RESTORE_UPLOAD_TIMES, "sh"])
-            .arg(&target)
-            .arg(super::octal_relative(std::path::Path::new("../escape")))
-            .arg("1.123456789")
-            .output()
-            .unwrap();
-        assert!(!rejected.status.success());
-        assert!(!root.path().join("escape").exists());
-    }
-
-    #[test]
-    fn source_metadata_receipt_rejects_escapes_duplicates_and_ambiguous_paths() {
-        for path in [
-            "/outside",
-            "../outside",
-            "nested/../outside",
-            ".",
-            "nested//file",
-            "nested/./file",
-            "nested/file/",
-        ] {
-            let bytes = metadata_receipt(&[("", "source", "0"), (path, "file", "0")]);
-            assert!(super::SourceReceipt::parse(&bytes).is_err(), "{path:?}");
-        }
-        for entries in [
-            vec![("file", "file", "0")],
-            vec![("", "source", "0"), ("", "source", "0")],
-            vec![
-                ("", "source", "0"),
-                ("file", "file", "0"),
-                ("file", "file", "1"),
-            ],
-            vec![("", "source", "0"), ("file", "other", "0")],
-        ] {
-            assert!(super::SourceReceipt::parse(&metadata_receipt(&entries)).is_err());
-        }
-    }
-
-    #[test]
-    fn source_metadata_receipt_rejects_bad_versions_framing_and_time_bounds() {
-        for time in [
-            "",
-            "nan",
-            "1.",
-            "1.0000000001",
-            "1.nan",
-            "9223372036854775808",
-            "-9223372036854775809",
-            "18446744073709551616",
-        ] {
-            assert!(
-                super::SourceReceipt::parse(&metadata_receipt(&[("", "source", time)])).is_err(),
-                "{time:?}"
-            );
-        }
-        let valid = metadata_receipt(&[("", "source", "0")]);
-        assert!(super::SourceReceipt::parse(&valid[1..]).is_err());
-        assert!(super::SourceReceipt::parse(&valid[..valid.len() - 1]).is_err());
-        assert!(super::SourceReceipt::parse(super::SOURCE_RECEIPT).is_err());
-        let mut invalid_utf8 = valid;
-        invalid_utf8[super::SOURCE_RECEIPT.len() + 1] = 0xff;
-        assert!(super::SourceReceipt::parse(&invalid_utf8).is_err());
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn source_metadata_receipt_rejects_windows_aliases_and_case_collisions() {
-        for path in [r"C:\outside", r"\\server\outside", "file:stream", "NUL"] {
-            assert!(
-                super::SourceReceipt::parse(&metadata_receipt(&[
-                    ("", "source", "0"),
-                    (path, path, "0")
-                ]))
-                .is_err()
-            );
-        }
-        assert!(
-            super::SourceReceipt::parse(&metadata_receipt(&[
-                ("", "source", "0"),
-                ("Name", "Name", "0"),
-                ("name", "name", "0")
-            ]))
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn source_metadata_repairs_a_readonly_root_file_without_changing_bytes_or_flags() {
-        let root = inspection_workspace();
-        let file = root.path().join("private-file");
-        std::fs::write(&file, b"captured readonly body").unwrap();
-        let original = std::fs::metadata(&file).unwrap().permissions();
-        let mut readonly = original.clone();
-        readonly.set_readonly(true);
-        std::fs::set_permissions(&file, readonly).unwrap();
-        let receipt =
-            super::SourceReceipt::parse(&metadata_receipt(&[("", "original-name", "978307207")]))
-                .unwrap();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        receipt
-            .apply_times(&file, &super::CopyContext::new(4096, &cancel))
-            .unwrap();
-        let metadata = std::fs::metadata(&file).unwrap();
-        assert_eq!(
-            metadata.modified().unwrap(),
-            std::time::UNIX_EPOCH + std::time::Duration::from_secs(978_307_207)
-        );
-        assert!(metadata.permissions().readonly());
-        assert_eq!(std::fs::read(&file).unwrap(), b"captured readonly body");
-        std::fs::set_permissions(&file, original).unwrap();
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn source_metadata_never_follows_a_captured_symlink_to_an_outside_entry() {
-        let root = inspection_workspace();
-        let outside = root.path().join("outside");
-        let captured = root.path().join("captured");
-        std::fs::create_dir(&outside).unwrap();
-        std::fs::create_dir(&captured).unwrap();
-        let file = outside.join("file");
-        std::fs::write(&file, b"must remain untouched").unwrap();
-        let before = std::fs::metadata(&file).unwrap().modified().unwrap();
-        std::os::unix::fs::symlink(&outside, captured.join("link")).unwrap();
-        let receipt = super::SourceReceipt::parse(&metadata_receipt(&[
-            ("", "source", "0"),
-            ("link/file", "file", "0"),
-        ]))
-        .unwrap();
-        let cancel = tokio_util::sync::CancellationToken::new();
-        assert!(
-            receipt
-                .apply_times(&captured, &super::CopyContext::new(4096, &cancel))
-                .is_err()
-        );
-        assert_eq!(
-            std::fs::metadata(&file).unwrap().modified().unwrap(),
-            before
-        );
-        assert_eq!(std::fs::read(file).unwrap(), b"must remain untouched");
-    }
+    use super::remote_copy_output;
 
     #[test]
     fn remote_copy_receipt_retains_acquired_name_separately_from_counts() {
@@ -2451,29 +1623,10 @@ mod transport_tests {
     }
 
     #[test]
-    fn uploaded_source_permissions_retain_origin_provenance_not_staging_filesystem() {
-        let uploaded = super::RemoteSource::uploaded("/tmp/native-ext4-staging/payload");
-        assert_eq!(uploaded.path, "/tmp/native-ext4-staging/payload");
-        assert_eq!(
-            uploaded.permissions.argument(),
-            if cfg!(windows) {
-                "portable"
-            } else {
-                "filesystem"
-            },
-        );
-        let source = super::RemoteSource::filesystem("~/source/../actual");
-        assert_eq!(source.path, "~/source/../actual");
-        assert_eq!(source.permissions.argument(), "filesystem");
-    }
-
-    #[test]
     fn malformed_remote_copy_receipts_cannot_supply_a_private_or_escaping_name() {
         for output in [
             b"file 7\n".as_slice(),
             b"source\0root".as_slice(),
-            b"source\0\0file 7\n".as_slice(),
-            b"source\0../root\0file 7\n".as_slice(),
             b"source\0\xff\0file 7\n".as_slice(),
         ] {
             assert!(remote_copy_output(output).is_err(), "{output:?}");
@@ -2671,7 +1824,7 @@ mod transport_tests {
             super::FileClass::Regular
         );
         let probes = inspection.ancestor_probes;
-        assert!(probes > 0);
+        assert_eq!(probes, 0);
         assert_eq!(
             inspection
                 .inspect(&inspection_local(&second), true)
@@ -2679,7 +1832,7 @@ mod transport_tests {
             super::FileClass::Regular
         );
         assert_eq!(inspection.ancestor_probes, probes);
-        assert_eq!(inspection.ancestor_hits, 1);
+        assert_eq!(inspection.ancestor_hits, 0);
         assert_eq!(inspection.leaf_probes, 2);
         std::fs::remove_file(&second).unwrap();
         assert_eq!(
@@ -2720,148 +1873,29 @@ mod transport_tests {
         assert_eq!(inspection.leaf_probes, before);
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn inspection_guards_preserve_verbatim_parent_steps_and_trim_directory_markers() {
-        let path = std::path::Path::new(r"\\?\C:\parent\link\..\file");
-        let guards: Vec<_> = super::ancestor_guards(path).collect();
-        assert_eq!(guards[0], std::path::Path::new(r"\\?\C:\parent\link\.."));
-        assert_eq!(guards[1], std::path::Path::new(r"\\?\C:\parent\link"));
-        for path in [
-            r"C:\parent\link\",
-            r"C:\parent\link\.",
-            r"\\?\C:\parent\link\",
-        ] {
-            let path = std::path::Path::new(path);
-            assert_eq!(
-                super::ancestor_guards(path)
-                    .next()
-                    .unwrap()
-                    .file_name()
-                    .unwrap(),
-                "link"
-            );
-        }
-    }
-
     #[cfg(unix)]
     #[test]
-    fn inspection_failed_symlink_chain_does_not_cache_inner_prefixes() {
+    fn inspection_follows_native_directory_aliases_and_rechecks_leaves() {
         let root = inspection_workspace();
         let target = root.path().join("target");
         std::fs::create_dir_all(target.join("nested")).unwrap();
-        for name in ["first", "second"] {
-            std::fs::write(target.join("nested").join(name), name).unwrap();
-        }
-        let link = root.path().join("link");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
+        std::fs::write(target.join("nested/file"), b"first").unwrap();
+        let alias = root.path().join("alias");
+        std::os::unix::fs::symlink(&target, &alias).unwrap();
         let mut inspection = super::Inspection::default();
-        for name in ["first", "second"] {
-            let location = inspection_local(&link.join("nested").join(name));
-            let failure = inspection.inspect(&location, true).unwrap_err();
-            assert!(failure.contains("refusing symbolic link"), "{failure}");
-            assert!(inspection.ancestors.is_empty());
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn inspection_and_execution_reject_directory_links_with_ignored_suffixes() {
-        use crate::compiler::{CopyOp, Program};
-        let root = inspection_workspace();
-        let target = root.path().join("target");
-        std::fs::create_dir(&target).unwrap();
-        std::fs::write(target.join("child"), "protected").unwrap();
-        let link = root.path().join("link");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        for suffix in ["/", "/.", "/./"] {
-            let path = std::path::PathBuf::from(format!("{}{suffix}", link.display()));
-            let mut inspection = super::Inspection::default();
-            assert!(
-                inspection
-                    .inspect(&inspection_local(&path), true)
-                    .unwrap_err()
-                    .contains("refusing symbolic link")
-            );
-            assert!(inspection.ancestors.is_empty());
-            assert!(
-                super::check_ancestors(&path)
-                    .unwrap_err()
-                    .contains("refusing symbolic link")
-            );
-            let output = root.path().join("output");
-            let result = super::execute(
-                &Program {
-                    operations: vec![CopyOp {
-                        source: inspection_local(&path),
-                        destination: inspection_local(&output),
-                        pattern: None,
-                        span: crate::syntax::Span::default(),
-                    }],
-                },
-                &super::ExecutionOptions::default(),
-            );
-            assert!(
-                result
-                    .unwrap_err()
-                    .message
-                    .contains("refusing symbolic link")
-            );
-            assert!(!output.exists());
-            assert_eq!(
-                std::fs::read_to_string(target.join("child")).unwrap(),
-                "protected"
-            );
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn inspection_does_not_normalize_away_symlinks_or_outlive_preparation() {
-        let root = inspection_workspace();
-        let target = root.path().join("target");
-        std::fs::create_dir(&target).unwrap();
-        let safe = root.path().join("safe");
-        std::fs::write(&safe, "safe").unwrap();
-        let link = root.path().join("link");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        let mut inspection = super::Inspection::default();
-        inspection.inspect(&inspection_local(&safe), true).unwrap();
-        let failure = inspection
-            .inspect(&inspection_local(&link.join("..").join("safe")), true)
-            .unwrap_err();
-        assert!(failure.contains("refusing symbolic link"), "{failure}");
-
-        let parent = root.path().join("parent");
-        std::fs::create_dir(&parent).unwrap();
-        std::fs::write(parent.join("child"), "before").unwrap();
-        inspection
-            .inspect(&inspection_local(&parent.join("child")), true)
-            .unwrap();
-        std::fs::remove_file(parent.join("child")).unwrap();
-        std::fs::remove_dir(&parent).unwrap();
-        std::fs::write(target.join("child"), "after").unwrap();
-        std::os::unix::fs::symlink(&target, &parent).unwrap();
-        assert!(
-            super::inspect_location(&inspection_local(&parent.join("child")), true)
-                .unwrap_err()
-                .contains("refusing symbolic link")
-        );
-        assert!(
-            super::check_ancestors(&parent.join("child"))
-                .unwrap_err()
-                .contains("refusing symbolic link")
-        );
-    }
-
-    #[test]
-    fn sftp_downloads_escape_globs_without_changing_home_expansion() {
-        assert_eq!(escape_sftp_pattern("~/a[1].txt"), "~/a[[]1[]].txt");
+        let location = inspection_local(&alias.join("nested/file"));
         assert_eq!(
-            escape_sftp_pattern(r"dir/a*?[]\file"),
-            r"dir/a[*][?][[][]]\\file"
+            inspection.inspect(&location, true).unwrap(),
+            super::FileClass::Regular
         );
-        assert_eq!(escape_sftp_pattern("~/plain 文件.txt"), "~/plain 文件.txt");
+        std::fs::remove_file(target.join("nested/file")).unwrap();
+        assert_eq!(
+            inspection.inspect(&location, true).unwrap(),
+            super::FileClass::Missing
+        );
+        assert_eq!(inspection.ancestor_probes, 0);
+        assert_eq!(inspection.ancestor_hits, 0);
+        assert_eq!(inspection.leaf_probes, 2);
     }
 
     #[test]
@@ -2931,41 +1965,6 @@ mod transport_tests {
             }
         }
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
-    }
-
-    #[test]
-    fn staging_accepts_only_one_native_filename_component() {
-        for name in ["", ".", "..", "/root", "folder/file"] {
-            assert!(validate_staging_basename(name).is_err(), "{name:?}");
-        }
-        for name in ["a[1]{x} file.html", "配置.toml"] {
-            assert!(validate_staging_basename(name).is_ok(), "{name:?}");
-        }
-        #[cfg(windows)]
-        for name in [
-            r"D:\victim.txt",
-            r"D:victim.txt",
-            r"..\victim",
-            r"\victim",
-            "victim:stream",
-        ] {
-            assert!(validate_staging_basename(name).is_err(), "{name:?}");
-        }
-    }
-
-    #[test]
-    fn remote_tree_names_are_validated_before_recursive_download() {
-        assert!(validate_remote_names(b"\0tree\0nested\0nested\0nested/a.txt\0a.txt\0").is_ok());
-        assert!(validate_remote_names(b"\0tree\0missing-name\0").is_err());
-        #[cfg(windows)]
-        for listing in [
-            b"\0tree\0escape\0..\\..\\victim\0".as_slice(),
-            b"\0tree\0a\0a\0A\0A\0".as_slice(),
-            b"\0tree\0CON\0CON\0".as_slice(),
-            b"\0tree\0a.\0a.\0".as_slice(),
-        ] {
-            assert!(validate_remote_names(listing).is_err());
-        }
     }
 
     #[cfg(windows)]

@@ -13,7 +13,6 @@ mod fifo;
 mod flow;
 pub mod live;
 mod ordinary;
-mod path_policy;
 mod program;
 pub mod progress;
 mod scheduler;
@@ -99,16 +98,9 @@ pub(super) fn merge(target: &mut ExecutionReport, source: ExecutionReport) {
     target.cleanup.extend(source.cleanup);
 }
 
-/// Read-only admission check for existing local or remote recovery state.
-/// Missing and non-directory roots stay cold; present or inaccessible registries
-/// require normal runtime recovery, including its ownership checks and diagnostics.
-pub fn recovery_required(scratch_root: &Path, fallback: Option<&Path>) -> bool {
-    root_may_need_recovery(scratch_root) || fallback.is_some_and(root_may_need_recovery)
-}
-
-fn root_may_need_recovery(scratch_root: &Path) -> bool {
-    crate::filesystem::recovery::may_need_recovery(scratch_root)
-        || endpoint::may_need_recovery(scratch_root)
+/// Legacy compatibility: transfers no longer have global recovery admission.
+pub fn recovery_required(_: &Path, _: Option<&Path>) -> bool {
+    false
 }
 
 /// Blocking convenience entry point for finite documents. Async callers use a session.

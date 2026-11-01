@@ -150,7 +150,7 @@ struct Scope {
     source: Option<Arc<Source>>,
     symbols: Arc<imbl::OrdMap<String, Arc<symbols::Symbol>>>,
     symbol_calls: Vec<(Arc<symbols::Symbol>, SourceSpan)>,
-    symbol_budget: symbols::Budget,
+    symbol_count: symbols::CallCount,
     defined_units: Arc<imbl::OrdMap<String, SourceId>>,
     values: Arc<imbl::OrdMap<String, Value>>,
     macros: Arc<imbl::OrdMap<String, Arc<Macro>>>,
@@ -496,7 +496,7 @@ impl Session {
             .map_err(|report| vec![LocatedReport::new(source.clone(), report)])?;
         let mut candidate = self.clone();
         let mut scope = candidate.scope.clone();
-        scope.symbol_budget = symbols::Budget::default();
+        scope.symbol_count = symbols::CallCount::default();
         scope.current_unit = Some(source.id);
         scope.source = Some(source.clone());
         let mut lower = Lower {
@@ -523,10 +523,7 @@ impl Session {
             "runtime_slots",
             (scope.slots.load(std::sync::atomic::Ordering::Relaxed) - slots_before) as u64,
         );
-        trace.metric(
-            "function_specializations",
-            scope.symbol_budget.used() as u64,
-        );
+        trace.metric("function_specializations", scope.symbol_count.used() as u64);
         trace.metric("errors", errors.len() as u64);
         if !errors.is_empty() {
             trace.finish_result(&Err::<(), _>(&errors));
@@ -1297,7 +1294,7 @@ impl Lower<'_> {
             source: Some(definition.source.clone()),
             symbols: definition.symbols.clone(),
             symbol_calls: caller.symbol_calls.clone(),
-            symbol_budget: caller.symbol_budget.clone(),
+            symbol_count: caller.symbol_count.clone(),
             defined_units: Arc::new(imbl::OrdMap::new()),
             values: Arc::new(values),
             macros: definition.macros.clone(),
@@ -1486,7 +1483,6 @@ fn resolve(expression: &Expr, scope: &Scope, context: &CompileContext) -> Result
         }
         value => value,
     };
-    symbols::check_value(&value, expression.span, scope)?;
     Ok(value)
 }
 
@@ -1589,7 +1585,6 @@ fn resolve_join(
     }
     let Some(suffix_value) = suffix_value else {
         if !base_path.path.ends_with(['/', '\\']) {
-            symbols::check_size(base_path.path.len().saturating_add(1), operator, scope)?;
             base_path.path.push('/');
             if let Some(relocation) = &mut base_path.relocation {
                 relocation.append("/");
@@ -1627,13 +1622,6 @@ fn resolve_join(
             .into(),
         );
     }
-    let separator = usize::from(!base_path.path.ends_with(['/', '\\']));
-    let projected = base_path
-        .path
-        .len()
-        .saturating_add(separator)
-        .saturating_add(suffix_path.path.len());
-    symbols::check_size(projected, operator, scope)?;
     if base_path.backend.is_none() {
         base_path.backend = suffix_path.backend;
     }
@@ -1690,12 +1678,11 @@ fn path_fragment(value: Value, span: Span) -> Result<PathValue, Report> {
             .help("Select a space's item with '::' before composing a path, for example '$pwd::pwd / \"child\"'."));
         }
     };
-    if path.path.is_empty()
-        || language::path_boundary_whitespace(&path.path)
-        || path.path.contains('\0')
-    {
-        return Err(Report::new("path components must be nonempty, NUL-free and have no boundary whitespace", span)
-            .help("Internal spaces are valid. Use a bare quoted source for literal bytes; use '/' explicitly for paths."));
+    if path.path.is_empty() || path.path.contains('\0') {
+        return Err(
+            Report::new("path components must be nonempty and NUL-free", span)
+                .help("Use a bare quoted source for literal bytes; use '/' explicitly for paths."),
+        );
     }
     Ok(path)
 }
@@ -1844,11 +1831,7 @@ fn resolve_select(
         operator,
     )?;
     if let (Value::Space(outer), Value::Space(inner)) = (&value, &item_value) {
-        return Ok(Value::Space(compose_scopes(
-            outer.clone(),
-            inner.clone(),
-            operator,
-        )?));
+        return Ok(Value::Space(compose_scopes(outer.clone(), inner.clone())));
     }
     let fragment = path_fragment(item_value, item.span)?;
     match value {
@@ -2121,7 +2104,7 @@ fn contextualize_pwd_value(
         span,
     )?;
     if let Value::Space(inner) = value {
-        return Ok(Value::Space(compose_scopes(Space::Pwd, inner, span)?));
+        return Ok(Value::Space(compose_scopes(Space::Pwd, inner)));
     }
     let mut value = path_fragment(value, span)?;
     if value
@@ -2167,8 +2150,7 @@ fn qualify(value: Value, backend: Backend, span: Span) -> Result<Value, Failure>
         return Ok(Value::Space(compose_scopes(
             Space::Endpoint(backend),
             inner,
-            span,
-        )?));
+        )));
     }
     let mut path = path_fragment(value, span)?;
     if path.backend.as_ref().is_some_and(|other| other != &backend) {
@@ -2182,23 +2164,36 @@ fn qualify(value: Value, backend: Backend, span: Span) -> Result<Value, Failure>
     Ok(Value::Path(path))
 }
 
-fn compose_scopes(outer: Space, inner: Space, span: Span) -> Result<Space, Report> {
-    fn depth(space: &Space) -> usize {
-        match space {
-            Space::Qualified { outer, inner } => 1 + depth(outer).max(depth(inner)),
-            _ => 1,
-        }
-    }
-    if depth(&outer).max(depth(&inner)) >= 128 {
-        return Err(Report::new(
-            "scope composition nesting exceeds 128 levels",
-            span,
-        ));
-    }
-    Ok(Space::Qualified {
+fn compose_scopes(outer: Space, inner: Space) -> Space {
+    let pair = |outer, inner| Space::Qualified {
         outer: Box::new(outer),
         inner: Box::new(inner),
-    })
+    };
+    if !matches!(outer, Space::Qualified { .. }) && !matches!(inner, Space::Qualified { .. }) {
+        return pair(outer, inner);
+    }
+    let mut pending = vec![inner, outer];
+    let mut leaves = Vec::new();
+    while let Some(space) = pending.pop() {
+        match space {
+            Space::Qualified { outer, inner } => pending.extend([*inner, *outer]),
+            leaf => leaves.push(leaf),
+        }
+    }
+    // Composition is associative. Preserve application order while keeping
+    // clone, namespace conversion and evaluation stacks logarithmic in width.
+    while leaves.len() > 1 {
+        let mut next = Vec::with_capacity(leaves.len().div_ceil(2));
+        let mut level = leaves.into_iter();
+        while let Some(outer) = level.next() {
+            next.push(match level.next() {
+                Some(inner) => pair(outer, inner),
+                None => outer,
+            });
+        }
+        leaves = next;
+    }
+    leaves.pop().expect("composition has two operand scopes")
 }
 
 fn apply_scope_value(
@@ -2208,7 +2203,7 @@ fn apply_scope_value(
     context: &CompileContext,
 ) -> Result<Value, Failure> {
     if let Value::Space(inner) = item {
-        return Ok(Value::Space(compose_scopes(space, inner, span)?));
+        return Ok(Value::Space(compose_scopes(space, inner)));
     }
     match space {
         Space::Endpoint(backend) => qualify(item, backend, span),
@@ -2501,11 +2496,128 @@ mod performance_tests {
         let program = session
             .compile(&language::parse(source).unwrap(), &context())
             .unwrap();
-        assert_eq!(session.scope.symbol_budget.used(), 2);
+        assert_eq!(session.scope.symbol_count.used(), 2);
         assert_eq!(program.body.instructions.len(), 1);
         assert!(
             matches!(&program.body.instructions[0].kind, InstructionKind::Transfer { source: Input::File { location, .. }, .. } if location.path.ends_with("input/leaf"))
         );
+    }
+
+    #[test]
+    fn grouped_scope_composition_preserves_native_namespace_semantics() {
+        let context = CompileContext {
+            pwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+            source_file: Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("scope.msync")),
+        };
+        let endpoint = Space::Endpoint;
+        let cases = [
+            (
+                [endpoint(Backend::Local), Space::Pwd, Space::File],
+                "parent",
+            ),
+            ([endpoint(Backend::Local), Space::Pwd, Space::Pwd], "leaf"),
+            (
+                [
+                    endpoint(Backend::Path),
+                    endpoint(Backend::Path),
+                    endpoint(Backend::Path),
+                ],
+                "tool",
+            ),
+            (
+                [
+                    endpoint(Backend::Wsl),
+                    endpoint(Backend::Wsl),
+                    endpoint(Backend::Wsl),
+                ],
+                "guest/path",
+            ),
+            (
+                [endpoint(Backend::Wsl), Space::Pwd, endpoint(Backend::Local)],
+                "leaf",
+            ),
+            (
+                [
+                    endpoint(Backend::Tcp {
+                        host: "fixture.invalid".into(),
+                        port: 1234,
+                    }),
+                    endpoint(Backend::Tcp {
+                        host: "fixture.invalid".into(),
+                        port: 1234,
+                    }),
+                    endpoint(Backend::Tcp {
+                        host: "fixture.invalid".into(),
+                        port: 1234,
+                    }),
+                ],
+                "/",
+            ),
+        ];
+        let pair = |outer, inner| Space::Qualified {
+            outer: Box::new(outer),
+            inner: Box::new(inner),
+        };
+        for ([outer, middle, inner], item) in cases {
+            let left = pair(pair(outer.clone(), middle.clone()), inner.clone());
+            let right = pair(outer.clone(), pair(middle.clone(), inner.clone()));
+            let balanced = compose_scopes(compose_scopes(outer, middle), inner);
+            let resolve = |scope| {
+                let item = Value::Path(PathValue {
+                    backend: None,
+                    path: item.into(),
+                    is_file: false,
+                    mode: DestinationMode::Exact,
+                    relocation: None,
+                    relocation_unit: None,
+                });
+                apply_scope_value(scope, item, Span::default(), &context)
+                    .map(|value| {
+                        let Value::Path(path) = value else {
+                            panic!("expected path");
+                        };
+                        (
+                            path.backend,
+                            path.path,
+                            path.relocation,
+                            path.mode,
+                            path.is_file,
+                        )
+                    })
+                    .map_err(|failure| {
+                        failure
+                            .locate(Source::new("scope.msync", ""))
+                            .report
+                            .diagnostic
+                            .message
+                    })
+            };
+            let expected = resolve(left);
+            assert_eq!(expected, resolve(right));
+            assert_eq!(expected, resolve(balanced));
+        }
+    }
+
+    #[test]
+    fn scope_composition_balances_flat_sequences_without_a_depth_quota() {
+        let mut composed = Space::Pwd;
+        for _ in 0..257 {
+            composed = compose_scopes(composed, Space::Pwd);
+        }
+        let mut pending = vec![(&composed, 1)];
+        let mut leaves = 0;
+        let mut depth = 0;
+        while let Some((scope, level)) = pending.pop() {
+            depth = depth.max(level);
+            match scope {
+                Space::Qualified { outer, inner } => {
+                    pending.extend([(outer.as_ref(), level + 1), (inner.as_ref(), level + 1)])
+                }
+                _ => leaves += 1,
+            }
+        }
+        assert_eq!(leaves, 258);
+        assert!(depth <= 10);
     }
 
     #[test]

@@ -103,7 +103,7 @@ fn obsolete_provider_configuration_is_ignored_even_when_nonlocal_or_hostile() {
 
 #[cfg(windows)]
 #[test]
-fn network_search_paths_are_skipped_without_opening_remote_clients() {
+fn network_search_paths_are_reported_as_uninspected_without_opening_remote_clients() {
     let root = workspace();
     let output = invoke(root.path())
         .env("PATH", r"\\msync-doctor-no-remote-probe\share")
@@ -112,6 +112,13 @@ fn network_search_paths_are_skipped_without_opening_remote_clients() {
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     let text = String::from_utf8(output.stdout).unwrap();
-    assert!(!text.contains("msync-doctor-no-remote-probe"), "{text}");
+    if text.contains("search incomplete") {
+        assert!(
+            text.contains("Not inspected by this passive inventory"),
+            "{text}"
+        );
+        assert!(text.contains("msync-doctor-no-remote-probe"), "{text}");
+    }
+    assert!(!text.contains("Cannot locate"), "{text}");
     assert_eq!(fs::read_dir(root.path()).unwrap().count(), 0);
 }

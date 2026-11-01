@@ -79,8 +79,13 @@ impl FileResource {
         }
         // An exact parent write can change whether a descendant exists, even
         // when neither caller requested recursive enumeration.
-        self.path.parts.starts_with(&other.path.parts)
-            || other.path.parts.starts_with(&self.path.parts)
+        self.path
+            .comparison_parts()
+            .starts_with(other.path.comparison_parts())
+            || other
+                .path
+                .comparison_parts()
+                .starts_with(self.path.comparison_parts())
     }
 
     fn comparable(&self, other: &Self) -> Option<bool> {
@@ -129,8 +134,15 @@ impl FileResource {
     }
 
     fn same_path(&self, other: &Self) -> bool {
-        self.comparable(other)
-            .unwrap_or_else(|| self.path.parts == other.path.parts)
+        self.comparable(other).unwrap_or_else(|| {
+            let left = self.path.comparison_parts();
+            let right = other.path.comparison_parts();
+            if self.path.comparison_is_prefix() || other.path.comparison_is_prefix() {
+                left.starts_with(right) || right.starts_with(left)
+            } else {
+                left == right
+            }
+        })
     }
 
     fn definitely_same_path(&self, other: &Self) -> bool {
@@ -152,8 +164,12 @@ impl FileResource {
     }
 
     fn contains_path(&self, other: &Self) -> bool {
-        self.comparable(other)
-            .unwrap_or_else(|| other.path.parts.starts_with(&self.path.parts))
+        self.comparable(other).unwrap_or_else(|| {
+            let left = self.path.comparison_parts();
+            let right = other.path.comparison_parts();
+            right.starts_with(left)
+                || (other.path.comparison_is_prefix() && left.starts_with(right))
+        })
     }
 
     fn parent(&self) -> Option<Self> {
@@ -162,7 +178,11 @@ impl FileResource {
             return None;
         }
         let mut parent = self.clone();
-        Arc::make_mut(&mut parent.path).parts.pop();
+        let path = Arc::make_mut(&mut parent.path);
+        path.parts.pop();
+        if let Some(comparison) = path.comparison.as_mut() {
+            comparison.truncate(path.parts.len());
+        }
         parent.scope = Scope::Exact;
         let tail = parent.path.parts.join("/");
         parent.location.path = match parent.path.root.as_str() {
@@ -249,28 +269,47 @@ fn native_wsl_pair(left: &Backend, right: &Backend) -> bool {
 struct LogicalPath {
     root: String,
     parts: Vec<String>,
+    comparison: Option<Vec<String>>,
     uncertain: bool,
 }
 
 impl LogicalPath {
+    fn comparison_parts(&self) -> &[String] {
+        self.comparison.as_deref().unwrap_or(&self.parts)
+    }
+
+    fn comparison_is_prefix(&self) -> bool {
+        self.comparison_parts().len() < self.parts.len()
+    }
+
     fn new(location: &Location) -> Self {
         let local = matches!(
             location.backend,
             Backend::Local | Backend::Path | Backend::Env
         );
-        let path = if local {
+        let bytes = location.path.as_bytes();
+        let windows_spelling = local
+            && (cfg!(windows)
+                || location.path.starts_with("\\\\")
+                || location.path.starts_with("//")
+                || (bytes.first().is_some_and(u8::is_ascii_alphabetic)
+                    && bytes.get(1) == Some(&b':')
+                    && bytes
+                        .get(2)
+                        .is_some_and(|byte| matches!(*byte, b'/' | b'\\'))));
+        let path = if windows_spelling {
             location.path.replace('\\', "/")
         } else {
             location.path.clone()
         };
-        let verbatim = local && path.starts_with("//?/");
-        let (path, device) = if local {
+        let verbatim = windows_spelling && path.starts_with("//?/");
+        let (path, device) = if windows_spelling {
             windows_comparison_path(&path)
         } else {
             (Cow::Borrowed(path.as_str()), false)
         };
-        let drive = local && path.as_bytes().get(1) == Some(&b':');
-        let unc = local && path.starts_with("//");
+        let drive = windows_spelling && path.as_bytes().get(1) == Some(&b':');
+        let unc = windows_spelling && path.starts_with("//");
         let windows = drive || unc;
         let (root, tail) = if drive {
             (path[..2].to_ascii_lowercase(), &path[2..])
@@ -296,32 +335,44 @@ impl LogicalPath {
             match part {
                 "" | "." => {}
                 ".." => {
-                    if parts.pop().is_none() {
-                        uncertain = true;
-                    }
+                    // A selected directory may be a link. Only native lookup
+                    // can determine its parent; lexical cancellation is not identity.
+                    parts.push(part.to_owned());
+                    uncertain = true;
                 }
                 part => {
-                    if windows
-                        && (!part.is_ascii()
-                            || part.contains(':')
-                            || (verbatim && part.ends_with(['.', ' '])))
-                    {
-                        // Unicode case folding and NTFS alternate streams need
-                        // native identity evidence, not a portable string guess.
+                    if windows && (part.contains(':') || (verbatim && part.ends_with(['.', ' ']))) {
+                        // Device/alternate-stream spellings need native evidence;
+                        // they are not ordinary directory components.
                         uncertain = true;
                     }
-                    parts.push(if windows {
-                        part.trim_end_matches(['.', ' ']).to_ascii_lowercase()
-                    } else {
-                        part.to_owned()
-                    });
+                    parts.push(part.to_owned());
                 }
             }
         }
         uncertain |= unc && parts.len() < 2;
+        if unc {
+            for component in parts.iter_mut().take(2) {
+                component.make_ascii_lowercase();
+            }
+        }
+        let comparison = windows.then(|| {
+            parts
+                .iter()
+                .map_while(|part| {
+                    let component = if verbatim {
+                        part.as_str()
+                    } else {
+                        part.trim_end_matches(['.', ' '])
+                    };
+                    crate::plan::windows_comparison_component(component)
+                })
+                .collect()
+        });
         Self {
             root,
             parts,
+            comparison,
             uncertain,
         }
     }
@@ -792,7 +843,7 @@ mod windows_path_tests {
         for (normal, extended, sibling) in [
             (
                 r"D:\workspace\stream",
-                r"\\?\d:\WORKSPACE\stream",
+                r"\\?\d:\workspace\stream",
                 r"\\?\D:\workspace\gate",
             ),
             (
@@ -837,6 +888,52 @@ mod windows_path_tests {
     }
 
     #[test]
+    fn native_component_case_is_not_a_positive_identity_proof() {
+        let lower = file(r"D:\workspace\a");
+        let upper = file(r"D:\workspace\A");
+        assert_ne!(lower.path.parts, upper.path.parts);
+        assert!(!lower.definitely_same_path(&upper));
+        assert!(lower.may_overlap(&upper));
+        let street = file(r"D:\workspace\straße");
+        let expanded = file(r"D:\workspace\STRASSE");
+        assert!(!street.definitely_same_path(&expanded));
+        assert!(street.may_overlap(&expanded));
+        assert!(!street.may_overlap(&file(r"D:\unrelated\file")));
+        let source = VersionReadProof::pinned_file(lower.location.clone(), "capture", "1").unwrap();
+        assert!(!source.covers(&upper.location));
+    }
+
+    #[test]
+    fn uncased_unicode_workspaces_keep_independent_siblings() {
+        for root in [r"D:\用户\项目", r"D:\日本語\🚀", r"\\server\共享\项目"] {
+            let left = file(format!(r"{root}\a"));
+            let right = file(format!(r"{root}\b"));
+            let case_alias = file(format!(r"{root}\A"));
+            assert!(!left.may_overlap(&right), "{root}");
+            assert!(!left.definitely_same_path(&case_alias), "{root}");
+            assert!(left.may_overlap(&case_alias), "{root}");
+        }
+    }
+
+    #[test]
+    fn parent_traversal_is_not_a_positive_lexical_identity() {
+        let indirect = file("alias/../target");
+        let lexical = file("target");
+        assert!(!indirect.definitely_same_path(&lexical));
+        assert!(indirect.may_overlap(&lexical));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_posix_backslashes_remain_filename_characters() {
+        let literal = file("/workspace/line\nslash\\ 可莉");
+        let split = file("/workspace/line\nslash/ 可莉");
+        assert_eq!(literal.path.parts, ["workspace", "line\nslash\\ 可莉"]);
+        assert!(!literal.definitely_same_path(&split));
+        assert!(!literal.may_overlap(&split));
+    }
+
+    #[test]
     fn remote_posix_names_do_not_gain_native_windows_aliases() {
         let remote = |path: &str| {
             FileResource::new(
@@ -864,8 +961,8 @@ mod windows_path_tests {
         ) {
             prop_assume!(left != right);
             for (normal, extended) in [
-                (r"D:\root\", r"\\?\d:\ROOT\"),
-                (r"\\server\share\root\", r"\\?\UNC\SERVER\SHARE\ROOT\"),
+                (r"D:\root\", r"\\?\d:\root\"),
+                (r"\\server\share\root\", r"\\?\UNC\SERVER\SHARE\root\"),
             ] {
                 let aliases = [file(format!("{normal}leaf-{left}")), file(format!("{extended}leaf-{left}"))];
                 let siblings = [file(format!("{normal}leaf-{right}")), file(format!("{extended}leaf-{right}"))];

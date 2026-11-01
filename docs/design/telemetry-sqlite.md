@@ -41,16 +41,18 @@ a 4096-record producer queue, and a 1000 ms busy timeout. NORMAL synchronization
 is the default; FULL is configurable for callers requiring a WAL sync on each
 transaction. OFF is not offered as an optimization.
 
-A full queue applies backpressure rather than dropping arbitrary causal records.
-A flush is a queue barrier: it waits for all preceding records to commit or
-returns the first retained exporter error. The normal shutdown path drains queued
+Recording uses nonblocking queue admission. A full queue increments an explicit
+dropped-record count; it does not stall the interpreter behind SQLite. Flush and
+shutdown report incomplete recording, and the session's exporter_error includes
+the gap count. A flush remains a queue barrier for accepted records. The normal shutdown path drains queued
 records, marks the session ended, and joins the worker. Destructor failures do not
 panic or mask an ongoing file operation; explicit API flush exposes them.
 
-A per-session record cap defaults to one million and raises a visible exporter
-error instead of silently producing an incomplete trace. Retention keeps the
-newest 100 completed sessions by default, removing their normalized rows through
-cascading foreign keys. Rows belonging to active sessions are never evicted merely
+Default session retention, record count and database size use the database's
+representable maximum rather than imposing small policy quotas. Explicitly
+configured budgets remain available and report incomplete recording rather than
+changing the file-operation result. Configured retention removes completed
+sessions through cascading foreign keys. Rows belonging to active sessions are never evicted merely
 to satisfy that target. A crashed process can consequently leave an unfinished
 session for diagnosis; this is not a hard global database-size guarantee.
 Trace-level sampling is decided before enabling a session by the public API and
@@ -79,7 +81,7 @@ writer lock. Two first-open processes therefore see either an unclaimed empty
 database or the fully committed msync schema, never a stale empty-state decision.
 Foreign schemas are rejected without changing their journaling mode.
 
-`max_database_bytes` defaults to 256 MiB (minimum 1 MiB) and configures a SQLite
+An explicitly configured `max_database_bytes` configures a SQLite
 page-count cap. A database already exceeding the chosen page budget is rejected;
 future page allocation fails visibly with `SQLITE_FULL`. This also limits growth
 caused by abandoned sessions, which are intentionally not pruned as if complete.
@@ -124,3 +126,14 @@ The same gate passed the existing five JSONL integration tests and the independe
 fresh-database concurrent-process initialization regression. These results are
 local incremental acceptance, not a power-failure, remote-filesystem or Windows
 certification. No Cargo command was launched independently by the storage owner.
+
+## Delivery-first observer outcome (2026-11-01)
+
+Optional observer initialization or closure errors produce structured warnings
+with the selected destination and underlying cause. They never replace the
+result of a successful file operation. A failed operation remains failed even if
+its observer also fails. Telemetry query/export commands still report failure
+when their own requested output is unavailable; recording health and application
+outcome are distinct states. Producers never wait for queue space. Completed
+sessions with dropped records are explicitly marked incomplete/error, not
+presented as complete traces.

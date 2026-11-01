@@ -2,7 +2,7 @@
 
 use std::fs;
 use std::future::{Future, poll_fn};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -11,7 +11,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::compiler::CopyOp;
 use crate::endpoint::{Backend, Location};
-use crate::filesystem::{Entry, InvocationRoot, Snapshot, SnapshotStore};
 use crate::hir::{Input, Instruction, InstructionKind, Output};
 use crate::io::{FlowEnd, FlowReport};
 use crate::language::DestinationMode;
@@ -37,7 +36,7 @@ pub(super) fn validate_native_transfer(node: &Instruction) -> Result<()> {
     if crate::streams::is_named_pipe_path(&path.to_string_lossy()) {
         return Ok(());
     }
-    if !fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
+    if !fs::metadata(path).is_ok_and(|metadata| metadata.is_dir()) {
         return Ok(());
     }
     let physical = match destination {
@@ -68,7 +67,7 @@ pub(super) fn native_stream(location: &Location, source: bool) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileTypeExt;
-        fs::symlink_metadata(path).is_ok_and(|metadata| {
+        fs::metadata(path).is_ok_and(|metadata| {
             metadata.file_type().is_fifo() || metadata.file_type().is_socket()
         })
     }
@@ -78,7 +77,7 @@ pub(super) fn native_stream(location: &Location, source: bool) -> bool {
 
 pub(super) enum Source {
     Endpoint(Location),
-    Captured(CapturedSource),
+    File { file: fs::File, location: Location },
     Reader(Reader),
     Literal(Arc<str>),
 }
@@ -107,45 +106,7 @@ impl Source {
     }
 }
 
-pub(super) struct CapturedSource {
-    location: Location,
-    snapshot: Option<Snapshot>,
-    store: Option<SnapshotStore>,
-    invocation: Option<InvocationRoot>,
-}
-
-impl CapturedSource {
-    fn cleanup(&mut self) -> std::result::Result<(), crate::filesystem::FsError> {
-        self.snapshot.take();
-        if let Some(store) = &mut self.store {
-            store.cleanup()?;
-        }
-        self.store.take();
-        if let Some(invocation) = &self.invocation {
-            invocation.cleanup()?;
-        }
-        self.invocation.take();
-        Ok(())
-    }
-
-    fn retained_path(&self) -> Option<PathBuf> {
-        self.invocation
-            .as_ref()
-            .map(|invocation| invocation.path().to_owned())
-    }
-}
-
-impl Drop for CapturedSource {
-    fn drop(&mut self) {
-        if let Err(cause) = self.cleanup()
-            && let Some(context) = crate::telemetry::context()
-        {
-            context.record_error("flow.capture.cleanup", &cause);
-        }
-    }
-}
-
-fn capture_source(location: Location, scratch: &Path, span: Span) -> Result<Source> {
+fn capture_source(location: Location, _scratch: &Path, span: Span) -> Result<Source> {
     #[cfg(windows)]
     if crate::streams::is_named_pipe_path(&location.path) {
         return Ok(Source::Endpoint(location));
@@ -159,7 +120,7 @@ fn capture_source(location: Location, scratch: &Path, span: Span) -> Result<Sour
     if crate::streams::is_named_pipe_path(&path.to_string_lossy()) {
         return Ok(Source::Endpoint(location));
     }
-    let metadata = fs::symlink_metadata(&path).map_err(|cause| {
+    let metadata = fs::metadata(&path).map_err(|cause| {
         ExecutionError::caused(
             "cannot inspect the flow source before admission",
             span,
@@ -169,65 +130,10 @@ fn capture_source(location: Location, scratch: &Path, span: Span) -> Result<Sour
     if !metadata.is_file() {
         return Ok(Source::Endpoint(location));
     }
-    let invocation = InvocationRoot::create(scratch).map_err(|cause| {
-        ExecutionError::caused("cannot allocate flow-source storage", span, cause)
+    let file = fs::File::open(&path).map_err(|cause| {
+        ExecutionError::caused("cannot open the flow source before admission", span, cause)
     })?;
-    let mut capture = CapturedSource {
-        location: location.clone(),
-        snapshot: None,
-        store: None,
-        invocation: Some(invocation),
-    };
-    if let Err(mut error) = capture_file(&mut capture, &path, span) {
-        let retained = capture.retained_path();
-        if let Err(cause) = capture.cleanup() {
-            error.report.help.push(format!(
-                "failed flow-source acquisition also could not clean its storage: {cause}"
-            ));
-            error.retained_paths.extend(retained);
-        }
-        return Err(error);
-    }
-    Ok(Source::Captured(capture))
-}
-
-fn capture_file(capture: &mut CapturedSource, path: &Path, span: Span) -> Result<()> {
-    let invocation = capture.invocation.as_ref().expect("owned invocation");
-    capture.store = Some(
-        SnapshotStore::new_in(invocation.path(), invocation).map_err(|cause| {
-            ExecutionError::caused("cannot allocate flow-source snapshot", span, cause)
-        })?,
-    );
-    let snapshot = capture
-        .store
-        .as_ref()
-        .expect("owned snapshot store")
-        .capture_in(path, invocation)
-        .map_err(|cause| ExecutionError::caused("cannot capture flow-source bytes", span, cause))?;
-    let Some(Entry::File { artifact, .. }) = snapshot.entries().get(Path::new("")) else {
-        return Err(ExecutionError::new(
-            "the flow source changed kind during acquisition",
-            span,
-        ));
-    };
-    // A private alias retains the semantic basename without another byte copy.
-    let input = invocation.path().join("input");
-    fs::create_dir(&input).map_err(|cause| {
-        ExecutionError::caused("cannot allocate the captured source name", span, cause)
-    })?;
-    let basename = path
-        .file_name()
-        .ok_or_else(|| ExecutionError::new("the finite flow source has no basename", span))?;
-    let alias = input.join(basename);
-    fs::hard_link(artifact.path(), &alias).map_err(|cause| {
-        ExecutionError::caused("cannot retain the captured source name", span, cause)
-    })?;
-    capture.location = Location {
-        backend: Backend::Local,
-        path: alias.to_string_lossy().into_owned(),
-    };
-    capture.snapshot = Some(snapshot);
-    Ok(())
+    Ok(Source::File { file, location })
 }
 
 pub(super) enum Destination {
@@ -280,14 +186,45 @@ impl Flow {
         span: Span,
         pins: crate::streams::FifoPins,
     ) -> Result<Self> {
-        let observed = prepare(&source, &destination, buffer, span)?;
-        validate_pin("source", &pins.source, &observed.source, span)?;
-        validate_pin(
-            "destination",
-            &pins.destination,
-            &observed.destination,
+        Self::start_task(source, destination, buffer, cancel, span, pins, None)
+    }
+
+    pub fn start_queued(
+        source: Source,
+        destination: Destination,
+        buffer: usize,
+        cancel: CancellationToken,
+        span: Span,
+        pins: crate::streams::FifoPins,
+        admission: super::scheduler::Admission,
+    ) -> Result<Self> {
+        admission.feasible(super::scheduler::Demand::flows(1), span)?;
+        Self::start_task(
+            source,
+            destination,
+            buffer,
+            cancel,
             span,
-        )?;
+            pins,
+            Some(admission),
+        )
+    }
+
+    fn start_task(
+        source: Source,
+        destination: Destination,
+        buffer: usize,
+        cancel: CancellationToken,
+        span: Span,
+        pins: crate::streams::FifoPins,
+        admission: Option<super::scheduler::Admission>,
+    ) -> Result<Self> {
+        if buffer == 0 {
+            return Err(ExecutionError::new(
+                "the byte-flow buffer size must be positive",
+                span,
+            ));
+        }
         let context = crate::telemetry::context();
         let completion = CancellationToken::new();
         let completed = completion.clone().drop_guard();
@@ -297,14 +234,17 @@ impl Flow {
             task.expect_completion();
             task.attribute("operation", "byte-flow");
             let context = task.context();
-            let mut future = Box::pin(run_prepared(
-                source,
-                destination,
-                buffer,
-                cancel,
-                span,
-                pins,
-            ));
+            let mut future = Box::pin(async move {
+                let _lease = match admission {
+                    Some(admission) => tokio::select! {
+                        biased;
+                        () = cancel.cancelled() => return Ok(report(0, FlowEnd::Cancelled)),
+                        lease = admission.wait_flow(span) => Some(lease?),
+                    },
+                    None => None,
+                };
+                run_prepared(source, destination, buffer, cancel, span, pins).await
+            });
             let result = poll_fn(|cx| {
                 crate::telemetry::with_context(context.as_ref(), || future.as_mut().poll(cx))
             })
@@ -350,26 +290,6 @@ impl Flow {
     }
 }
 
-fn validate_pin(
-    role: &str,
-    expected: &Option<crate::streams::FifoIdentity>,
-    observed: &Option<crate::streams::FifoIdentity>,
-    span: Span,
-) -> Result<()> {
-    if expected == observed {
-        return Ok(());
-    }
-    Err(ExecutionError::caused(
-        format!("the {role} FIFO generation changed before flow admission"),
-        span,
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "the block's retained endpoint generation does not match the current endpoint",
-        ),
-    )
-    .help("No bytes were transferred by this flow. Re-evaluate the block against its current endpoints."))
-}
-
 #[cfg(test)]
 async fn run(
     source: Source,
@@ -382,6 +302,7 @@ async fn run(
     run_prepared(source, destination, buffer, cancel, span, pins).await
 }
 
+#[cfg(test)]
 fn prepare(
     source: &Source,
     destination: &Destination,
@@ -411,6 +332,7 @@ fn prepare(
     })
 }
 
+#[cfg(test)]
 fn pin_fifo(
     location: &Location,
     source: bool,
@@ -432,20 +354,17 @@ fn pin_fifo(
             ));
         }
     };
-    if let Some(pin) = &pin {
-        pin.require_generation_pin().map_err(|cause| {
-            ExecutionError::caused("cannot pin this platform's FIFO generation", span, cause)
-        })?;
-        if let Some(context) = crate::telemetry::context() {
-            context.event(
-                "flow.fifo.pin",
-                &[
-                    ("identity", &pin.native_id()),
-                    ("path", &path.to_string_lossy()),
-                ],
-                &[],
-            );
-        }
+    if let Some(pin) = &pin
+        && let Some(context) = crate::telemetry::context()
+    {
+        context.event(
+            "flow.fifo.pin",
+            &[
+                ("identity", &pin.native_id()),
+                ("path", &path.to_string_lossy()),
+            ],
+            &[],
+        );
     }
     Ok(pin)
 }
@@ -458,65 +377,14 @@ async fn run_prepared(
     span: Span,
     pins: crate::streams::FifoPins,
 ) -> Result<FlowReport> {
-    let (source, capture) = match source {
-        Source::Captured(capture) => (Source::Endpoint(capture.location.clone()), Some(capture)),
-        source => (source, None),
-    };
-    let result = match destination {
+    match destination {
         Destination::Endpoint { location, mode } => {
             to_endpoint(source, location, mode, buffer, cancel, span, pins).await
         }
         Destination::Writer { writer, closed } => {
             to_writer(source, writer, closed, buffer, cancel, span, pins.source).await
         }
-    };
-    finish_capture(capture, result, span).await
-}
-
-async fn finish_capture(
-    capture: Option<CapturedSource>,
-    mut result: Result<FlowReport>,
-    span: Span,
-) -> Result<FlowReport> {
-    let Some(mut capture) = capture else {
-        return result;
-    };
-    let retained = capture.retained_path();
-    let context = crate::telemetry::context();
-    let cleanup = crate::runtime::ssh::spawn_blocking(move || {
-        crate::telemetry::with_context(context.as_ref(), || capture.cleanup())
-    })
-    .await
-    .map_err(|cause| ExecutionError::caused("flow-source cleanup worker failed", span, cause))?;
-    if let Err(cause) = cleanup {
-        match &mut result {
-            Err(error) => {
-                error
-                    .report
-                    .help
-                    .push(format!("flow-source cleanup failed: {cause}"));
-                error.retained_paths.extend(retained);
-            }
-            Ok(_) => {
-                let mut error = ExecutionError::caused(
-                    "the flow completed, but its captured source could not be cleaned",
-                    span,
-                    cause,
-                )
-                .with_context(super::DiagnosticContext {
-                    phase: super::DiagnosticPhase::Cleanup,
-                    category: super::DiagnosticCategory::Cleanup,
-                    location: super::DiagnosticLocation::Context,
-                    action: "clean the completed flow-source snapshot",
-                    backend: None,
-                    instruction: None,
-                });
-                error.retained_paths.extend(retained);
-                return Err(error);
-            }
-        }
     }
-    result
 }
 
 async fn to_endpoint(
@@ -536,8 +404,12 @@ async fn to_endpoint(
         ));
     }
     if mode == DestinationMode::Container {
-        if !matches!(&source, Source::Endpoint(location) if !matches!(location.backend, Backend::Tcp { .. }))
-        {
+        let named = match &source {
+            Source::File { .. } => true,
+            Source::Endpoint(location) => !matches!(location.backend, Backend::Tcp { .. }),
+            _ => false,
+        };
+        if !named {
             return Err(ExecutionError::new(
                 "an unnamed program or literal flow needs an exact destination filename",
                 span,
@@ -586,7 +458,21 @@ async fn to_endpoint(
             )
             .await
         }
-        Source::Captured(_) => unreachable!("captured inputs are unwrapped by run"),
+        Source::File { file, location } => {
+            crate::streams::transfer_from_file(
+                file,
+                &CopyOp {
+                    source: location,
+                    destination,
+                    pattern: None,
+                    span,
+                },
+                buffer,
+                cancel,
+                pins.destination,
+            )
+            .await
+        }
     };
     result.map_err(|cause| flow_failure("byte-flow output failed", span, cause, retained_fifo))
 }
@@ -624,7 +510,11 @@ async fn to_writer(
         }
         Source::Reader(reader) => reader,
         Source::Literal(text) => Box::pin(LiteralReader { text, position: 0 }) as Reader,
-        Source::Captured(_) => unreachable!("captured inputs are unwrapped by run"),
+        Source::File { file, .. } => {
+            let mut file = tokio::fs::File::from_std(file);
+            file.set_max_buf_size(buffer);
+            Box::pin(file) as Reader
+        }
     };
     pump(reader, writer, closed, buffer, cancel, span).await
 }
@@ -868,6 +758,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn busy_independent_flow_waits_in_its_task_and_releases_capacity_on_completion() {
+        let limits = crate::scheduler::ResourceLimits {
+            jobs: 1,
+            max_streams: 1,
+            buffer_bytes: 4,
+            memory_bytes: 8,
+        };
+        let admission = super::super::scheduler::Admission::new(&limits).unwrap();
+        let held = admission.flow(Span::default()).unwrap();
+        let (writer, mut reader) = tokio::io::duplex(4);
+        let mut flow = Flow::start_queued(
+            Source::Literal(Arc::from("queued bytes")),
+            Destination::Writer {
+                writer: Box::pin(writer),
+                closed: CancellationToken::new(),
+            },
+            4,
+            CancellationToken::new(),
+            Span::default(),
+            crate::streams::FifoPins::default(),
+            admission.clone(),
+        )
+        .unwrap();
+        tokio::task::yield_now().await;
+        assert!(!flow.is_finished());
+        let received = tokio::spawn(async move {
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes).await.unwrap();
+            bytes
+        });
+        drop(held);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), flow.join())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.end, FlowEnd::SourceClosed);
+        assert_eq!(received.await.unwrap(), b"queued bytes");
+        assert_eq!(
+            admission.availability(super::super::scheduler::Demand::flows(1)),
+            super::super::scheduler::Availability::Ready
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_queued_flow_does_not_wait_for_another_transfers_permit() {
+        let limits = crate::scheduler::ResourceLimits {
+            jobs: 1,
+            max_streams: 1,
+            buffer_bytes: 4,
+            memory_bytes: 8,
+        };
+        let admission = super::super::scheduler::Admission::new(&limits).unwrap();
+        let _held = admission.flow(Span::default()).unwrap();
+        let cancel = CancellationToken::new();
+        let mut flow = Flow::start_queued(
+            Source::Literal(Arc::from("not admitted")),
+            Destination::Writer {
+                writer: Box::pin(tokio::io::sink()),
+                closed: CancellationToken::new(),
+            },
+            4,
+            cancel.clone(),
+            Span::default(),
+            crate::streams::FifoPins::default(),
+            admission,
+        )
+        .unwrap();
+        cancel.cancel();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), flow.join())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.end, FlowEnd::Cancelled);
+        assert_eq!(result.bytes, 0);
+    }
+
+    #[tokio::test]
     async fn cancellation_preserves_the_previous_finite_file() {
         let scratch = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
         fs::create_dir_all(&scratch).unwrap();
@@ -927,7 +894,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn finite_input_is_immutable_after_acquisition_returns() {
+    async fn opened_input_retains_the_version_replaced_by_a_later_statement() {
         let root = fixture();
         let input = root.path().join("input.txt");
         let scratch = root.path().join("scratch");
@@ -936,8 +903,10 @@ mod tests {
         let source = Source::acquire(&local(&input), &scratch, Span::default())
             .await
             .unwrap();
-        assert!(matches!(&source, Source::Captured(_)));
-        fs::write(&input, b"new bytes written by the next statement").unwrap();
+        assert!(matches!(&source, Source::File { .. }));
+        let replacement = root.path().join("replacement");
+        fs::write(&replacement, b"new bytes written by the next statement").unwrap();
+        crate::io::publish_file(&replacement, &input, false).unwrap();
         let (writer, mut consumer) = tokio::io::duplex(5);
         let consumer = crate::runtime::ssh::spawn(async move {
             let mut bytes = Vec::new();
@@ -965,7 +934,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn captured_finite_input_retains_its_container_basename() {
+    async fn opened_finite_input_retains_its_container_basename() {
         let root = fixture();
         let input = root.path().join("named-input.txt");
         let scratch = root.path().join("scratch");
@@ -1056,7 +1025,7 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
     #[tokio::test]
-    async fn an_old_block_fifo_pin_is_rejected_synchronously_before_dispatch() {
+    async fn an_old_block_fifo_pin_is_checked_by_the_actual_stream_open() {
         let root = fixture();
         let path = root.path().join("fifo");
         fifo(&path);
@@ -1064,7 +1033,7 @@ mod tests {
         let pins = prepare(&source, &destination, 64, Span::default()).unwrap();
         fs::remove_file(&path).unwrap();
         fifo(&path);
-        let error = Flow::start_with_pins(
+        let mut flow = Flow::start_with_pins(
             source,
             destination,
             64,
@@ -1072,14 +1041,17 @@ mod tests {
             Span::default(),
             pins,
         )
-        .err()
-        .expect("a stale block pin cannot authorize a new FIFO");
+        .unwrap();
+        let error = flow
+            .join()
+            .await
+            .expect_err("a stale endpoint cannot open a different FIFO");
         assert!(
             error
-                .report
-                .diagnostic
-                .message
-                .contains("generation changed")
+                .cause
+                .unwrap()
+                .to_string()
+                .contains("FIFO identity changed")
         );
     }
 

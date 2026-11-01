@@ -5,10 +5,11 @@
 Configuration changes application policy, not DSL meaning or object contracts.
 The CLI resolves one optional TOML configuration file before compilation or
 execution, overlays environment compatibility and explicit command-line values,
-and validates the resulting settings before any transfer, telemetry database or
-runtime scratch admission. `msync config` displays the effective settings as
+and validates the effective runtime settings once. SQLite options are checked
+only when that observer opens; they cannot prevent unrelated file work. `msync config` displays the effective settings as
 parseable TOML with a `# source: ...` comment immediately before each value.
-Inspection never creates the configured state or telemetry destinations.
+Inspection never creates the configured state or telemetry destinations and can
+display invalid runtime values so users can inspect and repair configuration.
 
 `--help` and `--version` do not open configuration files or initialize tracing,
 including when `--config` names a corrupt or nonexistent file. This preserves
@@ -71,7 +72,8 @@ interval_ms = 250
 `memory_limit` must admit at least one configured buffer. Byte values accept
 integer bytes or `KiB`, `MiB`, and `GiB` strings. `spool_limit` is a per-program
 combined stdout/stderr budget; zero is meaningful and `"unlimited"` is the default.
-`delay_ms` permits zero; `interval_ms` must be at least one millisecond.
+`delay_ms` permits zero; `interval_ms = 0` disables progress display. Large display
+durations are not execution-admission errors.
 `color` is `auto`, `always`, or `never`, preserving existing `NO_COLOR`/terminal
 behavior in auto mode. `0.5` remains a syntax alias; configuration does not
 restore removed transactional grammars.
@@ -110,7 +112,9 @@ configured custom path retains an ordinary open error when its parent is absent;
 the application does not silently substitute a different destination.
 SQLite `sample_per_million = 0` skips exporter admission entirely: it neither
 requires a home/destination nor creates the default state directory or database,
-even when `enabled = true`. Settings are still validated before command execution.
+even when `enabled = true`. Inactive backend settings are not validated. An
+observer open failure reports its path and cause as a warning, then file work
+continues without that observer.
 
 ```toml
 [telemetry]
@@ -121,9 +125,10 @@ queue_capacity = 4096
 batch_size = 128
 flush_interval_ms = 100
 busy_timeout_ms = 1000
-max_sessions = 100
-max_records_per_session = 1000000
-max_database_bytes = "256MiB"
+# Optional observer budgets; defaults impose no practical quota.
+# max_sessions = 100
+# max_records_per_session = 1000000
+# max_database_bytes = "256MiB"
 synchronous_full = false
 sample_per_million = 1000000
 ```
@@ -132,12 +137,12 @@ sample_per_million = 1000000
 selects JSONL instead. These explicit exporters conflict with each other and
 with `--no-telemetry`, rather than silently ignoring a requested output.
 
-Queue capacity is bounded to 1–1,000,000 records and batches to 1–65,536 records.
-Flush intervals are positive, busy timeouts fit SQLite's signed 32-bit
-millisecond interface, and sampling is between zero and 1,000,000 per million.
-Database capacity is at least 1 MiB and fits a signed 64-bit count. Configuration
-progress/flush durations do not exceed 24 hours, avoiding ineffective or
-pathological long waits while keeping intentional slow schedules representable.
+Queue capacity must be positive; queue and batch sizes have no policy-only upper
+limit. A zero batch or flush interval requests immediate flushing. Busy timeouts
+fit SQLite's signed 32-bit millisecond interface, and sampling is between zero
+and 1,000,000 per million. Database/session/record limits fit the database's
+signed representation. Optional quotas affect recording only, not transfer
+success. There is no 24-hour display/flush-duration ceiling.
 Sampling and exporter retention behavior are specified in the
 [telemetry contract](telemetry.md), not inferred from configuration text alone.
 
@@ -148,9 +153,10 @@ negative/overflowing byte counts and cross-field invariant failures are errors.
 The diagnostic names the configuration file, relevant key, and source line/column,
 retains the parser or native IO cause, and offers a repair. A failed configuration
 must not create transfer destinations or runtime staging data. Configuration
-input is limited to a regular UTF-8 file of at most 1 MiB; a FIFO cannot turn
-startup into a wait for an absent writer. Configuration
-errors are not rendered as errors in an unrelated DSL token.
+input is UTF-8 TOML with no arbitrary byte-size ceiling; explicitly selected
+pipes and other readable inputs use normal input semantics. Configuration
+errors are not rendered as errors in an unrelated DSL token. Lower-precedence
+values are not semantically rejected before a CLI override can replace them.
 
 ## Focused acceptance
 

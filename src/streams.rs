@@ -29,6 +29,8 @@ pub(crate) struct FifoIdentity {
     // A metadata-only native handle pins this inode generation without opening
     // a FIFO reader/writer. Keep it until the actual IO descriptor is verified.
     _lease: Option<Arc<fs::File>>,
+    #[cfg(unix)]
+    prepared: Option<Arc<Mutex<Option<fs::File>>>>,
 }
 
 impl PartialEq for FifoIdentity {
@@ -40,14 +42,38 @@ impl PartialEq for FifoIdentity {
 impl Eq for FifoIdentity {}
 
 impl FifoIdentity {
-    pub(crate) fn require_generation_pin(&self) -> io::Result<()> {
-        if self._lease.is_some() {
-            return Ok(());
-        }
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "the native backend cannot retain a metadata-only FIFO generation lease",
-        ))
+    #[cfg(unix)]
+    pub(crate) fn opening_guard(&self, path: &Path) -> io::Result<fs::File> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(path)?;
+        self.verify(&file)?;
+        Ok(file)
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn prepare(&mut self, path: &Path, reader: bool) -> io::Result<()> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = fs::OpenOptions::new()
+            .read(reader)
+            .write(!reader)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(path)?;
+        self.verify(&file)?;
+        self.prepared = Some(Arc::new(Mutex::new(Some(file))));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn take_prepared(&self) -> Option<fs::File> {
+        self.prepared.as_ref().and_then(|file| {
+            file.lock()
+                .unwrap_or_else(|cause| cause.into_inner())
+                .take()
+        })
     }
 
     pub(crate) fn native_id(&self) -> String {
@@ -85,7 +111,7 @@ pub(crate) fn fifo_identity(path: &Path) -> io::Result<Option<FifoIdentity>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{FileTypeExt, MetadataExt};
-        let metadata = fs::symlink_metadata(path)?;
+        let metadata = fs::metadata(path)?;
         if !metadata.file_type().is_fifo() {
             return Ok(None);
         }
@@ -95,7 +121,7 @@ pub(crate) fn fifo_identity(path: &Path) -> io::Result<Option<FifoIdentity>> {
             let mode = libc::O_PATH;
             let file = fs::OpenOptions::new()
                 .read(true)
-                .custom_flags(mode | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .custom_flags(mode | libc::O_CLOEXEC)
                 .open(path)?;
             (file.metadata()?, Some(Arc::new(file)))
         };
@@ -105,6 +131,7 @@ pub(crate) fn fifo_identity(path: &Path) -> io::Result<Option<FifoIdentity>> {
             device: metadata.dev(),
             inode: metadata.ino(),
             _lease: lease,
+            prepared: None,
         }))
     }
     #[cfg(not(unix))]
@@ -263,6 +290,53 @@ where
     result.map_err(|message| RuntimeError { message, span })
 }
 
+pub(crate) async fn transfer_from_file(
+    file: fs::File,
+    operation: &CopyOp,
+    buffer_bytes: usize,
+    cancel: CancellationToken,
+    fifo: Option<FifoIdentity>,
+) -> Result<StreamReport, RuntimeError> {
+    let child = cancel.child_token();
+    let _scope = FlowScope(child.clone());
+    let context = crate::telemetry::context();
+    let result = async {
+        if let Backend::Tcp { host, port } = &operation.destination.backend {
+            return transfer_open_file_to_tcp(file, host, *port, buffer_bytes, &child, context)
+                .await;
+        }
+        let (location, no_clobber) = destination_location(operation)?;
+        let endpoint = endpoint_pinned(&location, false, fifo)?;
+        let destination = tokio::select! {
+            biased;
+            () = child.cancelled() => return Ok(report(0, StreamEnd::Cancelled)),
+            opened = open_writer(endpoint, no_clobber, buffer_bytes, context.clone()) =>
+                opened.map_err(|cause| format!("cannot open stream destination: {cause}"))?,
+        };
+        let mut file = tokio::fs::File::from_std(file);
+        file.set_max_buf_size(buffer_bytes);
+        let (file, completion) = crate::io::managed_file(file, None);
+        run_opened(
+            Opened {
+                io: Box::new(file),
+                process: None,
+                close: None,
+                file: Some(completion),
+            },
+            destination,
+            buffer_bytes,
+            &child,
+            context,
+        )
+        .await
+    }
+    .await;
+    result.map_err(|message| RuntimeError {
+        message,
+        span: operation.span,
+    })
+}
+
 /// Retain the source endpoint/remote-process lifetime while writing into an
 /// already-owned destination such as a program's stdin or a private file stage.
 pub(crate) async fn transfer_to_writer<W>(
@@ -366,13 +440,24 @@ async fn transfer_file_to_tcp(
     cancel: &CancellationToken,
     context: Option<crate::telemetry::TraceContext>,
 ) -> Result<StreamReport, String> {
-    use std::io::{Seek, SeekFrom};
     let path = path.to_owned();
-    let mut file = tokio::select! {
+    let file = tokio::select! {
         biased;
         () = cancel.cancelled() => return Ok(report(0, StreamEnd::Cancelled)),
         opened = tokio::task::spawn_blocking(move || fs::File::open(path)) => opened.map_err(|error| error.to_string())?.map_err(|error| error.to_string())?,
     };
+    transfer_open_file_to_tcp(file, host, port, buffer_bytes, cancel, context).await
+}
+
+async fn transfer_open_file_to_tcp(
+    mut file: fs::File,
+    host: &str,
+    port: u16,
+    buffer_bytes: usize,
+    cancel: &CancellationToken,
+    context: Option<crate::telemetry::TraceContext>,
+) -> Result<StreamReport, String> {
+    use std::io::{Seek, SeekFrom};
     let socket = tokio::select! {
         biased;
         () = cancel.cancelled() => return Ok(report(0, StreamEnd::Cancelled)),
@@ -488,8 +573,12 @@ fn endpoint_pinned(
     if is_named_pipe_path(&path.to_string_lossy()) {
         return Ok(Endpoint::NamedPipe(path));
     }
-    crate::runtime::check_ancestors(&path)?;
-    let metadata = match fs::symlink_metadata(&path) {
+    let path = match fs::canonicalize(&path) {
+        Ok(path) => path,
+        Err(cause) if !source && cause.kind() == io::ErrorKind::NotFound => path,
+        Err(cause) => return Err(format!("{}: {cause}", path.display())),
+    };
+    let metadata = match fs::metadata(&path) {
         Ok(metadata) => Some(metadata),
         Err(error) if !source && error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(format!("{}: {error}", path.display())),
@@ -507,13 +596,17 @@ fn endpoint_pinned(
             let observed = fifo_identity(&path)
                 .map_err(|cause| cause.to_string())?
                 .ok_or("FIFO kind changed during endpoint inspection")?;
-            if fifo.is_some_and(|expected| expected != observed) {
-                return Err(format!(
-                    "FIFO identity changed after planning at {}",
-                    path.display()
-                ));
-            }
-            return Ok(Endpoint::Fifo(path, observed));
+            let identity = match fifo {
+                Some(expected) if expected != observed => {
+                    return Err(format!(
+                        "FIFO identity changed after planning at {}",
+                        path.display()
+                    ));
+                }
+                Some(expected) => expected,
+                None => observed,
+            };
+            return Ok(Endpoint::Fifo(path, identity));
         }
         if fifo.is_some() {
             return Err(format!("planned FIFO was replaced at {}", path.display()));
@@ -1005,81 +1098,41 @@ async fn finish(
     bytes: u64,
     cancel: &CancellationToken,
 ) -> Result<StreamReport, String> {
-    let deadline = destination
-        .process
-        .as_ref()
-        .is_some_and(RemoteProcess::file_output)
-        .then(|| tokio::time::Instant::now() + std::time::Duration::from_secs(30));
     let result = tokio::select! {
         biased;
-        _ = cancel.cancelled() => {
-            if destination.process.as_ref().is_some_and(RemoteProcess::commit_requested) {
-                shutdown_output(&mut destination.io, deadline).await
-            } else { return Ok(report(bytes, StreamEnd::Cancelled)); }
-        },
-        result = shutdown_output(&mut destination.io, deadline) => result,
+        () = cancel.cancelled() => return Ok(report(bytes, StreamEnd::Cancelled)),
+        result = async {
+            destination.io.flush().await?;
+            destination.io.shutdown().await
+        } => result,
     };
+    destination.io = Box::new(tokio::io::sink());
     match result {
         Ok(()) => {
-            destination.io = Box::new(tokio::io::sink());
-            let completed = if destination
-                .process
-                .as_ref()
-                .is_some_and(RemoteProcess::commit_requested)
-            {
-                let process = destination
-                    .process
-                    .as_mut()
-                    .expect("commit fence belongs to a remote process");
-                process
-                    .wait_commit(deadline.expect("commit fence is only used for a remote file"))
-                    .await?;
-                true
-            } else {
-                wait_process(&mut destination.process, cancel).await?
-            };
-            let end = if completed {
+            let end = if wait_process(&mut destination.process, cancel).await? {
                 StreamEnd::SourceClosed
             } else {
                 StreamEnd::Cancelled
             };
             Ok(report(bytes, end))
         }
-        Err(error)
-            if destination
-                .process
-                .as_ref()
-                .is_some_and(RemoteProcess::commit_requested) =>
-        {
-            let process = destination
-                .process
-                .as_mut()
-                .expect("commit intent owns a process");
-            process
-                .wait_commit(deadline.expect("commit intent owns a deadline"))
-                .await
-                .map_err(|outcome| format!("{outcome}; destination shutdown failed: {error}"))?;
-            Ok(report(bytes, StreamEnd::SourceClosed))
-        }
         Err(error) if disconnected(&error) => {
-            wait_process(&mut destination.process, cancel).await?;
-            Ok(report(bytes, StreamEnd::DestinationClosed))
+            if !wait_process(&mut destination.process, cancel).await? {
+                return Ok(report(bytes, StreamEnd::Cancelled));
+            }
+            let completed = destination.process.as_ref().is_some_and(|process| {
+                process.file_output() && process.committed.load(Ordering::Acquire)
+            });
+            Ok(report(
+                bytes,
+                if completed {
+                    StreamEnd::SourceClosed
+                } else {
+                    StreamEnd::DestinationClosed
+                },
+            ))
         }
         Err(error) => Err(format!("cannot finish stream destination: {error}")),
-    }
-}
-
-async fn shutdown_output(
-    destination: &mut Writer,
-    deadline: Option<tokio::time::Instant>,
-) -> io::Result<()> {
-    let shutdown = async {
-        destination.flush().await?;
-        destination.shutdown().await
-    };
-    match deadline {
-        Some(deadline) => tokio::time::timeout_at(deadline, shutdown).await.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "remote commit outcome unknown after finalization deadline; inspect destination before retrying"))?,
-        None => shutdown.await,
     }
 }
 
@@ -1475,33 +1528,6 @@ impl RemoteProcess {
         self.file_output() && self.commit_requested.load(Ordering::Acquire)
     }
 
-    async fn wait_commit(&mut self, deadline: tokio::time::Instant) -> Result<(), String> {
-        let result = match tokio::time::timeout_at(deadline, self.wait()).await {
-            Ok(result) => result,
-            Err(_) => Err("remote acknowledgement deadline expired".into()),
-        };
-        if let Err(error) = &result {
-            let _ = self.child.start_kill();
-            // Publication cannot become unknown merely because the client fails
-            // to exit or another process keeps its stderr pipe open afterward.
-            if self.committed.load(Ordering::Acquire) {
-                if let Some(context) = &self.context {
-                    context.event("remote.commit.acknowledged", &[], &[]);
-                    context.event(
-                        "remote.transport.failed_after_commit",
-                        &[("reason", error)],
-                        &[],
-                    );
-                }
-                return Ok(());
-            }
-            return Err(format!(
-                "remote commit outcome unknown; inspect destination before retrying: {error}"
-            ));
-        }
-        result
-    }
-
     async fn wait(&mut self) -> Result<(), String> {
         let status = self.child.wait().await.map_err(|error| error.to_string())?;
         #[cfg(windows)]
@@ -1531,7 +1557,7 @@ impl RemoteProcess {
         }
         if self.commit_requested() && !self.committed.load(Ordering::Acquire) {
             return Err(format!(
-                "remote commit outcome unknown; inspect destination before retrying ({status}): {}",
+                "remote transfer did not confirm completion; retry the transfer ({status}): {}",
                 self.error_text()
             ));
         }
@@ -1559,7 +1585,7 @@ impl Drop for RemoteProcess {
                 );
             } else if self.file_output() && !self.committed.load(Ordering::Acquire) {
                 context.event(
-                    "remote.rollback.requested",
+                    "remote.stage.discarded",
                     &[("reason", "flow closed without FINISH authorization")],
                     &[],
                 );
@@ -1604,14 +1630,8 @@ def ready(fd: int, interest: int, source: bool) -> bool:
     events: list[tuple[int, int]] = watcher.poll(100)
     return any(number == fd for number, _ in events)
 
-def safe_path(raw: str) -> str:
-    expanded: str = os.path.expanduser(raw)
-    current: str = expanded if os.path.isabs(expanded) else os.path.join(os.getcwd(), expanded)
-    while current != os.path.dirname(current):
-        if os.path.islink(current):
-            raise ValueError('refusing symbolic link in stream path')
-        current = os.path.dirname(current)
-    return os.path.abspath(expanded)
+def endpoint_path(raw: str) -> str:
+    return os.path.realpath(os.path.expanduser(raw))
 
 class Endpoint:
     path: str
@@ -1622,7 +1642,7 @@ class Endpoint:
     stage: str | None
 
     def __init__(self, path: str, mode: str) -> None:
-        self.path = safe_path(path)
+        self.path = endpoint_path(path)
         self.mode = mode
         self.fd = None
         self.connection = None
@@ -1646,9 +1666,6 @@ class Endpoint:
         else:
             raise ValueError('expected a regular file, FIFO or Unix stream socket')
         if self.kind == 'file' and mode != 'r':
-            if metadata is not None:
-                probe: int = os.open(self.path, os.O_WRONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
-                os.close(probe)
             directory: str = os.path.dirname(self.path)
             os.makedirs(directory, exist_ok=True)
             self.fd, self.stage = tempfile.mkstemp(prefix='.msync-flow-', suffix='.part', dir=directory)
@@ -1684,7 +1701,7 @@ class Endpoint:
                 raise OSError(result, os.strerror(result))
             self.fd = self.connection.fileno()
             return True
-        flags: int = os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW | (os.O_RDONLY if self.mode == 'r' else os.O_WRONLY)
+        flags: int = os.O_NONBLOCK | os.O_CLOEXEC | (os.O_RDONLY if self.mode == 'r' else os.O_WRONLY)
         try:
             self.fd = os.open(self.path, flags, 0o666)
             return True
@@ -1902,6 +1919,12 @@ async fn drain_remote_stderr(
             return;
         };
         if count == 0 {
+            if !line.is_empty() {
+                captured
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .extend_from_slice(&line);
+            }
             return;
         }
         for byte in &bytes[..count] {
@@ -1918,14 +1941,11 @@ async fn drain_remote_stderr(
                     committed.store(true, Ordering::Release);
                 } else {
                     let mut output = captured.lock().unwrap_or_else(|error| error.into_inner());
-                    let remaining = 8192_usize.saturating_sub(output.len());
-                    output.extend_from_slice(&line[..line.len().min(remaining)]);
-                    if output.len() < 8192 {
-                        output.push(b'\n');
-                    }
+                    output.extend_from_slice(&line);
+                    output.push(b'\n');
                 }
                 line.clear();
-            } else if line.len() < 8192 {
+            } else {
                 line.push(*byte);
             }
         }
@@ -1950,10 +1970,13 @@ struct Fifo(tokio::io::unix::AsyncFd<std::fs::File>);
 impl Fifo {
     fn reader(path: &Path, identity: &FifoIdentity) -> io::Result<Self> {
         use std::os::unix::fs::OpenOptionsExt;
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW)
-            .open(path)?;
+        let file = match identity.take_prepared() {
+            Some(file) => file,
+            None => fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+                .open(path)?,
+        };
         identity.verify(&file)?;
         // SAFETY: This module exclusively owns File and never exposes or replaces
         // its descriptor; it stays open and stable until AsyncFd drops it.
@@ -1967,11 +1990,16 @@ impl Fifo {
         // A missing reader yields ENXIO, so validate the pathname on every
         // rendezvous attempt too: replacing it must not cause an endless retry
         // against another unopened FIFO. The held descriptor is checked again.
-        identity.verify_metadata(&fs::symlink_metadata(path)?)?;
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW)
-            .open(path)?;
+        let file = match identity.take_prepared() {
+            Some(file) => file,
+            None => {
+                identity.verify_metadata(&fs::metadata(path)?)?;
+                fs::OpenOptions::new()
+                    .write(true)
+                    .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+                    .open(path)?
+            }
+        };
         identity.verify(&file)?;
         // SAFETY: The owned File's stable descriptor never escapes this module.
         Ok(Self(
@@ -2020,7 +2048,7 @@ mod fifo_identity_tests {
         let path = root.path().join("wire");
         fifo(&path);
         let identity = fifo_identity(&path).unwrap().unwrap();
-        identity.require_generation_pin().unwrap();
+        assert!(identity._lease.is_some());
         let failure = match Fifo::writer(&path, &identity) {
             Ok(_) => panic!("a metadata lease must not act as a FIFO reader"),
             Err(failure) => failure,
@@ -2032,19 +2060,6 @@ mod fifo_identity_tests {
         assert_eq!(pinned.ino(), identity.inode);
         fifo(&path);
         assert_ne!(fifo_identity(&path).unwrap().unwrap(), identity);
-    }
-
-    #[test]
-    fn inode_numbers_without_a_retained_lease_are_not_a_generation_capability() {
-        let identity = FifoIdentity {
-            device: 1,
-            inode: 42,
-            _lease: None,
-        };
-        assert_eq!(
-            identity.require_generation_pin().unwrap_err().kind(),
-            io::ErrorKind::Unsupported
-        );
     }
 
     #[test]
@@ -2157,6 +2172,10 @@ mod commit_tests {
     #[test]
     fn committed_child_process() {
         if let Ok(mode) = std::env::var("MSYNC_TEST_COMMITTED_CHILD") {
+            if mode == "diagnostic" {
+                eprint!("{}", "x".repeat(20_000));
+                std::process::exit(9);
+            }
             if mode != "unacked-hold" {
                 eprintln!("MSYNC_STREAM_COMMITTED");
             }
@@ -2168,6 +2187,13 @@ mod commit_tests {
             }
             std::process::exit(9);
         }
+    }
+
+    #[tokio::test]
+    async fn remote_diagnostics_retain_long_unterminated_final_lines() {
+        let mut process = RemoteProcess::capture(committed_child("diagnostic"), None).unwrap();
+        assert!(process.wait().await.is_err());
+        assert_eq!(process.error_text(), "x".repeat(20_000));
     }
 
     #[tokio::test]
@@ -2186,12 +2212,12 @@ mod commit_tests {
     }
 
     #[tokio::test]
-    async fn acknowledged_commit_survives_transport_timeout_and_releases_child() {
+    async fn acknowledged_transfer_cancellation_releases_a_held_child() {
         held_commit_outcome("acked-hold", true).await;
     }
 
     #[tokio::test]
-    async fn unacknowledged_commit_timeout_is_unknown_and_releases_child() {
+    async fn unacknowledged_transfer_cancellation_releases_a_held_child() {
         held_commit_outcome("unacked-hold", false).await;
     }
 
@@ -2210,15 +2236,17 @@ mod commit_tests {
         .expect("child must actually enter its holding state");
         assert_eq!(process.committed.load(Ordering::Acquire), acknowledged);
         assert!(process.child.try_wait().unwrap().is_none());
-        let result = process
-            .wait_commit(tokio::time::Instant::now() + std::time::Duration::from_millis(10))
-            .await;
-        if acknowledged {
-            result.unwrap();
-        } else {
-            assert!(result.unwrap_err().contains("commit outcome unknown"));
-        }
-        drop(process);
+        let cancel = CancellationToken::new();
+        let stopping = cancel.clone();
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            stopping.cancel();
+        });
+        let mut destination = Opened::native(Box::new(tokio::io::sink()) as Writer);
+        destination.process = Some(process);
+        let result = finish(&mut destination, 11, &cancel).await.unwrap();
+        assert_eq!(result.end, StreamEnd::Cancelled);
+        drop(destination);
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
             output.read_to_end(&mut Vec::new()),

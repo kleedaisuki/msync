@@ -132,13 +132,18 @@ pub fn contextualize(
     module
         .validate()
         .map_err(|cause| ContextError::new(format!("invalid object module: {cause}")))?;
+    contextualize_validated(module, context, session)
+}
+
+pub(crate) fn contextualize_validated(
+    module: &ObjectModule,
+    context: &Context,
+    session: &mut Session,
+) -> Result<ContextualizedModule, ContextError> {
     let context = source_module_context(module, context)?;
     validate_context(&context)?;
     let context = &context;
-    let (source, sources, mut origins, export_sites) = module
-        .debug
-        .materialize()
-        .map_err(|cause| ContextError::new(format!("invalid object debug information: {cause}")))?;
+    let (source, sources, mut origins, export_sites) = module.debug.materialize_validated();
     let mut candidate = session.clone();
     let (mut program, mut obligations) = bind_program(
         &module.program,
@@ -162,7 +167,7 @@ pub fn contextualize(
     maps.exports(&mut exports)?;
     candidate.reserve_runtime_slots(maps.next_slot);
     collect_obligations(&program.body, &mut obligations);
-    let graph = graph::build(&program);
+    let graph = graph::build_execution(&program);
     candidate
         .import_object_exports(&exports, &export_sites, &program)
         .map_err(|report| {
@@ -216,7 +221,7 @@ pub fn contextualize_source(
         &compiled.origins,
     )?;
     collect_obligations(&program.body, &mut obligations);
-    let graph = graph::build_with_context(&program, &planning);
+    let graph = graph::build_execution_with_context(&program, &planning);
     Ok(ContextualizedModule {
         program,
         graph,

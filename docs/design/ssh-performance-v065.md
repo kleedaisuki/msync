@@ -238,3 +238,228 @@ Its independently named [delivery observations](ssh-performance-v065-delivery-ob
 and [delivery summary](ssh-performance-v065-delivery-results.csv) preserve all
 rows, paired deltas, counts and CPU ratios. Probe identity remains
 `38eeea3bcb7aff7d1cd6ab334c6f7eddb80670f3c3b1ee0296f4e996d299469f`.
+
+## Windows-reported tiny-upload latency audit (2026-11-01)
+
+The reported native Windows REPL statement
+`cmd -> (ssh://forge)::cmd` transferred 1,795 bytes in 35,399.5 ms, while direct
+SSH use was substantially faster. This is valid workload evidence; the earlier
+Linux loopback improvements above never established Windows performance parity.
+The following source-path findings explain concrete amplification mechanisms,
+not an attribution of those 35 seconds without native phase measurements.
+
+### Serial transport and publication boundaries
+
+A normal finite local-to-SSH statement still performs preparation metadata and
+live destination reclassification, followed by ALLOCATE, generic send's temporary
+allocation/SCP/REMOTE_COPY/temporary cleanup, PUBLISH and independent SETTLE.
+Fractional source mtimes add bounded timestamp-restoration helpers. Thus one
+tiny upload includes approximately nine serial SSH/SCP client operations before
+optional metadata restoration or recovery. Connection reuse, when available,
+reduces authentication but does not remove these remote command/session turns.
+
+`src/execution/endpoint.rs::command_output` currently has no transport/phase span:
+its asynchronous ALLOCATE/PUBLISH/SETTLE/RECOVER clients are outside
+`runtime.rs::run_cancellable`'s `transport_process` spans. Existing synchronous
+transport timing therefore cannot distinguish the most important remote
+publication waits. Add named publication-phase spans before asking a user to
+interpret a partial trace. Record elapsed/status, endpoint, operation and
+nonsecret diagnostics; authentication secrets remain confined to native SSH.
+
+The 35-second `Spec::settle` timer is a cancellation deadline, not an unconditional
+sleep. A normal successful SETTLE exits as soon as its client and output readers
+finish. Its journal lock has a 30-second timeout, but the parent-directory flock
+is acquired first without that bound; unrelated sibling publication can delay
+it. Do not infer that a successful approximately-35-second run hit either timer.
+
+### Whole-filesystem flush amplification
+
+GNU [`sync -f`](https://www.gnu.org/software/coreutils/manual/html_node/sync-invocation.html)
+uses `syncfs`, synchronizing the **containing filesystem**, not only the named
+journal. This couples one small upload to unrelated server writeback. Plain
+`sync FILE` uses fsync instead, but replacing every call mechanically is wrong:
+fsync of a directory alone does not flush staged file contents, and persistence
+of renamed directory entries needs the containing directories as well. See
+[`fsync(2)`](https://www.man7.org/linux/man-pages/man2/fsync.2.html).
+
+The baseline successful exact-file path has these barriers:
+
+| Boundary | Missing target | Existing ordinary file |
+| --- | ---: | ---: |
+| Intent, complete staging and before-image decision | 1 | 1 |
+| Copied before-image | 0 | 1 |
+| Installed root | 1 | 1 |
+| COMMITTED receipt | 1 | 1 |
+| Unconditional successful EXIT recovery handler | 1 | 1 |
+| SETTLE durable intent retirement before recursive GC | 1 | 1 |
+| **Total filesystem-wide flushes** | **5** | **6** |
+
+The EXIT handler is `rollback -> recover_journal`; a COMMITTED journal bypasses
+restoration but still reaches its trailing `sync -f` on the parent filesystem.
+PUBLISH holds the parent-directory flock throughout this work. This is broader
+than network bandwidth: unrelated files under the same parent serialize and
+unrelated writes anywhere on the same filesystem can affect each barrier.
+
+A focused local shell probe extracted the actual RECOVERY/ALLOCATE/PUBLISH/SETTLE
+constants, staged exactly 1,795 bytes, wrapped `sync` to log and then execute
+`/usr/bin/sync` unchanged, and verified installed bytes and journal removal. It
+confirmed five calls for a missing target and six for an existing file. On this
+host each underlying sync invocation took about 3–12 ms; Python wrapper startup
+inflates helper wall time, so this is a **call-count and control-flow probe**, not
+a Windows/WAN timing comparison or an explanation of the observed 35 seconds.
+Disposable reproduction and results are under
+`.temp/ssh-publication-audit/{probe.py,results.json}` while retained.
+
+One safe opportunity is to disarm the rollback EXIT trap only **after** the
+COMMITTED barrier succeeds and before printing the final receipt. That removes
+a redundant success-only syncfs while retaining failure-path recovery. Do not
+skip recovery solely because a COMMITTED pathname exists: the final barrier may
+have failed or been interrupted. Keep independent SETTLE and durable intent
+retirement; existing crash cuts before/after receipt and during partial GC are
+relevant acceptance journeys. A larger replacement of syncfs with explicit
+file/directory fsync needs its own durability model and crash experiments, not a
+blind `-f` deletion.
+
+### Upload directly into owned journal storage
+
+ALLOCATE already gives the statement an exclusive same-filesystem remote
+journal, but generic send allocates another `/tmp/msync.*` parent, sends there,
+REMOTE_COPYs into `journal/payload`, then uses another SSH client to delete the
+extra parent. This duplicates ownership and serial transport work.
+
+An initially considered ownership-preserving improvement used `journal/upload`
+and retained REMOTE_COPY into `journal/payload`. That removes two clients, but
+keeps a full remote copy and can increase the destination filesystem's space
+requirement when `/tmp` was on a separate filesystem. The implemented refinement
+below instead uploads directly to the absent owned payload and normalizes it in
+place. Raw SCP output is still not treated as a finished publication payload.
+
+The latter distinction is critical on Windows. The existing
+[mode-provenance record](remote-publication-v5.md#mode-provenance-and-windows-permission-translation)
+contains actual Windows SCP results: `-rp` produced directory/file modes
+`0707/0666` under server umask `077`. An uploaded Linux staging inode does not
+establish original POSIX permission provenance. `RemoteSource::uploaded` marks
+Windows sources Portable; REMOTE_COPY preserves timestamps, derives fresh file
+modes from `0666 & ~umask`, lets directories use creation policy, and only
+attenuates rights from source read-only evidence. A direct-finalization helper
+must retain those rules, readonly-tree traversal, finite-node verification and
+counts. Generic remote source copying must retain its actual source-filesystem
+capability handling; already-materialized native upload metadata has explicit
+provenance instead. Raw SCP into public destination, an unconditional
+`chmod --reference`, or treating newly created ext4 staging as proof of Unix
+source modes would regress an already measured user contract.
+
+## Native Windows follow-up delivery (2026-11-01)
+
+### Implemented ownership changes
+
+The user reports v0.6.5, both VPN and non-VPN slowness, and the exact native
+Windows REPL journey `cmd -> (ssh://forge)::cmd`: 1,795 bytes in 35,399.5 ms.
+That report initiated this follow-up; it is not a request to tune the VPN.
+
+- `Spec::run_inner` now uses `runtime::stage_ssh_source` for finite SSH journal
+  uploads. SCP writes only the freshly allocated `journal/payload`; exact
+  fractional times are restored there. `REMOTE_FINALIZE_UPLOAD` checks/counts
+  the finite tree and normalizes portable Windows metadata in place. There is
+  no extra `/tmp` owner, cleanup client, remote payload copy or duplicate complete
+  payload on the destination filesystem. The finalizer replaces the old copy
+  helper, so the reduction is **two**, not three, authenticated remote sessions.
+- Unix upload metadata has already been materialized by the local capture owner;
+  a destination filesystem-magic whitelist cannot determine that provenance.
+  The private finalizer preserves it, including executable bits on F2FS/ZFS or
+  other destinations. Generic REMOTE_COPY for actual WSL/remote sources keeps
+  its existing source-capability policy, where synthetic modes remain relevant.
+- For ordinary-file overwrite, complete the private before-image copy before
+  writing intent. The initial barrier now persists new payload, copied old data
+  and decision/identity records together, before any public mutation. An
+  interrupted partial copy without intent remains private garbage.
+- Disarm the publisher's rollback EXIT trap only after COMMITTED's final sync
+  succeeds. Failures/signals before that point still run recovery. The successful
+  path no longer repeats a filesystem-wide recovery flush.
+- Async ALLOCATE/PUBLISH/SETTLE/RECOVER now emit `transport_process` records with
+  explicit phases and spawn/wait/drain timing. An explicitly propagated
+  publication TraceContext survives task and blocking-worker boundaries. New
+  payload/finalization/time spans record endpoint and session policy; policy is
+  refreshed after lazy Unix admission, not guessed before client configuration.
+
+The same actual-helper count probe found missing-target syncfs calls **5 → 4**
+and existing-ordinary-file calls **6 → 4**, with correct bytes and completed
+journal cleanup. These changes preserve independent settlement, intent retirement
+before destructive GC, exact pending discovery and live-owner locks.
+
+### Real SSH observations and identity
+
+Frozen baseline is the published delivery image SHA-256
+`f9162114c165da91d5336a51185e7329f25d584e4b4e465519a2e6ddec4498a0`;
+the working-tree follow-up image is
+`563850aa181b354d1378767f44b81b7123126f615e951042449052ac69b083f7`.
+This does not rename or replace published v0.6.5 assets. Source base is `964bc4f`
+plus this follow-up working diff. Both executable hashes were checked by the
+unchanged `benches/ssh_v065.py` runner at both ends of each run.
+
+Three alternating AB/BA pairs per case used the real private Linux OpenSSH
+fixture. All observations verified bytes, modes and whole-second mtimes.
+The native-client topology uses a deliberately overlong private control pathname
+to exercise the established working foreground fallback, with fixture-configured
+ControlMaster disabled. This forces separate authenticated sessions on Linux;
+it is **not** native Windows execution or WAN latency. It also pays Unix optional
+master-check overhead that Windows does not, so its absolute times must not be
+represented as predicted Windows performance.
+
+| Topology / workload | Before → after p50 ms | Authentications | Remote sessions |
+| --- | ---: | ---: | ---: |
+| Owned mux, 4 KiB upload | 475.857 → 392.443 | 1 → 1 | 8 → 6 |
+| Owned mux, five uploads | 1703.772 → 1275.915 | 1 → 1 | 40 → 30 |
+| Native clients, 1,795-byte upload | 1207.039 → 914.045 | 8 → 6 | 8 → 6 |
+| Native clients, five uploads | 5909.730 → 4392.386 | 40 → 30 | 40 → 30 |
+
+All 12 matched pairs improved in this small diagnostic window. Peer builds and
+process probes were held, but one peer reported that a documentation write may
+have overlapped the window. Treat timings as paired diagnostic observations,
+not a strictly filesystem-write-isolated final performance acceptance. The
+structural session counts and verified outputs do not depend on that timing
+qualification. Full reports remain under
+`.temp/ssh-windows-latency/paired-{owned,native}.json` while retained.
+
+Owned-topology reproduction:
+
+```sh
+python3 benches/ssh_v065.py BEFORE .temp/paired.json \
+  --after AFTER --samples 3 --case upload --case five-files
+```
+
+For the native topology, import the same runner, subclass `Fixture` so its
+`parent` is `parent / ('native-client-' + 'x' * 85)`, substitute that fixture,
+and set `PAYLOAD = b'x' * 1795` before calling `main` with the same arguments.
+The server's accepted-authentication count must equal remote sessions; a short
+workspace must instead demonstrate the owned-mux control. These steps preserve
+the actual source/protocol code and do not add a production no-reuse knob.
+
+### Focused acceptance
+
+- `tests/ssh_cohort_v065.py` passes 12 actual CLI journeys: coherent cohorts,
+  late collision preserving the complete old destination, alias admission,
+  empty/literal behavior, same-unit and later-REPL whole-cwd capture, unrelated
+  socket visibility, and exact fractional upload timestamps with phase/timer/
+  parent ancestry checks in owned and native-client topologies.
+- Three actual-helper journal tests pass, including seven ordinary-file normal/
+  partial-backup/process-kill cuts and repeat recovery, plus the existing
+  readonly-directory/partial-GC crash fixture. Independent reviewer probes
+  additionally retain external old hardlinks through the ordinary-file cuts.
+- The 31 transport helper tests pass, including portable umask/read-only
+  normalization, nanoseconds, native executable preservation without a
+  destination-filesystem probe, and cancellation before client contact. Existing
+  SSH context tests pass nine cases. Empty-admission recovery and structured
+  telemetry pass seven CLI tests.
+- Local formatting and strict lib/bin Clippy pass. The Windows GNU target
+  lib/bin compile check passes using installed Rust target, Clang/llvm-ar and
+  Debian mingw-w64 12.0.0-5 headers extracted under project `.cache/mingw-w64`.
+  No native Windows runtime/UI/performance claim follows from that check.
+
+The remaining large transport task is native Windows connection/session reuse,
+not a larger byte buffer. Win32-OpenSSH still does not provide the Unix
+ControlMaster mechanism. A retained native SSH exec channel with bounded framed
+commands/data can preserve configured aliases/agent/host-key behavior without
+adding a second credential cache or replacing SSH cryptography. Targeted
+file/directory persistence also remains separate work; global syncfs is not
+silently weakened here.

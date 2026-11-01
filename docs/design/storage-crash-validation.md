@@ -1,3 +1,10 @@
+> Historical acceptance for the former recoverable-statement design.
+> The user explicitly replaced that guarantee on 2026-11-01; persistent journals,
+> global recovery and the corresponding crash-matrix test targets are removed.
+> Current behavior is [ordinary staging and retry](statement-atomicity.md), with
+> [normal-user acceptance](normal-user-validation.md) instead of whole-statement
+> rollback or mandatory power-loss persistence.
+
 # Statement crash recovery acceptance
 
 The finite-statement contract is tested at process boundaries. The writer exits
