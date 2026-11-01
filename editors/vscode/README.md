@@ -9,12 +9,12 @@ negotiated with the server; the extension does not reimplement the compiler.
 ## Install and try
 
 Requires VS Code 1.91 or newer, Node/npm for development, and msync on PATH.
-Release users do not need Node/npm: download `msync-language-0.6.5.vsix` and
+Release users do not need Node/npm: download `msync-language-0.6.6.vsix` and
 `SHA256SUMS` from the same msync release, verify the VSIX's checksum, then use
 **Extensions: Install from VSIX**, or:
 
 ```sh
-code --install-extension msync-language-0.6.5.vsix
+code --install-extension msync-language-0.6.6.vsix
 ```
 
 The extension does not bundle the msync executable; install the matching platform

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.6 — 2026-11-01
+
+- Replace recoverable multi-file transactions with ordinary staging, atomic
+  file replacement and retry. Remove persistent registries, before-images,
+  commit journals, parent-wide publication locks, global recovery admission and
+  filesystem-wide syncfs. This explicitly changes the former crash-rollback
+  contract; completed members of failed multi-file work remain completed.
+- Carry finite transfer metadata and bytes through one native SSH exec per
+  endpoint, using Rust tar coding on the client. Remove SCP/helper reconnects,
+  implicit client preauthentication and duplicate source/payload copies.
+- Merge directory containers and replace same-name files so rerunning a transfer
+  updates normally without cloning unrelated destination data.
+- Support native linked workspaces, recursive link entries and case-sensitive
+  paths instead of blanket refusal. Retain native file descriptors for released
+  file inputs and support FIFO participant groups and queued independent flows.
+- Remove arbitrary input/import/object/query/document width and size policy
+  caps, path whitespace rejection, inactive config gates and repeated internal
+  object validation. Keep the actual language and platform representation rules.
+- Keep optional observer failures separate from transfer outcomes; SQLite
+  ingestion no longer blocks interpreter producers. Accept normal editor input
+  and format selected symlink targets through normal replacement.
+- Use compact execution dependency graphs instead of storing a proof for every
+  independent instruction pair. Preserve the public detailed-explanation API.
+
 ## 0.6.5
 
 The integrated source has passed local functional, compatibility and editor

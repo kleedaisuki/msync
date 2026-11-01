@@ -2,7 +2,7 @@
   "name": "msync-language",
   "displayName": "msync Language",
   "description": "msync 0.6 syntax highlighting and language-server support",
-  "version": "0.6.5",
+  "version": "0.6.6",
   "publisher": "msync",
   "license": "GPL-3.0-only",
   "engines": {

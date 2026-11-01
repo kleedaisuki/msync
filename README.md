@@ -4,18 +4,20 @@ A typed file-synchronization DSL in Rust: a pure optimizing compiler, a
 block-at-a-time interpreter, bounded asynchronous execution, source-mapped
 errors, a script formatter, a persistent REPL, and native editor/LSP tooling.
 
-> This checkout targets **0.6.5**. The source grammar remains **0.6**;
-> **0.5** remains a compatible alias. Contracts and verification evidence are
-> recorded in the [0.6.5 release notes](docs/releases/0.6.5.md) and
-> [integration workboard](docs/design/integration-v065.md). Published 0.6.0
-> artifacts and their recorded identities are not replaced by this work.
+> **0.6.6 uses ordinary copying and retry**, replacing the previous transaction/
+> recovery contract. A regular file is staged beside its target and atomically
+> replaced; failed multi-file work may leave completed members in place.
+> The source grammar remains **0.6**; **0.5** remains a compatible alias.
+> See the [0.6.6 release notes](docs/releases/0.6.6.md) and
+> [current copy contract](docs/design/statement-atomicity.md).
+> Previously published tags and assets remain unchanged.
 
 An optional `# msync: 0.6` header or `--syntax 0.6` selects the current grammar;
 existing 0.5 headers and flags remain accepted. Syntax 0.3 and transactional 0.4 are
 rejected with migration guidance, not accepted with silently changed semantics.
 To migrate an old quoted filename, use an explicit joined or qualified path,
 such as `$pwd::pwd / "file name"`; bare `"file name"` is literal data. All scripts
-use the same statement publication/recovery owner.
+use ordinary staging and replacement; failed transfers can be retried.
 
 ## Install a release
 
@@ -45,12 +47,11 @@ identity. Matching GPL source and third-party notices accompany each release.
 See [Windows packaging and lifecycle](docs/design/windows-packaging.md) for
 upgrade/PATH ownership and reproducible developer packaging commands.
 
-Runtime staging normally uses the workspace's `.temp`. If creation is denied
-by filesystem permissions, it can use `~/.msync/state` instead; set
-`MSYNC_STATE_DIR` to select that stable fallback. Recovery checks configured
-state before new effects. An occupied/invalid path is an error, not permission
-for silent fallback. Configure `execution.state_dir` or use `MSYNC_STATE_DIR`
-when a different state location is needed.
+Ordinary file staging stays beside the destination. Operations that need
+additional temporary storage normally use the workspace's `.temp`, with
+`~/.msync/state` as a permission fallback; `execution.state_dir` or
+`MSYNC_STATE_DIR` selects a different location. There is no startup recovery
+scan, persistent commit journal or requirement to repair old registries.
 
 ## Configure and inspect settings
 
@@ -291,9 +292,10 @@ String/Path truthiness, no nested Range/Scope/port element, and no conversion of
 a Bool range into a file transfer. Boolean consumers such as `$view::any_of`
 produce one Bool rather than another range.
 
-An implicit finite `range -> container/` is one file-publication statement; a
-later collision must not leave an earlier selected member published. An explicit
-`for` remains a sequence of statements, not a whole-loop transaction.
+An implicit finite `range -> container/` is one selected transfer operation.
+Containers merge directories and replace same-name files, so repeating a transfer
+updates normally. If a later member fails, completed members remain; retry the
+transfer. An explicit `for` remains a sequence of statements.
 `loop` and `for` nest by indentation; `break` exits the nearest
 loop. A value-producing `loop` requires compatible `break` values of string,
 path, boolean, or scope type. See the
@@ -481,27 +483,24 @@ guest/server-side descendant has terminated; remote termination is best effort.
 
 ## Statement publication and streams
 
-A finite file statement owns its stages and recovery state, not script-wide
-transaction history. The implemented publication contract is **one complete
-statement or none after recovery**; final acceptance gates are recorded
-separately. A failed later statement leaves earlier successful statements
-intact. Selectors and container merges still form one statement; multiple
-physical renames are not one OS-wide atomic rename, and outside observers can
-see an interrupted publication before recovery. Precise durability, recovery,
-and filesystem limits belong to
-[statement atomicity](docs/design/statement-atomicity.md).
+Ordinary files use a same-directory temporary file followed by native atomic
+replacement, with at most one file fsync. There is no filesystem-wide syncfs,
+backup/commit journal, parent-wide publication lock or startup recovery gate.
+Directory containers merge selected entries and replace same-name files; explicit
+`/.` replaces a tree. Multi-file work is not a persistent transaction: completed
+members may remain after an error or forced termination, and the same transfer
+can be retried. Unrelated destination children remain untouched by a merge.
 
-Recovery uses the same configured scratch root (the CLI defaults to `.temp`
-under its working directory), before new runtime effects, even for an empty
-script. Preserve pending recovery state until it is settled; startup does not
-scan unrelated user trees. Process-crash recovery is distinct from hard
-power-loss durability: the Windows implementation does not promise portable
-directory-flush guarantees on arbitrary storage.
-Unix publication synchronizes payloads and affected directories. Existing-file
-replacement uses an atomic rename with a retained hard-linked before-image
-where supported. Missing parents are staged under the highest absent ancestor,
-not exposed as half-created public scaffolding. Recovery refuses a foreign
-target identity rather than overwriting unrelated data.
+One finite SSH transfer carries metadata and archive bytes through one native
+SSH exec per endpoint; Windows does not need an external tar executable.
+The POSIX remote host needs GNU tar and the ordinary GNU cp/mv utilities;
+physical FIFO/socket transfers additionally use Python 3 on the remote host. Host
+aliases, agents, proxies and native authentication remain OpenSSH-owned. A failed
+archive/helper reports its actual error without an independent settlement client.
+Empty scripts and declarations do not inspect old registries or connect to old
+endpoints. Legacy recovery state is left alone, not interpreted as authority over
+new work. Current semantics and implementation ownership are in
+[staging and retry](docs/design/statement-atomicity.md).
 
 Streams and external program effects are not crash-rollbackable finite file
 statements. Ordinary files, pipes, sockets, HTTP responses, and remote byte
@@ -515,7 +514,7 @@ $pwd::pwd/input.bin -> wire::/
 
 TCP connects to the declared peer; it does not implicitly listen. Transfers are
 asynchronous and backpressured. Source EOF or a closed sink ends only that flow.
-Complementary FIFO halves co-start rather than waiting for each other's
+Complementary local FIFO participants co-start rather than waiting for each other's
 completion. See [stream details](docs/design/streams.md).
 
 ## Paths and namespaces
@@ -542,15 +541,16 @@ existing SSH settings.
 | Destination | Contract |
 | --- | --- |
 | `target` | Exact pathname; replace a regular file, reject an existing directory |
-| `target/` | Append basename; no file clobber, recursively merge directories |
+| `target/` | Append basename; replace same-name files and recursively merge directories |
 | `target/.` | Replace the directory tree, removing old children |
 
 A missing exact directory target may be created from a directory source.
 Selectors such as `configs/<.+\.toml>` match complete immediate-child basenames
 using Rust `regex`; matched directories copy recursively. Selectors need a
 container destination. No matches is a successful no-op. HTTP is read-only.
-Symlinks/reparse points, unsupported devices, same-file aliases, and unsafe tree
-overlap receive runtime checks, not heuristics.
+Selected symlinked workspaces use native path resolution. Recursive symlinks
+are preserved as entries rather than followed or blanket-rejected. Actual device,
+permission and path errors come from the corresponding native operation.
 
 ## Build and commands
 
@@ -590,8 +590,9 @@ objects. Formatting an object is rejected without modifying it.
 
 `fmt --check` is read-only and fails if formatting differs. `fmt --stdout` is an
 explicit preview; default `fmt -` is rejected rather than treating formatting
-as a transfer. Comments and values are preserved. In-place formatting refuses
-symlinks and read-only scripts.
+as a transfer. Comments and values are preserved. In-place formatting resolves
+a selected symlink, preserves the link and atomically replaces its target; actual
+native replacement permissions apply.
 
 ```sh
 msync run script.msync --jobs 4 --max-streams 8 --buffer-size 64KiB --memory-limit 16MiB
@@ -654,7 +655,7 @@ and semantic tokens. Coloring remains available if the server cannot start.
 From this checkout, install the packaged extension in VS Code 1.91 or newer:
 
 ```sh
-code --install-extension dist/editor/msync-language-0.6.5.vsix
+code --install-extension dist/editor/msync-language-0.6.6.vsix
 ```
 
 Alternatively use **Extensions: Install from VSIX** with that file. Install
@@ -733,7 +734,7 @@ Quality verification is local-first. Select affected contracts rather than
 automatically repeating the complete suite:
 
 ```sh
-./scripts/check-local.sh --test barrier_crash_v5 --test empty_recovery_v6 --test latency_v6
+./scripts/check-local.sh --test normal_user_model --test native_paths_v065 --test fifo_participants
 ./scripts/check-local.sh --editor
 ./scripts/check-local.sh --packaging
 ```
@@ -751,7 +752,7 @@ CI-status prerequisite for publication. Required assets, matching versions,
 checksums and published-tag immutability remain release invariants.
 
 Acceptance covers compiler→object→interpreter and CLI/REPL journeys, external
-file creation/deletion across barriers, bounded flows, and forced-crash recovery.
+file creation/deletion across barriers, queued flows, retry and ordinary replacement.
 OS/backend results are separate: WSL native ext4 and Windows-backed DrvFS are
 not interchangeable performance environments. See
 [measurements](docs/design/performance-v4.md) and [validation](docs/design/validation.md).
@@ -802,8 +803,9 @@ journeys. Linux results do not certify native Windows/WSL or remote CI execution
 For 0.6.5, compiler costs and SSH orchestration are measured separately against
 the frozen starting source. The SSH investigation uses real authenticated
 OpenSSH and counts client/helper processes and authentications alongside small
-operations; it does not explain latency solely through payload bandwidth or
-remove recovery flushes for speed. Current methods and acceptance state are in
+operations. That historical release retained recovery flushes; the subsequent
+user-requested redesign removes the protocol instead of tuning its overhead.
+Current methods and acceptance state are in
 [compiler performance](docs/design/compiler-performance-v065.md),
 [the real SSH fixture](docs/design/ssh-performance-v065-fixture.md), and
 [the integration workboard](docs/design/integration-v065.md).
