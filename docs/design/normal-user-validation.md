@@ -263,3 +263,52 @@ Retained reports: `.temp/release-v066/ssh.json` and
 `.temp/release-v066/closure.json`. This is a local Linux image, not the later
 Actions-packaged Linux or Windows binary. Release packaging independently builds
 and exercises the distributable assets.
+
+## Published v0.6.6 assets and validation status
+
+Released on 2026-11-01 at 15:48:14 Asia/Singapore from commit
+`5b288e914887e04928626cc5067d0a1a08d95ae8`:
+[release](https://github.com/kleedaisuki/msync/releases/tag/v0.6.6),
+[successful package workflow](https://github.com/kleedaisuki/msync/actions/runs/41285893473).
+The immutable tag resolves to that exact source commit. Windows static-CRT
+packaging and native install/upgrade/repair/PATH/transfer/uninstall, Linux portable
+object/IR replay, and the actual release-binary VS Code host passed.
+
+All four public assets were downloaded and matched the downloaded SHA256SUMS.
+The downloaded Linux binary reports `msync 0.6.6`; the VSIX manifest agrees.
+Windows ZIP contains the PE executable and actual tar/filetime license texts.
+The Linux archive contains the tracked release notes, not untracked local
+`docs/analysis` documents or temporary/cache fixtures.
+
+| Asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `msync-0.6.6-linux-x86_64.tar.gz` | 7273287 | `590012d4a3a9e8665a9b9d99c685eb061db7e69ca6bffcd5b082c733e58c35aa` |
+| `msync-0.6.6-windows-x86_64-setup.exe` | 6559286 | `1cf9db9b9c27a5a36a3911170367e6faa193344cbae600150c14113ab1b59b89` |
+| `msync-0.6.6-windows-x86_64.zip` | 7229480 | `c4a056c7d814498bcc4ae61fc377be5cbd1859c0b499ce7c5f0650c9f210761e` |
+| `msync-language-0.6.6.vsix` | 122090 | `7a9bbad21b0a0b5939b59472bef0f86feb6f1824b385fdbf41c9a25a40dc3757` |
+| `SHA256SUMS` | 390 | `bf68ff64b3352ccd2ab86ae925163cb0df381069bfa76ab0eaa947e346907a09` |
+
+### Separate Rust workflow is not green
+
+The [independent Rust workflow](https://github.com/kleedaisuki/msync/actions/runs/41285893351)
+failed on both Ubuntu and Windows. It was not a publication dependency, and
+package acceptance above must not be described as full Rust compatibility.
+The logged named failures number 29 on Ubuntu and 44 on Windows. No release
+tag or asset has been moved/replaced to conceal this result.
+
+Inspected failures include assertions for deliberately removed contracts:
+insert-only container collisions, recovery registry creation, immutable-source
+snapshots, readonly-bit refusals, path whitespace refusal, capacity refusal and
+pairwise FIFO waves. Other failures concern actual diagnostic operand locations,
+telemetry parentage/schema, Windows path/test-root spelling, and logical graph
+comparisons. They have not all been individually attributed; do not classify
+the entire failing workflow as stale tests or restore defensive machinery just
+to make it green. For example, `ordinary_failures_retain_the_semantic_macro_operand_not_the_whole_call`
+and `successful_physical_transfer_retains_task_context_across_polling` need
+focused follow-up against their real diagnostic/observation contracts.
+
+Reproduce an individual failure using the tagged source and
+`cargo test --locked --test TARGET NAME -- --nocapture`, then check the actual
+CLI journey and current contract before changing either code or expectations.
+The remote logs and source are retained at the linked run; local raw log copy
+is `.temp/release-v066/rust-failures.log` while available.
