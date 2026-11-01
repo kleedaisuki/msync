@@ -1,13 +1,13 @@
 # Changelog
 
-## 0.6.5 — locally accepted, unreleased
+## 0.6.5
 
 The integrated source has passed local functional, compatibility and editor
 acceptance, with bounded performance costs recorded explicitly. Native package,
 Windows installer and editor workflows passed on the development branch with
 publication skipped; the final [native Rust run](https://github.com/kleedaisuki/msync/actions/runs/41240455544)
 at `01aef79` passed on Ubuntu and Windows, including terminal wake and credential
-checks. Publication is a separate step; the
+checks. The
 [integration workboard](docs/design/integration-v065.md) records their scope.
 
 - Make inferred semantic `Path`, `String`, `Scope`, `Bool` and `Range<T>` types

@@ -7,7 +7,9 @@ canonical `$view::` built-in APIs, measured non-payload SSH performance, general
 scope qualification of lexical function results, scheduled conditionals, ordered
 user-created ranges, and the outstanding historical repairs. The package/editor
 delivery version is 0.6.5; versioning is not evidence that the implementation is
-complete. No release or published-tag mutation is authorized by this workboard.
+complete. The subsequent user instruction authorizes merging to main and
+publishing v0.6.5 with platform packages, the VSIX and checksums. Previously
+published tags and assets must remain unchanged.
 
 The starting source is `d501fd26614055af7a0f77b58a7b20bbb6cadd99`, on topic branch
 `codex/v0.6.5`. It includes the automatic empty-unit recovery repair and
@@ -50,8 +52,10 @@ are adjacent under `target/performance-v065/baselines/`.
   [the compiler record](compiler-performance-v065.md).
 
 The older checkpoints below retain their actual source/image scope. They do not
-replace this delivery evidence or retroactively acquire its identity. No main
-merge, new version tag, marketplace publication or GitHub Release is performed.
+replace this delivery evidence or retroactively acquire its identity. Following
+explicit user authorization, main is fast-forwarded to this delivery and the
+release workflow publishes v0.6.5 after package/editor installation acceptance.
+Marketplace publication is not part of this release.
 
 ## Contracts and authoritative completion evidence
 
