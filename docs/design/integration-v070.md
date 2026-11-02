@@ -163,3 +163,24 @@ and Windows. It checks native filesystem effects, lexical members, Scope ranges,
 inferred standard namespaces and String primitives from a compiled object after
 the script is removed. Preview must not create its output tree. Portable package
 acceptance also requires all five readable standard source files.
+
+The locally built optimized Linux archive passed its checksum, contained all
+five sources byte-for-byte, and excluded user-owned `docs/analysis`. Its installed
+binary passed the shared source-free smoke journey and the full actual SSH
+object/IR fixture above. Binary SHA-256:
+`52ac10ab332947ad641f0e9e81a9dde5678cafff3c366b48b96e14a2b21c18be`.
+The local archive SHA-256 is
+`084569325086ecccfc79682143963032b6ef0fc8306529a88b5bd835c162edd3`;
+the official Ubuntu-baseline archive built by Actions has a separate identity.
+Optimized-package SSH results are `.temp/v070/ssh-package-results.json`.
+
+### Historical executable artifacts
+
+The published v0.6.6 Linux archive was verified against its existing SHA256SUMS.
+Its executable (`5224927dabebd927fc0dd767a7ab17fa65f434594fb810723c6091df1fbb0d91`)
+compiled a 0.6 script containing a lexical macro, file transfer, Bool range and
+`$view::take` into both `.mobj` and JSON IR. After deleting the source, the v0.7
+executable ran both artifacts from a different working directory and produced
+the expected copied bytes and Bool-selected marker. Fixture paths are
+`.temp/v070/legacy-producer` and `.temp/v070/legacy-consumer`; the immutable
+historical producer is retained under `target/compatibility-v070`.
