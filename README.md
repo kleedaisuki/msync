@@ -4,16 +4,17 @@ A typed file-synchronization DSL in Rust: a pure optimizing compiler, a
 block-at-a-time interpreter, bounded asynchronous execution, source-mapped
 errors, a script formatter, a persistent REPL, and native editor/LSP tooling.
 
-> **0.6.6 uses ordinary copying and retry**, replacing the previous transaction/
-> recovery contract. A regular file is staged beside its target and atomically
-> replaced; failed multi-file work may leave completed members in place.
-> The source grammar remains **0.6**; **0.5** remains a compatible alias.
-> See the [0.6.6 release notes](docs/releases/0.6.6.md) and
+> **0.7.0 adds a source-backed standard library**, explicit lexical namespaces,
+> filesystem operations and `Range<Scope>` endpoint iteration.
+> A regular file is staged beside its target and atomically replaced; failed
+> multi-file work may leave completed members in place and can be retried.
+> The source grammar is **0.7**; **0.5** and **0.6** remain compatible aliases.
+> See the [0.7.0 release notes](docs/releases/0.7.0.md) and
 > [current copy contract](docs/design/statement-atomicity.md).
 > Previously published tags and assets remain unchanged.
 
-An optional `# msync: 0.6` header or `--syntax 0.6` selects the current grammar;
-existing 0.5 headers and flags remain accepted. Syntax 0.3 and transactional 0.4 are
+An optional `# msync: 0.7` header or `--syntax 0.7` selects the current grammar;
+existing 0.5/0.6 headers and flags remain accepted. Syntax 0.3 and transactional 0.4 are
 rejected with migration guidance, not accepted with silently changed semantics.
 To migrate an old quoted filename, use an explicit joined or qualified path,
 such as `$pwd::pwd / "file name"`; bare `"file name"` is literal data. All scripts
@@ -155,7 +156,7 @@ function calls. Operator capabilities determine valid operands and result types:
 | `<`, `<=`, `>`, `>=` | `String` with `String` | `Bool` |
 
 `$` introduces built-in scopes/APIs. They are typed values rather than names that
-only work in a hard-coded syntax position: for example, `api => $view` permits
+only work in a hard-coded syntax position: for example, `api => $std::ranges` permits
 `items | api::take(1)`. Ordinary lexical functions return inferred values that can
 be composed or qualified just like other values:
 
@@ -174,6 +175,95 @@ then the outer scope while preserving captured contexts. Conflicting explicit
 physical endpoints and rooted right-hand joins remain errors rather than
 coercions. See the
 [type/operator contract](docs/design/type-system-v065.md) for the shared rules.
+
+## Standard library and lexical namespaces (0.7)
+
+`$std` groups standard facilities into ordinary typed namespace values. Aliases
+do not depend on their spelling:
+
+```text
+fs => $std::fs
+ranges => $std::ranges
+
+scope hello:
+    codex := ~/.codex
+
+remote => ssh://forge
+if fs::is_directory(hello::codex):
+    hello::codex -> remote::backup/
+```
+
+A `scope` block exposes its declared members through `::`; its declarations do
+not leak into its parent. Blocks can contain nested scopes, values, functions,
+macros and native declarations. `alias => hello` keeps that same namespace.
+Filesystem scopes such as `$local` and `ssh://forge` continue to qualify paths;
+lexical scopes select named members instead of constructing unknown paths.
+
+Ranges now accept Scope elements, so endpoint distribution needs no duplicated
+transfer statements:
+
+```text
+forge => ssh://forge
+myvpn => ssh://myvpn
+wsl => $wsl
+
+macro copy_to(scope, file):
+    $local::file -> scope::file
+
+for file in [~/.codex/AGENTS, ~/.codex/codex.prompt]:
+    for scope in [wsl, myvpn, forge]:
+        copy_to(scope, file)
+```
+
+Unqualified file items retain their original home/path spelling until the
+selected endpoint supplies its context. `$local::file` uses the local home;
+`scope::file` uses the selected remote home. Explicitly qualified paths retain
+their endpoint rather than being silently rebound.
+
+| Namespace | Facilities |
+| --- | --- |
+| `$std::fs` | Runtime existence/type predicates, status, directory iteration, creation, removal, rename/copy/links, permissions and C++-style lexical path operations |
+| `$std::ranges` | Ordered lazy sources, adaptors and consumers; previous `$view`, `views::` and `ranges::` spellings remain compatible |
+| `$std::path` | Source-defined endpoint-preserving join, qualification and identity |
+| `$std::bool` | Source-defined identity, negation, conjunction, disjunction, xor and implication |
+| `$std::string` | Unicode-aware comparison, containment, concatenation, trimming, case conversion, replacement and splitting |
+
+Filesystem observations run at execution time. `check`, `plan`, compilation and
+dry-run never create directories, remove files or authenticate endpoints for
+these calls. Use `fs::is_directory(path)` rather than `fs::exists(path)` when the
+branch depends specifically on an entry's type. `fs::remove` returns false for a
+missing entry and removes files, links or empty directories; `fs::remove_all`
+recursively removes a tree. `fs::delete` retains the existing strict deletion
+contract, and the older `exists path` / `delete path` syntax still works.
+
+The [filesystem reference](docs/design/filesystem-v070.md) specifies the complete
+operation inventory, endpoint semantics and currently unrepresented numeric/time
+metadata. See the actual sources in [`stdlib/`](stdlib/): source functions use the
+normal specialization pipeline, and VS Code can jump into the bundled source
+without a development checkout. Portable packages also include it under
+`share/msync/std`.
+
+Host-provided operations have explicit `native` declarations:
+
+```text
+native directory(path) -> Bool = "fs.is_directory"
+native entries(path) -> Range<Path> = "fs.directory_iterator"
+native erase(path) -> Void = "fs.delete"
+if directory(input):
+    for file in entries(input):
+        file -> backup/
+erase(obsolete)
+```
+
+The implementation identifier selects a registered msync capability, not shell
+text or an external executable. Its signature determines argument types and
+infers the result when `-> Type` is omitted, or checks an explicit result.
+Native calls carry typed values into msync and may
+return supported scalar/Range values or `Void`; ordinary source functions still
+infer their types without annotations. A `Void` call is a statement, not a value.
+Dependent range primitives also have explicit native declarations: their
+callbacks specialize into typed lazy range IR, not executable source passed to
+the runtime.
 
 ## Compile-time functions and source composition (0.5.2)
 
@@ -262,16 +352,16 @@ chosen = loop:
 chosen -> completion.txt
 ```
 
-Regex selectors construct lazy ranges of paths. `$view::` is the canonical
-built-in API namespace for constructors, adaptors and scalar consumers. Existing
-`views::` and `ranges::` spellings remain compatibility aliases. Views compose
+Regex selectors construct lazy ranges of paths. `$std::ranges::` is the canonical
+API namespace for constructors, adaptors and scalar consumers. Existing
+`$view::`, `views::` and `ranges::` spellings remain compatibility aliases. Views compose
 with `|`; predicates return Bool and projections return an allowed scalar type.
 Enumeration starts only at consumption; filters and projections execute only for
 demanded elements. Directory-entry ordering remains deterministic.
 
 User-created ranges use `[ ... ]` and retain insertion order, independently of
-directory ordering. Their elements may be String data, Bool values or scoped
-Paths; ordinary symbol/boolean calls are expanded and typed as elements:
+directory ordering. Their elements may be String data, Bool values, Paths or
+Scopes; ordinary symbol/boolean calls are expanded and typed as elements:
 
 ```text
 boolean flip(flag):
@@ -288,8 +378,9 @@ files := [$pwd::"input file.txt", input.txt]
 A bare string element is data, while `$pwd::"input file.txt"` is a Path whose
 name contains spaces. Mixed allowed elements infer a finite scalar union; an
 operation must be valid for every possible item type. There is no implicit
-String/Path truthiness, no nested Range/Scope/port element, and no conversion of
-a Bool range into a file transfer. Boolean consumers such as `$view::any_of`
+String/Path truthiness, no nested Range/port element, and no conversion of
+a Bool or Scope range into a file transfer. Scope ranges are homogeneous rather
+than unions with unrelated scalar domains. Boolean consumers such as `$std::ranges::any_of`
 produce one Bool rather than another range.
 
 An implicit finite `range -> container/` is one selected transfer operation.
@@ -621,7 +712,7 @@ process-memory limit. `/limits` reports this separate per-program disk quota.
 | `/check FILE`, `/plan FILE` | Static inspection |
 | `/fmt FILE` | Format source in place |
 | `/dry-run [on\|off]`, `/limits` | Preview mode/resource settings |
-| `/syntax [0.6\|0.5]` | Inspect/select the current grammar or compatibility alias |
+| `/syntax [0.7\|0.6\|0.5]` | Inspect/select the current grammar or compatibility alias |
 | `/jobs`, `/wait`, `/stop` | Inspect, wait, or gracefully settle owned work |
 | `/kill` | Explicitly force-terminate programs; external effects may be partial |
 | `/clear` | Clear viewport, not bindings/history |

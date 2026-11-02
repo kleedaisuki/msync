@@ -56,7 +56,7 @@ OPTIONS
   --check            Check formatting without modifying the file (fmt only)
   --stdout           Explicit formatting preview, never writes the file (fmt only)
   --color auto|always|never   Color policy (default: auto; honors NO_COLOR)
-  --syntax 0.6       Select grammar; must agree with '# msync: VERSION'
+  --syntax 0.7       Select grammar; 0.5 and 0.6 remain compatible aliases
   --trace FILE        Write private, local JSONL telemetry ('-' = stderr)
   --telemetry-db FILE  Record end-to-end telemetry in SQLite
   --no-telemetry       Disable configured telemetry
@@ -82,9 +82,17 @@ TYPED CONTROL
   ready = exists \"input.txt\"
   if ready:
       input.txt -> output.txt
-  for file in inputs/<.+> | views::take(1):
+  for file in inputs/<.+> | $std::ranges::take(1):
       file -> selected/
   delete \"obsolete.txt\"
+
+STANDARD LIBRARY
+  fs => $std::fs
+  scope hello:
+      codex := ~/.codex
+  if fs::is_directory(hello::codex):
+      hello::codex -> backup/
+  native present(path) -> Bool = \"fs.exists\"
 
 PROGRAMS
   release Program => $path::bash(\"-c\", \"ls\")
@@ -92,15 +100,15 @@ PROGRAMS
   acquire Program
 
 REPL: /help or /? for commands. No arguments starts the REPL.
-Syntax 0.6 is the default CLI grammar; 0.5 remains a compatibility alias.
+Syntax 0.7 is the default CLI grammar; 0.5 and 0.6 remain compatibility aliases.
 An optional '# msync: VERSION' header makes the grammar explicit.
-In syntax 0.6 every bare quoted value is literal UTF-8 data, never an implicit file.
+Every bare quoted value is literal UTF-8 data, never an implicit file.
 Use $pwd::pwd / \"file name\" or $local::\"file name\" for paths containing spaces.
 Use $pwd::pwd/file for working-directory paths; $file::this and $file::parent identify the source script.
 Pipes and sockets end independently; Ctrl-C cancels active streams.
 External programs run asynchronously internally; an unmarked call waits for exit.
 Use release to launch without waiting, acquire to join, and acqrel for both effects.
-Finite file statements recover as a whole; streams and external effects are not rolled back.
+Completed members of failed multi-file work remain in place; retry the transfer.
 Graceful cancellation waits for started children to exit and may wait forever.
 ";
 
@@ -123,7 +131,7 @@ const REPL_HELP: &str = "REPL commands
   /export-relocatable FILE Export the last transfer with symbolic context roots
   /load-ir FILE            Execute reusable IR in the current session
   /limits                  Show execution, buffer and output-spool limits
-  /syntax [0.6|0.5]         Show or select the supported grammar
+  /syntax [0.7|0.6|0.5]     Show or select the supported grammar
   /jobs                    Show background jobs and their identifiers
   /wait                    Wait for active streams and external programs
   /stop                    Stop streams; drain already-started external programs
@@ -317,7 +325,7 @@ fn arguments(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
                 options.explicit.insert("language.syntax");
                 options.syntax = Some(
                     args.next()
-                        .ok_or("--syntax requires 0.6 (or compatible 0.5)")?
+                        .ok_or("--syntax requires 0.7 (or compatible 0.5/0.6)")?
                         .parse::<Version>()
                         .map_err(str::to_owned)?,
                 );

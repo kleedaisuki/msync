@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.7.0 — 2026-11-02
+
+- Introduce the typed `$std` standard library with `fs`, `ranges`, `path`,
+  `bool` and `string` namespaces. Infer namespace aliases such as
+  `fs => $std::fs`; retain existing range API compatibility spellings.
+- Add explicit lexical `scope name:` blocks with nested members, functions,
+  macros and aliases. Support ordered `Range<Scope>` values through callbacks,
+  consumers and endpoint-distribution loops.
+- Preserve unbound path/home provenance through runtime range bindings, so
+  `$local::file` and a selected remote `scope::file` use the correct contexts.
+- Add C++-inspired filesystem predicates, status, directory iteration,
+  creation/removal, copy/rename/link, symbolic permissions and lexical path
+  operations on local, SSH and WSL endpoints.
+- Compile source-defined standard functions through ordinary specialization.
+  Expose host facilities with explicit typed `native` declarations, including
+  scalar, Range and Void results, and negotiate `native_std_v1` in new objects.
+- Add standard-library completion, hover, signatures and definition navigation
+  into the binary's actual bundled source using read-only VS Code documents.
+  Ship readable standard sources in portable packages as well.
+- Select syntax 0.7 by default while retaining 0.5/0.6 source aliases and older
+  object loading. Keep normal-copy/retry semantics and native SSH ownership.
+
+See the [release notes](docs/releases/0.7.0.md) and
+[integration contract](docs/design/integration-v070.md).
+
 ## 0.6.6 — 2026-11-01
 
 - Replace recoverable multi-file transactions with ordinary staging, atomic

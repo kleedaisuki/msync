@@ -49,8 +49,9 @@
   Do not probe a computed Scope and synthesize it again on fallback: nested
   lexical calls can multiply that work. Keep ordinary scalar types compact;
   finite Bool/String/Path unions do not need a heap vector in every expression.
-- `$view::` is the canonical typed built-in API. Preserve working compatibility
-  aliases and source-owned operand diagnostics. New typed object operations must
+- `$std::ranges::` is the canonical typed range API; `$view::` remains its
+  compatible primitive scope. Preserve working aliases and source-owned operand
+  diagnostics. New typed object operations must
   negotiate `typed_values_v2`, including exported values and intermediate types.
   See [the type contract](docs/design/type-system-v065.md).
 - An implicit finite Range transfer is one selected transfer operation, not an
@@ -68,3 +69,24 @@
   that can leave its input loop in the same turn. Preserve ordered messages with
   nonblocking/coalesced native wakeups; input priority or sleeps alone do not
   repair a cyclic backpressure dependency.
+
+## Standard library and namespaces (v0.7.0)
+
+- `$std` and explicit `scope name:` declarations use inferred Scope values.
+  Lexical namespaces select declared members; physical endpoint scopes qualify
+  paths. Keep their ownership distinctions rather than guessing from names.
+- Standard sources in `stdlib/*.msync` are executable compiler input, not
+  parallel documentation. Cache parsed documents, never semantic scopes with a
+  first caller's slots/cwd. Source compositions specialize normally; explicit
+  native declarations own host-only and dependent compiler capabilities.
+- Range<Scope> retains endpoint identity. Unbound paths retain raw spelling and
+  a captured local projection until qualification; derived relative paths also
+  retain explicit endpoint provenance. Lexical inspection uses raw text while
+  actual local I/O uses captured context, not the process cwd.
+- Native operations, lexical namespace values and deferred path representation
+  negotiate `native_std_v1`. Old objects keep their original semantics; runtime
+  executes typed IR, never debug source. Lazy range calls evaluate arguments once
+  on demand, including source functions returning ranges.
+- Installed editor navigation uses versioned `msync-stdlib` virtual source
+  documents backed by the same embedded bytes as compilation. Compare URI
+  scheme/path semantically: VS Code may normalize triple-slash spellings.

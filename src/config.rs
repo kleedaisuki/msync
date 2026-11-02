@@ -132,7 +132,7 @@ impl Default for Settings {
                 state_dir: home().map(|path| path.join(".msync/state")),
             },
             color: Color::Auto,
-            syntax: "0.6".into(),
+            syntax: crate::language::Version::default().to_string(),
             progress: ProgressSettings::default(),
             telemetry: TelemetrySettings::default(),
         }
@@ -469,7 +469,7 @@ impl Loaded {
         {
             return Err(self.invalid(
                 "language.syntax",
-                "choose syntax 0.6 or its 0.5 compatibility alias",
+                "choose syntax 0.7 or its 0.5/0.6 compatibility aliases",
             ));
         }
         Ok(())
