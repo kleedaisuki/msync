@@ -184,3 +184,14 @@ executable ran both artifacts from a different working directory and produced
 the expected copied bytes and Bool-selected marker. Fixture paths are
 `.temp/v070/legacy-producer` and `.temp/v070/legacy-consumer`; the immutable
 historical producer is retained under `target/compatibility-v070`.
+
+## Native release packaging integration
+
+The first official [package run](https://github.com/kleedaisuki/msync/actions/runs/41473527239)
+passed the Ubuntu-baseline Linux package and packaged-binary VS Code host.
+Windows portable acceptance passed, then actual installed acceptance detected
+that Inno Setup's explicit file list omitted the newly staged `share/msync/std`
+directory. The installer manifest now installs that directory with the same
+recursive ownership rules as packaged documentation. No runtime or compiler
+change was needed, and the source-presence assertion remains in installed
+acceptance. Publication was skipped; no v0.7.0 tag or public asset existed.
