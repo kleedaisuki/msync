@@ -195,3 +195,29 @@ directory. The installer manifest now installs that directory with the same
 recursive ownership rules as packaged documentation. No runtime or compiler
 change was needed, and the source-presence assertion remains in installed
 acceptance. Publication was skipped; no v0.7.0 tag or public asset existed.
+
+## Published release
+
+The corrected [release run](https://github.com/kleedaisuki/msync/actions/runs/41474318621)
+passed native Windows portable/install/repair/upgrade/PATH/uninstall acceptance,
+the official Ubuntu-baseline Linux package, and the actual VS Code host against
+the packaged binary. It published [v0.7.0](https://github.com/kleedaisuki/msync/releases/tag/v0.7.0)
+at 2026-11-02 23:47:26 +08:00. The immutable tag and release target both point to
+`69b1921b7322a614baac1730fa6ec73b4cd2533b`.
+
+All four public assets were downloaded to `dist/releases/v0.7.0` and matched
+the release's SHA256SUMS. The public VSIX manifest is version 0.7.0, and the
+Windows portable ZIP contains all five standard source modules.
+
+| Public asset | SHA-256 |
+| --- | --- |
+| `msync-0.7.0-linux-x86_64.tar.gz` | `9141953d437667cff1a23186c2bc79262ba2a8beabe0787287433f3a7d141ee8` |
+| `msync-0.7.0-windows-x86_64-setup.exe` | `e7a47601e4c5efdf5c43531f24d05da23c601a868eda9d894cb4bcee3cd9cc5c` |
+| `msync-0.7.0-windows-x86_64.zip` | `54d0758d3dd1efe57fd6f7656e8b2955090c6aa94f1a4711b4ad3fc7a311dc21` |
+| `msync-language-0.7.0.vsix` | `d7368b237021a73f3d050f6a309aab64828c517273541ac5881e258597d72961` |
+
+The separate initial Rust workflow reached an unrelated historical Linux test
+failure before completion; its Windows job was superseded by the packaging-only
+follow-up. It is not counted as full-project Rust acceptance. The release uses
+the focused local checks and native package/editor journeys recorded above.
+Previously published tags and asset bytes were not replaced.
