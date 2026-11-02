@@ -8,6 +8,7 @@ const { test } = require('node:test');
 function harness(command = 'msync', startError) {
     const errors = [];
     const created = [];
+    const providers = [];
     class Client {
         constructor(...args) {
             this.args = args;
@@ -20,9 +21,16 @@ function harness(command = 'msync', startError) {
             if (startError) throw startError;
         }
         async stop() { this.stopped += 1; }
+        async sendRequest(method, params) { return `${method}:${params.uri}`; }
     }
     const host = {
-        workspace: { getConfiguration: section => {
+        workspace: {
+            registerTextDocumentContentProvider(scheme, provider) {
+                const registration = { scheme, provider, dispose() {} };
+                providers.push(registration);
+                return registration;
+            },
+            getConfiguration: section => {
             assert.equal(section, 'msync');
             return { get: (key, fallback) => {
                 assert.equal(key, 'serverPath');
@@ -42,10 +50,10 @@ function harness(command = 'msync', startError) {
     };
     let extension;
     try { extension = require(filename); } finally { Module._load = originalLoad; }
-    return { extension, errors, created, context: { subscriptions: [] } };
+    return { extension, errors, created, providers, context: { subscriptions: [] } };
 }
 
-test('activation launches stdio client without shell and registers file/untitled documents', async () => {
+test('activation launches stdio client without shell and registers user/library documents', async () => {
     const { extension, errors, created, context } = harness('/path with spaces/msync');
     await extension.activate(context);
     assert.equal(created.length, 1);
@@ -55,6 +63,7 @@ test('activation launches stdio client without shell and registers file/untitled
     });
     assert.deepEqual(client.args[3].documentSelector, [
         { scheme: 'file', language: 'msync' }, { scheme: 'untitled', language: 'msync' },
+        { scheme: 'msync-stdlib', language: 'msync' },
     ]);
     assert.equal(context.subscriptions[0], client);
     assert.equal(client.started, 1);
@@ -90,5 +99,16 @@ test('manually malformed server setting is diagnosed without throwing during act
     assert.equal(created.length, 0);
     assert.equal(errors.length, 1);
     assert.match(errors[0], /not a string/);
+    await extension.deactivate();
+});
+
+test('stdlib definition documents request source from the running server', async () => {
+    const { extension, providers, context } = harness();
+    await extension.activate(context);
+    assert.equal(providers.length, 1);
+    assert.equal(providers[0].scheme, 'msync-stdlib');
+    const text = await providers[0].provider.provideTextDocumentContent({ toString: () => 'msync-stdlib:///0.7.0/fs.msync' });
+    assert.equal(text, 'msync/stdlibSource:msync-stdlib:///0.7.0/fs.msync');
+    assert.equal(context.subscriptions[1], providers[0]);
     await extension.deactivate();
 });

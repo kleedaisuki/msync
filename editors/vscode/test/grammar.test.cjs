@@ -155,7 +155,7 @@ test('manifest and language configuration are internally consistent', () => {
     assert.equal(manifest.dependencies['vscode-languageclient'], '11.0.0');
     assert.equal(configuration.comments.lineComment, '#');
     const indentation = new RegExp(configuration.indentationRules.increaseIndentPattern);
-    for (const line of ['boolean ready(x):', 'if true:', 'if release ready:', 'if acquire ready:',
+    for (const line of ['scope hello:', 'boolean ready(x):', 'if true:', 'if release ready:', 'if acquire ready:',
         'if acqrel ready:', 'else if acquire false:', 'else:', 'for x in items:', 'loop:', 'result = loop:']) {
         assert.ok(indentation.test(line), line);
     }
@@ -166,7 +166,7 @@ test('manifest and language configuration are internally consistent', () => {
     assert.ok(configuration.autoClosingPairs.some(pair => pair.open === '[' && pair.close === ']' && pair.notIn.includes('string')));
     assert.ok(configuration.surroundingPairs.some(pair => pair[0] === '[' && pair[1] === ']'));
     const snippets = JSON.parse(fs.readFileSync(path.join(__dirname, '../snippets/msync.code-snippets'), 'utf8'));
-    assert.equal(snippets['View pipeline'].body[0], '${1:items} | \\$view::filter(${2:predicate})');
+    assert.equal(snippets['View pipeline'].body[0], '${1:items} | \\$std::ranges::filter(${2:predicate})');
     assert.equal(snippets['Ordered range'].body[0], '[${1:"first"}, ${2:true}, \\$local::${3:path}]');
     for (const scheduling of ['release', 'acquire', 'acqrel']) {
         assert.equal(snippets[`Conditional ${scheduling}`].body[0], `if ${scheduling} \${1:true}:`);
@@ -179,8 +179,26 @@ test('every compiler-tooling range spelling has native namespace/function scopes
     const spellings = Array.from(constants.matchAll(/"([^"]+)"/g), match => match[1]);
     assert.ok(spellings.length >= 25);
     for (const spelling of spellings) {
-        const [namespace, name] = spelling.split('::');
+        const pieces = spelling.split('::');
+        const name = pieces.pop();
+        const namespace = pieces.join('::');
         hasScope(`items | ${spelling}`, namespace, 'entity.name.namespace.msync');
         hasScope(`items | ${spelling}`, name, 'support.function.range.msync');
+    }
+});
+
+test('explicit namespaces, source natives and standard libraries retain native roles', () => {
+    hasScope('scope hello:', 'scope', 'storage.type.namespace.msync');
+    hasScope('scope hello:', 'hello', 'entity.name.namespace.msync');
+    hasScope('native exists(path) -> Bool = "fs.exists"', 'native', 'storage.type.function.msync');
+    hasScope('native exists(path) -> Bool = "fs.exists"', 'exists', 'entity.name.function.msync');
+    hasScope('native exists(path) -> Bool = "fs.exists"', 'path', 'variable.parameter.msync');
+    hasScope('items | $std::ranges::filter(present)', '$std::ranges', 'entity.name.namespace.msync');
+    hasScope('items | $std::ranges::filter(present)', 'filter', 'support.function.range.msync');
+    hasScope('if $std::fs::is_directory(input):', '$std', 'entity.name.namespace.msync');
+    hasScope('if $std::fs::is_directory(input):', 'fs', 'entity.name.namespace.msync');
+    hasScope('if $std::fs::is_directory(input):', 'is_directory', 'entity.name.function.msync');
+    for (const word of ['scope', 'native']) {
+        assert.ok(!scopes(`root/${word}/file -> output`, word).some(scope => scope.startsWith('keyword.')));
     }
 });

@@ -6,8 +6,11 @@
   "Range loop": { "prefix": "for", "body": ["for ${1:item} in ${2:root}/<${3:.+}>:", "    $0"], "description": "Iterate a lazy range" },
   "Value loop": { "prefix": "loop", "body": ["${1:result} = loop:", "    break ${2:\"done\"}"], "description": "Evaluate a loop result" },
   "Ordered range": { "prefix": "range", "body": ["[${1:\"first\"}, ${2:true}, \\$local::${3:path}]"], "description": "Construct an ordered typed range" },
-  "View pipeline": { "prefix": "viewfilter", "body": ["${1:items} | \\$view::filter(${2:predicate})"], "description": "Apply a builtin lazy view" },
+  "View pipeline": { "prefix": "viewfilter", "body": ["${1:items} | \\$std::ranges::filter(${2:predicate})"], "description": "Apply a builtin lazy view" },
   "Conditional release": { "prefix": "ifrelease", "body": ["if release ${1:true}:", "    $0"], "description": "Schedule a bool condition with release" },
   "Conditional acquire": { "prefix": "ifacquire", "body": ["if acquire ${1:true}:", "    $0"], "description": "Schedule a bool condition with acquire" },
+  "Namespace": { "prefix": "scope", "body": ["scope ${1:module}:", "    $0"], "description": "Declare an explicit lexical namespace" },
+  "Directory predicate": { "prefix": "isdir", "body": ["\\$std::fs::is_directory(${1:path})"], "description": "Inspect a directory at its selected endpoint" },
+  "Native function": { "prefix": "native", "body": ["native ${1:name}(${2:argument}) -> ${3:Bool} = \"${4:module.function}\""], "description": "Declare a typed host-implemented primitive" },
   "Conditional acqrel": { "prefix": "ifacqrel", "body": ["if acqrel ${1:true}:", "    $0"], "description": "Schedule a bool condition with acqrel" }
 }

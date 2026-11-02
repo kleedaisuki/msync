@@ -9,12 +9,12 @@ negotiated with the server; the extension does not reimplement the compiler.
 ## Install and try
 
 Requires VS Code 1.91 or newer, Node/npm for development, and msync on PATH.
-Release users do not need Node/npm: download `msync-language-0.6.6.vsix` and
+Release users do not need Node/npm: download `msync-language-0.7.0.vsix` and
 `SHA256SUMS` from the same msync release, verify the VSIX's checksum, then use
 **Extensions: Install from VSIX**, or:
 
 ```sh
-code --install-extension msync-language-0.6.6.vsix
+code --install-extension msync-language-0.7.0.vsix
 ```
 
 The extension does not bundle the msync executable; install the matching platform
@@ -69,13 +69,21 @@ an untrusted workspace setting.
   coloring is lexical; the Rust language server owns inference and validation.
   These typed expressions require the msync 0.6.5 server; earlier `views::` and
   `ranges::` spellings retain their coloring.
+- With msync 0.7, `$std::fs`, `$std::path`, `$std::bool`, `$std::string` and
+  `$std::ranges` offer member completion, hover, signatures and definition jumps.
+  Aliases such as `fs => $std::fs` and explicit `scope name:` members retain their
+  declaration identities. **Go to Definition** opens the executable's actual
+  embedded standard-library source as a read-only document; navigation works
+  inside that document too. There is no dependency on the repository checkout
+  or a writable installation directory. `native` declarations expose the host
+  boundary directly, while ordinary source functions show their implementation.
 - A regex selector is a path component, not a less-than comparison. Its character
   classes and escapes shield `>` and `#`. Unfinished single-line input does not
   color the rest of the file as a string or regex.
 - `#` toggles line comments; quotes, parentheses and range brackets can auto-close
   outside strings/comments. Block headers increase indentation, with indentation-based
   folding. Snippets cover functions, macros, conditions, both loop forms, ordered
-  ranges and canonical `$view::` pipelines. An unfinished range does not create
+  ranges, scope/native declarations and canonical `$std::ranges::` pipelines. An unfinished range does not create
   a persistent string/regex scope that colors unrelated later statements.
 - Use **Developer: Inspect Editor Tokens and Scopes** to distinguish native
   TextMate scopes from semantic tokens supplied by the msync server.

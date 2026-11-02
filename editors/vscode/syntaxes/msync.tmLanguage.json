@@ -10,6 +10,9 @@
       "include": "#strings"
     },
     {
+      "include": "#scope-declarations"
+    },
+    {
       "include": "#declarations"
     },
     {
@@ -73,7 +76,7 @@
       ]
     },
     "declarations": {
-      "begin": "^(\\s*)(macro|symbol|boolean)(\\s+)([\\p{L}\\p{N}_.-]+)(\\s*\\()",
+      "begin": "^(\\s*)(macro|symbol|boolean|native)(\\s+)([\\p{L}\\p{N}_.-]+)(\\s*\\()",
       "end": "\\)|(?=$)",
       "name": "meta.function.msync",
       "beginCaptures": {
@@ -144,7 +147,7 @@
       ]
     },
     "ranges": {
-      "match": "(?<![\\p{L}\\p{N}_./\\\\:$-])(\\$view|views|ranges)(::)([\\p{L}_][\\p{L}\\p{N}_]*)",
+      "match": "(?<![\\p{L}\\p{N}_./\\\\:$-])(\\$std::ranges|\\$view|views|ranges)(::)([\\p{L}_][\\p{L}\\p{N}_]*)",
       "captures": {
         "1": {
           "name": "entity.name.namespace.msync"
@@ -191,7 +194,7 @@
           "name": "keyword.operator.logical.msync"
         },
         {
-          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:macro|symbol|boolean|return|global|drop|delete|include|execute|if|else|for|in|loop|break|release|acquire|acqrel|async|await)(?![\\p{L}\\p{N}_./\\\\-])",
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:scope|native|macro|symbol|boolean|return|global|drop|delete|include|execute|if|else|for|in|loop|break|release|acquire|acqrel|async|await)(?![\\p{L}\\p{N}_./\\\\-])",
           "name": "keyword.control.msync"
         }
       ]
@@ -227,6 +230,20 @@
     "paths": {
       "match": "[^\\s\"(),\\[\\]<>|=]+",
       "name": "variable.other.readwrite.msync"
+    },
+    "scope-declarations": {
+      "match": "^(\\s*)(scope)(\\s+)([\\p{L}\\p{N}_.-]+)(\\s*:)",
+      "captures": {
+        "2": {
+          "name": "storage.type.namespace.msync"
+        },
+        "4": {
+          "name": "entity.name.namespace.msync"
+        },
+        "5": {
+          "name": "punctuation.separator.msync"
+        }
+      }
     }
   }
 }

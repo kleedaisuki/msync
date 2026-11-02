@@ -73,7 +73,7 @@ async function run() {
         const output = `$local::${JSON.stringify(path.join(workspace, 'never-created.txt'))}`;
         const branchOutput = `$local::${JSON.stringify(path.join(workspace, 'never-created-branch.txt'))}`;
         const victim = `$local::${JSON.stringify(path.join(workspace, 'preserved.txt'))}`;
-        const source = `label="可莉🌟"\nboolean keep(item):\n\treturn item\nsymbol codex(file):\n    return ~/.codex/file\nconfig := $wsl::codex(config.toml)\nitems := [true,false,keep(true)] | $view::filter(keep)\nview_api := $view\nalias_items := [true,false] | view_api::filter(keep)\n"must never execute" -> ${output}\ndelete ${victim}\nif release "not a bool":\n    "must never execute" -> ${branchOutput}\n`;
+        const source = `label="可莉🌟"\nboolean keep(item):\n\treturn item\nsymbol codex(file):\n    return ~/.codex/file\nconfig := $wsl::codex(config.toml)\nitems := [true,false,keep(true)] | $view::filter(keep)\nview_api := $view\nalias_items := [true,false] | view_api::filter(keep)\nfs => $std::fs\nstandard_ready = fs::is_directory(~/.codex)\nlogical = $std::bool::both(true, false)\nscope hello:\n    codex := ~/.codex\nnamed := hello::codex\nendpoints := [$local,$wsl]\nstandard_items := [true,false] | $std::ranges::filter(keep)\n"must never execute" -> ${output}\ndelete ${victim}\nif release "not a bool":\n    "must never execute" -> ${branchOutput}\n`;
         const filename = path.join(workspace, 'journey.msync');
         await fs.writeFile(filename, source);
         document = await vscode.workspace.openTextDocument(vscode.Uri.file(filename));
@@ -131,6 +131,47 @@ async function run() {
             return uri.toString() === document.uri.toString() && range.start.isEqual(declared);
         }), 'Scope qualification must not hide the lexical symbol declaration');
         await record('qualified-symbol-definition', { name: 'codex' });
+
+        const fsCursor = document.positionAt(current.indexOf('fs::is_directory') + 'fs::is_d'.length);
+        const fsCompletion = await bounded('stdlib alias completion', vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, fsCursor));
+        assert.ok(fsCompletion && fsCompletion.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'is_directory'));
+        const fsDefinition = await bounded('stdlib native definition', vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, fsCursor));
+        const native = fsDefinition.find(target => (target.targetUri || target.uri).scheme === 'msync-stdlib');
+        assert.ok(native, 'Filesystem primitives must navigate to their embedded declaration source');
+        const nativeUri = native.targetUri || native.uri;
+        const nativeDocument = await bounded('stdlib source document', vscode.workspace.openTextDocument(nativeUri));
+        const nativeRange = native.targetSelectionRange || native.range;
+        assert.equal(nativeDocument.getText(nativeRange), 'is_directory');
+        assert.ok(nativeDocument.getText().includes('native is_directory(path) -> Bool = "fs.is_directory"'));
+        await record('stdlib-native-source-navigation', { uri: nativeUri.toString(), member: 'is_directory' });
+
+        const pureCursor = document.positionAt(current.indexOf('$std::bool::both') + '$std::bool::'.length);
+        const pureDefinitions = await bounded('stdlib source function definition', vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, pureCursor));
+        const pure = pureDefinitions.find(target => (target.targetUri || target.uri).scheme === 'msync-stdlib');
+        assert.ok(pure);
+        const pureDocument = await bounded('stdlib source function document', vscode.workspace.openTextDocument(pure.targetUri || pure.uri));
+        assert.equal(pureDocument.getText(pure.targetSelectionRange || pure.range), 'both');
+        assert.ok(pureDocument.getText().includes('return left and right'));
+        const parameterUse = pureDocument.positionAt(pureDocument.getText().indexOf('return left and right') + 'return '.length);
+        const parameterDefinitions = await bounded('navigation inside stdlib source', vscode.commands.executeCommand('vscode.executeDefinitionProvider', pureDocument.uri, parameterUse));
+        const parameterDeclaration = pureDocument.positionAt(pureDocument.getText().indexOf('both(left, right)') + 'both('.length);
+        assert.ok(parameterDefinitions.some(target => (target.targetUri || target.uri).toString() === pureDocument.uri.toString() && (target.targetSelectionRange || target.range).start.isEqual(parameterDeclaration)));
+        await record('stdlib-source-function-navigation', { member: 'both' });
+
+        const rangeCursor = document.positionAt(current.indexOf('$std::ranges::filter') + '$std::ranges::'.length);
+        const rangeDefinitions = await bounded('dependent native range definition', vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, rangeCursor));
+        const rangeNative = rangeDefinitions.find(target => (target.targetUri || target.uri).scheme === 'msync-stdlib');
+        assert.ok(rangeNative);
+        const rangeDocument = await bounded('dependent native source document', vscode.workspace.openTextDocument(rangeNative.targetUri || rangeNative.uri));
+        assert.equal(rangeDocument.getText(rangeNative.targetSelectionRange || rangeNative.range), 'filter');
+        assert.ok(rangeDocument.getText().includes('native filter(values, predicate) = "ranges.filter"'));
+        await record('range-native-source-navigation', { member: 'filter' });
+
+        const memberCursor = document.positionAt(current.indexOf('hello::codex') + 'hello::'.length);
+        const memberDefinitions = await bounded('lexical scope member definition', vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, memberCursor));
+        const memberDeclaration = document.positionAt(current.indexOf('    codex :=') + 4);
+        assert.ok(memberDefinitions.some(target => (target.targetSelectionRange || target.range).start.isEqual(memberDeclaration)));
+        await record('lexical-namespace-definition', { namespace: 'hello', member: 'codex' });
 
         const legend = await bounded('semantic token legend', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokensLegend', document.uri));
         const tokens = await bounded('semantic tokens', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokens', document.uri));

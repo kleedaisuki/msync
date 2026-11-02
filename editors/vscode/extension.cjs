@@ -20,6 +20,7 @@ async function activate(context) {
         documentSelector: [
             { scheme: 'file', language: 'msync' },
             { scheme: 'untitled', language: 'msync' },
+            { scheme: 'msync-stdlib', language: 'msync' },
         ],
         outputChannelName: 'msync Language Server',
     });
@@ -27,6 +28,11 @@ async function activate(context) {
     context.subscriptions.push(candidate);
     try {
         await candidate.start();
+        context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('msync-stdlib', {
+            provideTextDocumentContent(uri, token) {
+                return candidate.sendRequest('msync/stdlibSource', { uri: uri.toString() }, token);
+            },
+        }));
     } catch (error) {
         client = undefined;
         const detail = error instanceof Error ? error.message : String(error);

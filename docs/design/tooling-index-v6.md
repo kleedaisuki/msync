@@ -229,3 +229,20 @@ xvfb-run -a npm run test:integration --prefix editors/vscode
 ```
 
 Detailed disposable host evidence is under `.temp/vscode-host-C61jvG`.
+
+### Final inferred-native release image
+
+After dependent range primitives became real inferred `Native` declarations,
+the refreshed production host journey passed **13/13 phases** on VS Code
+**1.144.0**. It additionally navigated `$std::ranges::filter` to the actual
+`native filter(values, predicate) = "ranges.filter"` declaration, not a comment
+anchor. The source-backed standard inventory contains only AST declarations.
+The existing native filesystem, pure Boolean, intra-library parameter and lexical
+namespace navigation phases passed; formatting returned 20 edits, semantic
+highlighting returned 90 valid tokens, and all DSL effect targets stayed untouched.
+
+This run started at `2026-11-02T15:29:24.300Z`; its frozen msync image SHA-256 is
+`ecea92ff9fe4d933126d9e61de46652c01f2fe2bd3b46baa52178bfd4c8b1d3f`.
+Detailed disposable evidence is `.temp/vscode-host-KUPzRS`. Reproduce the previous
+command with `MSYNC_TEST_SERVER_PATH` set to
+`$PWD/.temp/v070/msync-tooling-native-host`.
