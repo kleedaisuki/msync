@@ -12,12 +12,15 @@ target_root=${CARGO_TARGET_DIR:-"$root/target"}
 [[ "$target_root" == /* ]] || target_root="$root/$target_root"
 stage="$target_root/package/$name"
 rm -rf -- "$stage"
-mkdir -p "$stage/bin" "$stage/share/doc/msync" "$root/dist"
+mkdir -p "$stage/bin" "$stage/share/doc/msync" "$stage/share/msync/std" "$root/dist"
 install -m755 "$target_root/$target/release/msync" "$stage/bin/msync"
 cp README.md LICENSE "$stage/share/doc/msync/"
 while IFS= read -r -d '' file; do
   install -Dm644 "$file" "$stage/share/doc/msync/$file"
 done < <(git ls-files -z -- docs)
+while IFS= read -r -d '' file; do
+  install -m644 "$file" "$stage/share/msync/std/$(basename -- "$file")"
+done < <(git ls-files -z -- 'stdlib/*.msync')
 cp packaging/linux/INSTALL.md "$stage/INSTALL.md"
 python3 packaging/licenses.py --target "$target" --output "$stage/share/doc/msync/THIRD-PARTY-NOTICES.txt"
 [[ "$("$stage/bin/msync" --version)" == "msync $version" ]]

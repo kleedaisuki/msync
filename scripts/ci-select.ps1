@@ -67,6 +67,11 @@ $frontend += @('language_v065', 'ranges_v065', 'types_v065', 'acceptance_v065', 
 $execution += @('acceptance_v065', 'ranges_v065', 'pipeline_context_v065')
 $objects += @('ranges_v065', 'types_v065', 'acceptance_v065', 'pipeline_context_v065')
 $tooling += @('highlight_v065', 'tooling_v065', 'language_v065')
+$standard = @('acceptance_v070', 'namespaces_v070', 'ranges_v070', 'stdlib_v070', 'native_runtime_v070', 'filesystem_v070')
+$frontend += $standard
+$execution += $standard
+$objects += $standard
+$tooling += @('highlight_v070', 'tooling_v070', 'lsp_v070')
 
 foreach ($path in $Paths) {
     switch -Regex ($path.Replace('\', '/')) {
@@ -80,7 +85,7 @@ foreach ($path in $Paths) {
             }
             break
         }
-        '^\.github/workflows/editor\.yml$' { break }
+        '^\.github/workflows/(editor|release)\.yml$' { break }
         '^(build\.rs|\.github/)' {
             $full = $true
             $rust = $true
@@ -88,6 +93,13 @@ foreach ($path in $Paths) {
             break
         }
         '^scripts/(ci-|test-ci-)' { break }
+        '^stdlib/|^src/(stdlib|lib)\.rs$' {
+            $rust = $true
+            Add-Targets $standard
+            Add-Targets @('types_v065', 'ranges_v065', 'ranges_v6', 'normal_user_model')
+            Add-Targets $tooling
+            break
+        }
         '^vendor/rustyline/(src/|Cargo\.(toml|lock)$)' {
             $rust = $true
             Add-Targets @('barrier_terminal_v5', 'repl_terminal', 'latency_v6', 'repl_jobs')

@@ -1,0 +1,16 @@
+# msync: 0.7
+fs => $std::fs
+text => $std::string
+scope package:
+    input := std-input
+
+native present(path) -> Bool = "fs.is_regular_file"
+"installed standard library" -> std-input
+fs::create_directories(std-output)
+for endpoint in [$local] | $std::ranges::take(1):
+    package::input -> endpoint::std-output/payload
+fs::rename(std-output/payload, std-output/renamed)
+if fs::is_directory(std-output) and present(std-output/renamed):
+    text::trim(" ready ") -> std-output/status
+else:
+    "wrong" -> std-output/status

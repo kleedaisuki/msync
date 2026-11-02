@@ -105,6 +105,15 @@ try {
         $null = New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($destination)) -Force
         Copy-Item -LiteralPath (Join-Path $root $relative) -Destination $destination
     }
+    $standardLibrary = Join-Path $stage 'share/msync/std'
+    $null = New-Item -ItemType Directory -Path $standardLibrary -Force
+    $trackedLibrary = @(& $git.Source -C $root -c core.quotepath=false ls-files -- 'stdlib/*.msync')
+    if ($LASTEXITCODE -ne 0 -or $trackedLibrary.Count -eq 0) {
+        throw 'Packaging requires the tracked standard-library sources.'
+    }
+    foreach ($relative in $trackedLibrary) {
+        Copy-Item -LiteralPath (Join-Path $root $relative) -Destination $standardLibrary
+    }
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'portable-readme.txt') -Destination (Join-Path $stage 'INSTALL.md')
     $python = Get-Command python -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $python) { $python = Get-Command python3 -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 }

@@ -108,6 +108,11 @@ function Assert-InstalledJourney([string]$Directory) {
     $exe = Join-Path $Directory 'bin/msync.exe'
     $reported = Invoke-Msync $exe @('--version')
     if ("$reported".Trim() -ne "msync $version") { throw "Installed version mismatch: $reported" }
+    foreach ($module in @('fs', 'ranges', 'path', 'bool', 'string')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $Directory "share/msync/std/$module.msync") -PathType Leaf)) {
+            throw "Packaged standard-library source is missing: $module"
+        }
+    }
     $journey = Join-Path $work ('journey-' + [guid]::NewGuid().ToString('N'))
     $null = New-Item -ItemType Directory -Path $journey
     $utf8 = New-Object Text.UTF8Encoding $false
@@ -139,6 +144,18 @@ function Assert-InstalledJourney([string]$Directory) {
         Remove-Item -LiteralPath 'output.txt'
         $null = Invoke-Msync $exe @('run-ir', 'bound.json')
         if ([IO.File]::ReadAllText((Join-Path $journey 'output.txt')) -cne 'installed artifact payload 可莉') { throw 'Installed IR replay bytes differ.' }
+
+        Copy-Item -LiteralPath (Join-Path $root 'packaging/stdlib-smoke.msync') -Destination 'stdlib.msync'
+        $null = Invoke-Msync $exe @('check', 'stdlib.msync')
+        $null = Invoke-Msync $exe @('run', 'stdlib.msync', '--dry-run')
+        if (Test-Path -LiteralPath 'std-output') { throw 'Standard-library preview performed a native effect.' }
+        $null = Invoke-Msync $exe @('compile', 'stdlib.msync', '-o', 'stdlib.mobj')
+        Remove-Item -LiteralPath 'stdlib.msync'
+        $null = Invoke-Msync $exe @('run', 'stdlib.mobj')
+        if ([IO.File]::ReadAllText((Join-Path $journey 'std-output/renamed')) -cne 'installed standard library' -or
+            [IO.File]::ReadAllText((Join-Path $journey 'std-output/status')) -cne 'ready') {
+            throw 'Installed standard-library/native/namespace/Scope-range journey differs.'
+        }
     } finally { Pop-Location }
 }
 

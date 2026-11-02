@@ -53,6 +53,10 @@ Assert-Selected 'src/compiler/structured/scripts.rs' @('scripts_v052', 'scripts_
 Assert-Selected 'src/object/validate.rs' @('scripts_env_v052')
 Assert-Selected 'src/object/validate.rs' @('object_codec_v4', 'independent_object_integrity_v4', 'artifact_cli_v4')
 Assert-Selected 'src/structured/artifact.rs' @('normal_user_model', 'artifact_cli_v4', 'barrier_cli_v5')
+Assert-Selected 'src/stdlib.rs' @('acceptance_v070', 'stdlib_v070', 'native_runtime_v070', 'filesystem_v070', 'lsp_v070')
+Assert-Selected 'stdlib/fs.msync' @('acceptance_v070', 'filesystem_v070', 'types_v065')
+$packages = Select-Changes @('.github/workflows/release.yml')
+Assert (-not $packages.full -and -not $packages.rust) 'Package workflow edits have their own native installation acceptance'
 $deleted = Select-Changes @('tests/transaction_manager_v4.rs')
 Assert ($deleted.targets.Count -eq 0) 'Deleted tests must not become nonexistent Cargo targets'
 Write-Output 'CI selection: normal storage, barriers, native-process, artifact, and focused compatibility cases passed'
