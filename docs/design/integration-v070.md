@@ -216,8 +216,12 @@ Windows portable ZIP contains all five standard source modules.
 | `msync-0.7.0-windows-x86_64.zip` | `54d0758d3dd1efe57fd6f7656e8b2955090c6aa94f1a4711b4ad3fc7a311dc21` |
 | `msync-language-0.7.0.vsix` | `d7368b237021a73f3d050f6a309aab64828c517273541ac5881e258597d72961` |
 
-The separate initial Rust workflow reached an unrelated historical Linux test
-failure before completion; its Windows job was superseded by the packaging-only
-follow-up. It is not counted as full-project Rust acceptance. The release uses
-the focused local checks and native package/editor journeys recorded above.
+The separate initial Rust workflow passed its library tests, then failed the
+unchanged Linux binary assertion
+`object_export_never_replaces_its_source_or_a_readonly_output`: replacing the
+readonly output succeeded instead of being rejected. Both that assertion and
+the artifact writer are unchanged from the starting v0.6.6 source. Its Windows
+job was superseded by the packaging-only follow-up. It is not counted as
+full-project Rust acceptance. The release uses the focused local checks and
+native package/editor journeys recorded above.
 Previously published tags and asset bytes were not replaced.
