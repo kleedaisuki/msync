@@ -136,3 +136,96 @@ verified separately by the language-server acceptance target.
 The range-reference regressions and the value-loop visibility assertion were added
 after source-only integration review. They await the root-owned Cargo window;
 source presence is not reported as passing execution evidence.
+
+## v0.7 namespace and embedded-source navigation
+
+Explicit `scope` declarations own a member table in the source index. Their
+ordinary declarations retain individual definition identities and use the scope
+as their document-symbol parent. Qualification resolves against that member
+table, including namespace aliases and nested namespaces, instead of accidentally
+capturing a same-spelled caller binding. Call arguments remain in the caller's
+lexical environment. Native declarations are callable source symbols, with
+parameter names and return types retained in their signatures.
+
+`tooling::standard_library()` lazily indexes the actual embedded
+`stdlib::SOURCES` once. The exported inventory comes from each source module's
+immediate declarations, not a second filesystem API name list. Source-only
+namespace shapes track `$std`, its modules, and direct aliases; the index does
+not execute user functions to guess a returned namespace. Filesystem, string,
+path and Boolean completions, hover, signature help and definitions share this
+source inventory. Existing intrinsic range adaptors retain their shared lexical
+inventory and established `$view` completion forms while the canonical form is
+`$std::ranges`.
+
+The server returns versioned `msync-stdlib:///<package-version>/<module>.msync`
+locations. `msync/stdlibSource`, with `{ "uri": "..." }` parameters, returns the
+embedded source for exactly those module URIs. VS Code registers a read-only
+`TextDocumentContentProvider` for this scheme after the production language
+client starts. Thus installed and relocatable executables navigate into their
+own standard library without repository paths, mutable extraction caches, or
+requiring write access to the executable's installation directory. Source files
+are also packaged separately for direct inspection.
+
+This uses VS Code's official
+[virtual document provider](https://code.visualstudio.com/api/extension-guides/virtual-documents)
+contract. Keeping the cached syntactic index separate from execution and compiler
+acceptance follows the production separation described in the
+[rust-analyzer architecture](https://rust-analyzer.github.io/book/contributing/architecture.html).
+The relevant design observation is that navigation is an identity relation over
+source declarations, not a partial reimplementation of runtime type inference.
+
+Focused acceptance targets are `tests/tooling_v070.rs` (namespace and alias
+identities and actual library source spans), provider tests, `tests/lsp_v070.rs`
+(real stdio protocol), and the installed Extension Development Host journey
+(native source opening through the production provider). Execution results are
+recorded after the integrated compiler/runtime image is available.
+
+Dependent range primitives are actual `Native` AST declarations. Their result
+arrow is omitted because the native signature infers the result from the input
+range and specialized callback, for example
+`native filter(values, predicate) = "ranges.filter"`. The same source index
+handles these and concrete-return native declarations; there is no comment
+scanner, fabricated declaration identity, or separate navigation inventory.
+
+The first real v0.7 host run exposed an interoperability distinction hidden by a
+raw stdio test: VS Code normalizes an empty-authority virtual URI from
+`msync-stdlib:///version/module.msync` to `msync-stdlib:/version/module.msync`.
+Embedded-source lookup therefore resolves the URI's scheme and versioned path,
+not its serialized spelling. Both forms identify the same source bytes. The
+provider and actual-process regression retain the editor-normalized spelling.
+
+### Integrated v0.7 acceptance
+
+The production crate passed 20 source-index test functions across the focused
+`tooling_v070` (4), `tooling_v065` (5), and `tooling_v6` (11) targets. The latter
+was rerun alone after repairing the legacy reserved-namespace shadow case; the
+accepted new namespace/source cases were not swept into a blanket regression.
+`lsp_v070` passed its real child-process journey, including retrieval using VS
+Code's normalized virtual URI spelling. Seven production provider functions
+cover completion, signatures, source/member definitions, UTF-16 edits/tokens,
+and retained lexical behavior. Lexical/REPL evidence is recorded in the editor
+note rather than duplicated here.
+
+The real VS Code **1.144.0** Extension Development Host run started at
+`2026-11-02T15:16:44.240Z` and passed all **12 phases**, using the production
+esbuild bundle and frozen msync 0.7 executable SHA-256
+`10882813ca187029b494db2bf1d4841e69aadee175dc333f17921913d1c6f9d2`.
+It opened the actual `fs.msync` native declaration and `bool.msync` ordinary
+function source, then resolved a parameter reference inside that virtual source
+document through the real language client. Namespace member navigation and API
+alias completion passed; formatting returned 20 edits and semantic tokens
+contained 87 valid entries including the Unicode string/function/parameter
+roles. Both transfer outputs remained absent and the delete victim stayed
+unchanged. The named image identifies the host result; later component-only
+module-namespace definition coverage does not relabel that image.
+
+Reproduce with the managed host (no editor download required):
+
+```sh
+MSYNC_TEST_SERVER_PATH="$PWD/.temp/v070/msync-tooling-host" \
+MSYNC_TEST_VSCODE_EXECUTABLE="$PWD/editors/vscode/.vscode-test/vscode-linux-x64-1.144.0/code" \
+MSYNC_TEST_VSCODE_VERSION=1.144.0 \
+xvfb-run -a npm run test:integration --prefix editors/vscode
+```
+
+Detailed disposable host evidence is under `.temp/vscode-host-C61jvG`.

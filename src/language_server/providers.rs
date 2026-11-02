@@ -4,7 +4,9 @@ use lsp_types::*;
 
 use crate::highlight::{self, TokenKind};
 use crate::syntax::Span;
-use crate::tooling::{Definition, SymbolKind as Kind};
+use crate::tooling::{
+    Definition, LibraryModule, LibraryReference, SymbolKind as Kind, standard_library,
+};
 
 use super::documents::OpenDocument;
 
@@ -28,7 +30,7 @@ pub(super) fn completion(document: &mut OpenDocument, position: Position) -> Vec
     if protected(&document.text.source, offset) {
         return Vec::new();
     }
-    if let Some(items) = view_alias_completion(document, offset) {
+    if let Some(items) = namespace_completion(document, offset) {
         return items;
     }
     let start = completion_start(&document.text.source, offset);
@@ -85,6 +87,13 @@ pub(super) fn definition(
     position: Position,
 ) -> Option<Location> {
     let offset = document.text.offset(position)?;
+    if let Some((module, declaration, _)) = library_declaration(document, offset) {
+        let text = super::documents::Text::new(module.source.into());
+        return Some(Location::new(
+            library_uri(module.name),
+            text.range(declaration.selection),
+        ));
+    }
     let span = document.syntax().index.definition_at(offset)?.selection;
     Some(Location::new(uri.clone(), document.text.range(span)))
 }
@@ -95,7 +104,10 @@ pub(super) fn hover(document: &mut OpenDocument, position: Position) -> Option<H
         return None;
     }
     let declaration = document.syntax().index.definition_at(offset).cloned();
-    let (detail, span) = if let Some(declaration) = declaration {
+    let library = library_declaration(document, offset);
+    let (detail, span) = if let Some((_, declaration, span)) = library {
+        (declaration.detail.clone(), span)
+    } else if let Some(declaration) = declaration {
         let span = document
             .syntax()
             .index
@@ -183,6 +195,16 @@ pub(super) fn semantic_tokens(document: &mut OpenDocument) -> SemanticTokens {
                 0,
             )
         }))
+        .chain(
+            syntax
+                .index
+                .library_references()
+                .iter()
+                .filter_map(|reference| {
+                    let (_, definition) = library_symbol(reference)?;
+                    Some((reference.span, semantic_kind(definition.kind), 0))
+                }),
+        )
         .collect();
     overlays.sort_by_key(|(span, _, _)| (span.start, span.end));
     overlays.dedup_by_key(|(span, _, _)| (span.start, span.end));
@@ -271,7 +293,7 @@ pub(super) fn semantic_tokens(document: &mut OpenDocument) -> SemanticTokens {
 
 fn semantic_kind(kind: Kind) -> u32 {
     match kind {
-        Kind::Macro | Kind::Symbol | Kind::Boolean => 6,
+        Kind::Macro | Kind::Symbol | Kind::Boolean | Kind::Native => 6,
         Kind::Space => 5,
         Kind::Parameter | Kind::Iterator => 8,
         _ => 7,
@@ -337,53 +359,255 @@ fn completion_start(source: &str, offset: usize) -> usize {
         .map_or(start, |separator| start + separator + 2)
 }
 
-fn view_alias_completion(
-    document: &mut OpenDocument,
-    offset: usize,
-) -> Option<Vec<CompletionItem>> {
+fn namespace_completion(document: &mut OpenDocument, offset: usize) -> Option<Vec<CompletionItem>> {
     let start = word_start(&document.text.source, offset);
     let word = document.text.source[start..offset].to_owned();
     let (namespace, prefix) = word.rsplit_once("::")?;
-    if namespace.starts_with('$')
-        || namespace.contains("::")
-        || matches!(namespace, "views" | "ranges")
-    {
+    // Retain established fully-qualified completion labels for the legacy API.
+    if matches!(namespace, "$view" | "views" | "ranges") {
         return None;
     }
-    let index = &document.syntax().index;
-    if !index
-        .visible_at(offset)
-        .iter()
-        .any(|definition| definition.name == namespace && index.is_view_scope(definition.id))
-    {
-        return None;
-    }
+    let qualified = namespace.starts_with("$std");
+    let replacement = if qualified {
+        start
+    } else {
+        start + namespace.len() + 2
+    };
     let range = document.text.range(Span {
-        start: start + namespace.len() + 2,
+        start: replacement,
         end: offset,
     });
-    Some(
-        highlight::RANGE_ADAPTORS
+    let index = &document.syntax().index;
+    let module = index.library_namespace_at(namespace, offset);
+    let primitive_view = index.is_view_namespace_at(namespace, offset);
+    let members = index.members_at(namespace, offset);
+    if module.is_none() && members.is_none() {
+        return None;
+    }
+    let item = |name: &str, detail: String, kind| {
+        let label = if qualified {
+            format!("{namespace}::{name}")
+        } else {
+            name.into()
+        };
+        CompletionItem {
+            label: label.clone(),
+            kind: Some(kind),
+            detail: Some(detail),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(range, label))),
+            ..CompletionItem::default()
+        }
+    };
+    if let Some(module) = module {
+        if module.is_empty() {
+            return Some(
+                standard_library()
+                    .iter()
+                    .filter(|module| module.name.starts_with(prefix))
+                    .map(|module| {
+                        item(
+                            module.name,
+                            format!("scope $std::{}", module.name),
+                            CompletionItemKind::MODULE,
+                        )
+                    })
+                    .collect(),
+            );
+        }
+        if module == "ranges" && primitive_view {
+            return Some(
+                highlight::RANGE_ADAPTORS
+                    .iter()
+                    .filter_map(|name| name.strip_prefix("$std::ranges::"))
+                    .filter(|name| name.starts_with(prefix))
+                    .map(|name| {
+                        item(
+                            name,
+                            format!("$std::ranges::{name} — typed lazy range API"),
+                            CompletionItemKind::FUNCTION,
+                        )
+                    })
+                    .collect(),
+            );
+        }
+        let module = standard_library()
             .iter()
-            .filter_map(|name| {
-                let member = name.strip_prefix("$view::")?;
-                member.starts_with(prefix).then(|| CompletionItem {
-                    label: member.into(),
-                    kind: Some(CompletionItemKind::FUNCTION),
-                    detail: Some(format!("{name} — {}", builtin_detail(name))),
-                    text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
-                        range,
-                        member.into(),
-                    ))),
-                    ..CompletionItem::default()
+            .find(|entry| entry.name == module)?;
+        return Some(
+            module
+                .definitions()
+                .filter(|definition| definition.name.starts_with(prefix))
+                .map(|definition| {
+                    item(
+                        &definition.name,
+                        definition.detail.clone(),
+                        completion_kind(definition.kind),
+                    )
                 })
+                .collect(),
+        );
+    }
+    Some(
+        members?
+            .into_iter()
+            .filter(|definition| definition.name.starts_with(prefix))
+            .map(|definition| {
+                item(
+                    &definition.name,
+                    definition.detail.clone(),
+                    completion_kind(definition.kind),
+                )
             })
             .collect(),
     )
 }
 
+fn library_uri(module: &str) -> Uri {
+    format!(
+        "msync-stdlib:///{}/{module}.msync",
+        env!("CARGO_PKG_VERSION")
+    )
+    .parse()
+    .expect("static library URI")
+}
+
+pub(super) fn library_source(uri: &Uri) -> Option<&'static str> {
+    let uri = url::Url::parse(uri.as_str()).ok()?;
+    if uri.scheme() != "msync-stdlib" {
+        return None;
+    }
+    let module = uri
+        .path()
+        .strip_prefix(concat!("/", env!("CARGO_PKG_VERSION"), "/"))?
+        .strip_suffix(".msync")?;
+    standard_library()
+        .iter()
+        .find(|entry| entry.name == module)
+        .map(|module| module.source)
+}
+
+fn library_declaration(
+    document: &mut OpenDocument,
+    offset: usize,
+) -> Option<(&'static LibraryModule, &'static Definition, Span)> {
+    let reference = document.syntax().index.library_reference_at(offset)?;
+    let (module, definition) = library_symbol(reference)?;
+    Some((module, definition, reference.span))
+}
+
+fn library_symbol(
+    reference: &LibraryReference,
+) -> Option<(&'static LibraryModule, &'static Definition)> {
+    if reference.module.is_empty() {
+        let module = standard_library()
+            .iter()
+            .find(|module| module.name == reference.name)?;
+        let definition = module.index.definitions().iter().find(|definition| {
+            definition.parent.is_none()
+                && definition.name == module.name
+                && definition.kind == Kind::Space
+        })?;
+        return Some((module, definition));
+    }
+    let module = standard_library()
+        .iter()
+        .find(|module| module.name == reference.module)?;
+    let definition = module
+        .definitions()
+        .find(|definition| definition.name == reference.name)?;
+    Some((module, definition))
+}
+
+pub(super) fn signature_help(
+    document: &mut OpenDocument,
+    position: Position,
+) -> Option<SignatureHelp> {
+    let offset = document.text.offset(position)?;
+    let source = &document.text.source;
+    let mut protected = highlight::token_spans(&source[..offset])
+        .into_iter()
+        .filter(|token| {
+            matches!(
+                token.kind,
+                TokenKind::String | TokenKind::Comment | TokenKind::Selector
+            )
+        })
+        .map(|token| token.span)
+        .peekable();
+    let mut stack = Vec::new();
+    for (index, character) in source[..offset].char_indices() {
+        while protected.peek().is_some_and(|span| span.end <= index) {
+            protected.next();
+        }
+        if protected.peek().is_some_and(|span| span.start <= index) {
+            continue;
+        }
+        match character {
+            '(' | '[' => stack.push((character, index, 0_u32)),
+            ')' | ']' => {
+                stack.pop();
+            }
+            ',' => {
+                if let Some(('(', _, parameter)) = stack.last_mut() {
+                    *parameter += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    let (_, open, parameter) = *stack
+        .iter()
+        .rev()
+        .find(|(delimiter, _, _)| *delimiter == '(')?;
+    let end = source[..open].trim_end().len();
+    let start = word_start(source, end);
+    let callee = source[start..end].to_owned();
+    let index = &document.syntax().index;
+    let definition = if let Some((namespace, member)) = callee.rsplit_once("::") {
+        if let Some(module) = index.library_namespace_at(namespace, offset) {
+            standard_library()
+                .iter()
+                .find(|entry| entry.name == module)?
+                .definitions()
+                .find(|definition| definition.name == member)
+        } else {
+            index
+                .members_at(namespace, offset)?
+                .into_iter()
+                .find(|definition| definition.name == member && definition.kind.is_callable())
+        }
+    } else {
+        index
+            .visible_at(offset)
+            .into_iter()
+            .find(|definition| definition.name == callee && definition.kind.is_callable())
+    }?;
+    let parameters = definition.detail.split_once('(')?.1.split_once(')')?.0;
+    let parameters: Vec<_> = parameters
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| ParameterInformation {
+            label: ParameterLabel::Simple(name.into()),
+            documentation: None,
+        })
+        .collect();
+    Some(SignatureHelp {
+        signatures: vec![SignatureInformation {
+            label: definition.detail.clone(),
+            documentation: None,
+            parameters: Some(parameters),
+            active_parameter: Some(parameter),
+        }],
+        active_signature: Some(0),
+        active_parameter: Some(parameter),
+    })
+}
+
 fn builtin_detail(name: &str) -> String {
     let detail = match name {
+        "scope" => "scope name: — lexical namespace with inferred members",
+        "native" => "native name(args) -> Type = implementation — host-implemented typed function",
         "boolean" => "boolean name(args): — bool-returning lexical function; return is mandatory",
         "symbol" => "symbol name(args): — pure lexical value function",
         "macro" => "macro name(args): — lexical executable template",
@@ -563,5 +787,71 @@ mod tests {
         assert!(found);
         let symbols = symbols(&mut document);
         assert!(symbols.iter().any(|symbol| symbol.name == "ready"));
+    }
+    #[test]
+    fn standard_library_completion_navigation_and_signatures_share_source() {
+        let mut document =
+            OpenDocument::new("fs => $std::fs\nready = fs::is_directory(file)\n".into(), 1);
+        let position = Position::new(1, 16);
+        let uri: Uri = "file:///workspace/main.msync".parse().unwrap();
+        let module_location = definition(&mut document, &uri, Position::new(0, 13)).unwrap();
+        let module_source = library_source(&module_location.uri).unwrap();
+        let module_text = super::super::documents::Text::new(module_source.into());
+        assert_eq!(
+            &module_source[module_text.offset(module_location.range.start).unwrap()
+                ..module_text.offset(module_location.range.end).unwrap()],
+            "fs"
+        );
+        let location = definition(&mut document, &uri, position).unwrap();
+        assert!(location.uri.as_str().starts_with("msync-stdlib:///"));
+        let source = library_source(&location.uri).unwrap();
+        let editor_uri: Uri = location.uri.as_str().replace(":///", ":/").parse().unwrap();
+        assert_eq!(library_source(&editor_uri), Some(source));
+        let text = super::super::documents::Text::new(source.into());
+        let start = text.offset(location.range.start).unwrap();
+        let end = text.offset(location.range.end).unwrap();
+        assert_eq!(&source[start..end], "is_directory");
+        assert!(matches!(
+            hover(&mut document, position).unwrap().contents,
+            HoverContents::Markup(_)
+        ));
+        let mut incomplete = OpenDocument::new("fs => $std::fs\nready = fs::is_d".into(), 2);
+        let end = incomplete.text.end();
+        let item = completion(&mut incomplete, end)
+            .into_iter()
+            .find(|item| item.label == "is_directory")
+            .unwrap();
+        let Some(CompletionTextEdit::Edit(edit)) = item.text_edit else {
+            panic!("missing edit")
+        };
+        assert_eq!(edit.range.start, Position::new(1, 12));
+        let mut call = OpenDocument::new("fs => $std::fs\nready = fs::exists(".into(), 3);
+        let end = call.text.end();
+        let help = signature_help(&mut call, end).unwrap();
+        assert_eq!(help.signatures[0].label, "native exists(path) -> Bool");
+        assert_eq!(help.active_parameter, Some(0));
+        let mut ranges = OpenDocument::new("items := $std::ranges::id".into(), 1);
+        let end = ranges.text.end();
+        assert!(
+            completion(&mut ranges, end)
+                .iter()
+                .any(|item| item.label == "$std::ranges::identity")
+        );
+        let mut primitive = OpenDocument::new("api => $view\nitems := api::id".into(), 1);
+        let end = primitive.text.end();
+        assert!(
+            !completion(&mut primitive, end)
+                .iter()
+                .any(|item| item.label == "identity")
+        );
+    }
+
+    #[test]
+    fn explicit_namespace_completion_does_not_leak_outer_declarations() {
+        let mut document = OpenDocument::new("outer := file\nscope hello:\n    codex := ~/.codex\nalias => hello\nother := alias::co".into(), 1);
+        let end = document.text.end();
+        let items = completion(&mut document, end);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "codex");
     }
 }

@@ -1,5 +1,56 @@
 # Ordered scalar ranges in v0.6.5
 
+## v0.7.0 Scope range extension
+
+`Range<Scope>` uses the same tagged, lazy range cursor as scalar ranges. Finite
+Scope lists, Scope-valued transforms and `front`/`back`/`find` consumers preserve
+the actual endpoint and captured context. Merely enumerating an endpoint does
+not authenticate or execute remote work. Ordinary lexical specialization gives
+loop variables and callbacks the inferred Scope type, so `scope::file` uses the
+normal qualification operator rather than endpoint spelling recognition.
+
+Unqualified path items retain their raw spelling in `UnboundPath` typed IR,
+alongside the normal relocatable local projection. A range loop must not turn
+`~/.codex/config.toml` into an explicitly Local path before `scope::file`
+chooses its actual endpoint. Local consumption uses the captured local
+projection; remote qualification uses the original spelling so the selected
+endpoint owns HOME expansion. Explicit endpoint/contextual paths remain bound
+and cannot be silently reinterpreted on another endpoint. Dynamic path joins
+preserve this provenance, and source-free objects negotiate the new semantics
+through `native_std_v1`.
+
+All existing executable scalar control types are now permitted as range items.
+The compact Bool/String/Path union representation remains unchanged. A list
+mixing Scope with another scalar domain has no representable union in that
+model and is rejected at inference; object validation independently applies the
+same join rule. Empty lists retain their existing default Path item type.
+
+Source functions returning a Range retain scalar argument/local snapshots in a
+`RangeSource::Let` node, rather than forcing the result through scalar lowering.
+Its cursor evaluates those bindings once on first demand, reinstalls their
+cached values only while advancing the inner cursor, and restores the enclosing
+slot environment afterward, including failed advances. An outer `take(0)` never
+initializes the bindings. Object validation checks each binding before defining
+its slot, scopes the definitions around the inner range, and context linking
+remaps both definitions and uses. This makes source-backed
+`$std::ranges::single(fs::filename(input))` ordinary typed composition, including
+when its argument is a runtime result. The focused v0.7.0 journey also uses a
+directory-creation result twice to observe exactly-once evaluation and verifies
+that zero-demand ranges perform neither missing-path queries nor mutations.
+
+This reuses the existing generic runtime rather than introducing a second
+endpoint iterator. It follows the useful distinction in Rust's
+[Iterator contract](https://doc.rust-lang.org/std/iter/trait.Iterator.html):
+adaptors operate on an associated item type, while operations impose only the
+capabilities they actually need. Endpoint qualification therefore belongs to
+Scope, not to the cursor.
+
+`tests/ranges_v070.rs` exercises the supplied SSH/WSL list without connecting,
+then runs local Scope aliases through nested copy macros, identity transforms,
+filters, unique, `front` and `contains` from compiled objects and emitted IR after
+deleting the source. Earlier Scope-rejection assertions below describe the
+v0.6.5 boundary and have been migrated to mixed Scope/scalar rejection.
+
 ## Representation and inference
 
 The literal form `[expression, ...]` creates the same lazy `RangeExpr` plan as

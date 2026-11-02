@@ -14,7 +14,7 @@ pub enum Version {
 impl fmt::Display for Version {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Structured => "0.6",
+            Self::Structured => "0.7",
         })
     }
 }
@@ -32,13 +32,13 @@ impl FromStr for Version {
             return Err(MIGRATION_HELP);
         }
         match (parts[0], parts[1]) {
-            ("0", "5" | "6") => Ok(Self::Structured),
+            ("0", "5" | "6" | "7") => Ok(Self::Structured),
             _ => Err(MIGRATION_HELP),
         }
     }
 }
 
-const MIGRATION_HELP: &str = "Choose syntax 0.6 (0.5 remains a compatible alias); syntax 0.3 and 0.4 are no longer supported. Quoted sources are literal bytes: use '$pwd::pwd / \"filename\"' for a file path. Replace transaction controls with release and acquire barriers.";
+const MIGRATION_HELP: &str = "Choose syntax 0.7 (0.5 and 0.6 remain compatible aliases); syntax 0.3 and 0.4 are no longer supported. Quoted sources are literal bytes: use '$pwd::pwd / \"filename\"' for a file path. Replace transaction controls with release and acquire barriers.";
 
 /// Select grammar before any compilation or effects. The header stays in source,
 /// so it never shifts diagnostic byte ranges. Unmarked input uses `fallback`.
@@ -72,14 +72,14 @@ pub fn select_version(
         let parsed = value.trim().parse::<Version>();
         if code_seen {
             reports.push(Report::new("the syntax header must precede executable statements", span)
-                .help("Move '# msync: 0.6' to the initial comment block; a late header cannot change earlier statements."));
+                .help("Move '# msync: 0.7' to the initial comment block; a late header cannot change earlier statements."));
         } else if let Err(help) = parsed {
             reports.push(Report::new("unsupported syntax version", span).help(help));
         } else if let Some((_, previous)) = declared {
             reports.push(
                 Report::new("a script must have only one syntax header", span)
                     .label(previous, "the first header is here")
-                    .help("Keep one '# msync: 0.6' declaration before the code."),
+                    .help("Keep one '# msync: 0.7' declaration before the code."),
             );
         } else {
             declared = Some((parsed.expect("validated version"), span));

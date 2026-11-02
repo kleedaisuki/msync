@@ -57,8 +57,8 @@ fn highlighting_distinguishes_comparisons_and_path_selectors() {
 
 #[test]
 fn v6_is_default_with_v5_grammar_aliases_retained() {
-    assert_eq!(Version::default().to_string(), "0.6");
-    for version in ["0.5", "0.5.2", "0.6", "0.6.0"] {
+    assert_eq!(Version::default().to_string(), "0.7");
+    for version in ["0.5", "0.5.2", "0.6", "0.6.0", "0.7", "0.7.0"] {
         assert_eq!(version.parse::<Version>().unwrap(), Version::Structured);
     }
 }

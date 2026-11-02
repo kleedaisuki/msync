@@ -19,12 +19,14 @@ fn declarations_loop_binders_and_bare_range_consumers_have_stable_roles() {
     assert!(has("loop: # note", "loop", TokenKind::Command));
     for spelling in RANGE_ADAPTORS {
         let source = format!("items | {spelling}");
-        let (namespace, name) = spelling.split_once("::").unwrap();
-        assert!(has(
-            &source,
-            &format!("{namespace}::"),
-            TokenKind::Namespace
-        ));
+        let (namespace, name) = spelling.rsplit_once("::").unwrap();
+        for component in namespace.split("::") {
+            assert!(has(
+                &source,
+                &format!("{component}::"),
+                TokenKind::Namespace
+            ));
+        }
         assert!(has(&source, name, TokenKind::Binding), "{source}");
     }
     for keyword in ["delete", "drop", "if", "else", "for", "loop", "break"] {

@@ -65,6 +65,9 @@ pub struct Relocation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Namespace {
+    Lexical {
+        members: std::collections::BTreeMap<String, crate::hir::control::Expr>,
+    },
     WorkingDirectory,
     Module,
     Endpoint {
@@ -83,6 +86,36 @@ pub enum Namespace {
 #[serde(rename_all = "snake_case")]
 pub enum BuiltinScope {
     View,
+    Std,
+    Fs,
+    Path,
+    Bool,
+    String,
+    Ranges,
+}
+
+impl BuiltinScope {
+    pub fn module_name(self) -> Option<&'static str> {
+        match self {
+            Self::View | Self::Std => None,
+            Self::Fs => Some("fs"),
+            Self::Path => Some("path"),
+            Self::Bool => Some("bool"),
+            Self::String => Some("string"),
+            Self::Ranges => Some("ranges"),
+        }
+    }
+
+    pub fn from_module_name(name: &str) -> Option<Self> {
+        match name {
+            "fs" => Some(Self::Fs),
+            "path" => Some(Self::Path),
+            "bool" => Some(Self::Bool),
+            "string" => Some(Self::String),
+            "ranges" => Some(Self::Ranges),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -5,6 +5,7 @@
 //! values and signatures rather than inventing types for generic templates.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
 
 use crate::language::{BindingOp, Block, Document, Expr, ExprKind, Name, Statement, StatementKind};
 use crate::syntax::Span;
@@ -20,13 +21,17 @@ pub enum SymbolKind {
     Macro,
     Symbol,
     Boolean,
+    Native,
     Parameter,
     Iterator,
 }
 
 impl SymbolKind {
     pub fn is_callable(self) -> bool {
-        matches!(self, Self::Macro | Self::Symbol | Self::Boolean)
+        matches!(
+            self,
+            Self::Macro | Self::Symbol | Self::Boolean | Self::Native
+        )
     }
 }
 
@@ -54,14 +59,67 @@ pub struct SymbolIndex {
     references: Vec<Reference>,
     scopes: Vec<Scope>,
     namespace_shapes: BTreeMap<DefinitionId, NamespaceShape>,
+    namespace_members: BTreeMap<DefinitionId, Names>,
+    library_references: Vec<LibraryReference>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum NamespaceShape {
     Program,
     WorkingDirectory,
     File,
     View,
+    Library(String),
+    Lexical(DefinitionId),
+}
+
+/// An actual embedded source module, shared by editor completion and navigation.
+pub struct LibraryModule {
+    pub name: &'static str,
+    pub source: &'static str,
+    pub index: SymbolIndex,
+}
+
+impl LibraryModule {
+    pub fn definitions(&self) -> impl Iterator<Item = &Definition> {
+        let parent = self
+            .index
+            .definitions()
+            .iter()
+            .find(|definition| {
+                definition.parent.is_none()
+                    && definition.kind == SymbolKind::Space
+                    && definition.name == self.name
+            })
+            .map(|definition| definition.id);
+        self.index.definitions().iter().filter(move |definition| {
+            definition.parent == parent && definition.kind != SymbolKind::Parameter
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct LibraryReference {
+    pub module: String,
+    pub name: String,
+    pub span: Span,
+}
+
+pub fn standard_library() -> &'static [LibraryModule] {
+    static LIBRARY: OnceLock<Vec<LibraryModule>> = OnceLock::new();
+    LIBRARY.get_or_init(|| {
+        crate::stdlib::SOURCES
+            .iter()
+            .map(|(name, source)| {
+                let (document, _) = crate::language::parse_recovering(source);
+                LibraryModule {
+                    name,
+                    source,
+                    index: SymbolIndex::new(&document),
+                }
+            })
+            .collect()
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -173,6 +231,67 @@ impl SymbolIndex {
             self.namespace_shapes.get(&definition),
             Some(NamespaceShape::View)
         )
+    }
+
+    pub fn library_references(&self) -> &[LibraryReference] {
+        &self.library_references
+    }
+
+    pub fn library_reference_at(&self, offset: usize) -> Option<&LibraryReference> {
+        self.library_references
+            .iter()
+            .find(|reference| contains(reference.span, offset))
+    }
+
+    pub fn library_namespace_at(&self, namespace: &str, offset: usize) -> Option<String> {
+        match self.namespace_at(namespace, offset)? {
+            NamespaceShape::View => Some("ranges".into()),
+            NamespaceShape::Library(module) => Some(module),
+            _ => None,
+        }
+    }
+
+    pub fn is_view_namespace_at(&self, namespace: &str, offset: usize) -> bool {
+        matches!(
+            self.namespace_at(namespace, offset),
+            Some(NamespaceShape::View)
+        )
+    }
+
+    pub fn members_at(&self, namespace: &str, offset: usize) -> Option<Vec<&Definition>> {
+        let NamespaceShape::Lexical(id) = self.namespace_at(namespace, offset)? else {
+            return None;
+        };
+        let names = self.namespace_members.get(&id)?;
+        Some(
+            names
+                .values
+                .values()
+                .chain(names.symbols.values())
+                .chain(names.macros.values())
+                .filter_map(|id| self.definitions.get(*id))
+                .collect(),
+        )
+    }
+
+    fn namespace_at(&self, namespace: &str, offset: usize) -> Option<NamespaceShape> {
+        let mut components = namespace.split("::");
+        let first = components.next()?;
+        let mut shape = match first {
+            "$std" => NamespaceShape::Library(String::new()),
+            "$view" | "views" | "ranges" => NamespaceShape::View,
+            _ => {
+                let definition = self
+                    .visible_at(offset)
+                    .into_iter()
+                    .find(|definition| definition.name == first)?;
+                self.namespace_shapes.get(&definition.id)?.clone()
+            }
+        };
+        for component in components {
+            shape = self.member_shape(&shape, component)?;
+        }
+        Some(shape)
     }
 
     /// Resolve the declaration token or a reference under a byte offset.
@@ -307,6 +426,44 @@ impl SymbolIndex {
     ) {
         use StatementKind as S;
         match &statement.kind {
+            S::Scope { name, body } => self.namespace(
+                name,
+                body,
+                statement.span,
+                end,
+                environment,
+                Site { scope, parent },
+            ),
+            S::Native {
+                name,
+                parameters,
+                result,
+                ..
+            } => {
+                let detail = format!(
+                    "native {}({}){}",
+                    name.text,
+                    parameters
+                        .iter()
+                        .map(|parameter| parameter.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    if matches!(result, crate::language::NativeType::Inferred) {
+                        String::new()
+                    } else {
+                        format!(" -> {}", native_type_name(result))
+                    }
+                );
+                let id = self.definition(name, SymbolKind::Native, statement.span, detail, parent);
+                self.install(
+                    environment,
+                    scope,
+                    Namespace::Symbol,
+                    name,
+                    id,
+                    statement.span.end,
+                );
+            }
             S::Binding { name, op, value } => self.binding(
                 name,
                 *op,
@@ -443,7 +600,10 @@ impl SymbolIndex {
             detail = format!("{known} {}", name.text);
         }
         let shape = self.binding_shape(value, kind, environment);
-        if matches!(shape, Some(NamespaceShape::View)) {
+        if matches!(
+            shape,
+            Some(NamespaceShape::View | NamespaceShape::Library(_) | NamespaceShape::Lexical(_))
+        ) {
             kind = SymbolKind::Space;
             detail = format!("scope {}", name.text);
         }
@@ -452,6 +612,50 @@ impl SymbolIndex {
             self.namespace_shapes.insert(id, shape);
         }
         self.install(environment, scope, Namespace::Value, name, id, span.end);
+    }
+
+    fn namespace(
+        &mut self,
+        name: &Name,
+        body: &Block,
+        span: Span,
+        end: usize,
+        outer: &mut Environment,
+        site: Site,
+    ) {
+        let id = self.definition(
+            name,
+            SymbolKind::Space,
+            span,
+            format!("scope {}", name.text),
+            site.parent,
+        );
+        let mut inner = outer.clone();
+        let scope = self.scope(
+            Span {
+                start: name.span.end,
+                end: bounded_end(end, span.end),
+            },
+            self.scopes[site.scope].depth + 1,
+            &inner,
+        );
+        self.block(body, &mut inner, scope, Some(id));
+        let owned: BTreeSet<_> = self
+            .definitions
+            .iter()
+            .filter(|definition| definition.parent == Some(id))
+            .map(|definition| definition.id)
+            .collect();
+        for namespace in [Namespace::Value, Namespace::Macro, Namespace::Symbol] {
+            inner
+                .names
+                .map_mut(namespace)
+                .retain(|_, id| owned.contains(id));
+        }
+        self.namespace_members.insert(id, inner.names);
+        self.namespace_shapes
+            .insert(id, NamespaceShape::Lexical(id));
+        self.install(outer, site.scope, Namespace::Value, name, id, span.end);
     }
 
     fn template(&mut self, template: Template<'_>, outer: &mut Environment, site: Site) {
@@ -639,7 +843,20 @@ impl SymbolIndex {
                 namespace, item, ..
             } => {
                 self.expression(namespace, environment, scope, parent, false);
-                self.expression(item, environment, scope, parent, false);
+                if let Some(shape @ (NamespaceShape::Library(_) | NamespaceShape::Lexical(_))) =
+                    self.expression_shape(namespace, environment)
+                {
+                    self.member_expression(
+                        item,
+                        &shape,
+                        environment,
+                        scope,
+                        parent,
+                        statement_call,
+                    );
+                } else {
+                    self.expression(item, environment, scope, parent, false);
+                }
             }
             ExprKind::Not(value) | ExprKind::Exists(value) => {
                 self.expression(value, environment, scope, parent, false)
@@ -689,17 +906,63 @@ impl SymbolIndex {
     fn range_scope_reference(&mut self, expression: &Expr, environment: &Environment) {
         match &expression.kind {
             ExprKind::Path(path) => {
-                if let Some(namespace) = &path.qualifier
-                    && !matches!(namespace.text.as_str(), "$view" | "views" | "ranges")
-                {
-                    self.value_reference(namespace, environment);
+                if let Some(namespace) = &path.qualifier {
+                    let shape = self.qualifier_shape(&namespace.text, environment);
+                    if !matches!(namespace.text.as_str(), "$view" | "views" | "ranges")
+                        || matches!(
+                            shape,
+                            Some(NamespaceShape::View | NamespaceShape::Library(_))
+                        )
+                    {
+                        self.value_reference(namespace, environment);
+                    }
+                    match shape {
+                        Some(NamespaceShape::Library(module)) => {
+                            self.library_reference(&module, &path.path, expression.source.content)
+                        }
+                        Some(NamespaceShape::View) => {
+                            self.library_reference("ranges", &path.path, expression.source.content)
+                        }
+                        _ if matches!(namespace.text.as_str(), "views" | "ranges") => {
+                            self.library_reference("ranges", &path.path, expression.source.content)
+                        }
+                        _ => {}
+                    }
+                } else {
+                    self.library_reference("ranges", &path.path, expression.source.content);
                 }
             }
-            ExprKind::Select { namespace, .. } => {
-                if let ExprKind::Path(path) = &namespace.kind
-                    && !matches!(path.path.as_str(), "$view" | "views" | "ranges")
+            ExprKind::Select {
+                namespace, item, ..
+            } => {
+                if let ExprKind::Path(path) = &namespace.kind {
+                    let reserved = path.qualifier.is_none()
+                        && matches!(path.path.as_str(), "$view" | "views" | "ranges");
+                    if !reserved
+                        || matches!(
+                            self.qualifier_shape(&path.path, environment),
+                            Some(NamespaceShape::View | NamespaceShape::Library(_))
+                        )
+                    {
+                        self.path_reference(namespace, path, environment, false, false);
+                    }
+                } else {
+                    self.range_scope_reference(namespace, environment);
+                }
+                if let Some(shape @ (NamespaceShape::Library(_) | NamespaceShape::View)) =
+                    self.range_namespace_shape(namespace, environment)
                 {
-                    self.path_reference(namespace, path, environment, false, false);
+                    let module = match shape {
+                        NamespaceShape::Library(module) => module,
+                        _ => "ranges".into(),
+                    };
+                    let callee = match &item.kind {
+                        ExprKind::Call { callee, .. } => callee.as_ref(),
+                        _ => item,
+                    };
+                    if let ExprKind::Path(path) = &callee.kind {
+                        self.library_reference(&module, &path.path, callee.source.content);
+                    }
                 }
             }
             _ => {}
@@ -755,6 +1018,17 @@ impl SymbolIndex {
             self.value_reference(qualifier, environment);
             let shape = self.qualifier_shape(&qualifier.text, environment);
             let component = path.path.split(['/', '\\']).next().unwrap_or(&path.path);
+            if let Some(shape @ (NamespaceShape::Library(_) | NamespaceShape::Lexical(_))) = &shape
+            {
+                self.member_reference(
+                    shape,
+                    component,
+                    expression.source.content,
+                    call,
+                    statement_call,
+                );
+                return;
+            }
             if matches!(
                 shape,
                 Some(NamespaceShape::Program | NamespaceShape::File | NamespaceShape::View)
@@ -797,12 +1071,13 @@ impl SymbolIndex {
             "$pwd" => Some(NamespaceShape::WorkingDirectory),
             "$file" => Some(NamespaceShape::File),
             "$view" => Some(NamespaceShape::View),
+            "$std" => Some(NamespaceShape::Library(String::new())),
             _ => environment
                 .names
                 .values
                 .get(name)
                 .and_then(|id| self.namespace_shapes.get(id))
-                .copied(),
+                .cloned(),
         }
     }
 
@@ -815,22 +1090,154 @@ impl SymbolIndex {
         if kind == SymbolKind::Program {
             return Some(NamespaceShape::Program);
         }
-        let ExprKind::Path(path) = &value.kind else {
-            return None;
-        };
-        if path.qualifier.is_some() {
-            return None;
+        self.expression_shape(value, environment)
+    }
+
+    fn expression_shape(
+        &self,
+        expression: &Expr,
+        environment: &Environment,
+    ) -> Option<NamespaceShape> {
+        match &expression.kind {
+            ExprKind::Path(path) => match &path.qualifier {
+                Some(namespace) => self.member_shape(
+                    &self.qualifier_shape(&namespace.text, environment)?,
+                    &path.path,
+                ),
+                None => self.qualifier_shape(&path.path, environment),
+            },
+            ExprKind::Select {
+                namespace, item, ..
+            } => {
+                let ExprKind::Path(path) = &item.kind else {
+                    return None;
+                };
+                self.member_shape(&self.expression_shape(namespace, environment)?, &path.path)
+            }
+            _ => None,
         }
-        self.qualifier_shape(&path.path, environment)
+    }
+
+    fn member_shape(&self, namespace: &NamespaceShape, name: &str) -> Option<NamespaceShape> {
+        match namespace {
+            NamespaceShape::Library(module) if module.is_empty() => {
+                Some(NamespaceShape::Library(name.into()))
+            }
+            NamespaceShape::Lexical(id) => self
+                .namespace_members
+                .get(id)?
+                .values
+                .get(name)
+                .and_then(|id| self.namespace_shapes.get(id))
+                .cloned(),
+            _ => None,
+        }
+    }
+
+    fn library_reference(&mut self, module: &str, name: &str, span: Span) {
+        self.library_references.push(LibraryReference {
+            module: module.into(),
+            name: name.into(),
+            span,
+        });
+    }
+
+    fn member_reference(
+        &mut self,
+        namespace: &NamespaceShape,
+        name: &str,
+        span: Span,
+        call: bool,
+        statement_call: bool,
+    ) {
+        let span = Span {
+            start: span.start,
+            end: span.start + name.len(),
+        };
+        match namespace {
+            NamespaceShape::Library(module) => self.library_reference(module, name, span),
+            NamespaceShape::Lexical(id) => {
+                let Some(names) = self.namespace_members.get(id) else {
+                    return;
+                };
+                let target = if call {
+                    names
+                        .symbols
+                        .get(name)
+                        .or_else(|| statement_call.then(|| names.macros.get(name)).flatten())
+                        .or_else(|| names.values.get(name))
+                } else {
+                    names.values.get(name)
+                };
+                if let Some(id) = target.copied() {
+                    self.reference(span, id);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn member_expression(
+        &mut self,
+        expression: &Expr,
+        namespace: &NamespaceShape,
+        environment: &mut Environment,
+        scope: usize,
+        parent: Option<DefinitionId>,
+        statement_call: bool,
+    ) {
+        match &expression.kind {
+            ExprKind::Path(path) => {
+                let name = path.path.split(['/', '\\']).next().unwrap_or(&path.path);
+                self.member_reference(
+                    namespace,
+                    name,
+                    expression.source.content,
+                    false,
+                    statement_call,
+                );
+            }
+            ExprKind::Call { callee, arguments } => {
+                if let ExprKind::Path(path) = &callee.kind {
+                    self.member_reference(
+                        namespace,
+                        &path.path,
+                        callee.source.content,
+                        true,
+                        statement_call,
+                    );
+                }
+                for argument in arguments {
+                    self.expression(argument, environment, scope, parent, false);
+                }
+            }
+            _ => self.expression(expression, environment, scope, parent, statement_call),
+        }
     }
 
     fn view_namespace(&self, name: &str, environment: &Environment) -> bool {
-        matches!(name, "views" | "ranges")
-            || matches!(
-                self.qualifier_shape(name, environment),
-                Some(NamespaceShape::View)
-            )
+        match self.qualifier_shape(name, environment) {
+            Some(NamespaceShape::View) => true,
+            Some(NamespaceShape::Library(module)) => module == "ranges",
+            Some(_) => false,
+            None => matches!(name, "views" | "ranges"),
+        }
     }
+
+    fn range_namespace_shape(
+        &self,
+        expression: &Expr,
+        environment: &Environment,
+    ) -> Option<NamespaceShape> {
+        self.expression_shape(expression, environment).or_else(|| {
+            let ExprKind::Path(path) = &expression.kind else {
+                return None;
+            };
+            (path.qualifier.is_none() && matches!(path.path.as_str(), "views" | "ranges"))
+                .then_some(NamespaceShape::View)
+        })
+    }
+
     fn range_call<'e>(
         &self,
         expression: &'e Expr,
@@ -874,9 +1281,7 @@ impl SymbolIndex {
             ExprKind::Select {
                 namespace, item, ..
             } => {
-                let ExprKind::Path(namespace) = &namespace.kind else {
-                    return None;
-                };
+                let shape = self.range_namespace_shape(namespace, environment)?;
                 let item = match &item.kind {
                     ExprKind::Call { callee, .. } => callee.as_ref(),
                     _ => item,
@@ -884,10 +1289,11 @@ impl SymbolIndex {
                 let ExprKind::Path(item) = &item.kind else {
                     return None;
                 };
-                (namespace.qualifier.is_none()
-                    && self.view_namespace(&namespace.path, environment)
-                    && item.qualifier.is_none())
-                .then_some(item.path.as_str())
+                (matches!(shape, NamespaceShape::View)
+                    || matches!(&shape, NamespaceShape::Library(module) if module == "ranges"))
+                .then_some(())
+                .filter(|_| item.qualifier.is_none())
+                .map(|_| item.path.as_str())
             }
             _ => None,
         }
@@ -963,4 +1369,17 @@ fn is_pure_call(value: &Expr, environment: &Environment) -> bool {
         return false;
     };
     environment.names.symbols.contains_key(&path.path)
+}
+
+fn native_type_name(result: &crate::language::NativeType) -> String {
+    use crate::language::NativeType;
+    match result {
+        NativeType::Inferred => "inferred".into(),
+        NativeType::Void => "Void".into(),
+        NativeType::Bool => "Bool".into(),
+        NativeType::String => "String".into(),
+        NativeType::Path => "Path".into(),
+        NativeType::Scope => "Scope".into(),
+        NativeType::Range(item) => format!("Range<{}>", native_type_name(item)),
+    }
 }

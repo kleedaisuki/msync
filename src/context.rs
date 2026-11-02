@@ -376,6 +376,15 @@ impl crate::object::control::Visitor for ProgramBinder<'_> {
         self.instructions.pop();
         Ok(())
     }
+    fn range(&mut self, range: &mut crate::hir::control::RangeExpr) -> Result<(), ContextError> {
+        if let crate::hir::control::RangeSource::Native { pwd, .. } = &mut range.source
+            && pwd.is_none()
+        {
+            *pwd = Some(self.context.pwd.clone());
+        }
+        Ok(())
+    }
+
     fn expression(
         &mut self,
         expression: &mut crate::hir::control::Expr,
@@ -388,7 +397,7 @@ impl crate::object::control::Visitor for ProgramBinder<'_> {
                 module_file: self.context.module_file.clone(),
             };
         }
-        if let ExprKind::IntoPath { pwd, .. } = &mut expression.kind
+        if let ExprKind::IntoPath { pwd, .. } | ExprKind::Native { pwd, .. } = &mut expression.kind
             && pwd.is_none()
         {
             *pwd = Some(self.context.pwd.clone());
@@ -913,6 +922,11 @@ fn range_slots(
     mut visit: impl FnMut(&mut crate::hir::control::SlotId),
 ) {
     use crate::hir::control::RangeStage;
+    if let crate::hir::control::RangeSource::Let { bindings, .. } = &mut range.source {
+        for (slot, _) in bindings {
+            visit(slot);
+        }
+    }
     for stage in &mut range.stages {
         match stage {
             RangeStage::Filter { slot, .. }
@@ -973,6 +987,9 @@ impl<'ir> crate::object::control::ReadVisitor<'ir> for IdentityCollector {
     }
     fn range(&mut self, range: &'ir crate::hir::control::RangeExpr) -> Result<(), ContextError> {
         use crate::hir::control::RangeStage;
+        if let crate::hir::control::RangeSource::Let { bindings, .. } = &range.source {
+            self.slots.extend(bindings.iter().map(|(slot, _)| *slot));
+        }
         for stage in &range.stages {
             match stage {
                 RangeStage::Filter { slot, .. }

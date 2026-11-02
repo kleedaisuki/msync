@@ -306,6 +306,16 @@ fn semantic_document(source: &str) -> language::Document {
                     expression(range);
                     statements(body);
                 }
+                StatementKind::Scope { name, body } => {
+                    name.span = Default::default();
+                    statements(body);
+                }
+                StatementKind::Native {
+                    name, parameters, ..
+                } => {
+                    name.span = Default::default();
+                    names(parameters);
+                }
                 StatementKind::Loop { body } => statements(body),
                 StatementKind::Break(Some(value)) => expression(value),
                 StatementKind::Break(None) => {}

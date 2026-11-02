@@ -65,17 +65,11 @@ fn predicates_and_transforms_reject_wrong_result_types() {
             .contains("predicate must return bool")),
         "{errors:?}"
     );
-    let errors = compile(
+    let program = compile(
         "symbol scope(item):\n    return $local\nitems := missing/<.*> | views::transform(scope)\n",
     )
-    .unwrap_err();
-    assert!(
-        errors.iter().any(|report| report
-            .diagnostic
-            .message
-            .contains("transforms must return a path, string or bool")),
-        "{errors:?}"
-    );
+    .unwrap();
+    assert!(program.body.instructions.is_empty());
 }
 
 #[test]
@@ -124,7 +118,7 @@ fn finite_range_element_and_search_types_are_enforced() {
     for (code, message) in [
         (
             "items := ranges::of(\"text\", $local)\n",
-            "range elements must be paths, strings or bool",
+            "scope range cannot mix scopes",
         ),
         ("items := ranges::of(ranges::of(true))\n", "not a scalar"),
         (

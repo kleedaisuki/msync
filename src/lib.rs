@@ -28,3 +28,5 @@ pub mod telemetry;
 pub mod tooling;
 
 pub mod types;
+
+pub mod stdlib;

@@ -36,6 +36,7 @@ impl Flavor {
 
 #[derive(Clone, Debug)]
 pub(super) struct Symbol {
+    natives: Arc<imbl::OrdMap<String, Arc<natives::Native>>>,
     flavor: Flavor,
     name: Name,
     parameters: Vec<Name>,
@@ -67,10 +68,44 @@ pub(super) fn is_call(expression: &Expr, scope: &Scope) -> bool {
     let ExprKind::Call { callee, .. } = &expression.kind else {
         return false;
     };
-    let ExprKind::Path(path) = &callee.kind else {
+    is_callee(callee, scope)
+}
+
+pub(super) fn is_contextual_call(
+    expression: &Expr,
+    scope: &Scope,
+    context: &CompileContext,
+) -> bool {
+    let ExprKind::Call { callee, .. } = &expression.kind else {
         return false;
     };
-    path.qualifier.is_none() && scope.symbols.contains_key(&path.path)
+    if is_callee(callee, scope) {
+        return true;
+    }
+    namespaces::callee(callee, scope, context)
+        .ok()
+        .flatten()
+        .is_some_and(|(callee, module)| is_callee(&callee, &module))
+}
+
+fn is_callee(callee: &Expr, scope: &Scope) -> bool {
+    match &callee.kind {
+        ExprKind::Path(path) => match &path.qualifier {
+            None => scope.symbols.contains_key(&path.path),
+            Some(name) => {
+                matches!(scope.values.get(&name.text), Some(Value::Module(module)) if module.symbols.contains_key(&path.path))
+            }
+        },
+        ExprKind::Select {
+            namespace, item, ..
+        } => {
+            let ExprKind::Path(path) = &namespace.kind else {
+                return false;
+            };
+            matches!(scope.values.get(&path.path), Some(Value::Module(module)) if is_callee(item, module))
+        }
+        _ => false,
+    }
 }
 
 impl Lower<'_> {
@@ -153,6 +188,7 @@ fn define(
     }
     validate_body(body, flavor)?;
     let definition = Symbol {
+        natives: scope.natives.clone(),
         flavor,
         name: name.clone(),
         parameters: parameters.to_vec(),
@@ -210,11 +246,15 @@ pub(super) fn evaluate(
     let ExprKind::Call { callee, arguments } = &call.kind else {
         unreachable!("symbol call expression");
     };
+    let qualified = namespaces::callee(callee, caller, context)?;
+    let (callee, definitions) = qualified
+        .as_ref()
+        .map_or((callee.as_ref(), caller), |(callee, scope)| (callee, scope));
     let source = caller
         .source
         .clone()
         .unwrap_or_else(|| Source::new("<ast>", ""));
-    let definition = definition(callee, arguments.len(), caller, &source)?;
+    let definition = definition(callee, arguments.len(), definitions, &source)?;
     let call_site = source.at(call.span);
     instantiate(&definition, arguments, caller, context, call_site.clone()).map_err(|failure| {
         let located = failure
@@ -310,6 +350,7 @@ fn instantiate(
 ) -> Result<Value, Failure> {
     caller.symbol_count.record();
     let mut scope = Scope {
+        natives: definition.natives.clone(),
         slots: caller.slots.clone(),
         current_unit: caller.current_unit,
         source: Some(definition.source.clone()),
@@ -378,6 +419,17 @@ fn scoped(
 ) -> Result<Value, Failure> {
     if bindings.is_empty() {
         return Ok(value);
+    }
+    if let Value::Range(range) = value {
+        let item_type = range.item_type.clone();
+        return Ok(Value::Range(hir::control::RangeExpr {
+            source: hir::control::RangeSource::Let {
+                bindings,
+                range: Box::new(range),
+            },
+            stages: Vec::new(),
+            item_type,
+        }));
     }
     let mut body = v6::scalar(value, context, span)?;
     for (slot, value) in bindings.into_iter().rev() {

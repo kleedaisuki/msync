@@ -23,7 +23,14 @@ pub(super) async fn exists(
     if let Some(path) = local(location, true, span)? {
         return match tokio::fs::metadata(&path).await {
             Ok(_) => Ok(true),
-            Err(cause) if cause.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(cause)
+                if matches!(
+                    cause.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                Ok(false)
+            }
             Err(cause) => Err(io_error("inspect existence of", location, span, cause)),
         };
     }
@@ -153,7 +160,11 @@ async fn path_exists(location: &Location, cancel: &CancellationToken, span: Span
         match tokio::fs::metadata(directory.join(name)).await {
             Ok(metadata) if metadata.is_file() => return Ok(true),
             Ok(_) => {}
-            Err(cause) if cause.kind() == io::ErrorKind::NotFound => {}
+            Err(cause)
+                if matches!(
+                    cause.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) => {}
             Err(cause) => return Err(io_error("inspect PATH entry for", location, span, cause)),
         }
     }
@@ -292,7 +303,7 @@ check_parent() {
         q=${q%/*}; [ -n "$q" ] || q=/
     done
 }
-check_parent
+case $action in exists) ;; *) check_parent;; esac
 case $action in
 exists)
     # stat follows links and preserves errors such as ELOOP and EACCES. A failed
@@ -300,7 +311,7 @@ exists)
     LC_ALL=C; export LC_ALL
     if error=$(stat -L -c '' -- "$p" 2>&1); then printf true
     else
-        case $error in *': No such file or directory') printf false;; *) fail "$error";; esac
+        case $error in *': No such file or directory'|*': Not a directory') printf false;; *) fail "$error";; esac
     fi
     ;;
 delete)
@@ -345,6 +356,12 @@ mod tests {
         assert!(!exists(&location, &cancel, Span::default()).await.unwrap());
         tokio::fs::write(&path, b"hello").await.unwrap();
         assert!(exists(&location, &cancel, Span::default()).await.unwrap());
+        let child = Location {
+            backend: Backend::Local,
+            path: path.join("child").to_str().unwrap().to_owned(),
+        };
+        assert!(!exists(&child, &cancel, Span::default()).await.unwrap());
+
         delete(&location, &cancel, Span::default()).await.unwrap();
         assert!(!exists(&location, &cancel, Span::default()).await.unwrap());
         assert!(delete(&location, &cancel, Span::default()).await.is_err());
@@ -435,6 +452,9 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(run("exists", &target).stdout, b"true");
+        let child = run("exists", &target.join("child"));
+        assert!(child.status.success());
+        assert_eq!(child.stdout, b"false");
         assert_eq!(run("exists", &dangling).stdout, b"false");
         assert!(!run("exists", &cycle).status.success());
         assert!(!run("delete", directory.path()).status.success());

@@ -12,7 +12,7 @@ const MAX_NESTING: usize = 128;
 
 pub(super) fn opens_block(line: &str) -> bool {
     let code = line[..comment_start(line).unwrap_or(line.len())].trim_start();
-    ["macro ", "symbol ", "boolean ", "if ", "for "]
+    ["scope ", "macro ", "symbol ", "boolean ", "if ", "for "]
         .iter()
         .any(|prefix| code.starts_with(prefix))
         || code == "loop:"
@@ -247,7 +247,8 @@ impl Parser<'_> {
 
 fn statement_body(kind: &mut StatementKind) -> Option<&mut Block> {
     match kind {
-        StatementKind::Macro { body, .. }
+        StatementKind::Scope { body, .. }
+        | StatementKind::Macro { body, .. }
         | StatementKind::Symbol { body, .. }
         | StatementKind::Boolean { body, .. }
         | StatementKind::For { body, .. }
@@ -311,7 +312,14 @@ fn statement(code: &str, offset: usize) -> Result<Statement, Report> {
             span(offset, offset + code.len()),
         ));
     }
-    let kind = if let Some(header) = code.strip_prefix("macro ") {
+    let kind = if let Some(header) = code.strip_prefix("scope ") {
+        StatementKind::Scope {
+            name: name(header_body(header, offset + 6)?, offset + 6)?,
+            body: Vec::new(),
+        }
+    } else if let Some(header) = code.strip_prefix("native ") {
+        native_header(header, offset + 7)?
+    } else if let Some(header) = code.strip_prefix("macro ") {
         let (name, parameters) = definition_header(header, offset + 6, "macro")?;
         StatementKind::Macro {
             name,
@@ -395,6 +403,50 @@ fn statement(code: &str, offset: usize) -> Result<Statement, Report> {
     Ok(Statement {
         kind,
         span: span(offset, offset + code.len()),
+    })
+}
+
+fn native_type(raw: &str, offset: usize) -> Result<super::NativeType, Report> {
+    use super::NativeType;
+    let ty = match raw.trim() {
+        "Void" => NativeType::Void,
+        "Bool" => NativeType::Bool,
+        "String" => NativeType::String,
+        "Path" => NativeType::Path,
+        "Scope" => NativeType::Scope,
+        text if text.starts_with("Range<") && text.ends_with('>') => {
+            NativeType::Range(Box::new(native_type(&text[6..text.len() - 1], offset + 6)?))
+        }
+        _ => {
+            return Err(Report::new(
+                "expected a native result type: Void, Bool, String, Path, Scope or Range<T>",
+                span(offset, offset + raw.len()),
+            ));
+        }
+    };
+    Ok(ty)
+}
+
+fn native_header(raw: &str, offset: usize) -> Result<StatementKind, Report> {
+    let (signature, implementation) = raw.split_once(" = ").ok_or_else(|| {
+        Report::new(
+            "expected native name(parameters) [-> Type] = \"implementation\"",
+            span(offset, offset + raw.len()),
+        )
+    })?;
+    let (function, result) = match signature.rsplit_once(" -> ") {
+        Some((function, result)) => (function, native_type(result, offset + function.len() + 4)?),
+        None => (signature, super::NativeType::Inferred),
+    };
+    let header = format!("{function}:");
+    let (name, parameters) = definition_header(&header, offset, "native")?;
+    let implementation_offset = offset + signature.len() + 3;
+    let (implementation, _) = quoted(implementation.trim(), implementation_offset)?;
+    Ok(StatementKind::Native {
+        name,
+        parameters,
+        result,
+        implementation,
     })
 }
 
@@ -546,7 +598,7 @@ fn ordinary_statement(code: &str, offset: usize) -> Result<StatementKind, Report
         }
         [] => {
             let value = expression(code, offset)?;
-            if matches!(value.kind, ExprKind::Call { .. }) {
+            if expression_call(&value) {
                 Ok(StatementKind::Call(value))
             } else {
                 Err(Report::new("expected a transfer, binding, macro call, or control statement", value.span)
@@ -555,6 +607,14 @@ fn ordinary_statement(code: &str, offset: usize) -> Result<StatementKind, Report
         }
         [_, (index, _), ..] => Err(Report::new("expected one statement per line", span(offset + index, offset + index + 2))
             .help("Put the next statement on another line; quote operator characters when they belong to a path or literal.")),
+    }
+}
+
+fn expression_call(value: &Expr) -> bool {
+    match &value.kind {
+        ExprKind::Call { .. } => true,
+        ExprKind::Select { item, .. } => expression_call(item),
+        _ => false,
     }
 }
 
@@ -579,7 +639,18 @@ fn definition_header(raw: &str, offset: usize, kind: &str) -> Result<(Name, Vec<
     let macro_name = name(&header[..open], offset)?;
     let parameters = split_arguments(&header[open + 1..header.len() - 1], offset + open + 1)?
         .into_iter()
-        .map(|(text, at)| name(text, at))
+        .map(|(text, at)| {
+            if kind == "native"
+                && let Some(parameter) = text.strip_suffix("...")
+            {
+                let mut parameter = name(parameter, at)?;
+                parameter.text.push_str("...");
+                parameter.span.end += 3;
+                Ok(parameter)
+            } else {
+                name(text, at)
+            }
+        })
         .collect::<Result<Vec<_>, _>>()?;
     for (index, parameter) in parameters.iter().enumerate() {
         if let Some(previous) = parameters[..index]
@@ -626,6 +697,7 @@ fn name(raw: &str, offset: usize) -> Result<Name, Report> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CallRole {
     Value,
+    Member,
     Executable,
     ExecutableCallee,
 }
@@ -666,6 +738,7 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
     }
     let binary = binary_operator(&scan.binary);
     if let Some(tail) = unary_tail(text, "not")
+        && role != CallRole::Member
         && !tail.is_empty()
         && !matches!(binary, Some((_, "and" | "or")))
     {
@@ -704,7 +777,7 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
     }
     if let Some((keyword, tail)) = ["not", "exists"].into_iter().find_map(|keyword| {
         unary_tail(text, keyword)
-            .filter(|tail| !tail.is_empty())
+            .filter(|tail| role != CallRole::Member && !tail.is_empty())
             .map(|tail| (keyword, tail))
     }) {
         let operand = Box::new(expression(tail, offset + keyword.len())?);
@@ -781,7 +854,11 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
         }
         ExprKind::Select {
             namespace: Box::new(expression(&text[..operator], offset)?),
-            item: Box::new(expression(&text[operator + 2..], offset + operator + 2)?),
+            item: Box::new(expression_with_role(
+                &text[operator + 2..],
+                offset + operator + 2,
+                CallRole::Member,
+            )?),
             operator: span(offset + operator, offset + operator + 2),
         }
     } else if let Some((open, close)) = scan.calls.last().copied() {

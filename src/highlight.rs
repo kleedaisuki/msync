@@ -41,16 +41,51 @@ pub const BUILTINS: &[&str] = &[
     "$wsl::",
     "$path::",
     "$env::",
+    "$std::",
+    "$std::fs::",
+    "$std::path::",
+    "$std::bool::",
+    "$std::string::",
+    "$std::ranges::",
     "$view::",
 ];
 
 pub const KEYWORDS: &[&str] = &[
-    "macro", "symbol", "boolean", "return", "global", "drop", "delete", "exists", "include",
-    "execute", "if", "else", "for", "in", "loop", "break", "true", "false", "and", "not", "or",
-    "release", "acquire", "acqrel", "async", "await",
+    "scope", "native", "macro", "symbol", "boolean", "return", "global", "drop", "delete",
+    "exists", "include", "execute", "if", "else", "for", "in", "loop", "break", "true", "false",
+    "and", "not", "or", "release", "acquire", "acqrel", "async", "await",
 ];
 
 pub const RANGE_ADAPTORS: &[&str] = &[
+    "$std::ranges::of",
+    "$std::ranges::single",
+    "$std::ranges::all",
+    "$std::ranges::as_const",
+    "$std::ranges::as_rvalue",
+    "$std::ranges::common",
+    "$std::ranges::filter",
+    "$std::ranges::transform",
+    "$std::ranges::take",
+    "$std::ranges::drop",
+    "$std::ranges::take_while",
+    "$std::ranges::drop_while",
+    "$std::ranges::stride",
+    "$std::ranges::step",
+    "$std::ranges::unique",
+    "$std::ranges::reverse",
+    "$std::ranges::empty",
+    "$std::ranges::contains",
+    "$std::ranges::any_of",
+    "$std::ranges::any",
+    "$std::ranges::all_of",
+    "$std::ranges::none_of",
+    "$std::ranges::none",
+    "$std::ranges::front",
+    "$std::ranges::first",
+    "$std::ranges::back",
+    "$std::ranges::last",
+    "$std::ranges::find",
+    "$std::ranges::find_if",
     "$view::of",
     "$view::single",
     "$view::all",
@@ -153,11 +188,12 @@ fn line_tokens(source: &str, tokens: &mut Vec<Token>) {
     let mut position = 0;
     let first = source.len() - source.trim_start().len();
     let mut head = true;
-    let declaration = ["macro ", "symbol ", "boolean "]
+    let declaration = ["macro ", "symbol ", "boolean ", "native "]
         .iter()
         .any(|keyword| source[first..].starts_with(keyword));
     let mut parameters = false;
     let mut for_name = source[first..].starts_with("for ");
+    let mut scope_name = source[first..].starts_with("scope ");
     while position < source.len() {
         let start = position;
         let ch = source[position..].chars().next().unwrap();
@@ -187,10 +223,15 @@ fn line_tokens(source: &str, tokens: &mut Vec<Token>) {
             _ => {
                 position = word_end(source, position);
                 let word = &source[start..position];
-                let parameter = parameters || for_name && start != first;
+                let parameter = parameters
+                    || (for_name || scope_name) && start != first
+                    || declaration
+                        && start != first
+                        && source[position..].trim_start().starts_with('(');
                 word_tokens(source, start, position, head, parameter, tokens);
-                if start != first && for_name {
+                if start != first {
                     for_name = false;
+                    scope_name = false;
                 }
                 head &= scheduling_word(word) || matches!(word, "if" | "else");
                 continue;
@@ -385,10 +426,11 @@ fn word_tokens(
         return;
     } else if word.starts_with('$') {
         TokenKind::Namespace
+    } else if parameter {
+        TokenKind::Binding
     } else if control_word(source, word, head, end) {
         TokenKind::Command
-    } else if parameter
-        || source[end..].trim_start().starts_with('(')
+    } else if source[end..].trim_start().starts_with('(')
         || ["=>", ":=", "="]
             .iter()
             .any(|operator| source[end..].trim_start().starts_with(operator))
@@ -466,6 +508,8 @@ fn control_word(source: &str, word: &str, head: bool, end: usize) -> bool {
         "macro"
             | "symbol"
             | "boolean"
+            | "scope"
+            | "native"
             | "return"
             | "execute"
             | "include"

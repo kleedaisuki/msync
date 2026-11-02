@@ -104,7 +104,7 @@ impl Type {
     }
 
     pub fn is_range_item(&self) -> bool {
-        !matches!(self, Self::Space)
+        true
     }
 
     pub fn accepts(&self, candidate: &Self) -> bool {
@@ -140,6 +140,10 @@ pub enum ExprKind {
         mode: DestinationMode,
         relocation: Option<RelocPath>,
     },
+    UnboundPath {
+        path: String,
+        local: Box<Expr>,
+    },
     Space(Namespace),
     ResolvedSpace {
         namespace: Namespace,
@@ -158,6 +162,12 @@ pub enum ExprKind {
         body: Box<Expr>,
     },
     Exists(Box<Expr>),
+    Native {
+        name: String,
+        arguments: Vec<Expr>,
+        #[serde(default)]
+        pwd: Option<std::path::PathBuf>,
+    },
     Not(Box<Expr>),
     Binary {
         left: Box<Expr>,
@@ -238,6 +248,10 @@ pub enum ControlInstruction {
     Delete {
         path: Expr,
     },
+    Native {
+        name: String,
+        arguments: Vec<Expr>,
+    },
     RangeTransfer {
         range: RangeExpr,
         destination: Expr,
@@ -289,7 +303,21 @@ pub struct RangeExpr {
     deny_unknown_fields
 )]
 pub enum RangeSource {
-    Regex { root: Box<Expr>, pattern: String },
+    Let {
+        bindings: Vec<(SlotId, Expr)>,
+        range: Box<RangeExpr>,
+    },
+    Native {
+        name: String,
+        arguments: Vec<Expr>,
+        item_type: Type,
+        #[serde(default)]
+        pwd: Option<std::path::PathBuf>,
+    },
+    Regex {
+        root: Box<Expr>,
+        pattern: String,
+    },
     Values(Vec<Expr>),
 }
 
@@ -342,6 +370,7 @@ impl ControlInstruction {
             Self::Loop { .. } => "loop",
             Self::Break { .. } => "break",
             Self::Delete { .. } => "delete",
+            Self::Native { .. } => "native",
             Self::RangeTransfer { .. } => "range_transfer",
             Self::Transfer { .. } => "transfer",
         }

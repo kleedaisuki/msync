@@ -52,15 +52,23 @@ pub(super) fn literal(
         let value = v6::scalar(resolve(element, scope, context)?, context, element.span)?;
         if !value.ty.is_range_item() {
             return Err(Report::new(
-                "range elements must be paths, strings or bool values",
+                "range elements must be paths, strings, bool values or scopes",
                 element.span,
             )
             .into());
         }
         values.push(value);
     }
-    let item_type =
-        ctl::Type::join(values.iter().map(|value| value.ty.clone())).unwrap_or(ctl::Type::Path);
+    let item_type = if values.is_empty() {
+        ctl::Type::Path
+    } else {
+        ctl::Type::join(values.iter().map(|value| value.ty.clone())).ok_or_else(|| {
+            Report::new(
+                "a scope range cannot mix scopes with paths, strings or bool values",
+                span,
+            )
+        })?
+    };
     if !item_type.is_range_item() {
         return Err(Report::new("invalid range element type", span).into());
     }
@@ -155,7 +163,7 @@ fn apply(
             let stage = match name {
                 "transform" => {
                     if !expression.ty.is_range_item() {
-                        return Err(Report::new("range transforms must return a path, string or bool", arguments[0].span).into());
+                        return Err(Report::new("range transforms must return a path, string, bool or scope", arguments[0].span).into());
                     }
                     range.item_type = expression.ty.clone();
                     ctl::RangeStage::Transform { slot, expression }
@@ -260,7 +268,7 @@ fn callback(
         span: function.span,
         source: function.source.clone(),
     };
-    let value = symbols::evaluate(&call, &callback_scope, context)?;
+    let value = resolve(&call, &callback_scope, context)?;
     Ok((slot, v6::scalar(value, context, function.span)?))
 }
 
@@ -294,6 +302,12 @@ fn count(expression: &Expr, scope: &Scope, context: &CompileContext) -> Result<u
         }
         _ => match resolve(expression, scope, context)? {
             Value::Literal(text) => text.to_string(),
+            Value::Path(path)
+                if path.backend.is_none()
+                    && path.path.bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                path.path
+            }
             _ => {
                 return Err(Report::new(
                     "range take/drop counts must be nonnegative decimal constants",
@@ -320,6 +334,9 @@ pub(super) fn resolve_call(
     context: &CompileContext,
 ) -> Option<Result<Value, Failure>> {
     let (callee, arguments) = call_parts(expression)?;
+    if namespaces::callee(callee, scope, context).ok().flatten().is_some_and(|(callee, module)| {
+        matches!(&callee.kind, ExprKind::Path(path) if module.builtin_api == Some(crate::relocatable::BuiltinScope::Ranges) && module.symbols.contains_key(&path.path))
+    }) { return None }
     let name = adaptor_name(callee, scope, context, false)?;
     Some(resolve_named_call(
         &name,
@@ -339,7 +356,10 @@ pub(super) fn resolve_legacy_selection(
     let ExprKind::Path(path) = &namespace.kind else {
         return None;
     };
-    if path.qualifier.is_some() || !matches!(path.path.as_str(), "views" | "ranges") {
+    if path.qualifier.is_some()
+        || !matches!(path.path.as_str(), "views" | "ranges")
+        || scope.values.contains_key(&path.path)
+    {
         return None;
     }
     let (name, arguments) = selected_arguments(item)?;
@@ -354,10 +374,7 @@ pub(super) fn resolve_api_selection(
     scope: &Scope,
     context: &CompileContext,
 ) -> Option<Result<Value, Failure>> {
-    if !matches!(
-        namespace,
-        Value::Space(Space::Api(crate::relocatable::BuiltinScope::View))
-    ) {
+    if !is_api(namespace) {
         return None;
     }
     Some(match selected_arguments(item) {
@@ -421,18 +438,23 @@ fn resolve_named_call(
     apply(range, name, arguments, scope, context, span)
 }
 
+fn is_api(value: &Value) -> bool {
+    use crate::relocatable::BuiltinScope;
+    match value {
+        Value::Space(Space::Api(BuiltinScope::View | BuiltinScope::Ranges)) => true,
+        Value::Module(module) => module.builtin_api == Some(BuiltinScope::Ranges),
+        _ => false,
+    }
+}
+
 fn api_name(name: &str, scope: &Scope) -> bool {
+    if let Some(value) = scope.values.get(name) {
+        return is_api(value);
+    }
     if matches!(name, "views" | "ranges") {
         return true;
     }
-    match scope.values.get(name) {
-        Some(Value::Space(Space::Api(crate::relocatable::BuiltinScope::View))) => true,
-        Some(_) => false,
-        None => matches!(
-            Compiler::builtin_space(name),
-            Some(Space::Api(crate::relocatable::BuiltinScope::View))
-        ),
-    }
+    Compiler::builtin_space(name).is_some_and(|space| is_api(&Value::Space(space)))
 }
 
 fn api_namespace(expression: &Expr, scope: &Scope, context: &CompileContext) -> bool {
@@ -441,10 +463,35 @@ fn api_namespace(expression: &Expr, scope: &Scope, context: &CompileContext) -> 
     {
         return api_name(&path.path, scope);
     }
-    matches!(
-        resolve(expression, scope, context),
-        Ok(Value::Space(Space::Api(
-            crate::relocatable::BuiltinScope::View
-        )))
+    resolve(expression, scope, context).is_ok_and(|value| is_api(&value))
+}
+
+/// Compiler-native range parameters retain their dependent, specialized types.
+pub(super) fn native_arity(name: &str) -> Option<usize> {
+    match name {
+        "of" | "single" | "all" | "as_const" | "as_rvalue" | "common" | "reverse" | "unique"
+        | "empty" | "front" | "first" | "back" | "last" => Some(1),
+        "take" | "drop" | "stride" | "step" | "filter" | "transform" | "take_while"
+        | "drop_while" | "contains" | "find" | "any" | "any_of" | "all_of" | "none" | "none_of"
+        | "find_if" => Some(2),
+        _ => None,
+    }
+}
+
+pub(super) fn resolve_native(
+    implementation: &str,
+    arguments: &[Expr],
+    scope: &Scope,
+    context: &CompileContext,
+    span: Span,
+) -> Result<Value, Failure> {
+    resolve_named_call(
+        implementation
+            .strip_prefix("ranges.")
+            .expect("range native identity"),
+        arguments,
+        scope,
+        context,
+        span,
     )
 }

@@ -18,11 +18,17 @@ use crate::syntax::Span;
 
 type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(super) enum Value {
     Bool(bool),
     String(String),
     Path(Location, DestinationMode),
+    UnboundPath {
+        path: String,
+        local: Location,
+        mode: DestinationMode,
+        bound: bool,
+    },
     Space {
         namespace: Namespace,
         pwd: Option<PathBuf>,
@@ -34,6 +40,42 @@ pub(super) enum Value {
     },
 }
 
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Bool(left), Self::Bool(right)) => left == right,
+            (Self::String(left), Self::String(right)) => left == right,
+            (
+                Self::Space {
+                    namespace: left,
+                    pwd: left_pwd,
+                    module_file: left_file,
+                },
+                Self::Space {
+                    namespace: right,
+                    pwd: right_pwd,
+                    module_file: right_file,
+                },
+            ) => left == right && left_pwd == right_pwd && left_file == right_file,
+            (
+                Self::ComposedSpace {
+                    outer: left_outer,
+                    inner: left_inner,
+                },
+                Self::ComposedSpace {
+                    outer: right_outer,
+                    inner: right_inner,
+                },
+            ) => left_outer == right_outer && left_inner == right_inner,
+            _ => self
+                .path_value()
+                .is_some_and(|left| Some(left) == other.path_value()),
+        }
+    }
+}
+
+impl Eq for Value {}
+
 #[derive(Clone, Copy)]
 enum PathAccess {
     Entry,
@@ -41,6 +83,25 @@ enum PathAccess {
 }
 
 impl Value {
+    fn path_value(&self) -> Option<(&Location, DestinationMode)> {
+        match self {
+            Self::Path(location, mode)
+            | Self::UnboundPath {
+                local: location,
+                mode,
+                ..
+            } => Some((location, *mode)),
+            _ => None,
+        }
+    }
+
+    fn materialize(self) -> Self {
+        match self {
+            Self::UnboundPath { local, mode, .. } => Self::Path(local, mode),
+            value => value,
+        }
+    }
+
     fn is_scope(&self) -> bool {
         matches!(self, Self::Space { .. } | Self::ComposedSpace { .. })
     }
@@ -55,7 +116,7 @@ impl Value {
         }
     }
     fn location(self, span: Span) -> Result<Location> {
-        match self {
+        match self.materialize() {
             Self::Path(location, _) => Ok(location),
             Self::String(path) => Ok(Location {
                 backend: Backend::Local,
@@ -78,6 +139,10 @@ impl RuntimeSession {
         Box::pin(async move {
             let span = node.span;
             match operation {
+                ControlInstruction::Native { name, arguments } => {
+                    self.call_native(name, arguments, None, span).await?;
+                    Ok(())
+                }
                 ControlInstruction::Let { slot, value } => {
                     let value = self.eval(value, span).await?;
                     self.control_values.insert(*slot, value);
@@ -150,7 +215,7 @@ impl RuntimeSession {
                     let executable = self.eval(executable, span).await?.location(span)?;
                     let mut values = Vec::with_capacity(arguments.len());
                     for argument in arguments {
-                        let value = match self.eval(argument, span).await? {
+                        let value = match self.eval(argument, span).await?.materialize() {
                             Value::String(value) => hir::Argument::Text(value),
                             Value::Path(location, _) => hir::Argument::Path(location),
                             _ => {
@@ -184,7 +249,7 @@ impl RuntimeSession {
                 } => {
                     let source = match source {
                         TransferInput::Scalar(expression) => {
-                            match self.eval(expression, span).await? {
+                            match self.eval(expression, span).await?.materialize() {
                                 Value::String(text) => hir::Input::Literal(Arc::from(text)),
                                 Value::Path(location, _) => hir::Input::File {
                                     location,
@@ -227,6 +292,87 @@ impl RuntimeSession {
                     .await
                 }
             }
+        })
+    }
+
+    async fn call_native(
+        &mut self,
+        name: &str,
+        arguments: &[Expr],
+        pwd: Option<&std::path::Path>,
+        span: Span,
+    ) -> Result<super::native_fs::NativeResult> {
+        let signature = crate::stdlib::signature(name).ok_or_else(|| {
+            ExecutionError::new(format!("unknown native implementation '{name}'"), span)
+        })?;
+        let mut values = Vec::with_capacity(arguments.len());
+        let mut result_bound = signature.effect != crate::stdlib::NativeEffect::Pure;
+        for (index, argument) in arguments.iter().enumerate() {
+            let raw_path =
+                signature.parameters.get(index) == Some(&crate::stdlib::NativeParam::RawPath);
+            let value = self.eval(argument, span).await?;
+            if index == 0 && signature.effect == crate::stdlib::NativeEffect::Pure {
+                result_bound = match &value {
+                    Value::Path(..) => true,
+                    Value::UnboundPath { bound, .. } => *bound,
+                    _ => false,
+                };
+            }
+            let value = match value {
+                Value::UnboundPath {
+                    path,
+                    mut local,
+                    mode,
+                    ..
+                } if signature.effect == crate::stdlib::NativeEffect::Pure || raw_path => {
+                    local.path = path;
+                    Value::Path(local, mode)
+                }
+                value => value.materialize(),
+            };
+            if signature.effect != crate::stdlib::NativeEffect::Pure
+                && !raw_path
+                && let Value::Path(location, _) = &value
+            {
+                self.wait_control_path(location, PathAccess::Entry, span)
+                    .await?;
+                self.wait_control_path(location, PathAccess::Target, span)
+                    .await?;
+            }
+            values.push(value);
+        }
+        if name.starts_with("string.") {
+            return super::native_string::call(name, values, span);
+        }
+        let result = super::native_fs::call(name, values, &self.cancel, span).await?;
+        let Some(pwd) = pwd else { return Ok(result) };
+        let contextualize = |value| match value {
+            Value::Path(location, mode)
+                if location.backend == Backend::Local
+                    && !std::path::Path::new(&location.path).is_absolute() =>
+            {
+                let path = location.path;
+                let local = Location {
+                    backend: Backend::Local,
+                    path: pwd.join(&path).to_string_lossy().into_owned(),
+                };
+                Value::UnboundPath {
+                    path,
+                    local,
+                    mode,
+                    bound: result_bound,
+                }
+            }
+            value => value,
+        };
+        Ok(match result {
+            super::native_fs::NativeResult::Value(value) => {
+                super::native_fs::NativeResult::Value(contextualize(value))
+            }
+            super::native_fs::NativeResult::Range(values) => super::native_fs::NativeResult::Range(
+                values.into_iter().map(contextualize).collect(),
+            ),
+            super::native_fs::NativeResult::Void => super::native_fs::NativeResult::Void,
         })
     }
 
@@ -329,7 +475,7 @@ impl RuntimeSession {
         let mut cursor = Cursor::new(range);
         let mut nodes = Vec::new();
         while let Some(value) = cursor.next(self, span).await? {
-            let source = match value {
+            let source = match value.materialize() {
                 Value::String(text) => hir::Input::Literal(Arc::from(text)),
                 Value::Path(location, _) => {
                     self.wait_control_path(&location, PathAccess::Target, span)
@@ -463,8 +609,39 @@ impl RuntimeSession {
         Box::pin(async move {
             self.check(span)?;
             match &expression.kind {
+                ExprKind::Native {
+                    name,
+                    arguments,
+                    pwd,
+                } => {
+                    match self
+                        .call_native(name, arguments, pwd.as_deref(), span)
+                        .await?
+                    {
+                        super::native_fs::NativeResult::Value(value) => Ok(value),
+                        _ => Err(ExecutionError::new(
+                            format!("native '{name}' did not return a scalar value"),
+                            span,
+                        )),
+                    }
+                }
                 ExprKind::Bool(value) => Ok(Value::Bool(*value)),
                 ExprKind::String(value) => Ok(Value::String(value.clone())),
+                ExprKind::UnboundPath { path, local } => {
+                    let Value::Path(local, mode) = self.eval(local, span).await?.materialize()
+                    else {
+                        return Err(ExecutionError::new(
+                            "unbound path projection must be a path",
+                            span,
+                        ));
+                    };
+                    Ok(Value::UnboundPath {
+                        path: path.clone(),
+                        local,
+                        mode,
+                        bound: false,
+                    })
+                }
                 ExprKind::Path {
                     location,
                     mode,
@@ -513,7 +690,7 @@ impl RuntimeSession {
                     result
                 }
                 ExprKind::IntoPath { value, pwd } => match self.eval(value, span).await? {
-                    value @ Value::Path(..) => Ok(value),
+                    value @ (Value::Path(..) | Value::UnboundPath { .. }) => Ok(value),
                     Value::String(path) => {
                         let pwd = pwd.as_ref().ok_or_else(|| {
                             ExecutionError::new("filename conversion was not contextualized", span)
@@ -584,7 +761,12 @@ impl RuntimeSession {
                     mode,
                     suffix_backend,
                 } => {
-                    let base = self.eval(base, span).await?.location(span)?;
+                    let base_value = self.eval(base, span).await?;
+                    let unbound_base = match &base_value {
+                        Value::UnboundPath { path, bound, .. } => Some((path.clone(), *bound)),
+                        _ => None,
+                    };
+                    let base = base_value.location(span)?;
                     if suffix_backend
                         .as_ref()
                         .is_some_and(|backend| *backend != base.backend)
@@ -597,6 +779,9 @@ impl RuntimeSession {
                     let suffix = self.eval(suffix, span).await?;
                     let suffix = match suffix {
                         Value::String(text) => text,
+                        Value::UnboundPath {
+                            path, local, bound, ..
+                        } if !bound || local.backend == base.backend => path,
                         Value::Path(location, _) if location.backend == base.backend => {
                             location.path
                         }
@@ -608,7 +793,15 @@ impl RuntimeSession {
                         }
                     };
                     if suffix.is_empty() && *mode != DestinationMode::Exact {
-                        return Ok(Value::Path(base, *mode));
+                        return Ok(match unbound_base {
+                            Some((path, bound)) => Value::UnboundPath {
+                                path,
+                                local: base,
+                                mode: *mode,
+                                bound,
+                            },
+                            None => Value::Path(base, *mode),
+                        });
                     }
                     if suffix.is_empty()
                         || suffix.contains('\0')
@@ -625,24 +818,91 @@ impl RuntimeSession {
                     } else {
                         "/"
                     };
-                    Ok(Value::Path(
-                        Location {
-                            backend: base.backend,
-                            path: format!("{}{separator}{suffix}", base.path),
-                        },
-                        *mode,
-                    ))
+                    let local = Location {
+                        backend: base.backend,
+                        path: format!("{}{separator}{suffix}", base.path),
+                    };
+                    Ok(match unbound_base {
+                        Some((path, bound)) => {
+                            let separator = if path.ends_with(['/', '\\']) { "" } else { "/" };
+                            Value::UnboundPath {
+                                path: format!("{path}{separator}{suffix}"),
+                                local,
+                                mode: *mode,
+                                bound,
+                            }
+                        }
+                        None => Value::Path(local, *mode),
+                    })
                 }
                 ExprKind::Select { namespace, item } => {
                     let namespace = self.eval(namespace, span).await?;
                     let item = self.eval(item, span).await?;
-                    select(namespace, item, span)
+                    self.select_value(namespace, item, span).await
                 }
                 ExprKind::Loop { body } => self.control_loop(body, span).await?.ok_or_else(|| {
                     ExecutionError::new("a value-producing loop exited without a value", span)
                 }),
                 ExprKind::RangeQuery { range, query } => self.query(range, query, span).await,
             }
+        })
+    }
+
+    fn select_value<'a>(
+        &'a mut self,
+        namespace: Value,
+        item: Value,
+        span: Span,
+    ) -> Pending<'a, Value> {
+        Box::pin(async move {
+            if item.is_scope() {
+                return select(namespace, item, span);
+            }
+            if let Value::ComposedSpace { outer, inner } = namespace {
+                let item = self.select_value(*inner, item, span).await?;
+                return self.select_value(*outer, item, span).await;
+            }
+            if let Value::Space {
+                namespace: Namespace::Qualified { outer, inner },
+                pwd,
+                module_file,
+            } = namespace
+            {
+                let outer = Value::Space {
+                    namespace: *outer,
+                    pwd: pwd.clone(),
+                    module_file: module_file.clone(),
+                };
+                let inner = Value::Space {
+                    namespace: *inner,
+                    pwd,
+                    module_file,
+                };
+                let item = self.select_value(inner, item, span).await?;
+                return self.select_value(outer, item, span).await;
+            }
+            if let Value::Space {
+                namespace: Namespace::Lexical { members },
+                ..
+            } = namespace
+            {
+                let name = match item {
+                    Value::String(name) => name,
+                    Value::Path(location, _) => location.path,
+                    Value::UnboundPath { path, .. } => path,
+                    _ => {
+                        return Err(ExecutionError::new(
+                            "lexical namespace selection requires a member name",
+                            span,
+                        ));
+                    }
+                };
+                let member = members.get(&name).ok_or_else(|| {
+                    ExecutionError::new(format!("unknown lexical namespace member '{name}'"), span)
+                })?;
+                return self.eval(member, span).await;
+            }
+            select(namespace, item, span)
         })
     }
 
@@ -835,6 +1095,15 @@ fn select(namespace: Value, item: Value, span: Span) -> Result<Value> {
     }
     let explicit_backend = match &item {
         Value::Path(location, _) => Some(location.backend.clone()),
+        Value::UnboundPath {
+            local, bound: true, ..
+        } => Some(local.backend.clone()),
+        _ => None,
+    };
+    let unbound_path = match &item {
+        Value::UnboundPath {
+            path, bound: false, ..
+        } => Some(path.clone()),
         _ => None,
     };
     let location = item.location(span)?;
@@ -848,13 +1117,17 @@ fn select(namespace: Value, item: Value, span: Span) -> Result<Value> {
                 span,
             ));
         }
-        let path = if backend == Backend::Local && !absolute(&location.path) {
+        let selected_path = match unbound_path {
+            Some(path) if backend != Backend::Local => path,
+            _ => location.path,
+        };
+        let path = if backend == Backend::Local && !absolute(&selected_path) {
             pwd.ok_or_else(|| ExecutionError::new("local namespace context is unavailable", span))?
-                .join(&location.path)
+                .join(&selected_path)
                 .to_string_lossy()
                 .into_owned()
         } else {
-            location.path
+            selected_path
         };
         return Ok(Value::Path(
             Location { backend, path },
@@ -909,7 +1182,10 @@ fn select(namespace: Value, item: Value, span: Span) -> Result<Value> {
                 ));
             }
         }
-        Namespace::Endpoint { .. } | Namespace::Qualified { .. } | Namespace::Api { .. } => {
+        Namespace::Endpoint { .. }
+        | Namespace::Qualified { .. }
+        | Namespace::Api { .. }
+        | Namespace::Lexical { .. } => {
             unreachable!("namespace kind handled before path projection")
         }
     };
@@ -930,9 +1206,14 @@ struct Cursor<'plan> {
     kind: CursorKind<'plan>,
 }
 enum CursorKind<'plan> {
+    Let {
+        bindings: &'plan [(SlotId, Expr)],
+        values: Option<Vec<Value>>,
+        inner: Box<Cursor<'plan>>,
+    },
     Source {
         source: &'plan RangeSource,
-        ready: Option<std::vec::IntoIter<Location>>,
+        ready: Option<std::vec::IntoIter<Value>>,
         index: usize,
     },
     Filter {
@@ -982,13 +1263,19 @@ enum CursorKind<'plan> {
 
 impl<'plan> Cursor<'plan> {
     fn new(range: &'plan RangeExpr) -> Self {
-        let mut cursor = Self {
-            kind: CursorKind::Source {
-                source: &range.source,
+        let kind = match &range.source {
+            RangeSource::Let { bindings, range } => CursorKind::Let {
+                bindings,
+                values: None,
+                inner: Box::new(Self::new(range)),
+            },
+            source => CursorKind::Source {
+                source,
                 ready: None,
                 index: 0,
             },
         };
+        let mut cursor = Self { kind };
         for stage in &range.stages {
             let inner = Box::new(cursor);
             let kind = match stage {
@@ -1049,11 +1336,37 @@ impl<'plan> Cursor<'plan> {
         Box::pin(async move {
             session.check(span)?;
             match &mut self.kind {
+                CursorKind::Let {
+                    bindings,
+                    values,
+                    inner,
+                } => next_bound(bindings, values, inner, session, span).await,
                 CursorKind::Source {
                     source,
                     ready,
                     index,
                 } => match source {
+                    RangeSource::Let { .. } => unreachable!("bound ranges own a separate cursor"),
+                    RangeSource::Native {
+                        name,
+                        arguments,
+                        pwd,
+                        ..
+                    } => {
+                        if ready.is_none() {
+                            let super::native_fs::NativeResult::Range(values) = session
+                                .call_native(name, arguments, pwd.as_deref(), span)
+                                .await?
+                            else {
+                                return Err(ExecutionError::new(
+                                    format!("native '{name}' did not return a range"),
+                                    span,
+                                ));
+                            };
+                            *ready = Some(values.into_iter());
+                        }
+                        Ok(ready.as_mut().and_then(Iterator::next))
+                    }
                     RangeSource::Values(values) => {
                         let Some(expression) = values.get(*index) else {
                             return Ok(None);
@@ -1076,13 +1389,13 @@ impl<'plan> Cursor<'plan> {
                                     span,
                                 )
                                 .await?
+                                .into_iter()
+                                .map(|location| Value::Path(location, DestinationMode::Exact))
+                                .collect::<Vec<_>>()
                                 .into_iter(),
                             );
                         }
-                        Ok(ready
-                            .as_mut()
-                            .and_then(Iterator::next)
-                            .map(|location| Value::Path(location, DestinationMode::Exact)))
+                        Ok(ready.as_mut().and_then(Iterator::next))
                     }
                 },
                 CursorKind::Filter {
@@ -1221,6 +1534,47 @@ impl<'plan> Cursor<'plan> {
     }
 }
 
+async fn next_bound(
+    bindings: &[(SlotId, Expr)],
+    values: &mut Option<Vec<Value>>,
+    inner: &mut Cursor<'_>,
+    session: &mut RuntimeSession,
+    span: Span,
+) -> Result<Option<Value>> {
+    let mut previous = Vec::with_capacity(bindings.len());
+    let result = async {
+        match values {
+            Some(values) => {
+                for ((slot, _), value) in bindings.iter().zip(values) {
+                    previous.push((*slot, session.control_values.insert(*slot, value.clone())));
+                }
+            }
+            None => {
+                let mut captured = Vec::with_capacity(bindings.len());
+                for (slot, expression) in bindings {
+                    let value = session.eval(expression, span).await?;
+                    previous.push((*slot, session.control_values.insert(*slot, value.clone())));
+                    captured.push(value);
+                }
+                *values = Some(captured);
+            }
+        }
+        inner.next(session, span).await
+    }
+    .await;
+    for (slot, value) in previous.into_iter().rev() {
+        match value {
+            Some(value) => {
+                session.control_values.insert(slot, value);
+            }
+            None => {
+                session.control_values.remove(&slot);
+            }
+        }
+    }
+    result
+}
+
 struct ProcessRemap(std::collections::BTreeMap<hir::ProcessId, hir::ProcessId>);
 impl crate::object::control::Visitor for ProcessRemap {
     type Error = ExecutionError;
@@ -1278,6 +1632,74 @@ impl crate::object::control::Visitor for ProcessRemap {
 #[cfg(test)]
 mod range_tests {
     use super::*;
+
+    #[test]
+    fn unbound_range_paths_resolve_only_after_endpoint_selection() {
+        let local_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join(".temp/v070/local-home/.codex/config.toml")
+            .to_string_lossy()
+            .into_owned();
+        let value = Value::UnboundPath {
+            path: "~/.codex/config.toml".to_owned(),
+            local: Location {
+                backend: Backend::Local,
+                path: local_path.clone(),
+            },
+            mode: DestinationMode::Exact,
+            bound: false,
+        };
+        assert_eq!(value, value.clone().materialize());
+        for backend in [
+            Backend::Local,
+            Backend::Wsl,
+            Backend::Ssh {
+                host: "forge".to_owned(),
+                user: None,
+                port: None,
+            },
+        ] {
+            let selected = select(
+                Value::Space {
+                    namespace: Namespace::Endpoint {
+                        backend: backend.clone(),
+                    },
+                    pwd: None,
+                    module_file: None,
+                },
+                value.clone(),
+                Span::default(),
+            )
+            .unwrap();
+            assert_eq!(
+                selected,
+                Value::Path(
+                    Location {
+                        path: if backend == Backend::Local {
+                            local_path.clone()
+                        } else {
+                            "~/.codex/config.toml".to_owned()
+                        },
+                        backend,
+                    },
+                    DestinationMode::Exact,
+                )
+            );
+        }
+        assert!(
+            select(
+                Value::Space {
+                    namespace: Namespace::Endpoint {
+                        backend: Backend::Wsl
+                    },
+                    pwd: None,
+                    module_file: None,
+                },
+                value.materialize(),
+                Span::default(),
+            )
+            .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn filename_conversion_preserves_paths_and_captures_only_string_context() {

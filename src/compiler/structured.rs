@@ -21,6 +21,8 @@ use crate::source::{InstructionOrigin, LocatedReport, Origins, Source, SourceId,
 use crate::syntax::{OperandSource, Report, Span};
 
 mod diagnostics;
+mod namespaces;
+mod natives;
 mod ranges;
 mod scripts;
 mod symbols;
@@ -35,6 +37,7 @@ enum Value {
     Dynamic(hir::control::Expr),
     Range(hir::control::RangeExpr),
     Space(Space),
+    Module(Arc<Scope>),
     Process(ProcessId),
     Port(ProcessId, Port),
 }
@@ -48,7 +51,7 @@ impl Value {
             Self::Bool(_) => Type::Bool,
             Self::Dynamic(value) => Type::from_control(&value.ty),
             Self::Range(range) => Type::Range(range.item_type.clone()),
-            Self::Space(_) => Type::Scope,
+            Self::Space(_) | Self::Module(_) => Type::Scope,
             Self::Process(_) => Type::Process,
             Self::Port(_, Port::Stdin) => Type::WritePort,
             Self::Port(_, Port::Read(_)) => Type::ReadPort,
@@ -129,6 +132,7 @@ struct TransferValues {
 
 #[derive(Clone, Debug)]
 struct Macro {
+    natives: Arc<imbl::OrdMap<String, Arc<natives::Native>>>,
     name: Name,
     parameters: Vec<Name>,
     body: language::Block,
@@ -143,6 +147,9 @@ struct Macro {
 
 #[derive(Clone, Debug, Default)]
 struct Scope {
+    namespace_context: Option<CompileContext>,
+    builtin_api: Option<crate::relocatable::BuiltinScope>,
+    natives: Arc<imbl::OrdMap<String, Arc<natives::Native>>>,
     // Macro debug sources change during expansion; the caller's link unit does not.
     slots: Arc<std::sync::atomic::AtomicUsize>,
     cells: imbl::OrdMap<String, hir::control::SlotId>,
@@ -295,6 +302,7 @@ impl Session {
                     ));
                 }
                 Value::Space(_) => {}
+                Value::Module(_) => bindings.push(format!("{name} => <scope>")),
                 Value::Bool(value) => bindings.push(format!("{name} = {value}")),
                 Value::Dynamic(value) => {
                     bindings.push(format!("{name} = <runtime {:?}>", value.ty))
@@ -366,6 +374,19 @@ impl Session {
                     Value::Range(range) => ExportValue::Range {
                         range: range.clone(),
                     },
+                    Value::Module(module) if module.builtin_api.is_some() => {
+                        ExportValue::Namespace {
+                            namespace: Namespace::Api {
+                                scope: module.builtin_api.expect("marked API"),
+                            },
+                        }
+                    }
+                    Value::Module(module) => {
+                        let context = module.namespace_context.as_ref()?;
+                        let expression =
+                            v6::scalar(value.clone(), context, Span::default()).ok()?;
+                        ExportValue::Dynamic { expression }
+                    }
                     Value::Process(_) | Value::Port(_, _) => return None,
                 };
                 Some(Export {
@@ -673,6 +694,9 @@ fn import_consumptions(
 
 fn namespace(space: &Space) -> Namespace {
     match space {
+        Space::Lexical { members } => Namespace::Lexical {
+            members: members.clone(),
+        },
         Space::Pwd => Namespace::WorkingDirectory,
         Space::File => Namespace::Module,
         Space::Endpoint(backend) => Namespace::Endpoint {
@@ -716,6 +740,9 @@ fn imported_value(value: &ExportValue) -> Value {
 
 fn imported_namespace(namespace: &Namespace) -> Space {
     match namespace {
+        Namespace::Lexical { members } => Space::Lexical {
+            members: members.clone(),
+        },
         Namespace::WorkingDirectory => Space::Pwd,
         Namespace::Module => Space::File,
         Namespace::Endpoint { backend } => Space::Endpoint(backend.clone()),
@@ -813,7 +840,11 @@ impl Lower<'_> {
                         kind: ExprKind::Call { .. },
                         ..
                     },
-            } if !symbols::is_call(value_expression(statement), scope) => Some(name),
+            } if !symbols::is_contextual_call(value_expression(statement), scope, context)
+                && !natives::is_call(value_expression(statement), scope, context) =>
+            {
+                Some(name)
+            }
             _ => None,
         };
         if asynchronous || program_name.is_some() {
@@ -841,8 +872,41 @@ impl Lower<'_> {
         region: &mut Region,
     ) -> Result<(), LocatedReport> {
         use language::StatementKind;
+        if let StatementKind::Call(Expr {
+            kind:
+                ExprKind::Select {
+                    namespace,
+                    item,
+                    operator,
+                },
+            ..
+        }) = &statement.kind
+            && let Some(call) = namespaces::selected_call(namespace, item, *operator)
+        {
+            let statement = language::Statement {
+                kind: StatementKind::Call(call),
+                span: statement.span,
+            };
+            return self.operation(&statement, scope, context, region);
+        }
         match &statement.kind {
-            StatementKind::Call(call) if symbols::is_call(call, scope) => {
+            StatementKind::Call(call) if natives::is_range_call(call, scope, context) => {
+                diagnostics::resolve(call, scope, context)
+                    .map(|_| ())
+                    .map_err(|error| self.located(error))
+            }
+            StatementKind::Call(call) if natives::is_call(call, scope, context) => {
+                let (name, arguments) = natives::lower_call(call, scope, context)
+                    .map_err(|error| self.located(error))?
+                    .expect("native call");
+                self.control_emit(
+                    region,
+                    call.span,
+                    hir::control::ControlInstruction::Native { name, arguments },
+                );
+                Ok(())
+            }
+            StatementKind::Call(call) if symbols::is_contextual_call(call, scope, context) => {
                 diagnostics::resolve(call, scope, context)
                     .map(|_| ())
                     .map_err(|error| self.located(error))
@@ -853,6 +917,16 @@ impl Lower<'_> {
                 destination,
             } => self.transfer(source, destination, scope, context, statement.span, region),
             StatementKind::Comment(_) => Ok(()),
+            StatementKind::Native {
+                name,
+                parameters,
+                result,
+                implementation,
+            } => natives::define(name, parameters, result, implementation, scope)
+                .map_err(|error| self.located(error)),
+            StatementKind::Scope { name, body } => {
+                self.define_namespace(name, body, scope, context, region)
+            }
             StatementKind::Binding { name, op, value } => self
                 .bind(name, *op, value, scope, context, region)
                 .map_err(|failure| self.located(failure.with_expression(value, scope))),
@@ -933,9 +1007,11 @@ impl Lower<'_> {
         }
         scope.cells.remove(&name.text);
         let mut value = match (&expression.kind, op) {
-            (ExprKind::Call { .. }, _) if symbols::is_call(expression, scope) => {
+            (ExprKind::Call { .. }, _) if symbols::is_contextual_call(expression, scope, context) => {
                 let value = diagnostics::resolve(expression, scope, context)?;
-                if op == BindingOp::Space && !matches!(value, Value::Space(_) | Value::Process(_)) {
+                if op == BindingOp::Space
+                    && !matches!(value.ty(), crate::types::Type::Scope | crate::types::Type::Process)
+                {
                     return Err(Report::new("'=>' expects a space or program returned by the symbol; use ':=' for an item", expression.span).into());
                 }
                 value
@@ -947,7 +1023,7 @@ impl Lower<'_> {
                     .help("Use 'program => executable(arguments)' and read program::stdout or program::exit_code.")).into());
             }
             (_, BindingOp::Space) => match diagnostics::resolve(expression, scope, context)? {
-                Value::Space(space) => Value::Space(space),
+                value if value.ty() == crate::types::Type::Scope => value,
                 _ => return Err((Report::new("'=>' expects an endpoint namespace or a program call", expression.span)
                     .help("Use ':=' for path values, or '=>' with $local, $wsl, an endpoint URL or executable(arguments).")).into()),
             },
@@ -1167,6 +1243,7 @@ impl Lower<'_> {
         }
 
         let definition = Macro {
+            natives: scope.natives.clone(),
             name: name.clone(),
             parameters: parameters.to_vec(),
             body: body.to_vec(),
@@ -1190,12 +1267,28 @@ impl Lower<'_> {
         context: &CompileContext,
         region: &mut Region,
     ) -> Result<(), LocatedReport> {
+        let selected = if let ExprKind::Select {
+            namespace,
+            item,
+            operator,
+        } = &call.kind
+        {
+            namespaces::selected_call(namespace, item, *operator)
+        } else {
+            None
+        };
+        let call = selected.as_ref().unwrap_or(call);
         let ExprKind::Call { callee, arguments } = &call.kind else {
             return Err(self.located(Report::new("expected a macro call", call.span)));
         };
+        let qualified =
+            namespaces::callee(callee, caller, context).map_err(|error| self.located(error))?;
+        let (callee, definitions) = qualified
+            .as_ref()
+            .map_or((callee.as_ref(), caller), |(callee, scope)| (callee, scope));
         let ExprKind::Path(path) = &callee.kind else {
             return Err(self.located(Report::new(
-                "a macro call needs an unqualified macro name",
+                "a macro call needs a declared macro name",
                 callee.span,
             )));
         };
@@ -1208,7 +1301,7 @@ impl Lower<'_> {
                 .help("Bind an external program with 'program => executable(arguments)' instead."),
             ));
         }
-        let definition = match caller.macros.get(&path.path).cloned() {
+        let definition = match definitions.macros.get(&path.path).cloned() {
             Some(definition) => definition,
             None => {
                 if let Some((_, previous)) = self
@@ -1288,6 +1381,9 @@ impl Lower<'_> {
             })
             .collect();
         let mut scope = Scope {
+            namespace_context: None,
+            builtin_api: None,
+            natives: definition.natives.clone(),
             slots: caller.slots.clone(),
             cells: imbl::OrdMap::new(),
             current_unit: caller.current_unit,
@@ -1491,6 +1587,9 @@ fn resolve_value(
     scope: &Scope,
     context: &CompileContext,
 ) -> Result<Value, Failure> {
+    if let Some(value) = natives::resolve_call(expression, scope, context) {
+        return value;
+    }
     match &expression.kind {
         ExprKind::Literal(text) => Ok(Value::Literal(Arc::from(text.as_str()))),
         ExprKind::Path(path) => {
@@ -1722,6 +1821,18 @@ fn resolve_path(
             Some(Value::Process(process)) => {
                 return process_port(*process, &path.path, site.content).map_err(Into::into);
             }
+            Some(Value::Module(module)) => {
+                let item = Expr {
+                    kind: ExprKind::Path(PathExpr {
+                        qualifier: None,
+                        path: path.path.clone(),
+                        mode: path.mode,
+                    }),
+                    span: site.content,
+                    source: site.clone(),
+                };
+                return namespaces::select(module, &item, context);
+            }
             Some(Value::Space(space)) => Some(space.clone()),
             Some(Value::Dynamic(value)) if value.ty == hir::control::Type::Space => {
                 return v6::select(
@@ -1760,6 +1871,25 @@ fn resolve_select(
         return result;
     }
     let value = resolve(namespace, scope, context)?;
+    let value = namespaces::materialize(value, scope, context, namespace.span)?;
+    if let Value::Module(module) = &value {
+        if let Some(result) = namespaces::call(module, item, scope, context) {
+            return result;
+        }
+        if let Some(result) = ranges::resolve_api_selection(&value, item, scope, context) {
+            return result;
+        }
+        return namespaces::select(module, item, context);
+    }
+    if matches!(
+        &value,
+        Value::Space(Space::Api(crate::relocatable::BuiltinScope::Std))
+    ) {
+        let ExprKind::Path(path) = &item.kind else {
+            return Err(Report::new("$std requires a module member", item.span).into());
+        };
+        return natives::standard_module(&path.path, scope, context, item.span);
+    }
     if let Some(result) = ranges::resolve_api_selection(&value, item, scope, context) {
         return result;
     }
@@ -1799,7 +1929,10 @@ fn resolve_select(
         };
         return v6::select(value, item, context, operator);
     }
-    if !matches!(value, Value::Space(_) | Value::Process(_)) {
+    if !matches!(
+        value,
+        Value::Space(_) | Value::Module(_) | Value::Process(_)
+    ) {
         return Err(Report::new(
             "the left operand of '::' must be a space or program",
             operator,
@@ -1830,6 +1963,9 @@ fn resolve_select(
         &item_value,
         operator,
     )?;
+    if matches!(&item_value, Value::Dynamic(_)) {
+        return v6::select(value, item_value, context, operator);
+    }
     if let (Value::Space(outer), Value::Space(inner)) = (&value, &item_value) {
         return Ok(Value::Space(compose_scopes(outer.clone(), inner.clone())));
     }
@@ -1842,10 +1978,10 @@ fn resolve_select(
         {
             contextualize_pwd_value(Value::Path(fragment), item.span, context)
         }
-        Value::Space(space @ (Space::Qualified { .. } | Space::Api(_))) => {
+        Value::Space(space @ (Space::Qualified { .. } | Space::Api(_) | Space::Lexical { .. })) => {
             apply_scope_value(space, Value::Path(fragment), operator, context)
         }
-        Value::Space(_) | Value::Process(_) => {
+        Value::Space(_) | Value::Module(_) | Value::Process(_) => {
             if fragment.backend.is_some() {
                 return Err(Report::new(
                     "a named namespace member must not carry a physical endpoint",
@@ -1910,16 +2046,26 @@ fn resolve_namespace(
 ) -> Result<Value, Failure> {
     let quoted = site.content.start > site.span.start;
     match qualifier {
+        Some(Space::Lexical { members }) => {
+            let value = members
+                .get(&path.path)
+                .ok_or_else(|| Report::new(format!("scope has no member '{}'", path.path), span))?;
+            Ok(Value::Dynamic(value.clone()))
+        }
         Some(Space::Qualified { outer, inner }) => {
             let value = resolve_namespace(path, span, site, scope, context, Some(*inner))?;
             apply_scope_value(*outer, value, span, context)
+        }
+        Some(Space::Api(crate::relocatable::BuiltinScope::Std)) => {
+            natives::standard_module(&path.path, scope, context, span)
         }
         Some(Space::Api(_)) => {
             Err(Report::new("a built-in API scope requires an API member call", span).into())
         }
         Some(Space::Pwd) => resolve_pwd(path, span, site, scope, context),
         Some(Space::File) => resolve_file_member(path, span, site, context),
-        Some(Space::Endpoint(backend)) => qualify(
+        Some(space @ Space::Endpoint(_)) => apply_scope_value(
+            space,
             if quoted {
                 Value::Path(PathValue {
                     backend: None,
@@ -1932,8 +2078,8 @@ fn resolve_namespace(
             } else {
                 resolve_component(&path.path, site.content, scope, context)?
             },
-            backend,
             span,
+            context,
         ),
         None if quoted => Ok(Value::Path(PathValue {
             backend: None,
@@ -2096,6 +2242,9 @@ fn contextualize_pwd_value(
     span: Span,
     context: &CompileContext,
 ) -> Result<Value, Failure> {
+    if matches!(&value, Value::Dynamic(_)) {
+        return v6::select(Value::Space(Space::Pwd), value, context, span);
+    }
     require_types(
         crate::types::OperatorTrait::Select,
         "::",
@@ -2202,10 +2351,20 @@ fn apply_scope_value(
     span: Span,
     context: &CompileContext,
 ) -> Result<Value, Failure> {
+    if matches!(&item, Value::Dynamic(_)) {
+        return v6::select(Value::Space(space), item, context, span);
+    }
     if let Value::Space(inner) = item {
         return Ok(Value::Space(compose_scopes(space, inner)));
     }
     match space {
+        Space::Lexical { members } => {
+            let name = path_fragment(item, span)?.path;
+            let value = members
+                .get(&name)
+                .ok_or_else(|| Report::new(format!("scope has no member '{name}'"), span))?;
+            Ok(Value::Dynamic(value.clone()))
+        }
         Space::Endpoint(backend) => qualify(item, backend, span),
         Space::Pwd => {
             let path = path_fragment(item, span)?;

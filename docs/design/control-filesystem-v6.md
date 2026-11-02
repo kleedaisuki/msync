@@ -13,7 +13,8 @@ than launching an independent shell transport implementation.
 | `delete` | Unlink file or symlink | Readonly error | Nonrecursive `rm --` | Explicit unsupported error |
 | Regex range | Sorted UTF-8 entry names | Not a directory | NUL-framed sorted UTF-8 entry names | Explicit unsupported error |
 
-Existence returns false only for a missing target; a dangling symlink is false,
+Existence returns false for a missing target or an unresolvable child of a
+nondirectory (ENOENT/ENOTDIR); a dangling symlink is false,
 but a symlink cycle or metadata access failure is an error. Directories exist.
 Deletion inspects the link itself and does not dereference its final component.
 Actual directories and special entries are rejected; the operation never enables
@@ -24,10 +25,11 @@ not an authorization or a promise that a later transfer can still open the path.
 
 Remote existence cannot use shell `test -e` alone: that conflates inaccessible,
 cyclic, and absent paths. The helper uses GNU `stat -L` with `LC_ALL=C`, recognizing
-only the final ENOENT diagnostic suffix as absence. Other diagnostics are retained
-with endpoint/path context. Existing remote publication already assumes GNU tools.
+only the final ENOENT/ENOTDIR diagnostic suffixes as absence. Other diagnostics
+are retained with endpoint/path context. Existing remote publication already assumes GNU tools.
 Every user path is a positional argument through the shared transport quoting
-owner, not interpolated into shell source. Transport stdout is bounded at 8MiB.
+owner, not interpolated into shell source. Transport stdout preserves complete
+NUL-framed results without an entry quota.
 
 Ranges match the entire entry name, not a substring. They reject non-UTF-8 names
 rather than silently losing entries. Directory name acquisition may buffer names

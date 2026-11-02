@@ -343,3 +343,32 @@ and explicit formatting remain available. UTF-16 boundary and actual line-index
 representation rules remain protocol semantics. The real stdio acceptance journey
 opens a valid document beyond 8 MiB and exercises all four feature classes,
 including a large formatting response, without executing its transfer.
+
+## v0.7.0 lexical editor surface
+
+`scope` and `native` are recognized declaration heads in the tolerant Rust
+scanner and the native TextMate grammar. A namespace block keeps its declared
+name distinct from function parameters; a native declaration retains ordinary
+function/parameter scopes. Scope headers participate in native off-side
+indentation and folding. Existing keyword-looking path components remain paths.
+
+The canonical completion vocabulary includes `$std::fs`, `$std::path`,
+`$std::bool`, `$std::string` and `$std::ranges`. Range spellings remain available
+through `$view` and the established `views`/`ranges` aliases. The REPL derives
+non-range library members from the same source-backed `tooling::standard_library`
+index as LSP navigation, caching qualified names once rather than maintaining a
+second filesystem API list. Completion keeps the typed prefix and preceding call
+arguments intact. Namespace, native declaration, directory predicate and canonical
+range-pipeline snippets ship in the extension.
+
+This retains the upstream split between immediate, tolerant
+[TextMate syntax highlighting](https://code.visualstudio.com/api/language-extensions/syntax-highlight-guide)
+and additive [semantic highlighting](https://code.visualstudio.com/api/language-extensions/semantic-highlight-guide):
+the grammar does not infer types or independently accept programs. Actual
+Oniguruma-backed `npm test --prefix editors/vscode` passes all 16 tests, including
+nested canonical range names, explicit scope/native roles, old aliases and
+reserved-looking filenames. The unfiltered production Rust highlight window
+(`highlight_v070`, `highlight_v6`, `highlight_v065`) passes 11/11 functions;
+`cargo test --locked --bin msync editor::tests` passes 5/5 functions, including
+source-derived filesystem completion. LSP and actual-host integration evidence
+is recorded separately by the tooling integration owner.

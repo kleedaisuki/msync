@@ -22,8 +22,56 @@ fn block(output: &mut String, statements: &Block, depth: usize) {
     }
 }
 
+fn native_type(output: &mut String, ty: &super::NativeType) {
+    use super::NativeType;
+    match ty {
+        NativeType::Inferred => output.push_str("inferred"),
+        NativeType::Void => output.push_str("Void"),
+        NativeType::Bool => output.push_str("Bool"),
+        NativeType::String => output.push_str("String"),
+        NativeType::Path => output.push_str("Path"),
+        NativeType::Scope => output.push_str("Scope"),
+        NativeType::Range(item) => {
+            output.push_str("Range<");
+            native_type(output, item);
+            output.push('>');
+        }
+    }
+}
+
 fn write_statement(output: &mut String, kind: &StatementKind, depth: usize) {
     match kind {
+        StatementKind::Scope { name, body } => {
+            output.push_str("scope ");
+            output.push_str(&name.text);
+            output.push_str(":\n");
+            block(output, body, depth + 1);
+            return;
+        }
+        StatementKind::Native {
+            name,
+            parameters,
+            result,
+            implementation,
+        } => {
+            output.push_str("native ");
+            output.push_str(&name.text);
+            output.push('(');
+            output.push_str(
+                &parameters
+                    .iter()
+                    .map(|name| name.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+            output.push(')');
+            if !matches!(result, super::NativeType::Inferred) {
+                output.push_str(" -> ");
+                native_type(output, result);
+            }
+            output.push_str(" = ");
+            quoted(output, implementation);
+        }
         StatementKind::Binding { name, op, value } => {
             output.push_str(&name.text);
             output.push_str(match op {

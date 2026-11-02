@@ -12,7 +12,7 @@ mod control;
 
 pub(super) fn module(module: &ObjectModule) -> Result<(), ObjectError> {
     if module.format_version != FORMAT_VERSION
-        || !matches!(module.language_version.as_str(), "0.5" | "0.6")
+        || !matches!(module.language_version.as_str(), "0.5" | "0.6" | "0.7")
     {
         return Err(ObjectError::new(
             "unsupported object format or language version",
@@ -22,16 +22,24 @@ pub(super) fn module(module: &ObjectModule) -> Result<(), ObjectError> {
         .iter()
         .map(|name| (*name).to_owned())
         .collect::<BTreeSet<_>>();
-    if module.language_version == "0.6" {
+    if matches!(module.language_version.as_str(), "0.6" | "0.7") {
         supported.insert(CONTROL_FEATURE.into());
     }
     if requires_typed_values(module)? {
-        if module.language_version != "0.6" {
+        if !matches!(module.language_version.as_str(), "0.6" | "0.7") {
             return Err(ObjectError::new(
                 "typed value extensions require the 0.6 language feature",
             ));
         }
         supported.insert(TYPED_VALUES_FEATURE.into());
+    }
+    if requires_native_std(module)? {
+        if module.language_version != "0.7" {
+            return Err(ObjectError::new(
+                "native standard-library operations require the 0.7 language feature",
+            ));
+        }
+        supported.insert(NATIVE_STD_FEATURE.into());
     }
     if !module.source_modules.is_empty() {
         supported.insert(SOURCE_MODULES_FEATURE.into());
@@ -773,6 +781,16 @@ fn validate_namespace(namespace: &Namespace, depth: usize) -> Result<(), ObjectE
         return Err(ObjectError::new("object scope nesting exceeds 128 levels"));
     }
     match namespace {
+        Namespace::Lexical { members } => {
+            for value in members.values() {
+                if let crate::hir::control::ExprKind::Space(namespace)
+                | crate::hir::control::ExprKind::ResolvedSpace { namespace, .. } = &value.kind
+                {
+                    validate_namespace(namespace, depth + 1)?;
+                }
+            }
+            Ok(())
+        }
         Namespace::Endpoint { backend } => validate_backend(backend),
         Namespace::Qualified { outer, inner } => {
             validate_namespace(outer, depth + 1)?;

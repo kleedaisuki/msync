@@ -63,6 +63,9 @@ impl CompileContext {
 
 #[derive(Clone, Debug)]
 enum Space {
+    Lexical {
+        members: BTreeMap<String, crate::hir::control::Expr>,
+    },
     Endpoint(Backend),
     Pwd,
     File,
@@ -267,6 +270,7 @@ impl Compiler {
             "$path" => Some(Space::Endpoint(Backend::Path)),
             "$env" => Some(Space::Endpoint(Backend::Env)),
             "$view" => Some(Space::Api(crate::relocatable::BuiltinScope::View)),
+            "$std" => Some(Space::Api(crate::relocatable::BuiltinScope::Std)),
             _ => None,
         }
     }
@@ -521,7 +525,10 @@ impl Compiler {
                     Space::File => format!(
                         "The $file namespace has items 'this' and 'parent'; use '{qualifier}::this' or '{qualifier}::parent/path'."
                     ),
-                    Space::Endpoint(_) | Space::Qualified { .. } | Space::Api(_) => {
+                    Space::Endpoint(_)
+                    | Space::Qualified { .. }
+                    | Space::Api(_)
+                    | Space::Lexical { .. } => {
                         "This scope requires the structured expression frontend.".to_owned()
                     }
                 };
@@ -601,8 +608,15 @@ impl fmt::Display for Space {
             Self::Endpoint(backend) => backend.fmt(formatter),
             Self::Pwd => formatter.write_str("$pwd"),
             Self::File => formatter.write_str("$file"),
+            Self::Lexical { .. } => formatter.write_str("<scope>"),
             Self::Qualified { outer, inner } => write!(formatter, "({outer})::({inner})"),
             Self::Api(crate::relocatable::BuiltinScope::View) => formatter.write_str("$view"),
+            Self::Api(crate::relocatable::BuiltinScope::Std) => formatter.write_str("$std"),
+            Self::Api(scope) => write!(
+                formatter,
+                "$std::{}",
+                scope.module_name().expect("module scope")
+            ),
         }
     }
 }

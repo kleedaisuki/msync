@@ -2,6 +2,12 @@
 
 #[path = "control.rs"]
 mod control;
+#[path = "native_fs.rs"]
+mod native_fs;
+#[path = "native_fs_path.rs"]
+mod native_fs_path;
+#[path = "native_string.rs"]
+mod native_string;
 
 use super::blocks::BlockSchedule;
 use super::error::{ExecutionError, Result};

@@ -9,9 +9,40 @@ pub(super) enum LoopResult {
     Infer(Option<Option<Type>>),
 }
 
+fn native_context(pwd: &Option<std::path::PathBuf>) -> Result<(), ObjectError> {
+    if pwd.as_ref().is_some_and(|pwd| !pwd.is_absolute()) {
+        return Err(ObjectError::new(
+            "native call context must use an absolute directory",
+        ));
+    }
+    Ok(())
+}
+
 impl ProgramState {
+    fn native(
+        &mut self,
+        name: &str,
+        arguments: &[Expr],
+    ) -> Result<crate::stdlib::NativeResultType, ObjectError> {
+        let signature = crate::stdlib::signature(name)
+            .ok_or_else(|| ObjectError::new(format!("unknown native implementation '{name}'")))?;
+        let types = arguments
+            .iter()
+            .map(|argument| self.expression(argument))
+            .collect::<Result<Vec<_>, _>>()?;
+        if !signature.accepts(&types) {
+            return Err(ObjectError::new(format!(
+                "native '{name}' arguments do not match its signature"
+            )));
+        }
+        Ok(signature.result)
+    }
+
     pub(super) fn control(&mut self, control: &Control) -> Result<(), ObjectError> {
         match control {
+            Control::Native { name, arguments } => {
+                self.native(name, arguments)?;
+            }
             Control::Spawn {
                 process,
                 executable,
@@ -228,8 +259,30 @@ impl ProgramState {
             ));
         }
         let ty = match &expression.kind {
+            ExprKind::Native {
+                name,
+                arguments,
+                pwd,
+            } => {
+                native_context(pwd)?;
+                let crate::stdlib::NativeResultType::Scalar(ty) = self.native(name, arguments)?
+                else {
+                    return Err(ObjectError::new(
+                        "native scalar expression has a non-scalar signature",
+                    ));
+                };
+                ty
+            }
             ExprKind::Bool(_) => Type::Bool,
             ExprKind::String(_) => Type::String,
+            ExprKind::UnboundPath { path, local } => {
+                no_nul(path, "unbound control path")?;
+                if path.is_empty() {
+                    return Err(ObjectError::new("unbound control path must not be empty"));
+                }
+                self.expect(local, Type::Path)?;
+                Type::Path
+            }
             ExprKind::Path {
                 location,
                 relocation,
@@ -252,6 +305,7 @@ impl ProgramState {
             }
             ExprKind::Space(namespace) => {
                 validate_namespace(namespace, 0)?;
+                self.namespace_members(namespace)?;
                 Type::Space
             }
             ExprKind::ResolvedSpace {
@@ -267,6 +321,7 @@ impl ProgramState {
                     ));
                 }
                 validate_namespace(namespace, 0)?;
+                self.namespace_members(namespace)?;
                 Type::Space
             }
             ExprKind::Slot(slot) => self.slots.get(slot).cloned().ok_or_else(|| {
@@ -395,11 +450,59 @@ impl ProgramState {
         Ok(ty)
     }
 
+    fn namespace_members(
+        &mut self,
+        namespace: &crate::relocatable::Namespace,
+    ) -> Result<(), ObjectError> {
+        match namespace {
+            crate::relocatable::Namespace::Lexical { members } => {
+                for value in members.values() {
+                    self.expression(value)?;
+                }
+            }
+            crate::relocatable::Namespace::Qualified { outer, inner } => {
+                self.namespace_members(outer)?;
+                self.namespace_members(inner)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     pub(super) fn range(&mut self, range: &RangeExpr) -> Result<Type, ObjectError> {
         if range.stages.len() > 128 {
             return Err(ObjectError::new("object range pipeline exceeds 128 stages"));
         }
         let mut item_type = match &range.source {
+            RangeSource::Let { bindings, range } => {
+                for (slot, value) in bindings {
+                    let ty = self.expression(value)?;
+                    self.define_slot(*slot, ty)?;
+                }
+                let item_type = self.range(range)?;
+                for (slot, _) in bindings {
+                    self.slots.remove(slot);
+                }
+                item_type
+            }
+            RangeSource::Native {
+                name,
+                arguments,
+                item_type,
+                pwd,
+            } => {
+                native_context(pwd)?;
+                let crate::stdlib::NativeResultType::Range(ty) = self.native(name, arguments)?
+                else {
+                    return Err(ObjectError::new("native range has a non-range signature"));
+                };
+                if &ty != item_type {
+                    return Err(ObjectError::new(
+                        "native range annotation disagrees with its signature",
+                    ));
+                }
+                ty
+            }
             RangeSource::Regex { root, pattern } => {
                 path_type(&self.expression(root)?)?;
                 regex::Regex::new(pattern).map_err(|error| {
@@ -414,7 +517,13 @@ impl ProgramState {
                     range_item_type(&ty)?;
                     types.push(ty);
                 }
-                Type::join(types).unwrap_or(Type::Path)
+                if types.is_empty() {
+                    Type::Path
+                } else {
+                    Type::join(types).ok_or_else(|| {
+                        ObjectError::new("object scope range mixes scopes with scalar values")
+                    })?
+                }
             }
         };
         for stage in &range.stages {

@@ -25,6 +25,7 @@ pub const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
 pub const CONTROL_FEATURE: &str = "typed_control_v1";
 pub const SOURCE_MODULES_FEATURE: &str = "source_modules_v1";
 pub const TYPED_VALUES_FEATURE: &str = "typed_values_v2";
+pub const NATIVE_STD_FEATURE: &str = "native_std_v1";
 
 pub const FEATURES: &[&str] = &[
     "barrier_typed_ir_v2",
@@ -288,6 +289,17 @@ impl ObjectModule {
             }
             module.features.push(TYPED_VALUES_FEATURE.into());
         }
+        if requires_native_std(&module)? {
+            module.language_version = "0.7".into();
+            if !module
+                .features
+                .iter()
+                .any(|feature| feature == CONTROL_FEATURE)
+            {
+                module.features.push(CONTROL_FEATURE.into());
+            }
+            module.features.push(NATIVE_STD_FEATURE.into());
+        }
         module
             .relocations
             .sort_by_key(|relocation| (relocation.instruction, relocation.slot));
@@ -406,6 +418,59 @@ fn source_module_dependency(
     if let Anchor::ModuleFile { module } | Anchor::ModuleDirectory { module } = &path.anchor {
         names.insert(module.clone());
     }
+}
+
+fn requires_native_std(module: &ObjectModule) -> Result<bool, ObjectError> {
+    use crate::hir::control::{ControlInstruction, Expr, ExprKind, RangeExpr, RangeSource};
+    use crate::relocatable::{BuiltinScope, ExportValue, Namespace};
+    fn namespace_required(namespace: &Namespace) -> bool {
+        match namespace {
+            Namespace::Lexical { .. } => true,
+            Namespace::Api { scope } => *scope != BuiltinScope::View,
+            Namespace::Qualified { outer, inner } => {
+                namespace_required(outer) || namespace_required(inner)
+            }
+            _ => false,
+        }
+    }
+    struct Required(bool);
+    impl<'ir> control::ReadVisitor<'ir> for Required {
+        type Error = ObjectError;
+        fn control(&mut self, operation: &'ir ControlInstruction) -> Result<(), ObjectError> {
+            self.0 |= matches!(operation, ControlInstruction::Native { .. });
+            Ok(())
+        }
+        fn expression(&mut self, expression: &'ir Expr) -> Result<(), ObjectError> {
+            self.0 |= matches!(
+                expression.kind,
+                ExprKind::Native { .. } | ExprKind::UnboundPath { .. }
+            );
+            if let ExprKind::Space(namespace) | ExprKind::ResolvedSpace { namespace, .. } =
+                &expression.kind
+            {
+                self.0 |= namespace_required(namespace);
+            }
+            Ok(())
+        }
+        fn range(&mut self, range: &'ir RangeExpr) -> Result<(), ObjectError> {
+            self.0 |= matches!(
+                range.source,
+                RangeSource::Native { .. } | RangeSource::Let { .. }
+            );
+            Ok(())
+        }
+    }
+    let mut required = Required(false);
+    control::read_region(&module.program.body, &mut required)?;
+    for export in &module.exports {
+        match &export.value {
+            ExportValue::Dynamic { expression } => control::read_expr(expression, &mut required)?,
+            ExportValue::Range { range } => control::read_range(range, &mut required)?,
+            ExportValue::Namespace { namespace } => required.0 |= namespace_required(namespace),
+            _ => {}
+        }
+    }
+    Ok(required.0)
 }
 
 fn requires_typed_values(module: &ObjectModule) -> Result<bool, ObjectError> {

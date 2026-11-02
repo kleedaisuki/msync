@@ -139,15 +139,44 @@ pub(super) fn scalar(
         Value::Bool(value) => (ctl::Type::Bool, ctl::ExprKind::Bool(value)),
         Value::Literal(value) => (ctl::Type::String, ctl::ExprKind::String(value.to_string())),
         Value::Path(value) => {
+            let unbound = value.backend.is_none().then(|| value.path.clone());
             let mode = value.mode;
             let (location, relocation) = location(value, context, span)?;
-            (
-                ctl::Type::Path,
-                ctl::ExprKind::Path {
-                    location,
-                    mode,
-                    relocation,
+            let path = ctl::ExprKind::Path {
+                location,
+                mode,
+                relocation,
+            };
+            let kind = match unbound {
+                Some(path_text) => ctl::ExprKind::UnboundPath {
+                    path: path_text,
+                    local: Box::new(ctl::Expr {
+                        ty: ctl::Type::Path,
+                        kind: path,
+                    }),
                 },
+                None => path,
+            };
+            (ctl::Type::Path, kind)
+        }
+        Value::Module(module) if module.builtin_api.is_some() => (
+            ctl::Type::Space,
+            ctl::ExprKind::Space(Namespace::Api {
+                scope: module.builtin_api.expect("marked API"),
+            }),
+        ),
+        Value::Module(module) => {
+            let context = module.namespace_context.as_ref().unwrap_or(context);
+            let members = module
+                .values
+                .iter()
+                .map(|(name, value)| {
+                    scalar(value.clone(), context, span).map(|value| (name.clone(), value))
+                })
+                .collect::<Result<BTreeMap<_, _>, _>>()?;
+            (
+                ctl::Type::Space,
+                ctl::ExprKind::Space(Namespace::Lexical { members }),
             )
         }
         Value::Space(value) => (ctl::Type::Space, ctl::ExprKind::Space(namespace(&value))),
@@ -424,7 +453,7 @@ pub(super) fn select(
 }
 
 impl Lower<'_> {
-    fn control_emit(
+    pub(super) fn control_emit(
         &mut self,
         region: &mut Region,
         span: Span,
@@ -936,7 +965,8 @@ impl Lower<'_> {
         // Program/space bindings retain their established static lowering.
         if op == BindingOp::Space
             && matches!(expression.kind, ExprKind::Call { .. })
-            && !symbols::is_call(expression, scope)
+            && !symbols::is_contextual_call(expression, scope, context)
+            && !natives::is_call(expression, scope, context)
         {
             return Ok(false);
         }
@@ -968,7 +998,12 @@ impl Lower<'_> {
             scope.cells.remove(&name.text);
         }
         if !matches!(value, Value::Dynamic(_) | Value::Range(_)) {
-            if op == BindingOp::Space && !matches!(value, Value::Space(_) | Value::Process(_)) {
+            if op == BindingOp::Space
+                && !matches!(
+                    value.ty(),
+                    crate::types::Type::Scope | crate::types::Type::Process
+                )
+            {
                 return Err(Report::new("'=>' expects a space or program", expression.span).into());
             }
             let mut value = value;

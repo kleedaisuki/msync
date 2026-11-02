@@ -106,3 +106,54 @@ case was removed because nested macros are now part of the requested grammar.
 These results establish frontend behavior only; real CLI execution is recorded
 in the integration validation notes. Six README DSL examples and three 0.6
 release-note examples also parsed and formatted idempotently in that harness.
+
+## v0.7 lexical scopes and native declarations
+
+`scope name:` creates an explicit lexical namespace. Its declarations retain
+ordinary lexical capture, while its members are selected using `::`. Aliases use
+the inferred Scope type (`alias => name`), not a separate namespace alias table.
+Declarations inside the scope may refer to surrounding lexical values; only
+names declared in the scope become public members. Nested scopes, symbols and
+macros remain normal declarations. A member call resolves its definition inside
+the namespace, but evaluates arguments in the caller's environment.
+
+```msync
+scope hello:
+    codex := ~/.codex
+    symbol child(name):
+        global codex
+        return codex/name
+
+alias => hello
+alias::codex -> remote::codex
+hello::child("codex.prompt") -> remote::codex.prompt
+```
+
+Source namespaces are erased by ordinary specialization when only static member
+selection is required. When a namespace is used as a runtime Scope, its value
+members become a typed `Namespace::Lexical` map, retaining the declaration's
+working-directory/module context. This representation also exports value members
+in compiled objects without storing or recompiling source. Lexical function and
+macro templates remain source-level definitions, as before.
+
+Native declarations bind a lexical function name to a registered typed host
+capability. They are declarations without an indented body:
+
+```msync
+native exists(path) -> Bool = "fs.exists"
+native entries(path) -> Range<Path> = "fs.directory_iterator"
+native delete(path) -> Void = "fs.delete"
+```
+
+The parser retains the declared result (`Void`, `Bool`, `String`, `Path`, `Scope`
+or `Range<T>`) as `NativeType`; the compiler checks it against the implementation
+signature. The result annotation may be omitted for compiler-dependent signatures,
+for example `native filter(values, predicate) = "ranges.filter"`. Its AST result
+is `NativeType::Inferred`; specialization determines the result using actual
+argument types, and canonical formatting preserves the omitted annotation. Native implementation strings identify msync operations, not shell
+source. Namespaced native calls use normal namespace resolution and caller-owned
+argument evaluation. Formatting preserves these declarations and namespace block
+structure; the REPL buffers the entire `scope` block before submission.
+
+The canonical syntax version is now `0.7`; existing `0.5` and `0.6` spellings
+remain compatible aliases. Removed transactional versions remain rejected.

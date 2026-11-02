@@ -45,6 +45,11 @@ pub(crate) fn visit_control<V: Visitor>(
 ) -> Result<(), V::Error> {
     visitor.control(control)?;
     match control {
+        Control::Native { arguments, .. } => {
+            for argument in arguments {
+                visit_expr(argument, visitor)?;
+            }
+        }
         Control::Spawn {
             executable,
             arguments,
@@ -106,6 +111,15 @@ pub(crate) fn visit_expr<V: Visitor>(
 ) -> Result<(), V::Error> {
     visitor.expression(expression)?;
     match &mut expression.kind {
+        ExprKind::Native { arguments, .. } => {
+            for argument in arguments {
+                visit_expr(argument, visitor)?;
+            }
+        }
+        ExprKind::UnboundPath { local, .. } => visit_expr(local, visitor)?,
+        ExprKind::Space(namespace) | ExprKind::ResolvedSpace { namespace, .. } => {
+            visit_namespace(namespace, visitor)?;
+        }
         ExprKind::Exists(value) | ExprKind::Not(value) | ExprKind::IntoPath { value, .. } => {
             visit_expr(value, visitor)?
         }
@@ -139,12 +153,26 @@ pub(crate) fn visit_expr<V: Visitor>(
                 RangeQuery::Empty | RangeQuery::First | RangeQuery::Last => {}
             }
         }
-        ExprKind::Bool(_)
-        | ExprKind::String(_)
-        | ExprKind::Path { .. }
-        | ExprKind::Space(_)
-        | ExprKind::ResolvedSpace { .. }
-        | ExprKind::Slot(_) => {}
+        ExprKind::Bool(_) | ExprKind::String(_) | ExprKind::Path { .. } | ExprKind::Slot(_) => {}
+    }
+    Ok(())
+}
+
+fn visit_namespace<V: Visitor>(
+    namespace: &mut crate::relocatable::Namespace,
+    visitor: &mut V,
+) -> Result<(), V::Error> {
+    match namespace {
+        crate::relocatable::Namespace::Lexical { members } => {
+            for value in members.values_mut() {
+                visit_expr(value, visitor)?;
+            }
+        }
+        crate::relocatable::Namespace::Qualified { outer, inner } => {
+            visit_namespace(outer, visitor)?;
+            visit_namespace(inner, visitor)?;
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -155,6 +183,17 @@ pub(crate) fn visit_range<V: Visitor>(
 ) -> Result<(), V::Error> {
     visitor.range(range)?;
     match &mut range.source {
+        RangeSource::Let { bindings, range } => {
+            for (_, value) in bindings {
+                visit_expr(value, visitor)?;
+            }
+            visit_range(range, visitor)?;
+        }
+        RangeSource::Native { arguments, .. } => {
+            for argument in arguments {
+                visit_expr(argument, visitor)?;
+            }
+        }
         RangeSource::Regex { root, .. } => visit_expr(root, visitor)?,
         RangeSource::Values(values) => {
             for value in values {

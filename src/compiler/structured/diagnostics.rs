@@ -37,7 +37,7 @@ impl ExpansionTrace {
             site,
             name: short(name),
             kind: match value {
-                Value::Space(_) => "space alias",
+                Value::Space(_) | Value::Module(_) => "space alias",
                 Value::Process(_) => "program",
                 _ => "item",
             },
@@ -264,6 +264,7 @@ pub(super) fn describe(value: &Value) -> String {
         Value::Range(value) => format!("range<{:?}>", value.item_type),
         Value::Path(path) => path_description(path),
         Value::Literal(text) => format!("string literal {:?}", short(text)),
+        Value::Module(_) => "lexical scope".to_owned(),
         Value::Space(space) => format!("space {}", short(&space.to_string())),
         Value::Process(process) => format!("program #{}", process.0),
         Value::Port(process, port) => {

@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use msync::highlight::{BUILTINS, COMMANDS, KEYWORDS, RANGE_ADAPTORS, highlight};
 use rustyline::completion::{Completer, Pair};
@@ -303,7 +303,9 @@ impl Completer for LineHelper {
     }
 }
 
-fn completion_prefix(line: &str, pos: usize) -> Option<(usize, &str, &'static [&'static str])> {
+type CompletionPrefix<'a> = (usize, &'a str, Cow<'static, [&'static str]>);
+
+fn completion_prefix(line: &str, pos: usize) -> Option<CompletionPrefix<'_>> {
     if pos > line.len() || !line.is_char_boundary(pos) {
         return None;
     }
@@ -333,19 +335,46 @@ fn completion_prefix(line: &str, pos: usize) -> Option<(usize, &str, &'static [&
         .map_or(0, |(index, ch)| index + ch.len_utf8());
     let prefix = &before[start..];
     if prefix.starts_with(['/', ':']) && before[..start].trim().is_empty() {
-        Some((start, prefix, COMMANDS))
-    } else if prefix.starts_with("$view::")
+        Some((start, prefix, Cow::Borrowed(COMMANDS)))
+    } else if prefix.starts_with("$std::ranges::")
+        || prefix.starts_with("$view::")
         || prefix.starts_with("views::")
         || prefix.starts_with("ranges::")
     {
-        Some((start, prefix, RANGE_ADAPTORS))
+        Some((start, prefix, Cow::Borrowed(RANGE_ADAPTORS)))
+    } else if prefix.starts_with("$std::") && prefix[6..].contains("::") {
+        Some((
+            start,
+            prefix,
+            Cow::Owned(
+                standard_library_completions()
+                    .iter()
+                    .map(String::as_str)
+                    .collect(),
+            ),
+        ))
     } else if prefix.starts_with('$') {
-        Some((start, prefix, BUILTINS))
+        Some((start, prefix, Cow::Borrowed(BUILTINS)))
     } else if !prefix.is_empty() && prefix.chars().all(|ch| ch.is_alphanumeric() || ch == '_') {
-        Some((start, prefix, KEYWORDS))
+        Some((start, prefix, Cow::Borrowed(KEYWORDS)))
     } else {
         None
     }
+}
+
+fn standard_library_completions() -> &'static [String] {
+    static COMPLETIONS: OnceLock<Vec<String>> = OnceLock::new();
+    COMPLETIONS.get_or_init(|| {
+        msync::tooling::standard_library()
+            .iter()
+            .flat_map(|module| {
+                module
+                    .definitions()
+                    .filter(|definition| definition.kind.is_callable())
+                    .map(|definition| format!("$std::{}::{}", module.name, definition.name))
+            })
+            .collect()
+    })
 }
 
 fn completion_spelling<'a>(candidate: &'a str, prefix: &str) -> Cow<'a, str> {
@@ -493,6 +522,10 @@ mod tests {
     fn v6_keyword_and_range_completion_preserves_the_typed_boundary() {
         for (line, expected) in [
             ("boole", "boolean"),
+            ("sco", "scope"),
+            ("nat", "native"),
+            ("files | $std::ranges::fi", "$std::ranges::filter"),
+            ("if $std::fs::is_d", "$std::fs::is_directory"),
             ("files | $view::fi", "$view::filter"),
             ("items := [true,$view::si", "$view::single"),
             ("files | views::fi", "views::filter"),

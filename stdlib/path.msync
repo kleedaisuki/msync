@@ -1,0 +1,8 @@
+# Path construction uses the language's endpoint-preserving operators.
+scope path:
+    symbol join(base, child):
+        return base / child
+    symbol qualify(scope, path):
+        return scope::path
+    symbol identity(path):
+        return path

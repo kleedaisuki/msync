@@ -35,7 +35,10 @@ pub fn backends(region: &Region) -> Vec<&Backend> {
                     self.namespace(outer);
                     self.namespace(inner);
                 }
-                Namespace::WorkingDirectory | Namespace::Module | Namespace::Api { .. } => {}
+                Namespace::WorkingDirectory
+                | Namespace::Module
+                | Namespace::Api { .. }
+                | Namespace::Lexical { .. } => {}
             }
         }
     }
@@ -129,6 +132,11 @@ pub(crate) fn read_control<'ir, V: ReadVisitor<'ir>>(
 ) -> Result<(), V::Error> {
     visitor.control(control)?;
     match control {
+        Control::Native { arguments, .. } => {
+            for argument in arguments {
+                read_expr(argument, visitor)?;
+            }
+        }
         Control::Spawn {
             executable,
             arguments,
@@ -190,6 +198,15 @@ pub(crate) fn read_expr<'ir, V: ReadVisitor<'ir>>(
 ) -> Result<(), V::Error> {
     visitor.expression(expression)?;
     match &expression.kind {
+        ExprKind::Native { arguments, .. } => {
+            for argument in arguments {
+                read_expr(argument, visitor)?;
+            }
+        }
+        ExprKind::UnboundPath { local, .. } => read_expr(local, visitor)?,
+        ExprKind::Space(namespace) | ExprKind::ResolvedSpace { namespace, .. } => {
+            read_namespace(namespace, visitor)?;
+        }
         ExprKind::Exists(value) | ExprKind::Not(value) | ExprKind::IntoPath { value, .. } => {
             read_expr(value, visitor)?
         }
@@ -223,12 +240,26 @@ pub(crate) fn read_expr<'ir, V: ReadVisitor<'ir>>(
                 RangeQuery::Empty | RangeQuery::First | RangeQuery::Last => {}
             }
         }
-        ExprKind::Bool(_)
-        | ExprKind::String(_)
-        | ExprKind::Path { .. }
-        | ExprKind::Space(_)
-        | ExprKind::ResolvedSpace { .. }
-        | ExprKind::Slot(_) => {}
+        ExprKind::Bool(_) | ExprKind::String(_) | ExprKind::Path { .. } | ExprKind::Slot(_) => {}
+    }
+    Ok(())
+}
+
+fn read_namespace<'ir, V: ReadVisitor<'ir>>(
+    namespace: &'ir Namespace,
+    visitor: &mut V,
+) -> Result<(), V::Error> {
+    match namespace {
+        Namespace::Lexical { members } => {
+            for value in members.values() {
+                read_expr(value, visitor)?;
+            }
+        }
+        Namespace::Qualified { outer, inner } => {
+            read_namespace(outer, visitor)?;
+            read_namespace(inner, visitor)?;
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -239,6 +270,17 @@ pub(crate) fn read_range<'ir, V: ReadVisitor<'ir>>(
 ) -> Result<(), V::Error> {
     visitor.range(range)?;
     match &range.source {
+        RangeSource::Let { bindings, range } => {
+            for (_, value) in bindings {
+                read_expr(value, visitor)?;
+            }
+            read_range(range, visitor)?;
+        }
+        RangeSource::Native { arguments, .. } => {
+            for argument in arguments {
+                read_expr(argument, visitor)?;
+            }
+        }
         RangeSource::Regex { root, .. } => read_expr(root, visitor)?,
         RangeSource::Values(values) => {
             for value in values {

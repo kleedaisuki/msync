@@ -37,6 +37,16 @@ pub struct Name {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StatementKind {
+    Scope {
+        name: Name,
+        body: Block,
+    },
+    Native {
+        name: Name,
+        parameters: Vec<Name>,
+        result: NativeType,
+        implementation: String,
+    },
     Binding {
         name: Name,
         op: BindingOp,
@@ -94,6 +104,17 @@ pub enum StatementKind {
     /// Join one named process, or all currently pending processes when unnamed.
     Await(Option<Name>),
     Comment(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeType {
+    Inferred,
+    Void,
+    Bool,
+    String,
+    Path,
+    Scope,
+    Range(Box<NativeType>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

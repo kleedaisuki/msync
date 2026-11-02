@@ -147,7 +147,7 @@ fn mixed_lists_specialize_ordinary_callbacks_and_survive_object_and_ir() {
 #[test]
 fn literal_range_items_and_callbacks_obey_their_inferred_types() {
     for source in [
-        "items := [$local]\n",
+        "items := [$local, true]\n",
         "items := [[true]]\n",
         "for item in [true, \"text\"]:\n    if item:\n        \"wrong\" -> output\n",
         "boolean identity(item):\n    return item\nitems := [true, \"text\"] | $view::filter(identity)\n",

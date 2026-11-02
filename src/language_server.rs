@@ -37,6 +37,7 @@ fn serve(connection: &Connection) -> Result<(), String> {
         "positionEncoding": "utf-16",
         "textDocumentSync": {"openClose": true, "change": 2, "save": {"includeText": false}},
         "completionProvider": {"triggerCharacters": ["$", ":", "|"]},
+        "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
         "hoverProvider": true, "definitionProvider": true, "documentSymbolProvider": true,
         "documentFormattingProvider": true,
         "semanticTokensProvider": {"legend": {"tokenTypes": providers::TOKEN_TYPES, "tokenModifiers": ["declaration"]}, "full": true}
@@ -128,6 +129,23 @@ fn request_result(
                 document,
                 location.position,
             )))
+        }
+        "msync/stdlibSource" => {
+            let parameters: TextDocumentIdentifier = decode(parameters)?;
+            value(providers::library_source(&parameters.uri).ok_or_else(|| {
+                error(
+                    ErrorCode::InvalidParams,
+                    format!("unknown embedded standard-library source '{}'; this server supplies msync {} sources", parameters.uri.as_str(), env!("CARGO_PKG_VERSION")),
+                )
+            })?)
+        }
+        "textDocument/signatureHelp" => {
+            let parameters: SignatureHelpParams = decode(parameters)?;
+            let location = parameters.text_document_position_params;
+            value(providers::signature_help(
+                opened(documents, &location.text_document.uri)?,
+                location.position,
+            ))
         }
         "textDocument/hover" => {
             let parameters: HoverParams = decode(parameters)?;
