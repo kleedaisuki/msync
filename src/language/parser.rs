@@ -729,6 +729,10 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
             .help("Bind an intermediate boolean; one expression supports at most 128 unary operators."));
     }
     let scan = scan(text, offset)?;
+    if scan.calls.len() > MAX_NESTING {
+        return Err(Report::new("call expression nesting is too deep", range)
+            .help("Bind an intermediate call result before composing more calls."));
+    }
     if let Some((index, _)) = scan.operators.first() {
         return Err(Report::new(
             "a statement operator is not an expression",
