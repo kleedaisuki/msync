@@ -336,5 +336,118 @@ does not restore a superseded refusal policy.
 
 Local focused runs of the two library cases, the revised binary case and
 `artifact_cli_v4::readonly_object_publication_matches_native_replacement_and_preserves_permissions`
-passed. This fix changes test fixtures/oracles only: no production control flow,
+passed. These first three corrections change test fixtures/oracles only: no production control flow,
 permissions, publication or invocation-root behavior is changed.
+
+### Integration failures exposed after unblocking the unit binaries
+
+The [follow-up run](https://github.com/kleedaisuki/msync/actions/runs/41597307981)
+passed both native library and binary suites: Ubuntu 246 + 41 active tests,
+Windows 229 + 41. It then exposed the same two outdated `acceptance_v065`
+assertions on both platforms. To avoid discovering one masked target per remote
+build, one local no-fail-fast pass collected the **CI-selected integration
+targets only**, excluding the already accepted library/binary and artifact CLI
+target. It found 41 named failures in 20 targets; 37 targets passed and were not
+rerun. Raw collection and focused follow-up logs are under `.temp/ci-v071/`.
+
+| Category | Attribution and retained contract |
+| --- | --- |
+| **Real runtime diagnostic defect** | The ordinary-file fast path constructed errors without `with_operand`, falling back to an entire instruction or macro-call site. `e964d1a` attaches source origins to inspection/acquisition failures and destination origins to staging/metadata/publication failures, and restores missing-source/directory-mode advice. Existing macro, source-free phase, CLI and structured-telemetry assertions now pass unchanged. This is a production correction; no normal-path metadata probe or ownership guess from diagnostic text was added. |
+| Superseded transfer oracles | Existing container members are replaced; retransmission succeeds without transactional rollback. Runtime folding reports work actually retained, not erased assignments. Independent same-inode names are safe with sibling staging, preserving the source alias; a descendant tree copy captures a finite source before publication. Tests assert resulting bytes and identity separation instead of restoring blanket admission refusals. |
+| Source lifetime vs immutable snapshot | A retained file descriptor preserves the file version across **atomic pathname replacement**, not in-place writes to that inode. TCP and Unix-socket journeys now rotate the source pathname and still require original bytes, literal bytes and EOF. They do not demand a hidden full immutable copy of every file. |
+| FIFO protocol and readiness fixtures | All selected peers of one FIFO identity may co-start; multiple readers compete for one byte stream, with no implicit pairwise wave boundaries. Combined output bytes must be conserved; completed submissions define explicit waves. A fixed 40 ms delay in an independent-flow fixture was replaced by runtime readiness/polling before asserting publication. |
+| Ownership/layout and timestamps | Ordinary files and flows need no persistent recovery registry or necessarily an invocation directory. Tests still require stage retirement, original-target preservation on cancellation, peer closure and retention of unrelated user scratch data. Creating/removing entries changes native directory timestamps; tests no longer require restoring a fictitious pre-scratch namespace timestamp. |
+| Detailed proof API vs execution representation | Execution graphs intentionally omit quadratic commutation records. Detailed graph construction still exposes shared immutable proof footprints and rejects tampering. Parent namespace writes invalidate host observations for sibling missing paths; tests retain that premise rather than silently dropping it. Ambiguous lexical parent traversal cannot prove native identity or sibling separation on either host; direct stable siblings still commute. |
+| Queued task telemetry and CLI contracts | A queued flow task exists before resource admission: schedule is its child, while task retains actual instruction/block/execute/submission ancestry. Cycle, parent-existence, successful/error/cancellation status and payload exclusion checks remain. Publication says `atomic-replace`, not a removed statement journal. A static control-spawn preview need not evaluate its executable. Syntax 0.7 is canonical, and recorder initialization failure warns without changing a successful requested operation. |
+
+The previously failing targets were rerun locally after their respective
+corrections, followed only by remaining failing cases. Strict Clippy passed for
+the library, binary and changed integration targets. At this stage native Windows
+follow-up was still required before claiming the investigation complete.
+
+The next [incremental run](https://github.com/kleedaisuki/msync/actions/runs/41599022191)
+passed its Ubuntu job in full. Windows passed the initial corrected cases and
+continued through CLI acceptance, then found
+`case_sensitive_windows_names_are_refused_instead_of_silently_merged`. Its
+refusal is explicitly superseded by the current
+[native namespace contract](statement-atomicity.md): case-sensitive directories
+must work, and possible case-insensitive aliasing may order but not erase a
+distinct write. `5d6bce0` instead requires independent publication and consecutive
+updates of `A` and `a`, with distinct native identities.
+
+`5ea7708` makes selected Cargo targets collect all failures instead of stopping
+at the first failed binary. The manual workflow can reuse an explicit comparison
+baseline and choose a single native platform; push/PR defaults remain both
+platforms. No publication dependency was added. YAML parsing and all five dispatch/default matrix cases were checked
+locally. The
+[Windows-only baseline follow-up](https://github.com/kleedaisuki/msync/actions/runs/41600002389)
+requested pre-investigation `3d1b177` with `full=false`. It exposed a selector
+policy bug: any Rust-workflow edit promoted selection to full, overriding the
+intended baseline scope. That run therefore executed the full Windows Rust
+set, although it did not repeat Ubuntu. `4d9ba9b` corrects the orchestration-only
+classification, with a new regression in `scripts/test-ci-select.ps1`; both
+PowerShell selector test groups pass using the retained 7.6.9 toolchain.
+Future baseline selection remains incremental unless full acceptance is
+explicitly requested or a program/dependency change actually requires it.
+
+The extra Windows run collected ten failing targets instead of hiding later
+ones. Two contain additional production parser defects, corrected separately:
+
+- `10dec28`: the new scope-declaration prefix consumed an ordinary `scope :=`
+  binding. One discriminator now serves parsing and REPL block buffering;
+  `scope :=` and `scope =>` complete immediately, while `scope name:` still
+  accumulates its body. The 257-composition source/object test and a new REPL
+  buffering regression pass.
+- `f3ec1dc`: postfix call chains were scanned iteratively but descended through
+  their callees before checking their structural depth. The Windows thread
+  overflowed on the 1,024-call regression. The existing expression-depth policy
+  is now checked from that scan before descent. The threshold and thread stack
+  are unchanged; the independent 257-element flat-call test also passes.
+
+The remaining targets contain native-path or old-representation oracles:
+`join_v4`/`lowering_v4` now inspect deferred paths' local projections while
+retaining backend, mode, relocation and exact argv checks; ordinary leading
+spaces are not compiler errors. `object_v6` expects the current compiler's
+canonical 0.7 feature version, keeping historical-object tests separate.
+`selected_capture_v5` compares canonical ancestors. `runtime_guards_v4` compares
+actual native `step/../source` access: Windows ordinary path normalization and
+Unix traversal are not the same operation. `hir_plan_v4` does not invent a
+disjointness proof through an unobserved parent link. Legacy runtime container
+journeys now check replacement/retry. The synthetic 24-cohort planner fixture
+uses distinct FIFO channels; reusing one identity across future-input
+dependencies creates a real cycle, not independent waves.
+
+These newly exposed targets and only their remaining failures passed focused
+local follow-up, including strict Clippy for the library/binary and changed
+targets. The [next native run](https://github.com/kleedaisuki/msync/actions/runs/41602421116)
+uses the corrected incremental selector on both platforms.
+
+### Final native result
+
+[Run 41602421116](https://github.com/kleedaisuki/msync/actions/runs/41602421116)
+passed **both Ubuntu and Windows** at code commit
+`4d9ba9b0957832ab552443cf4255b2ffde35ef27`. Its recorded selection is
+`full=false`, `docs=false`, with 56 integration targets, plus the established
+library/binary checks and native terminal notification acceptance. The Windows
+credential-window step also passed. No CI quality gate or release dependency was
+introduced, and existing ignored host-specific experiments were not relabeled
+as passes. Raw final selection and platform logs are retained under
+`.temp/ci-v071/` while useful.
+
+| Native job | Passed | Failed | Ignored | Executed test binaries |
+| --- | ---: | ---: | ---: | ---: |
+| Ubuntu | 776 | 0 | 8 | 59 |
+| Windows | 751 | 0 | 10 | 60 |
+
+These totals sum the job's Cargo result records, including the separate vendored
+terminal checks and Windows credential-window invocation; filtered tests are
+not counted as passes.
+
+The production fixes are `e964d1a` (operand-owned runtime diagnostics),
+`10dec28` (scope binding/declaration disambiguation), and `f3ec1dc` (postfix-depth
+diagnosis before recursive descent). Other changes repair individually traced
+fixture/oracle assumptions and selected-run orchestration. The compiler does
+not reject ordinary whitespace, case-sensitive names, native replacements or
+retained descriptor semantics merely to satisfy an obsolete assertion.
+Already published v0.7.1 tags and package bytes are unchanged; this investigation
+does not silently republish the additional runtime/parser fixes as old assets.
