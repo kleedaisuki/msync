@@ -59,15 +59,16 @@ fn a_shared_capture_root_excludes_other_live_workers_without_hiding_user_scratch
         )
         .unwrap();
     }
-    {
+    let canonical = fs::canonicalize(root.path()).unwrap();
+    let private = outer.path().strip_prefix(&canonical).unwrap();
+    for source in [root.path(), canonical.as_path()] {
         let storage = first.storage.as_ref().unwrap();
-        let snapshot = storage.assets.capture_in(root.path(), &outer).unwrap();
+        let snapshot = storage.assets.capture_in(source, &outer).unwrap();
         assert!(
             snapshot
                 .entries()
                 .contains_key(Path::new(".temp/user-data"))
         );
-        let private = outer.path().strip_prefix(root.path()).unwrap();
         assert!(
             snapshot
                 .entries()
