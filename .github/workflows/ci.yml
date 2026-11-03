@@ -9,6 +9,15 @@ on:
         description: Run the complete Rust and documentation acceptance matrix
         type: boolean
         default: true
+      baseline:
+        description: Select changed contracts against this git ref when full is false
+        type: string
+        default: ''
+      platform:
+        description: Native platform to verify
+        type: choice
+        options: [both, windows, ubuntu]
+        default: both
 
 concurrency:
   group: rust-${{ github.event.pull_request.number || github.ref }}
@@ -31,9 +40,12 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           FORCE_FULL: ${{ github.event_name == 'workflow_dispatch' && inputs.full }}
+          SELECTED_BASELINE: ${{ github.event_name == 'workflow_dispatch' && inputs.baseline || '' }}
         run: |
           if ($env:FORCE_FULL -eq 'true') {
             ./scripts/ci-select.ps1 -ForceFull -GitHubOutput
+          } elseif ($env:SELECTED_BASELINE) {
+            ./scripts/ci-select.ps1 -Base $env:SELECTED_BASELINE -GitHubOutput
           } else {
             if (-not $env:BASE -or $env:BASE -match '^0+$') {
               $env:BASE = git merge-base HEAD origin/main
@@ -47,7 +59,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: ${{ fromJSON((github.event_name != 'workflow_dispatch' || inputs.platform == 'both') && '["ubuntu-latest","windows-latest"]' || inputs.platform == 'windows' && '["windows-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     env:
       CARGO_BUILD_JOBS: 2
@@ -66,7 +78,7 @@ jobs:
             exit $LASTEXITCODE
           }
           $targets = @($env:TARGETS | ConvertFrom-Json)
-          $testArgs = @('test', '--locked', '--lib', '--bin', 'msync')
+          $testArgs = @('test', '--locked', '--no-fail-fast', '--lib', '--bin', 'msync')
           foreach ($target in $targets) {
             $testArgs += @('--test', $target)
           }
