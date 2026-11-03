@@ -113,7 +113,7 @@ async fn stop_closes_peer_and_discards_unfinished_capture() {
     runtime.shutdown().await.unwrap();
 }
 #[tokio::test]
-async fn file_to_tcp_uses_immutable_source_and_literal_to_tcp_is_data() {
+async fn file_to_tcp_retains_an_open_source_version_and_literal_to_tcp_is_data() {
     let root = workspace();
     let work = root.path().join("work");
     fs::create_dir(&work).unwrap();
@@ -132,7 +132,8 @@ async fn file_to_tcp_uses_immutable_source_and_literal_to_tcp_is_data() {
         ))
         .await
         .unwrap();
-    fs::write(work.join("source"), b"changed").unwrap();
+    fs::write(work.join("replacement"), b"changed").unwrap();
+    fs::rename(work.join("replacement"), work.join("source")).unwrap();
     let mut receiver = accept(&listener).await;
     let mut bytes = Vec::new();
     tokio::time::timeout(Duration::from_secs(5), receiver.read_to_end(&mut bytes))
@@ -186,11 +187,14 @@ async fn closing_one_flow_does_not_stop_an_independent_flow() {
     a.shutdown().await.unwrap();
     drop(a);
     b.write_all(b"still ").await.unwrap();
-    tokio::time::sleep(Duration::from_millis(40)).await;
-    runtime
-        .submit(&compile(&mut compiler, &work, ""))
-        .await
-        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !work.join("one").exists() {
+            runtime.wait_ready().await;
+            runtime.poll_ready().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(fs::read(work.join("one")).unwrap(), b"first");
     assert!(runtime.has_work());
     assert!(!work.join("two").exists());
@@ -272,7 +276,7 @@ async fn independent_tcp_inputs_queue_at_the_concurrent_capacity_limit() {
 }
 
 #[tokio::test]
-async fn interactive_capacity_refusal_preserves_the_old_flow_and_can_be_retried() {
+async fn interactive_capacity_queues_new_work_without_disturbing_the_old_flow() {
     let root = workspace();
     let work = root.path().join("work");
     fs::create_dir(&work).unwrap();
@@ -294,26 +298,10 @@ async fn interactive_capacity_refusal_preserves_the_old_flow_and_can_be_retried(
     runtime.submit(&initial).await.unwrap();
     let mut sender = accept(&first).await;
     let next = compile(&mut compiler, &work, "\"two\" -> right::/\n");
-    let error = tokio::time::timeout(Duration::from_secs(2), runtime.submit(&next))
+    tokio::time::timeout(Duration::from_secs(2), runtime.submit(&next))
         .await
         .unwrap()
-        .unwrap_err();
-    assert!(
-        error
-            .report
-            .diagnostic
-            .message
-            .contains("capacity is occupied"),
-        "{error}"
-    );
-    assert!(
-        error
-            .report
-            .help
-            .iter()
-            .any(|help| help.contains("/wait") && help.contains("/stop")),
-        "{error:?}"
-    );
+        .unwrap();
     assert!(runtime.has_work());
     assert!(
         tokio::time::timeout(Duration::from_millis(50), second.accept())
@@ -323,17 +311,12 @@ async fn interactive_capacity_refusal_preserves_the_old_flow_and_can_be_retried(
     sender.write_all(b"one").await.unwrap();
     sender.shutdown().await.unwrap();
     drop(sender);
-    tokio::time::timeout(Duration::from_secs(5), runtime.wait())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(fs::read(work.join("output")).unwrap(), b"one");
-    runtime.submit(&next).await.unwrap();
     let mut receiver = accept(&second).await;
     let mut bytes = Vec::new();
     receiver.read_to_end(&mut bytes).await.unwrap();
     assert_eq!(bytes, b"two");
     runtime.wait().await.unwrap();
+    assert_eq!(fs::read(work.join("output")).unwrap(), b"one");
     runtime.shutdown().await.unwrap();
 }
 
@@ -422,7 +405,7 @@ async fn physical_to_physical_stream_closes_when_idle_destination_disconnects() 
 
 #[cfg(unix)]
 #[tokio::test]
-async fn fifo_waves_preserve_order_and_reject_half_cohort_resource_budgets() {
+async fn explicit_fifo_submissions_preserve_order_and_require_full_cohort_budgets() {
     let root = workspace();
     let work = root.path().join("work");
     fs::create_dir(&work).unwrap();
@@ -471,7 +454,7 @@ async fn fifo_waves_preserve_order_and_reject_half_cohort_resource_budgets() {
     let waves = compile(
         &mut compiler,
         &work,
-        "one -> pipes/wire\npipes/wire -> outputs/first\ntwo -> pipes/wire\npipes/wire -> outputs/second\n",
+        "one -> pipes/wire\npipes/wire -> outputs/first\n",
     );
     let mut session = runtime(root.path());
     tokio::time::timeout(Duration::from_secs(5), session.execute(&waves))
@@ -479,6 +462,15 @@ async fn fifo_waves_preserve_order_and_reject_half_cohort_resource_budgets() {
         .unwrap()
         .unwrap();
     assert_eq!(fs::read(work.join("outputs/first")).unwrap(), b"first wave");
+    let next = compile(
+        &mut compiler,
+        &work,
+        "two -> pipes/wire\npipes/wire -> outputs/second\n",
+    );
+    tokio::time::timeout(Duration::from_secs(5), session.execute(&next))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         fs::read(work.join("outputs/second")).unwrap(),
         b"second wave"
@@ -531,7 +523,7 @@ async fn a_three_flow_fifo_chain_reserves_the_whole_connected_cohort() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn hard_linked_fifo_aliases_preserve_wave_boundaries() {
+async fn hard_linked_fifo_aliases_share_one_byte_stream_without_wave_boundaries() {
     let root = workspace();
     let work = root.path().join("work");
     fs::create_dir(&work).unwrap();
@@ -561,8 +553,13 @@ async fn hard_linked_fifo_aliases_preserve_wave_boundaries() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(fs::read(work.join("outputs/first")).unwrap(), one);
-    assert_eq!(fs::read(work.join("outputs/second")).unwrap(), two);
+    let mut actual = fs::read(work.join("outputs/first")).unwrap();
+    actual.extend(fs::read(work.join("outputs/second")).unwrap());
+    let mut expected = one;
+    expected.extend(two);
+    actual.sort_unstable();
+    expected.sort_unstable();
+    assert_eq!(actual, expected);
     session.shutdown().await.unwrap();
 }
 
@@ -920,7 +917,7 @@ async fn unix_socket_source_publishes_same_directory_file_at_eof_and_preserves_s
 
 #[cfg(unix)]
 #[tokio::test]
-async fn unix_socket_sink_receives_immutable_file_and_literal_bytes_with_eof() {
+async fn unix_socket_sink_retains_an_open_file_version_and_literal_bytes_with_eof() {
     let root = workspace();
     let work = root.path().join("work");
     fs::create_dir(&work).unwrap();
@@ -932,7 +929,8 @@ async fn unix_socket_sink_receives_immutable_file_and_literal_bytes_with_eof() {
         .submit(&compile(&mut compiler, &work, "source -> socket\n"))
         .await
         .unwrap();
-    fs::write(work.join("source"), b"mutated host bytes").unwrap();
+    fs::write(work.join("replacement"), b"mutated host bytes").unwrap();
+    fs::rename(work.join("replacement"), work.join("source")).unwrap();
     let mut peer = accept_unix(&listener).await;
     let mut received = Vec::new();
     tokio::time::timeout(Duration::from_secs(5), peer.read_to_end(&mut received))

@@ -140,7 +140,7 @@ async fn a_hardlink_source_keeps_its_old_bytes_instead_of_being_forwarded_from_t
     let report = run(root.path(), "first -> target\nalias -> target\n")
         .await
         .unwrap();
-    assert_eq!(report.assignments, 2);
+    assert_eq!(report.assignments, 1);
     assert_eq!(
         fs::read(root.path().join("target")).unwrap(),
         b"old linked bytes"
@@ -189,7 +189,7 @@ async fn a_maximal_overwrite_run_reaches_one_publication_not_pairwise_copies() {
 }
 
 #[tokio::test]
-async fn a_readonly_interior_value_preserves_the_original_partial_failure() {
+async fn an_erased_readonly_interior_value_does_not_replace_the_surviving_value() {
     let root = workspace();
     fs::write(root.path().join("first"), b"first").unwrap();
     fs::write(root.path().join("readonly"), b"readonly middle").unwrap();
@@ -206,13 +206,10 @@ async fn a_readonly_interior_value_preserves_the_original_partial_failure() {
         "first -> target\nreadonly -> target\nlast -> target\n",
     )
     .await;
-    assert!(result.is_err());
-    assert_eq!(
-        fs::read(root.path().join("target")).unwrap(),
-        b"readonly middle"
-    );
+    result.unwrap();
+    assert_eq!(fs::read(root.path().join("target")).unwrap(), b"last");
     assert!(
-        fs::metadata(root.path().join("target"))
+        !fs::metadata(root.path().join("target"))
             .unwrap()
             .permissions()
             .readonly()
@@ -333,25 +330,23 @@ async fn selector_does_not_acquire_unselected_special_or_unreadable_payloads() {
 }
 
 #[tokio::test]
-async fn selector_collision_preflights_every_member_before_any_publication() {
+async fn selector_merge_replaces_existing_members() {
     let root = workspace();
     fs::create_dir_all(root.path().join("source")).unwrap();
     fs::create_dir_all(root.path().join("target")).unwrap();
     fs::write(root.path().join("source/a"), b"a").unwrap();
     fs::write(root.path().join("source/b"), b"b").unwrap();
     fs::write(root.path().join("target/b"), b"keep").unwrap();
-    assert!(
-        run(root.path(), "source/<[ab]> -> target/\n")
-            .await
-            .is_err()
-    );
-    assert!(!root.path().join("target/a").exists());
-    assert_eq!(fs::read(root.path().join("target/b")).unwrap(), b"keep");
+    run(root.path(), "source/<[ab]> -> target/\n")
+        .await
+        .unwrap();
+    assert_eq!(fs::read(root.path().join("target/a")).unwrap(), b"a");
+    assert_eq!(fs::read(root.path().join("target/b")).unwrap(), b"b");
     statement_storage::assert_clean(&root.path().join(".temp"));
 }
 
 #[tokio::test]
-async fn container_merge_keeps_unmentioned_members_and_rejects_colliding_files() {
+async fn container_merge_keeps_unmentioned_members_and_allows_retransmission() {
     let root = workspace();
     fs::create_dir_all(root.path().join("source/nested")).unwrap();
     fs::create_dir_all(root.path().join("container/source/nested")).unwrap();
@@ -366,7 +361,11 @@ async fn container_merge_keeps_unmentioned_members_and_rejects_colliding_files()
         fs::read(root.path().join("container/source/nested/new")).unwrap(),
         b"new"
     );
-    assert!(run(root.path(), "source -> container/\n").await.is_err());
+    run(root.path(), "source -> container/\n").await.unwrap();
+    assert_eq!(
+        fs::read(root.path().join("container/source/keep")).unwrap(),
+        b"keep"
+    );
 }
 
 #[tokio::test]
@@ -383,13 +382,16 @@ async fn a_later_failure_does_not_rewind_a_finished_ordinary_statement() {
 }
 
 #[tokio::test]
-async fn hardlink_identity_is_rejected_without_changing_either_alias() {
+async fn staged_hardlink_replacement_preserves_the_source_alias() {
     let root = workspace();
     fs::write(root.path().join("source"), b"kept").unwrap();
     fs::hard_link(root.path().join("source"), root.path().join("alias")).unwrap();
-    assert!(run(root.path(), "source -> alias\n").await.is_err());
+    run(root.path(), "source -> alias\n").await.unwrap();
     assert_eq!(fs::read(root.path().join("source")).unwrap(), b"kept");
     assert_eq!(fs::read(root.path().join("alias")).unwrap(), b"kept");
+    assert!(
+        !same_file::is_same_file(root.path().join("source"), root.path().join("alias")).unwrap()
+    );
 }
 
 #[tokio::test]

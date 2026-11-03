@@ -268,7 +268,7 @@ fn readonly_outcome(
 }
 
 #[test]
-fn readonly_producers_never_turn_a_later_overwrite_failure_into_success() {
+fn readonly_producers_preserve_native_outcomes_through_optimization() {
     for existing in [false, true] {
         for same_source in [false, true] {
             let root = workspace();
@@ -279,9 +279,13 @@ fn readonly_producers_never_turn_a_later_overwrite_failure_into_success() {
                 reference, optimized,
                 "existing={existing}, same_source={same_source}"
             );
-            assert!(!reference.0);
-            assert_eq!(reference.1, b"readonly producer");
-            assert!(reference.2);
+            if reference.0 && !same_source {
+                assert_eq!(reference.1, b"writable successor");
+                assert!(!reference.2);
+            } else {
+                assert_eq!(reference.1, b"readonly producer");
+                assert!(reference.2);
+            }
         }
     }
 }

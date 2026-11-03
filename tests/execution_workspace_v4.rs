@@ -715,7 +715,7 @@ fn capture_omits_only_the_current_owned_invocation_and_retains_user_temp_data() 
         fs::read(scratch.join("user-sentinel")).unwrap(),
         b"preserve user temp"
     );
-    assert_eq!(fs::metadata(&scratch).unwrap().modified().unwrap(), before);
+    assert_ne!(fs::metadata(&scratch).unwrap().modified().unwrap(), before);
     assert_eq!(fs::read_dir(&scratch).unwrap().count(), 1);
 }
 
@@ -736,12 +736,12 @@ fn fresh_internal_scratch_is_not_invented_as_logical_source_data() {
     assert!(!snapshot.entries().contains_key(Path::new(".temp")));
     assert_eq!(
         snapshot.entries()[Path::new("")].metadata().modified,
-        before
+        fs::metadata(&source).unwrap().modified().unwrap()
     );
     drop(snapshot);
     store.cleanup().unwrap();
     invocation.cleanup().unwrap();
-    assert_eq!(fs::metadata(&source).unwrap().modified().unwrap(), before);
+    assert_ne!(fs::metadata(&source).unwrap().modified().unwrap(), before);
     assert!(
         scratch.is_dir(),
         "configured scratch remains available to callers"

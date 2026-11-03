@@ -158,7 +158,7 @@ fn native_terminal_highlights_before_enter_and_keeps_unicode_editing_history_and
     entries.sort();
     assert_eq!(
         entries,
-        [".temp", "after-clear.txt", "copied.txt", "x"].map(std::ffi::OsString::from),
+        ["after-clear.txt", "copied.txt", "x"].map(std::ffi::OsString::from),
         "the editor must not persist history/cache files into its isolated HOME"
     );
     statement_storage::assert_clean(&directory.path().join(".temp"));

@@ -68,17 +68,16 @@ fn utf8_and_nul_literal_bytes_are_exact_and_parents_publish_with_the_statement()
 }
 
 #[test]
-fn a_selector_collision_does_not_publish_an_earlier_selected_file() {
+fn a_selector_replaces_existing_members_and_publishes_new_members() {
     let root = workspace();
     fs::create_dir(root.path().join("source")).unwrap();
     fs::write(root.path().join("source/a"), "a").unwrap();
     fs::write(root.path().join("source/b"), "b").unwrap();
     fs::create_dir(root.path().join("dest")).unwrap();
     fs::write(root.path().join("dest/b"), "keep").unwrap();
-    let error = run(root.path(), "source/<.*> -> dest/\n").unwrap_err();
-    assert!(error.to_string().contains("already exists"));
-    assert!(!root.path().join("dest/a").exists());
-    assert_eq!(text(root.path(), "dest/b"), "keep");
+    run(root.path(), "source/<.*> -> dest/\n").unwrap();
+    assert_eq!(text(root.path(), "dest/a"), "a");
+    assert_eq!(text(root.path(), "dest/b"), "b");
 }
 
 #[test]
@@ -122,17 +121,22 @@ fn read_after_write_preserves_values_when_later_statements_overwrite_sources() {
 }
 
 #[test]
-fn same_file_and_overlapping_tree_assignments_are_refused_without_mutation() {
+fn staged_hardlink_and_descendant_tree_copies_preserve_the_source() {
     let root = workspace();
     fs::write(root.path().join("source"), "original").unwrap();
     fs::hard_link(root.path().join("source"), root.path().join("alias")).unwrap();
-    assert!(run(root.path(), "source -> alias\n").is_err());
+    run(root.path(), "source -> alias\n").unwrap();
     assert_eq!(text(root.path(), "source"), "original");
     assert_eq!(text(root.path(), "alias"), "original");
+    assert!(
+        !same_file::is_same_file(root.path().join("source"), root.path().join("alias")).unwrap()
+    );
     fs::create_dir(root.path().join("tree")).unwrap();
     fs::write(root.path().join("tree/file"), "tree").unwrap();
-    assert!(run(root.path(), "tree -> tree/child/.\n").is_err());
-    assert!(!root.path().join("tree/child").exists());
+    run(root.path(), "tree -> tree/child/.\n").unwrap();
+    assert_eq!(text(root.path(), "tree/file"), "tree");
+    assert_eq!(text(root.path(), "tree/child/file"), "tree");
+    assert!(!root.path().join("tree/child/child").exists());
 }
 
 #[test]
@@ -196,17 +200,22 @@ fn a_literal_container_error_preserves_prior_atomic_statements_and_creates_no_co
 }
 
 #[test]
-fn a_read_only_file_is_not_bypassed_by_immutable_publication() {
+fn literal_replacement_obeys_native_readonly_permissions() {
     let root = workspace();
     let target = root.path().join("out");
     fs::write(&target, "protected").unwrap();
     let mut permissions = fs::metadata(&target).unwrap().permissions();
     permissions.set_readonly(true);
     fs::set_permissions(&target, permissions).unwrap();
-    let error = run(root.path(), "\"must not write\" -> out\n").unwrap_err();
-    assert_eq!(text(root.path(), "out"), "protected");
+    let result = run(root.path(), "\"replacement\" -> out\n");
+    if cfg!(windows) {
+        assert!(result.is_err());
+        assert_eq!(text(root.path(), "out"), "protected");
+    } else {
+        result.unwrap();
+        assert_eq!(text(root.path(), "out"), "replacement");
+    }
     assert!(fs::metadata(&target).unwrap().permissions().readonly());
-    assert!(error.to_string().contains("read-only"));
     let mut permissions = fs::metadata(&target).unwrap().permissions();
     #[cfg(windows)]
     {

@@ -113,8 +113,8 @@ async fn dropping_a_live_stream_owner_closes_its_peer() {
         .unwrap()
         .unwrap();
     peer.write_all(b"UNCOMMITTED_DROP_PREFIX").await.unwrap();
-    let private = runtime.private_root().unwrap().unwrap().to_owned();
-    let record = runtime.private_stage_record().unwrap().unwrap().to_owned();
+    let private = runtime.private_root().unwrap().map(Path::to_owned);
+    let record = runtime.private_stage_record().unwrap().map(Path::to_owned);
     drop(runtime);
     let mut byte = [0u8; 1];
     let closed = tokio::time::timeout(Duration::from_secs(5), peer.read(&mut byte))
@@ -127,7 +127,9 @@ async fn dropping_a_live_stream_owner_closes_its_peer() {
     );
     assert_eq!(fs::read(work.join("target")).unwrap(), b"origin");
     tokio::time::timeout(Duration::from_secs(5), async {
-        while private.exists() || record.exists() {
+        while private.as_ref().is_some_and(|path| path.exists())
+            || record.as_ref().is_some_and(|path| path.exists())
+        {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })

@@ -494,7 +494,7 @@ async fn standalone_await_joins_physical_flows_before_later_file_statements() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn readonly_workspace_uses_only_the_explicit_fallback_without_weakening_errors() {
+async fn ordinary_file_transfer_does_not_require_primary_or_fallback_scratch() {
     use std::os::unix::fs::PermissionsExt;
     // This assertion must exercise DAC, not root's permission bypass.
     assert_ne!(unsafe { libc::geteuid() }, 0);
@@ -530,13 +530,13 @@ async fn readonly_workspace_uses_only_the_explicit_fallback_without_weakening_er
     session.shutdown().await.unwrap();
     assert_eq!(fs::read(&output).unwrap(), b"fallback payload");
     assert!(!cwd.join(".temp").exists());
-    assert!(root.path().join("state/.msync-recovery-v1").is_dir());
-    // An occupied non-directory primary path is not a permission failure and
-    // must remain an error, even when a writable fallback exists.
+    assert!(!root.path().join("state/.msync-recovery-v1").exists());
+    // An ordinary file transfer does not need invocation storage at all.
     let occupied = root.path().join("occupied");
     fs::write(&occupied, b"user data").unwrap();
     options.scratch_root = occupied;
     let mut session = RuntimeSession::new(&options).unwrap();
-    assert!(session.execute(&program).await.is_err());
+    session.execute(&program).await.unwrap();
+    session.shutdown().await.unwrap();
     assert_eq!(fs::read(&options.scratch_root).unwrap(), b"user data");
 }

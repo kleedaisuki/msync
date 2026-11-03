@@ -245,7 +245,6 @@ fn unsupported_operator_and_range_domains_fail_before_any_earlier_transfer() {
         "if acquire path:\n    \"wrong\" -> branch\n",
         "if acqrel \"false\":\n    \"wrong\" -> branch\n",
         "items := [[true]]\nfor item in items:\n    \"wrong\" -> branch\n",
-        "items := [$pwd]\nfor item in items:\n    \"wrong\" -> branch\n",
         "Program => $path::not-a-real-executable()\nitems := [Program]\n",
         "Program => $path::not-a-real-executable()\nitems := [Program::/]\n",
         "for item in [true, \"false\"]:\n    if item:\n        \"wrong\" -> branch\n",
@@ -474,7 +473,7 @@ fn conditional_scheduling_does_not_globally_join_an_unrelated_released_flow() {
 }
 
 #[test]
-fn implicit_regex_and_literal_path_ranges_publish_as_one_statement() {
+fn implicit_regex_and_literal_path_ranges_merge_existing_members_and_retry() {
     for range in ["inputs/<.+>", "[$pwd::inputs/a, $pwd::inputs/b]"] {
         let root = workspace();
         fs::create_dir(root.path().join("inputs")).unwrap();
@@ -482,18 +481,38 @@ fn implicit_regex_and_literal_path_ranges_publish_as_one_statement() {
         fs::write(root.path().join("inputs/b"), b"new b").unwrap();
         fs::create_dir(root.path().join("output")).unwrap();
         fs::write(root.path().join("output/b"), b"old b").unwrap();
+        fs::write(root.path().join("output/unrelated"), b"keep").unwrap();
         write_source(root.path(), &format!("{range} -> output/\n"));
-        let output = invoke(root.path(), &["run", "entry.msync"]);
-        assert!(
-            !output.status.success(),
-            "a colliding implicit range statement succeeded: {range}"
+        success(invoke(root.path(), &["run", "entry.msync"]));
+        assert_outputs(
+            root.path(),
+            &[
+                ("output/a", b"new a"),
+                ("output/b", b"new b"),
+                ("output/unrelated", b"keep"),
+            ],
         );
-        assert!(
-            !root.path().join("output/a").exists(),
-            "an earlier element escaped the failed statement: {range}"
+        fs::write(root.path().join("inputs/b"), b"retry b").unwrap();
+        success(invoke(root.path(), &["run", "entry.msync"]));
+        assert_outputs(
+            root.path(),
+            &[
+                ("output/a", b"new a"),
+                ("output/b", b"retry b"),
+                ("output/unrelated", b"keep"),
+            ],
         );
-        assert_eq!(fs::read(root.path().join("output/b")).unwrap(), b"old b");
     }
+}
+
+#[test]
+fn scope_range_members_execute_through_source_free_artifacts() {
+    let root = workspace();
+    source_object_and_ir(
+        root.path(),
+        "items := [$local]\nfor endpoint in items:\n    \"scope member\" -> endpoint::branch\n",
+        &[("branch", b"scope member")],
+    );
 }
 
 #[test]
