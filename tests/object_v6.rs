@@ -41,7 +41,7 @@ fn dynamic_object_relocates_nested_paths_and_observes_prior_write() {
         &old,
         "\"payload\" -> input\nready = exists input\nif ready:\n    \"nested\" -> output\nelse:\n    \"wrong\" -> output\ndelete input\n",
     );
-    assert_eq!(object.language_version, "0.6");
+    assert_eq!(object.language_version, "0.7");
     assert!(
         object
             .features
@@ -122,7 +122,7 @@ fn forged_types_undefined_slots_and_unguarded_control_are_rejected() {
     old_reader
         .features
         .retain(|feature| feature != CONTROL_FEATURE);
-    assert!(old_reader.validate().unwrap_err().message.contains("0.6"));
+    assert!(old_reader.validate().unwrap_err().message.contains("0.7"));
 }
 
 #[test]

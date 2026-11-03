@@ -6,6 +6,13 @@ use msync::hir::control::{ControlInstruction, ExprKind as ControlExprKind, Range
 use msync::hir::{Argument, BarrierKind, Input, InstructionKind, Output};
 use msync::language::{self, DestinationMode, ExprKind, StatementKind};
 
+fn path_projection(value: &msync::hir::control::Expr) -> &msync::hir::control::Expr {
+    match &value.kind {
+        ControlExprKind::UnboundPath { local, .. } => local,
+        _ => value,
+    }
+}
+
 fn compile(source: &str) -> msync::hir::Program {
     let context = CompileContext {
         pwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
@@ -107,7 +114,7 @@ fn literal_data_is_not_a_path_until_the_join_operator_supplies_path_context() {
                     source_file: None
                 }
             )
-            .is_err()
+            .is_ok()
     );
 }
 
@@ -222,11 +229,19 @@ fn quoted_dot_and_slash_fragments_never_invent_destination_intent() {
         "source -> $local::\"directory /file\"\n",
         ". / \"dir/ file\" -> target\n",
     ] {
-        let rejected = language::parse(source).is_err()
-            || Session::new()
-                .compile(&language::parse(source).unwrap(), &context)
-                .is_err();
-        assert!(rejected, "{source}");
+        let program = Session::new()
+            .compile(&language::parse(source).unwrap(), &context)
+            .unwrap();
+        assert!(matches!(
+            program.body.instructions[0].kind,
+            InstructionKind::Transfer {
+                destination: Output::File {
+                    mode: DestinationMode::Exact,
+                    ..
+                },
+                ..
+            }
+        ));
     }
 }
 
@@ -339,16 +354,16 @@ fn composed_executable_calls_and_selector_slashes_keep_their_grammar() {
     assert_eq!(range.item_type, Type::Path);
     assert!(range.stages.is_empty());
     assert!(matches!(
-        &root.kind,
+        &path_projection(root).kind,
         ControlExprKind::Path { location, .. }
-            if location.backend == Backend::Local && location.path.ends_with("/directory/")
+            if location.backend == Backend::Local && std::path::Path::new(&location.path).ends_with("directory")
     ));
     assert_eq!(*mode, DestinationMode::Container);
     assert!(matches!(
-        &destination.kind,
+        &path_projection(destination).kind,
         ControlExprKind::Path { location, mode, .. }
             if location.backend == Backend::Local
-                && location.path.ends_with("/target/")
+                && std::path::Path::new(&location.path).ends_with("target")
                 && *mode == DestinationMode::Container
     ));
     let program = compile("server => tcp://[::1]:9000\nserver::/ -> target\n");

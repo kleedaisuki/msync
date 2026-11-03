@@ -6,6 +6,20 @@ use msync::hir::control::{ControlInstruction, ExprKind as ControlExprKind, Range
 use msync::hir::{self, Argument, Input, InstructionKind, Output, ReadPort};
 use msync::language::{self, DestinationMode};
 
+fn path_projection(value: &msync::hir::control::Expr) -> &msync::hir::control::Expr {
+    match &value.kind {
+        ControlExprKind::UnboundPath { local, .. } => local,
+        _ => value,
+    }
+}
+
+fn projected_location(value: &msync::hir::control::Expr) -> &msync::endpoint::Location {
+    let ControlExprKind::Path { location, .. } = &path_projection(value).kind else {
+        panic!("expected a typed path projection: {value:?}");
+    };
+    location
+}
+
 fn context() -> CompileContext {
     CompileContext {
         pwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".temp/lowering-v4"),
@@ -243,26 +257,48 @@ fn process_call_preserves_direct_argv_and_all_typed_ports() {
         &mut Session::new(),
         "async program => $path::python(\"-c\", \"print('a -> b; $HOME')\", input.txt)\n\"你好\\n\" -> program::stdin\nprogram::stdout -> output.txt\nprogram::stderr -> errors.txt\nprogram::pid -> pid\nprogram::exit_code -> status1\nprogram::exit_code -> status2\nprogram::meta -> metadata\n",
     );
-    let InstructionKind::Spawn {
-        process,
-        executable,
-        arguments,
-        cwd,
-    } = &spawn(&program).kind
-    else {
-        panic!()
+    let (process, executable, arguments, cwd) = match &program.body.instructions[1].kind {
+        InstructionKind::Spawn {
+            process,
+            executable,
+            arguments,
+            cwd,
+        } => (*process, executable.clone(), arguments.clone(), cwd.clone()),
+        InstructionKind::Control(ControlInstruction::Spawn {
+            process,
+            executable,
+            arguments,
+            cwd,
+        }) => {
+            let arguments = arguments
+                .iter()
+                .map(|value| match &value.kind {
+                    ControlExprKind::String(text) => Argument::Text(text.clone()),
+                    _ => Argument::Path(projected_location(value).clone()),
+                })
+                .collect::<Vec<_>>();
+            (
+                *process,
+                projected_location(executable).clone(),
+                arguments,
+                PathBuf::from(&projected_location(cwd).path),
+            )
+        }
+        other => panic!("expected a spawn after the release barrier: {other:?}"),
     };
     assert_eq!(process.0, 0);
     assert_eq!(executable.backend, Backend::Path);
     assert_eq!(executable.path, "python");
-    assert_eq!(cwd, &context().pwd);
+    assert_eq!(cwd, context().pwd);
     assert!(matches!(&arguments[0], Argument::Text(value) if value == "-c"));
     assert!(matches!(&arguments[1], Argument::Text(value) if value == "print('a -> b; $HOME')"));
-    assert!(matches!(&arguments[2], Argument::Path(value) if value.path.ends_with("/input.txt")));
+    assert!(
+        matches!(&arguments[2], Argument::Path(value) if std::path::Path::new(&value.path).ends_with("input.txt"))
+    );
     assert!(
         matches!(transfer(transfers(&program)[0]).0, Input::Literal(text) if text.as_ref() == "你好\n")
     );
-    assert!(matches!(transfer(transfers(&program)[0]).1, Output::Stdin(id) if id == process));
+    assert!(matches!(transfer(transfers(&program)[0]).1, Output::Stdin(id) if *id == process));
     assert_eq!(transfers(&program).len(), 7);
 }
 
@@ -389,19 +425,19 @@ fn read_only_transports_and_selector_policy_reuse_existing_compiler_rules() {
         location,
         relocation,
         ..
-    } = &root.kind
+    } = &path_projection(root).kind
     else {
         panic!("a selector root must retain its typed path");
     };
     assert_eq!(location.backend, Backend::Local);
-    assert!(location.path.ends_with("/source/"));
+    assert!(std::path::Path::new(&location.path).ends_with("source"));
     assert!(relocation.is_some(), "a selector must remain relocatable");
     assert_eq!(*mode, DestinationMode::Container);
     assert!(matches!(
-        &destination.kind,
+        &path_projection(destination).kind,
         ControlExprKind::Path { location, mode, .. }
             if location.backend == Backend::Local
-                && location.path.ends_with("/output/")
+                && std::path::Path::new(&location.path).ends_with("output")
                 && *mode == DestinationMode::Container
     ));
 }

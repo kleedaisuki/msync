@@ -922,8 +922,7 @@ fn hierarchy_selectors_and_explicit_replacement_keep_tree_hazards() {
 }
 
 #[test]
-#[cfg(windows)]
-fn normalization_does_not_need_io_and_native_wsl_aliases_stay_conservative() {
+fn lexical_parent_traversal_does_not_claim_native_identity() {
     let left = FileResource::new(location("D:\\work\\a\\..\\B"), Scope::Exact);
     let same = FileResource::new(location("d:/work/b"), Scope::Exact);
     let sibling = FileResource::new(location("D:/work/c"), Scope::Exact);
@@ -935,7 +934,8 @@ fn normalization_does_not_need_io_and_native_wsl_aliases_stay_conservative() {
         Scope::Exact,
     );
     assert!(left.may_overlap(&same));
-    assert!(!left.may_overlap(&sibling));
+    assert!(left.may_overlap(&sibling));
+    assert!(!FileResource::new(location("D:/work/B"), Scope::Exact).may_overlap(&sibling));
     assert!(left.may_overlap(&wsl));
     assert!(
         FileResource::new(location("D:/work/name."), Scope::Exact)

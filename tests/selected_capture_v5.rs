@@ -123,7 +123,8 @@ fn containing_source_retains_user_temp_data_but_excludes_exact_private_owners() 
             .keys()
             .any(|path| path.starts_with("scratch/.msync-recovery-v1"))
     );
-    let invocation_relative = invocation.path().strip_prefix(root.path()).unwrap();
+    let canonical = fs::canonicalize(root.path()).unwrap();
+    let invocation_relative = invocation.path().strip_prefix(&canonical).unwrap();
     assert!(
         !snapshot
             .entries()

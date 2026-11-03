@@ -307,12 +307,12 @@ fn indexed_frontiers_keep_many_co_start_waves_ordered_without_a_global_fence() {
         for (source, destination, source_kind, destination_kind) in [
             (
                 input,
-                ".temp/review-v3-flow/fifo".into(),
+                format!(".temp/review-v3-flow/fifo-{wave}"),
                 FileClass::Regular,
                 FileClass::Stream,
             ),
             (
-                ".temp/review-v3-flow/fifo".into(),
+                format!(".temp/review-v3-flow/fifo-{wave}"),
                 format!(".temp/review-v3-flow/output-{wave}"),
                 FileClass::Stream,
                 FileClass::Missing,

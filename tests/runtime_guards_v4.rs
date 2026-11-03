@@ -28,7 +28,7 @@ fn program(root: &Path, text: &str) -> msync::hir::Program {
 }
 
 #[tokio::test]
-async fn fallback_retains_raw_traversal_obligations_erased_by_old_path_resolution() {
+async fn fallback_retains_native_traversal_semantics_after_host_changes() {
     let root = workspace();
     fs::create_dir(root.path().join("step")).unwrap();
     fs::write(root.path().join("source"), "payload").unwrap();
@@ -37,9 +37,18 @@ async fn fallback_retains_raw_traversal_obligations_erased_by_old_path_resolutio
     fs::remove_dir(root.path().join("step")).unwrap();
     fs::write(root.path().join("step"), "not a directory").unwrap();
     let mut runtime = RuntimeSession::new(&Options::new(root.path().join(".temp"))).unwrap();
-    let error = runtime.execute_prepared(&prepared).await.unwrap_err();
-    assert!(error.to_string().contains("directory"), "{error}");
-    assert!(!root.path().join("target").exists());
+    let native = fs::read(root.path().join("step/../source"));
+    let result = runtime.execute_prepared(&prepared).await;
+    assert_eq!(
+        result.is_ok(),
+        native.is_ok(),
+        "native: {native:?}; runtime: {result:?}"
+    );
+    if let Ok(bytes) = native {
+        assert_eq!(fs::read(root.path().join("target")).unwrap(), bytes);
+    } else {
+        assert!(!root.path().join("target").exists());
+    }
     runtime.shutdown().await.unwrap();
 }
 

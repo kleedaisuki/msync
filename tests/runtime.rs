@@ -36,7 +36,7 @@ fn program(source: &Path, target: &Path, container: bool, pattern: Option<&str>)
 }
 
 #[test]
-fn overwrite_and_preserve_name_are_distinct() {
+fn exact_and_container_targets_both_support_retransmission() {
     let dir = temporary_directory();
     let source = dir.path().join("config.toml");
     let target = dir.path().join("out/config.toml");
@@ -47,13 +47,11 @@ fn overwrite_and_preserve_name_are_distinct() {
     fs::write(&source, "two").unwrap();
     execute(&program(&source, &target, false, None), &options).unwrap();
     assert_eq!(fs::read_to_string(&target).unwrap(), "two");
-    assert!(
-        execute(
-            &program(&source, target.parent().unwrap(), true, None),
-            &options
-        )
-        .is_err()
-    );
+    execute(
+        &program(&source, target.parent().unwrap(), true, None),
+        &options,
+    )
+    .unwrap();
     assert_eq!(fs::read_to_string(&target).unwrap(), "two");
 }
 
@@ -84,7 +82,7 @@ fn recursive_merge_and_full_name_regex() {
 }
 
 #[test]
-fn preflight_prevents_partial_conflict_mutation() {
+fn container_retransmission_replaces_existing_and_adds_new_members() {
     let dir = temporary_directory();
     let source = dir.path().join("source");
     let out = dir.path().join("out/source");
@@ -93,15 +91,13 @@ fn preflight_prevents_partial_conflict_mutation() {
     fs::write(source.join("a"), "a").unwrap();
     fs::write(source.join("z"), "new").unwrap();
     fs::write(out.join("z"), "old").unwrap();
-    assert!(
-        execute(
-            &program(&source, out.parent().unwrap(), true, None),
-            &ExecutionOptions::default()
-        )
-        .is_err()
-    );
-    assert!(!out.join("a").exists());
-    assert_eq!(fs::read_to_string(out.join("z")).unwrap(), "old");
+    execute(
+        &program(&source, out.parent().unwrap(), true, None),
+        &ExecutionOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(fs::read_to_string(out.join("a")).unwrap(), "a");
+    assert_eq!(fs::read_to_string(out.join("z")).unwrap(), "new");
 }
 
 #[test]
