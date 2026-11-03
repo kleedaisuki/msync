@@ -95,6 +95,74 @@ fn object_publication_never_overwrites_the_source_or_an_existing_object_on_compi
 }
 
 #[test]
+fn readonly_object_publication_matches_native_replacement_and_preserves_permissions() {
+    let root = workspace();
+    let source = root.path().join("code.msync");
+    let output = root.path().join("module.mobj");
+    fs::write(&source, "\"first\" -> result\n").unwrap();
+    success(&invoke(
+        root.path(),
+        &["--no-config", "compile", "code.msync", "-o", "module.mobj"],
+    ));
+    let original = fs::read(&output).unwrap();
+    let writable = fs::metadata(&output).unwrap().permissions();
+    let mut readonly = writable.clone();
+    readonly.set_readonly(true);
+    fs::set_permissions(&output, readonly.clone()).unwrap();
+
+    // The publication contract follows native rename rights, not whether the
+    // destination's contents can be opened for writing. Probe the same volume.
+    let reference = root.path().join("native-target");
+    let replacement = root.path().join("native-stage");
+    fs::write(&reference, b"old").unwrap();
+    fs::write(&replacement, b"new").unwrap();
+    fs::set_permissions(&reference, readonly.clone()).unwrap();
+    fs::set_permissions(&replacement, readonly).unwrap();
+    let native = fs::rename(&replacement, &reference);
+
+    let updated = "\"replacement\" -> result\n";
+    fs::write(&source, updated).unwrap();
+    let published = invoke(
+        root.path(),
+        &["--no-config", "compile", "code.msync", "-o", "module.mobj"],
+    );
+    let permissions = fs::metadata(&output).unwrap().permissions();
+    fs::set_permissions(&output, writable.clone()).unwrap();
+    fs::set_permissions(&reference, writable.clone()).unwrap();
+    if native.is_err() {
+        fs::set_permissions(&replacement, writable).unwrap();
+    }
+    assert_eq!(
+        published.status.success(),
+        native.is_ok(),
+        "native rename: {native:?}; compiler: {}",
+        String::from_utf8_lossy(&published.stderr)
+    );
+    assert!(permissions.readonly());
+    assert_eq!(fs::read_to_string(&source).unwrap(), updated);
+    if native.is_ok() {
+        success(&published);
+        success(&invoke(root.path(), &["--no-config", "run", "module.mobj"]));
+        assert_eq!(
+            fs::read(root.path().join("result")).unwrap(),
+            b"replacement"
+        );
+    } else {
+        assert_eq!(fs::read(&output).unwrap(), original);
+        assert!(
+            String::from_utf8_lossy(&published.stderr).contains("cannot publish compiled object")
+        );
+    }
+    assert!(fs::read_dir(root.path()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".msync-")
+    }));
+}
+
+#[test]
 fn stdout_object_payload_is_exact_machine_input_even_when_color_is_forced() {
     let root = workspace();
     fs::write(root.path().join("code.msync"), "\"payload\" -> result\n").unwrap();

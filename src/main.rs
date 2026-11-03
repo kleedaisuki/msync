@@ -1086,7 +1086,7 @@ mod tests {
     }
 
     #[test]
-    fn object_export_never_replaces_its_source_or_a_readonly_output() {
+    fn object_export_preserves_its_source_and_replaces_an_existing_output() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
         fs::create_dir_all(&root).unwrap();
         let workspace = tempfile::tempdir_in(root).unwrap();
@@ -1109,20 +1109,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fs::read(&output).unwrap(), b"first object");
-        let writable = fs::metadata(&output).unwrap().permissions();
-        let mut readonly = writable.clone();
-        readonly.set_readonly(true);
-        fs::set_permissions(&output, readonly).unwrap();
-        assert!(
-            write_object(
-                output.to_str().unwrap(),
-                source.to_str().unwrap(),
-                b"replacement"
-            )
-            .is_err()
-        );
-        assert_eq!(fs::read(&output).unwrap(), b"first object");
-        fs::set_permissions(&output, writable).unwrap();
+        write_object(
+            output.to_str().unwrap(),
+            source.to_str().unwrap(),
+            b"replacement",
+        )
+        .unwrap();
+        assert_eq!(fs::read(&output).unwrap(), b"replacement");
+        assert_eq!(fs::read_to_string(&source).unwrap(), "source -> target\n");
         assert_eq!(fs::read_dir(workspace.path()).unwrap().count(), 2);
     }
 
