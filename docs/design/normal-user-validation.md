@@ -312,3 +312,29 @@ Reproduce an individual failure using the tagged source and
 CLI journey and current contract before changing either code or expectations.
 The remote logs and source are retained at the linked run; local raw log copy
 is `.temp/release-v066/rust-failures.log` while available.
+
+## v0.7.1 Rust CI fixture attribution (2026-11-03)
+
+The [v0.7.1 Rust run](https://github.com/kleedaisuki/msync/actions/runs/41595828315)
+stopped at three failures before reaching the selected integration journeys.
+They are individually attributed below; this is not a blanket attribution of
+other historical failures.
+
+| Failure | Mechanism and classification | Correction |
+| --- | --- | --- |
+| `native_fs::tests::local_filesystem_lifecycle_and_endpoint_values` on Windows | Test setup writes a filename containing LF before calling the operation under test. Win32 rejects control characters 1–31 in an ordinary filename. Fixture problem, not a native filesystem dispatcher failure. | Retain spaces, single quotes, shell-looking text and Unicode on both platforms; retain the LF filename on Unix only. No production pathname restrictions are added. |
+| `ordinary::tests::a_shared_capture_root_excludes_other_live_workers_without_hiding_user_scratch` on Windows | The owned root uses `filesystem::absolute`, which canonicalizes paths. Rust's Windows canonicalization produces extended-length syntax; `strip_prefix` against the noncanonical temporary directory fails despite matching directory identity. The test had already captured the source and found user `.temp` data before its own unwrap failed. Fixture spelling problem, not evidence of leaked private payload. | Form the relative-path oracle against the canonical ancestor. Capture through both the original and canonical source spellings, requiring user data to remain visible and the invocation subtree to remain excluded. Runtime ownership stays identity-based. |
+| `object_export_never_replaces_its_source_or_a_readonly_output` on Linux | The test still requires a readonly-bit refusal explicitly removed from `write_object` by `1b5d91c7c5cb007494d5dc317911c3d10d4e4050`. Native rename in a writable directory can replace an unwritable file. Stale contract assertion, not a missing admission check. | Keep source-preservation and ordinary object-replacement assertions. Add an actual CLI compile/recompile/run journey comparing publication with native sibling rename on the same filesystem; require readonly metadata preservation, exact old bytes on native rejection, executable new bytes on success, and no remaining owned stage. |
+
+Relevant primary platform references are
+[Microsoft filename rules](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file),
+[Rust canonicalization](https://doc.rust-lang.org/std/fs/fn.canonicalize.html), and
+[Rust rename semantics](https://doc.rust-lang.org/std/fs/fn.rename.html).
+The existing [normal-user tooling follow-up](safety-cost-audit-tooling.md#implemented-normal-user-follow-up-2026-11-01)
+and the actual removal commit establish the project's contract; an old test name
+does not restore a superseded refusal policy.
+
+Local focused runs of the two library cases, the revised binary case and
+`artifact_cli_v4::readonly_object_publication_matches_native_replacement_and_preserves_permissions`
+passed. This fix changes test fixtures/oracles only: no production control flow,
+permissions, publication or invocation-root behavior is changed.
