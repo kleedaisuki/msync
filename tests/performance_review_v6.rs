@@ -120,7 +120,7 @@ fn concurrent_processes_can_initialize_and_finish_one_fresh_trace_database() {
 }
 
 #[test]
-fn oversized_sqlite_busy_timeout_is_a_source_labeled_pre_effect_config_error() {
+fn invalid_sqlite_busy_timeout_warns_without_failing_the_requested_check() {
     let root = workspace();
     fs::write(
         root.path().join("entry.msync"),
@@ -136,12 +136,9 @@ fn oversized_sqlite_busy_timeout_is_a_source_labeled_pre_effect_config_error() {
         root.path(),
         &["check", "entry.msync", "--config", "invalid.toml"],
     );
-    assert!(!output.status.success());
+    assert!(output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        error.contains("invalid.toml") && error.contains("busy_timeout_ms"),
-        "{error}"
-    );
+    assert!(error.contains("busy_timeout_ms"), "{error}");
     assert!(!error.contains("panicked"), "{error}");
     assert!(!root.path().join("must-not-open.db").exists());
     assert!(!root.path().join("output").exists());

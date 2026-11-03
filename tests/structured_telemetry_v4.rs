@@ -125,12 +125,12 @@ impl Trace {
         );
     }
 
-    fn statement_journal(&self) {
+    fn ordinary_publication(&self) {
         self.absent("prepare");
         self.absent("transaction.publish");
         assert_eq!(
             field(self.span("copy"), "publication.policy"),
-            "statement-journal"
+            "atomic-replace"
         );
     }
 
@@ -243,7 +243,7 @@ fn structured_macro_literal_trace_has_real_phase_ownership_without_logging_sourc
     }
     trace.descendant("submission", "session");
     trace.descendant("copy", "execute");
-    trace.statement_journal();
+    trace.ordinary_publication();
     for phase in ["ordinary.acquire", "ordinary.stage", "ordinary.publish"] {
         trace.status(phase, "ok");
         trace.descendant(phase, "copy");
@@ -376,7 +376,7 @@ fn an_actual_http_reset_fails_execution_preserves_old_target_and_records_causal_
         trace.status(phase, "error");
     }
     trace.descendant("execute", "submission");
-    trace.statement_journal();
+    trace.ordinary_publication();
     trace.status("copy", "error");
     trace.status("ordinary.acquire", "error");
     trace.absent("ordinary.stage");

@@ -269,7 +269,7 @@ fn live_stream_keeps_repl_responsive_and_stop_joins_resources() {
         .filter(|record| record["kind"] == "span")
         .map(|record| (record["span_id"].as_str().unwrap(), record))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let mut current = spans[json_string(schedule, "span_id")];
+    let mut current = spans[json_string(schedule, "parent_span_id")];
     let mut ancestry = Vec::new();
     let mut visited = std::collections::BTreeSet::new();
     loop {
@@ -290,13 +290,13 @@ fn live_stream_keeps_repl_responsive_and_stop_joins_resources() {
         .collect::<Vec<_>>();
     assert!(
         names.starts_with(&[
-            "schedule",
+            "task",
             "interpreter.instruction",
             "interpreter.block",
             "execute",
             "submission"
         ]),
-        "the schedule must retain its actual instruction/block/execution/submission ancestry: {trace}"
+        "the queued task must retain its actual instruction/block/execution/submission ancestry: {trace}"
     );
     assert_eq!(ancestry[1]["attributes"]["instruction.kind"], "transfer");
     assert!(
@@ -317,19 +317,20 @@ fn live_stream_keeps_repl_responsive_and_stop_joins_resources() {
         .lines()
         .find(|line| {
             line.contains("\"name\":\"task\"")
-                && json_string(line, "parent_span_id") == json_string(schedule, "span_id")
+                && json_string(line, "span_id") == json_string(schedule, "parent_span_id")
         })
-        .expect("the scheduled flow must retain its actual task child");
+        .expect("queued admission must be owned by its actual flow task");
     assert_eq!(
-        json_string(task, "parent_span_id"),
-        json_string(schedule, "span_id")
+        json_string(task, "span_id"),
+        json_string(schedule, "parent_span_id")
     );
     assert_eq!(
         json_string(schedule, "parent_span_id"),
-        ancestry[1]["span_id"].as_str().unwrap()
+        ancestry[0]["span_id"].as_str().unwrap()
     );
-    assert_eq!(ancestry[0]["metrics"]["granted_slots"], 1);
-    assert_eq!(ancestry[0]["metrics"]["reserved_buffer_bytes"], 131072);
+    let admission: serde_json::Value = serde_json::from_str(schedule).unwrap();
+    assert_eq!(admission["metrics"]["granted_slots"], 1);
+    assert_eq!(admission["metrics"]["reserved_buffer_bytes"], 131072);
 }
 
 #[test]
@@ -645,7 +646,7 @@ fn source_load_reuses_bindings_without_a_second_compiler() {
     let (status, errors) = repl.finish();
     assert!(status.success(), "{errors}");
     assert!(errors.contains("unsupported syntax version"), "{errors}");
-    assert!(repl.output.contains("syntax: 0.6"), "{}", repl.output);
+    assert!(repl.output.contains("syntax: 0.7"), "{}", repl.output);
     assert_eq!(
         fs::read(directory.path().join("copied.txt")).unwrap(),
         b"shared path binding"

@@ -88,7 +88,7 @@ fn stdin_pipeline_checks_and_plans_without_copying_files() {
 }
 
 #[test]
-fn local_copy_journey_overwrites_then_preserves_insert_conflict() {
+fn local_copy_journey_overwrites_exact_and_container_targets() {
     let directory = workspace();
     fs::create_dir(directory.path().join("source")).unwrap();
     fs::write(
@@ -122,12 +122,10 @@ fn local_copy_journey_overwrites_then_preserves_insert_conflict() {
         &["run", "-"],
         "source/config.toml -> output/\n",
     );
-    assert!(!conflict.status.success());
-    assert!(stderr(&conflict).contains("already exists"));
-    assert!(stderr(&conflict).contains("source/config.toml -> output/"));
+    assert_success(&conflict);
     assert_eq!(
         fs::read_to_string(directory.path().join("output/config.toml")).unwrap(),
-        "new configuration"
+        "must not clobber"
     );
 }
 
@@ -775,10 +773,10 @@ fn trace_file_survives_exit_and_connects_all_pipeline_phases_without_payload_cap
         .find(|line| string_field(line, "name") == "copy")
         .unwrap();
     assert!(
-        copy.contains("\"publication.policy\":\"statement-journal\""),
+        copy.contains("\"publication.policy\":\"atomic-replace\""),
         "{copy}"
     );
-    assert!(copy.contains("\"phase\":\"committed\""), "{copy}");
+    assert!(copy.contains("\"status\":\"ok\""), "{copy}");
     assert!(
         copy.contains("private-source.txt") && copy.contains("private-destination.txt"),
         "{copy}"

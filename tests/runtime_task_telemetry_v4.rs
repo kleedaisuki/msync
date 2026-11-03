@@ -79,7 +79,7 @@ fn hierarchy(trace: &str) {
         .filter(|record| record["kind"] == "span")
         .map(|record| (record["span_id"].as_str().unwrap(), record))
         .collect::<BTreeMap<_, _>>();
-    let mut current = spans[field(schedule, "span_id")];
+    let mut current = spans[field(task, "span_id")];
     let mut ancestry = Vec::new();
     let mut visited = BTreeSet::new();
     loop {
@@ -100,7 +100,7 @@ fn hierarchy(trace: &str) {
         .collect::<Vec<_>>();
     assert!(
         names.starts_with(&[
-            "schedule",
+            "task",
             "interpreter.instruction",
             "interpreter.block",
             "execute",
@@ -123,7 +123,7 @@ fn hierarchy(trace: &str) {
                 .is_some_and(|count| count > 0)),
         "a schedule must belong to a submission that compiled actual work, not an earlier empty binding submission: {trace}"
     );
-    assert_eq!(field(task, "parent_span_id"), field(schedule, "span_id"));
+    assert_eq!(field(schedule, "parent_span_id"), field(task, "span_id"));
     assert!(schedule.contains("\"granted_slots\":1"));
     assert!(schedule.contains("\"reserved_buffer_bytes\":131072"));
     let flow = span(trace, "io.flow");

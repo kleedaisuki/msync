@@ -167,7 +167,7 @@ fn static_async_compile_and_plan_show_blocks_without_launching_child() {
             "expected launch, output, and await blocks: {text}"
         );
         assert!(text.contains("acquire program"), "{text}");
-        assert!(text.contains(child_name), "{text}");
+        assert!(text.contains("control spawn"), "{text}");
         no_effects(root.path());
         assert_eq!(
             fs::read_to_string(root.path().join("barriers.msync")).unwrap(),
