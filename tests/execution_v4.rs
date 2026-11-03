@@ -252,7 +252,7 @@ fn missing_windows_case_aliases_share_a_domain_without_changing_visible_names() 
 
 #[cfg(windows)]
 #[test]
-fn case_sensitive_windows_names_are_refused_instead_of_silently_merged() {
+fn case_sensitive_windows_names_remain_distinct_through_publication_and_planning() {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -309,14 +309,17 @@ fn case_sensitive_windows_names_are_refused_instead_of_silently_merged() {
     );
     drop(handle);
     fs::write(directory.join("A"), "preserve uppercase").unwrap();
-    let error = run(root.path(), "\"lowercase\" -> sensitive/a\n").unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("case-sensitive resource adapter")
-    );
+    run(root.path(), "\"lowercase\" -> sensitive/a\n").unwrap();
     assert_eq!(text(root.path(), "sensitive/A"), "preserve uppercase");
-    assert!(!directory.join("a").exists());
+    assert_eq!(text(root.path(), "sensitive/a"), "lowercase");
+    run(
+        root.path(),
+        "\"upper update\" -> sensitive/A\n\"lower update\" -> sensitive/a\n",
+    )
+    .unwrap();
+    assert_eq!(text(root.path(), "sensitive/A"), "upper update");
+    assert_eq!(text(root.path(), "sensitive/a"), "lower update");
+    assert!(!same_file::is_same_file(directory.join("A"), directory.join("a")).unwrap());
     assert!(!root.path().join("scratch").exists());
 }
 
