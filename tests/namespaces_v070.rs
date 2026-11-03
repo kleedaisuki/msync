@@ -35,6 +35,19 @@ fn namespace_aliases_and_lexical_functions_publish_real_files() {
 }
 
 #[test]
+fn scope_bindings_complete_without_starting_a_repl_block() {
+    for line in ["scope := $pwd", "scope => $local"] {
+        let mut buffer = msync::language::SubmissionBuffer::default();
+        let msync::language::Submission::Ready(source) = buffer.push_line(line).unwrap() else {
+            panic!("a binding must not wait for an indented scope body: {line}");
+        };
+        let document = msync::language::parse(&source).unwrap();
+        assert!(matches!(&document.statements[0].kind,
+            msync::language::StatementKind::Binding { name, .. } if name.text == "scope"));
+    }
+}
+
+#[test]
 fn scopes_and_native_declarations_format_idempotently_and_buffer_in_repl() {
     let source = "scope fs:\n\tnative exists(path) -> Bool = \"fs.exists\"\n\tnative entries(path) -> Range<Path> = \"fs.entries\"\n\tnative delete(path) -> Void = \"fs.delete\"\n";
     let formatted = msync::language::format(source).unwrap();

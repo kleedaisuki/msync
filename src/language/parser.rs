@@ -12,11 +12,17 @@ const MAX_NESTING: usize = 128;
 
 pub(super) fn opens_block(line: &str) -> bool {
     let code = line[..comment_start(line).unwrap_or(line.len())].trim_start();
-    ["scope ", "macro ", "symbol ", "boolean ", "if ", "for "]
-        .iter()
-        .any(|prefix| code.starts_with(prefix))
+    scope_header(code).is_some()
+        || ["macro ", "symbol ", "boolean ", "if ", "for "]
+            .iter()
+            .any(|prefix| code.starts_with(prefix))
         || code == "loop:"
         || code.trim_end().ends_with("loop:")
+}
+
+fn scope_header(code: &str) -> Option<&str> {
+    code.strip_prefix("scope ")
+        .filter(|header| !header.trim_start().starts_with([':', '=']))
 }
 
 #[derive(Clone, Copy)]
@@ -312,7 +318,7 @@ fn statement(code: &str, offset: usize) -> Result<Statement, Report> {
             span(offset, offset + code.len()),
         ));
     }
-    let kind = if let Some(header) = code.strip_prefix("scope ") {
+    let kind = if let Some(header) = scope_header(code) {
         StatementKind::Scope {
             name: name(header_body(header, offset + 6)?, offset + 6)?,
             body: Vec::new(),
