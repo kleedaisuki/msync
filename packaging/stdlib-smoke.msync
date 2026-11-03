@@ -5,10 +5,15 @@ scope package:
     input := std-input
 
 native present(path) -> Bool = "fs.is_regular_file"
+macro publish(scope, file):
+    "endpoint argument" -> scope::file
+
 "installed standard library" -> std-input
 fs::create_directories(std-output)
 for endpoint in [$local] | $std::ranges::take(1):
     package::input -> endpoint::std-output/payload
+    for file in [std-output/argument-first, std-output/argument-second]:
+        publish(endpoint, file)
 fs::rename(std-output/payload, std-output/renamed)
 if fs::is_directory(std-output) and present(std-output/renamed):
     text::trim(" ready ") -> std-output/status

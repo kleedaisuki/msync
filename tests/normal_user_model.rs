@@ -76,6 +76,88 @@ fn assert_no_recovery_protocol(path: &Path) {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn macro_loop_scope_selects_argument_paths_in_source_object_and_ir() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = workspace();
+    let local = root.path().join("home");
+    let remote = root.path().join("remote");
+    let bin = root.path().join("bin");
+    fs::create_dir_all(local.join(".codex")).unwrap();
+    fs::create_dir_all(remote.join(".codex")).unwrap();
+    fs::create_dir(remote.join("file")).unwrap();
+    fs::write(remote.join("file/sentinel"), b"unrelated directory").unwrap();
+    fs::create_dir(&bin).unwrap();
+    let launcher = bin.join("wsl");
+    // Exercise the production shell/archive protocol with a separate endpoint
+    // home and cwd. This harness does not emulate the Windows WSL launcher.
+    fs::write(
+        &launcher,
+        "#!/bin/sh\nshift\nexport HOME=\"$MSYNC_TEST_REMOTE\"\ncd \"$HOME\"\nexec \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut paths = vec![bin];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let path = std::env::join_paths(paths).unwrap();
+    let invoke = |args: &[&str]| {
+        success(
+            command(root.path())
+                .args(args)
+                .env("PATH", &path)
+                .env("HOME", &local)
+                .env("MSYNC_TEST_REMOTE", &remote)
+                .output()
+                .unwrap(),
+        );
+    };
+    fs::write(
+        root.path().join("publish.msync"),
+        "wsl => $wsl\nmacro copy_to(scope, file):\n    $local::file -> scope::file\nfor scope in [wsl]:\n    for file in [~/.codex/AGENTS.md, ~/.codex/codex.prompt]:\n        copy_to(scope, file)\nfor scope in [wsl]:\n    quoted := ignored-name\n    \"literal filename\" -> scope::\"quoted\"\n    \"unbound filename\" -> scope::unbound\n",
+    )
+    .unwrap();
+    invoke(&["compile", "publish.msync", "-o", "publish.mobj"]);
+    invoke(&["emit-ir", "publish.msync", "-o", "publish.json"]);
+    assert!(!remote.join("quoted").exists());
+    for (index, args) in [
+        ["run", "publish.msync"],
+        ["run", "publish.mobj"],
+        ["run-ir", "publish.json"],
+    ]
+    .iter()
+    .enumerate()
+    {
+        if index == 1 {
+            fs::remove_file(root.path().join("publish.msync")).unwrap();
+        }
+        for name in ["AGENTS.md", "codex.prompt"] {
+            fs::write(local.join(".codex").join(name), format!("{name}:{index}")).unwrap();
+        }
+        invoke(args);
+        for name in ["AGENTS.md", "codex.prompt"] {
+            assert_eq!(
+                fs::read(remote.join(".codex").join(name)).unwrap(),
+                format!("{name}:{index}").as_bytes()
+            );
+        }
+        assert_eq!(
+            fs::read(remote.join("quoted")).unwrap(),
+            b"literal filename"
+        );
+        assert_eq!(
+            fs::read(remote.join("unbound")).unwrap(),
+            b"unbound filename"
+        );
+        assert_eq!(
+            fs::read(remote.join("file/sentinel")).unwrap(),
+            b"unrelated directory"
+        );
+        assert_no_recovery_protocol(&remote);
+    }
+}
+
 #[test]
 fn ordinary_copy_overwrite_and_literal_use_no_persistent_protocol() {
     let root = workspace();

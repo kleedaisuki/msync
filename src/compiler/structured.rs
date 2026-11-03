@@ -1835,12 +1835,8 @@ fn resolve_path(
             }
             Some(Value::Space(space)) => Some(space.clone()),
             Some(Value::Dynamic(value)) if value.ty == hir::control::Type::Space => {
-                return v6::select(
-                    Value::Dynamic(value.clone()),
-                    Value::Literal(Arc::from(path.path.as_str())),
-                    context,
-                    span,
-                );
+                let item = resolve_namespace(path, span, site, scope, context, None)?;
+                return v6::select(Value::Dynamic(value.clone()), item, context, span);
             }
             Some(_) => return Err((Report::new(
                 format!("'{}' is a value, not a namespace or program", name.text),

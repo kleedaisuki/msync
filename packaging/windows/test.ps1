@@ -153,7 +153,9 @@ function Assert-InstalledJourney([string]$Directory) {
         Remove-Item -LiteralPath 'stdlib.msync'
         $null = Invoke-Msync $exe @('run', 'stdlib.mobj')
         if ([IO.File]::ReadAllText((Join-Path $journey 'std-output/renamed')) -cne 'installed standard library' -or
-            [IO.File]::ReadAllText((Join-Path $journey 'std-output/status')) -cne 'ready') {
+            [IO.File]::ReadAllText((Join-Path $journey 'std-output/status')) -cne 'ready' -or
+            [IO.File]::ReadAllText((Join-Path $journey 'std-output/argument-first')) -cne 'endpoint argument' -or
+            [IO.File]::ReadAllText((Join-Path $journey 'std-output/argument-second')) -cne 'endpoint argument') {
             throw 'Installed standard-library/native/namespace/Scope-range journey differs.'
         }
     } finally { Pop-Location }

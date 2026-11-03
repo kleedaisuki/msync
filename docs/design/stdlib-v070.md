@@ -74,6 +74,36 @@ A range's unqualified path must retain its unbound endpoint/home provenance:
 not the compiler's local machine. Explicit `$pwd`/`$local` projections remain
 context-bound and are not silently reinterpreted as remote paths.
 
+### Dynamic qualifier argument resolution (2026-11-03)
+
+The compact `scope::file` syntax reaches `resolve_path`, whereas a general
+selection expression reaches `resolve_select`. The former's dynamic-Scope
+branch incorrectly lowered the right operand to the literal string `file`.
+Consequently a macro called inside `for scope in [wsl, ...]` uploaded to the
+endpoint cwd's `file`, not the macro argument `~/.codex/AGENTS.md`. An existing
+directory at that accidental destination produces the remote directory error;
+the ordinary WSL localhost-proxy warning is unrelated to that rejection.
+
+The fix resolves the right operand through the existing `resolve_namespace`
+unqualified path flow before emitting typed Select. Bound parameters, raw home
+spelling, local projection, and quoted filenames then follow the same rules as
+static endpoint selection; no runtime source interpretation is introduced.
+The pre-fix compiler also executes `(scope)::file` correctly: parentheses route
+selection through `resolve_select`, providing an immediately usable workaround.
+Rebuilding the pre-fix source reproduced the reported directory error with a
+cwd `file/` fixture and successfully copied both intended home files using this
+workaround.
+
+`macro_loop_scope_selects_argument_paths_in_source_object_and_ir` in
+`tests/normal_user_model.rs` exercises the supplied macro and nested loops using
+the production archive/shell transport with separate local/endpoint homes. It
+checks both files and changed bytes across source, source-free object, and IR
+execution, preserves an unrelated `file/` directory, and checks quoted and
+unbound literal names. The Unix shell launcher is a transport harness, not an
+actual Windows WSL acceptance test. Focused standard-library and scope-returning
+function journeys also pass, as does strict Clippy for the binary and changed
+integration target.
+
 ## Engineering basis
 
 The public filesystem surface follows the operations and value distinctions in
