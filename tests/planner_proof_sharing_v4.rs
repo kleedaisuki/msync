@@ -35,7 +35,9 @@ fn independent_pair_proofs_share_immutable_node_effects_and_still_reject_tamperi
         fs::write(root.path().join(format!("d{index}")), b"before").unwrap();
     }
     let program = compile(root.path(), "s0 -> d0\ns1 -> d1\ns2 -> d2\n");
-    let prepared = preparation::prepare(&program, true).unwrap();
+    let mut prepared = preparation::prepare(&program, true).unwrap();
+    assert!(prepared.graph.commutations.is_empty());
+    prepared.graph = hir::graph::build_with_context(&prepared.program, &prepared.context);
     let proofs = &prepared.graph.commutations;
     assert_eq!(proofs.len(), 3);
     let first = proofs

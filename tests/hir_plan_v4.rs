@@ -922,6 +922,7 @@ fn hierarchy_selectors_and_explicit_replacement_keep_tree_hazards() {
 }
 
 #[test]
+#[cfg(windows)]
 fn normalization_does_not_need_io_and_native_wsl_aliases_stay_conservative() {
     let left = FileResource::new(location("D:\\work\\a\\..\\B"), Scope::Exact);
     let same = FileResource::new(location("d:/work/b"), Scope::Exact);

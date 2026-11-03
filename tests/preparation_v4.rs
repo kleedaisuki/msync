@@ -279,7 +279,8 @@ fn a_known_future_file_still_defers_traversal_of_its_old_host_ancestor() {
         instruction: consumed,
         role: EndpointRole::Source
     }));
-    assert!(!prepared.context.host_unstable.contains(&EndpointKey {
+    // Producing node also changes its parent's namespace, containing observed.
+    assert!(prepared.context.host_unstable.contains(&EndpointKey {
         instruction: consumed,
         role: EndpointRole::Destination
     }));
@@ -1016,7 +1017,13 @@ fn existing_parent_frontiers_restore_disjoint_creation_scheduling_and_are_certif
     let mut prepared = preparation::prepare(&program, true).unwrap();
     assert_eq!(prepared.context.existing_parent_frontiers.len(), 2);
     assert!(prepared.graph.dependencies.is_empty());
-    assert_eq!(prepared.graph.commutations.len(), 1);
+    assert!(prepared.graph.commutations.is_empty());
+    assert_eq!(
+        msync::hir::graph::build_with_context(&prepared.program, &prepared.context)
+            .commutations
+            .len(),
+        1
+    );
     prepared.verify().unwrap();
     prepared.context.existing_parent_frontiers.clear();
     assert!(prepared.verify().is_err());
@@ -1026,7 +1033,13 @@ fn existing_parent_frontiers_restore_disjoint_creation_scheduling_and_are_certif
     )
     .unwrap();
     assert!(siblings.graph.dependencies.is_empty());
-    assert_eq!(siblings.graph.commutations.len(), 1);
+    assert!(siblings.graph.commutations.is_empty());
+    assert_eq!(
+        msync::hir::graph::build_with_context(&siblings.program, &siblings.context)
+            .commutations
+            .len(),
+        1
+    );
     siblings.verify().unwrap();
     let shared_missing_parent = preparation::prepare(
         &compile(root.path(), "\"a\" -> missing/a\n\"b\" -> missing/b\n"),
