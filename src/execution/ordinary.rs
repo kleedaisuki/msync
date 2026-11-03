@@ -158,7 +158,9 @@ impl Ordinary {
                 {
                     return Ok(None);
                 }
-                let Some(metadata) = metadata(path, ready.span)? else {
+                let Some(metadata) = metadata(path, ready.span)
+                    .map_err(|error| error.with_operand(self.origin.as_ref(), false))?
+                else {
                     if fs::symlink_metadata(path)
                         .is_ok_and(|metadata| metadata.file_type().is_symlink())
                     {
@@ -167,13 +169,15 @@ impl Ordinary {
                     return Err(ExecutionError::new(
                         format!("source does not exist: {}", path.display()),
                         ready.span,
-                    ));
+                    ).with_operand(self.origin.as_ref(), false)
+                    .help("Check the resolved source path and create it before retrying the transfer."));
                 };
                 if !metadata.is_file() {
                     return Ok(None);
                 }
                 Some(NodeMetadata::capture(&metadata).map_err(|cause| {
                     ExecutionError::caused("cannot read source metadata", ready.span, cause)
+                        .with_operand(self.origin.as_ref(), false)
                 })?)
             }
             Source::Literal(_) => None,
@@ -192,11 +196,15 @@ impl Ordinary {
         } else {
             ready.target.clone()
         };
-        if metadata(&target, ready.span)?.is_some_and(|metadata| metadata.is_dir()) {
+        if metadata(&target, ready.span)
+            .map_err(|error| error.with_operand(self.origin.as_ref(), true))?
+            .is_some_and(|metadata| metadata.is_dir())
+        {
             return Err(ExecutionError::new(
                 "the exact destination is an existing directory",
                 ready.span,
             )
+            .with_operand(self.origin.as_ref(), true)
             .help("Append '/' for container insertion, or '/.' to replace the directory."));
         }
         let mut trace = copy_trace(ready, "ordinary-assignment");
@@ -227,8 +235,10 @@ impl Ordinary {
     ) -> Result<ExecutionReport> {
         let span = ready.span;
         let no_clobber = false;
-        let stage = crate::io::StagedFile::new(target, no_clobber)
-            .map_err(|cause| ExecutionError::caused("cannot create file stage", span, cause))?;
+        let stage = crate::io::StagedFile::new(target, no_clobber).map_err(|cause| {
+            ExecutionError::caused("cannot create file stage", span, cause)
+                .with_operand(self.origin.as_ref(), true)
+        })?;
         observe(
             self.progress.as_ref(),
             ready,
@@ -254,6 +264,7 @@ impl Ordinary {
                 ExecutionError::cancelled("file copy cancelled", span)
             } else {
                 ExecutionError::caused("cannot copy source", span, cause)
+                    .with_operand(self.origin.as_ref(), false)
             }
         })?;
         drop(acquire);
@@ -271,19 +282,25 @@ impl Ordinary {
             None => stage.preserve_target_permissions(),
         };
         prepared.finish_result(&preparation);
-        preparation
-            .map_err(|cause| ExecutionError::caused("cannot apply file metadata", span, cause))?;
+        preparation.map_err(|cause| {
+            ExecutionError::caused("cannot apply file metadata", span, cause)
+                .with_operand(self.origin.as_ref(), true)
+        })?;
         acquired();
         self.options.check(span)?;
-        crate::filesystem::sync_file(stage.path())
-            .map_err(|cause| failure("cannot flush staged file", span, cause))?;
+        crate::filesystem::sync_file(stage.path()).map_err(|cause| {
+            failure("cannot flush staged file", span, cause)
+                .with_operand(self.origin.as_ref(), true)
+        })?;
         drop(prepared);
         observe(self.progress.as_ref(), ready, Phase::Publish, &report);
         let mut publish = crate::telemetry::span("ordinary.publish");
         let publication = stage.commit();
         publish.finish_result(&publication);
-        publication
-            .map_err(|cause| ExecutionError::caused("cannot replace destination", span, cause))?;
+        publication.map_err(|cause| {
+            ExecutionError::caused("cannot replace destination", span, cause)
+                .with_operand(self.origin.as_ref(), true)
+        })?;
         Ok(report)
     }
 
@@ -297,6 +314,7 @@ impl Ordinary {
                 ready.span,
                 cause,
             )
+            .with_operand(self.origin.as_ref(), false)
         })?;
         if !source_metadata.is_dir() && !source_metadata.file_type().is_symlink() {
             if ready.pattern.is_some() {
@@ -352,9 +370,10 @@ impl Ordinary {
                 && metadata(&target, ready.span)?.is_some()
             {
                 return Err(ExecutionError::new(
-                    "a directory source needs an absent exact target or '/.'",
+                    "a directory source needs an absent exact target; an existing directory requires '/' or '/.'",
                     ready.span,
-                ));
+                ).with_operand(self.origin.as_ref(), true)
+                .help("Append '/' to merge into the existing directory, or '/.' to replace it."));
             }
             roots.push((source.clone(), target));
         }
