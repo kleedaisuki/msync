@@ -639,7 +639,7 @@ dependencies = [
 
 [[package]]
 name = "msync"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anstream",
  "clipboard-win",

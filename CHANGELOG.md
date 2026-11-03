@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1 — 2026-11-03
+
+- Fix compact `scope::file` selection when the scope comes from a runtime loop:
+  resolve the bound path or macro argument instead of using the literal name
+  `file`. Preserve endpoint-specific home resolution and quoted filenames.
+- Exercise nested endpoint/path macro loops in the installed Windows executable,
+  Windows portable package and Linux package acceptance journeys.
+
+See the [release notes](docs/releases/0.7.1.md).
+
 ## 0.7.0 — 2026-11-02
 
 - Introduce the typed `$std` standard library with `fs`, `ranges`, `path`,
