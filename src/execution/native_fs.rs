@@ -1059,7 +1059,12 @@ mod tests {
         assert!(boolean_result(
             dispatch("is_empty", std::slice::from_ref(&directory), &cancel, span).unwrap()
         ));
-        let source = location(&root.path().join("dir/source '$(false)'\nα"));
+        let name = if cfg!(windows) {
+            "source '$(false)' α"
+        } else {
+            "source '$(false)'\nα"
+        };
+        let source = location(&root.path().join("dir").join(name));
         fs::write(&source.path, b"original bytes").unwrap();
         let inaccessible_child = location(&Path::new(&source.path).join("child"));
         for name in ["status", "symlink_status"] {
