@@ -135,6 +135,8 @@ Assert-Selected 'src/structured/jobs.rs' @('latency_v6', 'performance_journeys')
 Assert-Selected 'src/context.rs' @('object_analysis_v6')
 $editorWorkflow = Select-Changes @('.github/workflows/editor.yml')
 Assert (-not $editorWorkflow.rust -and -not $editorWorkflow.full) 'The dedicated editor workflow must not start the unrelated Rust test matrix'
+$rustWorkflow = Select-Changes @('.github/workflows/ci.yml')
+Assert (-not $rustWorkflow.rust -and -not $rustWorkflow.full) 'Rust workflow orchestration must not expand the selected program contracts into a full matrix'
 Assert-Selected 'src/types.rs' @('acceptance_v065', 'language_v065', 'types_v065', 'ranges_v065', 'pipeline_context_v065')
 Assert-Selected 'src/compiler/structured/v6.rs' @('acceptance_v065', 'language_v065', 'ranges_v065')
 Assert-Selected 'src/execution/ordinary_cohort.rs' @('acceptance_v065', 'ranges_v065')

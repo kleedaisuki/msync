@@ -85,7 +85,7 @@ foreach ($path in $Paths) {
             }
             break
         }
-        '^\.github/workflows/(editor|release)\.yml$' { break }
+        '^\.github/workflows/(ci|editor|release)\.yml$' { break }
         '^(build\.rs|\.github/)' {
             $full = $true
             $rust = $true
