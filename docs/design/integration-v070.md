@@ -225,3 +225,47 @@ job was superseded by the packaging-only follow-up. It is not counted as
 full-project Rust acceptance. The release uses the focused local checks and
 native package/editor journeys recorded above.
 Previously published tags and asset bytes were not replaced.
+
+## Published patch v0.7.1
+
+The dynamic qualifier operand fix is commit `1754bd4`; release preparation is
+`fbdb30dd1dea10c955621f4239a8fa4be9cb8d93`. The immutable `v0.7.1` tag and release
+target both point to the latter. The
+[release run](https://github.com/kleedaisuki/msync/actions/runs/41595828293)
+published [v0.7.1](https://github.com/kleedaisuki/msync/releases/tag/v0.7.1) at
+2026-11-03 15:27:49 +08:00.
+
+Native Windows portable and installed-program acceptance passed, including the
+new nested endpoint/path macro loop compiled to an object and executed after
+source deletion. Both target files' bytes were checked using the packaged
+executable. Install, repair, cross-version upgrade, PATH and uninstall acceptance
+also passed. Linux package and actual packaged-binary VS Code host acceptance
+passed. All package versions agree at 0.7.1.
+
+All four public assets were downloaded to `dist/releases/v0.7.1` and matched the
+published SHA256SUMS. The Windows ZIP's complete internal manifest also matched;
+it contains all five standard source modules. Its `bin/msync.exe` SHA-256 is
+`6f124c08862ee77d878f6bb8e966bfca321d72735911bc9cd86ad8d28ac1ce93`.
+The public VSIX manifest reports 0.7.1. The downloaded Linux executable reports
+0.7.1 and passed the shared source-free macro regression smoke locally. Download
+and smoke scratch evidence is under `.temp/release-v071/`.
+
+| Public asset | SHA-256 |
+| --- | --- |
+| `msync-0.7.1-linux-x86_64.tar.gz` | `8f389667bcbbcb8fc2456e133adb72090520cd525de403f3d5373eee41321611` |
+| `msync-0.7.1-windows-x86_64-setup.exe` | `5992783b4ad0b4966300df32f99832e732538e2d8a4cbef164118fc976dc2cf0` |
+| `msync-0.7.1-windows-x86_64.zip` | `d91959e5a6fbd38aa3917e68f13278cd522cb9dc23f932d150cc9034135991b5` |
+| `msync-language-0.7.1.vsix` | `d79901e4ccd31110900602494966ce8a8adf47e889c28babf9735dc6207ed44b` |
+
+The independent [Rust run](https://github.com/kleedaisuki/msync/actions/runs/41595828315)
+is not a complete-project pass. Ubuntu repeated the previously recorded
+`object_export_never_replaces_its_source_or_a_readonly_output` failure after all
+246 active library tests passed. Windows passed 227 library tests and failed two
+unchanged fixtures: `local_filesystem_lifecycle_and_endpoint_values` attempts to
+create a filename containing a newline, rejected as InvalidFilename;
+`a_shared_capture_root_excludes_other_live_workers_without_hiding_user_scratch`
+fails its path `strip_prefix` unwrap. The affected test files and `src/main.rs`
+are unchanged from v0.7.0, and these direct fixture failures do not execute the
+modified compiler selection branch. No unrelated fixes or CI suppressions were
+bundled into this patch. Local focused source/object/IR transfer acceptance,
+strict changed-target Clippy and formatting passed before push.
