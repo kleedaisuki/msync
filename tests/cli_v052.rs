@@ -44,7 +44,7 @@ fn symbols_release_acquire_and_nested_sources_run_as_one_real_compiled_program()
     .unwrap();
     let exe = format!("{:?}", env!("CARGO_BIN_EXE_msync"));
     let source = format!(
-        "include \"shared.msync\"\nsymbol executable():\n    return $local::{exe}\nacqrel input(identity($pwd)::pwd, \"input file.txt\") -> output\nexecute \"parts/<.+\\\\.msync>\"\nrelease version => executable()(\"--version\")\nversion::stdout -> version.txt\nacquire version\n"
+        "include \"shared.msync\"\nsymbol executable():\n    return $local::{exe}\nacqrel input(identity($pwd)::pwd, \"input file.txt\") -> output\nexecute \"parts\" / <.+\\.msync>\nrelease version => executable()(\"--version\")\nversion::stdout -> version.txt\nacquire version\n"
     );
     fs::write(root.path().join("entry.msync"), source).unwrap();
     success(run(root.path(), &["check", "entry.msync"]));

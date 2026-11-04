@@ -241,7 +241,16 @@ fn repl_slash_commands_keep_bindings_recover_from_errors_and_load_files() {
         "check must not leak bindings: {out}"
     );
     assert!(!out.contains("msync>"), "piped REPL must not print prompts");
-    assert!(stderr(&result).contains("unknown endpoint"));
+    let diagnostic = stderr(&result);
+    assert!(
+        diagnostic.contains("operator '::' requires Scope or Process on the left, got Path"),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic.contains("left operand expands to endpoint-relative path item \"unknown\""),
+        "{diagnostic}"
+    );
+    assert!(!directory.path().join("work/ignored").exists());
     assert_eq!(
         fs::read_to_string(directory.path().join("work/result.txt")).unwrap(),
         "payload"
@@ -464,9 +473,15 @@ fn stdin_has_no_file_context_or_implicit_file_alias_and_namespace_formatting_is_
         "file::this -> output.txt\n",
     );
     assert!(!unbound_alias.status.success());
+    let diagnostic = stderr(&unbound_alias);
     assert!(
-        stderr(&unbound_alias).contains("unknown endpoint")
-            || stderr(&unbound_alias).contains("unknown namespace")
+        diagnostic.contains("operator '::' requires Scope or Process on the left, got Path"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("-:1:5"), "{diagnostic}");
+    assert!(
+        diagnostic.contains("left operand expands to endpoint-relative path item \"file\""),
+        "{diagnostic}"
     );
     let file = directory.path().join("namespaces.msync");
     fs::write(
@@ -622,15 +637,36 @@ fn endpoint_typo_diagnostic_points_to_exact_token_and_suggests_binding() {
     assert!(!output.status.success());
     let diagnostic = stderr(&output);
     assert!(
-        diagnostic.contains("remote"),
+        diagnostic.contains("operator '::' requires Scope or Process on the left, got Path"),
+        "{diagnostic}"
+    );
+    assert!(
+        diagnostic
+            .lines()
+            .any(|line| line.contains("help:") && line.contains("remote")),
         "diagnostic should suggest the similarly named binding: {diagnostic}"
     );
-    assert!(diagnostic.contains("2:1"), "{diagnostic}");
+    assert!(diagnostic.contains("2:7"), "{diagnostic}");
     let underline = diagnostic.lines().find(|line| line.contains('^')).unwrap();
     assert_eq!(
         underline.chars().filter(|ch| *ch == '^').count(),
+        "::".len(),
+        "the primary diagnostic owns the binary operator: {diagnostic}"
+    );
+    let operand_label = diagnostic
+        .lines()
+        .find(|line| line.contains("left operand expands to"))
+        .unwrap();
+    assert_eq!(
+        operand_label
+            .split("left operand expands to")
+            .next()
+            .unwrap()
+            .chars()
+            .filter(|ch| *ch == '-')
+            .count(),
         "remtoe".len(),
-        "underline the qualifier, not the whole statement: {diagnostic}"
+        "the secondary label owns exactly the inferred left operand: {diagnostic}"
     );
 }
 
@@ -643,7 +679,7 @@ fn pipe_diagnostics_are_plain_and_forced_color_is_available() {
     let plain_error = stderr(&plain);
     assert!(!plain_error.contains('\u{1b}'));
     assert!(plain_error.contains("unknown::目录 -> output"));
-    assert!(plain_error.contains("2:1"));
+    assert!(plain_error.contains("2:8"));
     assert!(plain_error.contains('^'));
     let colored = invoke(
         directory.path(),
