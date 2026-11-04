@@ -95,12 +95,22 @@ fn native_terminal_highlights_before_enter_and_keeps_unicode_editing_history_and
 
     repl.send("probe := $pwd::pwd");
     let edit = repl.until_matching(|raw| {
-        pty::color_of(raw, "$pwd").is_some() && pty::color_of(raw, ":=").is_some()
+        pty::visible(raw).contains("probe := $pwd::pwd")
+            && foreground(raw, "pwd::") == Some(35)
+            && foreground(raw, "::") == Some(33)
     });
-    assert_ne!(
-        pty::color_of(&edit, "$pwd"),
-        pty::color_of(&edit, ":="),
-        "namespace and operator need distinct lexical styles before Enter: {edit:?}"
+    for operator in [":=", "$", "::"] {
+        assert_eq!(
+            foreground(&edit, operator),
+            Some(33),
+            "{operator} must retain its independent operator style before Enter: {edit:?}"
+        );
+    }
+    assert_eq!(foreground(&edit, "pwd::"), Some(35));
+    assert_eq!(
+        foreground(&edit, "pwd"),
+        None,
+        "the selected path member must not inherit its namespace's style: {edit:?}"
     );
     assert!(!directory.path().join("probe").exists());
     repl.mark();
@@ -176,7 +186,16 @@ fn native_terminal_colors_colon_commands_context_items_and_quoted_escapes_before
     repl.mark();
 
     repl.send("root := $file::parent/assets");
-    repl.until_matching(|raw| foreground(raw, "parent") == Some(35));
+    let edit = repl.until_matching(|raw| {
+        pty::visible(raw).contains("root := $file::parent/assets")
+            && foreground(raw, "file::") == Some(35)
+            && foreground(raw, "/") == Some(33)
+    });
+    for operator in ["$", "::", "/"] {
+        assert_eq!(foreground(&edit, operator), Some(33), "{edit:?}");
+    }
+    assert_eq!(foreground(&edit, "file::"), Some(35));
+    assert_eq!(foreground(&edit, "parent"), None, "{edit:?}");
     repl.send("\u{3}");
     repl.prompt();
     repl.mark();
