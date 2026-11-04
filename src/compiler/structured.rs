@@ -1883,15 +1883,15 @@ fn resolve_reference(operand: &Expr, operator: Span, scope: &Scope) -> Result<Va
     Compiler::builtin_reference(&path.path)
         .map(Value::Space)
         .ok_or_else(|| {
-            Report::new(
+            let report = Report::new(
                 format!("unknown binding reference '${}'", path.path),
                 Span {
                     start: operator.start,
                     end: operand.span.end,
                 },
             )
-            .help("Declare the value before referencing it; '$local', '$pwd', '$file' and '$std' are built-in scopes.")
-            .into()
+            .help("Declare the value before referencing it; '$local', '$pwd', '$file' and '$std' are built-in scopes.");
+            diagnostics::suggest_binding(report, &path.path, scope, |_| true).into()
         })
 }
 
@@ -2200,7 +2200,7 @@ fn resolve_select(
         value,
         Value::Space(_) | Value::Module(_) | Value::Process(_)
     ) {
-        return Err(Report::new(
+        let report = Report::new(
             format!(
                 "operator '::' requires Scope or Process on the left, got {}",
                 value.ty()
@@ -2210,8 +2210,19 @@ fn resolve_select(
         .label(
             namespace.span,
             format!("left operand expands to {}", diagnostics::describe(&value)),
-        )
-        .into());
+        );
+        let report = match &namespace.kind {
+            ExprKind::Path(path) if path.qualifier.is_none() => {
+                diagnostics::suggest_binding(report, &path.path, scope, |candidate| {
+                    matches!(
+                        candidate.ty(),
+                        crate::types::Type::Scope | crate::types::Type::Process
+                    )
+                })
+            }
+            _ => report,
+        };
+        return Err(report.into());
     }
     let path = match &item.kind {
         ExprKind::Path(path) if path.qualifier.is_none() => Some(path.clone()),
@@ -3044,6 +3055,29 @@ mod operator_tests {
             &source[errors[0].diagnostic.span.start..errors[0].diagnostic.span.end],
             "true"
         );
+    }
+
+    #[test]
+    fn lookup_spelling_help_uses_visible_bindings_with_the_required_capability() {
+        for source in [
+            "remote => $local\nremtoex := \"closer spelling, wrong type\"\nremtoe::input -> output\n",
+            "scope remote:\n    item := input\nremtoe::item -> output\n",
+            "remote := $local\n$remtoe::input -> output\n",
+            "remote := \"literal value\"\n$remtoe -> output\n",
+        ] {
+            let errors = Session::new()
+                .compile(&language::parse(source).unwrap(), &context())
+                .unwrap_err();
+            assert_eq!(errors.len(), 1);
+            assert!(
+                errors[0]
+                    .help
+                    .iter()
+                    .any(|help| help == "A similarly named binding is 'remote'."),
+                "{errors:?}",
+            );
+            assert!(errors[0].help.iter().all(|help| !help.contains("remtoex")));
+        }
     }
 
     #[test]

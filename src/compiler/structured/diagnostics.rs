@@ -7,6 +7,25 @@ const VALUE_LIMIT: usize = 160;
 
 pub(super) type ExpansionMap = imbl::OrdMap<String, ExpansionTrace>;
 
+/// Spelling help is selected from values actually visible in this environment;
+/// callers supply the semantic capability required by the failed operation.
+pub(super) fn suggest_binding(
+    report: Report,
+    name: &str,
+    scope: &Scope,
+    accepts: impl Fn(&Value) -> bool,
+) -> Report {
+    let candidates = scope
+        .values
+        .iter()
+        .filter(|(_, value)| accepts(value))
+        .map(|(name, _)| name.as_str());
+    match crate::suggest::closest(name, candidates) {
+        Some(candidate) => report.help(format!("A similarly named binding is '{candidate}'.")),
+        None => report,
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Frame {
     site: SourceSpan,
