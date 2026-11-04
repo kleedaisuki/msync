@@ -270,7 +270,7 @@ test('unquoted URI schemes, separators and atomic addresses have distinct native
         'ssh://forge', 'ssh://user@forge:2222/work/tree',
         'http://example.test/a?x=1#fragment', 'https://example.test',
         'tcp://127.0.0.1:8022', 'tcp://[::1]:8022',
-        'ssh://user@[2001:db8::1]:2222/work/tree',
+        'ssh://user@[2001:db8::1]:2222/work/tree', 'ssh://forge/工作🌟/config',
     ]) {
         const separator = uri.indexOf('://');
         const line = `remote := ${uri}`;
@@ -300,4 +300,15 @@ test('custom semantic URI roles inherit theme types and native TextMate fallback
     const scopes = manifest.contributes.semanticTokenScopes.find(value => value.language === 'msync').scopes;
     assert.deepEqual(scopes.protocol, ['support.type.protocol.msync']);
     assert.deepEqual(scopes.endpoint, ['string.unquoted.endpoint.msync']);
+});
+
+test('URI editing retains protocol roles before an address or IPv6 bracket is complete', () => {
+    hasScope('remote := ssh://', 'ssh', 'support.type.protocol.msync');
+    hasScope('remote := ssh://', '://', 'keyword.operator.protocol.msync');
+    const empty = grammar.tokenizeLine('remote := ssh://', textmate.INITIAL).tokens;
+    assert.ok(!empty.some(token => token.scopes.includes('string.unquoted.endpoint.msync')));
+    hasScope('remote := tcp://[::', 'tcp', 'support.type.protocol.msync');
+    hasScope('remote := tcp://[::', '://', 'keyword.operator.protocol.msync');
+    hasScope('remote := tcp://[::', '[::', 'string.unquoted.endpoint.msync');
+    assert.ok(!scopes('remote := tcp://[::', '[::').includes('entity.name.namespace.msync'));
 });
