@@ -32,3 +32,7 @@ copy($ local, .codex/codex.prompt)
 ".codex"/codex.prompt -> "std-output"/string-path
 .codex/"codex.prompt" -> "std-output"/path-string
 .codex/codex.prompt -> "std-output"/path-path
+
+# Lexical Path operations work even when String data resembles source syntax.
+selector_shaped := "."/"<literal>"
+fs::string(fs::filename(selector_shaped)) -> std-output/literal-name

@@ -164,6 +164,9 @@ function Assert-InstalledJourney([string]$Directory) {
                 throw "Installed String/Path interoperability failed for $pairing."
             }
         }
+        if ([IO.File]::ReadAllText((Join-Path $journey 'std-output/literal-name')) -cne '<literal>') {
+            throw 'Installed native calls reinterpreted a String-generated Path as selector syntax.'
+        }
 
         # Use this account's actual Windows path, including its backslash spelling.
         $quotedBase = '"' + $journey.Replace('\', '\\').Replace('"', '\"') + '"'
