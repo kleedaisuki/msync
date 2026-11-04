@@ -195,6 +195,77 @@ fn generic_string_path_join_matrix_executes_from_source_object_and_ir() {
 }
 
 #[test]
+fn computed_paths_keep_literal_selector_spelling_through_native_calls_and_artifacts() {
+    let root = workspace();
+    fs::create_dir(root.path().join("selectors")).unwrap();
+    fs::write(root.path().join("selectors/literal"), b"selected bytes").unwrap();
+    // Angle brackets are valid ordinary filename characters on Unix. Windows
+    // still checks/exports the inferred Path contract without doing invalid I/O.
+    if !cfg!(windows) {
+        fs::write(root.path().join("<literal>"), b"literal filename bytes").unwrap();
+    }
+    fs::write(
+        root.path().join("entry.msync"),
+        concat!(
+            "literal_name := \"<literal>\"\n",
+            "direct := \".\" / \"<literal>\"\n",
+            "aliased := \".\" / literal_name\n",
+            "qualified := $local::\".\" / literal_name\n",
+            "native filename(path) = \"fs.filename\"\n",
+            "native text(path) = \"fs.generic_string\"\n",
+            "native_path := filename(direct)\n",
+            "native_join := \".\" / native_path\n",
+            "native_text := text(native_path)\n",
+            "native_string_join := \".\" / native_text\n",
+            "direct -> direct.txt\n",
+            "aliased -> aliased.txt\n",
+            "qualified -> qualified.txt\n",
+            "native_join -> native-path.txt\n",
+            "native_string_join -> native-string.txt\n",
+            "destination_name := \"<copied>\"\n",
+            "direct -> \".\" / destination_name\n",
+            "selectors/<literal> -> selected/\n",
+        ),
+    )
+    .unwrap();
+    export(root.path());
+    if cfg!(windows) {
+        return;
+    }
+    for args in [
+        ["run", "entry.msync"],
+        ["run", "program.mobj"],
+        ["run-ir", "program.json"],
+    ] {
+        success(root.path(), &args);
+        for name in [
+            "direct.txt",
+            "aliased.txt",
+            "qualified.txt",
+            "native-path.txt",
+            "native-string.txt",
+            "<copied>",
+        ] {
+            assert_eq!(
+                fs::read(root.path().join(name)).unwrap(),
+                b"literal filename bytes",
+                "{args:?}: {name}"
+            );
+            fs::remove_file(root.path().join(name)).unwrap();
+        }
+        assert_eq!(
+            fs::read(root.path().join("selected/literal")).unwrap(),
+            b"selected bytes",
+            "{args:?}: explicit source selector"
+        );
+        fs::remove_dir_all(root.path().join("selected")).unwrap();
+        if args[1] == "entry.msync" {
+            fs::remove_file(root.path().join("entry.msync")).unwrap();
+        }
+    }
+}
+
+#[test]
 fn an_unknown_reference_is_a_source_error_not_a_filename() {
     let root = workspace();
     fs::write(root.path().join("entry.msync"), "$missing -> output\n").unwrap();
