@@ -1,5 +1,8 @@
 //! Typed program arguments and lexical globals through direct native execution.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -32,19 +35,16 @@ async fn whole_program_macro_arguments_preserve_payloads_and_lexical_globals() {
         .prefix("macro-native-")
         .tempdir_in(temporary)
         .unwrap();
-    let executable = std::env::current_exe()
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
+    let executable = literal_string::quoted(&std::env::current_exe().unwrap().to_string_lossy());
     let payload = "  typed program 可莉\n保留末尾空格  ";
+    let source_payload = literal_string::quoted(payload);
     let scratch = root.path().join("scratch");
     fs::create_dir(&scratch).unwrap();
     fs::write(scratch.join("user-sentinel"), b"preserve user data").unwrap();
     let mut compiler = Session::new();
     let mut runtime = RuntimeSession::new(&Options::new(&scratch)).unwrap();
     let script = format!(
-        "capture := captured\nmacro relay(program, bytes):\n    global capture\n    bytes -> program::stdin\n    program::stdout -> capture\ncapture := wrong-output\nasync child => $local::\"{executable}\"(\"--exact\", \"macro_echo_child_fixture\", \"--ignored\", \"--nocapture\")\nrelay(child, {payload:?})\nawait child\n"
+        "capture := captured\nmacro relay(program, bytes):\n    global capture\n    bytes -> program::stdin\n    program::stdout -> capture\ncapture := wrong-output\nasync child => $local::{executable}(\"--exact\", \"macro_echo_child_fixture\", \"--ignored\", \"--nocapture\")\nrelay(child, {source_payload})\nawait child\n"
     );
     let program = compiler
         .compile(

@@ -1,3 +1,6 @@
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -42,7 +45,7 @@ fn symbols_release_acquire_and_nested_sources_run_as_one_real_compiled_program()
         "real static composition 可莉\n",
     )
     .unwrap();
-    let exe = format!("{:?}", env!("CARGO_BIN_EXE_msync"));
+    let exe = literal_string::quoted(env!("CARGO_BIN_EXE_msync"));
     let source = format!(
         "include \"shared.msync\"\nsymbol executable():\n    return $local::{exe}\nacqrel input(identity($pwd)::pwd, \"input file.txt\") -> output\nexecute \"parts\" / <.+\\.msync>\nrelease version => executable()(\"--version\")\nversion::stdout -> version.txt\nacquire version\n"
     );

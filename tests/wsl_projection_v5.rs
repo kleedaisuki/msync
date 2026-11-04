@@ -1,6 +1,9 @@
 //! Actual WSL projections of Windows files must retain local alias provenance.
 #![cfg(windows)]
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -43,7 +46,7 @@ fn projected(path: &Path) -> String {
 }
 
 fn quoted(value: &str) -> String {
-    serde_json::to_string(value).unwrap()
+    literal_string::quoted(value)
 }
 
 async fn run(root: &Path, scratch: &Path, script: &str) -> Result<(), String> {

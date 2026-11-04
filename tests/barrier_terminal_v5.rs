@@ -4,6 +4,9 @@
 #[allow(dead_code)]
 mod pty;
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -25,15 +28,11 @@ fn workspace() -> tempfile::TempDir {
 #[test]
 fn terminal_ctrl_c_drains_a_running_child_until_it_exits_itself() {
     let root = workspace();
-    let fixture = std::env::current_exe()
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
+    let fixture = literal_string::quoted(&std::env::current_exe().unwrap().to_string_lossy());
     fs::write(
         root.path().join("start.msync"),
         format!(
-            "async child => $local::\"{fixture}\"(\"--exact\", \"terminal_drain_child_fixture\", \"--ignored\", \"--nocapture\")\n"
+            "async child => $local::{fixture}(\"--exact\", \"terminal_drain_child_fixture\", \"--ignored\", \"--nocapture\")\n"
         ),
     )
     .unwrap();

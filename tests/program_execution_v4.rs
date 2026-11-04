@@ -1,5 +1,8 @@
 //! Direct asynchronous processes, replayable ports, and long-lived stream owners.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -32,16 +35,12 @@ fn compile(compiler: &mut Session, work: &Path, text: &str) -> msync::hir::Progr
 }
 
 fn executable() -> String {
-    std::env::current_exe()
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
+    literal_string::quoted(&std::env::current_exe().unwrap().to_string_lossy())
 }
 
 fn command(name: &str, mode: &str) -> String {
     format!(
-        "{name} => $local::\"{}\"(\"--exact\", \"program_child_fixture\", \"--ignored\", \"--nocapture\", \"--skip\", \"mode:{mode}\")\n",
+        "{name} => $local::{}(\"--exact\", \"program_child_fixture\", \"--ignored\", \"--nocapture\", \"--skip\", \"mode:{mode}\")\n",
         executable()
     )
 }

@@ -1,3 +1,6 @@
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use msync::language::{self, Expr, ExprKind, StatementKind, Submission, SubmissionBuffer};
 use proptest::prelude::*;
 
@@ -256,7 +259,7 @@ proptest! {
         values in prop::collection::vec(("[A-Za-z 可莉🌟#,$:()\\[\\]]{0,16}", any::<bool>()), 0..9),
     ) {
         let elements = values.iter().flat_map(|(text, value)| [
-            serde_json::to_string(text).unwrap(), value.to_string(),
+            literal_string::quoted(text), value.to_string(),
         ]).collect::<Vec<_>>();
         let source = format!("items := [{}]\n", elements.join(", "));
         let formatted = language::format(&source).unwrap();

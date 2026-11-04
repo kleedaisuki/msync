@@ -1,5 +1,8 @@
 //! Context changes, not filename conventions, determine relocatable execution.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -16,9 +19,7 @@ fn workspace() -> tempfile::TempDir {
 }
 
 fn quote(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
+    literal_string::quoted(&path.to_string_lossy())
 }
 
 fn invoke(cwd: &Path, arguments: &[&str], bindings: &[(&str, &Path)]) -> Output {
@@ -90,7 +91,7 @@ fn identical_object_bytes_bind_two_environments_without_rebasing_absolute_consta
     let absolute = build.join("absolute-constant");
     fs::write(&absolute, b"old constant contents must not be captured").unwrap();
     fs::write(build.join("code.msync"), format!(
-        "macro copy(src, des):\n    src -> des\ncopy($pwd::pwd / \"input\", from-pwd)\ncopy(~/input, from-home)\ncopy($env::MSYNC_OBJECT_INPUT/input, from-env)\n$local::\"{}\" -> from-absolute\n",
+        "macro copy(src, des):\n    src -> des\ncopy($pwd::pwd / \"input\", from-pwd)\ncopy(~/input, from-home)\ncopy($env::MSYNC_OBJECT_INPUT/input, from-env)\n$local::{} -> from-absolute\n",
         quote(&absolute)
     )).unwrap();
     success(&invoke(

@@ -2,6 +2,9 @@
 #[path = "support/statement_storage.rs"]
 mod statement_storage;
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -1300,13 +1303,15 @@ fn ssh_remote_file_stages_rollback_after_prefix_reset_cancel_and_future_abort() 
     success(&fixture.remote("mkfifo /root/finish-no-reader"));
     fs::write(fixture.workspace().join("empty.bin"), []).unwrap();
     let source = format!(
-        "remote => ssh://root@127.0.0.1:{}\n{:?} -> remote::~/finish-no-reader\n",
+        "remote => ssh://root@127.0.0.1:{}\n{} -> remote::~/finish-no-reader\n",
         fixture.port,
-        fixture
-            .workspace()
-            .join("empty.bin")
-            .to_string_lossy()
-            .replace('\\', "/")
+        literal_string::quoted(
+            &fixture
+                .workspace()
+                .join("empty.bin")
+                .to_string_lossy()
+                .replace('\\', "/")
+        )
     );
     success(
         &fixture.command(

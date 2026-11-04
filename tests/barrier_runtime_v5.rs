@@ -1,5 +1,8 @@
 //! Real process gates establish ordering independently of scheduler timing.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -23,7 +26,7 @@ fn workspace() -> tempfile::TempDir {
 }
 
 fn quoted(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    literal_string::quoted(value)
 }
 
 fn gate_command(address: std::net::SocketAddr, complete: &Path, before: Option<&Path>) -> String {

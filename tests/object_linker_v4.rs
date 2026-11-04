@@ -1,5 +1,8 @@
 //! Lexical context substitution never observes or executes the filesystem.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::Path;
 
@@ -91,14 +94,11 @@ fn module_context_relocates_cwd_home_and_debug_without_touching_endpoints() {
 #[test]
 fn absolute_constants_under_the_compile_directory_are_not_relocated_by_prefix() {
     let fixture = workspace();
-    let constant = fixture
-        .path()
-        .join("literal-constant")
-        .to_string_lossy()
-        .replace('\\', "\\\\");
+    let constant =
+        literal_string::quoted(&fixture.path().join("literal-constant").to_string_lossy());
     let object = module(
         fixture.path(),
-        &format!("$local::\"{constant}\" -> $pwd::pwd / \"output\"\n"),
+        &format!("$local::{constant} -> $pwd::pwd / \"output\"\n"),
     );
     let new = fixture.path().join("another");
     fs::create_dir(&new).unwrap();

@@ -1,5 +1,8 @@
 //! Actual process launches need no transaction provider; failures retain their runtime phase.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -30,9 +33,7 @@ fn invoke(root: &Path, arguments: &[&str]) -> Output {
 }
 
 fn literal_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
+    literal_string::quoted(&path.to_string_lossy())
 }
 
 #[test]
@@ -69,7 +70,7 @@ async fn an_embedding_program_launch_requires_neither_worker_nor_isolation_provi
     let root = workspace();
     let executable = literal_path(Path::new(env!("CARGO_BIN_EXE_msync")));
     let source = format!(
-        "macro unused(src, des):\n    src -> des\n\nprogram => $local::\"{executable}\"(\"--version\")\nprogram::stdout -> version\nprogram::exit_code -> result\n"
+        "macro unused(src, des):\n    src -> des\n\nprogram => $local::{executable}(\"--version\")\nprogram::stdout -> version\nprogram::exit_code -> result\n"
     );
     let context = CompileContext {
         pwd: root.path().to_owned(),
@@ -92,7 +93,7 @@ fn a_program_macro_executes_without_a_native_transaction_backend() {
     let executable = literal_path(Path::new(env!("CARGO_BIN_EXE_msync")));
     fs::write(
         root.path().join("code.msync"),
-        format!("macro launch():\n    program => $local::\"{executable}\"(\"--version\")\n    program::exit_code -> result\nlaunch()\n"),
+        format!("macro launch():\n    program => $local::{executable}(\"--version\")\n    program::exit_code -> result\nlaunch()\n"),
     )
     .unwrap();
     for command in ["compile", "run"] {
@@ -113,7 +114,7 @@ fn a_missing_executable_is_a_runtime_failure_at_the_macro_call() {
     let executable = literal_path(&root.path().join("no-such-executable"));
     fs::write(
         root.path().join("code.msync"),
-        format!("macro launch():\n    program => $local::\"{executable}\"()\n\nlaunch()\n"),
+        format!("macro launch():\n    program => $local::{executable}()\n\nlaunch()\n"),
     )
     .unwrap();
     let checked = invoke(root.path(), &["check", "code.msync"]);

@@ -1,5 +1,8 @@
 #![cfg(unix)]
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -109,7 +112,7 @@ fn backslash_filename_is_not_forwarded_from_a_directory_path() {
     )
     .unwrap();
     fs::write(work.path().join("slash\\name"), b"literal backslash bytes").unwrap();
-    let literal = serde_json::to_string("slash\\name").unwrap();
+    let literal = literal_string::quoted("slash\\name");
     let source =
         format!("\"new directory-path bytes\" -> slash/name\n$local::{literal} -> copied\n");
     let output = run(work.path(), &source);

@@ -1,3 +1,6 @@
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use msync::highlight::{self, TokenKind};
 use msync::language::{self, BindingOp, ExprKind, StatementKind, Submission, SubmissionBuffer};
 use proptest::prelude::*;
@@ -151,7 +154,7 @@ proptest! {
         awaited in any::<bool>(),
     ) {
         let prefix = format!("{}{}", if asynchronous { "async " } else { "" }, if awaited { "await " } else { "" });
-        let source = format!("{prefix}\"{}\" -> output\n", value.replace('\t', "\\t"));
+        let source = format!("{prefix}{} -> output\n", literal_string::quoted(&value));
         let formatted = language::format(&source).unwrap();
         prop_assert_eq!(language::format(&formatted).unwrap(), formatted.clone());
         let document = language::parse(&formatted).unwrap();

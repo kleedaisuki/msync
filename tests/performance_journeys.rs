@@ -3,6 +3,9 @@
 #[path = "support/journey_process.rs"]
 mod journey_process;
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::Path;
 use std::process::Output;
@@ -118,7 +121,7 @@ fn released_program_completion_is_visible_while_repl_input_remains_idle() {
         ),
     )
     .unwrap();
-    let executable = serde_json::to_string(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let executable = literal_string::quoted(env!("CARGO_BIN_EXE_msync"));
     let mut repl = Process::start(Process::command(root.path(), &["repl", "--color", "never"]));
     repl.send(
         format!(

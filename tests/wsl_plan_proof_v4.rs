@@ -1,6 +1,9 @@
 //! Real metadata evidence, not an injected regular-file premise.
 #![cfg(windows)]
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -169,14 +172,11 @@ fn wsl_drive_projection_and_opaque_program_remain_unverified() {
     );
     assert!(!plan.graph.dependencies.is_empty());
     assert!(!cwd.join("out").exists());
-    let executable = std::env::current_exe()
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "\\\\");
+    let executable = literal_string::quoted(&std::env::current_exe().unwrap().to_string_lossy());
     let plan = fixture.prepare(
         &cwd,
         &format!(
-            "p => $local::\"{executable}\"()\n\"first\" -> out\n$wsl::\"{}/source\" -> out\n",
+            "p => $local::{executable}()\n\"first\" -> out\n$wsl::\"{}/source\" -> out\n",
             fixture.remote
         ),
     );

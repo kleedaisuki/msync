@@ -1,5 +1,8 @@
 //! Relocations follow typed value provenance, never an absolute-path prefix guess.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::path::{Path, PathBuf};
 
 use msync::compiler::{
@@ -77,14 +80,10 @@ fn macro_parameters_preserve_home_and_pwd_anchors_without_machine_paths() {
 #[test]
 fn an_explicit_absolute_constant_under_compile_pwd_is_not_made_relocatable() {
     let context = context("code.msync");
-    let absolute = context
-        .pwd
-        .join("absolute")
-        .to_string_lossy()
-        .replace('\\', "\\\\");
+    let absolute = literal_string::quoted(&context.pwd.join("absolute").to_string_lossy());
     let compiled = lower(
         &mut Session::new(),
-        &format!("$local::\"{absolute}\" -> result\n$pwd::pwd / \"relative\" -> second\n"),
+        &format!("$local::{absolute} -> result\n$pwd::pwd / \"relative\" -> second\n"),
         &context,
     );
     assert!(

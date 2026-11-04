@@ -3,6 +3,9 @@
 #[path = "support/pty.rs"]
 mod pty;
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -305,7 +308,7 @@ fn a_background_flow_failure_does_not_wait_for_an_unrelated_held_child() {
     )
     .unwrap();
     let mut repl = Repl::start(root.path());
-    let executable = serde_json::to_string(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let executable = literal_string::quoted(env!("CARGO_BIN_EXE_msync"));
     repl.send(&format!(
         "release child => $local::{executable}(\"run\", \"held.msync\")\n"
     ));

@@ -1,5 +1,8 @@
 //! Independent integration regressions for ownership across structured regions.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -50,7 +53,7 @@ fn constant_dead_arm_does_not_leave_relocations_to_discarded_nodes() {
 #[test]
 fn dead_async_launch_in_macro_does_not_escape_as_a_phantom_join() {
     let root = workspace();
-    let executable = serde_json::to_string(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let executable = literal_string::quoted(env!("CARGO_BIN_EXE_msync"));
     fs::write(root.path().join("entry.msync"), format!("macro task():\n    if false:\n        release child => $local::{executable}(\"--version\")\n    \"kept\" -> selected\ntask()\n")).unwrap();
     success(run(root.path(), &["run", "entry.msync"]));
     assert_eq!(fs::read(root.path().join("selected")).unwrap(), b"kept");
@@ -59,7 +62,7 @@ fn dead_async_launch_in_macro_does_not_escape_as_a_phantom_join() {
 #[test]
 fn mutually_exclusive_branches_may_each_consume_the_same_program_port() {
     let root = workspace();
-    let executable = serde_json::to_string(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let executable = literal_string::quoted(env!("CARGO_BIN_EXE_msync"));
     fs::write(root.path().join("switch"), b"on").unwrap();
     fs::write(root.path().join("entry.msync"), format!("release child => $local::{executable}(\"--version\")\nif exists switch:\n    child::stdout -> selected\nelse:\n    child::stdout -> other\nacquire child\n")).unwrap();
     success(run(root.path(), &["run", "entry.msync"]));
@@ -79,7 +82,7 @@ fn a_program_launch_in_a_two_iteration_for_gets_fresh_runtime_identity() {
     for name in ["a", "b"] {
         fs::write(root.path().join("inputs").join(name), name).unwrap();
     }
-    let executable = serde_json::to_string(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let executable = literal_string::quoted(env!("CARGO_BIN_EXE_msync"));
     fs::write(root.path().join("entry.msync"), format!("for item in inputs/<.+>:\n    child => $local::{executable}(\"--version\")\n    child::stdout -> version.txt\n")).unwrap();
     success(run(root.path(), &["run", "entry.msync"]));
     assert_eq!(
