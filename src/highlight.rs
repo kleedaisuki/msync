@@ -177,48 +177,61 @@ pub struct Token {
 pub fn token_spans(source: &str) -> Vec<Token> {
     let mut output = Vec::new();
     let mut offset = 0;
-    for line in crate::syntax::physical_lines(source) {
+    while offset < source.len() {
         let begin = output.len();
-        line_tokens(line, &mut output);
+        let consumed = line_tokens(&source[offset..], &mut output);
         for token in &mut output[begin..] {
             token.span.start += offset;
             token.span.end += offset;
         }
-        offset += line.len();
+        offset += consumed;
     }
     output
 }
 
-fn line_tokens(source: &str, tokens: &mut Vec<Token>) {
-    if shell_tokens(source, tokens) {
-        return;
+fn line_tokens(source: &str, tokens: &mut Vec<Token>) -> usize {
+    let mut limit = crate::syntax::physical_lines(source)
+        .next()
+        .map_or(0, str::len);
+    if shell_tokens(&source[..limit], tokens) {
+        return limit;
     }
     let mut position = 0;
-    let first = source.len() - source.trim_start().len();
+    let first = limit - source[..limit].trim_start().len();
     let mut head = true;
     let declaration = ["macro ", "symbol ", "boolean ", "native "]
         .iter()
-        .any(|keyword| source[first..].starts_with(keyword));
+        .any(|keyword| source[first..limit].starts_with(keyword));
     let mut parameters = false;
-    let mut for_name = source[first..].starts_with("for ");
-    let mut scope_name = source[first..].starts_with("scope ");
-    while position < source.len() {
+    let mut for_name = source[first..limit].starts_with("for ");
+    let mut scope_name = source[first..limit].starts_with("scope ");
+    while position < limit {
+        let active = &source[..limit];
         let start = position;
         let ch = source[position..].chars().next().unwrap();
         let (end, kind) = match ch {
-            '#' if comment_boundary(source, position) => (
-                source[position..]
+            '#' if comment_boundary(active, position) => (
+                active[position..]
                     .find('\n')
-                    .map_or(source.len(), |end| position + end),
+                    .map_or(active.len(), |end| position + end),
                 TokenKind::Comment,
             ),
-            '"' => (quoted_end(source, position), TokenKind::String),
-            '/' if head && repl_command_end(source, position).is_some() => (
-                repl_command_end(source, position).unwrap(),
+            '"' => {
+                let token = crate::language::literal::scan_string(source, position).unwrap();
+                if token.span.end > limit {
+                    limit = token.span.end
+                        + crate::syntax::physical_lines(&source[token.span.end..])
+                            .next()
+                            .map_or(0, str::len);
+                }
+                (token.span.end, TokenKind::String)
+            }
+            '/' if head && repl_command_end(active, position).is_some() => (
+                repl_command_end(active, position).unwrap(),
                 TokenKind::Command,
             ),
-            '<' if selector_start(source, position) => {
-                (selector_end(source, position), TokenKind::Selector)
+            '<' if selector_start(active, position) => {
+                (selector_end(active, position), TokenKind::Selector)
             }
             '(' | ')' | '[' | ']' | ',' => {
                 if declaration && matches!(ch, '(' | ')') {
@@ -226,21 +239,21 @@ fn line_tokens(source: &str, tokens: &mut Vec<Token>) {
                 }
                 (position + 1, TokenKind::Text)
             }
-            ':' if header_colon(source, position) => (position + 1, TokenKind::Text),
-            _ if operator_at(source, position) => (
-                position + operator_len(source, position),
+            ':' if header_colon(active, position) => (position + 1, TokenKind::Text),
+            _ if operator_at(active, position) => (
+                position + operator_len(active, position),
                 TokenKind::Operator,
             ),
-            _ if ch.is_whitespace() => (whitespace_end(source, position), TokenKind::Text),
+            _ if ch.is_whitespace() => (whitespace_end(active, position), TokenKind::Text),
             _ => {
-                position = word_end(source, position);
+                position = word_end(active, position);
                 let word = &source[start..position];
                 let parameter = parameters
                     || (for_name || scope_name) && start != first
                     || declaration
                         && start != first
-                        && source[position..].trim_start().starts_with('(');
-                word_tokens(source, start, position, head, parameter, tokens);
+                        && active[position..].trim_start().starts_with('(');
+                word_tokens(active, start, position, head, parameter, tokens);
                 if start != first {
                     for_name = false;
                     scope_name = false;
@@ -255,6 +268,7 @@ fn line_tokens(source: &str, tokens: &mut Vec<Token>) {
             kind,
         });
     }
+    limit
 }
 
 fn shell_tokens(source: &str, tokens: &mut Vec<Token>) -> bool {
@@ -342,21 +356,6 @@ fn selector_start(source: &str, position: usize) -> bool {
 
 fn comment_boundary(source: &str, position: usize) -> bool {
     position == 0 || source.as_bytes()[position - 1].is_ascii_whitespace()
-}
-
-fn quoted_end(source: &str, start: usize) -> usize {
-    let mut escaped = false;
-    for (offset, ch) in source[start + 1..].char_indices() {
-        let end = start + 1 + offset + ch.len_utf8();
-        if ch == '\n' {
-            return end - 1;
-        }
-        if ch == '"' && !escaped {
-            return end;
-        }
-        escaped = ch == '\\' && !escaped;
-    }
-    source.len()
 }
 
 fn selector_end(source: &str, start: usize) -> usize {
@@ -542,10 +541,6 @@ pub fn highlight(source: &str, color: bool) -> String {
             TokenKind::Text => "",
         };
         let text = &source[token.span.start..token.span.end];
-        if color && token.kind == TokenKind::String {
-            quoted_display(text, &mut output);
-            continue;
-        }
         styled(text, style, color, &mut output);
     }
     output
@@ -561,29 +556,6 @@ fn styled(text: &str, style: &str, color: bool, output: &mut String) {
     if color && !style.is_empty() {
         output.push_str("\x1b[0m");
     }
-}
-
-fn quoted_display(text: &str, output: &mut String) {
-    let mut chars = text.char_indices();
-    let mut start = 0;
-    while let Some((offset, ch)) = chars.next() {
-        if ch != '\\' {
-            continue;
-        }
-        let Some((next, escaped)) = chars.next() else {
-            break;
-        };
-        // Unknown escapes retain their backslash in the grammar. They are
-        // ordinary quoted text, not a warning or a recognized escape pair.
-        if !matches!(escaped, '\\' | '"' | 'n' | 'r' | 't') {
-            continue;
-        }
-        styled(&text[start..offset], "32", true, output);
-        let end = next + escaped.len_utf8();
-        styled(&text[offset..end], "1;36", true, output);
-        start = end;
-    }
-    styled(&text[start..], "32", true, output);
 }
 
 fn visible(text: &str, output: &mut String) {
