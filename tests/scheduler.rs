@@ -462,7 +462,7 @@ async fn invalid_resource_budgets_fail_before_work_starts() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn execution_rechecks_ancestors_after_the_preparation_snapshot_is_dropped() {
+async fn execution_follows_native_ancestor_links_and_retry_updates_the_target() {
     let root = workspace();
     let source = root.path().join("source");
     let parent = root.path().join("parent");
@@ -470,7 +470,8 @@ async fn execution_rechecks_ancestors_after_the_preparation_snapshot_is_dropped(
     fs::write(&source, "new data").unwrap();
     fs::create_dir(&parent).unwrap();
     fs::create_dir(&redirected).unwrap();
-    fs::write(redirected.join("target"), "unrelated data").unwrap();
+    fs::write(redirected.join("target"), "old target data").unwrap();
+    fs::write(redirected.join("unrelated"), "keep me").unwrap();
     let input = program(&format!(
         "{} -> {}\n",
         operand(&source),
@@ -479,20 +480,30 @@ async fn execution_rechecks_ancestors_after_the_preparation_snapshot_is_dropped(
     let plan = prepare(&input, true).unwrap();
     fs::remove_dir(&parent).unwrap();
     std::os::unix::fs::symlink(&redirected, &parent).unwrap();
-    let failure = execute_plan_async(&plan, &limits(1, 1), CancellationToken::new())
+    let summary = execute_plan_async(&plan, &limits(1, 1), CancellationToken::new())
         .await
-        .unwrap_err();
+        .unwrap();
+    assert_eq!(summary.report.copied_files, 1);
+    assert_eq!(summary.report.transferred_bytes, b"new data".len() as u64);
+    for destination in [parent.join("target"), redirected.join("target")] {
+        assert_eq!(fs::read(destination).unwrap(), b"new data");
+    }
+
+    fs::write(&source, "retry data").unwrap();
+    let retry = prepare(&input, true).unwrap();
+    let summary = execute_plan_async(&retry, &limits(1, 1), CancellationToken::new())
+        .await
+        .unwrap();
+    assert_eq!(summary.report.copied_files, 1);
+    assert_eq!(summary.report.transferred_bytes, b"retry data".len() as u64);
+    for destination in [parent.join("target"), redirected.join("target")] {
+        assert_eq!(fs::read(destination).unwrap(), b"retry data");
+    }
     assert!(
-        failure.message.contains("refusing symbolic link"),
-        "{failure}"
+        fs::symlink_metadata(&parent)
+            .unwrap()
+            .file_type()
+            .is_symlink()
     );
-    assert_eq!(
-        fs::read_to_string(redirected.join("target")).unwrap(),
-        "unrelated data"
-    );
-    let failure = prepare(&input, true).unwrap_err();
-    assert!(
-        failure.message.contains("refusing symbolic link"),
-        "{failure}"
-    );
+    assert_eq!(fs::read(redirected.join("unrelated")).unwrap(), b"keep me");
 }
