@@ -115,6 +115,16 @@ foreach ($path in $Paths) {
             Add-Targets @('performance_journeys', 'performance_lsp_journeys', 'source_lines_v6')
             break
         }
+        '^tests/support/literal_string\.rs$' {
+            $rust = $true
+            foreach ($file in [IO.Directory]::EnumerateFiles((Join-Path $PSScriptRoot '../tests'), '*.rs')) {
+                if ([IO.File]::ReadAllText($file).Contains('support/literal_string.rs')) {
+                    Add-Targets @([IO.Path]::GetFileNameWithoutExtension($file))
+                }
+            }
+            break
+        }
+        '^tests/support/literal_string\.py$' { break }
         '^tests/([^/]+)\.rs$' {
             $rust = $true
             Add-Targets @($Matches[1])
