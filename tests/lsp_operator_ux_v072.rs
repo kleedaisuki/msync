@@ -416,3 +416,138 @@ fn completion_within_literal_strings_preserves_full_paths_and_existing_delimiter
     );
     client.finish();
 }
+
+#[test]
+fn protocol_semantics_keep_uri_receivers_atomic_and_never_complete_a_local_host_directory() {
+    let temporary = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+    fs::create_dir_all(&temporary).unwrap();
+    let workspace = tempfile::Builder::new()
+        .prefix("lsp-protocols-")
+        .tempdir_in(temporary)
+        .unwrap();
+    fs::create_dir(workspace.path().join("forge")).unwrap();
+    fs::write(
+        workspace.path().join("forge/local-only-sentinel"),
+        "not a remote resource",
+    )
+    .unwrap();
+    let mut client = lsp_client::Client::start(workspace.path());
+    let initialized = client.request(1, "initialize", json!({"processId":null,"capabilities":{}}));
+    let legend = &initialized["capabilities"]["semanticTokensProvider"]["legend"]["tokenTypes"];
+    assert_eq!(legend[10], "protocol");
+    assert_eq!(legend[11], "endpoint");
+    client.notify("initialized", json!({}));
+    let uri = url::Url::from_file_path(workspace.path().join("protocols.msync"))
+        .unwrap()
+        .to_string();
+    client.notify(
+        "textDocument/didOpen",
+        json!({"textDocument":{"uri":uri,"languageId":"msync","version":1,"text":""}}),
+    );
+    for (index, source) in [
+        "selected := ssh://forge /",
+        "selected := (ssh://forge) /",
+        "selected := (ssh://forge)::",
+        "remote := ssh://forge\nselected := remote::",
+        "selected := $local::ssh://forge",
+        "selected := ssh://",
+        "selected := http://forge/path /",
+        "selected := tcp://[::1]:9000 /",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        replace(&mut client, &uri, index as i32 + 2, source);
+        let items = complete(&mut client, &uri, index as u64 + 2, source);
+        assert!(
+            !items
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["kind"] == 17 || item["kind"] == 19),
+            "URI receiver must not become a local Path operand: {source}: {items}"
+        );
+    }
+    let named = "forge := other\nssh := other\nvalue := ssh://forge";
+    replace(&mut client, &uri, 11, named);
+    for (id, column) in [(30, 9), (31, 15)] {
+        let completion = client.request(
+            id,
+            "textDocument/completion",
+            json!({"textDocument":{"uri":uri},"position":{"line":2,"character":column}}),
+        );
+        assert_eq!(
+            completion,
+            json!([]),
+            "URI text must not offer same-named lexical bindings"
+        );
+        let definition = client.request(
+            id + 10,
+            "textDocument/definition",
+            json!({"textDocument":{"uri":uri},"position":{"line":2,"character":column}}),
+        );
+        assert!(
+            definition.is_null(),
+            "URI atom must not navigate to lexical ssh/forge: {definition}"
+        );
+        let hover = client.request(
+            id + 20,
+            "textDocument/hover",
+            json!({"textDocument":{"uri":uri},"position":{"line":2,"character":column}}),
+        );
+        assert!(
+            hover.is_null(),
+            "URI text must not inherit lexical keyword/value hover: {hover}"
+        );
+    }
+    let keyword_host = "value := http://true";
+    replace(&mut client, &uri, 12, keyword_host);
+    let hover = client.request(
+        60,
+        "textDocument/hover",
+        json!({"textDocument":{"uri":uri},"position":{"line":0,"character":16}}),
+    );
+    assert!(
+        hover.is_null(),
+        "an address named true is not a Bool literal: {hover}"
+    );
+    let source = "server := ssh://user@[2001:db8::1]:2222\nweb := https://site.test/path\ntext := \"ssh://forge\"\n";
+    replace(&mut client, &uri, 20, source);
+    let tokens = client.request(
+        20,
+        "textDocument/semanticTokens/full",
+        json!({"textDocument":{"uri":uri}}),
+    );
+    let mut line = 0;
+    let mut column = 0;
+    let mut semantic = Vec::new();
+    for token in tokens["data"].as_array().unwrap().as_chunks::<5>().0 {
+        let delta = token[0].as_u64().unwrap() as usize;
+        line += delta;
+        column = if delta == 0 { column } else { 0 } + token[1].as_u64().unwrap() as usize;
+        let len = token[2].as_u64().unwrap() as usize;
+        semantic.push((
+            token[3].as_u64().unwrap(),
+            &source.lines().nth(line).unwrap()[column..column + len],
+        ));
+    }
+    for expected in [
+        (10, "ssh"),
+        (10, "https"),
+        (1, "://"),
+        (11, "user@[2001:db8::1]:2222"),
+        (11, "site.test/path"),
+        (2, "\"ssh://forge\""),
+    ] {
+        assert!(
+            semantic.contains(&expected),
+            "missing {expected:?}: {semantic:?}"
+        );
+    }
+    assert_eq!(semantic.iter().filter(|(kind, _)| *kind == 10).count(), 2);
+    assert_eq!(
+        semantic.iter().filter(|(_, text)| *text == "://").count(),
+        2
+    );
+    client.finish();
+}

@@ -162,6 +162,9 @@ pub enum TokenKind {
     String,
     Selector,
     Comment,
+    /// Scheme name in an unquoted endpoint URI; the URI remains one language value.
+    Protocol,
+    /// Address/authority and any URI-owned suffix, excluding the protocol separator.
     Endpoint,
     /// REPL commands and structured-language control directives.
     Command,
@@ -437,9 +440,34 @@ fn word_tokens(
     tokens: &mut Vec<Token>,
 ) {
     let word = &source[start..end];
-    let kind = if word.contains("://") {
-        TokenKind::Endpoint
-    } else if source[end..].trim_start().starts_with("::")
+    if let Some(separator) = word.find("://") {
+        let protocol_end = start + separator;
+        tokens.push(Token {
+            span: Span {
+                start,
+                end: protocol_end,
+            },
+            kind: TokenKind::Protocol,
+        });
+        tokens.push(Token {
+            span: Span {
+                start: protocol_end,
+                end: protocol_end + 3,
+            },
+            kind: TokenKind::Operator,
+        });
+        if protocol_end + 3 < end {
+            tokens.push(Token {
+                span: Span {
+                    start: protocol_end + 3,
+                    end,
+                },
+                kind: TokenKind::Endpoint,
+            });
+        }
+        return;
+    }
+    let kind = if source[end..].trim_start().starts_with("::")
         || source[..start].trim_end().ends_with('$')
     {
         TokenKind::Namespace
@@ -536,6 +564,7 @@ pub fn highlight(source: &str, color: bool) -> String {
             TokenKind::String => "32",
             TokenKind::Selector => "35",
             TokenKind::Comment => "2;37",
+            TokenKind::Protocol => "1;36",
             TokenKind::Endpoint => "34",
             TokenKind::Command => "1;36",
             TokenKind::Text => "",
@@ -703,7 +732,7 @@ mod tests {
         let endpoint = "source => ssh://person@[::1]/tmp/file";
         assert!(token_spans(endpoint).iter().any(|token| {
             token.kind == TokenKind::Endpoint
-                && &endpoint[token.span.start..token.span.end] == "ssh://person@[::1]/tmp/file"
+                && &endpoint[token.span.start..token.span.end] == "person@[::1]/tmp/file"
         }));
         assert_eq!(token_spans("/help")[0].kind, TokenKind::Command);
     }

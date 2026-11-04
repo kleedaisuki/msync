@@ -386,10 +386,12 @@ fn path_spelling(name: &str, shadowed: bool) -> String {
 
 fn query(source: &str, offset: usize) -> Option<Query> {
     let tokens = highlight::token_spans(&source[..offset]);
-    if tokens
-        .last()
-        .is_some_and(|token| matches!(token.kind, TokenKind::Comment | TokenKind::Selector))
-    {
+    if tokens.last().is_some_and(|token| {
+        matches!(
+            token.kind,
+            TokenKind::Comment | TokenKind::Selector | TokenKind::Protocol | TokenKind::Endpoint
+        ) || token.kind == TokenKind::Operator && &source[token.span.start..token.span.end] == "://"
+    }) {
         return None;
     }
     let last = tokens.last().copied();
@@ -402,7 +404,7 @@ fn query(source: &str, offset: usize) -> Option<Query> {
         let spelling = &source[begin..end];
         if token.kind == TokenKind::Operator && matches!(spelling, "/" | "::") {
             separator = Some((start, begin, end));
-        } else if token.kind == TokenKind::Operator && spelling != "$"
+        } else if token.kind == TokenKind::Operator && !matches!(spelling, "$" | "://")
             || token.kind == TokenKind::Command && !matches!(spelling, "true" | "false")
         {
             start = end;

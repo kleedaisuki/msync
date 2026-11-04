@@ -428,3 +428,28 @@ remote-prefix non-admission. The extension-host journey applies the same edits
 in VS Code, checks independent semantic operator tokens, and reconnects through
 the explicit Restart Language Server command. The extension also restarts after
 `msync.serverPath` changes and offers Open Settings when startup fails.
+
+## Protocol and address presentation
+
+An unquoted URI is still one endpoint value in the parser and compiler. Its
+editor presentation has three independent roles: the scheme is `Protocol`,
+`://` is an `Operator`, and the remaining authority/address (including user,
+IPv6 brackets, port and URI-owned path/query/fragment) is `Endpoint`. Quoted URL
+text stays an ordinary String; selectors and shell payloads keep their own
+literal contexts. Incomplete `ssh://` and IPv6 edits retain those same roles.
+
+LSP appends custom `protocol` and `endpoint` semantic types without renumbering
+existing legend entries. The extension declares standard `type` and `string`
+supertypes plus `support.type.protocol.msync` and
+`string.unquoted.endpoint.msync` theme fallbacks. TextMate assigns the same
+three-way roles immediately, including `keyword.operator.protocol.msync` for
+`://`. Terminal highlighting uses distinct protocol/operator/address styles.
+
+Presentation does not split URI ownership for tooling: `://` cannot reset the
+start of a path query to its hostname, and an in-progress URI is not a filesystem
+prefix. URI text is also protected from lexical binding/keyword completion and
+hover; source navigation retains the parser's atomic operand identity. A real
+stdio journey deliberately creates a local `forge` directory and checks that
+`ssh://forge /` never lists it, while same-named `ssh`/`forge` bindings do not
+become URI definitions. No authentication, transport, URI validation or endpoint
+execution behavior changes with these display roles.

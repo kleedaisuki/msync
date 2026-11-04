@@ -44,7 +44,9 @@ fn ordered_list_delimiters_do_not_hide_boolean_or_function_items() {
 fn ipv6_endpoint_brackets_remain_inside_the_endpoint() {
     for source in ["wire => tcp://[::1]:9000", "items := [tcp://[::1]:9000]"] {
         assert!(
-            has(source, "tcp://[::1]:9000", TokenKind::Endpoint),
+            has(source, "[::1]:9000", TokenKind::Endpoint)
+                && has(source, "tcp", TokenKind::Protocol)
+                && has(source, "://", TokenKind::Operator),
             "{source}"
         );
     }

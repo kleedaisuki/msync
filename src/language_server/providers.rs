@@ -21,6 +21,8 @@ pub(super) const TOKEN_TYPES: &[&str] = &[
     "variable",
     "parameter",
     "number",
+    "protocol",
+    "endpoint",
 ];
 
 pub(super) fn completion(document: &mut OpenDocument, position: Position) -> Vec<CompletionItem> {
@@ -275,7 +277,9 @@ pub(super) fn semantic_tokens(document: &mut OpenDocument) -> SemanticTokens {
             TokenKind::String => 2,
             TokenKind::Selector => 3,
             TokenKind::Comment => 4,
-            TokenKind::Namespace | TokenKind::Endpoint => 5,
+            TokenKind::Namespace => 5,
+            TokenKind::Protocol => 10,
+            TokenKind::Endpoint => 11,
             TokenKind::Binding => 7,
             TokenKind::Text
                 if document.text.source[token.span.start..token.span.end]
@@ -380,7 +384,15 @@ fn symbol_kind(kind: Kind) -> SymbolKind {
 }
 
 fn protected(source: &str, offset: usize) -> bool {
-    highlight::token_spans(source)
+    let tokens = highlight::token_spans(source);
+    if tokens.iter().any(|token| {
+        matches!(token.kind, TokenKind::Protocol | TokenKind::Endpoint)
+            && token.span.start <= offset
+            && offset <= token.span.end
+    }) {
+        return true;
+    }
+    tokens
         .iter()
         .find(|token| token.span.start < offset && offset <= token.span.end)
         .is_some_and(|token| {
