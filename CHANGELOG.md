@@ -1,10 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.7.3 — Unreleased
 
+- Remove backslash escape decoding from String source syntax. Windows path text
+  such as `"D:\Code\agents\target"` remains literal; doubled quote delimiters
+  represent an embedded quote, and actual multiline content is preserved.
+- Insert bare filesystem Path completions by default, quoting only when needed
+  for whitespace, grammar or a lexical-name collision.
+- Distinguish URI protocol names, the `://` operator and endpoint addresses in
+  editor and terminal highlighting without changing endpoint values.
 - Restore nearest visible binding suggestions on typed `::` and `$` errors,
-  keeping operator-owned diagnostics and inferred operand types. This follow-up
-  is on main; the published 0.7.2 tag and packages are unchanged.
+  keeping operator-owned diagnostics and inferred operand types.
+
+See the [release notes](docs/releases/0.7.3.md). Published 0.7.2 assets are unchanged.
 
 ## 0.7.2 — 2026-11-04
 
