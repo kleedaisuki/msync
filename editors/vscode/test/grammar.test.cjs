@@ -110,7 +110,7 @@ test('quoted strings and regular-expression classes shield punctuation', () => {
     hasScope(line, '[>#]', 'constant.other.character-class.regexp.msync');
     hasScope(line, '# note', 'comment.line.number-sign.msync');
     hasScope('text = "a\\n -> # b"', '# b', 'string.quoted.double.msync');
-    hasScope('text = "a\\n -> # b"', '\\n', 'constant.character.escape.msync');
+    hasScope('text = "a\\n -> # b"', '\\n', 'string.quoted.double.msync');
     hasScope('remote => https://example.com/a?x=1#fragment', 'https://', 'string.unquoted.endpoint.msync');
 });
 
@@ -125,11 +125,9 @@ test('comparisons and reserved-looking filename components are not regexes or co
     assert.ok(!scopes('left<right', '<').includes('string.regexp.msync'));
 });
 
-test('unfinished single-line literals do not poison later lines and native spans cover UTF16 input', () => {
+test('unfinished selector lines recover while multiline String contents retain literal scopes', () => {
     let state = textmate.INITIAL;
-    for (const line of ['text = "unfinished', 'if true:', '    root/<[a-z', 'delete file',
-        'items := ["可莉🌟", $local::"unfinished', 'if acquire false:', '    [true, false',
-        'items | $view::filter(ready)']) {
+    for (const line of ['root/<[a-z', 'if acquire false:', '[true, false', 'items | $view::filter(ready)']) {
         const result = grammar.tokenizeLine(line, state);
         let cursor = 0;
         for (const token of result.tokens) {
@@ -140,11 +138,20 @@ test('unfinished single-line literals do not poison later lines and native spans
         assert.ok(cursor >= line.length);
         state = result.ruleStack;
     }
-    hasScope('delete file', 'delete', 'keyword.control.msync');
     const next = grammar.tokenizeLine('if release true:', state);
     const modifier = next.tokens.find(token => token.startIndex <= 3 && token.endIndex > 3);
     assert.ok(modifier.scopes.includes('keyword.control.msync'));
     assert.ok(!modifier.scopes.some(scope => scope.startsWith('string.')));
+
+    const first = grammar.tokenizeLine('text = "可莉🌟 literal \\target', textmate.INITIAL);
+    const middle = grammar.tokenizeLine('inside ""quotes"" # $local:: / <selector>', first.ruleStack);
+    assert.ok(middle.tokens.every(token => token.scopes.includes('string.quoted.double.msync')));
+    const closing = grammar.tokenizeLine('last line" / child # comment', middle.ruleStack);
+    assert.ok(closing.tokens.some(token => token.scopes.includes('keyword.operator.msync')));
+    assert.ok(closing.tokens.some(token => token.scopes.includes('comment.line.number-sign.msync')));
+    const after = grammar.tokenizeLine('if true:', closing.ruleStack);
+    assert.ok(after.tokens.some(token => token.scopes.includes('keyword.control.msync')));
+    assert.ok(!after.tokens.some(token => token.scopes.includes('string.quoted.double.msync')));
 });
 
 test('manifest and language configuration are internally consistent', () => {
@@ -233,4 +240,27 @@ test('editor word selection keeps operators separate from filenames and namespac
     const words = new RegExp(configuration.wordPattern, 'g');
     assert.deepEqual('$local::.codex/codex.prompt'.match(words), ['local', '.codex', 'codex.prompt']);
     assert.deepEqual('$std::ranges::filter(可莉🌟)'.match(words), ['std', 'ranges', 'filter', '可莉🌟']);
+});
+
+test('ordinary Strings preserve Windows backslashes and doubled quotes without C escape coloring', () => {
+    for (const line of [
+        String.raw`path := "D:\Code\agents\target\xmlsquish"/codex.prompt`,
+        String.raw`path := "C:\Users\STONE\.codex"/codex.prompt`,
+        String.raw`path := "D:\quoted""directory\target\"/codex.prompt`,
+    ]) {
+        hasScope(line, 'codex.prompt', 'variable.other.readwrite.msync');
+        hasScope(line, '/codex.prompt', 'keyword.operator.msync');
+        const tokens = grammar.tokenizeLine(line, textmate.INITIAL).tokens;
+        assert.ok(!tokens.some(token => token.scopes.some(scope => scope.startsWith('constant.character.escape'))));
+        const backslashes = tokens.filter(token => line.slice(token.startIndex, token.endIndex).includes('\\'));
+        assert.ok(backslashes.length);
+        assert.ok(backslashes.every(token => token.scopes.includes('string.quoted.double.msync')));
+    }
+    const quoted = String.raw`text := "literal \n\t\r\"" # $local::path/<[a-z]+>" / child # actual comment`;
+    for (const word of ['\\n', '\\t', '\\r', '# $local', '::', '<[a-z]+>']) {
+        hasScope(quoted, word, 'string.quoted.double.msync');
+        assert.ok(!scopes(quoted, word).some(scope => /escape|operator|regexp|comment/.test(scope)));
+    }
+    hasScope(quoted, '""', 'constant.character.quote.msync');
+    hasScope(quoted, '# actual comment', 'comment.line.number-sign.msync');
 });

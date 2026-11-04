@@ -59,7 +59,7 @@
     },
     "strings": {
       "begin": "\"",
-      "end": "\"|(?=$)",
+      "end": "\"",
       "name": "string.quoted.double.msync",
       "beginCaptures": {
         "0": {
@@ -73,10 +73,11 @@
       },
       "patterns": [
         {
-          "match": "\\\\[\\\\\"nrt]",
-          "name": "constant.character.escape.msync"
+          "match": "\"\"",
+          "name": "constant.character.quote.msync"
         }
-      ]
+      ],
+      "applyEndPatternLast": true
     },
     "declarations": {
       "begin": "^(\\s*)(macro|symbol|boolean|native)(\\s+)([\\p{L}\\p{N}_.-]+)(\\s*\\()",
