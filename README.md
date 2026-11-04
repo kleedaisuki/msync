@@ -4,12 +4,14 @@ A typed file-synchronization DSL in Rust: a pure optimizing compiler, a
 block-at-a-time interpreter, bounded asynchronous execution, source-mapped
 errors, a script formatter, a persistent REPL, and native editor/LSP tooling.
 
-> **0.7.0 adds a source-backed standard library**, explicit lexical namespaces,
+> **0.7.2 unifies operator expressions and editor support**: unary `$` references,
+> binary `::` qualification and `/` path joins, plus local filesystem completion.
+> The source-backed standard library provides explicit lexical namespaces,
 > filesystem operations and `Range<Scope>` endpoint iteration.
 > A regular file is staged beside its target and atomically replaced; failed
 > multi-file work may leave completed members in place and can be retried.
 > The source grammar is **0.7**; **0.5** and **0.6** remain compatible aliases.
-> See the [0.7.0 release notes](docs/releases/0.7.0.md) and
+> See the [0.7.2 release notes](docs/releases/0.7.2.md) and
 > [current copy contract](docs/design/statement-atomicity.md).
 > Previously published tags and assets remain unchanged.
 
@@ -139,7 +141,7 @@ String literals have explicit path-fragment overloads inside `/`; a bare quoted
 transfer source still means literal data. See the [complete operator and space/item
 definitions](docs/design/language-v4.md#-operator-evaluated-item-composition).
 
-### Inferred types and operator capabilities (0.6.5)
+### Inferred types and operator capabilities
 
 The compiler names `Path`, `String`, `Scope`, `Bool` and `Range<T>` explicitly in
 its semantic model. Source does **not** gain type annotations or user-defined
@@ -148,6 +150,7 @@ function calls. Operator capabilities determine valid operands and result types:
 
 | Operation | Operand domain | Result |
 | --- | --- | --- |
+| `$name` or `$ name` | Lexical or built-in reference | Referenced value's inferred type |
 | `left / right` | Each operand is `String` or `Path` | `Path` |
 | `scope::item` | `Scope` with `Path` or `String` | `Path` |
 | `outer::inner` | `Scope` with `Scope` | `Scope` |
@@ -155,10 +158,31 @@ function calls. Operator capabilities determine valid operands and result types:
 | `==`, `!=` | Matching `Bool` or matching `String` | `Bool` |
 | `<`, `<=`, `>`, `>=` | `String` with `String` | `Bool` |
 
-`$` introduces built-in scopes/APIs. They are typed values rather than names that
-only work in a hard-coded syntax position: for example, `api => $std::ranges` permits
-`items | api::take(1)`. Ordinary lexical functions return inferred values that can
-be composed or qualified just like other values:
+`$` is a unary reference operator: it looks up a lexical binding or built-in value,
+not an implicit path prefix. `::` and `/` are binary operators, including without
+spaces. `$` binds before `::`, and `::` before `/`. Their inferred operand types
+determine their meaning; quoting produces a String rather than guessing a path.
+For example, `api => $std::ranges` permits `items | api::take(1)`.
+String-generated paths are not reparsed as selectors: `"."/"<literal>"` stays
+Path. An actual selector uses unquoted source syntax, such as `"directory"/<.*>`.
+
+```text
+macro copy(scope, file):
+    scope::file -> "backup"/file
+
+copy($local, .codex/codex.prompt)
+
+# A String base joined with a filename becomes a Path.
+config := "C:\Users\STONE\.codex"/codex.prompt
+```
+
+In VS Code, completion after `$local::` lists files and directories, including
+hidden directories such as `.codex`. Selecting a name with spaces inserts a quoted
+path expression; completing a directory lets you continue into its children.
+Remote endpoints are not contacted while editing.
+
+Ordinary lexical functions return inferred values that can be composed or
+qualified just like other values:
 
 ```text
 symbol codex(file):
@@ -273,7 +297,7 @@ symbol home(space):
 
 config := home($local) / ".codex"
 include "shared.msync"
-execute "tasks/<.+\\.msync>"
+execute "tasks"/<.+\.msync>
 ```
 
 Symbols inline statically with independent lexical environments, generic value/

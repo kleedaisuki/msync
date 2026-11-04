@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.2 — 2026-11-04
+
+- Represent `$` references and `::` selection explicitly in the frontend and
+  resolve operators through inferred values, preserving the existing typed IR
+  and native host interface.
+- Align VS Code and semantic highlighting for unary `$`, binary `::` and binary
+  `/`, including all four String/Path operand pairings in compact joins.
+- Keep String-generated paths as Path even when their text resembles a selector;
+  only explicit source selector syntax creates a Range.
+- Add compiler-backed local filesystem completion, including `$local::`, hidden
+  directories and correctly quoted names; editing does not authenticate endpoints.
+- Show inferred binding types on hover, reconnect when the server path changes,
+  and provide an explicit language-server restart command.
+- Exercise operator workflows through real editor interactions and source-free
+  object/IR execution, plus installed native package acceptance.
+
+See the [release notes](docs/releases/0.7.2.md).
+
 ## 0.7.1 — 2026-11-03
 
 - Fix compact `scope::file` selection when the scope comes from a runtime loop:
