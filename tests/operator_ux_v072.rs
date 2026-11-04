@@ -93,6 +93,8 @@ fn scope_members_and_string_references_keep_their_inferred_types_in_artifacts() 
             "    endpoint := $local\n",
             "pattern := profile::pattern\n",
             "$pattern -> literal.txt\n",
+            "true := \"named true\"\n",
+            "$true -> named.txt\n",
             "base := \"input directory\"\n",
             "file := profile::endpoint::($base / \"file.txt\")\n",
             "$file -> path.txt\n",
@@ -109,6 +111,7 @@ fn scope_members_and_string_references_keep_their_inferred_types_in_artifacts() 
         success(root.path(), &args);
         for (name, expected) in [
             ("literal.txt", ".*"),
+            ("named.txt", "named true"),
             ("path.txt", "path bytes"),
             ("status.txt", "typed native result"),
         ] {
@@ -118,6 +121,75 @@ fn scope_members_and_string_references_keep_their_inferred_types_in_artifacts() 
                 "{args:?}: {name}"
             );
             fs::remove_file(root.path().join(name)).unwrap();
+        }
+    }
+}
+
+#[test]
+fn generic_string_path_join_matrix_executes_from_source_object_and_ir() {
+    let root = workspace();
+    fs::create_dir(root.path().join("input directory")).unwrap();
+    fs::write(
+        root.path().join("input directory/file.txt"),
+        b"joined bytes",
+    )
+    .unwrap();
+    fs::write(
+        root.path().join("entry.msync"),
+        concat!(
+            "string_base := \"input directory\"\n",
+            "string_child := \"file.txt\"\n",
+            "path_base := $local::\"input directory\"\n",
+            "path_child := file.txt\n",
+            "ss := string_base / string_child\n",
+            "sp := string_base / path_child\n",
+            "ps := path_base / string_child\n",
+            "pp := path_base / path_child\n",
+            "$ss -> string-string.txt\n",
+            "$sp -> string-path.txt\n",
+            "$ps -> path-string.txt\n",
+            "$pp -> path-path.txt\n",
+            "literal := \"input directory/file.txt\"\n",
+            "$literal -> literal.txt\n",
+            "native present(path) = \"fs.is_regular_file\"\n",
+            "if present($ss) and present($sp) and present($ps) and present($pp):\n",
+            "    \"all joins are paths\" -> native.txt\n",
+        ),
+    )
+    .unwrap();
+    export(root.path());
+    for args in [
+        ["run", "entry.msync"],
+        ["run", "program.mobj"],
+        ["run-ir", "program.json"],
+    ] {
+        success(root.path(), &args);
+        for name in [
+            "string-string.txt",
+            "string-path.txt",
+            "path-string.txt",
+            "path-path.txt",
+        ] {
+            assert_eq!(
+                fs::read(root.path().join(name)).unwrap(),
+                b"joined bytes",
+                "{args:?}: {name}"
+            );
+            fs::remove_file(root.path().join(name)).unwrap();
+        }
+        for (name, expected) in [
+            ("literal.txt", "input directory/file.txt"),
+            ("native.txt", "all joins are paths"),
+        ] {
+            assert_eq!(
+                fs::read_to_string(root.path().join(name)).unwrap(),
+                expected,
+                "{args:?}: {name}"
+            );
+            fs::remove_file(root.path().join(name)).unwrap();
+        }
+        if args[1] == "entry.msync" {
+            fs::remove_file(root.path().join("entry.msync")).unwrap();
         }
     }
 }
