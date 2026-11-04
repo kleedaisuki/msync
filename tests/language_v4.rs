@@ -137,6 +137,19 @@ fn shape(source: &str) -> String {
                     name.span = Default::default();
                 }
             }
+            ExprKind::Reference { operand, operator } => {
+                strip_expr(operand);
+                *operator = Default::default();
+            }
+            ExprKind::Select {
+                namespace,
+                item,
+                operator,
+            } => {
+                strip_expr(namespace);
+                strip_expr(item);
+                *operator = Default::default();
+            }
             ExprKind::Call { callee, arguments } => {
                 strip_expr(callee);
                 for argument in arguments {
@@ -180,7 +193,7 @@ run($wsl::"source path", "text\n流")
         matches!(&document.statements[1].kind, StatementKind::Binding { value, .. } if matches!(&value.kind, ExprKind::Literal(text) if text == "source path"))
     );
     assert!(
-        matches!(&document.statements[2].kind, StatementKind::Transfer { source, .. } if matches!(&source.kind, ExprKind::Path(path) if path.qualifier.as_ref().unwrap().text == "$local"))
+        matches!(&document.statements[2].kind, StatementKind::Transfer { source, .. } if matches!(&source.kind, ExprKind::Select { namespace, .. } if matches!(&namespace.kind, ExprKind::Reference { .. })))
     );
 }
 

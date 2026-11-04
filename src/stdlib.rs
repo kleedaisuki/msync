@@ -19,6 +19,32 @@ pub enum NativeParam {
     Scope,
     AnyScalar,
 }
+
+impl NativeParam {
+    pub fn accepts(self, argument: &Type) -> bool {
+        match self {
+            Self::Path | Self::RawPath => Type::join([Type::String, Type::Path])
+                .expect("path-compatible scalar union")
+                .accepts(argument),
+            Self::String => *argument == Type::String,
+            Self::Bool => *argument == Type::Bool,
+            Self::Scope => *argument == Type::Space,
+            Self::AnyScalar => true,
+        }
+    }
+}
+
+impl std::fmt::Display for NativeParam {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output.write_str(match self {
+            Self::Path | Self::RawPath => "Path | String",
+            Self::String => "String",
+            Self::Bool => "Bool",
+            Self::Scope => "Scope",
+            Self::AnyScalar => "Bool | String | Path | Scope",
+        })
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeResultType {
     Void,
@@ -44,17 +70,7 @@ impl Signature {
                 .parameters
                 .iter()
                 .zip(arguments)
-                .all(|(parameter, argument)| match parameter {
-                    NativeParam::Path | NativeParam::RawPath => {
-                        Type::join([Type::String, Type::Path])
-                            .unwrap()
-                            .accepts(argument)
-                    }
-                    NativeParam::String => *argument == Type::String,
-                    NativeParam::Bool => *argument == Type::Bool,
-                    NativeParam::Scope => *argument == Type::Space,
-                    NativeParam::AnyScalar => true,
-                })
+                .all(|(parameter, argument)| parameter.accepts(argument))
     }
 }
 

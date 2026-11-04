@@ -104,6 +104,31 @@ actual Windows WSL acceptance test. Focused standard-library and scope-returning
 function journeys also pass, as does strict Clippy for the binary and changed
 integration target.
 
+## Native declarations as the typed host interface (v0.7.2)
+
+`native` is the source-to-host interface rather than another family of parser
+keywords for individual operations. For example,
+`native contains(value, pattern) = "string.contains"` obtains its result and
+parameter capabilities from the host signature registry; an optional written
+result type must agree with that registry. A lexical alias or ordinary namespace
+selection reaches the same registered operation. The implementation name is an
+identity in that registry, not a shell command, dynamic library path, or source
+fragment to evaluate.
+
+`NativeParam::accepts` is shared by source lowering and executable-object
+signature validation. A rejected argument is reported at that argument with its
+inferred type and the required capability, rather than a generic whole-call
+failure. Path-compatible parameters accept String and Path; actual filesystem
+operations project strings through the captured context, while lexical path
+operations retain raw spelling. Native effects and result types continue into
+the existing typed Native/RangeSource IR, negotiating `native_std_v1`; no extra
+source interpreter or second bytecode representation is introduced.
+
+Dependent range operations keep their compiler-owned specialization signatures:
+their result depends on the input item type and callback, so they are not
+misrepresented as a single fixed scalar FFI signature. This is a typed capability
+distinction, not a source-spelling exception.
+
 ## Engineering basis
 
 The public filesystem surface follows the operations and value distinctions in

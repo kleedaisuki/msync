@@ -189,9 +189,65 @@ pub struct Lowered {
     pub source_modules: Vec<crate::object::SourceModule>,
 }
 
+/// Semantic information for editor queries. Inspecting a value never runs its
+/// native operations, launches a process, or opens a transport.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpressionInfo {
+    pub ty: crate::types::Type,
+    /// Present only when the value has a statically known filesystem location.
+    /// Endpoint scopes denote their current directory; lexical scopes have none.
+    pub location: Option<Location>,
+}
+
 impl Session {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn inspect_expression(
+        &self,
+        expression: &Expr,
+        context: &CompileContext,
+    ) -> Result<ExpressionInfo, Report> {
+        let inspect = || -> Result<ExpressionInfo, Failure> {
+            let value = resolve(expression, &self.scope, context)?;
+            let ty = value.ty();
+            let location = match value {
+                Value::Path(path) => Some(location(path, context, expression.span)?.0),
+                Value::Space(Space::Endpoint(backend)) => Some(Location {
+                    path: if backend == Backend::Local {
+                        context.pwd.to_string_lossy().into_owned()
+                    } else {
+                        ".".into()
+                    },
+                    backend,
+                }),
+                Value::Space(Space::Pwd) => Some(Location {
+                    backend: Backend::Local,
+                    path: context.pwd.to_string_lossy().into_owned(),
+                }),
+                Value::Space(Space::File) => context
+                    .source_file
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .map(|parent| Location {
+                        backend: Backend::Local,
+                        path: parent.to_string_lossy().into_owned(),
+                    }),
+                _ => None,
+            };
+            Ok(ExpressionInfo { ty, location })
+        };
+        inspect().map_err(|failure| {
+            failure
+                .locate(
+                    self.scope
+                        .source
+                        .clone()
+                        .unwrap_or_else(|| Source::new("<inspection>", "")),
+                )
+                .into_report()
+        })
     }
 
     pub fn runtime_slot_base(&self) -> usize {
@@ -1441,6 +1497,51 @@ impl Lower<'_> {
     }
 
     fn expression_site(&self, expression: &Expr, scope: &Scope) -> SourceSpan {
+        if let ExprKind::Reference { operand, .. } = &expression.kind {
+            let site = self.expression_site(operand, scope);
+            if site.source.id != self.source.id || site.span != operand.span {
+                return site;
+            }
+        }
+        if let ExprKind::Select {
+            namespace, item, ..
+        } = &expression.kind
+        {
+            let (name, reference) = match &namespace.kind {
+                ExprKind::Path(path) if path.qualifier.is_none() => {
+                    (Some(path.path.as_str()), false)
+                }
+                ExprKind::Reference { operand, .. } => match &operand.kind {
+                    ExprKind::Path(path) if path.qualifier.is_none() => {
+                        (Some(path.path.as_str()), true)
+                    }
+                    _ => (None, false),
+                },
+                _ => (None, false),
+            };
+            if let Some(name) = name {
+                let value = scope.values.get(name);
+                let builtin = reference
+                    .then(|| Compiler::builtin_reference(name))
+                    .flatten();
+                let item_scope = match (value, builtin.as_ref()) {
+                    (Some(Value::Module(module)), _) => Some(module.as_ref()),
+                    (Some(Value::Space(Space::Endpoint(_) | Space::Qualified { .. })), _)
+                    | (None, Some(Space::Endpoint(_))) => Some(scope),
+                    (Some(Value::Space(Space::Pwd)), _) | (None, Some(Space::Pwd)) => {
+                        (!matches!(&item.kind, ExprKind::Path(path) if path.path == "pwd"))
+                            .then_some(scope)
+                    }
+                    _ => None,
+                };
+                if let Some(item_scope) = item_scope {
+                    let site = self.expression_site(item, item_scope);
+                    if site.source.id != self.source.id || site.span != item.span {
+                        return site;
+                    }
+                }
+            }
+        }
         if let ExprKind::Join { base, suffix, .. } = &expression.kind {
             let site = self.expression_site(base, scope);
             if site.source.id != self.source.id || site.span != base.span {
@@ -1592,6 +1693,7 @@ fn resolve_value(
     }
     match &expression.kind {
         ExprKind::Literal(text) => Ok(Value::Literal(Arc::from(text.as_str()))),
+        ExprKind::Reference { operand, operator } => resolve_reference(operand, *operator, scope),
         ExprKind::Path(path) => {
             let mut value =
                 resolve_path(path, expression.span, &expression.source, scope, context)?;
@@ -1622,6 +1724,43 @@ fn resolve_value(
         | ExprKind::Exists(_)
         | ExprKind::Loop { .. } => v6::resolve_expression(expression, scope, context),
     }
+}
+
+fn resolve_reference(operand: &Expr, operator: Span, scope: &Scope) -> Result<Value, Failure> {
+    let ExprKind::Path(path) = &operand.kind else {
+        return Err(
+            Report::new("operator '$' requires a binding name", operand.span)
+                .help(
+                    "Reference a lexical value with '$name', or a built-in scope such as '$local'.",
+                )
+                .into(),
+        );
+    };
+    if path.qualifier.is_some()
+        || path.path.is_empty()
+        || !path
+            .path
+            .chars()
+            .all(|character| character.is_alphanumeric() || matches!(character, '.' | '_' | '-'))
+    {
+        return Err(Report::new("operator '$' requires a binding name", operand.span).into());
+    }
+    if let Some(value) = scope.values.get(&path.path) {
+        return Ok(captured_value(value, scope));
+    }
+    Compiler::builtin_reference(&path.path)
+        .map(Value::Space)
+        .ok_or_else(|| {
+            Report::new(
+                format!("unknown binding reference '${}'", path.path),
+                Span {
+                    start: operator.start,
+                    end: operand.span.end,
+                },
+            )
+            .help("Declare the value before referencing it; '$local', '$pwd', '$file' and '$std' are built-in scopes.")
+            .into()
+        })
 }
 
 fn contextual(path: Option<&RelocPath>) -> bool {
@@ -1930,7 +2069,10 @@ fn resolve_select(
         Value::Space(_) | Value::Module(_) | Value::Process(_)
     ) {
         return Err(Report::new(
-            "the left operand of '::' must be a space or program",
+            format!(
+                "operator '::' requires Scope or Process on the left, got {}",
+                value.ty()
+            ),
             operator,
         )
         .label(
@@ -2592,6 +2734,7 @@ fn reject_root_replacement(path: &PathValue, span: Span) -> Result<(), Report> {
 
 fn qualifier_site(expression: &Expr) -> Span {
     match &expression.kind {
+        ExprKind::Select { namespace, .. } => namespace.span,
         ExprKind::Path(path) => path
             .qualifier
             .as_ref()
@@ -2601,6 +2744,9 @@ fn qualifier_site(expression: &Expr) -> Span {
 }
 
 fn selector_site(expression: &Expr) -> Span {
+    if let ExprKind::Select { item, .. } = &expression.kind {
+        return selector_site(item);
+    }
     if let ExprKind::Join {
         suffix: Some(suffix),
         ..
@@ -2608,12 +2754,17 @@ fn selector_site(expression: &Expr) -> Span {
     {
         return selector_site(suffix);
     }
-    if let ExprKind::Path(path) = &expression.kind
-        && let Some(start) = path.path.rfind('<')
+    let text = match &expression.kind {
+        ExprKind::Path(path) => Some(path.path.as_str()),
+        ExprKind::Literal(text) => Some(text.as_str()),
+        _ => None,
+    };
+    if let Some(text) = text
+        && let Some(start) = text.rfind('<')
     {
         return expression
             .source
-            .interval(start + 1, path.path.len().saturating_sub(1));
+            .interval(start + 1, text.len().saturating_sub(1));
     }
     expression.source.content
 }
@@ -2630,6 +2781,120 @@ fn check_name(name: &Name) -> Result<(), Report> {
     super::validate_name(&name.text).map_err(|message| {
         Report::new(message, name.span).help("Use letters, digits, '.', '_' or '-' for a binding name; built-ins begin with '$' and cannot be rebound.")
     })
+}
+
+#[cfg(test)]
+mod operator_tests {
+    use super::*;
+
+    fn context() -> CompileContext {
+        CompileContext {
+            pwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".temp/inspect-operators"),
+            source_file: None,
+        }
+    }
+
+    fn expression(text: &str) -> Expr {
+        let document = language::parse(&format!("inspected := {text}\n")).unwrap();
+        let language::StatementKind::Binding { value, .. } = &document.statements[0].kind else {
+            panic!("query expression");
+        };
+        value.clone()
+    }
+
+    #[test]
+    fn editor_inspection_uses_typed_values_without_observing_filesystem_effects() {
+        let context = context();
+        let mut session = Session::new();
+        session
+            .compile(
+                &language::parse(concat!(
+                    "endpoint := $ local\n",
+                    "base := folder\n",
+                    "pattern := \".*\"\n",
+                    "ready := true\n",
+                    "scope profile:\n",
+                    "    item := file\n",
+                    "native present(path) = \"fs.is_regular_file\"\n",
+                ))
+                .unwrap(),
+                &context,
+            )
+            .unwrap();
+        let endpoint = session
+            .inspect_expression(&expression("$endpoint"), &context)
+            .unwrap();
+        assert_eq!(endpoint.ty, crate::types::Type::Scope);
+        assert_eq!(
+            endpoint.location,
+            Some(Location {
+                backend: Backend::Local,
+                path: context.pwd.to_string_lossy().into_owned(),
+            })
+        );
+        let path = session
+            .inspect_expression(&expression("$base / \"child\""), &context)
+            .unwrap();
+        assert_eq!(path.ty, crate::types::Type::Path);
+        assert_eq!(
+            Path::new(&path.location.unwrap().path),
+            context.pwd.join("folder/child")
+        );
+        for (text, ty) in [
+            ("$pattern", crate::types::Type::String),
+            ("$ready", crate::types::Type::Bool),
+            ("$profile", crate::types::Type::Scope),
+            ("present(missing-file)", crate::types::Type::Bool),
+        ] {
+            let info = session
+                .inspect_expression(&expression(text), &context)
+                .unwrap();
+            assert_eq!(info.ty, ty, "{text}");
+            assert_eq!(info.location, None, "{text}");
+        }
+    }
+
+    #[test]
+    fn lexical_references_keep_boolean_spelled_binding_names() {
+        let context = context();
+        let mut session = Session::new();
+        session
+            .compile(
+                &language::parse(
+                    "true := \"named true\"\nscope false:\n    data := \"named false\"\n",
+                )
+                .unwrap(),
+                &context,
+            )
+            .unwrap();
+        for text in ["$true", "$ true", "$(true)", "$false::data"] {
+            assert_eq!(
+                session
+                    .inspect_expression(&expression(text), &context)
+                    .unwrap()
+                    .ty,
+                crate::types::Type::String,
+                "{text}",
+            );
+        }
+    }
+
+    #[test]
+    fn native_argument_errors_report_inferred_types_at_the_owned_argument() {
+        let source = "native contains(text, pattern) = \"string.contains\"\nresult := contains(\"text\", true)\n";
+        let errors = Session::new()
+            .compile(&language::parse(source).unwrap(), &context())
+            .unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].diagnostic.message,
+            "native 'string.contains' argument 2 expects String, got Bool"
+        );
+        assert_eq!(
+            &source[errors[0].diagnostic.span.start..errors[0].diagnostic.span.end],
+            "true"
+        );
+    }
 }
 
 #[cfg(test)]

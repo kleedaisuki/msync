@@ -66,6 +66,7 @@ pub struct SymbolIndex {
 #[derive(Clone, Debug)]
 enum NamespaceShape {
     Program,
+    Endpoint,
     WorkingDirectory,
     File,
     View,
@@ -275,17 +276,25 @@ impl SymbolIndex {
     }
 
     fn namespace_at(&self, namespace: &str, offset: usize) -> Option<NamespaceShape> {
-        let mut components = namespace.split("::");
+        let mut components = namespace.split("::").map(str::trim);
         let first = components.next()?;
-        let mut shape = match first {
-            "$std" => NamespaceShape::Library(String::new()),
-            "$view" | "views" | "ranges" => NamespaceShape::View,
-            _ => {
-                let definition = self
-                    .visible_at(offset)
-                    .into_iter()
-                    .find(|definition| definition.name == first)?;
-                self.namespace_shapes.get(&definition.id)?.clone()
+        let name = first.strip_prefix('$').map_or(first, str::trim);
+        let lexical = self
+            .visible_at(offset)
+            .into_iter()
+            .find(|definition| definition.name == name);
+        let builtin = if first.starts_with('$') {
+            format!("${name}")
+        } else {
+            first.into()
+        };
+        let mut shape = if let Some(definition) = lexical {
+            self.namespace_shapes.get(&definition.id)?.clone()
+        } else {
+            match builtin.as_str() {
+                "$std" => NamespaceShape::Library(String::new()),
+                "$view" | "views" | "ranges" => NamespaceShape::View,
+                _ => return None,
             }
         };
         for component in components {
@@ -584,7 +593,11 @@ impl SymbolIndex {
         let pure_call = is_pure_call(value, environment);
         let (mut kind, mut detail) = binding_detail(name, op, value, pure_call);
         if op != BindingOp::Space
-            && let ExprKind::Path(path) = &value.kind
+            && let ExprKind::Path(path) = &match &value.kind {
+                ExprKind::Reference { operand, .. } => operand.as_ref(),
+                _ => value,
+            }
+            .kind
             && path.qualifier.is_none()
             && let Some(id) = environment.names.values.get(&path.path)
         {
@@ -602,7 +615,14 @@ impl SymbolIndex {
         let shape = self.binding_shape(value, kind, environment);
         if matches!(
             shape,
-            Some(NamespaceShape::View | NamespaceShape::Library(_) | NamespaceShape::Lexical(_))
+            Some(
+                NamespaceShape::Endpoint
+                    | NamespaceShape::WorkingDirectory
+                    | NamespaceShape::File
+                    | NamespaceShape::View
+                    | NamespaceShape::Library(_)
+                    | NamespaceShape::Lexical(_)
+            )
         ) {
             kind = SymbolKind::Space;
             detail = format!("scope {}", name.text);
@@ -818,6 +838,9 @@ impl SymbolIndex {
             ExprKind::Path(path) => {
                 self.path_reference(expression, path, environment, false, statement_call)
             }
+            ExprKind::Reference { operand, .. } => {
+                self.expression(operand, environment, scope, parent, false);
+            }
             ExprKind::Call { callee, arguments } => {
                 if let ExprKind::Path(path) = &callee.kind {
                     self.path_reference(callee, path, environment, true, statement_call);
@@ -905,6 +928,11 @@ impl SymbolIndex {
 
     fn range_scope_reference(&mut self, expression: &Expr, environment: &Environment) {
         match &expression.kind {
+            ExprKind::Reference { operand, .. } => {
+                if let ExprKind::Path(path) = &operand.kind {
+                    self.path_reference(operand, path, environment, false, false);
+                }
+            }
             ExprKind::Path(path) => {
                 if let Some(namespace) = &path.qualifier {
                     let shape = self.qualifier_shape(&namespace.text, environment);
@@ -1067,7 +1095,12 @@ impl SymbolIndex {
         }
     }
     fn qualifier_shape(&self, name: &str, environment: &Environment) -> Option<NamespaceShape> {
+        let lexical = name.strip_prefix('$').unwrap_or(name).trim();
+        if let Some(id) = environment.names.values.get(lexical) {
+            return self.namespace_shapes.get(id).cloned();
+        }
         match name {
+            "$local" | "$wsl" | "$path" | "$env" => Some(NamespaceShape::Endpoint),
             "$pwd" => Some(NamespaceShape::WorkingDirectory),
             "$file" => Some(NamespaceShape::File),
             "$view" => Some(NamespaceShape::View),
@@ -1099,6 +1132,12 @@ impl SymbolIndex {
         environment: &Environment,
     ) -> Option<NamespaceShape> {
         match &expression.kind {
+            ExprKind::Reference { operand, .. } => {
+                let ExprKind::Path(path) = &operand.kind else {
+                    return self.expression_shape(operand, environment);
+                };
+                self.qualifier_shape(&format!("${}", path.path), environment)
+            }
             ExprKind::Path(path) => match &path.qualifier {
                 Some(namespace) => self.member_shape(
                     &self.qualifier_shape(&namespace.text, environment)?,
@@ -1350,7 +1389,7 @@ fn binding_detail(
         ExprKind::Path(path) if path.qualifier.is_none() && path.path.starts_with('$') => "scope",
         ExprKind::Path(path) if path.path.contains('<') => "range",
         ExprKind::Path(_) | ExprKind::Join { .. } | ExprKind::Select { .. } => "path",
-        ExprKind::Loop { .. } | ExprKind::Call { .. } => "value",
+        ExprKind::Reference { .. } | ExprKind::Loop { .. } | ExprKind::Call { .. } => "value",
     };
     if op == BindingOp::Space {
         if matches!(value.kind, ExprKind::Call { .. }) && !pure_call {

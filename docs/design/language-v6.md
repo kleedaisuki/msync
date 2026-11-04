@@ -157,3 +157,40 @@ structure; the REPL buffers the entire `scope` block before submission.
 
 The canonical syntax version is now `0.7`; existing `0.5` and `0.6` spellings
 remain compatible aliases. Removed transactional versions remain rejected.
+
+## v0.7.2 value references and binary path syntax
+
+`$` is a prefix value-reference operator, represented by
+`ExprKind::Reference { operand, operator }`. Its operand is parsed normally;
+lexical value lookup and builtin capability selection belong to semantic
+resolution, not token spelling. `copy($local, .codex/codex.prompt)` therefore
+contains a reference expression and a binary Join argument, rather than a path
+whose text starts with a dollar. Whitespace and grouping are ordinary syntax:
+`$local`, `$ local`, and `$(local)` have the same lookup meaning. Reference
+operands are identifier context: `$true` and `$(false)` look up valid binding
+names, while unprefixed `true` and `false` remain Bool literals.
+
+Every source `::` is a binary `Select` expression, including a direct
+`$local::file` and a quoted `$local::"folder name/file"`. The old
+`PathExpr.qualifier` field remains available to AST API consumers, but the
+structured parser no longer manufactures a separate qualified-path encoding.
+A quoted operand remains a String in the AST; the selection capability decides
+how a Scope supplies path context. Likewise
+`"C:\Users\STONE\.codex"/codex.prompt` is a Join with a String left operand,
+not one malformed quoted token. Existing quote escape semantics are unchanged.
+
+Slash composes path fragments below selection in precedence. Selection and
+slash each associate left; unary references bind to their own operand before
+selection or joining. Formatting retains parentheses where a lower-precedence
+namespace or right-nested composition needs them, for example `(a/b)::c`,
+`a::(b::c)` and `a/(b/c)`. Native executable calls still select the executable
+before applying arguments; a lexical call in a selection's value position
+still returns the value to be qualified. The distinction is the enclosing
+statement's call role, not the function's name.
+
+URL schemes, UNC roots, quoted strings and regex selectors retain their atomic
+boundaries: the slashes or double colons inside `ssh://[::1]/root/file` and
+`<name/with::operators>` are not source expression operators. Source spans on
+Reference, Select and Join own the actual `$`, `::` and `/` token bytes.
+`tests/language_v072.rs` exercises these rules alongside the existing frontend
+formatting/property corpus.

@@ -228,3 +228,43 @@ as a compact slash. The parser fix preserves regex-internal delimiters and does
 not turn ordinary String comparisons into selectors. Relocation remains in the
 typed Range's root; tests inspecting the old top-level Transfer slot must inspect
 the corresponding typed root rather than conclude the anchor disappeared.
+
+## Uniform operand syntax and editor queries (v0.7.2)
+
+The frontend now represents `$` as `Reference { operand, operator }` and every
+source `::` as `Select { namespace, item, operator }`. It no longer encodes a
+compact selection in `PathExpr.qualifier` while routing a computed selection
+through another AST shape. The field remains supported for existing AST API
+clients, but ordinary parsed source leaves it empty. `$local`, `$ local` and
+`$(local)` resolve the same reference; lexical values are looked up first, then
+the registered built-in scopes. `$value` retains the value's inferred type,
+including mutable Bool/String slots, Path and Scope. Unknown explicit references
+are diagnosed as unknown names, not silently reinterpreted as file paths.
+
+Reference is a name-resolution operation with an environment-dependent result,
+not a conversion from an already evaluated Path. A bare path/name operand keeps
+the language's existing implicit lexical-lookup convention. Prefix lookup binds
+tighter than selection, which binds tighter than path join. Parentheses preserve
+grouping and formatter association; quoted strings remain String values until
+an operator or a registered native parameter asks for a path-compatible value.
+
+The path capability is deliberately symmetric in its operand domains:
+`String × String`, `String × Path`, `Path × String` and `Path × Path` all produce
+Path. This is not a Windows-path rule. It applies to lexical bindings, function
+arguments, native results and direct literals alike. Path values retain endpoint
+and captured-context identity, while strings remain ordinary literal data outside
+path-compatible operations. Rooted right operands and conflicting explicit
+endpoints are still semantic value constraints after type admission.
+
+`Session::inspect_expression` exposes the same pure synthesis to the editor as
+`ExpressionInfo { ty, location }`. A location is present for a statically known
+Path or physical directory scope; lexical scopes and runtime-produced values
+have no fabricated filesystem location. This query neither executes a native
+call nor launches/authenticates a transport. The editor selects local filesystem
+locations before requesting directory entries, instead of inventing its own
+string-based path type checker.
+
+Selection keeps operand-owned source maps: regex diagnostics descend into the
+actual selected suffix, including decoded quoted UTF-8 intervals. Bound arguments
+retain their declaration/call-site provenance, while unbound member syntax keeps
+the complete source expression as the user-visible call site.

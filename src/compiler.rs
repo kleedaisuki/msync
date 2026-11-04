@@ -262,15 +262,21 @@ impl Compiler {
     }
 
     fn builtin_space(value: &str) -> Option<Space> {
+        value.strip_prefix('$').and_then(Self::builtin_reference)
+    }
+
+    /// The operand of the source-level `$` reference operator. The flat API's
+    /// prefixed spelling delegates here rather than owning another built-in set.
+    fn builtin_reference(value: &str) -> Option<Space> {
         match value {
-            "$pwd" => Some(Space::Pwd),
-            "$file" => Some(Space::File),
-            "$local" => Some(Space::Endpoint(Backend::Local)),
-            "$wsl" => Some(Space::Endpoint(Backend::Wsl)),
-            "$path" => Some(Space::Endpoint(Backend::Path)),
-            "$env" => Some(Space::Endpoint(Backend::Env)),
-            "$view" => Some(Space::Api(crate::relocatable::BuiltinScope::View)),
-            "$std" => Some(Space::Api(crate::relocatable::BuiltinScope::Std)),
+            "pwd" => Some(Space::Pwd),
+            "file" => Some(Space::File),
+            "local" => Some(Space::Endpoint(Backend::Local)),
+            "wsl" => Some(Space::Endpoint(Backend::Wsl)),
+            "path" => Some(Space::Endpoint(Backend::Path)),
+            "env" => Some(Space::Endpoint(Backend::Env)),
+            "view" => Some(Space::Api(crate::relocatable::BuiltinScope::View)),
+            "std" => Some(Space::Api(crate::relocatable::BuiltinScope::Std)),
             _ => None,
         }
     }

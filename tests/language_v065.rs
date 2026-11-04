@@ -9,6 +9,16 @@ fn binding(source: &str) -> Expr {
     value.clone()
 }
 
+fn reference_name(value: &Expr) -> Option<&str> {
+    let ExprKind::Reference { operand, .. } = &value.kind else {
+        return None;
+    };
+    match &operand.kind {
+        ExprKind::Path(path) => Some(path.path.as_str()),
+        _ => None,
+    }
+}
+
 #[test]
 fn ordered_ranges_parse_normal_expressions_with_original_unicode_spans() {
     let source = "values := [\"可莉,🌟\", true, $local::\"folder name/file\", identity(\"a,b\"), [false, true],]\n";
@@ -20,7 +30,7 @@ fn ordered_ranges_parse_normal_expressions_with_original_unicode_spans() {
     assert!(matches!(&values[0].kind, ExprKind::Literal(text) if text == "可莉,🌟"));
     assert!(matches!(values[1].kind, ExprKind::Bool(true)));
     assert!(
-        matches!(&values[2].kind, ExprKind::Path(path) if path.qualifier.as_ref().unwrap().text == "$local" && path.path == "folder name/file")
+        matches!(&values[2].kind, ExprKind::Select { namespace, item, .. } if reference_name(namespace) == Some("local") && matches!(&item.kind, ExprKind::Literal(text) if text == "folder name/file"))
     );
     assert!(matches!(values[3].kind, ExprKind::Call { .. }));
     assert!(matches!(&values[4].kind, ExprKind::Range(items) if items.len() == 2));
@@ -99,7 +109,7 @@ fn namespace_qualification_applies_to_value_call_results_without_callee_spelling
         else {
             panic!("expected selection of call result");
         };
-        assert!(matches!(namespace.kind, ExprKind::Path(path) if path.path == "$wsl"));
+        assert!(reference_name(&namespace) == Some("wsl"));
         assert!(matches!(item.kind, ExprKind::Call { .. }));
         assert_eq!(language::format(&source).unwrap(), source);
     }
@@ -110,7 +120,7 @@ fn namespace_qualification_applies_to_value_call_results_without_callee_spelling
         panic!("executable calls keep endpoint qualification on the executable");
     };
     assert!(
-        matches!(callee.kind, ExprKind::Path(path) if path.qualifier.as_ref().unwrap().text == "$local")
+        matches!(&callee.kind, ExprKind::Select { namespace, item, .. } if reference_name(namespace) == Some("local") && matches!(&item.kind, ExprKind::Path(path) if path.path == "tool"))
     );
 }
 
@@ -124,17 +134,21 @@ fn qualified_boolean_values_remain_typed_but_quoted_paths_and_executables_stay_p
         else {
             panic!("qualification must retain the boolean operand type");
         };
-        assert!(matches!(namespace.kind, ExprKind::Path(path) if path.path == "$pwd"));
+        assert!(reference_name(&namespace) == Some("pwd"));
         assert!(matches!(item.kind, ExprKind::Bool(_)));
 
         let value = binding(&format!("item := $pwd::\"{word}\"\n"));
-        assert!(matches!(value.kind, ExprKind::Path(path) if path.path == word));
+        assert!(
+            matches!(&value.kind, ExprKind::Select { item, .. } if matches!(&item.kind, ExprKind::Literal(text) if text == word))
+        );
 
         let value = binding(&format!("program => $path::{word}()\n"));
         let ExprKind::Call { callee, .. } = value.kind else {
             panic!()
         };
-        assert!(matches!(callee.kind, ExprKind::Path(path) if path.path == word));
+        assert!(
+            matches!(&callee.kind, ExprKind::Select { item, .. } if matches!(&item.kind, ExprKind::Path(path) if path.path == word))
+        );
     }
 }
 

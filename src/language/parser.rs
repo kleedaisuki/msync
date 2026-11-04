@@ -703,6 +703,7 @@ fn name(raw: &str, offset: usize) -> Result<Name, Report> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CallRole {
     Value,
+    Reference,
     Member,
     Executable,
     ExecutableCallee,
@@ -727,6 +728,16 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
     {
         return Err(Report::new("unary expression nesting is too deep", range)
             .help("Bind an intermediate boolean; one expression supports at most 128 unary operators."));
+    }
+    if text
+        .chars()
+        .take_while(|ch| *ch == '$' || ch.is_whitespace())
+        .filter(|ch| *ch == '$')
+        .count()
+        > MAX_NESTING
+    {
+        return Err(Report::new("unary expression nesting is too deep", range)
+            .help("Bind an intermediate value before composing more reference operators."));
     }
     let scan = scan(text, offset)?;
     if scan.calls.len() > MAX_NESTING {
@@ -802,16 +813,26 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
         });
     }
     if matches!(scan.calls.as_slice(), [(0, close)] if *close == text.len() - 1) {
-        let mut inner = expression(&text[1..text.len() - 1], offset + 1)?;
+        // A grouped reference operand is still a name, not a Bool literal.
+        // Other groups retain their ordinary value-expression semantics.
+        let inner_role = if role == CallRole::Reference {
+            CallRole::Reference
+        } else {
+            CallRole::Value
+        };
+        let mut inner = expression_with_role(&text[1..text.len() - 1], offset + 1, inner_role)?;
         inner.span = range;
         return Ok(inner);
     }
     let executable_call = (role == CallRole::Executable)
         .then(|| scan.calls.last().copied())
-        .flatten();
+        .flatten()
+        .filter(|(open, _)| text[..*open].trim() != "$");
     let kind = if text == "loop:" {
         ExprKind::Loop { body: Vec::new() }
-    } else if let Some(value) = boolean_literal(text) {
+    } else if let Some(value) = boolean_literal(text)
+        .filter(|_| !matches!(role, CallRole::ExecutableCallee | CallRole::Reference))
+    {
         ExprKind::Bool(value)
     } else if matches!(scan.ranges.as_slice(), [(0, close)] if *close == text.len() - 1) {
         ExprKind::Range(
@@ -852,12 +873,7 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
             operator: span(offset + operator, offset + operator + 1),
             mode,
         }
-    } else if let Some(operator) = scan.selections.iter().rev().copied().find(|operator| {
-        scan.selections.len() > 1
-            || !scan.calls.is_empty()
-            || !scan.ranges.is_empty()
-            || role == CallRole::Value && boolean_literal(&text[operator + 2..]).is_some()
-    }) {
+    } else if let Some(operator) = scan.selections.last().copied().filter(|_| !url_atom(text)) {
         if scan.selections.len() > MAX_NESTING {
             return Err(Report::new("namespace expression nesting is too deep", span(offset + operator, offset + operator + 2))
                 .help("Bind an intermediate space; one expression supports at most 128 namespace operators."));
@@ -867,11 +883,17 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
             item: Box::new(expression_with_role(
                 &text[operator + 2..],
                 offset + operator + 2,
-                CallRole::Member,
+                if role == CallRole::ExecutableCallee {
+                    CallRole::ExecutableCallee
+                } else {
+                    CallRole::Member
+                },
             )?),
             operator: span(offset + operator, offset + operator + 2),
         }
-    } else if let Some((open, close)) = scan.calls.last().copied() {
+    } else if let Some((open, close)) = scan.calls.last().copied()
+        && text[..open].trim() != "$"
+    {
         call_expression(text, offset, open, close, role)?
     } else if let Some((0, close)) = scan.ranges.first() {
         return Err(Report::new(
@@ -882,33 +904,21 @@ fn expression_with_role(raw: &str, offset: usize, role: CallRole) -> Result<Expr
         let (value, source) = quoted(text, offset)?;
         provenance = source;
         ExprKind::Literal(value)
+    } else if let Some(operand) = text.strip_prefix('$') {
+        ExprKind::Reference {
+            operand: Box::new(expression_with_role(
+                operand,
+                offset + 1,
+                CallRole::Reference,
+            )?),
+            operator: span(offset, offset + 1),
+        }
     } else {
-        let (qualifier, suffix, suffix_offset) =
-            if let Some((qualifier, suffix)) = text.split_once("::").filter(|_| !url_atom(text)) {
-                let qualifier_name = qualifier_name(qualifier, offset)?;
-                (Some(qualifier_name), suffix, offset + qualifier.len() + 2)
-            } else {
-                (None, text, offset)
-            };
-        let value = if suffix.starts_with('"') {
-            let (value, source) = quoted(suffix, suffix_offset)?;
-            provenance = source;
-            value
-        } else {
-            if let Some(index) = suffix.find('"') {
-                return Err(Report::new("quote the complete path or namespace suffix", span(suffix_offset + index, suffix_offset + index + 1))
-                    .help("For a file source with spaces, write '$local::\"folder name/file.txt\"'; bare quoted sources are literal streams."));
-            }
-            if suffix.is_empty() {
-                return Err(Report::new(
-                    "expected a path after '::'",
-                    span(suffix_offset, suffix_offset),
-                ));
-            }
-            provenance = OperandSource::unmapped(span(suffix_offset, suffix_offset + suffix.len()));
-            suffix.to_owned()
-        };
-        path(qualifier, value)
+        if let Some(index) = text.find('"') {
+            return Err(Report::new("quote the complete path or namespace suffix", span(offset + index, offset + index + 1))
+                .help("For a file source with spaces, write '$local::\"folder name/file.txt\"'; bare quoted sources are literal streams."));
+        }
+        path(None, text.to_owned())
     };
     Ok(Expr {
         kind,
@@ -1024,24 +1034,6 @@ fn path(qualifier: Option<Name>, path: String) -> ExprKind {
         qualifier,
         path,
         mode: DestinationMode::Exact,
-    })
-}
-
-fn qualifier_name(raw: &str, offset: usize) -> Result<Name, Report> {
-    let bare = raw.strip_prefix('$').unwrap_or(raw);
-    if bare.is_empty()
-        || !bare
-            .chars()
-            .all(|ch| ch.is_alphanumeric() || matches!(ch, '.' | '_' | '-'))
-    {
-        return Err(Report::new(
-            "expected a namespace or program name before '::'",
-            span(offset, offset + raw.len()),
-        ));
-    }
-    Ok(Name {
-        text: raw.to_owned(),
-        span: span(offset, offset + raw.len()),
     })
 }
 

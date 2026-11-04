@@ -22,11 +22,14 @@ fn quoted_suffix_provenance_maps_decoded_bytes_back_to_utf8_and_escapes() {
     let StatementKind::Transfer { source, .. } = &document.statements[0].kind else {
         panic!()
     };
-    let ExprKind::Path(path) = &source.kind else {
-        panic!()
+    let ExprKind::Select { item, .. } = &source.kind else {
+        panic!("expected scope selection")
     };
-    let start = path.path.find('<').unwrap() + 1;
-    let site = source.source.interval(start, path.path.len() - 1);
+    let ExprKind::Literal(path) = &item.kind else {
+        panic!("the quoted suffix remains a String")
+    };
+    let start = path.find('<').unwrap() + 1;
+    let site = item.source.interval(start, path.len() - 1);
     assert_eq!(&text[site.start..site.end], "\\\\z[");
     let errors = pipeline::compile_named(
         &mut Session::new(),
@@ -123,6 +126,39 @@ fn runtime_origin_retains_call_argument_and_definition_without_hir_layout_change
     );
     assert_eq!(&*report.related[0].site.source.name, "defs.msync");
     assert_eq!(compiled.sources.iter().count(), 2);
+}
+
+#[test]
+fn binary_selection_keeps_the_bound_macro_operand_as_its_runtime_origin() {
+    let mut session = Session::new();
+    pipeline::compile_named(
+        &mut session,
+        "macro copy(endpoint, item):\n    endpoint::item -> output\n",
+        "defs.msync",
+        &context("defs.msync"),
+        &PlanningContext::default(),
+    )
+    .unwrap();
+    let caller = "copy($local, missing-input)\n";
+    let compiled = pipeline::compile_named(
+        &mut session,
+        caller,
+        "caller.msync",
+        &context("caller.msync"),
+        &PlanningContext::default(),
+    )
+    .unwrap();
+    let instruction = &compiled.program.body.instructions[0];
+    let report = compiled.instruction_report(
+        instruction.id,
+        Report::new("source missing", instruction.span),
+        Some(false),
+    );
+    assert_eq!(&*report.source.name, "caller.msync");
+    assert_eq!(
+        &caller[report.report.diagnostic.span.start..report.report.diagnostic.span.end],
+        "missing-input"
+    );
 }
 
 #[test]

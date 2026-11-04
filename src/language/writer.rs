@@ -281,6 +281,16 @@ fn expression(output: &mut String, value: &Expr, depth: usize) {
             }
         }
         ExprKind::Literal(text) => quoted(output, text),
+        ExprKind::Reference { operand, .. } => {
+            output.push('$');
+            if matches!(operand.kind, ExprKind::Path(_)) {
+                expression(output, operand, depth);
+            } else {
+                output.push('(');
+                expression(output, operand, depth);
+                output.push(')');
+            }
+        }
         ExprKind::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
         ExprKind::Range(values) => {
             output.push('[');
@@ -328,15 +338,31 @@ fn expression(output: &mut String, value: &Expr, depth: usize) {
         ExprKind::Select {
             namespace, item, ..
         } => {
-            expression(output, namespace, depth);
+            // Selection binds more tightly than slash, and associates left.
+            grouped_expression(
+                output,
+                namespace,
+                depth,
+                matches!(namespace.kind, ExprKind::Join { .. }),
+            );
             output.push_str("::");
-            expression(output, item, depth);
+            grouped_expression(
+                output,
+                item,
+                depth,
+                matches!(item.kind, ExprKind::Select { .. } | ExprKind::Join { .. }),
+            );
         }
         ExprKind::Join { base, suffix, .. } => {
             expression(output, base, depth);
             output.push('/');
             if let Some(suffix) = suffix {
-                expression(output, suffix, depth);
+                grouped_expression(
+                    output,
+                    suffix,
+                    depth,
+                    matches!(suffix.kind, ExprKind::Join { .. }),
+                );
             }
         }
         ExprKind::Call { callee, arguments } => {
@@ -350,6 +376,16 @@ fn expression(output: &mut String, value: &Expr, depth: usize) {
             }
             output.push(')');
         }
+    }
+}
+
+fn grouped_expression(output: &mut String, value: &Expr, depth: usize, grouped: bool) {
+    if grouped {
+        output.push('(');
+    }
+    expression(output, value, depth);
+    if grouped {
+        output.push(')');
     }
 }
 
