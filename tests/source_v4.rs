@@ -31,6 +31,25 @@ fn quoted_suffix_provenance_maps_decoded_bytes_back_to_utf8_and_escapes() {
     let start = path.find('<').unwrap() + 1;
     let site = item.source.interval(start, path.len() - 1);
     assert_eq!(&text[site.start..site.end], "\\\\z[");
+    // A quoted suffix is literal String data, even when it resembles a selector.
+    pipeline::compile_named(
+        &mut Session::new(),
+        text,
+        "unicode.msync",
+        &context("unicode.msync"),
+        &PlanningContext::default(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn explicit_selector_errors_keep_the_unquoted_pattern_source_span() {
+    let text = "$local::\"目录\"/<\\z(> -> output/\n";
+    let start = text.find('<').unwrap() + 1;
+    let site = Span {
+        start,
+        end: text.find('>').unwrap(),
+    };
     let errors = pipeline::compile_named(
         &mut Session::new(),
         text,

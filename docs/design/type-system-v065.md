@@ -209,11 +209,10 @@ inferred unsupported type retained in the explanation. Reporting only the `/`
 operator would lose the caller's actual bad argument and is not an acceptable
 consequence of making the type relation explicit.
 
-Regex selection now produces a Range, but invalid-pattern diagnostics use the
-existing decoded selector interval rather than the enclosing expression span.
-This retains escaped Unicode suffix provenance without interpreting a regex
-library's formatted human error. The unchanged `source_v4` quoted-suffix case
-passes with its exact decoded-byte range.
+Explicit regex selection produces a Range; invalid-pattern diagnostics use the
+selector's pattern interval rather than the enclosing expression span. Quoted
+path/literal source maps independently retain decoded Unicode/escape intervals,
+without reinterpreting string payloads as regex source.
 
 The `$pwd` member projection is shared by direct syntax and typed computed member
 values. An ordinary function returning the member name `pwd` must select the
@@ -265,6 +264,23 @@ locations before requesting directory entries, instead of inventing its own
 string-based path type checker.
 
 Selection keeps operand-owned source maps: regex diagnostics descend into the
-actual selected suffix, including decoded quoted UTF-8 intervals. Bound arguments
+explicit unquoted selector suffix, while String operands retain decoded UTF-8
+intervals without acquiring selector behavior from their payload. Bound arguments
 retain their declaration/call-site provenance, while unbound member syntax keeps
 the complete source expression as the user-visible call site.
+
+### Selector syntax is not Path data
+
+Only an explicit unquoted `<pattern>` source atom constructs a regex Range.
+The compiler extracts its pattern and rewrites a root expression, resolves that
+root once, and emits the existing typed `RangeSource::Regex` node. Runtime-produced
+Path roots and captured endpoints follow the same rule. A selector followed by
+another path component remains a source error.
+
+String and native-produced Path values are never rescanned for angle brackets:
+`"." / "<literal>"` is Path, as is joining a String variable with that payload.
+The distinction applies to reading, writing, include and execute. For explicit
+selection beneath a quoted directory, use `"directory name"/<pattern>`, not
+`"directory name/<pattern>"`; the latter is ordinary filename data. This corrects
+the former content-based source behavior without changing existing compiled
+Path/Range opcodes or object feature negotiation.

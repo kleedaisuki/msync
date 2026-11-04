@@ -88,9 +88,12 @@ impl Lower<'_> {
         region: &mut Region,
     ) -> Result<(), LocatedReport> {
         let site = self.source.at(expression.span);
-        let value =
-            resolve_value(expression, scope, context).map_err(|failure| self.located(failure))?;
-        let path = script_path(value, context)
+        let selector = source_selector(expression).map_err(|report| self.located(report))?;
+        let root = selector
+            .as_ref()
+            .map_or(expression, |selector| &selector.root);
+        let value = resolve_value(root, scope, context).map_err(|failure| self.located(failure))?;
+        let path = script_path(value, selector, context)
             .map_err(|message| self.located(Report::new(message, expression.span)))?;
         let paths = script_matches(path)
             .map_err(|message| self.located(Report::new(message, expression.span)))?;
@@ -226,8 +229,12 @@ struct SourcePath {
     binding: SourceModulePath,
 }
 
-fn script_path(value: Value, context: &CompileContext) -> Result<SourcePath, String> {
-    let (mut location, mut relocation) = match value {
+fn script_path(
+    value: Value,
+    selector: Option<SourceSelector>,
+    context: &CompileContext,
+) -> Result<SourcePath, String> {
+    let (location, relocation) = match value {
         Value::Literal(text) => (
             Location {
                 backend: Backend::Local,
@@ -260,16 +267,7 @@ fn script_path(value: Value, context: &CompileContext) -> Result<SourcePath, Str
             location.backend
         ));
     }
-    let before = location.path.len();
-    let pattern = super::super::take_selector(&mut location.path, &mut HashSet::new())?;
-    if let Some(relocation) = &mut relocation {
-        relocation.suffix.truncate(
-            relocation
-                .suffix
-                .len()
-                .saturating_sub(before - location.path.len()),
-        );
-    }
+    let pattern = selector.map(|selector| selector.pattern);
     let relocation = path_relocation(&location.backend, &location.path, relocation);
     let relative = !absolute_fragment(&location.path) && !rooted_fragment(&location.path);
     // Explicit environment items keep their cwd anchor in contextual objects.
