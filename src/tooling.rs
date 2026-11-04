@@ -844,6 +844,25 @@ impl SymbolIndex {
             ExprKind::Call { callee, arguments } => {
                 if let ExprKind::Path(path) = &callee.kind {
                     self.path_reference(callee, path, environment, true, statement_call);
+                } else if let ExprKind::Select {
+                    namespace, item, ..
+                } = &callee.kind
+                    && let ExprKind::Path(path) = &item.kind
+                {
+                    self.expression(namespace, environment, scope, parent, false);
+                    if let Some(shape @ (NamespaceShape::Library(_) | NamespaceShape::Lexical(_))) =
+                        self.expression_shape(namespace, environment)
+                    {
+                        self.member_reference(
+                            &shape,
+                            &path.path,
+                            item.source.content,
+                            true,
+                            statement_call,
+                        );
+                    } else {
+                        self.path_reference(item, path, environment, true, statement_call);
+                    }
                 } else {
                     self.expression(callee, environment, scope, parent, false);
                 }
@@ -866,8 +885,9 @@ impl SymbolIndex {
                 namespace, item, ..
             } => {
                 self.expression(namespace, environment, scope, parent, false);
+                let shape = self.expression_shape(namespace, environment);
                 if let Some(shape @ (NamespaceShape::Library(_) | NamespaceShape::Lexical(_))) =
-                    self.expression_shape(namespace, environment)
+                    shape
                 {
                     self.member_expression(
                         item,
@@ -877,6 +897,12 @@ impl SymbolIndex {
                         parent,
                         statement_call,
                     );
+                } else if matches!(shape, Some(NamespaceShape::Program | NamespaceShape::File))
+                    || matches!(shape, Some(NamespaceShape::WorkingDirectory))
+                        && matches!(&item.kind, ExprKind::Path(path) if path.path == "pwd")
+                {
+                    // Process ports and contextual namespace members are owned
+                    // by their receiver, never by a same-spelled outer value.
                 } else {
                     self.expression(item, environment, scope, parent, false);
                 }
@@ -1404,10 +1430,15 @@ fn is_pure_call(value: &Expr, environment: &Environment) -> bool {
     let ExprKind::Call { callee, .. } = &value.kind else {
         return false;
     };
-    let ExprKind::Path(path) = &callee.kind else {
-        return false;
-    };
-    environment.names.symbols.contains_key(&path.path)
+    fn selected_name(expression: &Expr) -> Option<&str> {
+        match &expression.kind {
+            ExprKind::Path(path) => Some(&path.path),
+            ExprKind::Select { item, .. } => selected_name(item),
+            ExprKind::Reference { operand, .. } => selected_name(operand),
+            _ => None,
+        }
+    }
+    selected_name(callee).is_some_and(|name| environment.names.symbols.contains_key(name))
 }
 
 fn native_type_name(result: &crate::language::NativeType) -> String {
