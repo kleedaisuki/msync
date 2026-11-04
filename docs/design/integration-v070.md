@@ -410,9 +410,9 @@ The published tag remains `952850d641b3ae57427fea0a03d1448234c2eee9`.
 
 ## Held v0.7.3 candidate: literal Strings and endpoint display
 
-Publication is explicitly on hold at the user's request. Candidate code stays
-on `codex/literal-strings-completion`; neither the existing v0.7.2 tag/assets nor
-main are replaced by this candidate.
+The candidate was held on `codex/literal-strings-completion` at the user's
+request until the user authorized publication on 2026-11-04. The existing
+v0.7.2 tag and asset bytes remain unchanged.
 
 The reported `D:\Code\agents\target` failure was first-pass String decoding,
 not LSP JSON, URI or formatter double decoding. The old lexer preserved unknown

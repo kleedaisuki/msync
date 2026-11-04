@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.3 — Unreleased
+## 0.7.3 — 2026-11-04
 
 - Remove backslash escape decoding from String source syntax. Windows path text
   such as `"D:\Code\agents\target"` remains literal; doubled quote delimiters
