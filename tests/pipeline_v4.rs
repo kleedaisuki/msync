@@ -17,7 +17,7 @@ fn macro_expansion_and_graph_compilation_need_no_filesystem_or_child() {
     let mut session = Session::new();
     let compiled = pipeline::compile(
         &mut session,
-        "macro write(value, path):\n    value -> $pwd::path\nwrite(\"你好\\n\", output.txt)\n",
+        "macro write(value, path):\n    value -> $pwd::path\nwrite(\"你好\n\", output.txt)\n",
         &context(),
         &[],
     )

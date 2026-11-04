@@ -255,7 +255,7 @@ fn macro_source_file_is_definition_bound_but_pwd_is_call_bound() {
 fn process_call_preserves_direct_argv_and_all_typed_ports() {
     let program = compile(
         &mut Session::new(),
-        "async program => $path::python(\"-c\", \"print('a -> b; $HOME')\", input.txt)\n\"你好\\n\" -> program::stdin\nprogram::stdout -> output.txt\nprogram::stderr -> errors.txt\nprogram::pid -> pid\nprogram::exit_code -> status1\nprogram::exit_code -> status2\nprogram::meta -> metadata\n",
+        "async program => $path::python(\"-c\", \"print('a -> b; $HOME')\", input.txt)\n\"你好\n\" -> program::stdin\nprogram::stdout -> output.txt\nprogram::stderr -> errors.txt\nprogram::pid -> pid\nprogram::exit_code -> status1\nprogram::exit_code -> status2\nprogram::meta -> metadata\n",
     );
     let (process, executable, arguments, cwd) = match &program.body.instructions[1].kind {
         InstructionKind::Spawn {

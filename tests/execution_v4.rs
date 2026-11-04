@@ -57,7 +57,7 @@ fn typed_macro_copies_a_real_tree_into_explicit_replacement_without_nesting() {
 #[test]
 fn utf8_and_nul_literal_bytes_are_exact_and_parents_publish_with_the_statement() {
     let root = workspace();
-    let source = "\"可莉🌟\\n\0done\" -> deep/tree/result.txt\n";
+    let source = "\"可莉🌟\n\0done\" -> deep/tree/result.txt\n";
     let report = run(root.path(), source).unwrap();
     assert_eq!(
         fs::read(root.path().join("deep/tree/result.txt")).unwrap(),
