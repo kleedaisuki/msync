@@ -36,3 +36,7 @@ copy($ local, .codex/codex.prompt)
 # Lexical Path operations work even when String data resembles source syntax.
 selector_shaped := "."/"<literal>"
 fs::string(fs::filename(selector_shaped)) -> std-output/literal-name
+
+# Ordinary String data has no backslash escapes or raw-prefix variant.
+"D:\Code\agents\target\new\runtime\artifacts" -> std-output/windows-spelling
+"say ""hello""" -> std-output/quoted-content
