@@ -155,8 +155,26 @@ function Assert-InstalledJourney([string]$Directory) {
         if ([IO.File]::ReadAllText((Join-Path $journey 'std-output/renamed')) -cne 'installed standard library' -or
             [IO.File]::ReadAllText((Join-Path $journey 'std-output/status')) -cne 'ready' -or
             [IO.File]::ReadAllText((Join-Path $journey 'std-output/argument-first')) -cne 'endpoint argument' -or
-            [IO.File]::ReadAllText((Join-Path $journey 'std-output/argument-second')) -cne 'endpoint argument') {
+            [IO.File]::ReadAllText((Join-Path $journey 'std-output/argument-second')) -cne 'endpoint argument' -or
+            [IO.File]::ReadAllText((Join-Path $journey 'std-output/copied.prompt')) -cne 'operator payload') {
             throw 'Installed standard-library/native/namespace/Scope-range journey differs.'
+        }
+        foreach ($pairing in @('string-string', 'string-path', 'path-string', 'path-path')) {
+            if ([IO.File]::ReadAllText((Join-Path $journey "std-output/$pairing")) -cne 'operator payload') {
+                throw "Installed String/Path interoperability failed for $pairing."
+            }
+        }
+
+        # Use this account's actual Windows path, including its backslash spelling.
+        $quotedBase = '"' + $journey.Replace('\', '\\').Replace('"', '\"') + '"'
+        $windowsSource = "$quotedBase/.codex/codex.prompt -> std-output/windows.prompt`n"
+        [IO.File]::WriteAllText((Join-Path $journey 'windows-path.msync'), $windowsSource, $utf8)
+        $null = Invoke-Msync $exe @('check', 'windows-path.msync')
+        $null = Invoke-Msync $exe @('compile', 'windows-path.msync', '-o', 'windows-path.mobj')
+        Remove-Item -LiteralPath 'windows-path.msync'
+        $null = Invoke-Msync $exe @('run', 'windows-path.mobj')
+        if ([IO.File]::ReadAllText((Join-Path $journey 'std-output/windows.prompt')) -cne 'operator payload') {
+            throw 'Quoted Windows base joined to a compact relative path copied different bytes.'
         }
     } finally { Pop-Location }
 }

@@ -4,9 +4,11 @@ text => $std::string
 scope package:
     input := std-input
 
-native present(path) -> Bool = "fs.is_regular_file"
+native present(path) = "fs.is_regular_file"
 macro publish(scope, file):
     "endpoint argument" -> scope::file
+macro copy(scope, file):
+    scope::file -> "std-output"/copied.prompt
 
 "installed standard library" -> std-input
 fs::create_directories(std-output)
@@ -19,3 +21,14 @@ if fs::is_directory(std-output) and present(std-output/renamed):
     text::trim(" ready ") -> std-output/status
 else:
     "wrong" -> std-output/status
+
+# Exercise reference, qualification and compact joins through the installed compiler.
+$fs::create_directories(.codex)
+"operator payload" -> ".codex"/codex.prompt
+copy($ local, .codex/codex.prompt)
+
+# The slash capability admits every String/Path operand pairing.
+".codex"/"codex.prompt" -> "std-output"/string-string
+".codex"/codex.prompt -> "std-output"/string-path
+.codex/"codex.prompt" -> "std-output"/path-string
+.codex/codex.prompt -> "std-output"/path-path

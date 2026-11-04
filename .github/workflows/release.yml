@@ -143,6 +143,10 @@ jobs:
           test "$(cat std-output/status)" = ready
           test "$(cat std-output/argument-first)" = 'endpoint argument'
           test "$(cat std-output/argument-second)" = 'endpoint argument'
+          test "$(cat std-output/copied.prompt)" = 'operator payload'
+          for pairing in string-string string-path path-string path-path; do
+            test "$(cat "std-output/$pairing")" = 'operator payload'
+          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-linux-x86_64
