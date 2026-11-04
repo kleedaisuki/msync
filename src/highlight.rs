@@ -34,6 +34,14 @@ pub const COMMANDS: &[&str] = &[
 ];
 
 pub const BUILTINS: &[&str] = &[
+    "$local",
+    "$wsl",
+    "$pwd",
+    "$file",
+    "$path",
+    "$env",
+    "$std",
+    "$view",
     "$pwd::pwd",
     "$file::this",
     "$file::parent",
@@ -205,6 +213,10 @@ fn line_tokens(source: &str, tokens: &mut Vec<Token>) {
                 TokenKind::Comment,
             ),
             '"' => (quoted_end(source, position), TokenKind::String),
+            '/' if head && repl_command_end(source, position).is_some() => (
+                repl_command_end(source, position).unwrap(),
+                TokenKind::Command,
+            ),
             '<' if selector_start(source, position) => {
                 (selector_end(source, position), TokenKind::Selector)
             }
@@ -254,7 +266,7 @@ fn shell_tokens(source: &str, tokens: &mut Vec<Token>) -> bool {
         return false;
     }
     let end = start + command.len();
-    if operator_at(source[end..].trim_start(), 0) {
+    if statement_operator_at(source[end..].trim_start()) {
         return false;
     }
     if start != 0 {
@@ -295,12 +307,19 @@ fn operator_at(source: &str, position: usize) -> bool {
 
 fn operator_len(source: &str, position: usize) -> usize {
     match source.as_bytes().get(position..position + 2) {
-        Some(b"->" | b"=>" | b":=" | b"==" | b"!=" | b"<=" | b">=") => 2,
+        Some(b"->" | b"=>" | b":=" | b"==" | b"!=" | b"<=" | b">=" | b"::") => 2,
         _ => usize::from(matches!(
             source.as_bytes().get(position),
-            Some(b'=' | b'<' | b'>' | b'|')
+            Some(b'=' | b'<' | b'>' | b'|' | b'$' | b'/')
         )),
     }
+}
+
+fn statement_operator_at(source: &str) -> bool {
+    ["->", "=>", ":=", "==", "!=", "<=", ">="]
+        .iter()
+        .any(|operator| source.starts_with(operator))
+        || source.starts_with(['=', '<', '>', '|'])
 }
 
 fn selector_start(source: &str, position: usize) -> bool {
@@ -393,7 +412,7 @@ fn word_end(source: &str, start: usize) -> usize {
         }
         if ch.is_whitespace()
             || matches!(ch, '"' | '<' | '(' | ')' | '[' | ']' | ',')
-            || operator_at(source, position)
+            || !endpoint && operator_at(source, position)
             || ch == ':' && header_colon(source, position)
         {
             return position;
@@ -421,12 +440,11 @@ fn word_tokens(
     let word = &source[start..end];
     let kind = if word.contains("://") {
         TokenKind::Endpoint
-    } else if word.contains("::") {
-        namespace_tokens(source, start, end, tokens);
-        return;
-    } else if word.starts_with('$') {
+    } else if source[end..].trim_start().starts_with("::")
+        || source[..start].trim_end().ends_with('$')
+    {
         TokenKind::Namespace
-    } else if parameter {
+    } else if parameter || range_member(source, start) {
         TokenKind::Binding
     } else if control_word(source, word, head, end) {
         TokenKind::Command
@@ -445,48 +463,25 @@ fn word_tokens(
     });
 }
 
-fn namespace_tokens(source: &str, start: usize, end: usize, tokens: &mut Vec<Token>) {
-    let mut cursor = start;
-    let mut namespace = "";
-    while let Some(separator) = source[cursor..end].find("::") {
-        let boundary = cursor + separator + 2;
-        namespace = &source[cursor..cursor + separator];
-        tokens.push(Token {
-            span: Span {
-                start: cursor,
-                end: boundary,
-            },
-            kind: TokenKind::Namespace,
-        });
-        cursor = boundary;
-    }
-    if cursor == end {
-        return;
-    }
-    if matches!(namespace, "$pwd" | "$file" | "$env") {
-        let boundary = cursor
-            + source[cursor..end]
-                .find(['/', '\\'])
-                .unwrap_or(end - cursor);
-        if let Some(previous) = tokens.last_mut() {
-            previous.span.end = boundary;
-        }
-        cursor = boundary;
-    }
-    if cursor < end {
-        tokens.push(Token {
-            span: Span { start: cursor, end },
-            kind: if source[cursor..end].starts_with('$') {
-                TokenKind::Namespace
-            } else if source[end..].trim_start().starts_with('(')
-                || matches!(namespace, "$view" | "views" | "ranges")
-            {
-                TokenKind::Binding
-            } else {
-                TokenKind::Text
-            },
-        });
-    }
+fn range_member(source: &str, start: usize) -> bool {
+    let Some(namespace) = source[..start].trim_end().strip_suffix("::") else {
+        return false;
+    };
+    ["$view", "$std::ranges", "views", "ranges"]
+        .iter()
+        .any(|name| {
+            namespace.ends_with(name)
+                && namespace[..namespace.len() - name.len()]
+                    .chars()
+                    .next_back()
+                    .is_none_or(|ch| ch.is_whitespace() || matches!(ch, '(' | ',' | '[' | '|'))
+        })
+}
+
+fn repl_command_end(source: &str, start: usize) -> Option<usize> {
+    let word = source[start..].split_whitespace().next()?;
+    let end = start + word.len();
+    (is_command(word) && !statement_operator_at(source[end..].trim_start())).then_some(end)
 }
 
 fn scheduling_word(word: &str) -> bool {
@@ -494,6 +489,10 @@ fn scheduling_word(word: &str) -> bool {
 }
 
 fn control_word(source: &str, word: &str, head: bool, end: usize) -> bool {
+    let start = end - word.len();
+    if source[..start].ends_with('/') && !matches!(word, "true" | "false") {
+        return false;
+    }
     if head && scheduling_word(word) {
         return true;
     }
@@ -521,7 +520,7 @@ fn control_word(source: &str, word: &str, head: bool, end: usize) -> bool {
             | "for"
             | "loop"
             | "break"
-    ) || (is_command(word) && !operator_at(source[end..].trim_start(), 0)))
+    ) || (is_command(word) && !statement_operator_at(source[end..].trim_start())))
 }
 
 pub fn highlight(source: &str, color: bool) -> String {
@@ -701,7 +700,7 @@ mod tests {
                 .iter()
                 .filter(|token| token.kind == TokenKind::Operator)
                 .count(),
-            1
+            2
         );
         assert_eq!(
             tokens
@@ -721,6 +720,23 @@ mod tests {
     }
 
     #[test]
+    fn value_operators_have_independent_spans_without_splitting_literals() {
+        let source = r#"copy($local :: .codex/codex.prompt, "C:\Users\STONE\.codex"/codex.prompt)"#;
+        let operators = token_spans(source)
+            .into_iter()
+            .filter(|token| token.kind == TokenKind::Operator)
+            .map(|token| &source[token.span.start..token.span.end])
+            .collect::<Vec<_>>();
+        assert_eq!(operators, ["$", "::", "/", "/"]);
+        let endpoint = "source => ssh://person@[::1]/tmp/file";
+        assert!(token_spans(endpoint).iter().any(|token| {
+            token.kind == TokenKind::Endpoint
+                && &endpoint[token.span.start..token.span.end] == "ssh://person@[::1]/tmp/file"
+        }));
+        assert_eq!(token_spans("/help")[0].kind, TokenKind::Command);
+    }
+
+    #[test]
     fn raw_terminal_controls_are_visible_not_executed() {
         assert_eq!(highlight("a\x1b[2J\r\0", false), "a\\x1b[2J\\r\\u{0}");
     }
@@ -732,6 +748,9 @@ mod tests {
         assert_eq!(tokens[0].kind, TokenKind::Command);
         assert_eq!(tokens[1].kind, TokenKind::Text);
         assert_eq!(highlight(source, false), source);
+        let absolute_payload = token_spans("/bash /usr/bin/printf '$HOME'");
+        assert_eq!(absolute_payload[0].kind, TokenKind::Command);
+        assert_eq!(absolute_payload[1].kind, TokenKind::Text);
         let path_copy = token_spans("/bash -> output");
         assert!(
             !path_copy

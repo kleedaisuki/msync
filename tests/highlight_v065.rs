@@ -13,7 +13,9 @@ fn canonical_view_apis_keep_namespace_and_callable_roles() {
         let spelling = format!("$view::{name}");
         assert!(RANGE_ADAPTORS.contains(&spelling.as_str()));
         let source = format!("items | {spelling}");
-        assert!(has(&source, "$view::", TokenKind::Namespace));
+        assert!(has(&source, "$", TokenKind::Operator));
+        assert!(has(&source, "::", TokenKind::Operator));
+        assert!(has(&source, "view", TokenKind::Namespace));
         assert!(has(&source, name, TokenKind::Binding));
     }
 }
@@ -24,7 +26,7 @@ fn ordered_list_delimiters_do_not_hide_boolean_or_function_items() {
     assert!(has(source, "true", TokenKind::Command));
     assert!(has(source, "false", TokenKind::Command));
     assert!(has(source, "ready", TokenKind::Binding));
-    assert!(has(source, "$local::", TokenKind::Namespace));
+    assert!(has(source, "local", TokenKind::Namespace));
     assert!(has(source, "\"可莉 folder\"", TokenKind::String));
     for source in ["items := [true,", "items := [\"open", "items := [root/<a>]"] {
         let mut cursor = 0;
@@ -57,14 +59,14 @@ fn conditional_scheduling_and_nested_scopes_are_tolerant() {
         }
     }
     let source = "config := $wsl::$local::codex(config.toml)";
-    for scope in ["$wsl::", "$local::"] {
+    for scope in ["wsl", "local"] {
         assert!(has(source, scope, TokenKind::Namespace));
     }
     assert!(has(source, "codex", TokenKind::Binding));
-    assert!(has("scope := $wsl::$local", "$local", TokenKind::Namespace));
+    assert!(has("scope := $wsl::$local", "local", TokenKind::Namespace));
 
     let source = format!("{}item", "$local::".repeat(4096));
     let tokens = token_spans(&source);
-    assert_eq!(tokens.len(), 4097);
+    assert_eq!(tokens.len(), 4096 * 3 + 1);
     assert_eq!(tokens.last().unwrap().span.end, source.len());
 }

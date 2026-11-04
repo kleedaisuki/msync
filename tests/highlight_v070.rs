@@ -26,12 +26,12 @@ fn standard_library_scopes_and_ranges_have_nested_namespace_roles() {
     }
     assert!(RANGE_ADAPTORS.contains(&"$std::ranges::filter"));
     let source = "items | $std::ranges::filter(keep)";
-    assert!(has(source, "$std::", TokenKind::Namespace));
-    assert!(has(source, "ranges::", TokenKind::Namespace));
+    assert!(has(source, "std", TokenKind::Namespace));
+    assert!(has(source, "ranges", TokenKind::Namespace));
     assert!(has(source, "filter", TokenKind::Binding));
     let source = "if $std::fs::is_directory(path):";
-    assert!(has(source, "$std::", TokenKind::Namespace));
-    assert!(has(source, "fs::", TokenKind::Namespace));
+    assert!(has(source, "std", TokenKind::Namespace));
+    assert!(has(source, "fs", TokenKind::Namespace));
     assert!(has(source, "is_directory", TokenKind::Binding));
 }
 
