@@ -13,6 +13,7 @@ ROOT: Path = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from benches.ssh_v065 import Fixture, checked, lines, owned_run
+from support.literal_string import quoted
 
 
 def digest(path: Path) -> str:
@@ -32,7 +33,7 @@ def verify(fixture: Fixture, binary: Path) -> dict[str, object]:
     local: Path = fixture.root / 'local'
     remote: Path = fixture.root / "remote 可莉 ' $(not-a-command)\nworkspace"
     local.mkdir()
-    remote_path: str = 'remote::' + json.dumps(str(remote), ensure_ascii=False)
+    remote_path: str = 'remote::' + quoted(str(remote))
     source: str = f'''fs => $std::fs
 views => $std::ranges
 remote => ssh://Perf_Fixture
@@ -41,7 +42,7 @@ native directory(path) -> Bool = "fs.is_directory"
 fs::create_directories(root)
 fs::remove(root/link)
 for endpoint in [remote] | views::take(1):
-    "remote bytes 可莉" -> endpoint::{json.dumps(str(remote / 'source'), ensure_ascii=False)}
+    "remote bytes 可莉" -> endpoint::{quoted(str(remote / 'source'))}
 fs::rename(root/source, root/renamed)
 fs::create_symlink("renamed", root/link)
 fs::set_permissions(root/renamed, "owner_read|owner_write|group_read")

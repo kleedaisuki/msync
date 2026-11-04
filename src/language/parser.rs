@@ -17,7 +17,7 @@ pub(super) fn opens_block(line: &str) -> bool {
             .iter()
             .any(|prefix| code.starts_with(prefix))
         || code == "loop:"
-        || code.trim_end().ends_with("loop:")
+        || code.trim_end().ends_with("loop:") && !has_unterminated_string(code)
 }
 
 fn scope_header(code: &str) -> Option<&str> {
@@ -60,7 +60,9 @@ pub fn parse_recovering(source: &str) -> (Document, Vec<Report>) {
 fn lines<'a>(source: &'a str, errors: &mut Vec<Report>) -> Vec<Line<'a>> {
     let mut result = Vec::new();
     let mut offset = 0;
-    for physical in crate::syntax::physical_lines(source) {
+    while offset < source.len() {
+        let (end, _) = logical_line_end(source, offset);
+        let physical = &source[offset..end];
         let text = physical.trim_end_matches(['\r', '\n']);
         let prefix = text.len() - text.trim_start_matches([' ', '\t']).len();
         let mut indent = 0;
@@ -99,9 +101,79 @@ fn lines<'a>(source: &'a str, errors: &mut Vec<Report>) -> Vec<Line<'a>> {
                 )
             }),
         });
-        offset += physical.len();
+        offset = end;
     }
     result
+}
+
+/// A physical newline ends a statement unless it belongs to a String. Regex
+/// selectors and comments keep their established physical-line boundaries.
+pub(crate) fn logical_line_end(source: &str, start: usize) -> (usize, bool) {
+    let bytes = source.as_bytes();
+    let mut index = start;
+    let mut selector = false;
+    let mut escaped = false;
+    let mut character_class = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if matches!(byte, b'\r' | b'\n') {
+            return (
+                index
+                    + if byte == b'\r' && bytes.get(index + 1) == Some(&b'\n') {
+                        2
+                    } else {
+                        1
+                    },
+                false,
+            );
+        }
+        if selector {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'[' {
+                character_class = true;
+            } else if byte == b']' {
+                character_class = false;
+            } else if byte == b'>' && !character_class && selector_end(bytes, index) {
+                selector = false;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' {
+            let token = super::literal::scan_string(source, index).expect("quote begins a String");
+            if !token.terminated {
+                return (source.len(), true);
+            }
+            index = token.span.end;
+            continue;
+        }
+        if byte == b'#' && (index == start || bytes[index - 1].is_ascii_whitespace()) {
+            while index < bytes.len() && !matches!(bytes[index], b'\r' | b'\n') {
+                index += 1;
+            }
+            continue;
+        }
+        if byte == b'<' && starts_selector(&bytes[start..], index - start) {
+            selector = true;
+        }
+        index += 1;
+    }
+    (source.len(), false)
+}
+
+pub(super) fn has_unterminated_string(source: &str) -> bool {
+    let mut start = 0;
+    while start < source.len() {
+        let (end, unterminated) = logical_line_end(source, start);
+        if unterminated {
+            return true;
+        }
+        start = end;
+    }
+    false
 }
 
 struct Parser<'a> {
@@ -1042,55 +1114,31 @@ fn trimmed(raw: &str, offset: usize) -> (&str, usize) {
 }
 
 fn quoted(text: &str, offset: usize) -> Result<(String, OperandSource), Report> {
-    let mut value = String::new();
-    let mut offsets = Vec::new();
-    let mut chars = text.char_indices();
-    chars.next();
-    while let Some((index, ch)) = chars.next() {
-        if ch == '"' {
-            if index + 1 != text.len() {
-                return Err(Report::new("unexpected text after quoted expression", span(offset + index + 1, offset + text.len()))
-                    .help("Keep the complete path inside its quotes; use a namespace prefix outside them."));
-            }
-            offsets.push(offset + index);
-            return Ok((
-                value,
-                OperandSource::mapped(
-                    span(offset, offset + text.len()),
-                    span(offset + 1, offset + index),
-                    offsets,
-                ),
-            ));
-        }
-        if ch != '\\' {
-            value.push(ch);
-            offsets.extend((0..ch.len_utf8()).map(|byte| offset + index + byte));
-            continue;
-        }
-        let before = value.len();
-        match chars.next() {
-            Some((_, 'n')) => value.push('\n'),
-            Some((_, 'r')) => value.push('\r'),
-            Some((_, 't')) => value.push('\t'),
-            Some((_, ch @ ('"' | '\\'))) => value.push(ch),
-            Some((_, ch)) => {
-                value.push('\\');
-                value.push(ch);
-            }
-            None => break,
-        }
-        offsets.extend(std::iter::repeat_n(offset + index, value.len() - before));
+    let Some(token) = super::literal::scan_string(text, 0) else {
+        return Err(Report::new(
+            "expected a String literal",
+            span(offset, offset + text.len()),
+        ));
+    };
+    if !token.terminated {
+        return Err(unterminated_string(token.span, offset));
     }
-    Err(
-        Report::new("unterminated quoted expression", span(offset, offset + 1))
-            .label(
-                span(offset + text.len(), offset + text.len()),
-                "insert closing quote here",
-            )
-            .help(
-                "Close the expression with a double quote; use \\\" for a quote inside the value.",
-            ),
-    )
+    if token.span.end != text.len() {
+        return Err(Report::new(
+            "unexpected text after quoted expression",
+            span(offset + token.span.end, offset + text.len()),
+        )
+        .help(
+            "Keep the complete value inside its quotes, or compose it with an explicit operator.",
+        ));
+    }
+    Ok(super::literal::decode_string(text, token, offset))
+}
+
+fn unterminated_string(token: Span, offset: usize) -> Report {
+    Report::new("unterminated quoted expression", span(offset + token.start, offset + token.start + 1))
+        .label(span(offset + token.end, offset + token.end), "insert closing quote here")
+        .help("Close the String with a double quote; write two adjacent double quotes for a quote inside the value.")
 }
 
 struct Scan {
@@ -1116,7 +1164,6 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
         binary: Vec::new(),
     };
     let bytes = text.as_bytes();
-    let mut quote = None;
     let mut selector = None;
     let mut escaped = false;
     let mut character_class = false;
@@ -1124,15 +1171,12 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
     let mut index = 0;
     while index < bytes.len() {
         let byte = bytes[index];
-        if quote.is_some() {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                quote = None;
+        if byte == b'"' && selector.is_none() {
+            let token = super::literal::scan_string(text, index).expect("quote begins a String");
+            if !token.terminated {
+                return Err(unterminated_string(token.span, offset));
             }
-            index += 1;
+            index = token.span.end;
             continue;
         }
         if selector.is_some() {
@@ -1156,7 +1200,6 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
                 index += 1;
             }
             b'/' if delimiters.is_empty() => result.joins.push(index),
-            b'"' => quote = Some(index),
             b'<' if starts_selector(bytes, index) => selector = Some(index),
             b'(' | b'[' if byte == b'(' || starts_range(bytes, index) => {
                 if delimiters.len() >= MAX_NESTING {
@@ -1238,17 +1281,6 @@ fn scan(text: &str, offset: usize) -> Result<Scan, Report> {
             _ => {}
         }
         index += 1;
-    }
-    if let Some(start) = quote {
-        return Err(Report::new(
-            "unterminated quoted expression",
-            span(offset + start, offset + start + 1),
-        )
-        .label(
-            span(offset + text.len(), offset + text.len()),
-            "insert closing quote here",
-        )
-        .help("Close the expression with a double quote; escape embedded quotes as \\\"."));
     }
     if let Some(start) = selector {
         return Err(Report::new(
@@ -1351,41 +1383,40 @@ fn split_arguments(text: &str, offset: usize) -> Result<Vec<(&str, usize)>, Repo
 
 fn comment_start(text: &str) -> Option<usize> {
     let bytes = text.as_bytes();
-    let mut quoted = false;
     let mut selector = false;
     let mut escaped = false;
     let mut character_class = false;
-    for (index, &byte) in bytes.iter().enumerate() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if (quoted || selector) && byte == b'\\' {
-            escaped = true;
-            continue;
-        }
-        if quoted {
-            if byte == b'"' {
-                quoted = false;
-            }
-            continue;
-        }
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
         if selector {
-            if byte == b'[' {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'[' {
                 character_class = true;
             } else if byte == b']' {
                 character_class = false;
             } else if byte == b'>' && !character_class && selector_end(bytes, index) {
                 selector = false;
             }
+            index += 1;
             continue;
         }
         match byte {
-            b'"' => quoted = true,
+            b'"' => {
+                index = super::literal::scan_string(text, index)
+                    .expect("quote begins a String")
+                    .span
+                    .end;
+                continue;
+            }
             b'<' if starts_selector(bytes, index) => selector = true,
             b'#' if index == 0 || bytes[index - 1].is_ascii_whitespace() => return Some(index),
             _ => {}
         }
+        index += 1;
     }
     None
 }

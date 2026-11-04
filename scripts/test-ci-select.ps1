@@ -33,6 +33,9 @@ $one = Select-Changes @('tests/ux_031.rs')
 Assert ($one.rust -and -not $one.full -and $one.targets.Count -eq 1 -and $one.targets[0] -eq 'ux_031') 'Single test edit must select exactly its target'
 $terminal = Select-Changes @('tests/support/pty_windows.rs')
 Assert (-not $terminal.full -and $terminal.targets -contains 'repl_terminal') 'PTY helper must select terminal journeys'
+Assert-Selected 'tests/support/literal_string.rs' @('integration_v060', 'native_paths_v065', 'cli_v060', 'scripts_v052')
+$pythonLiteral = Select-Changes @('tests/support/literal_string.py')
+Assert (-not $pythonLiteral.rust -and -not $pythonLiteral.full) 'Python source generation must not start a Rust regression matrix'
 $dependency = Select-Changes @('Cargo.lock')
 Assert ($dependency.full -and $dependency.rust -and $dependency.docs) 'Dependency changes require the complete compatibility matrix'
 $manifestWithoutEvidence = Select-Changes @('Cargo.toml')

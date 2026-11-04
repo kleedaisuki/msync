@@ -80,10 +80,15 @@ fn selector_escapes_classes_and_incomplete_lines_preserve_source_bytes() {
 }
 
 #[test]
-fn cr_only_physical_lines_do_not_extend_comments_or_unfinished_strings() {
+fn cr_only_lines_end_comments_but_literal_strings_keep_their_actual_newlines() {
     let source = "# comment\rdelete file\rtext = \"unfinished\rfor file in items:\r";
     assert!(has(source, "delete", TokenKind::Command));
-    assert!(has(source, "for", TokenKind::Command));
+    assert!(!has(source, "for", TokenKind::Command));
+    assert!(has(
+        source,
+        "\"unfinished\rfor file in items:\r",
+        TokenKind::String
+    ));
     let pieces: String = token_spans(source)
         .iter()
         .map(|token| &source[token.span.start..token.span.end])

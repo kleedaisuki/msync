@@ -407,3 +407,70 @@ including the migrated CLI and actual terminal journeys. The separate
 passed its actual VS Code host as well. This is changed-contract/native evidence,
 not a full-project matrix or a reason to replace the already-verified release.
 The published tag remains `952850d641b3ae57427fea0a03d1448234c2eee9`.
+
+## Held v0.7.3 candidate: literal Strings and endpoint display
+
+The candidate was held on `codex/literal-strings-completion` at the user's
+request until the user authorized publication on 2026-11-04. The existing
+v0.7.2 tag and asset bytes remain unchanged.
+
+The reported `D:\Code\agents\target` failure was first-pass String decoding,
+not LSP JSON, URI or formatter double decoding. The old lexer preserved unknown
+backslash sequences but decoded `\t`, `\n` and `\r`, making ordinary directory
+names fail selectively. The published v0.7.2 executable independently reproduced
+the exact TAB byte versus backslash+t difference. Its old Windows package fixture
+pre-escaped backslashes, so it did not represent directly pasted native input.
+
+The user's final contract has no backslash escapes and no raw/escape String
+prefixes. Ordinary Strings retain all backslashes; doubled quote delimiters
+represent an embedded quote, and real multiline data remains real bytes. One
+shared scanner/writer now owns structured and public legacy quote boundaries,
+source provenance, formatter output and editor tokens. REPL literal state is
+incremental: command-looking lines inside a String do not dispatch commands.
+Version-header recognition likewise skips String data. Existing typed object
+and JSON wire values are not reinterpreted under the new source contract.
+
+Filesystem completion inserts ordinary bare Path operands, quoting only when
+whitespace, grammar or a lexical/member collision makes that necessary. No
+`./name` rewrite is used to hide a collision: slash remains a normal binary
+operator whose operands are evaluated. Source-producing test helpers now use
+source-literal spelling rather than JSON/Rust Debug escaping; wire/report JSON
+and OpenSSH configuration encoding remain unchanged.
+
+URI display roles are distinct: protocol `ssh`, operator `://`, address `forge`.
+The parser/runtime still own one complete endpoint value. Custom VS Code protocol
+and endpoint token types inherit standard type/string styling and have explicit
+TextMate fallbacks. The URI remains atomic for symbol/file queries: display-only
+operator splitting cannot change a remote receiver into a local directory query
+or turn a hostname into a same-spelled lexical binding.
+
+Focused local acceptance:
+
+- Literal/frontend/source/public-API/version matrix: 92 selected cases, including
+  property tests, strict library/bin/changed-target Clippy and formatting.
+- Independent real source/format/source-free object/IR/REPL: 5 journeys. Exact
+  Windows spelling, native `target/new/runtime` paths, actual control bytes,
+  doubled quotes, String/Path combinations and command/header-looking data pass.
+  The actual published v0.7.2 producer's objects and JSON IR also execute on the
+  new runtime after source deletion, retaining the old decoded literal bytes.
+- Source-generator migration: 44 selected Rust cases, strict Clippy for all 36
+  changed test consumers; Python strict typing/import checks and four actual CLI
+  byte journeys. No SSH/performance measurements were repeated for serializer edits.
+- Real LSP-to-copy journeys, exact bare/spaced insertion and parser-shared String
+  prefixes pass, including collision identities and trailing/backslash/quote data.
+- Full literal/editor host: VS Code 1.144.0, frozen executable SHA-256
+  `c289094dd0174aba251c09c0978f858ad75e21387359e26932044296aa614031`, evidence
+  `.temp/vscode-host-tWXBln`.
+- Subsequent protocol-only host: 10 URI cases and 60 actual semantic tokens;
+  frozen SHA-256 `1c95b38a6949e32d29c849d2f646992561f058170a10e056273314c4dcc56b86`,
+  evidence `.temp/vscode-host-ucy62V`. The accepted full host was not repeated.
+- Expanded native/standard-library package smoke: check, effect-free preview,
+  source-free object execution and all 14 output files/250 bytes pass locally.
+  The Windows installed fixture now uses direct single-backslash native source
+  under `target\new\runtime` and verifies exact String spelling, not just a path
+  that Windows might normalize. Its PowerShell syntax passed the cached official
+  parser. Native Windows execution remains platform acceptance for the candidate.
+- CI selection discovers direct consumers of the Rust source-literal test helper;
+  the Python helper does not trigger Rust. Existing selector regression checks
+  pass under the cached official PowerShell engine, without adding quality gates
+  or silently requesting an unrelated complete-project regression matrix.

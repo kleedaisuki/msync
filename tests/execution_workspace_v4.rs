@@ -1,3 +1,6 @@
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::Path;
 #[cfg(windows)]
@@ -394,13 +397,9 @@ async fn program_observes_prior_file_publication_in_its_real_working_directory()
     let mut runtime = RuntimeSession::new(&Options::new(cwd.join(".temp"))).unwrap();
     let mut compiler = Session::new();
     run_live(&mut runtime, &mut compiler, &cwd, "\"seed\" -> seed\n").await;
-    let executable = std::env::current_exe()
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
+    let executable = literal_string::quoted(&std::env::current_exe().unwrap().to_string_lossy());
     run_live(&mut runtime, &mut compiler, &cwd,
-        &format!("child => $local::\"{executable}\"(\"--exact\", \"sparse_view_child_fixture\", \"--ignored\", \"--nocapture\")\nchild::exit_code -> code\n")).await;
+        &format!("child => $local::{executable}(\"--exact\", \"sparse_view_child_fixture\", \"--ignored\", \"--nocapture\")\nchild::exit_code -> code\n")).await;
     assert_eq!(fs::read(cwd.join("seed")).unwrap(), b"seed");
     assert_eq!(
         fs::read(cwd.join("native-file")).unwrap(),
@@ -426,19 +425,15 @@ async fn program_observes_prior_publications_and_user_scratch_in_other_directori
     fs::write(b.join("seed"), b"seed").unwrap();
     let mut runtime = RuntimeSession::new(&Options::new(a1.join(".temp"))).unwrap();
     let mut compiler = Session::new();
-    let quoted = |path: &Path| {
-        path.to_string_lossy()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-    };
+    let quoted = |path: &Path| literal_string::quoted(&path.to_string_lossy());
     run_live(
         &mut runtime,
         &mut compiler,
         &a1,
         &format!(
-            "input -> output\n$local::\"{}/input\" -> $local::\"{}/output\"\n",
-            quoted(&a2),
-            quoted(&a2)
+            "input -> output\n$local::{} -> $local::{}\n",
+            quoted(&a2.join("input")),
+            quoted(&a2.join("output"))
         ),
     )
     .await;
@@ -451,17 +446,13 @@ async fn program_observes_prior_publications_and_user_scratch_in_other_directori
         )
         .unwrap();
     }
-    let executable = std::env::current_exe()
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
+    let executable = literal_string::quoted(&std::env::current_exe().unwrap().to_string_lossy());
     let context = CompileContext {
         pwd: b.clone(),
         source_file: None,
     };
     let launch = pipeline::compile(&mut compiler,
-        &format!("child => $local::\"{executable}\"(\"--exact\", \"sparse_view_child_fixture\", \"--ignored\", \"--nocapture\", \"--skip\", \"root:{}\", \"--skip\", \"root:{}\")\n", quoted(&a1), quoted(&a2)), &context, &[]).unwrap();
+        &format!("child => $local::{executable}(\"--exact\", \"sparse_view_child_fixture\", \"--ignored\", \"--nocapture\", \"--skip\", {}, \"--skip\", {})\n", literal_string::quoted(&format!("root:{}", a1.display())), literal_string::quoted(&format!("root:{}", a2.display()))), &context, &[]).unwrap();
     runtime.execute(&launch.program).await.unwrap();
     let feed = pipeline::compile(
         &mut compiler,
@@ -929,13 +920,9 @@ async fn program_completion_gates_future_source_and_destination_traversal() {
     let cwd = workspace.path().join("work");
     fs::create_dir(&cwd).unwrap();
     fs::write(cwd.join("node"), b"original ordinary file").unwrap();
-    let executable = std::env::current_exe()
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
+    let executable = literal_string::quoted(&std::env::current_exe().unwrap().to_string_lossy());
     let script = format!(
-        "child => $local::\"{executable}\"(\"--exact\", \"deferred_ancestor_child_fixture\", \"--ignored\", \"--nocapture\")\n$pwd::pwd/node/../node/x -> observed\n\"literal bytes\" -> $pwd::pwd/node/../node/literal\n$pwd::pwd/node/../node/literal -> observed-literal\nchild::stdout -> $pwd::pwd/node/../node/stdout\n"
+        "child => $local::{executable}(\"--exact\", \"deferred_ancestor_child_fixture\", \"--ignored\", \"--nocapture\")\n$pwd::pwd/node/../node/x -> observed\n\"literal bytes\" -> $pwd::pwd/node/../node/literal\n$pwd::pwd/node/../node/literal -> observed-literal\nchild::stdout -> $pwd::pwd/node/../node/stdout\n"
     );
     let context = CompileContext {
         pwd: cwd.clone(),
@@ -985,13 +972,10 @@ async fn program_creates_user_scratch_then_following_block_copies_it() {
             fs::create_dir(cwd.join(".temp")).unwrap();
             fs::write(cwd.join(".temp/sentinel"), b"retain user data").unwrap();
         }
-        let executable = std::env::current_exe()
-            .unwrap()
-            .to_string_lossy()
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"");
+        let executable =
+            literal_string::quoted(&std::env::current_exe().unwrap().to_string_lossy());
         let launch = format!(
-            "child => $local::\"{executable}\"(\"--exact\", \"scratch_namespace_child_fixture\", \"--ignored\", \"--nocapture\")\n"
+            "child => $local::{executable}(\"--exact\", \"scratch_namespace_child_fixture\", \"--ignored\", \"--nocapture\")\n"
         );
         let context = CompileContext {
             pwd: cwd.clone(),

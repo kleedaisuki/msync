@@ -22,6 +22,7 @@ ROOT: Path = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / 'tests'))
 from benches.ssh_v065 import Fixture, checked, lines, owned_run
+from support.literal_string import quoted
 from normal_ssh_model import invoke, remote
 
 
@@ -51,7 +52,7 @@ def cancel_fifo(fixture: Fixture, binary: Path, direction: str) -> dict[str, obj
     fifo: Path = fixture.root / ('fifo-' + direction)
     os.mkfifo(fifo)
     (local / 'cmd').write_bytes(b'old payload must not arrive after cancelled connection')
-    location: str = 'remote::' + json.dumps(str(fifo))
+    location: str = 'remote::' + quoted(str(fifo))
     source: str = ('cmd -> ' + location if direction == 'write' else location + ' -> received') + '\n'
     calls_before: int = len(lines(fixture.calls))
     child: subprocess.Popen[bytes] = subprocess.Popen(
@@ -128,7 +129,7 @@ def large_selection(fixture: Fixture, binary: Path) -> Mapping[str, object]:
     result: subprocess.CompletedProcess[bytes] = owned_run(
         [str(binary), '--no-config', 'run', '-'], cwd=local,
         environment=fixture.environment(), source=(
-            'remote => ssh://Perf_Fixture\nremote::' + json.dumps(str(source)) + '/<.+> -> received/\n'
+            'remote => ssh://Perf_Fixture\nremote::' + quoted(str(source)) + '/<.+> -> received/\n'
         ).encode(), timeout=45,
     )
     (local / 'stdout.log').write_bytes(result.stdout)
@@ -200,7 +201,7 @@ def native_directory_markers(fixture: Fixture, binary: Path) -> list[dict[str, o
     (parent / 'child/nested').write_bytes(b'nested')
     alias: Path = fixture.root / 'native-alias'
     alias.symlink_to(parent / 'child', target_is_directory=True)
-    selected: str = 'remote::' + json.dumps(str(alias) + '/..')
+    selected: str = 'remote::' + quoted(str(alias) + '/..')
     cases: list[dict[str, object]] = []
     cases.append(asdict(invoke(fixture, binary, local,
         selected + ' -> received/\n', 'download-native-parent')))
@@ -211,7 +212,7 @@ def native_directory_markers(fixture: Fixture, binary: Path) -> list[dict[str, o
         f'[{selected}, {remote(parent / "data")}] -> {remote(target)}/\n', 'server-cohort-native-parent')))
     assert (target / parent.name / 'data').read_bytes() == b'native parent directory'
     assert (target / 'data').read_bytes() == b'native parent directory'
-    invalid: str = 'remote::' + json.dumps(str(parent / 'data') + '/.')
+    invalid: str = 'remote::' + quoted(str(parent / 'data') + '/.')
     cases.append(asdict(invoke(fixture, binary, local,
         invalid + ' -> invalid-received\n', 'download-file-directory-marker', expected_success=False)))
     assert not (local / 'invalid-received').exists()

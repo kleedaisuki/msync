@@ -8,6 +8,10 @@ const vscode = require('vscode');
 const EXTENSION = 'msync.msync-language';
 const TIMEOUT = 30_000;
 
+function stringLiteral(value) {
+    return '"' + value.replaceAll('"', '""') + '"';
+}
+
 async function bounded(description, promise) {
     let timer;
     try {
@@ -80,9 +84,9 @@ async function run() {
     };
     try {
         assert.equal(vscode.workspace.getConfiguration('msync').get('serverPath'), process.env.MSYNC_TEST_SERVER_PATH);
-        const output = `$local::${JSON.stringify(path.join(workspace, 'never-created.txt'))}`;
-        const branchOutput = `$local::${JSON.stringify(path.join(workspace, 'never-created-branch.txt'))}`;
-        const victim = `$local::${JSON.stringify(path.join(workspace, 'preserved.txt'))}`;
+        const output = `$local::${stringLiteral(path.join(workspace, 'never-created.txt'))}`;
+        const branchOutput = `$local::${stringLiteral(path.join(workspace, 'never-created-branch.txt'))}`;
+        const victim = `$local::${stringLiteral(path.join(workspace, 'preserved.txt'))}`;
         const source = `label="可莉🌟"\nboolean keep(item):\n\treturn item\nsymbol codex(file):\n    return ~/.codex/file\nconfig := $wsl::codex(config.toml)\nitems := [true,false,keep(true)] | $view::filter(keep)\nview_api := $view\nalias_items := [true,false] | view_api::filter(keep)\nfs => $std::fs\nstandard_ready = fs::is_directory(~/.codex)\nlogical = $std::bool::both(true, false)\nscope hello:\n    codex := ~/.codex\nnamed := hello::codex\nendpoints := [$local,$wsl]\nstandard_items := [true,false] | $std::ranges::filter(keep)\n"must never execute" -> ${output}\ndelete ${victim}\nif release "not a bool":\n    "must never execute" -> ${branchOutput}\n`;
         const filename = path.join(workspace, 'journey.msync');
         await fs.writeFile(filename, source);
@@ -198,7 +202,7 @@ async function run() {
         const fileItem = fileCompletion.items.find(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt');
         assert.equal(fileItem.kind, vscode.CompletionItemKind.File);
         await applyCompletion(pathDocument, fileItem);
-        assert.equal(pathDocument.getText(), 'probe := $local::"codex.prompt"');
+        assert.equal(pathDocument.getText(), 'probe := $local::codex.prompt');
         await until('completed path compiles', () => vscode.languages.getDiagnostics(pathDocument.uri), value => value.length === 0);
         await record('endpoint-filesystem-completion', { label: 'codex.prompt', appliedText: pathDocument.getText() });
         const resetPath = async source => {
@@ -221,13 +225,46 @@ async function run() {
         const directoryItem = hiddenDirectory.items.find(item => (typeof item.label === 'string' ? item.label : item.label.label).replace(/\/$/, '') === '.codex');
         assert.equal(directoryItem.kind, vscode.CompletionItemKind.Folder);
         await applyCompletion(pathDocument, directoryItem);
-        assert.equal(pathDocument.getText(), 'probe := $local::".codex"/');
+        assert.equal(pathDocument.getText(), 'probe := $local::.codex/');
         const nested = await until('nested file completion',
             () => vscode.commands.executeCommand('vscode.executeCompletionItemProvider', pathDocument.uri, pathDocument.positionAt(pathDocument.getText().length)),
             value => value && value.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt'));
         await applyCompletion(pathDocument, nested.items.find(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt'));
-        assert.equal(pathDocument.getText(), 'probe := $local::".codex"/"codex.prompt"');
+        assert.equal(pathDocument.getText(), 'probe := $local::.codex/codex.prompt');
         await record('hidden-directory-file-completion', { appliedText: pathDocument.getText() });
+        await resetPath('codex.prompt := "shadow"\nprobe := $local::');
+        const collision = await until('filename colliding with a lexical binding',
+            () => vscode.commands.executeCommand('vscode.executeCompletionItemProvider', pathDocument.uri, pathDocument.positionAt(pathDocument.getText().length)),
+            value => value && value.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt'));
+        await applyCompletion(pathDocument, collision.items.find(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt'));
+        assert.equal(pathDocument.getText(), 'codex.prompt := "shadow"\nprobe := $local::"codex.prompt"');
+        await record('filename-binding-collision-completion', { appliedText: pathDocument.getText() });
+        const windowsLiteral = String.raw`"D:\Code\agents\target\xmlsquish"`;
+        const trailingLiteral = String.raw`"D:\Code\agents\target\"`;
+        const doubledLiteral = String.raw`"D:\Code\say""hello"""`;
+        const windowsSource = 'windows:=' + windowsLiteral + '/codex.prompt\ntrailing := ' + trailingLiteral + '\nquoted := ' + doubledLiteral + '\nquote := "a""b"\nmultiline := "first\nsecond"\n';
+        const windowsFile = path.join(workspace, 'literal-windows-path.msync');
+        await fs.writeFile(windowsFile, windowsSource);
+        const windowsDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(windowsFile));
+        await vscode.window.showTextDocument(windowsDocument);
+        const windowsFormatting = await bounded('literal Windows path formatting', vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', windowsDocument.uri, { insertSpaces: true, tabSize: 4 }));
+        assert.ok(windowsFormatting && windowsFormatting.length, 'The literal fixture must receive a real formatting edit');
+        const windowsEdit = new vscode.WorkspaceEdit();
+        windowsEdit.set(windowsDocument.uri, windowsFormatting);
+        assert.ok(await vscode.workspace.applyEdit(windowsEdit));
+        assert.ok(windowsDocument.getText().includes(windowsLiteral), 'Formatting must preserve each Windows backslash once');
+        assert.ok(windowsDocument.getText().includes(trailingLiteral), 'A trailing backslash must not escape the closing quote');
+        assert.ok(windowsDocument.getText().includes(doubledLiteral), 'Embedded quotes must stay doubled');
+        assert.ok(!windowsDocument.getText().includes('\t'), 'Literal backslash-t must not become a tab');
+        assert.ok(windowsDocument.getText().includes('"a""b"'));
+        assert.ok(windowsDocument.getText().includes('"first\nsecond"'));
+        const windowsLegend = await bounded('literal Windows path token legend', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokensLegend', windowsDocument.uri));
+        const windowsTokens = await bounded('literal Windows path semantic tokens', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokens', windowsDocument.uri));
+        assert.ok(windowsLegend && windowsTokens);
+        const windowsPieces = semanticPieces(windowsDocument, windowsLegend, windowsTokens.data);
+        assert.ok(windowsPieces.some(piece => piece.text === windowsLiteral && piece.type === 'string'));
+        await until('literal Windows path has no diagnostics', () => vscode.languages.getDiagnostics(windowsDocument.uri), values => values.length === 0);
+        await record('literal-windows-string', { source: windowsDocument.getText(), token: windowsLiteral });
         await vscode.window.showTextDocument(document);
 
         const legend = await bounded('semantic token legend', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokensLegend', document.uri));

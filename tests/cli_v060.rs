@@ -1,5 +1,8 @@
 //! Acceptance journeys use the public CLI, real files, and reusable compiled objects.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -421,7 +424,7 @@ fn repl_cd_filename_roles_use_the_selected_cwd_without_touching_the_original() {
 #[test]
 fn dynamic_spawn_string_arguments_use_a_loop_returned_executable_in_objects_and_ir() {
     let root = workspace();
-    let executable = serde_json::to_string(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let executable = literal_string::quoted(env!("CARGO_BIN_EXE_msync"));
     write_script(
         root.path(),
         &format!(
@@ -467,7 +470,7 @@ fn dynamic_spawn_path_arguments_run_real_child_scripts_from_objects_and_ir() {
         "\"second child\" -> second-output\n",
     )
     .unwrap();
-    let executable = serde_json::to_string(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let executable = literal_string::quoted(env!("CARGO_BIN_EXE_msync"));
     write_script(
         root.path(),
         &format!(

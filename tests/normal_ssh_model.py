@@ -17,6 +17,7 @@ ROOT: Path = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from benches.ssh_v065 import Fixture, checked, lines, owned_run, prepared_file, verified_file
+from support.literal_string import quoted
 
 
 @dataclass(frozen=True)
@@ -77,7 +78,7 @@ def invoke(
 
 
 def remote(path: Path) -> str:
-    return 'remote::' + json.dumps(str(path), ensure_ascii=False)
+    return 'remote::' + quoted(str(path))
 
 
 def check_ssh(fixture: Fixture, binary: Path) -> list[Journey]:
@@ -148,7 +149,7 @@ def check_ssh(fixture: Fixture, binary: Path) -> list[Journey]:
 
     unusual: str = 'line\nslash\\ 可莉'
     prepared_file(local / unusual, b'literal names', mtime_ns=mtime)
-    journeys.append(invoke(fixture, binary, local, f'$local::{json.dumps(unusual, ensure_ascii=False)} -> {remote(target / unusual)}\n', 'literal-name'))
+    journeys.append(invoke(fixture, binary, local, f'$local::{quoted(unusual)} -> {remote(target / unusual)}\n', 'literal-name'))
     verified_file(target / unusual, b'literal names', mtime_ns=mtime)
 
     (target / 'blocked-parent').write_bytes(b'not a directory')

@@ -41,17 +41,15 @@ fn contextual_lookup_items_are_styled_but_endpoint_paths_are_not_namespace_items
 }
 
 #[test]
-fn quoted_escapes_are_distinct_without_reinterpreting_literals_or_unfinished_input() {
-    let source = r#""a\n\r\t\\\"\q -> # <[>]>" -> out"#;
+fn quoted_backslashes_and_doubled_quotes_are_literal_string_content() {
+    let source = r#""a\n\r\t\\""\q -> # <[>]>" -> out"#;
     assert!(msync::syntax::parse(source).is_ok());
     let colored = highlight(source, true);
-    for escape in [r"\n", r"\r", r"\t", r"\\", r#"\""#] {
-        assert!(
-            colored.contains(&format!("\x1b[1;36m{escape}\x1b[0m")),
-            "{colored:?}"
-        );
-    }
-    assert!(!colored.contains("\x1b[1;36m\\q"));
+    assert!(colored.contains("\x1b[32m"));
+    assert!(
+        !colored.contains("\x1b[1;36m"),
+        "backslashes are ordinary String bytes: {colored:?}"
+    );
     assert_eq!(pieces(source, TokenKind::Operator), vec!["->"]);
     assert_eq!(pieces(source, TokenKind::Comment), Vec::<&str>::new());
     for source in [r"C:\temp\new -> out", r#""unfinished\"#, r#""unfinished\q"#] {
@@ -59,4 +57,16 @@ fn quoted_escapes_are_distinct_without_reinterpreting_literals_or_unfinished_inp
         assert!(!highlight(source, true).contains("\x1b[1;36m"));
         assert!(!highlight(source, true).contains("\x1b[31m"));
     }
+}
+
+#[test]
+fn multiline_strings_shield_language_syntax_until_the_shared_closing_quote() {
+    let source = "text := \"line one\n# not comment -> $local::path\nline \"\"three\"\"\"/child\n";
+    assert_eq!(
+        pieces(source, TokenKind::String),
+        vec!["\"line one\n# not comment -> $local::path\nline \"\"three\"\"\""]
+    );
+    assert_eq!(pieces(source, TokenKind::Operator), vec![":=", "/"]);
+    assert!(pieces(source, TokenKind::Comment).is_empty());
+    assert_eq!(highlight(source, false), source);
 }

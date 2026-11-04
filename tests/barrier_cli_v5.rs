@@ -1,5 +1,8 @@
 //! User-facing process and filesystem journeys across synchronization barriers.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -19,7 +22,7 @@ fn workspace() -> tempfile::TempDir {
 }
 
 fn literal(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    literal_string::quoted(value)
 }
 
 fn child(name: &str, mode: &str) -> String {

@@ -1,5 +1,8 @@
 //! A root process's exit is observable before inherited output reaches EOF.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -99,15 +102,11 @@ fn root_exit_code_is_available_while_a_descendant_keeps_stdout_open() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
-    let executable = std::env::current_exe()
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
+    let executable = literal_string::quoted(&std::env::current_exe().unwrap().to_string_lossy());
     fs::write(
         root.path().join("exit-observation.msync"),
         format!(
-            "async Root => $local::\"{executable}\"(\"--exact\", \"process_exit_child_fixture\", \"--ignored\", \"--nocapture\", \"--skip\", \"mode:root:{address}\")\nRoot::stdout -> captured\nRoot::exit_code -> status\nawait Root\n"
+            "async Root => $local::{executable}(\"--exact\", \"process_exit_child_fixture\", \"--ignored\", \"--nocapture\", \"--skip\", \"mode:root:{address}\")\nRoot::stdout -> captured\nRoot::exit_code -> status\nawait Root\n"
         ),
     )
     .unwrap();

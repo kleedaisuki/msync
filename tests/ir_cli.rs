@@ -1,3 +1,6 @@
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -348,13 +351,9 @@ fn ir_child_fixture() {
 #[test]
 fn exported_macro_programs_and_barriers_use_the_structured_interpreter() {
     let root = workspace();
-    let exe = std::env::current_exe()
-        .unwrap()
-        .to_string_lossy()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
+    let exe = literal_string::quoted(&std::env::current_exe().unwrap().to_string_lossy());
     let source = format!(
-        "macro capture(program):\n    program::stdout -> output\n\nasync child => $local::\"{exe}\"(\"--exact\", \"ir_child_fixture\", \"--ignored\", \"--nocapture\")\ncapture(child)\nawait child\n"
+        "macro capture(program):\n    program::stdout -> output\n\nasync child => $local::{exe}(\"--exact\", \"ir_child_fixture\", \"--ignored\", \"--nocapture\")\ncapture(child)\nawait child\n"
     );
     fs::write(root.path().join("macro.msync"), source).unwrap();
     success(run(

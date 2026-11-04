@@ -1,3 +1,6 @@
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -719,11 +722,10 @@ fn marked_program(delay_millis: u32) -> String {
     let command = {
         let windows = std::env::var_os("WINDIR").expect("Windows directory");
         let executable = Path::new(&windows).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-        let executable = serde_json::to_string(&executable.to_string_lossy()).unwrap();
-        let script = serde_json::to_string(&format!(
+        let executable = literal_string::quoted(&executable.to_string_lossy());
+        let script = literal_string::quoted(&format!(
             "[IO.File]::WriteAllText('started.txt','started'); Start-Sleep -Milliseconds {delay_millis}; [IO.File]::WriteAllText('finished.txt','finished')",
-        ))
-        .unwrap();
+        ));
         format!(
             "async child => $local::{executable}(\"-NoProfile\", \"-NonInteractive\", \"-Command\", {script})\n"
         )
@@ -770,7 +772,7 @@ fn stop_drains_a_running_external_program_until_its_own_exit() {
 #[test]
 fn a_completed_default_program_retains_ports_for_later_repl_submissions() {
     let directory = workspace();
-    let executable = serde_json::to_string(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let executable = literal_string::quoted(env!("CARGO_BIN_EXE_msync"));
     let mut repl = Repl::start(directory.path());
     repl.send(&format!("Program => $local::{executable}(\"--version\")\n"));
     repl.until("done:");
@@ -815,7 +817,7 @@ fn explicit_kill_is_destructive_and_does_not_masquerade_as_graceful_stop() {
 fn a_partial_submission_retains_the_started_program_job_and_its_bindings() {
     let directory = workspace();
     let mut source = HeldSource::start(b"earlier program completed");
-    let executable = serde_json::to_string(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let executable = literal_string::quoted(env!("CARGO_BIN_EXE_msync"));
     fs::write(
         directory.path().join("child.msync"),
         format!(

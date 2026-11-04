@@ -1,3 +1,7 @@
+#[cfg(unix)]
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -104,7 +108,7 @@ fn quoted_native_filenames_keep_whitespace_newlines_and_backslashes() {
         fs::write(work.path().join(name), b"literal native filename").unwrap();
         let source = format!(
             "$local::{} -> copied-{index}\n",
-            serde_json::to_string(name).unwrap()
+            literal_string::quoted(name)
         );
         fs::write(work.path().join("entry.msync"), &source).unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_msync"))

@@ -23,6 +23,7 @@ struct Query {
     operator: &'static str,
     prefix: String,
     replacement: Span,
+    literal_directory: Option<String>,
 }
 
 pub(super) fn completion(
@@ -36,7 +37,7 @@ pub(super) fn completion(
     let Some(info) = inspect_completion(
         document,
         &query.parent,
-        offset,
+        query.replacement.start,
         if query.operator == "::" {
             crate::types::OperatorTrait::Select
         } else {
@@ -47,6 +48,13 @@ pub(super) fn completion(
         return Ok(None);
     };
     let range = document.text.range(query.replacement);
+    let names: std::collections::BTreeSet<_> = document
+        .syntax()
+        .index
+        .visible_at(offset)
+        .into_iter()
+        .map(|definition| definition.name.clone())
+        .collect();
     let mut items: Vec<_> = info
         .members
         .iter()
@@ -110,7 +118,17 @@ pub(super) fn completion(
         // Follow a symlink for its completion kind, just as normal filesystem
         // navigation does. A dangling symlink is still a useful file suggestion.
         let folder = entry.path().is_dir();
-        let mut spelling = path_spelling(name);
+        let mut spelling = if let Some(directory) = &query.literal_directory {
+            let mut spelling = String::new();
+            language::literal::write_string(&mut spelling, &format!("{directory}{name}"));
+            spelling
+        } else {
+            path_spelling(
+                name,
+                names.contains(name.split(['/', '\\']).next().unwrap_or(name))
+                    || info.members.contains(&name),
+            )
+        };
         if folder {
             spelling.push('/');
         }
@@ -344,40 +362,58 @@ fn expression(source: &str) -> Option<Expr> {
     Some(value)
 }
 
-fn path_spelling(name: &str) -> String {
-    // A filesystem selection is a literal basename, not a lexical value lookup
-    // or a namespace's named member. Both path operators consume this String.
+fn path_spelling(name: &str, shadowed: bool) -> String {
+    // Ordinary filenames remain ordinary Path operands. A String is needed
+    // only when the grammar or actual lexical/member lookup would change the
+    // selected basename's meaning.
+    if !shadowed
+        && !name.chars().any(char::is_whitespace)
+        && let Some(Expr {
+            kind: ExprKind::Path(path),
+            ..
+        }) = expression(name)
+        && path.qualifier.is_none()
+        && path.path == name
+        && path.mode == language::DestinationMode::Exact
+        && !name.contains('<')
+    {
+        return name.into();
+    }
     let mut quoted = String::new();
-    language::write_literal(&mut quoted, name);
+    language::literal::write_string(&mut quoted, name);
     quoted
 }
 
 fn query(source: &str, offset: usize) -> Option<Query> {
-    let line = source[..offset]
-        .rfind(['\n', '\r'])
-        .map_or(0, |position| position + 1);
-    let tokens = highlight::token_spans(&source[line..offset]);
-    if tokens
-        .last()
-        .is_some_and(|token| matches!(token.kind, TokenKind::Comment | TokenKind::Selector))
-    {
+    let tokens = highlight::token_spans(&source[..offset]);
+    if tokens.last().is_some_and(|token| {
+        matches!(
+            token.kind,
+            TokenKind::Comment | TokenKind::Selector | TokenKind::Protocol | TokenKind::Endpoint
+        ) || token.kind == TokenKind::Operator && &source[token.span.start..token.span.end] == "://"
+    }) {
         return None;
     }
-    let mut start = line;
+    let last = tokens.last().copied();
+    let mut start = 0;
     let mut stack = Vec::new();
     let mut separator = None;
     for token in tokens {
-        let begin = line + token.span.start;
-        let end = line + token.span.end;
+        let begin = token.span.start;
+        let end = token.span.end;
         let spelling = &source[begin..end];
         if token.kind == TokenKind::Operator && matches!(spelling, "/" | "::") {
             separator = Some((start, begin, end));
-        } else if token.kind == TokenKind::Operator && spelling != "$"
+        } else if token.kind == TokenKind::Operator && !matches!(spelling, "$" | "://")
             || token.kind == TokenKind::Command && !matches!(spelling, "true" | "false")
         {
             start = end;
             separator = None;
         } else if token.kind == TokenKind::Text {
+            if spelling.contains(['\n', '\r']) {
+                start = end;
+                separator = None;
+            }
             match spelling {
                 "(" | "[" => {
                     stack.push((start, separator));
@@ -398,7 +434,22 @@ fn query(source: &str, offset: usize) -> Option<Query> {
             }
         }
     }
-    let (start, begin, end) = separator?;
+    let Some((start, begin, end)) = separator else {
+        let token = last.filter(|token| token.kind == TokenKind::String)?;
+        let (directory, prefix, replacement) = literal_prefix(source, token.span.start, offset)?;
+        if directory.is_empty() {
+            return None;
+        }
+        let mut parent = String::new();
+        language::literal::write_string(&mut parent, &directory);
+        return Some(Query {
+            parent,
+            operator: "/",
+            prefix,
+            replacement,
+            literal_directory: Some(directory),
+        });
+    };
     let mut parent = source[start..begin].trim().to_owned();
     if parent.is_empty() {
         if &source[begin..end] != "/" {
@@ -411,39 +462,67 @@ fn query(source: &str, offset: usize) -> Option<Query> {
     let suffix = &source[end..offset];
     let leading = suffix.len() - suffix.trim_start().len();
     let raw = &suffix[leading..];
-    let prefix = if raw.starts_with('"') {
-        let quoted = if raw.len() > 1 && raw.ends_with('"') {
-            raw.to_owned()
-        } else {
-            format!("{raw}\"")
-        };
-        let ExprKind::Literal(prefix) = expression(&quoted)?.kind else {
-            return None;
-        };
-        prefix
+    let mut operation = if &source[begin..end] == "::" {
+        "::"
+    } else {
+        "/"
+    };
+    let (prefix, literal_directory, replacement) = if raw.starts_with('"') {
+        let (directory, prefix, replacement) = literal_prefix(source, end + leading, offset)?;
+        if !directory.is_empty() {
+            let mut spelling = String::new();
+            language::literal::write_string(&mut spelling, &directory);
+            parent = format!("({parent}) {operation} {spelling}");
+            operation = "/";
+        }
+        (prefix, Some(directory), replacement)
     } else {
         if raw.chars().any(char::is_whitespace) || raw.contains(['(', ')', '[', ']', ',', '$', '"'])
         {
             return None;
         }
-        raw.into()
-    };
-    let replacement_end = if raw.starts_with('"') && source[offset..].starts_with('"') {
-        offset + 1
-    } else {
-        offset
+        (
+            raw.into(),
+            None,
+            Span {
+                start: end + leading,
+                end: offset,
+            },
+        )
     };
     Some(Query {
         parent,
-        operator: if &source[begin..end] == "::" {
-            "::"
-        } else {
-            "/"
-        },
+        operator: operation,
         prefix,
-        replacement: Span {
-            start: end + leading,
-            end: replacement_end,
-        },
+        literal_directory,
+        replacement,
     })
+}
+
+fn literal_prefix(source: &str, start: usize, offset: usize) -> Option<(String, String, Span)> {
+    let prefix_source = &source[start..offset];
+    let prefix_token = language::literal::scan_string(prefix_source, 0)?;
+    if prefix_token.span.end != prefix_source.len() {
+        return None;
+    }
+    let (decoded, _) = language::literal::decode_string(prefix_source, prefix_token, 0);
+    let full = language::literal::scan_string(source, start)?;
+    let replacement = Span {
+        start,
+        end: if full.terminated {
+            full.span.end
+        } else {
+            offset
+        },
+    };
+    let boundary = decoded
+        .rfind(std::path::is_separator)
+        .map_or(0, |separator| {
+            separator + decoded[separator..].chars().next().unwrap().len_utf8()
+        });
+    Some((
+        decoded[..boundary].into(),
+        decoded[boundary..].into(),
+        replacement,
+    ))
 }

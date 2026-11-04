@@ -1,5 +1,8 @@
 //! Configuration is observable policy, applied before effects and below explicit CLI options.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -260,7 +263,7 @@ fn a_real_transfer_runs_with_configured_limits_and_preserves_literal_bytes() {
 #[test]
 fn configured_program_spool_limit_is_enforced_and_cli_can_raise_it() {
     let root = workspace();
-    let executable = serde_json::to_string(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let executable = literal_string::quoted(env!("CARGO_BIN_EXE_msync"));
     fs::write(
         root.path().join("entry.msync"),
         format!("P => $local::{executable}(\"--version\")\nP::stdout -> version\n"),

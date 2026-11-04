@@ -1,5 +1,8 @@
 //! Independent phase boundaries, including an unused program macro in an object.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -191,10 +194,10 @@ fn a_called_program_macro_runs_source_and_object_without_an_isolation_provider()
     let root = workspace();
     let executable =
         std::env::var_os("MSYNC_TEST_EXE").unwrap_or_else(|| env!("CARGO_BIN_EXE_msync").into());
-    let executable = executable.to_string_lossy().replace('\\', "\\\\");
+    let executable = literal_string::quoted(&executable.to_string_lossy());
     fs::write(
         root.path().join("code.msync"),
-        format!("macro launch():\n    p => $local::\"{executable}\"(\"--version\")\n    p::exit_code -> code\nlaunch()\n"),
+        format!("macro launch():\n    p => $local::{executable}(\"--version\")\n    p::exit_code -> code\nlaunch()\n"),
     )
     .unwrap();
     success(&invoke(

@@ -1,3 +1,6 @@
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -510,8 +513,8 @@ fn repeated_relative_and_absolute_source_preserves_one_relocatable_identity() {
         fs::write(&piece, "location := $file::parent\n").unwrap();
         let relative = "include \"piece.msync\"\n";
         let absolute = format!(
-            "include \"{}\"\n",
-            piece.to_string_lossy().replace('\\', "/")
+            "include {}\n",
+            literal_string::quoted(&piece.to_string_lossy().replace('\\', "/"))
         );
         let directives = if absolute_first {
             format!("{absolute}{relative}")

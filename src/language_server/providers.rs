@@ -21,6 +21,8 @@ pub(super) const TOKEN_TYPES: &[&str] = &[
     "variable",
     "parameter",
     "number",
+    "protocol",
+    "endpoint",
 ];
 
 pub(super) fn completion(document: &mut OpenDocument, position: Position) -> Vec<CompletionItem> {
@@ -275,7 +277,9 @@ pub(super) fn semantic_tokens(document: &mut OpenDocument) -> SemanticTokens {
             TokenKind::String => 2,
             TokenKind::Selector => 3,
             TokenKind::Comment => 4,
-            TokenKind::Namespace | TokenKind::Endpoint => 5,
+            TokenKind::Namespace => 5,
+            TokenKind::Protocol => 10,
+            TokenKind::Endpoint => 11,
             TokenKind::Binding => 7,
             TokenKind::Text
                 if document.text.source[token.span.start..token.span.end]
@@ -380,7 +384,15 @@ fn symbol_kind(kind: Kind) -> SymbolKind {
 }
 
 fn protected(source: &str, offset: usize) -> bool {
-    highlight::token_spans(source)
+    let tokens = highlight::token_spans(source);
+    if tokens.iter().any(|token| {
+        matches!(token.kind, TokenKind::Protocol | TokenKind::Endpoint)
+            && token.span.start <= offset
+            && offset <= token.span.end
+    }) {
+        return true;
+    }
+    tokens
         .iter()
         .find(|token| token.span.start < offset && offset <= token.span.end)
         .is_some_and(|token| {
@@ -389,7 +401,8 @@ fn protected(source: &str, offset: usize) -> bool {
                 TokenKind::String | TokenKind::Comment | TokenKind::Selector
             ) && (offset < token.span.end
                 || token.kind != TokenKind::String
-                || !source[token.span.start..token.span.end].ends_with('"'))
+                || crate::language::literal::scan_string(source, token.span.start)
+                    .is_some_and(|literal| !literal.terminated))
         })
 }
 
@@ -829,6 +842,15 @@ mod tests {
         assert!(
             matches!(codex.text_edit.as_ref(), Some(CompletionTextEdit::Edit(edit)) if edit.new_text == "codex" && edit.range.start.character == 16)
         );
+    }
+
+    #[test]
+    fn doubled_quotes_and_literal_backslashes_use_shared_string_boundaries() {
+        let mut unfinished = OpenDocument::new("text := \"unfinished\"\"".into(), 1);
+        let end = unfinished.text.end();
+        assert!(completion(&mut unfinished, end).is_empty());
+        let complete = "text := \"C:\\target\\\"";
+        assert!(!protected(complete, complete.len()));
     }
 
     #[test]

@@ -4,14 +4,16 @@ A typed file-synchronization DSL in Rust: a pure optimizing compiler, a
 block-at-a-time interpreter, bounded asynchronous execution, source-mapped
 errors, a script formatter, a persistent REPL, and native editor/LSP tooling.
 
-> **0.7.2 unifies operator expressions and editor support**: unary `$` references,
+> **0.7.3 fixes literal Strings and filesystem completion**: Windows backslashes
+> stay literal, with bare Path suggestions for ordinary filenames.
+> Operator expressions and editor support share unary `$` references,
 > binary `::` qualification and `/` path joins, plus local filesystem completion.
 > The source-backed standard library provides explicit lexical namespaces,
 > filesystem operations and `Range<Scope>` endpoint iteration.
 > A regular file is staged beside its target and atomically replaced; failed
 > multi-file work may leave completed members in place and can be retried.
 > The source grammar is **0.7**; **0.5** and **0.6** remain compatible aliases.
-> See the [0.7.2 release notes](docs/releases/0.7.2.md) and
+> See the [0.7.3 release notes](docs/releases/0.7.3.md) and
 > [current copy contract](docs/design/statement-atomicity.md).
 > Previously published tags and assets remain unchanged.
 
@@ -129,6 +131,12 @@ Literal content is preserved byte-for-byte. Macros expand typed values in an
 isolated lexical environment. `global name` imports a binding from the macro's
 definition-time environment; caller locals are not implicitly captured.
 
+Strings have **no backslash escapes**. `"D:\Code\agents\target"` contains literal
+backslashes; `"\t"` and `"\n"` contain two characters each. Write a double quote
+inside a String by doubling the quote delimiter: `"say ""hello"""`. Strings can
+contain actual newlines; formatting preserves their content without converting
+it to escape sequences. No raw-string prefix or path-dependent decoding exists.
+
 `$pwd` is a `Scope`; `$pwd::pwd` is its working-directory **Path item**. For example,
 `here => $pwd` aliases the space (use `here::pwd`), whereas
 `cwd := $pwd::pwd` captures the cwd path value. Naming a space with `=>` does not
@@ -177,8 +185,9 @@ config := "C:\Users\STONE\.codex"/codex.prompt
 ```
 
 In VS Code, completion after `$local::` lists files and directories, including
-hidden directories such as `.codex`. Selecting a name with spaces inserts a quoted
-path expression; completing a directory lets you continue into its children.
+hidden directories such as `.codex`. Ordinary names insert bare Path operands;
+names with whitespace or a syntax/name collision are quoted only when necessary
+to select the actual file. Completing a directory lets you continue into its children.
 Remote endpoints are not contacted while editing.
 
 Ordinary lexical functions return inferred values that can be composed or

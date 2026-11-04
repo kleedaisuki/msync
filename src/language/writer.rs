@@ -400,16 +400,5 @@ fn needs_quote(path: &str) -> bool {
 }
 
 pub(crate) fn quoted(output: &mut String, text: &str) {
-    output.push('"');
-    for ch in text.chars() {
-        match ch {
-            '"' => output.push_str("\\\""),
-            '\\' => output.push_str("\\\\"),
-            '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
-            '\t' => output.push_str("\\t"),
-            _ => output.push(ch),
-        }
-    }
-    output.push('"');
+    super::literal::write_string(output, text);
 }

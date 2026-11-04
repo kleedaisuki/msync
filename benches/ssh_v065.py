@@ -228,7 +228,7 @@ def observe(
     remote: Path = work / "r"
     local.mkdir(parents=True)
     remote.mkdir()
-    remote_path: str = "remote::" + json.dumps(str(remote))
+    remote_path: str = 'remote::"' + str(remote).replace('"', '""') + '"'
     before_calls: int = len(lines(fixture.calls))
     before_log: int = len(lines(fixture.log))
     if case == "upload":

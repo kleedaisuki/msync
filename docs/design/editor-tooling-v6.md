@@ -403,12 +403,22 @@ Directories include hidden entries and directory symlinks; absent directories
 are an ordinary incomplete edit, while actual filesystem read errors retain the
 path and operating-system error in the request response.
 
-Filesystem labels show native names; insertion always uses a quoted String
-basename and adds `/` for a folder. This is not cosmetic escaping: a selected
-file named `source` must not resolve a lexical binding `source`, and an actual
-file named `pwd` must not become `$pwd::pwd`. String operands preserve file
-identity for both path operators without per-entry compiler synthesis or growing
-reserved-name exceptions. Folder selection retriggers ordinary suggestions.
+Filesystem labels show native names. The literal-String follow-up emits an
+ordinary Path basename by default and adds `/` for a folder. Quoting is reserved
+for whitespace and real grammar/name-resolution necessities: a selected file
+named `source` must not resolve a lexical binding `source`, and an actual file
+named `pwd` must not become `$pwd::pwd`. Such ambiguous basenames use a String
+operand; `./source` is not a disambiguator because `/` still evaluates both
+operands. Folder selection retriggers ordinary suggestions.
+
+The parser, tolerant highlighter and completion share
+`language::literal::scan_string`/`decode_string`. Backslashes are literal bytes;
+there is no raw-prefix or C-escape language. A doubled quote represents an
+embedded quote, and physical newlines remain inside a single String token.
+Completion within an explicitly quoted path retains its full directory spelling,
+including a trailing backslash, and replaces an existing closing delimiter rather
+than duplicating it. The formatter uses the same literal writer. No drive-name
+heuristics, hidden tab replacement, or String-content warning is involved.
 
 Acceptance `lsp_operator_ux_v072` drives the real stdio server, applies its UTF-16
 text edits and runs the resulting source to check copied bytes. It covers String
@@ -418,3 +428,28 @@ remote-prefix non-admission. The extension-host journey applies the same edits
 in VS Code, checks independent semantic operator tokens, and reconnects through
 the explicit Restart Language Server command. The extension also restarts after
 `msync.serverPath` changes and offers Open Settings when startup fails.
+
+## Protocol and address presentation
+
+An unquoted URI is still one endpoint value in the parser and compiler. Its
+editor presentation has three independent roles: the scheme is `Protocol`,
+`://` is an `Operator`, and the remaining authority/address (including user,
+IPv6 brackets, port and URI-owned path/query/fragment) is `Endpoint`. Quoted URL
+text stays an ordinary String; selectors and shell payloads keep their own
+literal contexts. Incomplete `ssh://` and IPv6 edits retain those same roles.
+
+LSP appends custom `protocol` and `endpoint` semantic types without renumbering
+existing legend entries. The extension declares standard `type` and `string`
+supertypes plus `support.type.protocol.msync` and
+`string.unquoted.endpoint.msync` theme fallbacks. TextMate assigns the same
+three-way roles immediately, including `keyword.operator.protocol.msync` for
+`://`. Terminal highlighting uses distinct protocol/operator/address styles.
+
+Presentation does not split URI ownership for tooling: `://` cannot reset the
+start of a path query to its hostname, and an in-progress URI is not a filesystem
+prefix. URI text is also protected from lexical binding/keyword completion and
+hover; source navigation retains the parser's atomic operand identity. A real
+stdio journey deliberately creates a local `forge` directory and checks that
+`ssh://forge /` never lists it, while same-named `ssh`/`forge` bindings do not
+become URI definitions. No authentication, transport, URI validation or endpoint
+execution behavior changes with these display roles.

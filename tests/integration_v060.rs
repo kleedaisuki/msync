@@ -1,5 +1,8 @@
 //! Static acceptance independent of the compiler's internal expression representation.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::path::PathBuf;
 
 use msync::compiler::{CompileContext, structured::Session};
@@ -84,8 +87,8 @@ proptest! {
         };
         let source = format!(
             "left = {}\nright = {}\nif (left {operator} right):\n    \"true\" -> output\nelse:\n    \"false\" -> output\n",
-            serde_json::to_string(&left).unwrap(),
-            serde_json::to_string(&right).unwrap(),
+            literal_string::quoted(&left),
+            literal_string::quoted(&right),
         );
         let document = language::parse(&source).unwrap();
         let program = Session::new().compile(&document, &context()).unwrap();

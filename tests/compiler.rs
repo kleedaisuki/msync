@@ -1,3 +1,6 @@
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use msync::{
     compiler::{Backend, CompileContext, Compiler},
     syntax,
@@ -568,7 +571,10 @@ fn ssh_configuration_lookup_never_silently_strips_host_controls() {
         "ssh://host\rother",
         "ssh:\t//host",
     ] {
-        let source = format!("remote => {endpoint:?}\nremote::input -> output\n");
+        let source = format!(
+            "remote => {}\nremote::input -> output\n",
+            literal_string::quoted(endpoint)
+        );
         let errors = reports(&source);
         assert!(!errors.is_empty());
         assert!(errors[0].diagnostic.message.contains("control characters"));

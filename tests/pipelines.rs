@@ -1,3 +1,6 @@
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::Path;
 
@@ -22,7 +25,7 @@ fn program(source: &str) -> Program {
 }
 
 fn path(path: &Path) -> String {
-    format!("{:?}", path.to_string_lossy().replace('\\', "/"))
+    literal_string::quoted(&path.to_string_lossy().replace('\\', "/"))
 }
 
 #[tokio::test]

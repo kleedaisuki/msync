@@ -73,7 +73,7 @@ test('ordered range punctuation does not absorb booleans, calls, paths or regex 
     hasScope(line, 'false', 'constant.language.boolean.msync');
     hasScope('items := [root/<[>#]+\\.txt>] | $view::take(1)', '[>#]', 'constant.other.character-class.regexp.msync');
     hasScope('items := [root/<[>#]+\\.txt>] | $view::take(1)', 'take', 'support.function.range.msync');
-    hasScope('items := [tcp://[::1]:80]', 'tcp://', 'string.unquoted.endpoint.msync');
+    hasScope('items := [tcp://[::1]:80]', '[::1]:80', 'string.unquoted.endpoint.msync');
     const endpoint = grammar.tokenizeLine('items := [tcp://[::1]:80]', textmate.INITIAL).tokens;
     assert.ok(endpoint.at(-1).scopes.includes('punctuation.section.brackets.end.msync'));
 });
@@ -110,8 +110,8 @@ test('quoted strings and regular-expression classes shield punctuation', () => {
     hasScope(line, '[>#]', 'constant.other.character-class.regexp.msync');
     hasScope(line, '# note', 'comment.line.number-sign.msync');
     hasScope('text = "a\\n -> # b"', '# b', 'string.quoted.double.msync');
-    hasScope('text = "a\\n -> # b"', '\\n', 'constant.character.escape.msync');
-    hasScope('remote => https://example.com/a?x=1#fragment', 'https://', 'string.unquoted.endpoint.msync');
+    hasScope('text = "a\\n -> # b"', '\\n', 'string.quoted.double.msync');
+    hasScope('remote => https://example.com/a?x=1#fragment', 'example.com/a?x=1#fragment', 'string.unquoted.endpoint.msync');
 });
 
 test('comparisons and reserved-looking filename components are not regexes or controls', () => {
@@ -125,11 +125,9 @@ test('comparisons and reserved-looking filename components are not regexes or co
     assert.ok(!scopes('left<right', '<').includes('string.regexp.msync'));
 });
 
-test('unfinished single-line literals do not poison later lines and native spans cover UTF16 input', () => {
+test('unfinished selector lines recover while multiline String contents retain literal scopes', () => {
     let state = textmate.INITIAL;
-    for (const line of ['text = "unfinished', 'if true:', '    root/<[a-z', 'delete file',
-        'items := ["可莉🌟", $local::"unfinished', 'if acquire false:', '    [true, false',
-        'items | $view::filter(ready)']) {
+    for (const line of ['root/<[a-z', 'if acquire false:', '[true, false', 'items | $view::filter(ready)']) {
         const result = grammar.tokenizeLine(line, state);
         let cursor = 0;
         for (const token of result.tokens) {
@@ -140,11 +138,20 @@ test('unfinished single-line literals do not poison later lines and native spans
         assert.ok(cursor >= line.length);
         state = result.ruleStack;
     }
-    hasScope('delete file', 'delete', 'keyword.control.msync');
     const next = grammar.tokenizeLine('if release true:', state);
     const modifier = next.tokens.find(token => token.startIndex <= 3 && token.endIndex > 3);
     assert.ok(modifier.scopes.includes('keyword.control.msync'));
     assert.ok(!modifier.scopes.some(scope => scope.startsWith('string.')));
+
+    const first = grammar.tokenizeLine('text = "可莉🌟 literal \\target', textmate.INITIAL);
+    const middle = grammar.tokenizeLine('inside ""quotes"" # $local:: / <selector>', first.ruleStack);
+    assert.ok(middle.tokens.every(token => token.scopes.includes('string.quoted.double.msync')));
+    const closing = grammar.tokenizeLine('last line" / child # comment', middle.ruleStack);
+    assert.ok(closing.tokens.some(token => token.scopes.includes('keyword.operator.msync')));
+    assert.ok(closing.tokens.some(token => token.scopes.includes('comment.line.number-sign.msync')));
+    const after = grammar.tokenizeLine('if true:', closing.ruleStack);
+    assert.ok(after.tokens.some(token => token.scopes.includes('keyword.control.msync')));
+    assert.ok(!after.tokens.some(token => token.scopes.includes('string.quoted.double.msync')));
 });
 
 test('manifest and language configuration are internally consistent', () => {
@@ -225,7 +232,7 @@ test('lookup, qualification and composition operators have independent theme rol
     hasScope('copy($local, .codex/codex.prompt)', 'local', 'entity.name.namespace.msync');
     hasScope('"C:\\Users\\STONE\\.codex"/codex.prompt', 'Users', 'string.quoted.double.msync');
     hasScope('$local::root/<[a/$:]+>', '[a/$:]', 'constant.other.character-class.regexp.msync');
-    hasScope('root => ssh://user@host/path', 'ssh://', 'string.unquoted.endpoint.msync');
+    hasScope('root => ssh://user@host/path', 'user@host/path', 'string.unquoted.endpoint.msync');
 });
 
 test('editor word selection keeps operators separate from filenames and namespaces', () => {
@@ -233,4 +240,75 @@ test('editor word selection keeps operators separate from filenames and namespac
     const words = new RegExp(configuration.wordPattern, 'g');
     assert.deepEqual('$local::.codex/codex.prompt'.match(words), ['local', '.codex', 'codex.prompt']);
     assert.deepEqual('$std::ranges::filter(可莉🌟)'.match(words), ['std', 'ranges', 'filter', '可莉🌟']);
+});
+
+test('ordinary Strings preserve Windows backslashes and doubled quotes without C escape coloring', () => {
+    for (const line of [
+        String.raw`path := "D:\Code\agents\target\xmlsquish"/codex.prompt`,
+        String.raw`path := "C:\Users\STONE\.codex"/codex.prompt`,
+        String.raw`path := "D:\quoted""directory\target\"/codex.prompt`,
+    ]) {
+        hasScope(line, 'codex.prompt', 'variable.other.readwrite.msync');
+        hasScope(line, '/codex.prompt', 'keyword.operator.msync');
+        const tokens = grammar.tokenizeLine(line, textmate.INITIAL).tokens;
+        assert.ok(!tokens.some(token => token.scopes.some(scope => scope.startsWith('constant.character.escape'))));
+        const backslashes = tokens.filter(token => line.slice(token.startIndex, token.endIndex).includes('\\'));
+        assert.ok(backslashes.length);
+        assert.ok(backslashes.every(token => token.scopes.includes('string.quoted.double.msync')));
+    }
+    const quoted = String.raw`text := "literal \n\t\r\"" # $local::path/<[a-z]+>" / child # actual comment`;
+    for (const word of ['\\n', '\\t', '\\r', '# $local', '::', '<[a-z]+>']) {
+        hasScope(quoted, word, 'string.quoted.double.msync');
+        assert.ok(!scopes(quoted, word).some(scope => /escape|operator|regexp|comment/.test(scope)));
+    }
+    hasScope(quoted, '""', 'constant.character.quote.msync');
+    hasScope(quoted, '# actual comment', 'comment.line.number-sign.msync');
+});
+
+test('unquoted URI schemes, separators and atomic addresses have distinct native scopes', () => {
+    for (const uri of [
+        'ssh://forge', 'ssh://user@forge:2222/work/tree',
+        'http://example.test/a?x=1#fragment', 'https://example.test',
+        'tcp://127.0.0.1:8022', 'tcp://[::1]:8022',
+        'ssh://user@[2001:db8::1]:2222/work/tree', 'ssh://forge/工作🌟/config',
+    ]) {
+        const separator = uri.indexOf('://');
+        const line = `remote := ${uri}`;
+        hasScope(line, uri.slice(0, separator), 'support.type.protocol.msync');
+        hasScope(line, '://', 'keyword.operator.protocol.msync');
+        hasScope(line, uri.slice(separator + 3), 'string.unquoted.endpoint.msync');
+        const tokens = grammar.tokenizeLine(line, textmate.INITIAL).tokens;
+        const endpoint = tokens.filter(token => token.scopes.includes('string.unquoted.endpoint.msync'));
+        assert.equal(endpoint.length, 1);
+        assert.equal(line.slice(endpoint[0].startIndex, endpoint[0].endIndex), uri.slice(separator + 3));
+    }
+    for (const line of ['value := "ssh://forge"', 'value := "tcp://[::1]:8022/path"']) {
+        const tokens = grammar.tokenizeLine(line, textmate.INITIAL).tokens;
+        assert.ok(tokens.some(token => token.scopes.includes('string.quoted.double.msync')));
+        assert.ok(!tokens.some(token => token.scopes.includes('support.type.protocol.msync')
+            || token.scopes.includes('keyword.operator.protocol.msync')
+            || token.scopes.includes('string.unquoted.endpoint.msync')));
+    }
+    hasScope('paths := root/<ssh://forge>', 'ssh://forge', 'string.regexp.msync');
+});
+
+test('custom semantic URI roles inherit theme types and native TextMate fallback scopes', () => {
+    const manifest = require('../package.json');
+    const roles = new Map(manifest.contributes.semanticTokenTypes.map(type => [type.id, type.superType]));
+    assert.equal(roles.get('protocol'), 'type');
+    assert.equal(roles.get('endpoint'), 'string');
+    const scopes = manifest.contributes.semanticTokenScopes.find(value => value.language === 'msync').scopes;
+    assert.deepEqual(scopes.protocol, ['support.type.protocol.msync']);
+    assert.deepEqual(scopes.endpoint, ['string.unquoted.endpoint.msync']);
+});
+
+test('URI editing retains protocol roles before an address or IPv6 bracket is complete', () => {
+    hasScope('remote := ssh://', 'ssh', 'support.type.protocol.msync');
+    hasScope('remote := ssh://', '://', 'keyword.operator.protocol.msync');
+    const empty = grammar.tokenizeLine('remote := ssh://', textmate.INITIAL).tokens;
+    assert.ok(!empty.some(token => token.scopes.includes('string.unquoted.endpoint.msync')));
+    hasScope('remote := tcp://[::', 'tcp', 'support.type.protocol.msync');
+    hasScope('remote := tcp://[::', '://', 'keyword.operator.protocol.msync');
+    hasScope('remote := tcp://[::', '[::', 'string.unquoted.endpoint.msync');
+    assert.ok(!scopes('remote := tcp://[::', '[::').includes('entity.name.namespace.msync'));
 });

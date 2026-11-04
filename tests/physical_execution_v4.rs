@@ -1,4 +1,8 @@
 //! Real physical endpoint journeys through the default v4 runtime.
+#[cfg(windows)]
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use msync::{
     compiler::{CompileContext, structured::Session},
     execution::{Options, RuntimeSession},
@@ -1101,14 +1105,13 @@ async fn native_named_pipe_bridge_coadmits_both_real_interpreter_flows() {
         .access_outbound(true)
         .create(&output)
         .unwrap();
-    let quote = |path: &str| path.replace('\\', "\\\\").replace('"', "\\\"");
     let program = compile(
         &mut Session::new(),
         &work,
         &format!(
-            "input -> $local::\"{}\"\n$local::\"{}\" -> output\n",
-            quote(&input),
-            quote(&output)
+            "input -> $local::{}\n$local::{} -> output\n",
+            literal_string::quoted(&input),
+            literal_string::quoted(&output)
         ),
     );
     let bridge = async move {

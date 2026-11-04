@@ -167,10 +167,18 @@ function Assert-InstalledJourney([string]$Directory) {
         if ([IO.File]::ReadAllText((Join-Path $journey 'std-output/literal-name')) -cne '<literal>') {
             throw 'Installed native calls reinterpreted a String-generated Path as selector syntax.'
         }
+        if ([IO.File]::ReadAllText((Join-Path $journey 'std-output/windows-spelling')) -cne 'D:\Code\agents\target\new\runtime\artifacts' -or
+            [IO.File]::ReadAllText((Join-Path $journey 'std-output/quoted-content')) -cne 'say "hello"') {
+            throw 'Installed literal Strings decoded a backslash or lost a doubled quote delimiter.'
+        }
 
-        # Use this account's actual Windows path, including its backslash spelling.
-        $quotedBase = '"' + $journey.Replace('\', '\\').Replace('"', '\"') + '"'
-        $windowsSource = "$quotedBase/.codex/codex.prompt -> std-output/windows.prompt`n"
+        # Paste native backslashes directly: \target, \new and \runtime are data.
+        $nativeBase = Join-Path $journey 'target\new\runtime'
+        $null = New-Item -ItemType Directory -Path $nativeBase -Force
+        Copy-Item -LiteralPath '.codex/codex.prompt' -Destination (Join-Path $nativeBase 'codex.prompt')
+        $quotedBase = '"' + $nativeBase.Replace('"', '""') + '"'
+        $windowsSource = "$quotedBase/codex.prompt -> std-output/windows.prompt`n" +
+            "fs => `$std::fs`nfs::string($quotedBase) -> std-output/windows-spelling`n"
         [IO.File]::WriteAllText((Join-Path $journey 'windows-path.msync'), $windowsSource, $utf8)
         $null = Invoke-Msync $exe @('check', 'windows-path.msync')
         $null = Invoke-Msync $exe @('compile', 'windows-path.msync', '-o', 'windows-path.mobj')
@@ -178,6 +186,9 @@ function Assert-InstalledJourney([string]$Directory) {
         $null = Invoke-Msync $exe @('run', 'windows-path.mobj')
         if ([IO.File]::ReadAllText((Join-Path $journey 'std-output/windows.prompt')) -cne 'operator payload') {
             throw 'Quoted Windows base joined to a compact relative path copied different bytes.'
+        }
+        if ([IO.File]::ReadAllText((Join-Path $journey 'std-output/windows-spelling')) -cne $nativeBase) {
+            throw 'Native Windows backslashes were decoded or doubled instead of remaining literal.'
         }
     } finally { Pop-Location }
 }

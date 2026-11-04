@@ -1,5 +1,8 @@
 //! Output quota is distinct from a buffer budget and never kills the child.
 
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -31,7 +34,7 @@ fn invoke(root: &Path, limit: &str) -> Output {
 #[test]
 fn zero_quota_reports_output_failure_only_after_the_child_finishes_its_effects() {
     let root = workspace();
-    let executable = serde_json::to_string(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let executable = literal_string::quoted(env!("CARGO_BIN_EXE_msync"));
     fs::write(
         root.path().join("child.msync"),
         "\"child completed\" -> finished.txt\n",
@@ -57,7 +60,7 @@ fn zero_quota_reports_output_failure_only_after_the_child_finishes_its_effects()
 #[test]
 fn a_nonzero_quota_can_capture_the_complete_program_output() {
     let root = workspace();
-    let executable = serde_json::to_string(env!("CARGO_BIN_EXE_msync")).unwrap();
+    let executable = literal_string::quoted(env!("CARGO_BIN_EXE_msync"));
     fs::write(
         root.path().join("parent.msync"),
         format!("Program => $local::{executable}(\"--version\")\nProgram::stdout -> version.txt\n"),

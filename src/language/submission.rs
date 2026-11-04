@@ -13,7 +13,11 @@ pub enum Submission {
 enum State {
     #[default]
     Idle,
-    Block(String),
+    Block {
+        source: String,
+        compound: bool,
+        literal: bool,
+    },
 }
 
 /// A compound REPL submission is released by a blank physical line or EOF.
@@ -25,7 +29,12 @@ pub struct SubmissionBuffer {
 
 impl SubmissionBuffer {
     pub fn is_pending(&self) -> bool {
-        matches!(self.state, State::Block(_))
+        matches!(self.state, State::Block { .. })
+    }
+
+    /// Command-looking physical lines are data while a String is unfinished.
+    pub fn in_string(&self) -> bool {
+        matches!(self.state, State::Block { literal: true, .. })
     }
 
     pub fn push_line(&mut self, line: &str) -> Result<Submission, Report> {
@@ -41,20 +50,40 @@ impl SubmissionBuffer {
             )
             .help("Queue pasted lines in order; a blank line finishes the compound submission."));
         }
-        if let State::Block(source) = &mut self.state {
-            if line.trim().is_empty() {
+        if let State::Block {
+            source,
+            compound,
+            literal,
+        } = &mut self.state
+        {
+            if line.trim().is_empty() && !*literal {
                 return Ok(Submission::Ready(self.finish().expect("pending block")));
             }
             source.push_str(line);
             source.push('\n');
+            let tail = if *literal {
+                super::literal::string_end(line, 0).map(|end| &line[end..])
+            } else {
+                Some(line)
+            };
+            *literal = tail.is_none_or(super::parser::has_unterminated_string);
+            if !*compound && !*literal {
+                return Ok(Submission::Ready(self.finish().expect("completed String")));
+            }
             return Ok(Submission::Pending);
         }
         if line.trim().is_empty() {
             return Ok(Submission::Empty);
         }
         let source = format!("{line}\n");
-        if super::parser::opens_block(line) {
-            self.state = State::Block(source);
+        let compound = super::parser::opens_block(line);
+        let literal = super::parser::has_unterminated_string(&source);
+        if compound || literal {
+            self.state = State::Block {
+                source,
+                compound,
+                literal,
+            };
             Ok(Submission::Pending)
         } else {
             Ok(Submission::Ready(source))
@@ -66,7 +95,7 @@ impl SubmissionBuffer {
     pub fn finish(&mut self) -> Option<String> {
         match std::mem::take(&mut self.state) {
             State::Idle => None,
-            State::Block(source) => Some(source),
+            State::Block { source, .. } => Some(source),
         }
     }
 

@@ -175,7 +175,7 @@ fn native_terminal_highlights_before_enter_and_keeps_unicode_editing_history_and
 }
 
 #[test]
-fn native_terminal_colors_colon_commands_context_items_and_quoted_escapes_before_enter() {
+fn native_terminal_colors_colon_commands_context_items_and_literal_backslashes_before_enter() {
     let directory = workspace();
     let mut repl = terminal(directory.path(), "always");
     repl.send(":hel\t");
@@ -202,12 +202,12 @@ fn native_terminal_colors_colon_commands_context_items_and_quoted_escapes_before
 
     repl.send(r#"root := "界\n\q""#);
     let edit = repl.until_matching(|raw| {
-        foreground(raw, r"\n") == Some(36) && foreground(raw, r"\q") == Some(32)
+        foreground(raw, r"\n") == Some(32) && foreground(raw, r"\q") == Some(32)
     });
     assert_eq!(foreground(&edit, "界"), Some(32));
     repl.accept();
     let bindings = repl.submit("/bindings");
-    assert!(pty::visible(&bindings).contains(r"界\n\\q"), "{bindings:?}");
+    assert!(pty::visible(&bindings).contains(r"界\n\q"), "{bindings:?}");
     repl.exit();
     assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
 }

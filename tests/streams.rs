@@ -1,3 +1,6 @@
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::Path;
 #[cfg(windows)]
@@ -17,9 +20,9 @@ async fn ipv6_endpoint_urls_connect_with_native_unbracketed_addresses() {
     let listener = TcpListener::bind("[::1]:0").await.unwrap();
     let target = root.path().join("ipv6.bin");
     let source = format!(
-        "wire => tcp://{}\nwire::/ -> {:?}\n",
+        "wire => tcp://{}\nwire::/ -> {}\n",
         listener.local_addr().unwrap(),
-        target.to_string_lossy().replace('\\', "/")
+        literal_string::quoted(&target.to_string_lossy().replace('\\', "/"))
     );
     let program = msync::compiler::Compiler::new()
         .compile(&msync::syntax::parse(&source).unwrap())

@@ -16,6 +16,7 @@ ROOT: Path = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from benches.ssh_v065 import Fixture, checked, lines, owned_run, prepared_file, verified_file
+from support.literal_string import quoted
 
 
 class TraceSpan(TypedDict):
@@ -109,7 +110,7 @@ def invoke(
 
 
 def remote_path(path: Path) -> str:
-    return "remote::" + json.dumps(str(path))
+    return "remote::" + quoted(str(path))
 
 
 def check_cohorts(fixture: Fixture, binary: Path, completed: list[str]) -> None:
@@ -203,10 +204,10 @@ def check_whole_cwd(fixture: Fixture, binary: Path, completed: list[str]) -> Non
         user.mkdir(parents=True)
         prepared_file(user / "retained", b"user-owned SSH-looking data")
         target: Path = local.parent / "copy" if destination_kind == "local" else remote / "copy"
-        destination: str = "$local::" + json.dumps(str(target)) if destination_kind == "local" else remote_path(target)
+        destination: str = "$local::" + quoted(str(target)) if destination_kind == "local" else remote_path(target)
         source: str = (
             f"{remote_path(remote / 'probe')} -> warmup\n"
-            f"$local::{json.dumps(str(local))} -> {destination}/.\n"
+            f"$local::{quoted(str(local))} -> {destination}/.\n"
         )
         offset: int = arguments.stat().st_size if arguments.exists() else 0
         invoke(fixture, binary, local, source)
@@ -225,7 +226,7 @@ def check_whole_cwd(fixture: Fixture, binary: Path, completed: list[str]) -> Non
     target = local.parent / "copy"
     source = (
         f"{remote_path(remote / 'probe')} -> warmup\n"
-        f"$local::{json.dumps(str(local))} -> $local::{json.dumps(str(target))}/.\n"
+        f"$local::{quoted(str(local))} -> $local::{quoted(str(target))}/.\n"
     )
     offset = arguments.stat().st_size
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as external:
@@ -249,7 +250,7 @@ def check_repl_capture(fixture: Fixture, binary: Path, completed: list[str]) -> 
     source: str = (
         "remote => ssh://Perf_Fixture\n"
         f"{remote_path(remote / 'probe')} -> warmup\n"
-        f"$local::{json.dumps(str(local))} -> $local::{json.dumps(str(target))}/.\n"
+        f"$local::{quoted(str(local))} -> $local::{quoted(str(target))}/.\n"
         "/quit\n"
     )
     (local / "input.txt").write_text(source)

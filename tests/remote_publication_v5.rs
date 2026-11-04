@@ -1,5 +1,9 @@
 //! The structured interpreter must preserve finite remote publication semantics.
 
+#[cfg(windows)]
+#[path = "support/literal_string.rs"]
+mod literal_string;
+
 use std::fs;
 use std::path::Path;
 
@@ -8,7 +12,7 @@ use msync::hir::{InstructionKind, Output};
 
 #[cfg(windows)]
 fn quoted(value: &str) -> String {
-    serde_json::to_string(value).unwrap()
+    literal_string::quoted(value)
 }
 
 fn compile(work: &Path, source: &str) -> msync::hir::Program {
