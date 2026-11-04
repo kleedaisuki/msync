@@ -61,6 +61,12 @@ an untrusted workspace setting.
 
 ## Language editing
 
+- Unquoted endpoint URIs have three distinct display roles: in `ssh://forge`,
+  `ssh` is the protocol, `://` is the operator, and `forge` is the address.
+  The address remains one region even with a user, IPv6 host, port or path.
+  Quoted URLs stay ordinary Strings. Custom semantic `protocol` and `endpoint`
+  roles inherit standard type/string styling and have TextMate theme fallbacks.
+
 - `$` is a unary lookup operator; `::` qualifies a member/path and `/` composes
   paths. Each has its own operator scope rather than coloring an entire
   `$local::directory/file` expression as one namespace. Quoted strings, URI
@@ -119,6 +125,11 @@ the **production bundled extension** inside a real Extension Development Host:
 MSYNC_TEST_SERVER_PATH=/absolute/path/to/frozen/msync xvfb-run -a npm run test:integration
 ```
 
+For a protocol-highlighting-only change, use `MSYNC_TEST_PROTOCOL_ONLY=1` with
+that command. This selects a separate native-host suite that checks URI protocol,
+separator and atomic address semantic ranges, quoted-URL String behavior and
+production theme fallbacks without rerunning the unrelated editing journey.
+
 Use Node 22+ for the test runner. On a desktop with an X11 display, omit
 `xvfb-run -a`; the Linux runner explicitly selects X11 rather than inheriting
 an unrelated Wayland session. The official runner manages its VS Code download
@@ -147,6 +158,13 @@ UTF-16 ranges, including independent `$`, `::` and `/`
 operators. **msync: Restart Language Server** reconnected and retained completion.
 Transfer outputs remained absent and the delete victim unchanged throughout.
 This was an automated Xvfb Extension Development Host session, not a mocked editor.
+
+A separate protocol-only native-host run on the same date checked **10 URI
+forms** and **60 semantic tokens**: protocol/operator/address separation, complete
+and unfinished IPv6 addresses, Unicode address paths, an empty address while
+editing, quoted-URL Strings and unchanged namespace tokens. The production
+manifest supplied custom semantic-type inheritance and TextMate fallbacks.
+This targeted run did not repeat the already-accepted full editing journey.
 
 Runtime dependencies are locked. As of 2026-10-31, the official latest stable
 `vscode-languageclient` is 11.0.0 and still depends on `minimatch ^10.2.6`.
