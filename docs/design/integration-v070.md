@@ -474,3 +474,59 @@ Focused local acceptance:
   the Python helper does not trigger Rust. Existing selector regression checks
   pass under the cached official PowerShell engine, without adding quality gates
   or silently requesting an unrelated complete-project regression matrix.
+
+### Published v0.7.3
+
+After the user's explicit publication request,
+[PR #7](https://github.com/kleedaisuki/msync/pull/7) merged as
+`69e2b6da196c7d6fd3f4dea6ac449c6e0eb01d5f`. The immutable `v0.7.3` tag and
+release target both point to that commit. The
+[official release run](https://github.com/kleedaisuki/msync/actions/runs/41841603210)
+passed its version/completeness checks, Ubuntu-baseline Linux package, native
+Windows portable/install/repair/upgrade/PATH/uninstall journey, and actual VS Code
+host against the packaged binary. It published
+[v0.7.3](https://github.com/kleedaisuki/msync/releases/tag/v0.7.3) at
+2026-11-04 21:54:34 +08:00. Superseded development-branch runs were cancelled;
+publication did not wait for a separate Rust/editor CI status gate.
+
+The native Windows installed journey uses actual `target\new\runtime`
+directories and directly pasted single-backslash source, checks the copied bytes,
+and checks that the native path String remains exact. The downloaded Linux
+executable reports 0.7.3 and replays the expanded source-free package smoke:
+14 files, 250 bytes, including the literal Windows spelling and doubled quotes.
+Public extraction/audit and native workflow evidence is under `.temp/release-v073`.
+
+All four public assets were downloaded to `dist/releases/v0.7.3` and matched
+SHA256SUMS. All 143 Windows portable payload-manifest entries matched. Its native
+x86-64 executable SHA-256 is
+`f94b5f437c287e2948fff5fafad7476abb699ca4ed9f0212197a40e55e9eae8a`.
+The five standard sources match after normal Windows checkout CRLF normalization.
+The public VSIX reports 0.7.3, contains the actual current grammar, and declares
+protocol/endpoint semantic roles with type/string inheritance and native theme
+fallbacks. Its bundled client matches the locally tested bytes (SHA-256
+`a782ee9d454d5793129b655b312d75f90a525de0ac21562fca7eddf454752997`).
+
+| Public asset | SHA-256 |
+| --- | --- |
+| `msync-0.7.3-linux-x86_64.tar.gz` | `11aa22de56962e67326ee384aab351b9ed1757ab69bd12270d51e562598cefdd` |
+| `msync-0.7.3-windows-x86_64-setup.exe` | `1fc976de0925961443cf00cc22da8b1900ddc7b5fc7818b7e5d4db40bd69df8e` |
+| `msync-0.7.3-windows-x86_64.zip` | `725886fb84032edead77c39a46bb8ab07e66d8cc64bb81c07ebf59748f5d7085` |
+| `msync-language-0.7.3.vsix` | `475eae934e424940752212955ea51971883785c466aaa84d2ab50a91b8d8a5dc` |
+
+The separate [Rust matrix](https://github.com/kleedaisuki/msync/actions/runs/41841603435)
+was not counted as a complete pass. Its remaining direct source fixtures in
+`execution_v4`, `lowering_v4` and `pipeline_v4` still used backslash-n syntax
+while expecting an actual LF. Test-only commit `6e885b2` changes those three
+source spellings to physical newline data, keeping every expected UTF-8/NUL,
+argv/port and IR assertion unchanged; all three exact cases and strict targeted
+Clippy pass locally.
+
+Ubuntu additionally exposed the scheduler's old ancestor-symlink rejection
+fixture. Independent review found the same assertions already in v0.7.2 and
+no implementation changes in runtime/scheduler/filesystem/preparation/execution
+between the releases. Commit `1b5d91c` had explicitly removed that rejection
+under the normal-copy contract. Test-only commit `83459fb` now checks actual
+native link traversal, exact target bytes/counts, retry updates, retained link
+identity and an untouched sibling; the real async journey, strict target Clippy
+and formatting pass. These follow-ups do not change published production code,
+tags or asset bytes, and no assertion is skipped or disabled.
