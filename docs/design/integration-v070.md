@@ -399,3 +399,11 @@ operand label. Its four-scenario compiler unit and strict library/CLI Clippy pas
 This small diagnostic improvement is explicitly **Unreleased** on main; it is
 not represented as part of the already-published 0.7.2 bytes. No tag or asset was
 moved or replaced, and no CI assertion was skipped or disabled.
+
+The final [native follow-up Rust run](https://github.com/kleedaisuki/msync/actions/runs/41828249607)
+at `69257cb5577cdd4f9bc6ceb0e1a0e259b6dbcde3` passed on Ubuntu and Windows,
+including the migrated CLI and actual terminal journeys. The separate
+[editor follow-up](https://github.com/kleedaisuki/msync/actions/runs/41828249465)
+passed its actual VS Code host as well. This is changed-contract/native evidence,
+not a full-project matrix or a reason to replace the already-verified release.
+The published tag remains `952850d641b3ae57427fea0a03d1448234c2eee9`.
