@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Restore nearest visible binding suggestions on typed `::` and `$` errors,
+  keeping operator-owned diagnostics and inferred operand types. This follow-up
+  is on main; the published 0.7.2 tag and packages are unchanged.
+
 ## 0.7.2 — 2026-11-04
 
 - Represent `$` references and `::` selection explicitly in the frontend and

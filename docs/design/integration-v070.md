@@ -344,3 +344,58 @@ lifecycle checks and immutable release publication remain in place.
   build/install/package evidence is under `.temp/release-v072`.
 - `cargo fmt --all --check` and `git diff --check` passed. No complete-project
   regression matrix was used as a substitute for these changed workflows.
+
+### Published v0.7.2 and public artifact verification
+
+[PR #6](https://github.com/kleedaisuki/msync/pull/6) merged into main as
+`952850d641b3ae57427fea0a03d1448234c2eee9`. The immutable `v0.7.2` tag and release
+target both point to that commit. The
+[official release run](https://github.com/kleedaisuki/msync/actions/runs/41826442995)
+passed Windows portable/install/repair/upgrade/PATH/uninstall, the Ubuntu-baseline
+Linux package and the real VS Code host against its packaged binary. It published
+[v0.7.2](https://github.com/kleedaisuki/msync/releases/tag/v0.7.2) at
+2026-11-04 20:12:06 +08:00. Superseded branch/PR runs were cancelled after merge;
+publication did not wait for the separate Rust or editor CI status.
+
+All four public assets were downloaded into `dist/releases/v0.7.2` and matched
+the published SHA256SUMS. Every one of the Windows ZIP's 142 internal manifest
+entries matched. Its executable is native x86-64 with SHA-256
+`1eba793948ae69fec83422e15318fcd35a03cd2b866c68dff0d6964ac61d7a5c`.
+All five Windows standard sources match their Git source after native CRLF/LF
+normalization; the package and its embedded standard sources come from the same
+Windows checkout, not the Linux checkout's byte representation.
+
+The public VSIX reports 0.7.2 and every payload file is byte-identical to the
+locally installed/tested VSIX. Its bundled client SHA-256 is
+`a782ee9d454d5793129b655b312d75f90a525de0ac21562fca7eddf454752997`.
+The public Linux executable is native x86-64, reports 0.7.2, and passed the full
+expanded source-free native/operator package smoke after extraction, including
+all String/Path pairings and selector-shaped literal Path content. Public audit,
+package smoke and native logs are under `.temp/release-v072`.
+
+| Public asset | SHA-256 |
+| --- | --- |
+| `msync-0.7.2-linux-x86_64.tar.gz` | `d6b9dea6632c243a42291c6ac8903fb2515e8810f7f5db1d270f4b7836d6f52a` |
+| `msync-0.7.2-windows-x86_64-setup.exe` | `f8e23b0440a7d4ceec33bf9576167af4fc5071043e27e9ec0bcb7a9f147dde66` |
+| `msync-0.7.2-windows-x86_64.zip` | `94e87a758a01831262e21324385b95e1dc6434365f43fcb042c318f2268cc439` |
+| `msync-language-0.7.2.vsix` | `f2c681895144b58ff33dae7bd8fd5e2586f3b1a28608181de1352517e998a7be` |
+
+### Supplemental compatibility follow-up on main
+
+The independent [Rust run](https://github.com/kleedaisuki/msync/actions/runs/41826443001)
+passed its library suites (Ubuntu 254 active cases, Windows 237), but is not a
+complete pass. Both platforms failed the same changed-contract fixtures in
+`cli`, `cli_v052` and `repl_terminal`: old unknown-endpoint diagnostic ownership,
+quoted script selector inference, and merged `$namespace::` color spans.
+The actual typed diagnostic was correct; a strengthened assertion also exposed
+lost nearest-binding help that the old source-excerpt assertion did not detect.
+
+Test-only commits `e8472e4` and `06e42d6` migrate those expectations without
+weakening the real copy, object/IR, editing/history or source-span journeys.
+Two failed PTY journeys and all 27 CLI cases now pass locally, with strict
+changed-target Clippy and formatting. Commit `2e3adac` restores nearest semantic
+binding help only on error paths, preserving the typed error, operator span and
+operand label. Its four-scenario compiler unit and strict library/CLI Clippy pass.
+This small diagnostic improvement is explicitly **Unreleased** on main; it is
+not represented as part of the already-published 0.7.2 bytes. No tag or asset was
+moved or replaced, and no CI assertion was skipped or disabled.
