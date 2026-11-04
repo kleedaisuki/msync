@@ -33,26 +33,37 @@ pub(super) fn completion(document: &mut OpenDocument, position: Position) -> Vec
     if let Some(items) = namespace_completion(document, offset) {
         return items;
     }
-    let start = completion_start(&document.text.source, offset);
+    let qualified = namespace_prefix(&document.text.source, offset);
+    let start = qualified.as_ref().map_or_else(
+        || completion_start(&document.text.source, offset),
+        |(_, _, prefix)| *prefix,
+    );
     let prefix = document.text.source[start..offset].to_owned();
     let range = document.text.range(Span { start, end: offset });
     let mut items = Vec::new();
     let mut seen = BTreeSet::new();
     for definition in document.syntax().index.visible_at(offset) {
-        if definition.name.starts_with(&prefix)
+        if definition
+            .name
+            .starts_with(prefix.strip_prefix('$').map_or(prefix.as_str(), str::trim))
             && seen.insert((definition.name.clone(), definition.kind as u8))
         {
+            let spelling = if prefix.starts_with('$') {
+                format!("${}", definition.name)
+            } else {
+                definition.name.clone()
+            };
             items.push(CompletionItem {
-                label: definition.name.clone(),
+                label: spelling.clone(),
                 kind: Some(completion_kind(definition.kind)),
                 detail: Some(definition.detail.clone()),
-                text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
-                    range,
-                    definition.name.clone(),
-                ))),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(range, spelling))),
                 ..CompletionItem::default()
             });
         }
+    }
+    if qualified.is_some() {
+        return items;
     }
     for name in highlight::KEYWORDS
         .iter()
@@ -81,6 +92,34 @@ pub(super) fn completion(document: &mut OpenDocument, position: Position) -> Vec
     items
 }
 
+pub(super) fn operand_completion(
+    document: &mut OpenDocument,
+    offset: usize,
+    prefix: &str,
+    range: Range,
+    members: &[&str],
+) -> Vec<CompletionItem> {
+    document
+        .syntax()
+        .index
+        .visible_at(offset)
+        .into_iter()
+        .filter(|definition| {
+            definition.name.starts_with(prefix) && !members.contains(&definition.name.as_str())
+        })
+        .map(|definition| CompletionItem {
+            label: definition.name.clone(),
+            kind: Some(completion_kind(definition.kind)),
+            detail: Some(definition.detail.clone()),
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
+                range,
+                definition.name.clone(),
+            ))),
+            ..CompletionItem::default()
+        })
+        .collect()
+}
+
 pub(super) fn definition(
     document: &mut OpenDocument,
     uri: &Uri,
@@ -96,6 +135,26 @@ pub(super) fn definition(
     }
     let span = document.syntax().index.definition_at(offset)?.selection;
     Some(Location::new(uri.clone(), document.text.range(span)))
+}
+
+pub(super) fn hover_with_context(
+    document: &mut OpenDocument,
+    position: Position,
+    context: &crate::compiler::CompileContext,
+) -> Option<Hover> {
+    let mut hover = hover(document, position)?;
+    let offset = document.text.offset(position)?;
+    let definition = document.syntax().index.definition_at(offset).cloned();
+    if let Some(definition) = definition
+        && matches!(definition.kind, Kind::Binding | Kind::Space)
+        && let Some(ty) = super::paths::binding_type(document, definition.selection, context)
+    {
+        hover.contents = HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: format!("```msync\n{ty} {}\n```", definition.name),
+        });
+    }
+    Some(hover)
 }
 
 pub(super) fn hover(document: &mut OpenDocument, position: Position) -> Option<Hover> {
@@ -321,13 +380,16 @@ fn symbol_kind(kind: Kind) -> SymbolKind {
 }
 
 fn protected(source: &str, offset: usize) -> bool {
-    highlight::token_spans(&source[..offset])
-        .last()
+    highlight::token_spans(source)
+        .iter()
+        .find(|token| token.span.start < offset && offset <= token.span.end)
         .is_some_and(|token| {
             matches!(
                 token.kind,
                 TokenKind::String | TokenKind::Comment | TokenKind::Selector
-            )
+            ) && (offset < token.span.end
+                || token.kind != TokenKind::String
+                || !source[token.span.start..token.span.end].ends_with('"'))
         })
 }
 
@@ -360,19 +422,33 @@ fn completion_start(source: &str, offset: usize) -> usize {
 }
 
 fn namespace_completion(document: &mut OpenDocument, offset: usize) -> Option<Vec<CompletionItem>> {
-    let start = word_start(&document.text.source, offset);
-    let word = document.text.source[start..offset].to_owned();
-    let (namespace, prefix) = word.rsplit_once("::")?;
-    // Retain established fully-qualified completion labels for the legacy API.
+    let (start, namespace, prefix_start) = namespace_prefix(&document.text.source, offset)?;
+    let prefix = document.text.source[prefix_start..offset].to_owned();
+    let namespace = namespace.as_str();
+    // Legacy range aliases retain their fully qualified labels, but whitespace
+    // around the actual operators has exactly the same semantics.
     if matches!(namespace, "$view" | "views" | "ranges") {
-        return None;
+        let qualified = format!("{namespace}::{prefix}");
+        let range = document.text.range(Span { start, end: offset });
+        return Some(
+            highlight::RANGE_ADAPTORS
+                .iter()
+                .filter(|name| name.starts_with(&qualified))
+                .map(|name| CompletionItem {
+                    label: (*name).into(),
+                    kind: Some(CompletionItemKind::FUNCTION),
+                    detail: Some(builtin_detail(name)),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
+                        range,
+                        (*name).into(),
+                    ))),
+                    ..CompletionItem::default()
+                })
+                .collect(),
+        );
     }
-    let qualified = namespace.starts_with("$std");
-    let replacement = if qualified {
-        start
-    } else {
-        start + namespace.len() + 2
-    };
+    let qualified = namespace == "$std" || namespace.starts_with("$std::");
+    let replacement = if qualified { start } else { prefix_start };
     let range = document.text.range(Span {
         start: replacement,
         end: offset,
@@ -403,7 +479,7 @@ fn namespace_completion(document: &mut OpenDocument, offset: usize) -> Option<Ve
             return Some(
                 standard_library()
                     .iter()
-                    .filter(|module| module.name.starts_with(prefix))
+                    .filter(|module| module.name.starts_with(&prefix))
                     .map(|module| {
                         item(
                             module.name,
@@ -419,7 +495,7 @@ fn namespace_completion(document: &mut OpenDocument, offset: usize) -> Option<Ve
                 highlight::RANGE_ADAPTORS
                     .iter()
                     .filter_map(|name| name.strip_prefix("$std::ranges::"))
-                    .filter(|name| name.starts_with(prefix))
+                    .filter(|name| name.starts_with(&prefix))
                     .map(|name| {
                         item(
                             name,
@@ -436,7 +512,7 @@ fn namespace_completion(document: &mut OpenDocument, offset: usize) -> Option<Ve
         return Some(
             module
                 .definitions()
-                .filter(|definition| definition.name.starts_with(prefix))
+                .filter(|definition| definition.name.starts_with(&prefix))
                 .map(|definition| {
                     item(
                         &definition.name,
@@ -450,7 +526,7 @@ fn namespace_completion(document: &mut OpenDocument, offset: usize) -> Option<Ve
     Some(
         members?
             .into_iter()
-            .filter(|definition| definition.name.starts_with(prefix))
+            .filter(|definition| definition.name.starts_with(&prefix))
             .map(|definition| {
                 item(
                     &definition.name,
@@ -460,6 +536,53 @@ fn namespace_completion(document: &mut OpenDocument, offset: usize) -> Option<Ve
             })
             .collect(),
     )
+}
+
+fn namespace_prefix(source: &str, offset: usize) -> Option<(usize, String, usize)> {
+    let separator = source[..offset].rfind("::")?;
+    let suffix = &source[separator + 2..offset];
+    if suffix.contains(['\n', '\r']) {
+        return None;
+    }
+    let prefix_start = separator + 2 + suffix.len() - suffix.trim_start().len();
+    if !source[prefix_start..offset].chars().all(name_character) {
+        return None;
+    }
+    let start = qualified_word_start(source, separator);
+    let namespace: String = source[start..separator].split_whitespace().collect();
+    (!namespace.is_empty()).then_some((start, namespace, prefix_start))
+}
+
+fn name_character(ch: char) -> bool {
+    ch.is_alphanumeric() || matches!(ch, '_' | '-' | '.')
+}
+
+fn qualified_word_start(source: &str, end: usize) -> usize {
+    let mut cursor = end;
+    loop {
+        cursor = source[..cursor].trim_end_matches([' ', '\t']).len();
+        let name_end = cursor;
+        while let Some(ch) = source[..cursor]
+            .chars()
+            .next_back()
+            .filter(|ch| name_character(*ch))
+        {
+            cursor -= ch.len_utf8();
+        }
+        if name_end == cursor {
+            return cursor;
+        }
+        let gap = source[..cursor].trim_end_matches([' ', '\t']).len();
+        if source[..gap].ends_with("::") {
+            cursor = gap - 2;
+        } else {
+            return if source[..gap].ends_with('$') {
+                gap - 1
+            } else {
+                cursor
+            };
+        }
+    }
 }
 
 fn library_uri(module: &str) -> Uri {
@@ -560,8 +683,8 @@ pub(super) fn signature_help(
         .rev()
         .find(|(delimiter, _, _)| *delimiter == '(')?;
     let end = source[..open].trim_end().len();
-    let start = word_start(source, end);
-    let callee = source[start..end].to_owned();
+    let start = qualified_word_start(source, end);
+    let callee: String = source[start..end].split_whitespace().collect();
     let index = &document.syntax().index;
     let definition = if let Some((namespace, member)) = callee.rsplit_once("::") {
         if let Some(module) = index.library_namespace_at(namespace, offset) {
@@ -706,6 +829,32 @@ mod tests {
         assert!(
             matches!(codex.text_edit.as_ref(), Some(CompletionTextEdit::Edit(edit)) if edit.new_text == "codex" && edit.range.start.character == 16)
         );
+    }
+
+    #[test]
+    fn unary_references_and_spaced_namespace_operators_complete_semantically() {
+        let mut document = OpenDocument::new("root := .codex\nselected := $ro".into(), 1);
+        let end = document.text.end();
+        assert!(
+            completion(&mut document, end)
+                .iter()
+                .any(|item| item.label == "$root")
+        );
+        for source in ["value := $ std :: string :: st", "value := $ view :: ta"] {
+            let mut document = OpenDocument::new(source.into(), 1);
+            let end = document.text.end();
+            let items = completion(&mut document, end);
+            assert!(
+                items
+                    .iter()
+                    .any(|item| item.label.ends_with(if source.contains("string") {
+                        "starts_with"
+                    } else {
+                        "take"
+                    })),
+                "{source}: {items:?}"
+            );
+        }
     }
 
     #[test]
