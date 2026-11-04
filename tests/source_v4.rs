@@ -297,8 +297,8 @@ fn named_arity_and_previous_stream_owner_labels_keep_their_original_source() {
 }
 
 #[test]
-fn qualified_quoted_members_map_errors_through_escaped_utf8_suffixes() {
-    let source = "f => $file\nf::\"th\\t字\" -> out\n";
+fn qualified_quoted_members_map_errors_through_doubled_utf8_delimiters() {
+    let source = "f => $file\nf::\"th\"\"字\" -> out\n";
     let errors = pipeline::compile_named(
         &mut Session::new(),
         source,
@@ -308,7 +308,7 @@ fn qualified_quoted_members_map_errors_through_escaped_utf8_suffixes() {
     )
     .unwrap_err();
     let span = errors[0].report.diagnostic.span;
-    assert_eq!(&source[span.start..span.end], "th\\t字");
+    assert_eq!(&source[span.start..span.end], "th\"\"字");
     let source = "p => $path::python()\np::stdot -> out\n";
     let errors = pipeline::compile_named(
         &mut Session::new(),
@@ -533,7 +533,7 @@ fn stored_expansion_traces_are_bounded_across_long_rebinding_chains() {
 
 #[test]
 fn expansion_labels_escape_controls_and_preserve_literal_join_semantics() {
-    let source = "bad := \"/root/file\\n\\tend\"\nbase/bad -> output\n";
+    let source = "bad := \"/root/file\n\tend\"\nbase/bad -> output\n";
     let errors = pipeline::compile_named(
         &mut Session::new(),
         source,

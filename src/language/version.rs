@@ -52,7 +52,9 @@ pub fn select_version(
     let mut reports = Vec::new();
     let mut code_seen = false;
     let mut offset = 0;
-    for physical in crate::syntax::physical_lines(source) {
+    while offset < source.len() {
+        let (end, _) = super::parser::logical_line_end(source, offset);
+        let physical = &source[offset..end];
         let line = physical.trim_end_matches(['\r', '\n']);
         let trimmed = line.trim_start();
         let Some(comment) = trimmed.strip_prefix('#') else {

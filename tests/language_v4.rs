@@ -18,7 +18,8 @@ program::exit_code -> exit_codex.txt
 verifier => $pwd::.venv/Scripts/python.exe(scripts/verify.py, "verify")
 verifier::pid -> pid
 "scucess" -> result.txt
-"你好\n世界" -> 中文.txt
+"你好
+世界" -> 中文.txt
 "# not a comment" -> $local::"a # file.txt"
 "" -> empty.txt
 "##;
@@ -82,7 +83,7 @@ fn canonical_format_is_idempotent_and_preserves_nested_regions() {
     assert!(!first.contains('\t'));
     assert!(first.contains("macro copy_codex(.codex, des):\n    global config\n"));
     assert!(first.contains("    .codex/agents -> $pwd::des/agents/.\n"));
-    assert!(first.contains("\"你好\\n世界\" -> 中文.txt\n"));
+    assert!(first.contains("\"你好\n世界\" -> 中文.txt\n"));
     assert_eq!(language::format(&first).unwrap(), first);
     assert_eq!(shape(EXAMPLE), shape(&first));
 }
@@ -334,7 +335,7 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
     fn arbitrary_utf8_literal_formatting_preserves_payload_and_is_idempotent(value in "[^\\x00\\r\\n]{0,80}") {
-        let literal = value.replace('\\', "\\\\").replace('"', "\\\"").replace('\t', "\\t");
+        let literal = value.replace('"', "\"\"");
         let source = format!("\"{literal}\" -> output\n");
         let canonical = language::format(&source).unwrap();
         prop_assert_eq!(shape(&source), shape(&canonical));

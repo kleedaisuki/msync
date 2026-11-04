@@ -211,7 +211,7 @@ consequence of making the type relation explicit.
 
 Explicit regex selection produces a Range; invalid-pattern diagnostics use the
 selector's pattern interval rather than the enclosing expression span. Quoted
-path/literal source maps independently retain decoded Unicode/escape intervals,
+path/literal source maps independently retain Unicode and doubled-quote intervals,
 without reinterpreting string payloads as regex source.
 
 The `$pwd` member projection is shared by direct syntax and typed computed member

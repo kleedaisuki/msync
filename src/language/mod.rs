@@ -3,6 +3,7 @@
 //! The original `syntax::Script` API remains the flat v0.3 compatibility API.
 //! This frontend retains literal/path distinctions and explicit scheduling barriers.
 
+pub mod literal;
 mod parser;
 mod submission;
 mod version;
@@ -10,6 +11,7 @@ mod writer;
 
 use crate::syntax::{OperandSource, Span};
 
+pub(crate) use parser::logical_line_end;
 pub use parser::{parse, parse_recovering};
 pub use submission::{Submission, SubmissionBuffer};
 pub use version::{Version, select_version};

@@ -52,8 +52,8 @@ fn operators_and_comments_in_selectors_are_not_delimiters() {
 }
 
 #[test]
-fn quotes_support_windows_unicode_and_preserve_unknown_escapes() {
-    let source = r#""C:\\Users\\猫\\file #1.txt" -> "D:\\new folder\\file.txt""#;
+fn quotes_preserve_windows_unicode_and_backslashes_literally() {
+    let source = r#""C:\Users\猫\file #1.txt" -> "D:\new folder\file.txt""#;
     assert_eq!(
         kinds(source),
         vec![StatementKind::Copy {
@@ -73,10 +73,33 @@ fn quotes_support_windows_unicode_and_preserve_unknown_escapes() {
 }
 
 #[test]
-fn escaped_control_characters_roundtrip() {
-    let source = r#""a\n\t\r\"\\b" -> c"#;
+fn literal_control_spellings_and_doubled_quotes_roundtrip() {
+    let source = r#""a\n\t\r""\b" -> c"#;
+    assert_eq!(
+        kinds(source),
+        vec![StatementKind::Copy {
+            source: "a\\n\\t\\r\"\\b".into(),
+            destination: "c".into()
+        }]
+    );
     let formatted = format(source).unwrap();
     assert_eq!(kinds(source), kinds(&formatted));
+    assert_eq!(format(&formatted).unwrap(), formatted);
+}
+
+#[test]
+fn actual_multiline_operand_controls_roundtrip_without_source_escapes() {
+    let value = "first\nsecond\r\nthird\tcolumn";
+    let source = format!("\"{value}\" -> output\n");
+    assert_eq!(
+        kinds(&source),
+        vec![StatementKind::Copy {
+            source: value.into(),
+            destination: "output".into()
+        }]
+    );
+    let formatted = format(&source).unwrap();
+    assert_eq!(kinds(&formatted), kinds(&source));
     assert_eq!(format(&formatted).unwrap(), formatted);
 }
 
@@ -391,8 +414,9 @@ proptest! {
     #[test]
     fn formatter_preserves_arbitrary_quoted_operands(left in ".{1,100}", right in ".{1,100}") {
         fn quoted(value: &str) -> String {
-            format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\r', "\\r").replace('\t', "\\t"))
+            format!("\"{}\"", value.replace('"', "\"\""))
         }
+
         let source = format!("{} -> {} # generated\n", quoted(&left), quoted(&right));
         let formatted = format(&source).unwrap();
         prop_assert_eq!(kinds(&source), kinds(&formatted));

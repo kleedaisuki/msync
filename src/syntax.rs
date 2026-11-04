@@ -94,7 +94,7 @@ pub struct Operands {
     pub right: OperandSource,
 }
 
-/// Maps semantic operand byte intervals back to original source, including escapes.
+/// Maps semantic operand bytes back to their source, including doubled quotes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OperandSource {
     pub span: Span,
@@ -103,6 +103,13 @@ pub struct OperandSource {
 }
 
 impl OperandSource {
+    pub(crate) fn verbatim(span: Span, content: Span) -> Self {
+        Self {
+            span,
+            content,
+            decoded_offsets: None,
+        }
+    }
     pub(crate) fn mapped(span: Span, content: Span, decoded_offsets: Vec<usize>) -> Self {
         Self {
             span,
@@ -167,13 +174,11 @@ pub fn parse_rich(source: &str) -> Result<Script, Vec<Report>> {
     let mut script = Script::default();
     let mut diagnostics = Vec::new();
     let mut offset = 0;
-    for line in source.split_inclusive('\n') {
-        let line = line.trim_end_matches(['\r', '\n']);
+    while offset < source.len() {
+        let (end, _) = crate::language::logical_line_end(source, offset);
+        let line = source[offset..end].trim_end_matches(['\r', '\n']);
         parse_line(line, offset, &mut script, &mut diagnostics);
-        // Include the original line terminator in the next statement's span.
-        offset += source[offset..]
-            .find('\n')
-            .map_or(line.len(), |index| index + 1);
+        offset = end;
     }
     if diagnostics.is_empty() {
         Ok(script)
@@ -217,22 +222,31 @@ fn scan_line(line: &str, offset: usize) -> Result<LineScan, Report> {
         operators: Vec::new(),
         comment: None,
     };
-    let mut quote = None;
     let mut selector = None;
     let mut escaped = false;
     let mut character_class = false;
     let mut index = 0;
     while index < bytes.len() {
         let byte = bytes[index];
-        if quote.is_some() {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == b'"' {
-                quote = None;
+        if byte == b'"' && selector.is_none() {
+            let token =
+                crate::language::literal::scan_string(line, index).expect("quote begins a String");
+            if !token.terminated {
+                return Err(error(
+                    "unterminated quoted operand",
+                    offset + index,
+                    offset + index + 1,
+                )
+                .label(
+                    Span {
+                        start: offset + line.len(),
+                        end: offset + line.len(),
+                    },
+                    "insert closing quote here",
+                )
+                .help("Close the operand with a double quote; double an embedded quote."));
             }
-            index += 1;
+            index = token.span.end;
             continue;
         }
         if selector.is_some() {
@@ -251,7 +265,6 @@ fn scan_line(line: &str, offset: usize) -> Result<LineScan, Report> {
             continue;
         }
         match byte {
-            b'"' => quote = Some(index),
             b'<' => selector = Some(index),
             b'#' if index == 0 || bytes[index - 1].is_ascii_whitespace() => {
                 scan.comment = Some(index);
@@ -265,21 +278,6 @@ fn scan_line(line: &str, offset: usize) -> Result<LineScan, Report> {
             }
         }
         index += 1;
-    }
-    if let Some(start) = quote {
-        return Err(error(
-            "unterminated quoted operand",
-            offset + start,
-            offset + start + 1,
-        )
-        .label(
-            Span {
-                start: offset + line.len(),
-                end: offset + line.len(),
-            },
-            "insert closing quote here",
-        )
-        .help("Close the operand with a double quote; escape embedded quotes as \\\"."));
     }
     if let Some(start) = selector {
         let end = recovery_operand_end(line, start);
@@ -422,58 +420,22 @@ fn operand(raw: &str, offset: usize) -> Result<(String, OperandSource), Report> 
             },
         ));
     }
-    let mut decoded = String::with_capacity(value.len() - 2);
-    let mut decoded_offsets = Vec::with_capacity(value.len());
-    let mut chars = value[1..].char_indices();
-    while let Some((index, ch)) = chars.next() {
-        if ch == '"' {
-            if index + 2 != value.len() {
-                return Err(error(
-                    "unexpected text after quoted operand",
-                    start + index + 2,
-                    end,
-                ));
-            }
-            if decoded.is_empty() {
-                return Err(error("expected a non-empty operand", start, end));
-            }
-            decoded_offsets.push(start + index + 1);
-            return Ok((
-                decoded,
-                OperandSource {
-                    span: Span { start, end },
-                    content: Span {
-                        start: start + 1,
-                        end: end - 1,
-                    },
-                    decoded_offsets: Some(decoded_offsets),
-                },
-            ));
-        }
-        let before = decoded.len();
-        if ch != '\\' {
-            decoded.push(ch);
-            decoded_offsets.extend((0..ch.len_utf8()).map(|byte| start + index + 1 + byte));
-            continue;
-        }
-        match chars.next().map(|(_, ch)| ch) {
-            Some('"') => decoded.push('"'),
-            Some('\\') => decoded.push('\\'),
-            Some('n') => decoded.push('\n'),
-            Some('r') => decoded.push('\r'),
-            Some('t') => decoded.push('\t'),
-            Some(ch) => {
-                decoded.push('\\');
-                decoded.push(ch);
-            }
-            None => return Err(error("unterminated escape", start, end)),
-        }
-        decoded_offsets.extend(std::iter::repeat_n(
-            start + index + 1,
-            decoded.len() - before,
+    let token = crate::language::literal::scan_string(value, 0).expect("quoted operand");
+    if !token.terminated {
+        return Err(error("unterminated quoted operand", start, end));
+    }
+    if token.span.end != value.len() {
+        return Err(error(
+            "unexpected text after quoted operand",
+            start + token.span.end,
+            end,
         ));
     }
-    Err(error("unterminated quoted operand", start, end))
+    let (decoded, site) = crate::language::literal::decode_string(value, token, start);
+    if decoded.is_empty() {
+        return Err(error("expected a non-empty operand", start, end));
+    }
+    Ok((decoded, site))
 }
 
 fn error(message: &str, start: usize, end: usize) -> Report {
@@ -535,18 +497,7 @@ pub(crate) fn write_operand(output: &mut String, value: &str) {
         output.push_str(value);
         return;
     }
-    output.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => output.push_str("\\\""),
-            '\\' => output.push_str("\\\\"),
-            '\n' => output.push_str("\\n"),
-            '\r' => output.push_str("\\r"),
-            '\t' => output.push_str("\\t"),
-            _ => output.push(ch),
-        }
-    }
-    output.push('"');
+    crate::language::literal::write_string(output, value);
 }
 
 /// Render a UTF-8-safe line/column diagnostic, including malformed external spans.

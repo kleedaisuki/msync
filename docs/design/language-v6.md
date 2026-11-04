@@ -177,7 +177,7 @@ structured parser no longer manufactures a separate qualified-path encoding.
 A quoted operand remains a String in the AST; the selection capability decides
 how a Scope supplies path context. Likewise
 `"C:\Users\STONE\.codex"/codex.prompt` is a Join with a String left operand,
-not one malformed quoted token. Existing quote escape semantics are unchanged.
+not one malformed quoted token.
 
 Slash composes path fragments below selection in precedence. Selection and
 slash each associate left; unary references bind to their own operand before
@@ -194,3 +194,26 @@ boundaries: the slashes or double colons inside `ssh://[::1]/root/file` and
 Reference, Select and Join own the actual `$`, `::` and `/` token bytes.
 `tests/language_v072.rs` exercises these rules alongside the existing frontend
 formatting/property corpus.
+
+## Literal String contents (unreleased)
+
+Ordinary double-quoted Strings preserve their contents literally. Backslashes
+have no escape meaning: `"C:\Users\STONE\target"`, `"\n"` and `"\t"` contain
+the written backslash bytes, not substituted control characters. There is no
+raw-string prefix, escape-string prefix, path-dependent decoding, or compatibility
+auto-detection. This is an intentional source-language correction; compiled
+String values and the typed IR retain their existing representation.
+
+An embedded double quote is represented by doubling it: `"a""b"` has the value
+`a"b`. Comments, path operators and parentheses inside a String remain data.
+Actual newline, carriage-return and tab characters can occur in the content;
+logical statement scanning retains multiline Strings without interpreting their
+interior indentation as block structure. The formatter serializes the same
+literal bytes and doubles embedded quotes, preserving semantic values and
+formatting idempotence without inventing escape sequences.
+
+The shared `language::literal` scanner owns quote boundaries for the parser and
+editor. Decoded operand intervals map doubled quotes and UTF-8 bytes back to the
+original source, so downstream diagnostics do not have to reconstruct spelling.
+`tests/literal_strings.rs` exercises Windows-style text, quote boundaries,
+multiline formatting and byte-accurate operand provenance.

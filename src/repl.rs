@@ -133,12 +133,12 @@ fn repl_inner(options: &Args) -> CliResult {
         if trimmed.is_empty() && !pending.is_pending() {
             continue;
         }
-        if matches!(trimmed, "/quit" | "/exit" | ":quit" | ":q") {
+        if !pending.in_string() && matches!(trimmed, "/quit" | "/exit" | ":quit" | ":q") {
             pending.cancel();
             return finish_repl(&mut state, true, options.color);
         }
         let command_line = line.trim_start().trim_end_matches(['\r', '\n']);
-        let result = if is_repl_command(command_line) {
+        let result = if !pending.in_string() && is_repl_command(command_line) {
             if pending.is_pending()
                 && command_line
                     .split_whitespace()
