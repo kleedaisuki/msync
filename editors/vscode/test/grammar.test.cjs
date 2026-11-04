@@ -46,13 +46,13 @@ test('declarations, parameters, calls and range adapters use theme-standard scop
     hasScope('files | views::filter(keep) | ranges::empty', 'filter', 'support.function.range.msync');
     hasScope('files | views::all', 'all', 'support.function.range.msync');
     hasScope('files | views::take(32)', '32', 'constant.numeric.count.msync');
-    hasScope('items | $view::filter(present)', '$view', 'entity.name.namespace.msync');
+    hasScope('items | $view::filter(present)', 'view', 'entity.name.namespace.msync');
     hasScope('items | $view::filter(present)', 'filter', 'support.function.range.msync');
     hasScope('$view::single(true)', 'single', 'support.function.range.msync');
 });
 
 test('nested scopes and scoped calls retain native namespace and function roles', () => {
-    hasScope('config := $wsl::codex(config.toml)', '$wsl', 'entity.name.namespace.msync');
+    hasScope('config := $wsl::codex(config.toml)', 'wsl', 'entity.name.namespace.msync');
     hasScope('config := $wsl::codex(config.toml)', 'codex', 'entity.name.function.msync');
     hasScope('config := ($wsl::project)::codex(config.toml)', 'project', 'variable.other.readwrite.msync');
     hasScope('config := ($wsl::project)::codex(config.toml)', 'codex', 'entity.name.function.msync');
@@ -66,7 +66,7 @@ test('ordered range punctuation does not absorb booleans, calls, paths or regex 
     hasScope(line, ']', 'punctuation.section.brackets.end.msync');
     hasScope(line, '可莉🌟', 'string.quoted.double.msync');
     hasScope(line, 'true', 'constant.language.boolean.msync');
-    hasScope(line, '$local', 'entity.name.namespace.msync');
+    hasScope(line, 'local', 'entity.name.namespace.msync');
     hasScope(line, 'two words', 'string.quoted.double.msync');
     hasScope(line, 'codex', 'entity.name.function.msync');
     hasScope(line, 'any', 'entity.name.function.msync');
@@ -101,7 +101,7 @@ test('booleans, logical operators, all controls and lexical bindings are recogni
         hasScope(`${word} item:`, word, 'keyword.control.msync');
     }
     hasScope('result = true', 'result', 'variable.other.readwrite.msync');
-    hasScope('$pwd::pwd/input', '$pwd', 'entity.name.namespace.msync');
+    hasScope('$pwd::pwd/input', 'pwd', 'entity.name.namespace.msync');
 });
 
 test('quoted strings and regular-expression classes shield punctuation', () => {
@@ -181,7 +181,7 @@ test('every compiler-tooling range spelling has native namespace/function scopes
     for (const spelling of spellings) {
         const pieces = spelling.split('::');
         const name = pieces.pop();
-        const namespace = pieces.join('::');
+        const namespace = pieces.at(-1).replace(/^\$/, '');
         hasScope(`items | ${spelling}`, namespace, 'entity.name.namespace.msync');
         hasScope(`items | ${spelling}`, name, 'support.function.range.msync');
     }
@@ -193,12 +193,44 @@ test('explicit namespaces, source natives and standard libraries retain native r
     hasScope('native exists(path) -> Bool = "fs.exists"', 'native', 'storage.type.function.msync');
     hasScope('native exists(path) -> Bool = "fs.exists"', 'exists', 'entity.name.function.msync');
     hasScope('native exists(path) -> Bool = "fs.exists"', 'path', 'variable.parameter.msync');
-    hasScope('items | $std::ranges::filter(present)', '$std::ranges', 'entity.name.namespace.msync');
+    hasScope('items | $std::ranges::filter(present)', 'ranges', 'entity.name.namespace.msync');
     hasScope('items | $std::ranges::filter(present)', 'filter', 'support.function.range.msync');
-    hasScope('if $std::fs::is_directory(input):', '$std', 'entity.name.namespace.msync');
+    hasScope('if $std::fs::is_directory(input):', 'std', 'entity.name.namespace.msync');
     hasScope('if $std::fs::is_directory(input):', 'fs', 'entity.name.namespace.msync');
     hasScope('if $std::fs::is_directory(input):', 'is_directory', 'entity.name.function.msync');
     for (const word of ['scope', 'native']) {
         assert.ok(!scopes(`root/${word}/file -> output`, word).some(scope => scope.startsWith('keyword.')));
     }
+});
+
+test('lookup, qualification and composition operators have independent theme roles', () => {
+    for (const line of [
+        'copy($local, .codex/codex.prompt)',
+        '"C:\\Users\\STONE\\.codex"/codex.prompt',
+        '$local::.codex/codex.prompt',
+        '($local)::("C:\\Users\\STONE\\.codex" / codex.prompt)',
+        '$std::ranges::filter(keep)',
+    ]) {
+        const tokens = grammar.tokenizeLine(line, textmate.INITIAL).tokens;
+        const pieces = tokens.map(token => ({ text: line.slice(token.startIndex, token.endIndex), scopes: token.scopes }));
+        const outsideStrings = pieces.filter(piece => !piece.scopes.includes('string.quoted.double.msync'));
+        for (const piece of outsideStrings) {
+            if (piece.text.includes('$') || piece.text.includes('::') || piece.text.includes('/')) {
+                assert.ok(['$', '::', '/'].includes(piece.text), JSON.stringify(piece));
+                assert.ok(piece.scopes.includes('keyword.operator.msync'), JSON.stringify(piece));
+                assert.ok(!piece.scopes.includes('entity.name.namespace.msync'), JSON.stringify(piece));
+            }
+        }
+    }
+    hasScope('copy($local, .codex/codex.prompt)', 'local', 'entity.name.namespace.msync');
+    hasScope('"C:\\Users\\STONE\\.codex"/codex.prompt', 'Users', 'string.quoted.double.msync');
+    hasScope('$local::root/<[a/$:]+>', '[a/$:]', 'constant.other.character-class.regexp.msync');
+    hasScope('root => ssh://user@host/path', 'ssh://', 'string.unquoted.endpoint.msync');
+});
+
+test('editor word selection keeps operators separate from filenames and namespaces', () => {
+    const configuration = require('../language-configuration.json');
+    const words = new RegExp(configuration.wordPattern, 'g');
+    assert.deepEqual('$local::.codex/codex.prompt'.match(words), ['local', '.codex', 'codex.prompt']);
+    assert.deepEqual('$std::ranges::filter(可莉🌟)'.match(words), ['std', 'ranges', 'filter', '可莉🌟']);
 });

@@ -57,5 +57,6 @@
   },
   "folding": {
     "offSide": true
-  }
+  },
+  "wordPattern": "[^\\s\"(),\\[\\]<>|=:$\\/\\\\]+"
 }
