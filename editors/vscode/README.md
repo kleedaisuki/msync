@@ -9,12 +9,12 @@ negotiated with the server; the extension does not reimplement the compiler.
 ## Install and try
 
 Requires VS Code 1.91 or newer, Node/npm for development, and msync on PATH.
-Release users do not need Node/npm: download `msync-language-0.7.0.vsix` and
+Release users do not need Node/npm: download `msync-language-0.7.2.vsix` and
 `SHA256SUMS` from the same msync release, verify the VSIX's checksum, then use
 **Extensions: Install from VSIX**, or:
 
 ```sh
-code --install-extension msync-language-0.7.0.vsix
+code --install-extension msync-language-0.7.2.vsix
 ```
 
 The extension does not bundle the msync executable; install the matching platform
@@ -40,9 +40,10 @@ The prepublish hook bundles the runtime client and protocol libraries with
 `esbuild`, keeping the native grammar and third-party license notices beside
 the bundle. The VSIX does not need a `node_modules` tree at runtime.
 
-Set the user/machine setting below if msync is not on PATH, then reload the
-window. This is an executable path, not a shell command; spaces do not need
-shell quoting:
+Set the user/machine setting below if msync is not on PATH. Changes restart the
+server automatically; **msync: Restart Language Server** also reconnects without
+reloading the window. Startup errors offer **Open Settings**. This is an executable
+path, not a shell command; spaces do not need shell quoting:
 
 ```json
 {
@@ -59,6 +60,16 @@ by the extension. Server-path configuration is machine-scoped, not accepted from
 an untrusted workspace setting.
 
 ## Language editing
+
+- `$` is a unary lookup operator; `::` qualifies a member/path and `/` composes
+  paths. Each has its own operator scope rather than coloring an entire
+  `$local::directory/file` expression as one namespace. Quoted strings, URI
+  endpoints and regex selector bodies keep their literal coloring. Word selection
+  and completion replacement keep operators separate from names.
+- With the matching 0.7.2 server, `$local::` and local endpoint aliases complete
+  files and directories in the selected local context. Filename completions
+  carry precise replacement ranges and insert quoted literal operands, keeping
+  real filenames independent of lexical bindings with the same spelling.
 
 - All 0.6 control/declaration words, boolean and comparison operators, range
   pipelines, function names/parameters, namespaces, string escapes, selectors
@@ -115,19 +126,21 @@ Every run isolates HOME, temporary files, editor profiles, extensions and its
 workspace below the repository `.temp` directory before loading the official
 runner. It records the frozen server's SHA-256, host version, phases and output
 logs. The suite checks real diagnostics, clearing after an edit, formatting,
-range completion, semantic tokens and UTF-16 ranges. A transfer/delete fixture
+range and filesystem completion (including applying the selected file edit),
+operator semantic tokens and UTF-16 ranges. A transfer/delete fixture
 must leave its output absent and its victim unchanged throughout. Failures
 retain diagnostic, configuration and active-extension details alongside the
 host logs. Xvfb runs exercise the real host but are not a human visual review.
 
-The real-host gate passed on 2026-10-31 with VS Code **1.144.0**, official
-`@vscode/test-electron` **3.1.0**, and the production esbuild bundle. The real
-msync process reported the bool type error, cleared it after an edit, supplied
-14 formatting edits, completed `views::filter`, and supplied 29 semantic tokens
-including the exact Unicode string `"可莉🌟"`, function and parameter roles.
-Both absolute transfer outputs remained absent and the delete victim's bytes
-were unchanged. This was an automated Xvfb Extension Development Host session,
-not a mocked editor or a human assessment of colors and layout.
+The real-host journey passed on 2026-11-04 with VS Code **1.144.0** and the
+production esbuild bundle. It applied root-file, spaced-filename and hidden
+`.codex/` directory/file completions through VS Code's actual completion edits,
+reported and cleared a bool diagnostic, formatted the document, and navigated
+both lexical symbols and embedded standard-library sources. All **116 semantic
+tokens** had valid UTF-16 ranges, including independent `$`, `::` and `/`
+operators. **msync: Restart Language Server** reconnected and retained completion.
+Transfer outputs remained absent and the delete victim unchanged throughout.
+This was an automated Xvfb Extension Development Host session, not a mocked editor.
 
 Runtime dependencies are locked. As of 2026-10-31, the official latest stable
 `vscode-languageclient` is 11.0.0 and still depends on `minimatch ^10.2.6`.
