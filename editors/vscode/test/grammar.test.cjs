@@ -73,7 +73,7 @@ test('ordered range punctuation does not absorb booleans, calls, paths or regex 
     hasScope(line, 'false', 'constant.language.boolean.msync');
     hasScope('items := [root/<[>#]+\\.txt>] | $view::take(1)', '[>#]', 'constant.other.character-class.regexp.msync');
     hasScope('items := [root/<[>#]+\\.txt>] | $view::take(1)', 'take', 'support.function.range.msync');
-    hasScope('items := [tcp://[::1]:80]', 'tcp://', 'string.unquoted.endpoint.msync');
+    hasScope('items := [tcp://[::1]:80]', '[::1]:80', 'string.unquoted.endpoint.msync');
     const endpoint = grammar.tokenizeLine('items := [tcp://[::1]:80]', textmate.INITIAL).tokens;
     assert.ok(endpoint.at(-1).scopes.includes('punctuation.section.brackets.end.msync'));
 });
@@ -111,7 +111,7 @@ test('quoted strings and regular-expression classes shield punctuation', () => {
     hasScope(line, '# note', 'comment.line.number-sign.msync');
     hasScope('text = "a\\n -> # b"', '# b', 'string.quoted.double.msync');
     hasScope('text = "a\\n -> # b"', '\\n', 'string.quoted.double.msync');
-    hasScope('remote => https://example.com/a?x=1#fragment', 'https://', 'string.unquoted.endpoint.msync');
+    hasScope('remote => https://example.com/a?x=1#fragment', 'example.com/a?x=1#fragment', 'string.unquoted.endpoint.msync');
 });
 
 test('comparisons and reserved-looking filename components are not regexes or controls', () => {
@@ -232,7 +232,7 @@ test('lookup, qualification and composition operators have independent theme rol
     hasScope('copy($local, .codex/codex.prompt)', 'local', 'entity.name.namespace.msync');
     hasScope('"C:\\Users\\STONE\\.codex"/codex.prompt', 'Users', 'string.quoted.double.msync');
     hasScope('$local::root/<[a/$:]+>', '[a/$:]', 'constant.other.character-class.regexp.msync');
-    hasScope('root => ssh://user@host/path', 'ssh://', 'string.unquoted.endpoint.msync');
+    hasScope('root => ssh://user@host/path', 'user@host/path', 'string.unquoted.endpoint.msync');
 });
 
 test('editor word selection keeps operators separate from filenames and namespaces', () => {
@@ -263,4 +263,41 @@ test('ordinary Strings preserve Windows backslashes and doubled quotes without C
     }
     hasScope(quoted, '""', 'constant.character.quote.msync');
     hasScope(quoted, '# actual comment', 'comment.line.number-sign.msync');
+});
+
+test('unquoted URI schemes, separators and atomic addresses have distinct native scopes', () => {
+    for (const uri of [
+        'ssh://forge', 'ssh://user@forge:2222/work/tree',
+        'http://example.test/a?x=1#fragment', 'https://example.test',
+        'tcp://127.0.0.1:8022', 'tcp://[::1]:8022',
+        'ssh://user@[2001:db8::1]:2222/work/tree',
+    ]) {
+        const separator = uri.indexOf('://');
+        const line = `remote := ${uri}`;
+        hasScope(line, uri.slice(0, separator), 'support.type.protocol.msync');
+        hasScope(line, '://', 'keyword.operator.protocol.msync');
+        hasScope(line, uri.slice(separator + 3), 'string.unquoted.endpoint.msync');
+        const tokens = grammar.tokenizeLine(line, textmate.INITIAL).tokens;
+        const endpoint = tokens.filter(token => token.scopes.includes('string.unquoted.endpoint.msync'));
+        assert.equal(endpoint.length, 1);
+        assert.equal(line.slice(endpoint[0].startIndex, endpoint[0].endIndex), uri.slice(separator + 3));
+    }
+    for (const line of ['value := "ssh://forge"', 'value := "tcp://[::1]:8022/path"']) {
+        const tokens = grammar.tokenizeLine(line, textmate.INITIAL).tokens;
+        assert.ok(tokens.some(token => token.scopes.includes('string.quoted.double.msync')));
+        assert.ok(!tokens.some(token => token.scopes.includes('support.type.protocol.msync')
+            || token.scopes.includes('keyword.operator.protocol.msync')
+            || token.scopes.includes('string.unquoted.endpoint.msync')));
+    }
+    hasScope('paths := root/<ssh://forge>', 'ssh://forge', 'string.regexp.msync');
+});
+
+test('custom semantic URI roles inherit theme types and native TextMate fallback scopes', () => {
+    const manifest = require('../package.json');
+    const roles = new Map(manifest.contributes.semanticTokenTypes.map(type => [type.id, type.superType]));
+    assert.equal(roles.get('protocol'), 'type');
+    assert.equal(roles.get('endpoint'), 'string');
+    const scopes = manifest.contributes.semanticTokenScopes.find(value => value.language === 'msync').scopes;
+    assert.deepEqual(scopes.protocol, ['support.type.protocol.msync']);
+    assert.deepEqual(scopes.endpoint, ['string.unquoted.endpoint.msync']);
 });

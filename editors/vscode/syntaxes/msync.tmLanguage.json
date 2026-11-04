@@ -111,8 +111,18 @@
       ]
     },
     "endpoints": {
-      "match": "[A-Za-z][A-Za-z0-9+.-]*://(?:\\[[^\\]\\s\"()]+\\]|[^\\s(),\"\\[\\]])+",
-      "name": "string.unquoted.endpoint.msync"
+      "match": "([A-Za-z][A-Za-z0-9+.-]*)(://)((?:\\[[^\\]\\s\"()]+\\]|[^\\s(),\"\\[\\]])+)",
+      "captures": {
+        "1": {
+          "name": "support.type.protocol.msync"
+        },
+        "2": {
+          "name": "keyword.operator.protocol.msync"
+        },
+        "3": {
+          "name": "string.unquoted.endpoint.msync"
+        }
+      }
     },
     "selectors": {
       "begin": "(?<![\\p{L}\\p{N}_.)\"\\]>])<(?![=\\s\"])",

@@ -60,6 +60,31 @@
         "command": "msync.restartLanguageServer",
         "title": "msync: Restart Language Server"
       }
+    ],
+    "semanticTokenTypes": [
+      {
+        "id": "protocol",
+        "superType": "type",
+        "description": "The protocol scheme of an unquoted endpoint URI, such as ssh or tcp."
+      },
+      {
+        "id": "endpoint",
+        "superType": "string",
+        "description": "The address portion of an unquoted endpoint URI, including its user, host, port and path."
+      }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "msync",
+        "scopes": {
+          "protocol": [
+            "support.type.protocol.msync"
+          ],
+          "endpoint": [
+            "string.unquoted.endpoint.msync"
+          ]
+        }
+      }
     ]
   },
   "scripts": {
