@@ -9,12 +9,12 @@ negotiated with the server; the extension does not reimplement the compiler.
 ## Install and try
 
 Requires VS Code 1.91 or newer, Node/npm for development, and msync on PATH.
-Release users do not need Node/npm: download `msync-language-0.7.2.vsix` and
+Release users do not need Node/npm: download `msync-language-0.7.3.vsix` and
 `SHA256SUMS` from the same msync release, verify the VSIX's checksum, then use
 **Extensions: Install from VSIX**, or:
 
 ```sh
-code --install-extension msync-language-0.7.2.vsix
+code --install-extension msync-language-0.7.3.vsix
 ```
 
 The extension does not bundle the msync executable; install the matching platform
@@ -66,13 +66,14 @@ an untrusted workspace setting.
   `$local::directory/file` expression as one namespace. Quoted strings, URI
   endpoints and regex selector bodies keep their literal coloring. Word selection
   and completion replacement keep operators separate from names.
-- With the matching 0.7.2 server, `$local::` and local endpoint aliases complete
+- With the matching 0.7.3 server, `$local::` and local endpoint aliases complete
   files and directories in the selected local context. Filename completions
-  carry precise replacement ranges and insert quoted literal operands, keeping
-  real filenames independent of lexical bindings with the same spelling.
+  carry precise replacement ranges and keep ordinary filenames as Path operands.
+  Names with spaces, syntax punctuation or a lexical-name collision are quoted
+  when necessary to select the actual filename rather than a binding.
 
 - All 0.6 control/declaration words, boolean and comparison operators, range
-  pipelines, function names/parameters, namespaces, string escapes, selectors
+  pipelines, function names/parameters, namespaces, literal Strings, selectors
   and comments use standard theme-compatible TextMate scopes.
 - The 0.6.5 vocabulary recognizes canonical builtin `$view::filter(...)` APIs,
   scope-qualified calls such as `$wsl::codex(config.toml)`, nested `::` expressions, ordered
@@ -89,8 +90,10 @@ an untrusted workspace setting.
   or a writable installation directory. `native` declarations expose the host
   boundary directly, while ordinary source functions show their implementation.
 - A regex selector is a path component, not a less-than comparison. Its character
-  classes and escapes shield `>` and `#`. Unfinished single-line input does not
-  color the rest of the file as a string or regex.
+  classes and escapes shield `>` and `#`. Unfinished selectors recover at the
+  next line. Quoted Strings preserve every backslash literally, including Windows
+  `\target` components; a quote inside a String is doubled (`"a""b"`). Strings
+  can span physical lines, which remain colored as String content until closing.
 - `#` toggles line comments; quotes, parentheses and range brackets can auto-close
   outside strings/comments. Block headers increase indentation, with indentation-based
   folding. Snippets cover functions, macros, conditions, both loop forms, ordered
@@ -103,8 +106,8 @@ an untrusted workspace setting.
 
 `npm test` loads the actual `vscode-textmate` engine and `vscode-oniguruma` WASM
 rather than approximating Oniguruma with JavaScript regexes. It checks scopes,
-escapes, selectors/comparisons, UTF-16 token coverage, incomplete editing and
-manifest/configuration consistency. Separate mocked-host tests exercise client
+literal backslashes, doubled quotes, multiline Strings, selectors/comparisons,
+UTF-16 token coverage, incomplete editing and manifest/configuration consistency. Separate mocked-host tests exercise client
 activation, executable paths containing spaces, document selection, failure
 messages and idempotent shutdown. End-to-end server protocol behavior also has
 Rust integration coverage; the mocked unit tests are not the native-host gate.
@@ -133,11 +136,14 @@ retain diagnostic, configuration and active-extension details alongside the
 host logs. Xvfb runs exercise the real host but are not a human visual review.
 
 The real-host journey passed on 2026-11-04 with VS Code **1.144.0** and the
-production esbuild bundle. It applied root-file, spaced-filename and hidden
-`.codex/` directory/file completions through VS Code's actual completion edits,
-reported and cleared a bool diagnostic, formatted the document, and navigated
-both lexical symbols and embedded standard-library sources. All **116 semantic
-tokens** had valid UTF-16 ranges, including independent `$`, `::` and `/`
+production esbuild bundle against **msync 0.7.3**. It applied root-file,
+spaced-filename, lexical-collision and hidden `.codex/` directory/file completions
+through VS Code's actual completion edits, reported and cleared a bool diagnostic, formatted the document, and navigated
+both lexical symbols and embedded standard-library sources. A real formatting
+edit preserved ordinary Windows backslashes, a trailing backslash, doubled quotes
+and multiline String contents; the Windows literal retained its exact String
+semantic token and had no diagnostics. All **116 semantic tokens** had valid
+UTF-16 ranges, including independent `$`, `::` and `/`
 operators. **msync: Restart Language Server** reconnected and retained completion.
 Transfer outputs remained absent and the delete victim unchanged throughout.
 This was an automated Xvfb Extension Development Host session, not a mocked editor.
