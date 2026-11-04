@@ -132,6 +132,14 @@ fn completion_edits_copy_actual_hidden_spaced_and_shadowed_files_without_remote_
             .find(|item| item["label"] == label && item["kind"] == 17)
             .unwrap_or_else(|| panic!("missing {label} for {prefix:?}: {items}"));
         assert_eq!(item["kind"], 17, "file completion kind: {item}");
+        if label == "codex.prompt" {
+            assert_eq!(
+                item["textEdit"]["newText"], "codex.prompt",
+                "ordinary filename must remain a Path operand"
+            );
+        } else if label == "two words.prompt" {
+            assert_eq!(item["textEdit"]["newText"], "\"two words.prompt\"");
+        }
         let edited = apply(prefix, item);
         let script = format!("{edited}\nselected -> result\n");
         fs::write(workspace.path().join("run.msync"), script).unwrap();
@@ -168,7 +176,7 @@ fn completion_edits_copy_actual_hidden_spaced_and_shadowed_files_without_remote_
             .iter()
             .find(|item| item["label"] == "codex.prompt")
             .unwrap();
-        assert!(apply(prefix, item).ends_with("$local::\"codex.prompt\""));
+        assert!(apply(prefix, item).ends_with("$local::codex.prompt"));
     }
     for prefix in [
         "scope config:\n    base := .codex\n    selected := base/",
@@ -303,5 +311,108 @@ fn hover_uses_compiler_types_and_semantic_tokens_keep_operators_separate() {
         2
     );
     assert!(operators.contains(&"/"));
+    client.finish();
+}
+
+#[test]
+fn completion_within_literal_strings_preserves_full_paths_and_existing_delimiters() {
+    let temporary = Path::new(env!("CARGO_MANIFEST_DIR")).join(".temp");
+    fs::create_dir_all(&temporary).unwrap();
+    let workspace = tempfile::Builder::new()
+        .prefix("lsp-literal-paths-")
+        .tempdir_in(temporary)
+        .unwrap();
+    fs::create_dir(workspace.path().join("path dir")).unwrap();
+    fs::write(
+        workspace.path().join("path dir/codex.prompt"),
+        "literal completion bytes",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    for name in ["tail\\", "quoted\"file.prompt", "base\\leaf"] {
+        fs::write(workspace.path().join(name), "literal completion bytes").unwrap();
+    }
+    let mut client = lsp_client::Client::start(workspace.path());
+    client.request(1, "initialize", json!({"processId":null,"capabilities":{}}));
+    client.notify("initialized", json!({}));
+    let uri = url::Url::from_file_path(workspace.path().join("literal.msync"))
+        .unwrap()
+        .to_string();
+    client.notify(
+        "textDocument/didOpen",
+        json!({"textDocument":{"uri":uri,"languageId":"msync","version":1,"text":""}}),
+    );
+    let cases = [
+        (
+            "selected := $local::\"path dir/co",
+            "codex.prompt",
+            "\"path dir/codex.prompt\"",
+        ),
+        (
+            "selected := \"path dir/co",
+            "codex.prompt",
+            "\"path dir/codex.prompt\"",
+        ),
+        #[cfg(unix)]
+        ("selected := $local::\"tail\\", "tail\\", "\"tail\\\""),
+        #[cfg(unix)]
+        (
+            "selected := $local::\"quoted\"\"",
+            "quoted\"file.prompt",
+            "\"quoted\"\"file.prompt\"",
+        ),
+        #[cfg(unix)]
+        (
+            "base := other\nselected := $local::",
+            "base\\leaf",
+            "\"base\\leaf\"",
+        ),
+    ];
+    for (index, (prefix, label, expected)) in cases.into_iter().enumerate() {
+        replace(&mut client, &uri, index as i32 + 2, prefix);
+        let items = complete(&mut client, &uri, index as u64 + 2, prefix);
+        let item = items
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["label"] == label && item["kind"] == 17)
+            .unwrap_or_else(|| panic!("{prefix}: {items}"));
+        assert_eq!(item["textEdit"]["newText"], expected);
+        let edited = apply(prefix, item);
+        let script = format!("{edited}\n$local::selected -> result\n");
+        fs::write(workspace.path().join("run.msync"), script).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_msync"))
+            .args(["run", "run.msync"])
+            .current_dir(workspace.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{edited}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.path().join("result")).unwrap(),
+            "literal completion bytes"
+        );
+    }
+    let source = "selected := $local::\"path dir/codex\"";
+    replace(&mut client, &uri, 20, source);
+    let cursor = source.find("codex").unwrap() + 2;
+    let items = client.request(
+        20,
+        "textDocument/completion",
+        json!({"textDocument":{"uri":uri},"position":{"line":0,"character":cursor}}),
+    );
+    let item = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["label"] == "codex.prompt" && item["kind"] == 17)
+        .unwrap();
+    assert_eq!(
+        apply(source, item),
+        "selected := $local::\"path dir/codex.prompt\""
+    );
     client.finish();
 }

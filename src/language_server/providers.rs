@@ -389,7 +389,8 @@ fn protected(source: &str, offset: usize) -> bool {
                 TokenKind::String | TokenKind::Comment | TokenKind::Selector
             ) && (offset < token.span.end
                 || token.kind != TokenKind::String
-                || !source[token.span.start..token.span.end].ends_with('"'))
+                || crate::language::literal::scan_string(source, token.span.start)
+                    .is_some_and(|literal| !literal.terminated))
         })
 }
 
@@ -829,6 +830,15 @@ mod tests {
         assert!(
             matches!(codex.text_edit.as_ref(), Some(CompletionTextEdit::Edit(edit)) if edit.new_text == "codex" && edit.range.start.character == 16)
         );
+    }
+
+    #[test]
+    fn doubled_quotes_and_literal_backslashes_use_shared_string_boundaries() {
+        let mut unfinished = OpenDocument::new("text := \"unfinished\"\"".into(), 1);
+        let end = unfinished.text.end();
+        assert!(completion(&mut unfinished, end).is_empty());
+        let complete = "text := \"C:\\target\\\"";
+        assert!(!protected(complete, complete.len()));
     }
 
     #[test]

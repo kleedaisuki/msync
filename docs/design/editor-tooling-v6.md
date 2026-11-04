@@ -403,12 +403,22 @@ Directories include hidden entries and directory symlinks; absent directories
 are an ordinary incomplete edit, while actual filesystem read errors retain the
 path and operating-system error in the request response.
 
-Filesystem labels show native names; insertion always uses a quoted String
-basename and adds `/` for a folder. This is not cosmetic escaping: a selected
-file named `source` must not resolve a lexical binding `source`, and an actual
-file named `pwd` must not become `$pwd::pwd`. String operands preserve file
-identity for both path operators without per-entry compiler synthesis or growing
-reserved-name exceptions. Folder selection retriggers ordinary suggestions.
+Filesystem labels show native names. The literal-String follow-up emits an
+ordinary Path basename by default and adds `/` for a folder. Quoting is reserved
+for whitespace and real grammar/name-resolution necessities: a selected file
+named `source` must not resolve a lexical binding `source`, and an actual file
+named `pwd` must not become `$pwd::pwd`. Such ambiguous basenames use a String
+operand; `./source` is not a disambiguator because `/` still evaluates both
+operands. Folder selection retriggers ordinary suggestions.
+
+The parser, tolerant highlighter and completion share
+`language::literal::scan_string`/`decode_string`. Backslashes are literal bytes;
+there is no raw-prefix or C-escape language. A doubled quote represents an
+embedded quote, and physical newlines remain inside a single String token.
+Completion within an explicitly quoted path retains its full directory spelling,
+including a trailing backslash, and replaces an existing closing delimiter rather
+than duplicating it. The formatter uses the same literal writer. No drive-name
+heuristics, hidden tab replacement, or String-content warning is involved.
 
 Acceptance `lsp_operator_ux_v072` drives the real stdio server, applies its UTF-16
 text edits and runs the resulting source to check copied bytes. It covers String
