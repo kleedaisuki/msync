@@ -4,12 +4,34 @@ const vscode = require('vscode');
 const { LanguageClient } = require('vscode-languageclient/node');
 
 let client;
+let enabled = false;
+let lifecycle = Promise.resolve();
 
-async function activate(context) {
+function serialize(action) {
+    const next = lifecycle.then(action, action);
+    lifecycle = next;
+    return next;
+}
+
+function startupMessage(message) {
+    void vscode.window.showErrorMessage(message, 'Open Settings').then(action => {
+        if (action === 'Open Settings') {
+            return vscode.commands.executeCommand('workbench.action.openSettings', 'msync.serverPath');
+        }
+    });
+}
+
+async function stop() {
+    const running = client;
+    client = undefined;
+    if (running) await running.dispose();
+}
+
+async function start() {
     const configured = vscode.workspace.getConfiguration('msync').get('serverPath', 'msync');
     const command = typeof configured === 'string' ? configured.trim() : '';
     if (!command) {
-        void vscode.window.showErrorMessage('msync.serverPath is empty or not a string. Set it to the msync 0.6+ executable to enable language services.');
+        startupMessage('msync.serverPath is empty or not a string. Set it to the msync executable to enable language services.');
         return;
     }
     const candidate = new LanguageClient('msync', 'msync Language Server', {
@@ -24,28 +46,46 @@ async function activate(context) {
         ],
         outputChannelName: 'msync Language Server',
     });
-    client = candidate;
-    context.subscriptions.push(candidate);
     try {
         await candidate.start();
-        context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('msync-stdlib', {
-            provideTextDocumentContent(uri, token) {
-                return candidate.sendRequest('msync/stdlibSource', { uri: uri.toString() }, token);
-            },
-        }));
+        client = candidate;
     } catch (error) {
-        client = undefined;
+        await candidate.dispose();
         const detail = error instanceof Error ? error.message : String(error);
-        void vscode.window.showErrorMessage(`Cannot start msync language services: ${detail}. Install msync 0.6+ or configure msync.serverPath. Syntax highlighting remains available.`);
+        startupMessage(`Cannot start msync language services: ${detail}. Install msync or configure msync.serverPath, then use msync: Restart Language Server. Syntax highlighting remains available.`);
     }
 }
 
-async function deactivate() {
-    const running = client;
-    client = undefined;
-    if (running) {
-        await running.stop();
-    }
+function restart() {
+    return serialize(async () => {
+        if (!enabled) return;
+        await stop();
+        await start();
+    });
+}
+
+async function activate(context) {
+    enabled = true;
+    context.subscriptions.push(
+        vscode.commands.registerCommand('msync.restartLanguageServer', restart),
+        vscode.workspace.onDidChangeConfiguration(event => {
+            if (event.affectsConfiguration('msync.serverPath')) {
+                void restart().catch(error => startupMessage(`Cannot restart msync language services: ${error.message}`));
+            }
+        }),
+        vscode.workspace.registerTextDocumentContentProvider('msync-stdlib', {
+            provideTextDocumentContent(uri, token) {
+                if (!client) throw new Error('msync language server is not running. Use msync: Restart Language Server.');
+                return client.sendRequest('msync/stdlibSource', { uri: uri.toString() }, token);
+            },
+        }),
+    );
+    await restart();
+}
+
+function deactivate() {
+    enabled = false;
+    return serialize(stop);
 }
 
 module.exports = { activate, deactivate };

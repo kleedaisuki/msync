@@ -189,9 +189,133 @@ pub struct Lowered {
     pub source_modules: Vec<crate::object::SourceModule>,
 }
 
+/// Semantic information for editor queries. Inspecting a value never runs its
+/// native operations, launches a process, or opens a transport.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExpressionInfo {
+    pub ty: crate::types::Type,
+    /// Present only when the value has a statically known filesystem location.
+    /// Endpoint scopes denote their current directory; lexical scopes have none.
+    pub location: Option<Location>,
+}
+
+/// Completion capabilities synthesized from the selected receiver value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PathCompletionInfo {
+    pub location: Option<Location>,
+    pub members: &'static [&'static str],
+}
+
 impl Session {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn inspect_expression(
+        &self,
+        expression: &Expr,
+        context: &CompileContext,
+    ) -> Result<ExpressionInfo, Report> {
+        let inspect = || -> Result<ExpressionInfo, Failure> {
+            let value = resolve(expression, &self.scope, context)?;
+            let ty = value.ty();
+            let location = match value {
+                Value::Path(path) => Some(location(path, context, expression.span)?.0),
+                Value::Space(Space::Endpoint(backend)) => Some(Location {
+                    path: if backend == Backend::Local {
+                        context.pwd.to_string_lossy().into_owned()
+                    } else {
+                        ".".into()
+                    },
+                    backend,
+                }),
+                Value::Space(Space::Pwd) => Some(Location {
+                    backend: Backend::Local,
+                    path: context.pwd.to_string_lossy().into_owned(),
+                }),
+                Value::Space(Space::File) => context
+                    .source_file
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .map(|parent| Location {
+                        backend: Backend::Local,
+                        path: parent.to_string_lossy().into_owned(),
+                    }),
+                _ => None,
+            };
+            Ok(ExpressionInfo { ty, location })
+        };
+        inspect().map_err(|failure| {
+            failure
+                .locate(
+                    self.scope
+                        .source
+                        .clone()
+                        .unwrap_or_else(|| Source::new("<inspection>", "")),
+                )
+                .into_report()
+        })
+    }
+
+    /// Resolve a path-operator receiver once, retaining its actual intrinsic
+    /// members and projecting a static directory only when that operator admits it.
+    pub fn inspect_path_parent(
+        &self,
+        expression: &Expr,
+        operator: crate::types::OperatorTrait,
+        context: &CompileContext,
+    ) -> Result<PathCompletionInfo, Report> {
+        let inspect = || -> Result<PathCompletionInfo, Failure> {
+            let value = resolve(expression, &self.scope, context)?;
+            let members = match &value {
+                Value::Space(space) => intrinsic_members(space),
+                _ => &[],
+            };
+            let path = match (operator, value) {
+                (crate::types::OperatorTrait::Join, value) => {
+                    require_join_operand(&value, expression.span)?;
+                    match value {
+                        Value::Literal(_) | Value::Path(_) => {
+                            let path = path_fragment(value, expression.span)?;
+                            (!path.is_file).then_some(path)
+                        }
+                        _ => None,
+                    }
+                }
+                (crate::types::OperatorTrait::Select, Value::Space(space)) => {
+                    if !scope_has_directory_projection(&space) {
+                        None
+                    } else {
+                        match apply_scope_value(
+                            space,
+                            Value::Literal(Arc::from(".")),
+                            expression.span,
+                            context,
+                        )? {
+                            Value::Path(path) => Some(path),
+                            _ => None,
+                        }
+                    }
+                }
+                _ => None,
+            };
+            Ok(PathCompletionInfo {
+                location: path
+                    .map(|path| location(path, context, expression.span).map(|result| result.0))
+                    .transpose()?,
+                members,
+            })
+        };
+        inspect().map_err(|failure| {
+            failure
+                .locate(
+                    self.scope
+                        .source
+                        .clone()
+                        .unwrap_or_else(|| Source::new("<inspection>", "")),
+                )
+                .into_report()
+        })
     }
 
     pub fn runtime_slot_base(&self) -> usize {
@@ -524,7 +648,6 @@ impl Session {
             session: &mut candidate,
             program: hir::Program::default(),
             next_instruction: 0,
-            selectors: HashSet::new(),
             expansion: Vec::new(),
             calls: Vec::new(),
             source,
@@ -758,7 +881,6 @@ struct Lower<'a> {
     session: &'a mut Session,
     program: hir::Program,
     next_instruction: usize,
-    selectors: HashSet<String>,
     expansion: Vec<Span>,
     calls: Vec<(Arc<Macro>, SourceSpan)>,
     source: Arc<Source>,
@@ -1134,36 +1256,15 @@ impl Lower<'_> {
         let mut relocations = Vec::new();
         let source = match source_value {
             Value::Literal(text) => Input::Literal(text),
-            Value::Path(mut path) => {
-                let length = path.path.len();
-                let pattern = super::take_selector(&mut path.path, &mut self.selectors).map_err(|message| {
-                    Report::new(message, selector_site(source)).help("Use one final '/<regex>' component; selectors match complete entry names.")
-                })?;
-                if let Some(relocation) = &mut path.relocation {
-                    relocation.suffix.truncate(
-                        relocation
-                            .suffix
-                            .len()
-                            .saturating_sub(length - path.path.len()),
-                    );
-                }
-                if pattern.is_some()
-                    && matches!(path.backend, Some(Backend::Http { .. } | Backend::Path))
-                {
-                    return Err((Report::new(
-                        "selectors require a directory-capable source",
-                        source.span,
-                    )
-                    .help(
-                        "Select from a local, WSL or SSH directory, not an HTTP or PATH endpoint.",
-                    ))
-                    .into());
-                }
+            Value::Path(path) => {
                 let (location, relocation) = location(path, context, source.span)?;
                 if let Some(path) = relocation {
                     relocations.push((Slot::Source, path));
                 }
-                Input::File { location, pattern }
+                Input::File {
+                    location,
+                    pattern: None,
+                }
             }
             Value::Port(process, Port::Read(port)) => {
                 if matches!(port, ReadPort::Stdout | ReadPort::Stderr) {
@@ -1186,9 +1287,6 @@ impl Lower<'_> {
                 let mode = if mode == DestinationMode::Exact { path.mode } else { mode };
                 if matches!(path.backend, Some(Backend::Http { .. } | Backend::Path)) {
                     return Err((Report::new("HTTP(S) and PATH endpoints are read-only", qualifier_site(destination))).into());
-                }
-                if path.path.contains(['<', '>']) {
-                    return Err((Report::new("selectors are only allowed in the source", selector_site(destination))).into());
                 }
                 if mode == DestinationMode::ReplaceTree {
                     if path.path.ends_with("/.") || path.path.ends_with("\\.") {
@@ -1441,6 +1539,51 @@ impl Lower<'_> {
     }
 
     fn expression_site(&self, expression: &Expr, scope: &Scope) -> SourceSpan {
+        if let ExprKind::Reference { operand, .. } = &expression.kind {
+            let site = self.expression_site(operand, scope);
+            if site.source.id != self.source.id || site.span != operand.span {
+                return site;
+            }
+        }
+        if let ExprKind::Select {
+            namespace, item, ..
+        } = &expression.kind
+        {
+            let (name, reference) = match &namespace.kind {
+                ExprKind::Path(path) if path.qualifier.is_none() => {
+                    (Some(path.path.as_str()), false)
+                }
+                ExprKind::Reference { operand, .. } => match &operand.kind {
+                    ExprKind::Path(path) if path.qualifier.is_none() => {
+                        (Some(path.path.as_str()), true)
+                    }
+                    _ => (None, false),
+                },
+                _ => (None, false),
+            };
+            if let Some(name) = name {
+                let value = scope.values.get(name);
+                let builtin = reference
+                    .then(|| Compiler::builtin_reference(name))
+                    .flatten();
+                let item_scope = match (value, builtin.as_ref()) {
+                    (Some(Value::Module(module)), _) => Some(module.as_ref()),
+                    (Some(Value::Space(Space::Endpoint(_) | Space::Qualified { .. })), _)
+                    | (None, Some(Space::Endpoint(_))) => Some(scope),
+                    (Some(Value::Space(Space::Pwd)), _) | (None, Some(Space::Pwd)) => {
+                        (!matches!(&item.kind, ExprKind::Path(path) if path.path == "pwd"))
+                            .then_some(scope)
+                    }
+                    _ => None,
+                };
+                if let Some(item_scope) = item_scope {
+                    let site = self.expression_site(item, item_scope);
+                    if site.source.id != self.source.id || site.span != item.span {
+                        return site;
+                    }
+                }
+            }
+        }
         if let ExprKind::Join { base, suffix, .. } = &expression.kind {
             let site = self.expression_site(base, scope);
             if site.source.id != self.source.id || site.span != base.span {
@@ -1572,14 +1715,104 @@ fn import_globals(names: &[Name], scope: &mut Scope) -> Result<(), Report> {
 }
 
 fn resolve(expression: &Expr, scope: &Scope, context: &CompileContext) -> Result<Value, Failure> {
-    let value = resolve_value(expression, scope, context)?;
-    let value = match value {
-        Value::Path(path) if path.path.contains('<') => {
-            ranges::selector(path, scope, context, selector_site(expression))?
+    if let Some(selector) = source_selector(expression)? {
+        let root = resolve_value(&selector.root, scope, context)?;
+        return ranges::selector(root, selector, context);
+    }
+    resolve_value(expression, scope, context)
+}
+
+/// A selector belongs to explicit source syntax, never to a produced Path's
+/// payload. Only selector-bearing source needs a rewritten root expression;
+/// ordinary paths retain their compact representation and have no intent flag.
+struct SourceSelector {
+    pattern: String,
+    root: Expr,
+    empty_root: bool,
+    span: Span,
+}
+
+fn source_selector(expression: &Expr) -> Result<Option<SourceSelector>, Report> {
+    match &expression.kind {
+        ExprKind::Path(path) if path.path.contains(['<', '>']) => {
+            let Some(start) = path.path.find('<') else {
+                return Err(Report::new(
+                    "unmatched '>' in source path",
+                    expression.source.content,
+                ));
+            };
+            let mut root = path.path.clone();
+            let pattern = super::take_selector(&mut root, &mut HashSet::new())
+                .map_err(|message| Report::new(message, selector_site(expression)))?
+                .expect("explicit selector atom");
+            let mut root_expression = expression.clone();
+            let ExprKind::Path(root_path) = &mut root_expression.kind else {
+                unreachable!()
+            };
+            root_path.path = root;
+            Ok(Some(SourceSelector {
+                pattern,
+                root: root_expression,
+                empty_root: start == 0,
+                span: selector_site(expression),
+            }))
         }
-        value => value,
-    };
-    Ok(value)
+        ExprKind::Join {
+            base,
+            suffix,
+            operator,
+            mode,
+        } => {
+            if let Some(selector) = source_selector(base)? {
+                return Err(Report::new(
+                    "a selector must be the final source path component '<regex>'",
+                    selector.span,
+                ));
+            }
+            let Some(mut selector) = suffix.as_deref().map_or(Ok(None), source_selector)? else {
+                return Ok(None);
+            };
+            let root = Expr {
+                kind: ExprKind::Join {
+                    base: base.clone(),
+                    suffix: (!selector.empty_root).then(|| Box::new(selector.root)),
+                    operator: *operator,
+                    mode: if selector.empty_root {
+                        DestinationMode::Container
+                    } else {
+                        *mode
+                    },
+                },
+                span: expression.span,
+                source: expression.source.clone(),
+            };
+            selector.root = root;
+            selector.empty_root = false;
+            Ok(Some(selector))
+        }
+        ExprKind::Select {
+            namespace,
+            item,
+            operator,
+        } => {
+            let Some(mut selector) = source_selector(item)? else {
+                return Ok(None);
+            };
+            let root = Expr {
+                kind: ExprKind::Select {
+                    namespace: namespace.clone(),
+                    item: Box::new(selector.root),
+                    operator: *operator,
+                },
+                span: expression.span,
+                source: expression.source.clone(),
+            };
+            selector.root = root;
+            selector.empty_root = false;
+            Ok(Some(selector))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn resolve_value(
@@ -1592,6 +1825,7 @@ fn resolve_value(
     }
     match &expression.kind {
         ExprKind::Literal(text) => Ok(Value::Literal(Arc::from(text.as_str()))),
+        ExprKind::Reference { operand, operator } => resolve_reference(operand, *operator, scope),
         ExprKind::Path(path) => {
             let mut value =
                 resolve_path(path, expression.span, &expression.source, scope, context)?;
@@ -1622,6 +1856,43 @@ fn resolve_value(
         | ExprKind::Exists(_)
         | ExprKind::Loop { .. } => v6::resolve_expression(expression, scope, context),
     }
+}
+
+fn resolve_reference(operand: &Expr, operator: Span, scope: &Scope) -> Result<Value, Failure> {
+    let ExprKind::Path(path) = &operand.kind else {
+        return Err(
+            Report::new("operator '$' requires a binding name", operand.span)
+                .help(
+                    "Reference a lexical value with '$name', or a built-in scope such as '$local'.",
+                )
+                .into(),
+        );
+    };
+    if path.qualifier.is_some()
+        || path.path.is_empty()
+        || !path
+            .path
+            .chars()
+            .all(|character| character.is_alphanumeric() || matches!(character, '.' | '_' | '-'))
+    {
+        return Err(Report::new("operator '$' requires a binding name", operand.span).into());
+    }
+    if let Some(value) = scope.values.get(&path.path) {
+        return Ok(captured_value(value, scope));
+    }
+    Compiler::builtin_reference(&path.path)
+        .map(Value::Space)
+        .ok_or_else(|| {
+            Report::new(
+                format!("unknown binding reference '${}'", path.path),
+                Span {
+                    start: operator.start,
+                    end: operand.span.end,
+                },
+            )
+            .help("Declare the value before referencing it; '$local', '$pwd', '$file' and '$std' are built-in scopes.")
+            .into()
+        })
 }
 
 fn contextual(path: Option<&RelocPath>) -> bool {
@@ -1930,7 +2201,10 @@ fn resolve_select(
         Value::Space(_) | Value::Module(_) | Value::Process(_)
     ) {
         return Err(Report::new(
-            "the left operand of '::' must be a space or program",
+            format!(
+                "operator '::' requires Scope or Process on the left, got {}",
+                value.ty()
+            ),
             operator,
         )
         .label(
@@ -2410,6 +2684,23 @@ fn apply_scope_value(
     }
 }
 
+fn intrinsic_members(space: &Space) -> &'static [&'static str] {
+    match space {
+        Space::Pwd => &["pwd"],
+        Space::File => &["this", "parent"],
+        Space::Qualified { inner, .. } => intrinsic_members(inner),
+        _ => &[],
+    }
+}
+
+fn scope_has_directory_projection(space: &Space) -> bool {
+    match space {
+        Space::Endpoint(_) | Space::Pwd => true,
+        Space::Qualified { inner, .. } => scope_has_directory_projection(inner),
+        Space::File | Space::Lexical { .. } | Space::Api(_) => false,
+    }
+}
+
 fn process_port(process: ProcessId, path: &str, span: Span) -> Result<Value, Report> {
     let port = match path {
         "stdin" => Port::Stdin,
@@ -2592,6 +2883,7 @@ fn reject_root_replacement(path: &PathValue, span: Span) -> Result<(), Report> {
 
 fn qualifier_site(expression: &Expr) -> Span {
     match &expression.kind {
+        ExprKind::Select { namespace, .. } => namespace.span,
         ExprKind::Path(path) => path
             .qualifier
             .as_ref()
@@ -2601,6 +2893,9 @@ fn qualifier_site(expression: &Expr) -> Span {
 }
 
 fn selector_site(expression: &Expr) -> Span {
+    if let ExprKind::Select { item, .. } = &expression.kind {
+        return selector_site(item);
+    }
     if let ExprKind::Join {
         suffix: Some(suffix),
         ..
@@ -2608,12 +2903,17 @@ fn selector_site(expression: &Expr) -> Span {
     {
         return selector_site(suffix);
     }
-    if let ExprKind::Path(path) = &expression.kind
-        && let Some(start) = path.path.rfind('<')
+    let text = match &expression.kind {
+        ExprKind::Path(path) => Some(path.path.as_str()),
+        ExprKind::Literal(text) => Some(text.as_str()),
+        _ => None,
+    };
+    if let Some(text) = text
+        && let Some(start) = text.rfind('<')
     {
         return expression
             .source
-            .interval(start + 1, path.path.len().saturating_sub(1));
+            .interval(start + 1, text.len().saturating_sub(1));
     }
     expression.source.content
 }
@@ -2630,6 +2930,207 @@ fn check_name(name: &Name) -> Result<(), Report> {
     super::validate_name(&name.text).map_err(|message| {
         Report::new(message, name.span).help("Use letters, digits, '.', '_' or '-' for a binding name; built-ins begin with '$' and cannot be rebound.")
     })
+}
+
+#[cfg(test)]
+mod operator_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn context() -> CompileContext {
+        CompileContext {
+            pwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".temp/inspect-operators"),
+            source_file: None,
+        }
+    }
+
+    fn expression(text: &str) -> Expr {
+        let document = language::parse(&format!("inspected := {text}\n")).unwrap();
+        let language::StatementKind::Binding { value, .. } = &document.statements[0].kind else {
+            panic!("query expression");
+        };
+        value.clone()
+    }
+
+    #[test]
+    fn editor_inspection_uses_typed_values_without_observing_filesystem_effects() {
+        let context = context();
+        let mut session = Session::new();
+        session
+            .compile(
+                &language::parse(concat!(
+                    "endpoint := $ local\n",
+                    "base := folder\n",
+                    "pattern := \".*\"\n",
+                    "ready := true\n",
+                    "scope profile:\n",
+                    "    item := file\n",
+                    "native present(path) = \"fs.is_regular_file\"\n",
+                ))
+                .unwrap(),
+                &context,
+            )
+            .unwrap();
+        let endpoint = session
+            .inspect_expression(&expression("$endpoint"), &context)
+            .unwrap();
+        assert_eq!(endpoint.ty, crate::types::Type::Scope);
+        assert_eq!(
+            endpoint.location,
+            Some(Location {
+                backend: Backend::Local,
+                path: context.pwd.to_string_lossy().into_owned(),
+            })
+        );
+        let path = session
+            .inspect_expression(&expression("$base / \"child\""), &context)
+            .unwrap();
+        assert_eq!(path.ty, crate::types::Type::Path);
+        assert_eq!(
+            Path::new(&path.location.unwrap().path),
+            context.pwd.join("folder/child")
+        );
+        for (text, ty) in [
+            ("$pattern", crate::types::Type::String),
+            ("$ready", crate::types::Type::Bool),
+            ("$profile", crate::types::Type::Scope),
+            ("present(missing-file)", crate::types::Type::Bool),
+        ] {
+            let info = session
+                .inspect_expression(&expression(text), &context)
+                .unwrap();
+            assert_eq!(info.ty, ty, "{text}");
+            assert_eq!(info.location, None, "{text}");
+        }
+    }
+
+    #[test]
+    fn lexical_references_keep_boolean_spelled_binding_names() {
+        let context = context();
+        let mut session = Session::new();
+        session
+            .compile(
+                &language::parse(
+                    "true := \"named true\"\nscope false:\n    data := \"named false\"\n",
+                )
+                .unwrap(),
+                &context,
+            )
+            .unwrap();
+        for text in ["$true", "$ true", "$(true)", "$false::data"] {
+            assert_eq!(
+                session
+                    .inspect_expression(&expression(text), &context)
+                    .unwrap()
+                    .ty,
+                crate::types::Type::String,
+                "{text}",
+            );
+        }
+    }
+
+    #[test]
+    fn native_argument_errors_report_inferred_types_at_the_owned_argument() {
+        let source = "native contains(text, pattern) = \"string.contains\"\nresult := contains(\"text\", true)\n";
+        let errors = Session::new()
+            .compile(&language::parse(source).unwrap(), &context())
+            .unwrap_err();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].diagnostic.message,
+            "native 'string.contains' argument 2 expects String, got Bool"
+        );
+        assert_eq!(
+            &source[errors[0].diagnostic.span.start..errors[0].diagnostic.span.end],
+            "true"
+        );
+    }
+
+    #[test]
+    fn completion_capabilities_follow_scope_values_and_lexical_shadowing() {
+        let mut session = Session::new();
+        let context = context();
+        session
+            .compile(
+                &language::parse(
+                    "file_alias := $file\npwd_alias := $pwd\nfile := ssh://no-auth.invalid\n",
+                )
+                .unwrap(),
+                &context,
+            )
+            .unwrap();
+        for text in ["$file", "file"] {
+            let info = session
+                .inspect_path_parent(
+                    &expression(text),
+                    crate::types::OperatorTrait::Select,
+                    &context,
+                )
+                .unwrap();
+            assert!(info.members.is_empty());
+            assert!(matches!(
+                info.location,
+                Some(Location {
+                    backend: Backend::Ssh { .. },
+                    ..
+                })
+            ));
+        }
+        let file = session
+            .inspect_path_parent(
+                &expression("file_alias"),
+                crate::types::OperatorTrait::Select,
+                &context,
+            )
+            .unwrap();
+        assert_eq!(file.members, ["this", "parent"]);
+        assert_eq!(file.location, None);
+        let pwd = session
+            .inspect_path_parent(
+                &expression("pwd_alias"),
+                crate::types::OperatorTrait::Select,
+                &context,
+            )
+            .unwrap();
+        assert_eq!(pwd.members, ["pwd"]);
+        assert_eq!(
+            Path::new(&pwd.location.unwrap().path),
+            context.pwd.join(".")
+        );
+    }
+
+    #[test]
+    fn explicit_selectors_keep_runtime_typed_roots_and_reject_child_suffixes() {
+        let context = context();
+        let source = "for endpoint in [$local]:\n    endpoint::<.*> -> output/\n";
+        let program = Session::new()
+            .compile(&language::parse(source).unwrap(), &context)
+            .unwrap();
+        let debug = format!("{program:?}");
+        assert!(debug.contains("Regex"), "{debug}");
+        let source = "directory/<name>/child -> output\n";
+        let errors = Session::new()
+            .compile(&language::parse(source).unwrap(), &context)
+            .unwrap_err();
+        assert!(
+            errors[0]
+                .diagnostic
+                .message
+                .contains("final source path component")
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn string_join_type_is_independent_of_selector_shaped_payload(pattern in "[a-z\\[\\]{}*+?.]{0,20}") {
+            let payload = format!("<{pattern}>");
+            let mut literal = String::new();
+            language::write_literal(&mut literal, &payload);
+            let info = Session::new().inspect_expression(&expression(&format!("\".\"/{literal}")), &context()).unwrap();
+            prop_assert_eq!(info.ty, crate::types::Type::Path);
+            prop_assert!(info.location.unwrap().path.ends_with(&payload));
+        }
+    }
 }
 
 #[cfg(test)]

@@ -26,14 +26,14 @@ fn colon_commands_match_slash_commands_without_coloring_dsl_paths() {
 #[test]
 fn contextual_lookup_items_are_styled_but_endpoint_paths_are_not_namespace_items() {
     for (source, expected) in [
-        ("$pwd::pwd/文件 -> out", "$pwd::pwd"),
-        ("$file::parent/assets -> out", "$file::parent"),
-        ("$file::this -> out", "$file::this"),
-        ("$env::LOCALAPPDATA/tools -> out", "$env::LOCALAPPDATA"),
-        ("$env::环境\\tools -> out", "$env::环境"),
-        ("remote::ordinary/path -> out", "remote::"),
-        ("$local::ordinary/path -> out", "$local::"),
-        ("$pwd::", "$pwd::"),
+        ("$pwd::pwd/文件 -> out", "pwd"),
+        ("$file::parent/assets -> out", "file"),
+        ("$file::this -> out", "file"),
+        ("$env::LOCALAPPDATA/tools -> out", "env"),
+        ("$env::环境\\tools -> out", "env"),
+        ("remote::ordinary/path -> out", "remote"),
+        ("$local::ordinary/path -> out", "local"),
+        ("$pwd::", "pwd"),
     ] {
         assert_eq!(pieces(source, TokenKind::Namespace), vec![expected]);
         assert_eq!(highlight(source, false), source);

@@ -2,7 +2,7 @@
   "name": "msync-language",
   "displayName": "msync Language",
   "description": "msync 0.7 syntax highlighting and language-server support",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "publisher": "msync",
   "license": "GPL-3.0-only",
   "engines": {
@@ -51,10 +51,16 @@
           "type": "string",
           "default": "msync",
           "scope": "machine",
-          "description": "Path to the msync executable (0.6+; 0.7+ for standard-library navigation and signatures). It is launched directly with --language-server; shell arguments are not accepted."
+          "description": "Path to the msync executable (0.6+; 0.7.2+ for operator-aware editing and filesystem completion). Launched directly with --language-server; shell arguments are not accepted. Changes restart the server automatically."
         }
       }
-    }
+    },
+    "commands": [
+      {
+        "command": "msync.restartLanguageServer",
+        "title": "msync: Restart Language Server"
+      }
+    ]
   },
   "scripts": {
     "test": "node --test test/*.test.cjs",

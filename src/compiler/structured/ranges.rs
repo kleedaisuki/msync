@@ -4,37 +4,23 @@ use super::*;
 use crate::hir::control as ctl;
 
 pub(super) fn selector(
-    mut path: PathValue,
-    scope: &Scope,
+    root: Value,
+    selector: SourceSelector,
     context: &CompileContext,
-    span: Span,
 ) -> Result<Value, Failure> {
-    let original = path.path.len();
-    let pattern = super::super::take_selector(&mut path.path, &mut HashSet::new())
-        .map_err(|message| Report::new(message, span))?;
-    let Some(pattern) = pattern else {
-        return Ok(Value::Path(path));
-    };
-    if matches!(
-        path.backend,
-        Some(Backend::Http { .. } | Backend::Path | Backend::Tcp { .. })
-    ) {
+    let span = selector.span;
+    if matches!(&root, Value::Path(path) if matches!(path.backend, Some(Backend::Http { .. } | Backend::Path | Backend::Tcp { .. })))
+    {
         return Err(Report::new("ranges require a directory-capable endpoint", span).into());
     }
-    if let Some(relocation) = &mut path.relocation {
-        relocation.suffix.truncate(
-            relocation
-                .suffix
-                .len()
-                .saturating_sub(original - path.path.len()),
-        );
+    let root = v6::scalar(root, context, span)?;
+    if root.ty != ctl::Type::Path {
+        return Err(Report::new("a selector requires a directory path", span).into());
     }
-    let root = v6::scalar(Value::Path(path), context, span)?;
-    let _ = scope;
     Ok(Value::Range(ctl::RangeExpr {
         source: ctl::RangeSource::Regex {
             root: Box::new(root),
-            pattern,
+            pattern: selector.pattern,
         },
         stages: Vec::new(),
         item_type: ctl::Type::Path,

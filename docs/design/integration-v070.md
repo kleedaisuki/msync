@@ -269,3 +269,78 @@ are unchanged from v0.7.0, and these direct fixture failures do not execute the
 modified compiler selection branch. No unrelated fixes or CI suppressions were
 bundled into this patch. Local focused source/object/IR transfer acceptance,
 strict changed-target Clippy and formatting passed before push.
+
+## v0.7.2 operator and editor convergence
+
+The frontend now preserves unary reference and binary selection nodes instead
+of encoding `$name` and compact `scope::item` as special qualified paths. It
+continues to specialize into the established typed IR; this is not a second
+runtime type system. Native argument admission shares the registered capability
+with object validation and reports the offending argument's inferred type.
+
+The central interoperability contract is `(String | Path) / (String | Path) ->
+Path`, not Windows-path recognition. Quoted strings remain data unless consumed
+by a path operator. Independent real-process acceptance uses all four operand
+pairings, lexical String and Path aliases on either side, native observations,
+and changed file bytes through source, source-free objects and JSON IR.
+`tests/operator_ux_v072.rs` covers these journeys with strict targeted Clippy.
+The older real transport macro regression also passes after compact selection
+and parenthesized selection were unified.
+
+Filesystem completion queries the compiler for the parent value's type and
+location. Only selected Local locations enter the shared filesystem path binder;
+remote endpoints never authenticate during editing. Completion labels retain
+normal filenames while inserted basenames are String fragments, so the same
+`::` and `/` capabilities produce paths without lexical-name shadowing or a
+second filename parser. Query-only declaration sessions are cached independently
+of executable sessions. Hover uses the same inferred value types.
+
+Final interoperability inspection exposed a remaining content-inference defect:
+`"."/"<literal>"` became Range despite both input types being String. Selector
+intent now originates in explicit unquoted source syntax, not produced Path
+bytes. Source and destination paths formed from Strings retain their type;
+transfers and compile-time script composition no longer rescan them for selectors.
+Existing typed selector objects remain executable. Quoted-selector source should
+use a quoted base followed by an explicit selector, such as `"directory"/<.*>`.
+
+Intrinsic member completion likewise follows the resolved receiver capability,
+not its source spelling: aliases of File/Pwd retain their members, while lexical
+values named `file` or `pwd` do not fabricate intrinsic members. Directory
+projection and member metadata come from one compiler receiver synthesis.
+
+The platform package smoke now replays all four String/Path pairings through a
+source-free object. Windows additionally uses its actual quoted drive path,
+as a platform acceptance case of the general type relation. Existing installed
+lifecycle checks and immutable release publication remain in place.
+
+### Focused local delivery checks
+
+- Frontend, types, namespaces, native runtime and source provenance: 90 selected
+  cases; strict library/changed-target Clippy. The real transport macro regression
+  passed without reintroducing a qualifier-specific resolution path.
+- The selector/capability correction additionally passed 59 affected compiler,
+  property, source-provenance, range and script-expansion cases, with strict
+  library/changed-target Clippy. Independent review replayed dynamic endpoint
+  selectors and literal angle-named include/execute scripts through source,
+  source-free objects and IR.
+- Independent source/object/JSON IR user journeys: 8 cases, including all four
+  generic String/Path pairings, runtime mutable references and inferred native
+  results, plus literal selector-shaped source/destination paths; strict
+  changed-target Clippy.
+- Final real LSP-to-CLI journeys passed 2/2; selected provider, tooling and
+  highlighter checks passed 11, 20 and 23 cases respectively. The final LSP
+  capability/selector deltas passed protocol acceptance and strict Clippy.
+  Extension Node tests passed 21 cases.
+- The actual VS Code 1.144.0 host applied root/hidden-directory/spaced-filename
+  completions, checked separate operator tokens, navigated embedded sources and
+  reconnected through `msync.restartLanguageServer`. Its nonexecution fixture
+  retained the deletion victim and created no DSL outputs. Evidence is under
+  `.temp/vscode-host-c4VQqo` (frozen server SHA-256
+  `f2b069caf5fd41cd60b1b8553fa710f0020a578b30a71fa28e94239f9d3b19b5`).
+- The 0.7.2 VSIX built successfully and installed with the actual Code CLI into
+  an isolated extension directory, reporting `msync.msync-language@0.7.2`.
+- A locally extracted optimized Linux archive passed check/dry-run/source-free
+  native and String/Path package smoke, with all expected output bytes. Local
+  build/install/package evidence is under `.temp/release-v072`.
+- `cargo fmt --all --check` and `git diff --check` passed. No complete-project
+  regression matrix was used as a substitute for these changed workflows.

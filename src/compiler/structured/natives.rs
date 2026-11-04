@@ -187,8 +187,20 @@ fn lower_native(
         .into());
     }
     let mut values = Vec::with_capacity(arguments.len());
-    for (argument, parameter) in arguments.iter().zip(signature.parameters) {
+    for (index, (argument, parameter)) in arguments.iter().zip(signature.parameters).enumerate() {
         let value = v6::scalar(resolve(argument, scope, context)?, context, argument.span)?;
+        if !parameter.accepts(&value.ty) {
+            return Err(Report::new(
+                format!(
+                    "native '{}' argument {} expects {parameter}, got {}",
+                    native.implementation,
+                    index + 1,
+                    crate::types::Type::from_control(&value.ty),
+                ),
+                argument.span,
+            )
+            .into());
+        }
         let value = if *parameter == NativeParam::Path
             && signature.effect != crate::stdlib::NativeEffect::Pure
         {
@@ -197,20 +209,6 @@ fn lower_native(
             value
         };
         values.push(value);
-    }
-    let types = values
-        .iter()
-        .map(|value| value.ty.clone())
-        .collect::<Vec<_>>();
-    if !signature.accepts(&types) {
-        return Err(Report::new(
-            format!(
-                "native '{}' arguments do not match its typed signature",
-                native.implementation
-            ),
-            span,
-        )
-        .into());
     }
     Ok((native.implementation.clone(), values))
 }

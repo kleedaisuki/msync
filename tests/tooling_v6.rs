@@ -211,7 +211,7 @@ fn unicode_spans_details_and_nested_symbol_parents_are_owned_by_ast() {
 
 #[test]
 fn intrinsic_namespace_members_never_navigate_to_shadowing_values() {
-    let source = "pwd = \"text\"\nthis = \"text\"\nhere => $pwd\nmodule => $file\nP => executable()\nprocess := P\nstdout = \"text\"\na := $pwd::pwd\nb := here::pwd\nc := module::this\nprocess::stdout -> output\n";
+    let source = "a := $pwd::pwd\nhere => $pwd\nmodule => $file\npwd = \"text\"\nthis = \"text\"\nP => executable()\nprocess := P\nstdout = \"text\"\nb := here::pwd\nc := module::this\nprocess::stdout -> output\n";
     let index = index(source);
     for member in ["$pwd::pwd", "here::pwd", "module::this", "process::stdout"] {
         let start = source.find(member).unwrap();

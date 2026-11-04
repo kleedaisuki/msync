@@ -23,7 +23,7 @@ fn declarations_loop_binders_and_bare_range_consumers_have_stable_roles() {
         for component in namespace.split("::") {
             assert!(has(
                 &source,
-                &format!("{component}::"),
+                component.trim_start_matches('$'),
                 TokenKind::Namespace
             ));
         }
@@ -47,7 +47,7 @@ fn compact_string_comparisons_do_not_turn_into_selector_spans() {
     }
     for source in [
         "root/or/and/not/exists -> destination",
-        "remote::true/file -> output",
+        "remote::\"true\"/file -> output",
     ] {
         assert!(
             !token_spans(source)

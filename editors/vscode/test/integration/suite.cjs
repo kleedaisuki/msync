@@ -57,6 +57,16 @@ function semanticPieces(document, legend, data) {
     return pieces;
 }
 
+async function applyCompletion(document, item) {
+    const replacement = item.textEdit?.range || item.range?.replacing || item.range;
+    const insertion = item.textEdit?.newText || item.insertText;
+    assert.ok(replacement instanceof vscode.Range, 'Filesystem completion must own the replacement range');
+    assert.equal(typeof insertion, 'string');
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(document.uri, replacement, insertion);
+    assert.ok(await vscode.workspace.applyEdit(edit));
+}
+
 async function run() {
     const workspace = process.env.MSYNC_TEST_WORKSPACE;
     const runRoot = process.env.MSYNC_TEST_ROOT;
@@ -173,6 +183,53 @@ async function run() {
         assert.ok(memberDefinitions.some(target => (target.targetSelectionRange || target.range).start.isEqual(memberDeclaration)));
         await record('lexical-namespace-definition', { namespace: 'hello', member: 'codex' });
 
+        await fs.writeFile(path.join(workspace, 'codex.prompt'), 'local editor fixture\n');
+        await fs.writeFile(path.join(workspace, 'two words.prompt'), 'quoted filename fixture\n');
+        await fs.mkdir(path.join(workspace, '.codex'));
+        await fs.writeFile(path.join(workspace, '.codex', 'codex.prompt'), 'nested editor fixture\n');
+        const completionFile = path.join(workspace, 'path-completion.msync');
+        await fs.writeFile(completionFile, 'probe := $local::');
+        const pathDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(completionFile));
+        await vscode.window.showTextDocument(pathDocument);
+        const pathCursor = pathDocument.positionAt(pathDocument.getText().length);
+        const fileCompletion = await until('endpoint filesystem completion',
+            () => vscode.commands.executeCommand('vscode.executeCompletionItemProvider', pathDocument.uri, pathCursor),
+            value => value && value.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt'));
+        const fileItem = fileCompletion.items.find(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt');
+        assert.equal(fileItem.kind, vscode.CompletionItemKind.File);
+        await applyCompletion(pathDocument, fileItem);
+        assert.equal(pathDocument.getText(), 'probe := $local::"codex.prompt"');
+        await until('completed path compiles', () => vscode.languages.getDiagnostics(pathDocument.uri), value => value.length === 0);
+        await record('endpoint-filesystem-completion', { label: 'codex.prompt', appliedText: pathDocument.getText() });
+        const resetPath = async source => {
+            const edit = new vscode.WorkspaceEdit();
+            edit.replace(pathDocument.uri, new vscode.Range(pathDocument.positionAt(0), pathDocument.positionAt(pathDocument.getText().length)), source);
+            assert.ok(await vscode.workspace.applyEdit(edit));
+        };
+        await resetPath('probe := $local::two');
+        const spaced = await until('spaced filename completion',
+            () => vscode.commands.executeCommand('vscode.executeCompletionItemProvider', pathDocument.uri, pathDocument.positionAt(pathDocument.getText().length)),
+            value => value && value.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'two words.prompt'));
+        await applyCompletion(pathDocument, spaced.items.find(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'two words.prompt'));
+        assert.equal(pathDocument.getText(), 'probe := $local::"two words.prompt"');
+        await record('quoted-filename-completion', { appliedText: pathDocument.getText() });
+
+        await resetPath('probe := $local::');
+        const hiddenDirectory = await until('hidden directory completion',
+            () => vscode.commands.executeCommand('vscode.executeCompletionItemProvider', pathDocument.uri, pathDocument.positionAt(pathDocument.getText().length)),
+            value => value && value.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label).replace(/\/$/, '') === '.codex'));
+        const directoryItem = hiddenDirectory.items.find(item => (typeof item.label === 'string' ? item.label : item.label.label).replace(/\/$/, '') === '.codex');
+        assert.equal(directoryItem.kind, vscode.CompletionItemKind.Folder);
+        await applyCompletion(pathDocument, directoryItem);
+        assert.equal(pathDocument.getText(), 'probe := $local::".codex"/');
+        const nested = await until('nested file completion',
+            () => vscode.commands.executeCommand('vscode.executeCompletionItemProvider', pathDocument.uri, pathDocument.positionAt(pathDocument.getText().length)),
+            value => value && value.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt'));
+        await applyCompletion(pathDocument, nested.items.find(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt'));
+        assert.equal(pathDocument.getText(), 'probe := $local::".codex"/"codex.prompt"');
+        await record('hidden-directory-file-completion', { appliedText: pathDocument.getText() });
+        await vscode.window.showTextDocument(document);
+
         const legend = await bounded('semantic token legend', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokensLegend', document.uri));
         const tokens = await bounded('semantic tokens', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokens', document.uri));
         assert.ok(legend && tokens && tokens.data.length, 'The real client must register a semantic token provider');
@@ -180,7 +237,14 @@ async function run() {
         assert.ok(pieces.some(piece => piece.text === 'keep' && piece.type === 'function'));
         assert.ok(pieces.some(piece => piece.text === 'item' && piece.type === 'parameter'));
         assert.ok(pieces.some(piece => piece.text === '"可莉🌟"' && piece.type === 'string'));
+        assert.ok(pieces.some(piece => piece.text === '$' && piece.type === 'operator'));
+        assert.ok(pieces.some(piece => piece.text === '::' && piece.type === 'operator'));
+        assert.ok(pieces.some(piece => piece.text === '/' && piece.type === 'operator'));
         await record('semantic-tokens', { count: tokens.data.length / 5, tokenTypes: legend.tokenTypes });
+        await bounded('explicit language server restart', vscode.commands.executeCommand('msync.restartLanguageServer'));
+        const afterRestart = await bounded('completion after language server restart', vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, fsCursor));
+        assert.ok(afterRestart && afterRestart.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'is_directory'));
+        await record('language-server-restart', { completion: 'is_directory' });
         await effectsAreAbsent(workspace);
         await record('no-dsl-side-effects', { preserved: 'preserved.txt', absent: ['never-created.txt', 'never-created-branch.txt'] });
     } catch (error) {

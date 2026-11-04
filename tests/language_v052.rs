@@ -211,6 +211,10 @@ fn semantic_document(source: &str) -> language::Document {
                     expression(value);
                 }
             }
+            ExprKind::Reference { operand, operator } => {
+                expression(operand);
+                *operator = Default::default();
+            }
             ExprKind::Not(value) | ExprKind::Exists(value) => expression(value),
             ExprKind::Binary {
                 left,

@@ -372,3 +372,49 @@ reserved-looking filenames. The unfiltered production Rust highlight window
 `cargo test --locked --bin msync editor::tests` passes 5/5 functions, including
 source-derived filesystem completion. LSP and actual-host integration evidence
 is recorded separately by the tooling integration owner.
+
+## v0.7.2 typed operators and filesystem editing
+
+Both tolerant Rust highlighting and TextMate give `$`, `::` and `/` independent
+operator spans; quoted Strings, selectors and endpoint URLs retain their literal
+roles. The lexical index traverses unary References and uses inferred namespace
+shapes for navigation, including physical Scope aliases. Hover on a concrete
+binding asks the compiler for its actual type rather than reporting every
+namespace selection as Path. Generic templates retain their source signature
+until an argument environment exists.
+
+Filesystem completion is an ordinary typed expression query followed by local
+I/O. It parses the parent expression at the current argument/path boundary,
+uses `Session::inspect_path_parent` to synthesize the receiver once, and binds the
+resulting local location with
+`runtime::local_path_at` (including home and captured working-directory semantics).
+There is no remote listing, authentication, transport setup or effect execution.
+A namespace's names are still completed through the lexical/library index.
+Intrinsic members belong to the inferred receiver (`Pwd`/`File`), not the spelling
+of `$pwd`/`$file`; aliases retain them and lexical shadowing removes them. Actual
+lexical operand/callable suggestions remain available beside filesystem entries,
+including for remote prefixes, without advertising unrelated language keywords.
+
+The server caches the pure compiler declaration preamble across filename
+keystrokes. Within an active lexical Scope, a compiler-only query binding at the
+editing line's indentation preserves inherited names and shadowing before module
+export. Filename changes do not change that cached parent-expression query.
+Directories include hidden entries and directory symlinks; absent directories
+are an ordinary incomplete edit, while actual filesystem read errors retain the
+path and operating-system error in the request response.
+
+Filesystem labels show native names; insertion always uses a quoted String
+basename and adds `/` for a folder. This is not cosmetic escaping: a selected
+file named `source` must not resolve a lexical binding `source`, and an actual
+file named `pwd` must not become `$pwd::pwd`. String operands preserve file
+identity for both path operators without per-entry compiler synthesis or growing
+reserved-name exceptions. Folder selection retriggers ordinary suggestions.
+
+Acceptance `lsp_operator_ux_v072` drives the real stdio server, applies its UTF-16
+text edits and runs the resulting source to check copied bytes. It covers String
+and Path parents, hidden and spaced names, lexical/builtin name collisions,
+home-relative paths, actual function arguments, nested lexical scopes, and
+remote-prefix non-admission. The extension-host journey applies the same edits
+in VS Code, checks independent semantic operator tokens, and reconnects through
+the explicit Restart Language Server command. The extension also restarts after
+`msync.serverPath` changes and offers Open Settings when startup fails.

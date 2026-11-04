@@ -89,6 +89,7 @@ pub(super) struct OpenDocument {
     pub dirty: bool,
     pub generation: u64,
     syntax: Option<Syntax>,
+    pub path_scope: Option<super::paths::ScopeCache>,
 }
 
 pub(super) struct Syntax {
@@ -105,6 +106,7 @@ impl OpenDocument {
             dirty: true,
             generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
             syntax: None,
+            path_scope: None,
         }
     }
 

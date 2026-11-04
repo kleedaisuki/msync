@@ -1108,13 +1108,6 @@ impl Lower<'_> {
                             )
                             .into());
                         }
-                        if path.path.contains(['<', '>']) {
-                            return Err(Report::new(
-                                "selectors are only allowed in the source",
-                                destination.span,
-                            )
-                            .into());
-                        }
                         if mode == DestinationMode::ReplaceTree {
                             if path.path.ends_with("/.") || path.path.ends_with("\\.") {
                                 path.path.pop();

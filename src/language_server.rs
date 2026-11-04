@@ -2,6 +2,7 @@
 
 mod analysis;
 mod documents;
+mod paths;
 mod providers;
 
 use std::collections::BTreeMap;
@@ -36,7 +37,7 @@ fn serve(connection: &Connection) -> Result<(), String> {
     let capabilities = json!({
         "positionEncoding": "utf-16",
         "textDocumentSync": {"openClose": true, "change": 2, "save": {"includeText": false}},
-        "completionProvider": {"triggerCharacters": ["$", ":", "|"]},
+        "completionProvider": {"triggerCharacters": ["$", ":", "|", "/", "\\"]},
         "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
         "hoverProvider": true, "definitionProvider": true, "documentSymbolProvider": true,
         "documentFormattingProvider": true,
@@ -124,7 +125,15 @@ fn request_result(
         "textDocument/completion" => {
             let parameters: CompletionParams = decode(parameters)?;
             let location = parameters.text_document_position;
+            let context = documents.context(&location.text_document.uri);
             let document = opened(documents, &location.text_document.uri)?;
+            let offset = document.text.offset(location.position);
+            if let Some(offset) = offset
+                && let Some(items) = paths::completion(document, offset, &context)
+                    .map_err(|message| error(ErrorCode::RequestFailed, message))?
+            {
+                return value(CompletionResponse::Array(items));
+            }
             value(CompletionResponse::Array(providers::completion(
                 document,
                 location.position,
@@ -150,8 +159,13 @@ fn request_result(
         "textDocument/hover" => {
             let parameters: HoverParams = decode(parameters)?;
             let location = parameters.text_document_position_params;
+            let context = documents.context(&location.text_document.uri);
             let document = opened(documents, &location.text_document.uri)?;
-            value(providers::hover(document, location.position))
+            value(providers::hover_with_context(
+                document,
+                location.position,
+                &context,
+            ))
         }
         "textDocument/definition" => {
             let parameters: GotoDefinitionParams = decode(parameters)?;

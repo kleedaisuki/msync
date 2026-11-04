@@ -28,6 +28,9 @@
       "include": "#namespaces"
     },
     {
+      "include": "#lookups"
+    },
+    {
       "include": "#bindings"
     },
     {
@@ -147,15 +150,18 @@
       ]
     },
     "ranges": {
-      "match": "(?<![\\p{L}\\p{N}_./\\\\:$-])(\\$std::ranges|\\$view|views|ranges)(::)([\\p{L}_][\\p{L}\\p{N}_]*)",
+      "match": "(?<![\\p{L}\\p{N}_./\\\\$-])(\\$)?(view|views|ranges)(::)([\\p{L}_][\\p{L}\\p{N}_]*)",
       "captures": {
         "1": {
-          "name": "entity.name.namespace.msync"
+          "name": "keyword.operator.msync"
         },
         "2": {
-          "name": "punctuation.accessor.msync"
+          "name": "entity.name.namespace.msync"
         },
         "3": {
+          "name": "keyword.operator.msync"
+        },
+        "4": {
           "name": "support.function.range.msync"
         }
       }
@@ -163,19 +169,22 @@
     "namespaces": {
       "patterns": [
         {
-          "match": "(\\$?[\\p{L}\\p{N}_.-]+)(::)",
+          "match": "(\\$)?([\\p{L}\\p{N}_.-]+)(::)",
           "captures": {
             "1": {
-              "name": "entity.name.namespace.msync"
+              "name": "keyword.operator.msync"
             },
             "2": {
-              "name": "punctuation.accessor.msync"
+              "name": "entity.name.namespace.msync"
+            },
+            "3": {
+              "name": "keyword.operator.msync"
             }
           }
         },
         {
           "match": "::",
-          "name": "punctuation.accessor.msync"
+          "name": "keyword.operator.msync"
         }
       ]
     },
@@ -208,7 +217,7 @@
       "name": "constant.numeric.count.msync"
     },
     "operators": {
-      "match": "->|=>|:=|==|!=|<=|>=|[=<>|/]",
+      "match": "::|->|=>|:=|==|!=|<=|>=|[=<>|/$]",
       "name": "keyword.operator.msync"
     },
     "punctuation": {
@@ -228,7 +237,7 @@
       ]
     },
     "paths": {
-      "match": "[^\\s\"(),\\[\\]<>|=]+",
+      "match": "[^\\s\"(),\\[\\]<>|=/:$]+",
       "name": "variable.other.readwrite.msync"
     },
     "scope-declarations": {
@@ -242,6 +251,17 @@
         },
         "5": {
           "name": "punctuation.separator.msync"
+        }
+      }
+    },
+    "lookups": {
+      "match": "(\\$)([\\p{L}\\p{N}_.-]+)",
+      "captures": {
+        "1": {
+          "name": "keyword.operator.msync"
+        },
+        "2": {
+          "name": "entity.name.namespace.msync"
         }
       }
     }

@@ -136,6 +136,12 @@ pub struct Expr {
 pub enum ExprKind {
     Path(PathExpr),
     Literal(String),
+    /// Lexical value lookup. The parser retains the unary operator separately
+    /// from its operand; type checking determines whether it names a value.
+    Reference {
+        operand: Box<Expr>,
+        operator: Span,
+    },
     Bool(bool),
     Range(Vec<Expr>),
     Not(Box<Expr>),
@@ -181,6 +187,8 @@ pub enum BinaryOp {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PathExpr {
+    /// Compatibility for AST API consumers. Source qualification is a Select
+    /// expression so every operand participates in ordinary type inference.
     pub qualifier: Option<Name>,
     pub path: String,
     /// A trailing slash denotes a container; `/.` denotes explicit replacement.
