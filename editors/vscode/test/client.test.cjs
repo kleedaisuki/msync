@@ -9,11 +9,16 @@ function harness(command = 'msync', startError) {
     const errors = [];
     const created = [];
     const providers = [];
+    const commands = new Map();
+    const executed = [];
+    const configurationListeners = [];
+    let selectedAction;
     class Client {
         constructor(...args) {
             this.args = args;
             this.started = 0;
             this.stopped = 0;
+            this.requests = [];
             created.push(this);
         }
         async start() {
@@ -21,10 +26,16 @@ function harness(command = 'msync', startError) {
             if (startError) throw startError;
         }
         async stop() { this.stopped += 1; }
-        async sendRequest(method, params) { return `${method}:${params.uri}`; }
+        async dispose() { await this.stop(); }
+        async sendRequest(method, params) { this.requests.push(method); return `${method}:${params.uri}`; }
     }
     const host = {
+        commands: {
+            registerCommand(name, callback) { commands.set(name, callback); return { dispose() {} }; },
+            executeCommand(...args) { executed.push(args); return Promise.resolve(); },
+        },
         workspace: {
+            onDidChangeConfiguration(callback) { configurationListeners.push(callback); return { dispose() {} }; },
             registerTextDocumentContentProvider(scheme, provider) {
                 const registration = { scheme, provider, dispose() {} };
                 providers.push(registration);
@@ -38,7 +49,11 @@ function harness(command = 'msync', startError) {
                 return command;
             } };
         } },
-        window: { showErrorMessage: message => { errors.push(message); return Promise.resolve(); } },
+        window: { showErrorMessage: (message, action) => {
+            errors.push(message);
+            assert.equal(action, 'Open Settings');
+            return Promise.resolve(selectedAction);
+        } },
     };
     const filename = path.resolve(__dirname, '../extension.cjs');
     delete require.cache[filename];
@@ -50,7 +65,10 @@ function harness(command = 'msync', startError) {
     };
     let extension;
     try { extension = require(filename); } finally { Module._load = originalLoad; }
-    return { extension, errors, created, providers, context: { subscriptions: [] } };
+    return { extension, errors, created, providers, commands, executed, configurationListeners,
+        setCommand(value) { command = value; },
+        selectSettingsAction() { selectedAction = 'Open Settings'; },
+        context: { subscriptions: [] } };
 }
 
 test('activation launches stdio client without shell and registers user/library documents', async () => {
@@ -65,7 +83,7 @@ test('activation launches stdio client without shell and registers user/library 
         { scheme: 'file', language: 'msync' }, { scheme: 'untitled', language: 'msync' },
         { scheme: 'msync-stdlib', language: 'msync' },
     ]);
-    assert.equal(context.subscriptions[0], client);
+    assert.equal(context.subscriptions.length, 3);
     assert.equal(client.started, 1);
     assert.equal(errors.length, 0);
     await extension.deactivate();
@@ -109,6 +127,50 @@ test('stdlib definition documents request source from the running server', async
     assert.equal(providers[0].scheme, 'msync-stdlib');
     const text = await providers[0].provider.provideTextDocumentContent({ toString: () => 'msync-stdlib:///0.7.0/fs.msync' });
     assert.equal(text, 'msync/stdlibSource:msync-stdlib:///0.7.0/fs.msync');
-    assert.equal(context.subscriptions[1], providers[0]);
+    assert.equal(context.subscriptions[2], providers[0]);
     await extension.deactivate();
+});
+
+
+test('explicit restart replaces the client without duplicating library document providers', async () => {
+    const { extension, created, providers, commands, context } = harness();
+    await extension.activate(context);
+    await commands.get('msync.restartLanguageServer')();
+    assert.equal(created.length, 2);
+    assert.equal(created[0].stopped, 1);
+    assert.equal(created[1].started, 1);
+    assert.equal(providers.length, 1);
+    await providers[0].provider.provideTextDocumentContent({ toString: () => 'msync-stdlib:///0.7.2/fs.msync' });
+    assert.equal(created[0].requests.length, 0);
+    assert.equal(created[1].requests.length, 1);
+    await extension.deactivate();
+    assert.equal(created[1].stopped, 1);
+});
+
+test('configuration changes serialize restarts and read the new executable path', async () => {
+    const { extension, created, commands, configurationListeners, setCommand, context } = harness();
+    await extension.activate(context);
+    setCommand('/new path/msync');
+    configurationListeners[0]({ affectsConfiguration: name => name === 'msync.serverPath' });
+    await commands.get('msync.restartLanguageServer')();
+    assert.equal(created.at(-1).args[2].command, '/new path/msync');
+    for (const client of created.slice(0, -1)) assert.equal(client.stopped, 1);
+    const beforeUnrelatedChange = created.length;
+    configurationListeners[0]({ affectsConfiguration: () => false });
+    await Promise.resolve();
+    assert.equal(created.length, beforeUnrelatedChange);
+    await extension.deactivate();
+});
+
+test('startup error settings action and corrected configuration recover without window reload', async () => {
+    const h = harness('');
+    h.selectSettingsAction();
+    await h.extension.activate(h.context);
+    await Promise.resolve();
+    assert.deepEqual(h.executed, [['workbench.action.openSettings', 'msync.serverPath']]);
+    h.setCommand('msync');
+    await h.commands.get('msync.restartLanguageServer')();
+    assert.equal(h.created.length, 1);
+    assert.equal(h.created[0].started, 1);
+    await h.extension.deactivate();
 });
