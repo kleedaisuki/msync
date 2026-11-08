@@ -485,3 +485,15 @@ specializations expose only common safe members. An editor probe can retain
 useful types through missing delimiters without admitting that incomplete program
 as executable input. REPL completion uses the same editor analysis fork seeded
 from accepted session bindings, rather than replaying earlier effects.
+
+Path completion separates the lookup value from the edited expression. Pure
+compiler facts identify literal Paths, String bases, joins, qualifications,
+Scope fields and known returned Paths without executing them. A lookup of
+`folder/pa` can therefore enumerate the known value of `folder`, while inserting
+`folder/"paper.txt"` rather than treating `folder` as a directory name. The same
+contract covers `Settings::root/` and `factory()/`. Unknown runtime values are
+not fabricated as same-spelled filenames. In a live REPL, accepted binding facts
+come from the owned initialized VM slots: Path working-directory/home captures
+and nested Scope fields survive `/cd`. Function captures are matched in closure
+capture order, not by misusing a captured slot as a root slot; the editor fork
+never mutates the live compilation or invokes the function to obtain a path.

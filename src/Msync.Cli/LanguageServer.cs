@@ -56,10 +56,10 @@ internal sealed partial class LanguageServer(
         return null;
     }
 
-    private static JsonArray Completions(EditorDocument document, JsonElement parameters)
+    private static JsonArray Completions(EditorDocument document, JsonElement parameters, EditorContext? context = null)
     {
         int offset = Offset(document.Source, parameters.GetProperty("position"));
-        EditorContext? context = document.Analysis?.At(offset);
+        context ??= document.Analysis?.At(offset);
         if (context?.Receiver is { } receiver) return MemberCompletions(receiver.Members ?? []);
         var bindings = (context?.Bindings ?? []).Concat(EditorCompiler.BuiltinBindings)
             .DistinctBy(binding => binding.Name, StringComparer.Ordinal).ToArray();
@@ -94,7 +94,7 @@ internal sealed partial class LanguageServer(
                 ["label"] = item.Label,
                 ["kind"] = context.Kind == SourceCompletionKind.Ssh ? 18 : item.IsDirectory ? 19 : 17,
                 ["detail"] = item.Detail,
-                ["filterText"] = context.Qualifier + (context.Quoted ? "\"" : "") + item.Label,
+                ["filterText"] = item.FilterText ?? context.Qualifier + (context.Quoted ? "\"" : "") + item.Label,
                 ["documentation"] = item.Detail.StartsWith("String", StringComparison.Ordinal)
                     ? new JsonObject
                     {
