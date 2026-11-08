@@ -52,6 +52,13 @@ For a controlled optimization within 0.8, replace `--rust OLD` with
 `--previous-aot BEFORE` and keep `--aot AFTER`. Both images then use the same
 0.8 source and `.mso` format; only the changed runtime contract needs measuring.
 
+To compare legacy Rust, the accepted C# product and a new candidate in the same
+measurement window, add `--control-aot CURRENT_CS` beside `--rust RUST --aot NEW`.
+The optional three-image mode rotates `ABC/BCA/CAB/CBA/ACB/BAC`, balancing every
+image's position and both order directions. The default two-image AB/BA behavior
+is unchanged. Source/object preparation still uses each image's real syntax and
+artifact format; exact-byte and metadata checks run independently for all three.
+
 ## Persistent interactive requests
 
 ```sh

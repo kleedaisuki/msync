@@ -374,7 +374,7 @@ def sample_case(
 ) -> dict[str, list[float]]:
     values: dict[str, list[float]] = {image.name: [] for image in images}
     for iteration in range(warmups + samples):
-        order = list(images) if iteration % 2 == 0 else list(reversed(images))
+        order = sample_order(images, iteration)
         for image in order:
             workspace = workspaces[image.name]
             try:
@@ -401,6 +401,14 @@ def sample_case(
     return values
 
 
+def sample_order(images: Sequence[Image], iteration: int) -> list[Image]:
+    if len(images) == 2:
+        return list(images) if iteration % 2 == 0 else list(reversed(images))
+    offset = iteration % len(images)
+    order = [*images[offset:], *images[:offset]]
+    return order if iteration // len(images) % 2 == 0 else list(reversed(order))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     previous = parser.add_mutually_exclusive_group(required=True)
@@ -410,6 +418,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--aot", type=Path, required=True, help="Native AOT 0.8.0 executable"
+    )
+    parser.add_argument(
+        "--control-aot",
+        type=Path,
+        help="Additional frozen C# product baseline for a three-image comparison",
     )
     parser.add_argument(
         "--case", choices=(*CASES, *VALUE_CASES, *SOURCE_CASES), action="append"
@@ -435,7 +448,10 @@ def main() -> None:
         if options.rust
         else freeze(options.previous_aot.resolve(), "before", root)
     )
-    images = [previous_image, freeze(options.aot.resolve(), "aot", root)]
+    images = [previous_image]
+    if options.control_aot is not None:
+        images.append(freeze(options.control_aot.resolve(), "control", root))
+    images.append(freeze(options.aot.resolve(), "aot", root))
     workspaces = {
         image.name: prepare(
             image,
@@ -471,7 +487,9 @@ def main() -> None:
             "batch_statements": options.statements,
             "percentiles": "p50 median; p95 linearly interpolated empirical quantile",
             "cache": "warm, no page-cache eviction",
-            "order": "alternating AB/BA per sample",
+            "order": "alternating AB/BA per sample"
+            if len(images) == 2
+            else "ABC/BCA/CAB/CBA/ACB/BAC balanced six-round rotation",
             "verification": "outside timed interval; exact file bytes, tree count, native modes and ns mtime",
         },
         "images": [asdict(image) for image in images],
