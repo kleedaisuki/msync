@@ -1,5 +1,41 @@
 # v0.8 independent user acceptance
 
+## Typed editor latency closure (2026-11-09)
+
+Version remains **0.8.0**. Product source `f0f7b8544da776a5d5114b24a7e5591e1bbfe445`
+passed the focused actual
+[Linux Native AOT job](https://github.com/kleedaisuki/msync/actions/runs/42500088180/job/128790757763)
+and [Windows Native AOT job](https://github.com/kleedaisuki/msync/actions/runs/42500088180/job/128790757503).
+The changed selection is presentation, asynchronous LSP analysis, response/cache/
+resolve semantics, and contextual completion. Linux includes an actual encrypted
+SSH endpoint; unchanged installer, WSL, authentication and terminal-editing
+contracts retain their prior acceptance rather than being repeated.
+
+Accepted executable identities:
+
+- Linux: `8793d3bac69f25db91c33452dae7ea2bd1e61e91cf7bc4c6a67eff05d6501b9f`.
+- Windows: `6a1f809b07fd272440407237e5b922e5634760a2ef329c30ace5c710c389cd97`.
+
+The actual response journey exercises both negotiated lazy documentation and
+legacy eager clients, including useful selected documentation, equal labels in
+different receivers, shadowing, cross-document isolation, stale generations,
+close/reopen and cache invalidation. Existing UTF-16, held refresh, cancellation
+and malformed-editor recovery journeys also pass. A public-semantic differential
+snapshot at every UTF-16 offset of eight mixed sources is byte-identical, and
+Core type formatting matches all 65,536 underlying flag values. Local strict
+product compilation and the twelve changed C# formatting selections pass.
+
+The [matched native latency record](performance-v080.md#matched-typed-editor-latency-follow-up-2026-11-09)
+compares the same useful typed behavior with the same host/SDK/toolchain. Seven
+paired observations show ordinary completion p50 4.056 to 2.129 ms and the
+128-binding edit burst 12.601 to 6.985 ms, with full raw and tail observations
+retained. These are product latency observations, not CI performance gates.
+The exact accepted Linux native executable also passed the production-bundle
+VS Code 1.144 host at `.temp/vscode-host-OSgLQb`: semantic roles, inferred field
+hovers, formatting, restart and no source effects were exercised in the editor.
+The current complete [delivery set](packaging-v080.md#current-complete-local-delivery-set)
+supersedes the previous image hashes below; historical evidence is retained.
+
 ## Product polish and typed completion closure (2026-11-08)
 
 Version remains **0.8.0**. The accepted product source snapshot is
