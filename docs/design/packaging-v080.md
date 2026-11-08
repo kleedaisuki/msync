@@ -81,6 +81,9 @@ accepted editing/foreground-input suite. The POSIX fixture distinguishes stdout
 and stderr terminal ownership independently. Windows additionally proves a
 bright-black binding ghost suffix does not enter submitted source until the
 user accepts it with RightArrow, using exact destination bytes as the oracle.
+The native askpass helper is also launched from a spaced product path on both
+hosts, checking UTF-8 answers, repeated prompt ownership, configured helpers and
+cancellation against the same packaged executable.
 Each phase retains stdout/stderr and the native image hash under
 `.temp/platform-results`; one failed phase does not suppress another's result.
 

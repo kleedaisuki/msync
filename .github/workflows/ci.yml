@@ -111,6 +111,23 @@ jobs:
           from pathlib import Path
           binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
           subprocess.run(['python', 'packaging/polish_journeys.py', '--binary', str(binary), '--output', '.temp/platform-results'], check=True)
+      - name: Exercise the actual native authentication helper and cancellation
+        if: ${{ !cancelled() && inputs.polish_only && steps.package.outcome == 'success' }}
+        shell: python
+        env:
+          PACKAGE_RID: ${{ matrix.rid }}
+        run: |
+          import os
+          import shutil
+          import subprocess
+          import tempfile
+          from pathlib import Path
+          binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
+          Path('.temp').mkdir(exist_ok=True)
+          with tempfile.TemporaryDirectory(prefix='native prompt product ', dir='.temp') as name:
+              payload: Path = Path(name).resolve()
+              shutil.copytree(binary.parent, payload, dirs_exist_ok=True)
+              subprocess.run(['dotnet', 'run', '--project', 'tests/Msync.Authentication.Tests/Msync.Authentication.Tests.csproj', '-c', 'Release', '--artifacts-path', 'artifacts/auth-contract', '-p:RestoreLockedMode=true', '--', str(payload / binary.name)], check=True)
       - name: Install the pinned console transport for changed Windows presentation
         if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
         run: |
