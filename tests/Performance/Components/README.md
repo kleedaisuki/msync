@@ -68,3 +68,33 @@ bytes from two independent native processes:
 python3 tests/Performance/Components/verify.py \
   .temp/performance-v080/current/components/native/msync-components
 ```
+
+## Typed editor analysis
+
+`--editor-analysis` runs the actual editor parser, compiler analysis and lexical
+context query independently of JSON-RPC framing. It emits CSV to stdout with
+p50/p95 milliseconds and current-thread allocation bytes per operation:
+
+```sh
+dotnet run --project tests/Performance/Components -c Release -- \
+  --editor-analysis --sizes 32,128,4000 --samples 15 --warmups 5
+```
+
+The scalar, literal-Path and generic Scope-return workloads distinguish common
+single concrete values from shape/callable metadata. Setup checks that every
+expected binding is visible at the final declaration boundary. The parse,
+analyze, end-context and beginning-context measurements are separate, not
+summed as disjoint costs. These measurements are synchronous; the retained
+result prevents dead-result elimination. Use `--stages parse,analyze` to select
+only the changed stage. A managed run explains allocations and causal changes;
+matched Native AOT images and real LSP requests establish user-visible latency.
+Coordinate timing windows and freeze the full adjacent assembly set before
+building another candidate. For managed comparisons, keep tiered compilation
+and warm-up policy identical (the follow-up study used
+`DOTNET_TieredCompilation=0`).
+
+`tests/Msync.Compiler.Tests --editor-lookups` compares a selected `Resolve`
+result with full `At` output for lexical bindings, shadows, incomplete functions,
+Scope/factory members, polymorphic common members, Path joins and Process fields.
+It also checks absent names stay absent. Resolution uses the same raw semantic
+context selection, but materializes only the requested value.
