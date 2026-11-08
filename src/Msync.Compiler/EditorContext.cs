@@ -7,7 +7,10 @@ namespace Msync.Compiler;
 
 public enum EditorReceiverKind { Member, PathJoin }
 public sealed record EditorContext(IReadOnlyList<SemanticMember> Bindings, SemanticMember? Receiver,
-    EditorReceiverKind ReceiverKind = EditorReceiverKind.Member, ConnectionValue? PhysicalEndpoint = null, bool HasPhysicalOwner = false);
+    EditorReceiverKind ReceiverKind = EditorReceiverKind.Member, ConnectionValue? PhysicalEndpoint = null, bool HasPhysicalOwner = false)
+{
+    public bool IsTypePosition { get; init; }
+}
 
 internal readonly record struct EditorPathFlowStart(int Selections, int Leaves);
 
@@ -18,7 +21,7 @@ internal sealed record EditorCallTrace(string SourceName, string Source, SourceS
         : $"while checking this call with {string.Join(", ", Parameters.Zip(Types, (parameter, type) => $"{parameter.Name}: {type}"))}");
 }
 
-internal sealed class EditorContextCollector
+internal sealed partial class EditorContextCollector
 {
     private sealed record Snapshot(SourceSpan Owner, bool IncludesEnd, int Point, ImmutableDictionary<string, Binding> Bindings, bool Concrete);
     private sealed record Selection(SourceSpan Span, Info Receiver, bool Concrete, EditorReceiverKind Kind, Expr? Expression,
@@ -49,7 +52,7 @@ internal sealed class EditorContextCollector
             PathLeaf leaf = leaves[index];
             if (!flow.Contains(leaf.Expression)) continue;
             bool unknown = leaf.HasOwner && !Compilation.HasStaticPathProjection(leaf.Endpoint)
-                || !Compilation.HasStaticPathProjection(connection);
+                || connection is null;
             leaves[index] = leaf with { HasOwner = true, Endpoint = unknown ? null : connection };
             domains.Add(leaf.Expression.Span);
         }
@@ -228,6 +231,11 @@ internal sealed partial class Compilation
                 EditorRecovery = true,
                 EditorProbe = true
             };
+            if (template.Syntax.ReturnType is { } returnType)
+            {
+                try { frame.ExpectedReturn = ResolveType(frame, returnType); frame.ExpectedReturnSpan = returnType.Span; }
+                catch (CompileException) { }
+            }
             foreach (Parameter parameter in template.Syntax.Parameters)
             {
                 if (parameter.Name.Length == 0) continue;
@@ -238,10 +246,13 @@ internal sealed partial class Compilation
                     catch (CompileException) { }
                 }
                 if (parameter.Nullable) info = info with { Type = info.Type.WithNull };
-                frame.Bind(parameter.Name, new(frame.Allocate(), info));
+                var origin = DeclarationOrigin(frame, new(parameter.Span.Start, parameter.Name.Length));
+                frame.Bind(parameter.Name, new(frame.Allocate(), info, Origin: origin));
+                if (origin is not null) CaptureDefinition(frame, origin.Span, [origin]);
                 Observe(frame, new(parameter.Span.Start, parameter.Name.Length), info, parameter.Name);
             }
-            if (template.Syntax.Name is { } name) frame.Bind(name, new(-1, new(Msync.Core.TypeRef.Function, template), template));
+            if (template.Syntax.Name is { } name) frame.Bind(name, new(-1, new(Msync.Core.TypeRef.Function, template), template,
+                DeclarationOrigin(frame, template.Syntax.NameSpan)));
             CaptureContext(frame, template.Syntax.Body.Span.Start);
             _ = Block(frame, template.Syntax.Body);
         }

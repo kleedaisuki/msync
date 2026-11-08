@@ -88,6 +88,7 @@ internal sealed partial class Compilation
         Frame frame = new(template.Source, template.SourceName, environment)
         {
             ExpectedReturn = asserted,
+            ExpectedReturnSpan = template.Syntax.ReturnType?.Span,
             ContextOwner = template.Syntax.Body.Span,
             ContextIncludesEnd = template.Syntax.Body.EditorIncomplete,
             EditorRecovery = caller.EditorRecovery,
@@ -96,7 +97,7 @@ internal sealed partial class Compilation
             EditorCallTrace = caller.EditorRecovery ? new(caller.SourceName, caller.Source, span, template.Syntax.Parameters, specialization.ParameterTypes, caller.EditorCallTrace) : null
         };
         frame.SelfCaptureSlots[template.Id] = Enumerable.Range(0, template.Captures.Count).ToArray();
-        foreach (var capture in template.Captures) frame.Bind(capture.Key, new(frame.Allocate(), capture.Value.Info));
+        foreach (var capture in template.Captures) frame.Bind(capture.Key, capture.Value with { Slot = frame.Allocate(), Self = null });
         for (int index = 0; index < arguments.Count; index++)
         {
             var parameter = template.Syntax.Parameters[index];
@@ -132,9 +133,12 @@ internal sealed partial class Compilation
                 throw error;
             }
             Observe(frame, new(parameter.Span.Start, parameter.Name.Length), info, parameter.Name);
-            frame.Bind(parameter.Name, new(frame.Allocate(), info));
+            var origin = DeclarationOrigin(frame, new(parameter.Span.Start, parameter.Name.Length));
+            frame.Bind(parameter.Name, new(frame.Allocate(), info, Origin: origin));
+            if (origin is not null) CaptureDefinition(frame, origin.Span, [origin]);
         }
-        if (template.Syntax.Name is not null) frame.Bind(template.Syntax.Name, new(-1, new(TypeRef.Function, template), template));
+        if (template.Syntax.Name is not null) frame.Bind(template.Syntax.Name, new(-1, new(TypeRef.Function, template), template,
+            DeclarationOrigin(frame, template.Syntax.NameSpan)));
         if (caller.EditorReportErrors) editorCalledTemplates?.Add(template);
         CaptureContext(frame, template.Syntax.Body.Span.Start);
         Info result;
@@ -145,7 +149,7 @@ internal sealed partial class Compilation
             foreach (var returned in frame.Returns) result = Join(result, returned);
             if (asserted is not null)
             {
-                CheckConversion(frame, result.Type, asserted, template.Syntax.Body.Span);
+                CheckReturnConversion(frame, result.Type, asserted, template.Syntax.Body.Span);
                 Convert(frame, result.Type, asserted, template.Syntax.Body.Span);
                 result = Retype(result, asserted);
             }

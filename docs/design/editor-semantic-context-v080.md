@@ -192,3 +192,36 @@ parameter case in a separate LSP process, checks its diagnostic and unrelated
 Scope hover, then applies a valid change and checks a Bool hover in the same
 surviving process. This tests user editing recovery, not only a caught exception
 inside a unit-test process.
+
+## Semantic definitions and structural outlines
+
+Navigation uses declaration identity from the same recovered syntax tree and
+lexical environments as inference. An editor Binding retains its own declaration
+location, separate from its value's initializer. A later alias therefore points
+to the alias declaration, while a captured name still points to the declaration
+that the function captured before a later shadow. Parameter slots retain the
+parameter's name span. Scope field origins belong to the field key rather than
+the function or Path used to initialize it; joined Scope shapes retain all
+applicable field locations instead of guessing one declaration.
+
+Editor reference locations are recorded when actual name and member resolution
+succeeds. Unbound atoms remain Paths and do not acquire links to later same-named
+variables. Native standard-library declarations keep their versioned
+`msync-stdlib` source locations. Origin objects and Scope origin maps are created
+only for editor analysis; normal runtime IR and artifact encoding are unchanged.
+
+Document symbols are collected from parser nodes, not a declaration-shaped
+regular expression. Strings and comments cannot manufacture outline entries.
+Each named declaration has its full node range and a separate name selection
+range; nested parameters, local bindings and Scope fields belong to its children.
+The server emits this hierarchy for capable clients and flattens the same tree
+into SymbolInformation locations for older clients. Absent optional details are
+omitted. Pending definition/outline requests follow the same current-generation
+analysis lifecycle as hover, without reparsing on the protocol reader loop.
+
+The actual stdio acceptance runner is
+`tests/Msync.EndToEnd/navigation_journey.py`: parameter/global shadowing, lawful
+`.codex` names, old captures, aliases, Scope fields, future unbound Paths, Unicode
+coordinates, virtual standard-library definitions and complete/incomplete
+outlines in both protocol capability modes. Compiler `--navigation` checks the
+same origin and structural range model independently of JSON conversion.

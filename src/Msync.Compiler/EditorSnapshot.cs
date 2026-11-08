@@ -35,7 +35,7 @@ internal sealed class EditorSnapshot
                 Value? item = actual is not null && actual.Members.TryGetValue(name, out Value? found) ? found : null;
                 members[name] = Info(member, item, unprovenCapture && item is null);
             }
-            scope = new(members, scope.Named);
+            scope = new(members, scope.Named, scope.Origins);
         }
         var result = info with
         {

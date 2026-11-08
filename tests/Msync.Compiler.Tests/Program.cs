@@ -1,4 +1,7 @@
 using Msync.Compiler.Syntax;
+if (args.Contains("--contextual-directories", StringComparer.Ordinal)) { ContextualDirectoryChecks.Run(); return; }
+if (args.Contains("--navigation", StringComparer.Ordinal)) { NavigationChecks.Run(); return; }
+if (args.Contains("--quoted-windows-paths", StringComparer.Ordinal)) { QuotedWindowsPaths.Run(); return; }
 if (args.Contains("--editor-lookups", StringComparer.Ordinal)) { EditorLookupChecks.Run(); return; }
 if (args.Contains("--qualified-contexts", StringComparer.Ordinal)) { QualificationContextChecks.Run(); return; }
 if (args.Contains("--regex-spans", StringComparer.Ordinal)) { RegexPresentationChecks.Run(); return; }

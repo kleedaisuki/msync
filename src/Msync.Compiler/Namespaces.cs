@@ -45,9 +45,14 @@ internal sealed partial class Compilation
             frame.Emit(OpCode.LoadLocal, existing.Slot); return existing.Info;
         }
         Dictionary<string, Info> members = [];
-        foreach (var module in libraries.Value.Keys.Order(StringComparer.Ordinal)) members[module] = StandardModule(frame, module, span);
+        Dictionary<string, IReadOnlyList<EditorLocation>>? origins = editorContexts is null ? null : new(StringComparer.Ordinal);
+        foreach (var module in libraries.Value.Keys.Order(StringComparer.Ordinal))
+        {
+            members[module] = StandardModule(frame, module, span);
+            if (origins is not null) origins[module] = [new($"msync-stdlib:///0.8.0/{module}.msync", libraries.Value[module].Source, new(0, 0))];
+        }
         frame.Emit(OpCode.MakeScope, members.Count, text: string.Join('\0', members.Keys));
-        var info = new Info(TypeRef.Scope, Scope: new(members));
+        var info = new Info(TypeRef.Scope, Scope: new(members, Origins: origins));
         frame.Emit(OpCode.Dup); Store(frame, "$std", info);
         return info;
     }
@@ -56,6 +61,7 @@ internal sealed partial class Compilation
         if (!libraries.Value.TryGetValue(name, out var library)) return StandardNativeModule(frame, name, span);
         Frame module = new(library.Source, $"msync-stdlib:///0.8.0/{name}.msync") { Locals = frame.Locals };
         List<string> keys = []; Dictionary<string, Info> members = [];
+        Dictionary<string, IReadOnlyList<EditorLocation>>? origins = editorContexts is null ? null : new(StringComparer.Ordinal);
         foreach (var statement in library.Document.Statements)
         {
             string? memberName = null; Info? info = null;
@@ -66,12 +72,20 @@ internal sealed partial class Compilation
                 case LetStatement { Pattern: NamePattern bound } let: memberName = bound.Name; info = Expression(module, let.Value); break;
             }
             if (memberName is null || info is null) throw Error(module, "A standard module contains only named declarations.", statement.Span);
-            module.Emit(OpCode.Dup); Store(module, memberName, info);
+            SourceSpan? nameSpan = statement switch
+            {
+                NativeDeclaration declaration => declaration.NameSpan,
+                FunctionDeclaration declaration => declaration.Function.NameSpan,
+                LetStatement { Pattern: NamePattern namePattern } => namePattern.Span,
+                _ => null
+            };
+            module.Emit(OpCode.Dup); Store(module, memberName, info, nameSpan);
+            if (origins is not null && module.Environment[memberName].Origin is { } origin) origins[memberName] = [origin];
             keys.Add(memberName); members[memberName] = info;
         }
         module.Emit(OpCode.MakeScope, keys.Count, text: string.Join('\0', keys), span: span);
         frame.Code.AddRange(module.Code); frame.Locals = module.Locals;
-        var result = new Info(TypeRef.Scope, Scope: new(members));
+        var result = new Info(TypeRef.Scope, Scope: new(members, Origins: origins));
         return result;
     }
     private Info StandardNativeModule(Frame frame, string name, SourceSpan span)

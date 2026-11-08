@@ -114,7 +114,7 @@ internal sealed partial class Compilation
         var result = returned.Value is null ? Emit(frame, OpCode.Null, TypeRef.Null, returned.Span) : Expression(frame, returned.Value);
         if (frame.ExpectedReturn is not null)
         {
-            CheckConversion(frame, result.Type, frame.ExpectedReturn, returned.Span);
+            CheckReturnConversion(frame, result.Type, frame.ExpectedReturn, returned.Span);
             Convert(frame, result.Type, frame.ExpectedReturn, returned.Span);
             result = Retype(result, frame.ExpectedReturn);
         }

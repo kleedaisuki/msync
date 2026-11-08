@@ -6,16 +6,19 @@ namespace Msync.Compiler;
 
 internal sealed partial class Compilation
 {
-    private void Store(Frame frame, string name, Info value)
+    private void Store(Frame frame, string name, Info value, SourceSpan? nameSpan = null)
     {
-        int slot = frame.Allocate(); frame.Emit(OpCode.StoreLocal, slot); frame.Bind(name, new(slot, value));
+        int slot = frame.Allocate(); frame.Emit(OpCode.StoreLocal, slot);
+        var origin = DeclarationOrigin(frame, nameSpan);
+        frame.Bind(name, new(slot, value, Origin: origin));
+        if (origin is not null) CaptureDefinition(frame, origin.Span, [origin]);
     }
     private void BindPattern(Frame frame, Pattern pattern, Info value)
     {
         switch (pattern)
         {
             case WildcardPattern or NamePattern { Name: "_" }: frame.Emit(OpCode.Pop); break;
-            case NamePattern name: Observe(frame, name.Span, value, name.Name); Store(frame, name.Name, value); break;
+            case NamePattern name: Observe(frame, name.Span, value, name.Name); Store(frame, name.Name, value, name.Span); break;
             case TuplePattern tuple:
                 Require(frame, value.Type, new(TypeKind.Range), pattern.Span);
                 int sourceSlot = frame.Allocate(); frame.Emit(OpCode.StoreLocal, sourceSlot);
@@ -31,24 +34,11 @@ internal sealed partial class Compilation
     }
     private TypeRef ResolveType(Frame frame, TypeSyntax syntax)
     {
-        TypeRef type = syntax.Name switch
-        {
-            "Bool" => TypeRef.Bool,
-            "String" => TypeRef.String,
-            "Path" => TypeRef.Path,
-            "Function" => TypeRef.Function,
-            "Scope" => TypeRef.Scope,
-            "Connection" => TypeRef.Connection,
-            "Process" => TypeRef.Process,
-            "Null" => TypeRef.Null,
-            "Number" => TypeRef.Number,
-            "Type" => TypeRef.Type,
-            "Range" => new(TypeKind.Range, syntax.Arguments.Count == 0 ? null : ResolveType(frame, syntax.Arguments[0])),
-            "Any" => TypeRef.Any,
-            _ => throw Error(frame, $"Unknown type '{syntax.Name}'.", syntax.Span,
+        if (!LanguageTypes.TryResolve(syntax.Name, out TypeRef type))
+            throw Error(frame, $"Unknown type '{syntax.Name}'.", syntax.Span,
                 label: "not a built-in type",
-                help: "Use Bool, String, Path, Function, Scope, Connection, Process, Null, Number, Type or Range<T>.", code: "E0202")
-        };
+                help: $"Use {string.Join(", ", LanguageTypes.Names.Select(name => name == "Range" ? "Range<T>" : name))}.", code: "E0202");
+        if (syntax.Name == "Range" && syntax.Arguments.Count != 0) type = new(TypeKind.Range, ResolveType(frame, syntax.Arguments[0]));
         foreach (var alternative in syntax.Alternatives) type = TypeRef.Union(type, ResolveType(frame, alternative));
         return syntax.Nullable ? type.WithNull : type;
     }
@@ -61,7 +51,7 @@ internal sealed partial class Compilation
         {
             var members = left.Scope.Members.Where(member => right.Scope.Members.ContainsKey(member.Key))
                 .ToDictionary(member => member.Key, member => Join(member.Value, right.Scope.Members[member.Key]));
-            scope = new(members, left.Scope.Named && right.Scope.Named);
+            scope = new(members, left.Scope.Named && right.Scope.Named, JoinOrigins(left.Scope, right.Scope, members.Keys));
         }
         IReadOnlyList<Info>? alternatives = null;
         if (left.Type.WithoutNull == TypeRef.Function && right.Type.WithoutNull == TypeRef.Function &&

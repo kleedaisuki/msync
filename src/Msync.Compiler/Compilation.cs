@@ -108,7 +108,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
     private Info Declare(Frame frame, string name, Info info, SourceSpan? span)
     {
         if (span is { } location) Observe(frame, location, info, name);
-        Store(frame, name, info);
+        Store(frame, name, info, span);
         frame.Emit(OpCode.Null);
         return new(TypeRef.Null);
     }
@@ -155,7 +155,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
     {
         if (pattern is NamePattern { Name: not ("" or "_") } name)
         {
-            Store(frame, name.Name, UnknownInfo);
+            Store(frame, name.Name, UnknownInfo, name.Span);
             Observe(frame, name.Span, UnknownInfo, name.Name);
         }
         if (pattern is TuplePattern tuple)

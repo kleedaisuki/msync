@@ -14,7 +14,12 @@ an artificial Null case.
 
 `let` introduces an immutable lexical binding, and a later declaration may shadow
 it. `_` is a discard pattern, not a nullable variable declaration. Destructuring
-patterns bind range elements. Paths preserve raw spelling until an endpoint or
+patterns bind range elements. Binding names use the language's atom spelling,
+not an ASCII identifier subset: `.codex`, `copy-config` and Unicode names are
+legal. Nonliteral atoms consult the lexical environment before becoming an
+unbound Path; the same rule applies to closure captures and qualified operands.
+Completion replaces the whole atom name, including a leading dot, rather than
+relying on the editor's default word range. Paths preserve raw spelling until an endpoint or
 runtime context projects them. Strings preserve literal backslashes and newlines;
 a doubled quote represents one quote. Path/String conversions are executable
 bytecode conversions where an annotation or parameter demands the other type,
@@ -73,6 +78,23 @@ must not change what a recursive call sees. Specialized recursive calls reuse a
 function-table identity instead of recursively expanding source. Recursive
 inference starts with Never and joins concrete return branches; explicit return
 annotations provide a direct expected type where needed.
+
+Return constraints use the same type catalog as parameters and bindings:
+
+```msync
+fn select(file: Path) -> Path { file };
+let optional = fn(file: Path, present: Bool) -> Path? {
+    if present { file } else { null }
+};
+```
+
+Both named and anonymous functions enforce the annotation on block tails and
+explicit returns, including executable Path/String conversions. A mismatch
+points to the returned expression and relates it to the declared return type.
+`LanguageTypes` is the single source for parsing, resolution, editor type
+completion and printed type discovery; `Number` is supported, not an unimplemented
+`Int` alias. Type completions are selected from parsed type positions after a
+parameter/binding colon or a function's `->`, not from arbitrary transfer arrows.
 
 First-class closures retain captured values when returned from a function or
 registered with a native range callback. Static call sites select a monomorphic

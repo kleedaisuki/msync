@@ -36,6 +36,7 @@ internal sealed partial class Compilation
     {
         if (frame.Environment.TryGetValue(name, out var binding))
         {
+            if (binding.Origin is { } origin) CaptureDefinition(frame, span, [origin]);
             if (binding.Self is not null) EmitClosure(frame, binding.Self);
             else frame.Emit(OpCode.LoadLocal, binding.Slot, span: span);
             return binding.Info;
@@ -192,6 +193,7 @@ internal sealed partial class Compilation
                     help: left.Scope is null ? "Select a declared member with scope::member."
                         : $"Available members: {string.Join(", ", left.Scope.Members.Keys.Order(StringComparer.Ordinal))}.", code: "E0205");
             Observe(frame, binary.Right.Span, info, member);
+            if (left.Scope.Origins?.TryGetValue(member, out var origins) == true) CaptureDefinition(frame, binary.Right.Span, origins);
             frame.Emit(OpCode.GetMember, text: member, span: binary.Span); return info;
         }
         if (left.Type == TypeRef.Process && member is not null)
@@ -238,8 +240,17 @@ internal sealed partial class Compilation
     internal static bool HasStaticPathProjection(ConnectionValue? connection) =>
         connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } or { Kind: ConnectionKind.Local, Address.Length: 0 };
 
-    internal static PathValue? QualifyKnownPath(PathValue path, ConnectionValue? connection) =>
-        HasStaticPathProjection(connection) ? PathSemantics.Qualify(path, connection!) : null;
+    internal static PathValue? QualifyKnownPath(PathValue path, ConnectionValue? connection)
+    {
+        bool deferredFile = path.Connection is { Kind: ConnectionKind.Local, Address: "file" }
+            && !(OperatingSystem.IsWindows() ? System.IO.Path.IsPathFullyQualified(path.NativeText) : System.IO.Path.IsPathRooted(path.Raw));
+        if (deferredFile && connection is not { Kind: ConnectionKind.Local, Address: "file" }) return null;
+        if (connection is { Kind: ConnectionKind.Local, Address: "pwd" } && path.Raw != "pwd")
+            return PathSemantics.Qualify(path, new(ConnectionKind.Local));
+        if (connection is { Kind: ConnectionKind.Local, Address: "file" } && path.Raw is not ("this" or "parent"))
+            return PathSemantics.Qualify(path, connection) with { WorkingDirectory = null, HomeDirectory = null };
+        return HasStaticPathProjection(connection) ? PathSemantics.Qualify(path, connection!) : null;
+    }
 
     private Info Scope(Frame frame, ScopeExpr scope, bool named = false)
     {
@@ -250,13 +261,15 @@ internal sealed partial class Compilation
         frame.ContextIncludesEnd = scope.EditorIncomplete;
         CaptureContext(frame, scope.Span.Start);
         Dictionary<string, Info> members = [];
+        Dictionary<string, IReadOnlyList<EditorLocation>>? origins = editorContexts is null ? null : new(StringComparer.Ordinal);
         List<string> keys = [];
         foreach (var member in scope.Members)
         {
             CaptureContext(frame, member.Span.Start);
             var info = Expression(frame, member.Value);
             if (member.NameSpan is { } memberName) Observe(frame, memberName, info, member.Name);
-            frame.Emit(OpCode.Dup); Store(frame, member.Name, info);
+            frame.Emit(OpCode.Dup); Store(frame, member.Name, info, member.NameSpan);
+            if (origins is not null && frame.Environment[member.Name].Origin is { } origin) origins[member.Name] = [origin];
             keys.Add(member.Name); members[member.Name] = info;
             CaptureContext(frame, member.Span.End);
         }
@@ -266,7 +279,7 @@ internal sealed partial class Compilation
         frame.Environment = old;
         frame.ContextOwner = owner;
         frame.ContextIncludesEnd = includesEnd;
-        return new(TypeRef.Scope, Scope: new(members, named));
+        return new(TypeRef.Scope, Scope: new(members, named, origins));
     }
 
 

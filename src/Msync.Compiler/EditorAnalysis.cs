@@ -15,7 +15,20 @@ public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrence
 {
     internal EditorContextCollector? Contexts { get; init; }
     public IReadOnlyList<SourceSpan> RegexSpans { get; init; } = [];
-    public EditorContext At(int offset) => Contexts?.At(offset) ?? new(RecoveryBindings ?? [], null);
+    public IReadOnlyList<EditorSymbol> Symbols { get; init; } = [];
+    public IReadOnlyList<EditorLocation> DefinitionsAt(int offset) => Contexts?.DefinitionsAt(offset) ?? [];
+    public IReadOnlyList<SourceSpan> TypeSpans { get; init; } = [];
+    public bool IsTypePosition(int offset)
+    {
+        foreach (SourceSpan span in TypeSpans)
+            if (span.Start <= offset && offset <= span.End) return true;
+        return false;
+    }
+    public EditorContext At(int offset)
+    {
+        EditorContext context = Contexts?.At(offset) ?? new(RecoveryBindings ?? [], null);
+        return IsTypePosition(offset) ? context with { IsTypePosition = true } : context;
+    }
     public SemanticMember? Resolve(int offset, string name) => Contexts is { } contexts ? contexts.Resolve(offset, name)
         : RecoveryBindings?.FirstOrDefault(binding => binding.Name == name);
 }
@@ -98,13 +111,16 @@ public static class EditorCompiler
         int? recoveryStart = null;
         Compilation? compilation = null;
         IReadOnlyList<SourceSpan> regexSpans = [];
+        IReadOnlyList<EditorSymbol> symbols = [];
+        List<SourceSpan> typeSpans = [];
         try
         {
             EditorParseResult parsed = Parser.ParseForEditor(source, sourceName);
             regexSpans = parsed.RegexSpans;
             Document document = parsed.Document;
+            symbols = EditorSymbols.Collect(document.Statements);
             diagnostic = parsed.Error?.Diagnostic;
-            Seed(document.Statements, source, syntax);
+            Seed(document.Statements, source, syntax, typeSpans);
             Action<SourceSpan, Info, string?, bool> observer = (span, info, name, concrete) =>
             {
                 if (!inferred.TryGetValue(span, out var observation)) inferred[span] = observation = new(name);
@@ -130,7 +146,7 @@ public static class EditorCompiler
                 ? Describe(span, observation.Name, alternatives.Values, scopeDescriptions)
                 : Describe(span, observation.Name, observation.Single!, scopeDescriptions);
         return new(syntax.Values.OrderBy(item => item.Span.Start).ThenBy(item => item.Span.Length).ToArray(), diagnostic, recovery, recoveryStart)
-        { Contexts = compilation?.EditorContexts, RegexSpans = regexSpans };
+        { Contexts = compilation?.EditorContexts, RegexSpans = regexSpans, TypeSpans = typeSpans, Symbols = symbols };
     }
 
     private sealed class Observation(string? name)
@@ -297,10 +313,22 @@ public static class EditorCompiler
 
     private static string Slice(string source, SourceSpan span) => source[span.Start..span.End];
 
-    private static void Seed(IEnumerable<Node> nodes, string source, Dictionary<SourceSpan, SemanticOccurrence> occurrences)
+    private static void Seed(IEnumerable<Node> nodes, string source, Dictionary<SourceSpan, SemanticOccurrence> occurrences, List<SourceSpan> typeSpans)
     {
         foreach (Node node in nodes)
         {
+            if (node is FunctionExpr functionType)
+            {
+                foreach (Parameter parameter in functionType.Parameters) AddType(parameter.Type);
+                AddType(functionType.ReturnType);
+            }
+            if (node is LetStatement letType) AddType(letType.Type);
+            if (node is NativeDeclaration nativeType)
+            {
+                foreach (Parameter parameter in nativeType.Parameters) AddType(parameter.Type);
+                AddType(nativeType.ReturnType);
+            }
+            if (node is TypeExpr valueType) AddType(valueType.Type);
             switch (node)
             {
                 case FunctionDeclaration function:
@@ -326,7 +354,14 @@ public static class EditorCompiler
                     break;
                 case ScopeMember { Value: ScopeExpr } member: Add(member.NameSpan, "Scope", $"{member.Name}: Scope"); break;
             }
-            Seed(Compilation.Children(node), source, occurrences);
+            Seed(Compilation.Children(node), source, occurrences, typeSpans);
+        }
+        void AddType(TypeSyntax? type)
+        {
+            if (type is null) return;
+            int start = type.Span.Start;
+            while (start > 0 && char.IsWhiteSpace(source[start - 1])) start--;
+            typeSpans.Add(new(start, type.Span.End - start));
         }
         void Add(SourceSpan? span, string type, string signature, string? role = null)
         {

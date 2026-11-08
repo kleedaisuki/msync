@@ -191,7 +191,8 @@ public sealed class Parser
             else if (op == "::" && At(TokenKind.Atom))
             {
                 var member = Next();
-                right = IsIdentifier(member.Text) ? new NameExpr(member.Text, member.Span) : new PathExpr(member.Text, member.Span);
+                right = new NameExpr(member.Text, member.Span);
+                if (WindowsPathBeforeString(member)) right = WindowsPathWithString(member);
             }
             else right = Expression(precedence + 1);
             left = new BinaryExpr(op, left, right, SourceSpan.Cover(left.Span, right.Span)) { OperatorSpan = operation.Span };
@@ -287,8 +288,9 @@ public sealed class Parser
             Fail("Expected an expression.");
             return new MissingExpr(new(Current.Span.Start, 0));
         }
-        if (TypeNames.Contains(token.Text)) { var type = ParseType(); return new TypeExpr(type, type.Span); }
+        if (LanguageTypes.Contains(token.Text)) { var type = ParseType(); return new TypeExpr(type, type.Span); }
         Next();
+        if (WindowsPathBeforeString(token)) return WindowsPathWithString(token);
         if (CanContinuePath(token.Text) && At(TokenKind.Atom) && CanContinuePath(Current.Text) && ContinuesBarePath())
         {
             while (At(TokenKind.Atom) && CanContinuePath(Current.Text) && ContinuesBarePath()) Next();
@@ -301,10 +303,22 @@ public sealed class Parser
             "false" => new BoolExpr(false, token.Span),
             "null" => new NullExpr(token.Span),
             _ when long.TryParse(token.Text, out long value) => new NumberExpr(value, token.Span),
-            _ when IsIdentifier(token.Text) => new NameExpr(token.Text, token.Span),
-            _ => new PathExpr(token.Text, token.Span)
+            _ => new NameExpr(token.Text, token.Span)
         };
     }
+    private bool WindowsPathBeforeString(Token token) => WindowsPathPrefix(token.Text) && At(TokenKind.String);
+
+    internal static bool WindowsPathPrefix(string text) => text.Length > 0 && text[^1] is '/' or '\\'
+        && (text[0] == '\\' || text.Length >= 3 && char.IsLetter(text[0]) && text[1] == ':' && text[2] is '/' or '\\');
+
+    private BinaryExpr WindowsPathWithString(Token token)
+    {
+        Token child = Next();
+        return new("/", new PathExpr(token.Text, token.Span), new StringExpr(child.Text, child.Span),
+            SourceSpan.Cover(token.Span, child.Span))
+        { OperatorSpan = new(token.Span.End - 1, 1) };
+    }
+
     private CallExpr Call(Expr callee)
     {
         Next(); List<Expr> args = [];
@@ -412,12 +426,11 @@ public sealed class Parser
         if (TakeWord("_")) return new WildcardPattern(token.Span);
         if (matching && TakeWord("null")) return new NullPattern(token.Span);
         if (matching && Take(TokenKind.Regex)) return new RegexPattern(token.Text, token.Span);
-        if (matching && TypeNames.Contains(token.Text)) { var type = ParseType(); return new TypePattern(type, type.Span); }
+        if (matching && LanguageTypes.Contains(token.Text)) { var type = ParseType(); return new TypePattern(type, type.Span); }
         if (matching && (At(TokenKind.String) || Word("true") || Word("false") || long.TryParse(token.Text, out _)))
         { var literal = Prefix(); return new LiteralPattern(literal, literal.Span); }
         return new NamePattern(Require(TokenKind.Atom, "Expected a binding or match pattern.").Text, token.Span);
     }
-    private static readonly HashSet<string> TypeNames = ["Bool", "Range", "String", "Function", "Scope", "Path", "Process", "Connection", "Null", "Type", "Number", "Int"];
     private TypeSyntax ParseType(bool union = true)
     {
         var name = Require(TokenKind.Atom, "Expected a type name.");
@@ -429,9 +442,9 @@ public sealed class Parser
         }
         bool nullable = Take(TokenKind.Question);
         if (union) while (Take(TokenKind.Pipe)) alternatives.Add(ParseType(false));
-        return new(name.Text, arguments, alternatives, nullable, SourceSpan.Cover(name.Span, Previous.Span));
+        return new(name.Text, arguments, alternatives, nullable,
+            new(name.Span.Start, Math.Max(name.Span.End, Previous.Span.End) - name.Span.Start));
     }
     private bool ContinuesBarePath() => source[Previous.Span.End..Current.Span.Start].All(c => c is ' ' or '\t');
-    private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "loop" or "native") && !TypeNames.Contains(text);
-    private static bool IsIdentifier(string text) => text.Length > 0 && (char.IsLetter(text[0]) || text[0] == '_') && text.All(c => char.IsLetterOrDigit(c) || c == '_');
+    private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "loop" or "native") && !LanguageTypes.Contains(text);
 }

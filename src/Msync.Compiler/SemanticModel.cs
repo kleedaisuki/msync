@@ -6,8 +6,9 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 namespace Msync.Compiler;
 
 internal sealed record Info(TypeRef Type, Template? Function = null, ScopeInfo? Scope = null, TypeRef? TypeValue = null, string? NativeName = null, IReadOnlyList<Info>? Alternatives = null, Info? Element = null, bool? KnownBool = null, ConnectionValue? KnownConnection = null, bool EditorUnknown = false, PathValue? KnownPath = null, string? KnownText = null);
-internal sealed record Binding(int Slot, Info Info, Template? Self = null);
-internal sealed record ScopeInfo(IReadOnlyDictionary<string, Info> Members, bool Named = false);
+internal sealed record Binding(int Slot, Info Info, Template? Self = null, EditorLocation? Origin = null);
+internal sealed record ScopeInfo(IReadOnlyDictionary<string, Info> Members, bool Named = false,
+    IReadOnlyDictionary<string, IReadOnlyList<EditorLocation>>? Origins = null);
 internal sealed class Template(int id, FunctionExpr syntax, IReadOnlyList<KeyValuePair<string, Binding>> captures, string source, string sourceName)
 {
     public int Id { get; } = id;
@@ -38,6 +39,7 @@ internal sealed class Frame(string source, string sourceName, ImmutableDictionar
     public int Locals { get; set; }
     public List<Info> Returns { get; } = [];
     public TypeRef? ExpectedReturn { get; set; }
+    public SourceSpan? ExpectedReturnSpan { get; set; }
     public Dictionary<int, int[]> SelfCaptureSlots { get; } = [];
     public List<List<int>> Breaks { get; } = [];
     public List<List<Info>> BreakValues { get; } = [];

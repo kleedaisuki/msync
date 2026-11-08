@@ -174,6 +174,7 @@ public static class Formatter
         {
             if (output.Length == 0 || output[^1] == '\n') return;
             if (previous is not { } prior) return;
+            if (token.Kind == TokenKind.String && prior.Kind == TokenKind.Atom && Parser.WindowsPathPrefix(prior.Text)) return;
             if (prior.Kind is TokenKind.LeftParen or TokenKind.LeftBracket or TokenKind.Select or TokenKind.Slash or TokenKind.Dollar) return;
             if (prior.Kind == TokenKind.Atom && token.Kind == TokenKind.Atom)
             {
