@@ -101,7 +101,7 @@
           "name": "meta.function.msync",
           "beginCaptures": {
             "1": {
-              "name": "entity.name.function.msync"
+              "name": "keyword.declaration.function.msync"
             },
             "3": {
               "name": "entity.name.function.msync"
@@ -143,7 +143,7 @@
           "name": "meta.function.msync",
           "beginCaptures": {
             "1": {
-              "name": "entity.name.function.msync"
+              "name": "keyword.declaration.function.msync"
             },
             "2": {
               "name": "punctuation.definition.parameters.begin.msync"
@@ -180,7 +180,7 @@
           "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(fn)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(?=\\s*\\{)",
           "captures": {
             "1": {
-              "name": "entity.name.function.msync"
+              "name": "keyword.declaration.function.msync"
             },
             "3": {
               "name": "entity.name.function.msync"
@@ -312,11 +312,11 @@
         },
         {
           "match": "(?<![\\p{L}\\p{N}_./\\\\:-])fn(?![\\p{L}\\p{N}_./\\\\-])",
-          "name": "entity.name.function.msync"
+          "name": "keyword.declaration.function.msync"
         },
         {
           "match": "(?<![\\p{L}\\p{N}_./\\\\:-])scope(?![\\p{L}\\p{N}_./\\\\-])",
-          "name": "variable.other.readwrite.msync"
+          "name": "keyword.declaration.scope.msync"
         },
         {
           "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:if|else|match|for|in|loop|break|return)(?![\\p{L}\\p{N}_./\\\\-])",
@@ -376,7 +376,7 @@
       "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(scope)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(?=\\s*\\{)",
       "captures": {
         "1": {
-          "name": "entity.name.type.msync"
+          "name": "keyword.declaration.scope.msync"
         },
         "3": {
           "name": "entity.name.type.msync"

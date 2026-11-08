@@ -56,6 +56,22 @@ async function run() {
         await extension.activate();
         await record('production-extension-active', { extension: extension.id });
 
+        const outlineFile = path.join(workspace, 'editing-outline.msync');
+        const outlinePrefix = Array.from({ length: 5000 }, (_, index) => `let declared_${index} = ${index};\n`).join('');
+        await fs.writeFile(outlineFile, outlinePrefix + 'fn editing(item) {');
+        const outlineDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(outlineFile));
+        await vscode.window.showTextDocument(outlineDocument);
+        for (const tail of ['fn editing(item) {', 'fn editing(item) { item', 'fn editing(item) { item };']) {
+            const change = new vscode.WorkspaceEdit();
+            change.replace(outlineDocument.uri, new vscode.Range(outlineDocument.positionAt(0), outlineDocument.positionAt(outlineDocument.getText().length)), outlinePrefix + tail);
+            assert.ok(await vscode.workspace.applyEdit(change));
+            const outline = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', outlineDocument.uri);
+            assert.ok(outline && outline.some(symbol => symbol.name === 'editing'), JSON.stringify(outline));
+            assert.ok(outline.every(symbol => symbol.range && symbol.selectionRange), 'DocumentSymbols must convert without the SymbolInformation fallback');
+        }
+        await record('document-symbols-while-editing', { declarations: 5001, revisions: 3 });
+        await vscode.window.showTextDocument(document);
+
         const errors = await until('nullable binding diagnostic', () => vscode.languages.getDiagnostics(document.uri),
             values => values.some(value => value.severity === vscode.DiagnosticSeverity.Error && /null|nullable|\?/i.test(value.message)));
         await record('nullable-diagnostic', { messages: errors.map(value => value.message) });
@@ -153,9 +169,9 @@ async function run() {
         const expected = [
             ['MyClass', 'type'], ['new:', 'function'], ['get:', 'function'],
             ['my_instance', 'variable'], ['construct', 'function'], ['ClassAlias', 'type'],
-            ['scope MyClass', 'type'], ['fn()', 'function'], ['fn(some)', 'function'],
+            ['scope MyClass', 'keyword'], ['fn()', 'keyword'], ['fn(some)', 'keyword'],
             ['SomeClass', 'type'], ['remote: ssh', 'variable'],
-            ['anonymous', 'variable'], ['scope { remote', 'variable'], ['Scope =', 'type'],
+            ['anonymous', 'variable'], ['scope { remote', 'keyword'], ['Scope =', 'type'],
             ['if true', 'controlKeyword'], ['else { null', 'controlKeyword'],
             ['? {}', 'controlKeyword'], ['match true', 'controlKeyword'],
         ];

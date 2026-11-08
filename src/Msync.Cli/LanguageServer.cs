@@ -17,6 +17,7 @@ internal sealed partial class LanguageServer(
     private bool semanticRefreshSupported;
     private bool semanticRefreshPending;
     private bool semanticRefreshDirty;
+    private bool hierarchicalDocumentSymbols;
     private bool completionResolveDocumentation;
     private long serverRequest;
     private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "return", "break", "loop", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "Bool", "Range", "String", "Function", "Scope", "Path", "Process", "Connection", "Null", "Number"];
@@ -26,6 +27,11 @@ internal sealed partial class LanguageServer(
         if (method == "initialize")
         {
             InitializeAuthentication(p);
+            hierarchicalDocumentSymbols = p.TryGetProperty("capabilities", out var symbolCapabilities)
+                && symbolCapabilities.TryGetProperty("textDocument", out var textDocumentCapabilities)
+                && textDocumentCapabilities.TryGetProperty("documentSymbol", out var symbolOptions)
+                && symbolOptions.TryGetProperty("hierarchicalDocumentSymbolSupport", out var hierarchy)
+                && hierarchy.ValueKind == JsonValueKind.True;
             completionResolveDocumentation = ResolvesDocumentation(p);
             semanticRefreshSupported = p.TryGetProperty("capabilities", out var capabilities)
                 && capabilities.TryGetProperty("workspace", out var workspace)
@@ -52,7 +58,7 @@ internal sealed partial class LanguageServer(
         }
         if (method == "textDocument/completion") return Completions(document, p, lazyDocumentation: completionResolveDocumentation);
         if (method == "textDocument/semanticTokens/full") return SemanticTokens(document);
-        if (method == "textDocument/documentSymbol") return Symbols(document);
+        if (method == "textDocument/documentSymbol") return Symbols(documentUri, document);
         if (method == "textDocument/definition") return Definition(documentUri, document.Source, p);
         if (method == "textDocument/hover") return Hover(document, p);
         if (method == "textDocument/codeAction") return CodeActions(documentUri, document, p);
@@ -157,7 +163,7 @@ internal sealed partial class LanguageServer(
         return module;
     }
 
-    private static JsonArray Symbols(EditorDocument document)
+    private JsonArray Symbols(string uri, EditorDocument document)
     {
         SourceText source = document.Source;
         JsonArray symbols = [];
@@ -168,7 +174,15 @@ internal sealed partial class LanguageServer(
             JsonObject range = source.Range(match.Groups[2].Index, match.Groups[2].Length);
             inferred.TryGetValue(match.Groups[2].Index, out var occurrence);
             int kind = occurrence?.SemanticRole switch { "function" => 12, "type" => 5, _ => match.Groups[1].Value switch { "fn" => 12, "scope" => 5, _ => 13 } };
-            symbols.Add((JsonNode)new JsonObject { ["name"] = match.Groups[2].Value, ["detail"] = occurrence?.Signature, ["kind"] = kind, ["range"] = range, ["selectionRange"] = range.DeepClone() });
+            JsonObject symbol = new() { ["name"] = match.Groups[2].Value, ["kind"] = kind };
+            if (hierarchicalDocumentSymbols)
+            {
+                symbol["range"] = range;
+                symbol["selectionRange"] = range.DeepClone();
+                if (occurrence is not null) symbol["detail"] = occurrence.Signature;
+            }
+            else symbol["location"] = new JsonObject { ["uri"] = uri, ["range"] = range };
+            symbols.Add((JsonNode)symbol);
         }
         return symbols;
     }
@@ -197,6 +211,7 @@ internal sealed partial class LanguageServer(
             ReadOnlySpan<char> token = text.AsSpan(match.Index, match.Length);
             bool comment = token[0] == '#' || token.StartsWith("//", StringComparison.Ordinal);
             bool quoted = token[0] == '"';
+            bool keyword = !comment && !quoted && IsKeyword(token);
             int separator = !comment && !quoted ? token.IndexOf("://", StringComparison.Ordinal) : -1;
             if (separator >= 0)
             {
@@ -206,15 +221,13 @@ internal sealed partial class LanguageServer(
                 continue;
             }
             int type = comment ? 5 : quoted ? 4 : "?:-=!/$|".AsSpan().Contains(token[0]) ? 8 :
-                IsKeyword(token) ? char.IsUpper(token[0]) ? 3 : 0 :
+                keyword ? char.IsUpper(token[0]) ? 3 : 0 :
                 match.Index > 0 && text[match.Index - 1] == '$' ? 9 : 2;
             if (!comment && !quoted)
             {
-                if (token.SequenceEqual("fn")) type = 1;
-                else if (token.SequenceEqual("scope")) type = AnonymousScope(text, match.Index + match.Length) ? 2 : 3;
-                else if (token.SequenceEqual("?") || ControlFlow(token)) type = 10;
+                if (token.SequenceEqual("?") || ControlFlow(token)) type = 10;
             }
-            if (inferred.TryGetValue(match.Index, out var semantic) && semantic.Span.Length == match.Length)
+            if (!keyword && inferred.TryGetValue(match.Index, out var semantic) && semantic.Span.Length == match.Length)
                 type = semantic.SemanticRole switch { "function" => 1, "type" => 3, _ => 2 };
             AddToken(match.Index, match.Length, type);
         }
@@ -250,17 +263,6 @@ internal sealed partial class LanguageServer(
     private static bool ControlFlow(ReadOnlySpan<char> token) => token.SequenceEqual("if") || token.SequenceEqual("else")
         || token.SequenceEqual("match") || token.SequenceEqual("for") || token.SequenceEqual("in")
         || token.SequenceEqual("return") || token.SequenceEqual("break") || token.SequenceEqual("loop");
-
-    private static bool AnonymousScope(string text, int offset)
-    {
-        while (offset < text.Length)
-        {
-            if (char.IsWhiteSpace(text[offset])) { offset++; continue; }
-            if (text[offset] != '#' && !text.AsSpan(offset).StartsWith("//", StringComparison.Ordinal)) return text[offset] == '{';
-            while (offset < text.Length && text[offset] is not ('\r' or '\n')) offset++;
-        }
-        return false;
-    }
 
     private static bool IsKeyword(ReadOnlySpan<char> token)
     {

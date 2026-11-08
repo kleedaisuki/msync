@@ -289,10 +289,12 @@ CLI help, the short syntax guide (`msync help syntax` or REPL `/syntax`),
 interactive highlighting, bytecode plans, and diagnostics share a theme-adaptive
 16-color vocabulary: cyan for structure and keywords, green for commands,
 Strings and repairs, magenta for types, blue for source gutters, and bold red
-for primary errors. The later role refinement gives `fn` and all known callable
-identifiers the same bright-yellow function color; control flow (including `?`)
-uses magenta. Named Scope declarations and their aliases retain the type role,
-whereas anonymous Scope keywords/instances use the ordinary variable role. They use the terminal's own palette rather than a fixed RGB
+for primary errors. The `fn` and `scope` tokens remain keywords in every
+declaration form. Known callable identifiers retain the bright-yellow function
+role; control flow (including `?`) uses magenta. Named Scope declaration names
+and their aliases retain the type role, whereas anonymous Scope values and
+instances use the ordinary variable role. They use the terminal's own palette
+rather than a fixed RGB
 background. `auto` tests the stream being rendered: redirected stdout does not
 turn off color on terminal stderr, and terminal stdout does not color piped
 stderr. `always` explicitly emits SGR; `never`, `NO_COLOR`, and automatic
@@ -526,3 +528,36 @@ which explicitly supports lazy documentation while preserving insertion and
 filtering fields. The encoded token array uses the AOT-compatible
 [`SerializeToElement` overload with generated `JsonTypeInfo`](https://learn.microsoft.com/dotnet/api/system.text.json.jsonserializer.serializetoelement)
 instead of runtime reflection.
+
+
+## Editing-time document symbols and keyword roles (2026-11-09)
+
+A `textDocument/documentSymbol` request can arrive before semantic analysis has
+finished. A missing signature is represented by an omitted `detail`, not JSON
+`null`. The installed vscode-languageclient 11.0.0 first tests
+`DocumentSymbol.is(first)`: its optional detail is `undefined | string`. A null
+detail rejects that union branch, after which the client interprets the same
+object as `SymbolInformation` and dereferences the absent `location.range`.
+The resulting TypeError was a malformed server response, not an editor range
+that should be swallowed or repaired by client middleware.
+
+The server now negotiates `hierarchicalDocumentSymbolSupport`: true returns
+`DocumentSymbol` objects with `range` and contained `selectionRange`; false or
+absent returns `SymbolInformation` objects with a real `location` URI/range.
+Unknown optional fields are omitted in either representation. The contract
+follows the [LSP document-symbol union](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#documentSymbol),
+and matches Microsoft's [null-omitting optional detail](https://learn.microsoft.com/en-us/dotnet/api/microsoft.visualstudio.languageserver.protocol.documentsymbol.detail).
+
+The actual VS Code 1.144 production bundle exercised immediate document-symbol
+requests across three incomplete/complete edits of a 5,001-declaration document
+without waiting for diagnostics, retaining the real client conversion path.
+That managed-image host passed at `.temp/vscode-host-sD3rYu`; the portable
+regression runner additionally feeds actual server arrays through the installed
+protocol classifier and client converter for hierarchical and flat clients.
+
+Presentation separates tokens from the values they declare: `fn` and `scope`
+use the keyword role; declaration names, aliases and references retain inferred
+function/type/variable roles. Control-flow `if`, `else`, `match` and `?` keep
+their independent control role. This rule is shared by semantic tokens,
+TextMate fallback and the terminal/guide scanner; keyword tokens cannot be
+overridden by an enclosing inferred expression.

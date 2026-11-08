@@ -88,10 +88,11 @@ match file {
 ### Inferred colors and inspection
 
 Function values use the theme's **function** color, including scope members and
-aliases such as `let callback = Module::operation;`, and the `fn` keyword uses
-that same role. Named `scope Name { ... }` declarations and their aliases use the
-**type** color, matching explicit type names. Anonymous `scope { ... }` keywords
-and their resulting values use the ordinary **identifier** color, including
+aliases such as `let callback = Module::operation;`. The `fn` and `scope`
+keywords use the theme's **keyword** color in every declaration form. Names of
+named `scope Name { ... }` declarations and their aliases use the **type** color,
+matching explicit type names. Values of anonymous `scope { ... }` expressions
+use the ordinary **identifier** color, including
 instances returned by constructor-like functions. Their inferred type is still
 Scope: hover and completion retain their declared members. Colors
 come from your VS Code theme; the extension does not impose a dark-only palette.
@@ -182,7 +183,7 @@ acceptance of the rewritten compiler.
 
 The refined product-polish host journey in `.temp/vscode-host-IP92gO` validated
 18 semantic roles: named Scope declarations and aliases, anonymous Scope
-keywords and instances, function keywords and values, explicit types, control
+instances, declaration keywords, function values, explicit types, control
 flow and `?`. It inspected Connection, Bool, String and Path members, displayed
 `fn get(some: Scope) -> Path`, wrapped the long call to 42 columns, and retained
 the typed call context on the failing member expression. It used VS Code 1.144.0

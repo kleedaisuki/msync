@@ -73,8 +73,6 @@ internal static class PromptSyntax
             string word = text[start..position];
             string selected = previous == "$" ? "$" + word : previous == "::" && chain.Length != 0 ? chain + "::" + word : word;
             AnsiColor style = Commands.Contains(word, StringComparer.Ordinal) ? AnsiColor.BrightCyan
-                : word == "fn" ? AnsiColor.BrightYellow
-                : word == "scope" ? AnonymousScope(text, position) ? AnsiColor.BrightBlue : AnsiColor.Magenta
                 : word is "if" or "else" or "match" or "for" or "in" or "loop" or "return" or "break" ? AnsiColor.Magenta
                 : Keywords.Contains(word, StringComparer.Ordinal) ? char.IsUpper(word[0]) ? AnsiColor.Magenta : AnsiColor.Cyan
                 : previous == "$" ? AnsiColor.Magenta
@@ -87,12 +85,6 @@ internal static class PromptSyntax
         return spans;
 
         void Add(AnsiColor style) => spans.Add(new(start, position - start, style));
-    }
-
-    private static bool AnonymousScope(string text, int offset)
-    {
-        while (offset < text.Length && char.IsWhiteSpace(text[offset])) offset++;
-        return offset == text.Length || text[offset] == '{';
     }
 
     private static AnsiColor? DeclaredColor(string text, int offset)
@@ -235,7 +227,7 @@ internal static class PromptSyntax
             || previous > 0 && text[previous] == '>' && text[previous - 1] == '=';
     }
 
-    private static bool InsideLiteral(string text, int offset)
+    internal static bool InsideLiteral(string text, int offset)
     {
         bool quoted = false;
         for (int position = 0; position < offset; position++)
