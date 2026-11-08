@@ -21,6 +21,7 @@ class Example:
     source: str
     expected: bytes
     runtime_timeout: float = 30
+    secondary_outputs: tuple[tuple[str, bytes], ...] = ()
 
 
 EXAMPLES: tuple[Example, ...] = (
@@ -196,6 +197,27 @@ EXAMPLES: tuple[Example, ...] = (
         b"after",
     ),
     Example(
+        "deferred-live-callable",
+        'let operation = fn { "before" }; let deferred = $std::ranges::transform([1], fn(item) { operation() }); operation = fn { "after" }; for item in deferred { item -> ./result; };',
+        b"after",
+    ),
+    Example(
+        "deferred-field-callable",
+        'let object = scope { operation: fn { "before" } }; let deferred = $std::ranges::transform([1], fn(item) { object::operation() }); object::operation = fn { "after" }; for item in deferred { item -> ./result; };',
+        b"after",
+    ),
+    Example(
+        "ordered-direct-callable",
+        'let operation = fn { "before" }; operation() -> ./first-call; operation = fn { "after" }; operation() -> ./result;',
+        b"after",
+        secondary_outputs=(("first-call", b"before"),),
+    ),
+    Example(
+        "generic-callable-contracts",
+        'let identity = fn(value) { value }; identity(true); identity = fn(value) { value }; identity("generic") -> ./result;',
+        b"generic",
+    ),
+    Example(
         "loop-live-callable",
         'let operation = fn { "before" }; let results = ""; for item in [1, 2] { results = $std::string::concat(results, operation()); operation = fn { "after" }; }; results -> ./result;',
         b"beforeafter",
@@ -225,6 +247,18 @@ EXAMPLES: tuple[Example, ...] = (
 )
 
 INVALID: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "callable-result-contract",
+        'let operation = fn { "before" };\noperation() -> ./ignored;\noperation = fn { true };',
+        (
+            "E0213",
+            "Bool",
+            "String",
+            "incompatible callable return type",
+            "this call established",
+            "operation = fn { true }",
+        ),
+    ),
     (
         "inferred-slot-type",
         'let value = true; value = "text";',
@@ -377,13 +411,17 @@ def run_example(binary: Path, directory: Path, example: Example) -> int:
         successful(
             binary, directory, ["run", str(target)], timeout=example.runtime_timeout
         )
-        assert result.read_bytes() == example.expected, (
-            example.name,
-            target.suffix,
-            example.expected,
-            result.read_bytes(),
-        )
-        result.unlink()
+        expected_outputs = (("result", example.expected), *example.secondary_outputs)
+        for name, payload in expected_outputs:
+            output = directory / name
+            assert output.read_bytes() == payload, (
+                example.name,
+                target.suffix,
+                name,
+                payload,
+                output.read_bytes(),
+            )
+            output.unlink()
     return len(stages)
 
 
@@ -431,6 +469,91 @@ def run_repl(binary: Path, directory: Path) -> int:
     return len(expected)
 
 
+def run_deferred_repl(binary: Path, directory: Path) -> int:
+    submissions = [
+        'let operation = fn { "before" }; let deferred = $std::ranges::transform([1], fn(item) { operation() });',
+        'operation = fn { "after" };',
+        "for item in deferred { item -> ./repl-deferred; };",
+        "/quit",
+    ]
+    result = subprocess.run(
+        [str(binary), "--no-config", "--no-telemetry", "repl"],
+        input="\n".join(submissions) + "\n",
+        cwd=directory,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0 and not result.stderr, (result.stdout, result.stderr)
+    output = directory / "repl-deferred"
+    assert output.exists() and output.read_bytes() == b"after", (
+        result.stdout,
+        result.stderr,
+        output.read_bytes() if output.exists() else None,
+    )
+    return 1
+
+
+def run_contextual_deferred_repl(binary: Path, directory: Path) -> int:
+    before = directory / "context-a"
+    after = directory / "context-b"
+    before.mkdir()
+    after.mkdir()
+    for folder, prefix in ((before, "A"), (after, "B")):
+        for name in ("a", "b"):
+            (folder / name).write_bytes(f"{prefix}/{name}".encode())
+
+    def quoted(path: Path) -> str:
+        return '"' + str(path).replace('"', '""') + '"'
+
+    cases: tuple[tuple[str, str | None, bytes], ...] = (
+        ("old-literal", None, b"A/a"),
+        ("new-literal", "operation = fn { ./b };", b"A/b"),
+        (
+            "captured-path",
+            "let captured = ./b; operation = fn { captured };",
+            b"B/b",
+        ),
+    )
+    for name, replacement, expected in cases:
+        output = directory / f"repl-context-{name}"
+        submissions = [
+            "/cd " + quoted(before),
+            "let operation = fn { ./a }; let deferred = $std::ranges::transform([1], fn(item) { operation() });",
+            "/cd " + quoted(after),
+        ]
+        if replacement is not None:
+            submissions.append(replacement)
+        submissions.extend(
+            ["for item in deferred { item -> " + quoted(output) + "; };", "/quit"]
+        )
+        result = subprocess.run(
+            [str(binary), "--no-config", "--no-telemetry", "repl"],
+            input="\n".join(submissions) + "\n",
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=30,
+        )
+        assert result.returncode == 0 and not result.stderr, (
+            name,
+            result.stdout,
+            result.stderr,
+        )
+        assert output.exists() and output.read_bytes() == expected, (
+            name,
+            expected,
+            output.read_bytes() if output.exists() else None,
+            result.stdout,
+            result.stderr,
+        )
+    return len(cases)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
@@ -452,7 +575,7 @@ def main() -> None:
         names: set[str] = (
             {example.name for example in EXAMPLES}
             | {name for name, _, _ in INVALID}
-            | {"repl"}
+            | {"repl", "deferred-repl", "deferred-repl-context"}
         )
         assert selected <= names, f"Unknown cases: {selected - names}"
         for example in EXAMPLES + (
@@ -478,6 +601,18 @@ def main() -> None:
             repl_results = run_repl(binary, directory)
             print(
                 "PASS repl: accepted live state across submissions and rejected store",
+                flush=True,
+            )
+        if not selected or "deferred-repl" in selected:
+            repl_results += run_deferred_repl(binary, directory)
+            print(
+                "PASS deferred-repl: lazy callback sees later accepted callable",
+                flush=True,
+            )
+        if not selected or "deferred-repl-context" in selected:
+            repl_results += run_contextual_deferred_repl(binary, directory)
+            print(
+                "PASS deferred-repl-context: caller cwd and captured Path identity",
                 flush=True,
             )
     print(
