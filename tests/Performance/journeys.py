@@ -26,6 +26,12 @@ CASES = (
     "copy-tree-source",
     "copy-tree-object",
 )
+VALUE_CASES = {
+    "check-values": ("check", "msync"),
+    "values-source": ("run", "msync"),
+    "values-object": ("run", "object"),
+    "values-bound": ("run-ir", "bound"),
+}
 
 
 @dataclass(frozen=True)
@@ -143,6 +149,22 @@ def source(image: Image, text: str) -> str:
     return "\n".join(line + suffix for line in text.splitlines()) + "\n"
 
 
+def values_source(image: Image, statements: int) -> str:
+    if image.name == "rust":
+        function = "symbol route(value):\n    return value\n\n"
+        bindings = "".join(
+            f'value_{index} := route("payload_{index}")\n'
+            for index in range(statements)
+        )
+        return function + bindings + f"value_{statements - 1} -> values-result.txt\n"
+    function = "fn route(value: String) { value };\n"
+    bindings = "".join(
+        f'let value_{index} = route("payload_{index}");\n'
+        for index in range(statements)
+    )
+    return function + bindings + f"value_{statements - 1} -> values-result.txt;\n"
+
+
 def prepare(
     image: Image,
     root: Path,
@@ -150,6 +172,7 @@ def prepare(
     file_bytes: int,
     ordinary_bytes: int | None = None,
     statements: int = 128,
+    include_values: bool = False,
 ) -> Path:
     workspace = root / image.name
     workspace.mkdir(parents=True, exist_ok=True)
@@ -188,12 +211,53 @@ def prepare(
             ],
             workspace,
         )
+    if include_values:
+        script = workspace / "values.msync"
+        script.write_text(values_source(image, statements), encoding="utf-8")
+        invoke(
+            image,
+            [
+                "--no-config",
+                "compile",
+                str(script),
+                "-o",
+                str(workspace / f"values.{extension}"),
+            ],
+            workspace,
+        )
+        binding = (
+            [
+                "emit-ir",
+                str(script),
+                "--ir-stage",
+                "contextual",
+                "-o",
+                str(workspace / "values.json"),
+            ]
+            if image.name == "rust"
+            else [
+                "bind-ir",
+                str(workspace / "values.mso"),
+                "-o",
+                str(workspace / "values.mexe"),
+            ]
+        )
+        invoke(image, ["--no-config", *binding], workspace)
     return workspace
 
 
 def arguments(image: Image, case: str, workspace: Path) -> list[str]:
     if case == "startup":
         return ["--version"]
+    if case in VALUE_CASES:
+        command, kind = VALUE_CASES[case]
+        extensions = {
+            "msync": "msync",
+            "object": "mobj" if image.name == "rust" else "mso",
+            "bound": "json" if image.name == "rust" else "mexe",
+        }
+        extension = extensions[kind]
+        return ["--no-config", command, str(workspace / f"values.{extension}")]
     if case.startswith("check-"):
         name = "small" if case == "check-small" else "batch"
         return ["--no-config", "check", str(workspace / f"{name}.msync")]
@@ -208,7 +272,14 @@ def arguments(image: Image, case: str, workspace: Path) -> list[str]:
     return ["--no-config", "run", str(workspace / f"{name}.{extension}")]
 
 
-def verify(case: str, workspace: Path, file_count: int) -> None:
+def verify(case: str, workspace: Path, file_count: int, statements: int = 128) -> None:
+    if case in VALUE_CASES and case != "check-values":
+        assert (
+            workspace / "values-result.txt"
+        ).read_bytes() == f"payload_{statements - 1}".encode(), (
+            "Typed function/binding result differs"
+        )
+        return
     if not case.startswith("copy-"):
         return
     if case.startswith("copy-file"):
@@ -241,11 +312,14 @@ def measure(
     file_count: int,
     checkpoint: Callable[[Sequence[Measurement], dict[str, object] | None], None]
     | None = None,
+    statements: int = 128,
 ) -> list[Measurement]:
     measurements: list[Measurement] = []
     for case in cases:
         try:
-            values = sample_case(images, workspaces, case, warmups, samples, file_count)
+            values = sample_case(
+                images, workspaces, case, warmups, samples, file_count, statements
+            )
         except SamplingFailure as error:
             if checkpoint is not None:
                 checkpoint(measurements, error.details)
@@ -279,6 +353,7 @@ def sample_case(
     warmups: int,
     samples: int,
     file_count: int,
+    statements: int,
 ) -> dict[str, list[float]]:
     values: dict[str, list[float]] = {image.name: [] for image in images}
     for iteration in range(warmups + samples):
@@ -287,7 +362,7 @@ def sample_case(
             workspace = workspaces[image.name]
             try:
                 elapsed = invoke(image, arguments(image, case, workspace), workspace)
-                verify(case, workspace, file_count)
+                verify(case, workspace, file_count, statements)
             except (InvocationFailure, AssertionError, OSError) as error:
                 details: dict[str, object] = (
                     error.details.copy()
@@ -319,7 +394,7 @@ def main() -> None:
     parser.add_argument(
         "--aot", type=Path, required=True, help="Native AOT 0.8.0 executable"
     )
-    parser.add_argument("--case", choices=CASES, action="append")
+    parser.add_argument("--case", choices=(*CASES, *VALUE_CASES), action="append")
     parser.add_argument("--samples", type=int, default=31)
     parser.add_argument("--warmups", type=int, default=3)
     parser.add_argument("--files", type=int, default=256)
@@ -350,6 +425,7 @@ def main() -> None:
             options.bytes,
             options.file_bytes,
             options.statements,
+            any(case in VALUE_CASES for case in options.case or ()),
         )
         for image in images
     }
@@ -415,6 +491,7 @@ def main() -> None:
         options.samples,
         options.files,
         checkpoint,
+        options.statements,
     )
     for image in images:
         if digest(Path(image.executable)) != image.sha256:

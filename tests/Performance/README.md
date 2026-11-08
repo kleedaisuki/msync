@@ -40,6 +40,14 @@ size and `--bytes` its member size. `--file-bytes` independently selects the sin
 file size; `--statements` selects the batch-check source size. Use `--case` to
 avoid repeating unaffected work when changing one component.
 
+To expose retained-local/function costs rather than only zero-local transfer
+lists, select `--case check-values`, `values-source`, `values-object` or
+`values-bound` with `--statements 1024`. Both versions define a generic identity
+function and 1,024 bindings, then publish the last String as actual file bytes.
+The old version uses symbol/typed aliases and its own object/contextual IR;
+0.8 uses typed functions, `.mso` and `.mexe`. The default seven cases are unchanged.
+These optional cases construct their artifacts once outside measured intervals.
+
 For a controlled optimization within 0.8, replace `--rust OLD` with
 `--previous-aot BEFORE` and keep `--aot AFTER`. Both images then use the same
 0.8 source and `.mso` format; only the changed runtime contract needs measuring.
