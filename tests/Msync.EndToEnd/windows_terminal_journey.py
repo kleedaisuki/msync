@@ -263,6 +263,18 @@ def run(binary: Path, directory: Path, phases: list[str]) -> dict[str, object]:
         terminal.evaluate("terminal_fn()", "MULTILINE_OK")
         phases.append("multiline braces and comments")
 
+        terminal.key('"first')
+        terminal.key("\r")
+        terminal.key('second" -> multiline.txt;')
+        submitted = len(terminal.plain)
+        terminal.send("\r")
+        literal = directory / "multiline.txt"
+        terminal.until(literal.exists, "interactive multiline String publication")
+        terminal.prompt(submitted)
+        assert literal.read_bytes() == b"first\nsecond", literal.read_bytes()
+        terminal.evaluate("terminal_fn()", "MULTILINE_OK")
+        phases.append("ordinary Enter inserts LF String bytes and preserves session")
+
         (directory / "read-foreground.py").write_text(
             "from pathlib import Path\n"
             "Path('child-ready').write_text('ready')\n"
