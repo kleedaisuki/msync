@@ -8,9 +8,9 @@ namespace Msync.Runtime;
 
 public sealed partial class Interpreter
 {
-    private readonly Module module;
+    private Module module;
     private readonly RuntimeContext context;
-    private readonly BasicBlock[][] blocks;
+    private BasicBlock[][] blocks;
     private readonly SemaphoreSlim slots;
     private readonly HashSet<IAsyncDisposable> iterators = [];
     private readonly Dictionary<string, IReadOnlyDictionary<int, int>> dispatchTables = [];
@@ -21,12 +21,7 @@ public sealed partial class Interpreter
     public Interpreter(Module module, ExecutionOptions? options = null)
     {
         context = new(options, module.Context);
-        this.module = module.Stage == ArtifactStage.Relocatable
-            ? Binding.Bind(module, new(context.WorkingDirectory, context.HomeDirectory, context.SourceFile)) : module;
-        if (this.module.Blocks is null) this.module = Optimizer.FormBlocks(this.module);
-        blocks = this.module.Functions.Select(function => new BasicBlock[function.Instructions.Count]).ToArray();
-        foreach (var block in this.module.Blocks!)
-            for (var pc = block.Start; pc < block.End; pc++) blocks[block.Function][pc] = block;
+        (this.module, blocks) = ProjectImage(module);
         slots = new(Math.Max(1, Math.Min(context.Jobs, (int)Math.Min(int.MaxValue, context.MemoryLimit / Math.Max(1, context.BufferSize)))));
     }
     public static ValueTask<Value> ExecuteAsync(Module module, ExecutionOptions? options = null, CancellationToken cancellationToken = default)
@@ -64,6 +59,7 @@ public sealed partial class Interpreter
     }
     private ValueTask<Value> RunFunctionAsync(int functionIndex, IReadOnlyList<Value> captures, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
     {
+        RefreshSessionImage();
         var function = module.Functions[functionIndex];
         if (arguments.Count != function.ParameterCount) throw new MsyncException($"Function '{function.Name}' expects {function.ParameterCount} arguments, received {arguments.Count}");
         var locals = new Value[function.LocalCount];
@@ -493,6 +489,7 @@ public sealed class ExecutionSession(ExecutionOptions? options = null)
     private sealed record UninitializedValue : Value { public override TypeRef Type => new(TypeKind.Never); }
     private static readonly Value Uninitialized = new UninitializedValue();
     private Value[] locals = [];
+    private SessionImage? image;
     private Value ReadSessionLocal(int slot) => locals[slot] is CellValue cell ? cell.Data : locals[slot];
     public bool IsLocalInitialized(int slot) => (uint)slot < (uint)locals.Length && !ReferenceEquals(ReadSessionLocal(slot), Uninitialized);
     public Value? GetLocalValue(int slot) => IsLocalInitialized(slot) ? ReadSessionLocal(slot) : null;
@@ -501,6 +498,11 @@ public sealed class ExecutionSession(ExecutionOptions? options = null)
         var count = module.Functions[module.EntryPoint].LocalCount;
         var previousLength = locals.Length; Array.Resize(ref locals, count);
         for (var i = previousLength; i < count; i++) locals[i] = Uninitialized;
-        return new Interpreter(module with { PreserveLocals = true }, options).ExecuteEntryAsync(locals, startInstruction, cancellationToken);
+        module = module with { PreserveLocals = true };
+        if (image is null) image = new(module);
+        else image.Publish(module);
+        var interpreter = new Interpreter(module, options);
+        interpreter.Attach(image);
+        return interpreter.ExecuteEntryAsync(locals, startInstruction, cancellationToken);
     }
 }
