@@ -48,6 +48,46 @@ def semantic_prompt_cases(terminal: Terminal) -> dict[str, int]:
     }
 
 
+def captured_path_cases(binary: Path, directory: Path) -> dict[str, int]:
+    old = directory / "old"
+    new = directory / "new"
+    for parent, payload in [
+        (old, b"CAPTURED_ORIGINAL_CONTEXT"),
+        (new, b"WRONG_CURRENT_CONTEXT"),
+    ]:
+        (parent / "base").mkdir(parents=True)
+        (parent / "base/item.txt").write_bytes(payload)
+    terminal = Terminal(binary, old, no_color=False)
+    try:
+        terminal.until(lambda: "> " in terminal.plain, "original context prompt")
+        terminal.evaluate(
+            'let captured = ./base; let holder = scope { dir: captured }; fn saved() { captured }; "READY"',
+            "READY",
+        )
+        start = len(terminal.plain)
+        terminal.key(("/cd " + '"' + str(new).replace('"', '""') + '"').encode())
+        terminal.send(b"\r")
+        terminal.prompt(start)
+        terminal.evaluate("/pwd", str(new))
+        for index, expression in enumerate(
+            ["captured/ite", "holder::dir/ite", "saved()/ite"]
+        ):
+            start = len(terminal.plain)
+            terminal.key(expression.encode())
+            terminal.key(b"\t")
+            terminal.key(b"\t")
+            terminal.key(f' -> ./result-{index}; "COPIED_{index}"'.encode())
+            terminal.send(b"\r")
+            terminal.prompt(terminal.line(f"COPIED_{index}", start))
+            assert (
+                new / f"result-{index}"
+            ).read_bytes() == b"CAPTURED_ORIGINAL_CONTEXT", expression
+            assert not (old / f"result-{index}").exists()
+        return {"captured_path_completion_after_cd": 3}
+    finally:
+        terminal.finish(directory / "captured-context.raw")
+
+
 def run(binary: Path, directory: Path) -> dict[str, int]:
     terminal = Terminal(binary, directory, no_color=False)
     try:
@@ -164,7 +204,9 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         assert "ype" not in plain.plain[start:], plain.plain[start:]
     finally:
         plain.finish(directory / "plain-terminal.raw")
+    context = captured_path_cases(binary, directory / "contexts")
     return {
+        **context,
         **semantic,
         "ghost_keyword_acceptance": 1,
         "enter_preserves_typed_source": 1,

@@ -378,6 +378,81 @@ def lexical_scope_queries(binary: Path, directory: Path) -> dict[str, int]:
         client.close()
 
 
+def alias_path_queries(binary: Path, directory: Path) -> dict[str, int]:
+    actual = directory / "actual"
+    actual.mkdir()
+    (actual / "file.txt").write_bytes(b"REAL_PATH_VALUE")
+    for trap in ["folder", "fi"]:
+        (directory / trap).mkdir()
+        (directory / trap / "false-candidate.txt").write_bytes(
+            b"DO_NOT_READ_ALIAS_SPELLING"
+        )
+    client = Client(binary, cwd=directory)
+    uri = (directory / "alias-editing.msync").as_uri()
+    cases = [
+        ("let folder = ./actual;\nfolder/fi", "folder/"),
+        ("scope Config { root: ./actual };\nConfig::root/fi", "Config::root/"),
+        ("fn factory() { ./actual };\nfactory()/fi", "factory()/"),
+        ('let text = "./actual";\ntext/fi', "text/"),
+    ]
+    try:
+        client.request(
+            "initialize", {"rootUri": directory.as_uri(), "capabilities": {}}
+        )
+        for version, (prefix, retained) in enumerate(cases, 1):
+            text = prefix + " -> ./alias-output;\n"
+            notify(client, uri, version, text, opening=version == 1)
+            response, _ = client.request(
+                "textDocument/completion",
+                {
+                    "textDocument": {"uri": uri},
+                    "position": lsp_position(text, len(prefix)),
+                },
+            )
+            matches = [
+                item
+                for item in response
+                if "file.txt" in item.get("textEdit", {}).get("newText", "")
+            ]
+            assert len(matches) == 1 and "Path" in matches[0].get("detail", ""), (
+                prefix,
+                response,
+            )
+            edited = apply_edit(text, matches[0]["textEdit"])
+            assert retained + '"file.txt"' in edited, edited
+            source = directory / "alias-run.msync"
+            source.write_text(edited, encoding="utf-8")
+            result = subprocess.run(
+                [str(binary), "--no-config", "run", str(source)],
+                cwd=directory,
+                capture_output=True,
+                check=False,
+                timeout=15,
+            )
+            assert result.returncode == 0, (edited, result.stderr)
+            assert (directory / "alias-output").read_bytes() == b"REAL_PATH_VALUE", (
+                edited
+            )
+        unknown = "fn unknown(fi: Path) { fi/fa"
+        notify(client, uri, len(cases) + 1, unknown)
+        response, _ = client.request(
+            "textDocument/completion",
+            {
+                "textDocument": {"uri": uri},
+                "position": lsp_position(unknown, len(unknown)),
+            },
+        )
+        items = {item["label"]: item for item in response}
+        assert "fi" in items and "Path" in (items["fi"].get("detail") or ""), items
+        assert not any("false-candidate" in str(item) for item in response), response
+        return {
+            "known_path_alias_actual_reads": len(cases),
+            "unknown_path_alias_no_io_guess": 1,
+        }
+    finally:
+        client.close()
+
+
 def remote_queries(
     binary: Path,
     directory: Path,
@@ -385,6 +460,7 @@ def remote_queries(
     remote: str,
     environment: dict[str, str],
     change: Callable[[str], None],
+    before_transfer: Callable[[], None] | None = None,
 ) -> dict[str, int]:
     client = Client(binary, cwd=directory, environment=environment)
     uri = (directory / "remote-editing.msync").as_uri()
@@ -395,17 +471,25 @@ def remote_queries(
         )
 
         def query(
-            prefix: str, *, alias: bool = False, shadowed: bool = False
+            prefix: str,
+            *,
+            alias: bool = False,
+            shadowed: bool = False,
+            stored: bool = False,
         ) -> tuple[str, list[dict[str, Any]]]:
             nonlocal version
             version += 1
-            declaration = f"let remote = {endpoint};\n" if alias else ""
+            declaration = f"let remote = {endpoint};\n" if alias or stored else ""
             if shadowed:
                 declaration += (
                     "{ let remote = ssh://msync-unselected.invalid; null; };\n"
                 )
             qualifier = "remote" if alias else endpoint
-            fragment = qualifier + "::" + remote + "/" + prefix
+            if stored:
+                declaration += "let folder = remote::" + quote(remote) + ";\n"
+                fragment = "folder/" + prefix
+            else:
+                fragment = qualifier + "::" + remote + "/" + prefix
             text = (
                 declaration + "let selected = " + fragment + ";\ndecltype(selected)\n"
             )
@@ -421,9 +505,14 @@ def remote_queries(
             return text, cast(list[dict[str, Any]], response)
 
         def chosen(
-            prefix: str, basename: str, *, alias: bool = False, shadowed: bool = False
+            prefix: str,
+            basename: str,
+            *,
+            alias: bool = False,
+            shadowed: bool = False,
+            stored: bool = False,
         ) -> str:
-            text, items = query(prefix, alias=alias, shadowed=shadowed)
+            text, items = query(prefix, alias=alias, shadowed=shadowed, stored=stored)
             matches = [
                 item
                 for item in items
@@ -433,7 +522,9 @@ def remote_queries(
             item = matches[0]
             assert "Path" in item.get("detail", ""), item
             edited = apply_edit(text, item["textEdit"])
-            assert ("remote::" if alias else endpoint + "::") in edited, edited
+            assert ("remote::" if alias or stored else endpoint + "::") in edited, (
+                edited
+            )
             native_run(binary, environment, directory, edited, "Path")
             return edited
 
@@ -442,9 +533,29 @@ def remote_queries(
         chosen("pl", "plain.txt", alias=True, shadowed=True)
         change("touch " + shlex.quote(remote + "/plain-new-after-query.txt"))
         chosen("pl", "plain-new-after-query.txt")
+        stored = chosen("pl", "plain.txt", stored=True)
+        assert 'folder/"plain.txt"' in stored, stored
+        if before_transfer is not None:
+            before_transfer()
+        script = stored.replace(
+            "decltype(selected)\n", "selected -> ./remote-alias-output;\n"
+        )
+        source = directory / "remote-alias-read.msync"
+        source.write_text(script, encoding="utf-8")
+        transferred = subprocess.run(
+            [str(binary), "--no-config", "run", str(source)],
+            cwd=directory,
+            env=environment,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+        assert transferred.returncode == 0, (script, transferred.stderr)
+        assert (directory / "remote-alias-output").read_bytes() == b"remote", script
         return {
-            "remote_endpoint_queries": 4,
-            "remote_alias_completion": 2,
+            "remote_endpoint_queries": 5,
+            "remote_alias_completion": 3,
+            "remote_stored_path_actual_read": 1,
             "restored_outer_endpoint_after_shadow": 1,
             "remote_refresh_visible": 1,
         }
@@ -505,12 +616,24 @@ def ssh_fixture(binary: Path, directory: Path) -> dict[str, int]:
             assert result.returncode == 0, (result.stdout, result.stderr)
 
         before = len(lines(fixture.calls))
+
+        def completed_queries() -> None:
+            calls = lines(fixture.calls)[before:]
+            assert calls.count("ssh") == 1 and "scp" not in calls, calls
+
         result = remote_queries(
-            binary, directory, "ssh://Perf_Fixture", str(remote), environment, change
+            binary,
+            directory,
+            "ssh://Perf_Fixture",
+            str(remote),
+            environment,
+            change,
+            completed_queries,
         )
         calls = lines(fixture.calls)[before:]
-        assert calls.count("ssh") == 1 and "scp" not in calls, calls
+        assert calls.count("ssh") == 2 and "scp" not in calls, calls
         result["retained_native_ssh_clients"] = 1
+        result["selected_cli_transfer_ssh_clients"] = 1
         return result
 
 
@@ -533,6 +656,7 @@ def main() -> None:
         working = Path(directory).resolve()
         result = run(binary, working)
         result.update(lexical_scope_queries(binary, working))
+        result.update(alias_path_queries(binary, working))
         if arguments.wsl_distro:
             result.update(wsl(binary, working, arguments.wsl_distro))
         if arguments.ssh_fixture:
