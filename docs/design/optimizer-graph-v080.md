@@ -132,3 +132,20 @@ The constant pool, dataflow meets and value-number keys use bit-exact
 negative zero and NaN payloads without changing range `contains`/`find`/`unique`
 or ordinary comparison semantics. A successful `x == 0` predicate therefore
 does not replace x by a particular signed-zero representation.
+
+## Research connections and validation model
+
+[Wegman and Zadeck's conditional constant propagation](https://research.ibm.com/publications/constant-propagation-with-conditional-branches--1)
+connects executable-edge discovery with constant meets. Our predicate analysis
+uses that connection, but represents block states rather than claiming a full
+sparse SSA implementation. Captured-cell writes invalidate both value facts and
+predicate identities; an infeasible predecessor must not pollute a live join.
+
+[Alive2's translation-validation approach](https://web.ist.utl.pt/nuno.lopes/pubs.php?id=alive2-pldi21)
+motivates checking transformations against an independent execution control,
+including errors and floating-point representation, rather than testing only
+the optimizer's expected instruction shape. The current differential and
+property probes are executable counterexample searches, not SMT proofs. Their
+control must truly be O0: automatic context binding otherwise invokes the
+module's configured optimizer. LLVM's undefined-behavior model is not imported
+into msync's mutable locations, deferred effects or observable divergence.
