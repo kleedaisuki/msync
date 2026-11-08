@@ -99,7 +99,7 @@ def runtime(binary: Path, directory: Path) -> dict[str, int]:
         assert checked.returncode == 0, (source, checked.stderr)
         formatted = invoke(binary, directory, ["fmt", str(program), "--stdout"])
         assert formatted.returncode == 0, formatted.stderr
-        program.write_text(formatted.stdout, encoding="utf-8")
+        program.write_bytes(formatted.stdout.encode("utf-8"))
         again = invoke(binary, directory, ["fmt", str(program), "--check"])
         assert again.returncode == 0, (source, again.stderr)
         executed = invoke(binary, directory, ["run", str(program)])
