@@ -1,6 +1,9 @@
 namespace Msync.Compiler.Syntax;
 
-public sealed record EditorParseResult(Document Document, SyntaxException? Error, int? IncompleteStart = null);
+public sealed record EditorParseResult(Document Document, SyntaxException? Error, int? IncompleteStart = null)
+{
+    public IReadOnlyList<SourceSpan> RegexSpans { get; init; } = [];
+}
 
 public sealed class Parser
 {
@@ -31,6 +34,8 @@ public sealed class Parser
     public static EditorParseResult ParseForEditor(string source, string sourceName = "<source>")
     {
         var tokens = new Lexer(source, sourceName).LexForEditor(out SyntaxException? error);
+        var regexSpans = tokens.Where(token => token.Kind == TokenKind.Regex).Select(token => token.Span).ToList();
+        if (error is { IsIncomplete: true } && source[error.Span.Start] == '<') regexSpans.Add(error.Span);
         Parser parser = new(source, sourceName, tokens, editorMode: true, error);
         List<Statement> statements = [];
         try { _ = parser.Statements(TokenKind.End, statements); }
@@ -39,7 +44,7 @@ public sealed class Parser
             if (error is null || syntax.Span.Start < error.Span.Start) error = syntax;
         }
         SyntaxException? first = parser.firstError ?? error;
-        return new(new(statements, new(0, source.Length)) { EditorError = first }, first, parser.incompleteRoot);
+        return new(new(statements, new(0, source.Length)) { EditorError = first }, first, parser.incompleteRoot) { RegexSpans = regexSpans };
     }
     private Token Current => tokens[position];
     private Token Previous => tokens[Math.Max(0, position - 1)];

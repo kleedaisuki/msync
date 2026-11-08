@@ -14,6 +14,7 @@ public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrence
     IReadOnlyList<SemanticMember>? RecoveryBindings = null, int? RecoveryStart = null)
 {
     internal EditorContextCollector? Contexts { get; init; }
+    public IReadOnlyList<SourceSpan> RegexSpans { get; init; } = [];
     public EditorContext At(int offset) => Contexts?.At(offset) ?? new(RecoveryBindings ?? [], null);
 }
 
@@ -57,9 +58,11 @@ public static class EditorCompiler
         IReadOnlyList<SemanticMember>? recovery = null;
         int? recoveryStart = null;
         Compilation? compilation = null;
+        IReadOnlyList<SourceSpan> regexSpans = [];
         try
         {
             EditorParseResult parsed = Parser.ParseForEditor(source, sourceName);
+            regexSpans = parsed.RegexSpans;
             Document document = parsed.Document;
             diagnostic = parsed.Error?.Diagnostic;
             Seed(document.Statements, source, syntax);
@@ -89,7 +92,7 @@ public static class EditorCompiler
         foreach (var (span, observation) in inferred)
             syntax[span] = Describe(span, observation.Name, observation.Values.Values, scopeDescriptions);
         return new(syntax.Values.OrderBy(item => item.Span.Start).ThenBy(item => item.Span.Length).ToArray(), diagnostic, recovery, recoveryStart)
-        { Contexts = compilation?.EditorContexts };
+        { Contexts = compilation?.EditorContexts, RegexSpans = regexSpans };
     }
 
     private sealed class Observation(string? name)

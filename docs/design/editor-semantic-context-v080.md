@@ -16,6 +16,12 @@ and diagnostic remain unchanged. Recovery does not append guessed source text,
 split on semicolons in Strings, or turn an unfinished function into an unrelated
 top-level prefix.
 
+The editor parse result also retains regex token spans from that same lexer
+stream, including an unfinished regex's original lexical diagnostic span.
+Semantic coloring consumes these ranges directly; regex content such as `fn`,
+`scope` or `?` must not be reclassified as surrounding language syntax. Strings,
+comments and ordinary comparison operators do not produce regex ranges.
+
 In particular, `fn f(arg) { let local = scope { x: ./ }; local::` retains the
 function, parameter, completed local binding, member receiver, and missing member.
 The strict compiler still rejects that text. The editor has enough structure to
@@ -95,6 +101,34 @@ initializer, or closing delimiter. Tests apply the resulting source edits and
 check ordinary compilation where the completed program is valid. Diagnostics,
 hover, member completion, and endpoint selection must agree on the same source
 generation and lexical context.
+
+## Static path values
+
+Typed descriptors retain a concrete-or-unknown `KnownPath` or `KnownText` fact
+for literals, aliases and Scope fields. These facts describe values, not
+filesystem observations. Pure joins and physical qualification reuse
+`PathSemantics`; no source is executed and no cwd, home directory, environment
+variable or search-path lookup is frozen by inference. Contextual endpoint
+projections therefore remain unknown when their result depends on execution.
+
+Implicit Path/String conversions update both the inferred type and the literal
+fact. A branch join or a polymorphic source occurrence retains a value only when
+all alternatives agree. Type-shared generic parameters forget scalar and Range
+item literal facts, so the first invocation cannot choose a later invocation's
+completion directory. Exact immutable Scope identities retain their member
+facts under the existing specialization contract.
+
+Materializing derived Path values is editor-only; ordinary compilation does not
+allocate extra joined path strings for presentation. Facts are not serialized
+into artifacts or included in specialization keys. A slash selection records its
+typed left receiver, allowing completion after a known path-producing function
+without a second expression evaluator. Accepted REPL values require their actual
+captured path context rather than projecting an old binding through a new cwd.
+
+`tests/Msync.Compiler.Tests --static-paths` covers literal and nested member
+aliases, pure joins and qualification, annotated and explicit returns, ambiguous
+branches, generic isolation, incomplete slash receivers and byte-for-byte
+artifact stability around editor analysis.
 
 ## Research connection
 
