@@ -163,8 +163,19 @@ class Terminal:
 
     def key(self, value: str) -> None:
         start = len(self.raw)
+        text_start = len(self.plain)
         self.send(value)
-        self.until(lambda: len(self.raw) > start, f"render key {value!r}")
+        if all(character >= " " and character != "\x7f" for character in value):
+            # Wait for the complete paint before sending Enter. Otherwise the
+            # reader can legitimately batch the tail and Enter as pasted text.
+            self.until(
+                lambda: (
+                    value in self.plain[text_start:].replace("\r", "").replace("\n", "")
+                ),
+                f"render text {value!r}",
+            )
+        else:
+            self.until(lambda: len(self.raw) > start, f"render key {value!r}")
 
     def line(self, value: str, start: int = 0) -> int:
         expected = re.compile(r"\r?\n" + re.escape(value) + r"\r?\n")
