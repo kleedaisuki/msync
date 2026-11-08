@@ -131,6 +131,13 @@ owned by the native SSH client. An unselected branch does not authenticate an
 endpoint. One finite remote transfer owns one native connection/channel,
 including metadata and bytes.
 
+The SSH/WSL endpoint provides a POSIX `sh` and GNU `tar`, `findutils` and
+`coreutils` (`stat`, `touch`, and the standard byte utilities). The transport
+uses their archive, selector and nanosecond-metadata operations; they are normally
+present in Ubuntu-based WSL distributions. A minimal Alpine endpoint needs the
+corresponding packages (`apk add tar findutils coreutils`). They are endpoint
+tools, not dependencies of local-only copying or the installed .NET AOT runtime.
+
 ```rust
 let remote = ssh://forge;
 for file in ~/.codex/<.+> {
