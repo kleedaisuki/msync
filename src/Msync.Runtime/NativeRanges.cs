@@ -13,11 +13,30 @@ public static partial class NativeRegistry
         RangeValue source = args[0] as RangeValue ?? throw new MsyncException($"ranges.{name} expects Range");
         if (name is "identity" or "all" or "as_const" or "as_rvalue" or "common") return source;
         if (name is "filter" or "transform" or "take_while" or "drop_while")
-            return new RangeValue(CallbackRange(source, name, args[1], invoke, token), name == "transform" ? TypeRef.Any : source.ItemType);
+            return Adapt(source, name == "transform" ? TypeRef.Any : source.ItemType,
+                (range, cancellation) => CallbackRange(range, name, args[1], invoke, cancellation), token);
         if (name is "take" or "drop" or "stride" or "step")
-            return new RangeValue(CountedRange(source, name, Count(args[1], name), token), source.ItemType);
-        if (name is "reverse" or "unique") return new RangeValue(OrderedRange(source, name, token), source.ItemType);
+        {
+            int count = Count(args[1], name);
+            if (name == "take" && count == 0) return new RangeValue(Array.Empty<Value>(), source.ItemType);
+            return Adapt(source, source.ItemType, (range, cancellation) => CountedRange(range, name, count, cancellation), token);
+        }
+        if (name is "reverse" or "unique")
+            return Adapt(source, source.ItemType, (range, cancellation) => OrderedRange(range, name, cancellation), token);
         return await ConsumeRangeAsync(source, name, args, invoke, token);
+    }
+
+    private static RangeValue Adapt(RangeValue source, TypeRef itemType,
+        Func<RangeValue, CancellationToken, IAsyncEnumerable<Value>> operation, CancellationToken token)
+    {
+        PathSelection? selection = source.Selection;
+        PathSelection? adapted = selection is null ? null : selection with
+        {
+            Apply = (items, cancellation) => operation(new RangeValue(
+                selection.Apply is null ? items : selection.Apply(items, cancellation), source.ItemType), cancellation)
+        };
+        return new RangeValue(operation(source, token), itemType, adapted,
+            source.Resolve is null ? null : async cancellation => Adapt(await source.Resolve(cancellation), itemType, operation, cancellation));
     }
 
     private static int Count(Value value, string operation)

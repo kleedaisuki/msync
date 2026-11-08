@@ -33,8 +33,24 @@ all hosts and retain endpoint identity without invoking transport.
   model in `legacy/src/execution/native_fs_path.rs` rather than `GetFullPath`,
   which would resolve lexical operations against the host working directory.
 
-The initial integration passes 86 assertions. It also checks the legacy status
+The initial integration passes 113 assertions. It also checks the legacy status
 labels (`regular`, `block`, `character`, `unknown`), octal/aggregate permission
 flags, String-as-filename native copy arguments and zero-argument `ranges.of()`. Native Windows filesystem API
 bindings compile with the same project; actual Windows execution is a separate
 platform acceptance responsibility.
+
+## Selector plans through native range adaptors
+
+The native adaptor implementation preserves `PathSelection` provenance and
+composes its `Apply` projection over the transfer owner's discovered candidate
+values. This reuses the ordinary async iterator functions; it never re-enumerates
+the selector's original `Items` stream while the SSH channel is already open.
+`Resolve` unwraps deferred source-language range functions lazily before a
+transfer chooses its protocol. A zero-count `take` returns an empty plan without
+resolving its source, so it cannot authenticate just to discover there is no work.
+
+The focused fixtures compose filter/take/reverse around deferred selectors and
+exercise take/drop/stride/reverse/unique/filter/transform/while adaptors using a
+source that raises if independently enumerated. The transport harness owns the
+authenticated one-channel acceptance, including predicate filesystem queries on
+the selected discovery channel.

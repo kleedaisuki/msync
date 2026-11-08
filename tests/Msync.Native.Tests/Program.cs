@@ -11,6 +11,8 @@ ValueTask<Value> Callback(Value function, IReadOnlyList<Value> args, Cancellatio
 {
     token.ThrowIfCancellationRequested();
     ++callbackCalls;
+    if (args[0] is PathValue path)
+        return ValueTask.FromResult(function is FunctionValue { NativeName: "identity-path" } ? args[0] : new BoolValue(!path.Raw.EndsWith("skip", StringComparison.Ordinal)));
     return ValueTask.FromResult<Value>(new BoolValue(((StringValue)args[0]).Data != "skip"));
 }
 ValueTask<Value> Call(string name, params Value[] args) => NativeRegistry.InvokeAsync(name, args, context, Callback);
@@ -158,6 +160,49 @@ try
     Equal(5, callbackCalls);
     Equal(S("last"), await Call("ranges.front", await Call("ranges.reverse", source)));
     Equal(2, (await Collect(await Call("ranges.unique", await Call("ranges.of", S("a"), S("b"), S("a"))))).Count);
+    async IAsyncEnumerable<Value> UnexpectedEnumeration()
+    {
+        await Task.Yield();
+        yield return await ValueTask.FromException<Value>(new InvalidOperationException("Selector source must be enumerated through discovered candidate values only"));
+    }
+    PathValue selectedDirectory = new("/selected", Connection: remote);
+    RangeValue selector = new(UnexpectedEnumeration(), TypeRef.Path, new PathSelection(selectedDirectory, ".+"));
+    Value[] candidates = [new PathValue("/selected/a", Connection: remote), new PathValue("/selected/skip", Connection: remote), new PathValue("/selected/c", Connection: remote)];
+    async Task<List<Value>> Project(Value value)
+    {
+        RangeValue range = (RangeValue)value;
+        while (range.Resolve is not null) range = await range.Resolve(CancellationToken.None);
+        Equal(true, range.Selection is not null);
+        IAsyncEnumerable<Value> projected = new RangeValue(candidates, TypeRef.Path).Items;
+        if (range.Selection!.Apply is not null) projected = range.Selection.Apply(projected, CancellationToken.None);
+        return await Collect(new RangeValue(projected, range.ItemType));
+    }
+    Equal(2, (await Project(await Call("ranges.take", selector, new NumberValue(2)))).Count);
+    Equal(candidates[1], (await Project(await Call("ranges.drop", selector, new NumberValue(1))))[0]);
+    Equal(candidates[2], (await Project(await Call("ranges.stride", selector, new NumberValue(2))))[1]);
+    Equal(candidates[2], (await Project(await Call("ranges.reverse", selector)))[0]);
+    Equal(3, (await Project(await Call("ranges.unique", selector))).Count);
+    Equal(2, (await Project(await Call("ranges.filter", selector, new FunctionValue(0)))).Count);
+    Equal(1, (await Project(await Call("ranges.take_while", selector, new FunctionValue(0)))).Count);
+    Equal(candidates[1], (await Project(await Call("ranges.drop_while", selector, new FunctionValue(0))))[0]);
+    Equal(candidates[0], (await Project(await Call("ranges.transform", selector, new FunctionValue(0, NativeName: "identity-path"))))[0]);
+    Equal(selector, await Call("ranges.identity", selector));
+    int resolutions = 0;
+    RangeValue deferredSelector = new(UnexpectedEnumeration(), TypeRef.Path, Resolve: cancellation =>
+    {
+        cancellation.ThrowIfCancellationRequested();
+        ++resolutions;
+        return ValueTask.FromResult(selector);
+    });
+    Value deferredChain = await Call("ranges.reverse", await Call("ranges.take", await Call("ranges.filter", deferredSelector, new FunctionValue(0)), new NumberValue(2)));
+    Equal(0, resolutions);
+    Equal(candidates[2], (await Project(deferredChain))[0]);
+    Equal(1, resolutions);
+    RangeValue zeroDemand = (RangeValue)await Call("ranges.take", deferredSelector, new NumberValue(0));
+    Equal(null, zeroDemand.Resolve);
+    Equal(null, zeroDemand.Selection);
+    Equal(0, (await Collect(zeroDemand)).Count);
+    Equal(1, resolutions);
     Console.WriteLine($"native filesystem/string/range journeys: {assertions} assertions passed");
 }
 finally { Directory.Delete(root, true); }
