@@ -20,14 +20,14 @@ internal static class GraphOptimization
         internal readonly Instruction Instruction = instruction;
         internal readonly int Index = index;
         internal HashSet<int>[] Inputs = [];
-        internal int Height;
         internal int StackInputs;
-        internal readonly HashSet<int> TargetDefinitions = [];
+        internal HashSet<int>? TargetDefinitions;
         internal bool Reachable;
         internal Value? Constant;
         internal bool ConstantVisited;
         internal bool ConstantResolving;
         internal bool Root;
+        internal string? NativeName;
         internal bool Kept;
         internal int LiveOutputs;
     }
@@ -112,7 +112,6 @@ internal static class GraphOptimization
                 {
                     var node = nodes[pc];
                     node.Reachable = true;
-                    node.Height = state.Stack.Count;
                     var instruction = node.Instruction;
                     var operands = new List<HashSet<int>>();
                     HashSet<int> Pop()
@@ -134,7 +133,7 @@ internal static class GraphOptimization
                             operands.Add(state.Locals[instruction.A]); Push(); break;
                         case OpCode.StoreLocal:
                         case OpCode.InitializeLocal:
-                            Consume(1); node.TargetDefinitions.UnionWith(state.Locals[instruction.A]); state.Locals[instruction.A] = [pc * 2]; break;
+                            Consume(1); (node.TargetDefinitions ??= []).UnionWith(state.Locals[instruction.A]); state.Locals[instruction.A] = [pc * 2]; break;
                         case OpCode.Dup: Consume(1); Push(); Push(1); break;
                         case OpCode.Pop: Consume(1); break;
                         case OpCode.Jump: break;
@@ -224,6 +223,7 @@ internal static class GraphOptimization
             var instruction = node.Instruction;
             var left = node.Inputs.Length > 0 ? Input(0) : null;
             var right = node.Inputs.Length > 1 ? Input(1) : null;
+            if (instruction.Op == OpCode.Call && left is FunctionValue { NativeName: not null } native) node.NativeName = native.NativeName;
             node.Constant = instruction.Op switch
             {
                 OpCode.Constant => constants[instruction.A] is ScopeValue or CellValue ? null : constants[instruction.A],
@@ -255,6 +255,7 @@ internal static class GraphOptimization
                 OpCode.Convert when instruction.Text == "Path" && left is StringValue text && module.Context is { } context => new PathValue(text.Data, context.WorkingDirectory, HomeDirectory: context.HomeDirectory),
                 OpCode.PathJoin when left is PathValue path && right is PathValue or StringValue && (module.Stage == ArtifactStage.Executable || path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl) => PathSemantics.JoinValue(path, right),
                 OpCode.NativeCall => ResolveNative(node),
+                OpCode.Call when node.NativeName is not null => ResolveNative(node, 1),
                 OpCode.GetMember => ResolveMember(node),
                 OpCode.Qualify when left is ConnectionValue { Kind: ConnectionKind.Local or ConnectionKind.Ssh or ConnectionKind.Wsl } connection && (connection.Kind != ConnectionKind.Local || connection.Address.Length == 0) && right is PathValue path => PureEvaluation.Qualify(connection, path, module.Context),
                 _ => null
@@ -264,16 +265,16 @@ internal static class GraphOptimization
             return node.Constant;
         }
 
-        private Value? ResolveNative(Node node)
+        private Value? ResolveNative(Node node, int skip = 0)
         {
-            var arguments = new Value[node.Inputs.Length];
+            var arguments = new Value[node.Inputs.Length - skip];
             for (var index = 0; index < arguments.Length; index++)
             {
-                var argument = Resolve(node.Inputs[index]);
+                var argument = Resolve(node.Inputs[index + skip]);
                 if (argument is null) return null;
                 arguments[index] = argument;
             }
-            return PureEvaluation.Native(node.Instruction.Text, arguments, module);
+            return PureEvaluation.Native(node.NativeName ?? node.Instruction.Text, arguments, module);
         }
 
         private Value? ResolveMember(Node node)
@@ -379,6 +380,22 @@ internal static class GraphOptimization
                 if (token < 0 || !seen.Add(token)) return;
                 var node = nodes[token / 2];
                 if (node.Instruction.Op == OpCode.MakeScope) escapedScopes.Add(token / 2);
+                if (node.Instruction.Op == OpCode.GetMember)
+                {
+                    var receivers = AllocationOrigins(node.Inputs[0], []);
+                    if (receivers is not null)
+                    {
+                        foreach (var receiver in receivers)
+                        {
+                            var allocation = nodes[receiver];
+                            var names = allocation.Instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
+                            var field = Array.IndexOf(names, node.Instruction.Text);
+                            if (field < 0) continue;
+                            foreach (var input in allocation.Inputs[field]) Visit(input);
+                        }
+                        return;
+                    }
+                }
                 foreach (var input in node.Inputs) foreach (var dependency in input) Visit(dependency);
             }
             foreach (var node in nodes.Where(node => node.Reachable && node.Instruction.Op is OpCode.Call or OpCode.ProcessCall or OpCode.NativeCall or OpCode.LoadCell))
@@ -441,7 +458,8 @@ internal static class GraphOptimization
                 OpCode.MakeClosure or OpCode.MakeScope or OpCode.MakeRange or OpCode.MakeLazyRange or OpCode.DeferRange or OpCode.IsNull or OpCode.SelectPath => false,
                 OpCode.SetMember => false,
                 OpCode.NativeCall => EffectAnalysis.NativeEffects(node.Instruction.Text) != InstructionEffect.None,
-                OpCode.Call when node.Instruction.B > 0 && summaries is not null =>
+                OpCode.Call when node.NativeName is not null => EffectAnalysis.NativeEffects(node.NativeName) != InstructionEffect.None,
+                OpCode.Call when node.Instruction.B > 0 && summaries is not null && Resolve(node.Inputs[0]) is FunctionValue { NativeName: null } =>
                     (summaries[node.Instruction.B - 1] & ~InstructionEffect.Capture) != InstructionEffect.None,
                 OpCode.GetMember => !HasDeclaredMember(node),
                 OpCode.LoadBuiltin => node.Instruction.Text?.TrimStart('$') is not ("std" or "local" or "pwd" or "file" or "env" or "path" or "wsl" or "view" or "views" or "ranges"),
@@ -466,16 +484,17 @@ internal static class GraphOptimization
             if (node.Kept) return;
             node.Kept = true;
             if (node.Instruction.Op == OpCode.StoreLocal && mutableSlots.Contains(node.Instruction.A))
-                foreach (var token in node.TargetDefinitions) Demand(token);
+                foreach (var token in node.TargetDefinitions!) Demand(token);
             if (node.Constant is not null && HasOutput(node.Instruction)) return;
             if (node.Instruction.Op is OpCode.JumpIfTrue or OpCode.JumpIfFalse && Resolve(node.Inputs[0]) is BoolValue) return;
-            foreach (var operand in node.Inputs) foreach (var token in operand) Demand(token);
+            foreach (var operand in node.Inputs.Skip(node.NativeName is null ? 0 : 1)) foreach (var token in operand) Demand(token);
         }
 
         private FunctionCode Emit()
         {
             var positions = new int[nodes.Length + 1];
             var emitted = new List<Instruction>();
+            var temporary = -1;
             for (var pc = 0; pc < nodes.Length; pc++)
             {
                 positions[pc] = emitted.Count;
@@ -504,8 +523,18 @@ internal static class GraphOptimization
                     continue;
                 }
                 if (node.Constant is { } value && HasOutput(instruction)) emitted.Add(Literal(value, instruction.Span));
-                else emitted.Add(instruction);
+                else emitted.Add(node.NativeName is null ? instruction : new(OpCode.NativeCall, instruction.A, Text: node.NativeName, Span: instruction.Span));
                 if (HasOutput(instruction) && node.LiveOutputs == 0) emitted.Add(new(OpCode.Pop, Span: instruction.Span));
+                if (node.NativeName is not null && node.Constant is null && node.Inputs[0].Any(demanded.Contains))
+                {
+                    if (node.LiveOutputs != 0)
+                    {
+                        if (temporary < 0) temporary = function.LocalCount;
+                        emitted.Add(new(OpCode.InitializeLocal, temporary, Span: instruction.Span));
+                    }
+                    emitted.Add(new(OpCode.Pop, Span: instruction.Span));
+                    if (node.LiveOutputs != 0) emitted.Add(new(OpCode.LoadLocal, temporary, Span: instruction.Span));
+                }
             }
             positions[^1] = emitted.Count;
             for (var index = 0; index < emitted.Count; index++)
@@ -518,7 +547,7 @@ internal static class GraphOptimization
                     _ => instruction
                 };
             }
-            return function with { Instructions = emitted };
+            return function with { Instructions = emitted, LocalCount = temporary < 0 ? function.LocalCount : temporary + 1 };
         }
 
         private Instruction Literal(Value value, SourceSpan? span)

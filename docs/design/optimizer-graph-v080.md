@@ -81,3 +81,16 @@ Every output was exactly `Null, Return`. These are component measurements, not
 Native AOT startup or transfer-throughput claims. The setup is intentionally
 linear and excludes parser time; it detects the former design's avoidable
 per-instruction copying of the entire local-state array.
+
+### Native callable ABI and call effects
+
+Older and current objects can invoke `FunctionValue.NativeName` through the
+ordinary `Call` stack ABI. `Call.B` is a specialization hint, not evidence that
+the callee is nonnative. The graph resolves the actual reaching callable before
+lowering a known native to `NativeCall`, propagating pure constants or consuming
+an interprocedural summary. Unknown callable values retain their invocation.
+The discarded callable expression can still contain effects; those remain
+independent demand roots. If a joined stack column retains the callable on
+another edge, lowering explicitly consumes it below the native arguments while
+preserving the returned value. This keeps the historical stack ABI without
+charging ordinary statically known native calls for a dynamic dispatch.
