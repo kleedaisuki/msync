@@ -30,6 +30,28 @@ installation lifecycle. Published older release tags and assets are unchanged.
 The local-check command builds with strict static/AOT analysis, checks only
 changed C# formatting, and runs explicitly selected real-process journeys.
 
+## Built-in reference
+
+`msync skill` prints a compact usage skill with links to progressively deeper
+topics. The reference is embedded in the executable, works offline, and remains
+available even when configuration is invalid:
+
+```sh
+msync skill
+msync skill language functions
+msync skill language scopes
+msync skill library fs
+msync skill workflow artifacts
+msync skill > SKILL.md
+```
+
+Use `msync help COMMAND` for command options or `msync help syntax` for the
+language guide. Terminal help and source diagnostics use the terminal's own
+color palette; `--color never` or `NO_COLOR` disables it. Redirected skill output
+is plain Markdown by default. The VS Code extension uses inferred function and
+Scope roles for highlighting, signatures, and member completion. Its formatter
+targets 80 columns while preserving literals and structural indentation.
+
 ## Expressions and bindings
 
 Indentation has no semantic role. Braces delimit blocks; `;` terminates a
