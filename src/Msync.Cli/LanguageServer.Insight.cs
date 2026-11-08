@@ -5,6 +5,30 @@ namespace Msync.Cli;
 
 internal sealed partial class LanguageServer
 {
+    private static bool ResolvesDocumentation(JsonElement parameters)
+    {
+        foreach (string name in new[] { "capabilities", "textDocument", "completion", "completionItem", "resolveSupport", "properties" })
+            if (parameters.ValueKind != JsonValueKind.Object || !parameters.TryGetProperty(name, out parameters)) return false;
+        return parameters.ValueKind == JsonValueKind.Array
+            && parameters.EnumerateArray().Any(property => property.ValueKind == JsonValueKind.String && property.GetString() == "documentation");
+    }
+
+    private JsonObject ResolveCompletion(JsonElement parameters)
+    {
+        JsonObject item = JsonNode.Parse(parameters.GetRawText())!.AsObject();
+        if (!parameters.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array || data.GetArrayLength() != 3
+            || data[0].ValueKind != JsonValueKind.String || data[0].GetString() != "msync") return item;
+        long generation = data[1].GetInt64();
+        var document = documents.Values.FirstOrDefault(candidate => candidate.Generation == generation);
+        if (document?.Analysis is null) return item;
+        string label = parameters.GetProperty("label").GetString()!;
+        var member = document.Analysis.Resolve(data[2].GetInt32(), label);
+        if (member is null && label.StartsWith('$'))
+            member = Msync.Compiler.EditorCompiler.BuiltinBindings.FirstOrDefault(candidate => candidate.Name == label);
+        if (member is not null) item["documentation"] = Documentation(member.Description);
+        return item;
+    }
+
     private static JsonNode? Hover(EditorDocument document, JsonElement parameters)
     {
         int offset = Offset(document.Source, parameters.GetProperty("position"));

@@ -17,6 +17,7 @@ internal sealed partial class LanguageServer(
     private bool semanticRefreshSupported;
     private bool semanticRefreshPending;
     private bool semanticRefreshDirty;
+    private bool completionResolveDocumentation;
     private long serverRequest;
     private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "return", "break", "loop", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "Bool", "Range", "String", "Function", "Scope", "Path", "Process", "Connection", "Null", "Number"];
 
@@ -25,15 +26,17 @@ internal sealed partial class LanguageServer(
         if (method == "initialize")
         {
             InitializeAuthentication(p);
+            completionResolveDocumentation = ResolvesDocumentation(p);
             semanticRefreshSupported = p.TryGetProperty("capabilities", out var capabilities)
                 && capabilities.TryGetProperty("workspace", out var workspace)
                 && workspace.TryGetProperty("semanticTokens", out var tokens)
                 && tokens.TryGetProperty("refreshSupport", out var refresh) && refresh.ValueKind == JsonValueKind.True;
             return JsonNode.Parse("""
-            {"capabilities":{"positionEncoding":"utf-16","textDocumentSync":{"openClose":true,"change":2},"documentFormattingProvider":true,"codeActionProvider":true,"completionProvider":{"triggerCharacters":[":","$","/","\\"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["keyword","function","variable","type","string","comment","protocol","endpoint","operator","namespace","controlKeyword","regexp"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"msync","version":"0.8.0"}}
+            {"capabilities":{"positionEncoding":"utf-16","textDocumentSync":{"openClose":true,"change":2},"documentFormattingProvider":true,"codeActionProvider":true,"completionProvider":{"resolveProvider":true,"triggerCharacters":[":","$","/","\\"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["keyword","function","variable","type","string","comment","protocol","endpoint","operator","namespace","controlKeyword","regexp"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"msync","version":"0.8.0"}}
             """);
         }
         if (method == "shutdown") return null;
+        if (method == "completionItem/resolve") return ResolveCompletion(p);
         if (method == "msync/stdlibSource")
         {
             string uri = p.GetProperty("uri").GetString()!;
@@ -47,7 +50,7 @@ internal sealed partial class LanguageServer(
             try { return new JsonArray(new JsonObject { ["range"] = document.Source.Range(0, text.Length), ["newText"] = format(text) }); }
             catch (Msync.Compiler.Syntax.SyntaxException) { return new JsonArray(); }
         }
-        if (method == "textDocument/completion") return Completions(document, p);
+        if (method == "textDocument/completion") return Completions(document, p, lazyDocumentation: completionResolveDocumentation);
         if (method == "textDocument/semanticTokens/full") return SemanticTokens(document);
         if (method == "textDocument/documentSymbol") return Symbols(document);
         if (method == "textDocument/definition") return Definition(documentUri, document.Source, p);
@@ -56,35 +59,50 @@ internal sealed partial class LanguageServer(
         return null;
     }
 
-    private static JsonArray Completions(EditorDocument document, JsonElement parameters, EditorContext? context = null)
+    private static JsonArray Completions(EditorDocument document, JsonElement parameters, EditorContext? context = null,
+        bool lazyDocumentation = false)
     {
         int offset = Offset(document.Source, parameters.GetProperty("position"));
         context ??= document.Analysis?.At(offset);
-        if (context?.Receiver is { } receiver && context.ReceiverKind == EditorReceiverKind.Member)
-            return MemberCompletions(receiver.Members ?? []);
-        var bindings = (context?.Bindings ?? []).Concat(EditorCompiler.BuiltinBindings)
-            .DistinctBy(binding => binding.Name, StringComparer.Ordinal).ToArray();
-        JsonArray items = MemberCompletions(bindings);
+        JsonArray items = MemberCompletions(CompletionMembers(context), document.Generation, offset, lazyDocumentation);
+        if (context?.Receiver is not null && context.ReceiverKind == EditorReceiverKind.Member) return items;
         foreach (string keyword in Keywords)
             items.Add((JsonNode)Completion(keyword, null, null, null, keyword: true));
         return items;
     }
 
-    private static JsonArray MemberCompletions(IEnumerable<SemanticMember> members)
+    private static IEnumerable<SemanticMember> CompletionMembers(EditorContext? context) =>
+        context?.Receiver is { } receiver && context.ReceiverKind == EditorReceiverKind.Member
+            ? receiver.Members ?? []
+            : (context?.Bindings ?? []).Concat(EditorCompiler.BuiltinBindings).DistinctBy(binding => binding.Name, StringComparer.Ordinal);
+
+    private static JsonArray MemberCompletions(IEnumerable<SemanticMember> members, long generation, int offset, bool lazyDocumentation)
     {
         JsonArray items = [];
         foreach (var member in members)
-            items.Add((JsonNode)Completion(member.Name, member.Type, member.Signature, member.Description, semanticRole: member.SemanticRole));
+        {
+            JsonObject item = Completion(member.Name, member.Type, member.Signature,
+                lazyDocumentation ? null : member.Description, semanticRole: member.SemanticRole);
+            if (lazyDocumentation)
+                item["data"] = new JsonArray(JsonValue.Create("msync"), JsonValue.Create(generation), JsonValue.Create(offset));
+            items.Add((JsonNode)item);
+        }
         return items;
     }
 
-    private static JsonObject Completion(string name, string? type, string? signature, string? description, bool keyword = false, string? semanticRole = null) => new()
+    private static JsonObject Completion(string name, string? type, string? signature, string? description, bool keyword = false, string? semanticRole = null)
     {
-        ["label"] = name,
-        ["kind"] = keyword ? 14 : semanticRole switch { "function" => 3, "type" => 7, _ => type is "Function" or "Function?" ? 3 : 6 },
-        ["detail"] = signature,
-        ["documentation"] = description is null ? null : new JsonObject { ["kind"] = "markdown", ["value"] = description }
-    };
+        JsonObject item = new()
+        {
+            ["label"] = name,
+            ["kind"] = keyword ? 14 : semanticRole switch { "function" => 3, "type" => 7, _ => type is "Function" or "Function?" ? 3 : 6 },
+            ["detail"] = signature
+        };
+        if (description is not null) item["documentation"] = Documentation(description);
+        return item;
+    }
+
+    private static JsonObject Documentation(string text) => new() { ["kind"] = "markdown", ["value"] = text };
 
     private static JsonArray SourceItems(SourceText source, SourceCompletionContext context, IReadOnlyList<SourceCompletionItem> candidates)
     {
@@ -157,12 +175,12 @@ internal sealed partial class LanguageServer(
 
     private static JsonObject SemanticTokens(EditorDocument document)
     {
+        if (document.SemanticTokenData is { } cached)
+            return new JsonObject { ["data"] = JsonArray.Create(cached) };
         SourceText source = document.Source;
         string text = source.Text;
         var inferred = (document.Analysis?.Occurrences ?? []).Where(item => item.SemanticRole is "function" or "type" || item.Type is "Scope" or "Scope?")
             .GroupBy(item => item.Span.Start).ToDictionary(group => group.Key, group => group.MinBy(item => item.Span.Length)!);
-        var declarations = Declaration().Matches(text).ToDictionary(match => match.Groups[2].Index,
-            match => match.Groups[1].Value == "fn" ? 1 : match.Groups[1].Value == "scope" ? 3 : 2);
         List<int> data = [];
         int previousLine = 0, previousColumn = 0;
         var patterns = document.Analysis?.RegexSpans ?? [];
@@ -198,7 +216,6 @@ internal sealed partial class LanguageServer(
             }
             if (inferred.TryGetValue(match.Index, out var semantic) && semantic.Span.Length == match.Length)
                 type = semantic.SemanticRole switch { "function" => 1, "type" => 3, _ => 2 };
-            else if (declarations.TryGetValue(match.Index, out int declared)) type = declared;
             AddToken(match.Index, match.Length, type);
         }
         while (patternIndex < patterns.Count)
@@ -206,8 +223,9 @@ internal sealed partial class LanguageServer(
             var pattern = patterns[patternIndex++];
             AddToken(pattern.Start, pattern.Length, 11);
         }
-        JsonNode? encoded = JsonSerializer.SerializeToNode(data.ToArray(), LanguageServerJson.Default.Int32Array);
-        return new JsonObject { ["data"] = encoded };
+        JsonElement encoded = JsonSerializer.SerializeToElement(data.ToArray(), LanguageServerJson.Default.Int32Array);
+        document.SemanticTokenData = encoded;
+        return new JsonObject { ["data"] = JsonArray.Create(encoded) };
 
         void AddToken(int offset, int length, int type)
         {

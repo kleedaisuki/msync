@@ -497,3 +497,32 @@ come from the owned initialized VM slots: Path working-directory/home captures
 and nested Scope fields survive `/cd`. Function captures are matched in closure
 capture order, not by misusing a captured slot as a root slot; the editor fork
 never mutates the live compilation or invokes the function to obtain a path.
+
+## Version-owned response data and completion documentation
+
+Semantic-token responses retain their source-generated encoded integer array in
+an immutable `JsonElement` on the exact `EditorDocument` generation. Each reply
+gets a fresh lazy `JsonArray` wrapper, not a shared mutable JSON node or a second
+lexical/semantic pass. A new document snapshot owns a new cache, including
+close/reopen with repeated client version numbers. Declarations use parser and
+compiler occurrences already published for that generation; a second
+whole-document declaration regex is not a competing source of semantic roles.
+
+Clients advertising `completionItem.resolveSupport.properties` containing
+`documentation` receive completion labels, kinds, inferred signatures and all
+insertion/filter fields immediately, with documentation deferred until
+`completionItem/resolve`. Other clients retain eager documentation. The opaque
+item data contains the internal generation and query offset; resolution selects
+that same generation's lexical/member context and original label. It never
+executes source, authenticates an endpoint or reads the filesystem. An edited,
+closed or reopened document cannot cause an old item to resolve against new
+bindings; an unavailable old generation leaves the item unchanged.
+
+Path candidates keep their insertion semantics and eager String-versus-Path
+safety guidance. Resolving a semantic candidate adds only documentation; it does
+not change the label, kind, signature, text edit, filter text or opaque data.
+This follows the [LSP completion and resolve contract](https://raw.githubusercontent.com/microsoft/language-server-protocol/gh-pages/_specifications/lsp/3.17/language/completion.md),
+which explicitly supports lazy documentation while preserving insertion and
+filtering fields. The encoded token array uses the AOT-compatible
+[`SerializeToElement` overload with generated `JsonTypeInfo`](https://learn.microsoft.com/dotnet/api/system.text.json.jsonserializer.serializetoelement)
+instead of runtime reflection.

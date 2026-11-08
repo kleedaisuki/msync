@@ -10,6 +10,7 @@ internal sealed partial class LanguageServer
     private sealed record EditorDocument(SourceText Source, int Version, long Generation)
     {
         public EditorAnalysis? Analysis { get; set; }
+        public JsonElement? SemanticTokenData { get; set; }
         public EditorDocument(string text, int version, long generation) : this(new SourceText(text), version, generation) { }
     }
     private abstract record ServerEvent;
