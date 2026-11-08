@@ -39,3 +39,27 @@ integer identities.
 
 Legacy scheduling modules retain their original iterator/control boundaries;
 the pass applies only to modules with directional scheduling semantics.
+
+## Component measurement
+
+`dotnet run -c Release --project tests/LoopOptimization -- --performance` measures
+prepared interpreter execution for summing the eager literal range 1 through 16.
+It compares level zero, loop expansion alone, and the integrated level-three
+pipeline. Binding happens before timing. After 32 warmups per variant, nine
+rotated batches execute each variant 128 times, verify the result 136, and record
+per-execution time and `GC.GetTotalAllocatedBytes` traffic. No timing threshold
+is an acceptance gate.
+
+The November 9 Linux x86-64 managed Release probe (.NET SDK 10.0.403, runtime
+10.0.14, QEMU Virtual CPU, Linux 6.12.113) yielded:
+
+| Variant | Static instructions | Median execution | Allocated bytes/run |
+| --- | ---: | ---: | ---: |
+| Level zero | 40 | 0.069824 ms | 13,344 |
+| Loop expansion alone | 202 | 0.044487 ms | 11,992 |
+| Integrated level three | 2 | 0.005710 ms | 1,552 |
+
+Expansion removes iterator machinery even before propagation. Subsequent graph
+passes fold this finite pure computation to its result. This experiment isolates
+managed interpreter dispatch/allocation; native startup and I/O throughput have
+their own end-to-end measurements.

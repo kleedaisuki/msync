@@ -86,6 +86,7 @@ try
     Require(await Outcome(noTrap) == "17", "Empty loop speculated a selected error");
     Require(noTrap.Functions.All(function => function.Instructions.All(instruction => instruction.Op != OpCode.GetMember)), "Known empty loop retained dead field read");
     Console.WriteLine($"Loop optimization: {assertions} contracts passed.");
+    if (args.Contains("--performance", StringComparer.Ordinal)) await LoopPerformance.RunAsync();
 }
 finally { Directory.Delete(root, true); }
 
