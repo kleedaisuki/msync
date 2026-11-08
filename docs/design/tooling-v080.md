@@ -240,3 +240,45 @@ submit key, not PrettyPrompt's host-newline-normalized presentation result.
 This preserves multi-line String data and exact parser-cache identity on Windows.
 All submit bindings use the same `KeyBindings` instance as the editor; a
 completion commit or soft newline cannot be mistaken for a source submission.
+
+## Actual native Windows console acceptance
+
+`tests/Msync.EndToEnd/windows_terminal_journey.py` drives the Windows console
+through the native ConPTY backend of [PyWinPTY](https://github.com/andfoy/pywinpty),
+not redirected standard input or a replacement Win32 console implementation.
+The fixture pins PyWinPTY 3.1.2's official CPython 3.14 x86-64 wheel by SHA-256
+in `windows-terminal-requirements.txt` and selects backend zero explicitly.
+Its command is:
+
+```text
+python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
+python tests/Msync.EndToEnd/windows_terminal_journey.py --binary PATH/TO/msync.exe --output .temp/platform-results/windows-console.json
+```
+
+The actual Windows Server 2025 console passed all **ten** phases in
+[job 128711880542](https://github.com/kleedaisuki/msync/actions/runs/42474236661/job/128711880542):
+Left/Backspace/End editing; UpArrow history; wrapped whitespace-path Tab completion
+and byte-verified transfer; Ctrl+C input cancellation; brace/comment continuation;
+ordinary Enter inside an unterminated String producing exactly `first\nsecond`
+bytes followed by a retained function call; native child stdin ownership; Ctrl+C
+during native child work with the function still callable; Ctrl+D EOF; and history
+restoration in a newly launched process.
+
+This used runner image `win25-vs2026` version `20261103.298.1`, Python 3.14.10,
+and the unchanged Native AOT executable SHA-256
+`40d37d193439bde5263bbc6b0e152c0aed89b0efee736e400a41f7fc04bf0e79`
+from the preceding native package run. The native process was not rebuilt while
+correcting the test's input driver. First prompt took 72.424 ms including ConPTY
+creation; five warm submission observations were 7.323–7.795 ms (median 7.547 ms),
+including socket/console transport and output observation. Paired product latency
+comparisons are recorded separately in the performance note.
+
+The real traces exposed two input-driver distinctions. ConPTY's terminal BS byte
+selects Ctrl+Backspace (word deletion); DEL is plain Backspace. Also, sending Enter
+after merely the first output fragment can leave printable text queued, which
+PrettyPrompt legitimately batches with the CR as a paste rather than a submit.
+The fixture now waits for the complete printable paint before the distinct Enter,
+ignoring physical wrap line feeds. Exact result and file-byte assertions remain;
+no fixed sleeps, added production branches or relaxed cancellation checks were
+needed. Raw VT logs and completed phases accompany the JSON result. This console
+phase passed independently of the separate WSL-download failure in that job.
