@@ -61,6 +61,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--cancel-only",
+        action="store_true",
+        help="Isolate cancellation when comparing an older image without readonly cleanup",
+    )
     args = parser.parse_args()
     if os.name != "posix":
         raise SystemExit(
@@ -72,7 +77,8 @@ def main() -> None:
         prefix="overlap-cancel-", dir=ROOT / ".temp"
     ) as temporary:
         root = Path(temporary)
-        readonly_snapshot(binary, root)
+        if not args.cancel_only:
+            readonly_snapshot(binary, root)
         source = root / "source"
         target = source / "target"
         target.mkdir(parents=True)
