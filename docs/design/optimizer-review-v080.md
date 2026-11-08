@@ -37,13 +37,23 @@ Compare `BitConverter.DoubleToInt64Bits` after actual execution at each level,
 including serialized `.mso` and bound `.mexe` routes. The initial result was
 `8000000000000000` at O0 and `0000000000000000` at optimized levels.
 
-A working-tree fix made Number constant identity bit-exact; rerunning the probe
-then retained `8000000000000000` at all four levels. That fix must not silently
-change runtime collection equality: `ranges.contains`/`find` use Value equality,
-and `ranges.unique` uses `HashSet<Value>`. Their preexisting numeric equality
-identifies the zero encodings, as does the language's numeric comparison.
-Constant identity and language equality are different relations; regression
-coverage must establish both independently.
+The final working-tree correction uses `ValueRepresentation` for bit-exact
+constant identity while preserving `NumberValue` runtime equality. Rerunning
+the discriminator retains `8000000000000000` at all four levels. This distinction
+also preserves `ranges.contains`/`find` Value equality and `ranges.unique`
+`HashSet<Value>` behavior: their existing numeric relation identifies the zero
+encodings, as does the language's numeric comparison.
+
+Predicate inference needs the same separation: successful `x == 0` establishes
+numerical equality, not an exact zero encoding. `PredicateOptimization` now
+retains that distinction for zero and NaN, rather than replacing the tested
+value with the comparison constant. A fresh actual-source check of
+`fn keep(x) { if x == 0 { x } else { 1 } }; keep(- 0)` returns negative zero at
+O0/O1/O2/O3; `$std::ranges::contains([0], - 0)` returns true at all levels.
+The space in `- 0` deliberately selects unary negation: the token `-0` is parsed
+as a signed integer literal and therefore does not distinguish zero encodings.
+Constant identity and language equality remain different relations; future
+regression coverage must establish both independently.
 
 ## Inline expansion must interleave simplification
 
