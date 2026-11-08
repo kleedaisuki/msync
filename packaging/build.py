@@ -82,13 +82,36 @@ def copy_file(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
+def native_libraries(publish: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in publish.rglob("*")
+        if path.is_file()
+        and (path.suffix.lower() in {".dll", ".dylib", ".so"} or ".so." in path.name)
+    )
+
+
+def copy_native_libraries(publish: Path, destination: Path) -> None:
+    for library in native_libraries(publish):
+        copy_file(library, destination / library.relative_to(publish))
+
+
 def stage_payload(publish: Path, stage: Path, rid: str, package_version: str) -> None:
     binary = publish / ("msync.exe" if rid.startswith("win-") else "msync")
     reported = command([str(binary), "--version"], capture=True).strip()
     if reported != f"msync {package_version}":
         raise ValueError(f"Published executable version mismatch: {reported}")
     copy_file(binary, stage / "bin" / binary.name)
+    copy_native_libraries(publish, stage / "bin")
     docs = stage / "share/doc/msync"
+    for license_file in (ROOT / "packaging/licenses/native").rglob("*"):
+        if license_file.is_file():
+            copy_file(
+                license_file,
+                docs
+                / "native-dependencies"
+                / license_file.relative_to(ROOT / "packaging/licenses/native"),
+            )
     for relative in [Path("README.md"), Path("LICENSE"), *tracked_files("docs")]:
         copy_file(ROOT / relative, docs / relative)
     libraries = tracked_files("stdlib/*.msync")

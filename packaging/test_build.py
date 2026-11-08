@@ -29,6 +29,40 @@ class PackageTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "does not match"):
                 build.version(root)
 
+    def test_native_payload_keeps_runtime_libraries_not_debug_symbols(self) -> None:
+        temporary = build.ROOT / ".temp"
+        temporary.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temporary) as name:
+            root = Path(name)
+            publish = root / "publish"
+            (publish / "nested").mkdir(parents=True)
+            for relative in (
+                "libe_sqlite3.so",
+                "e_sqlite3.dll",
+                "libdependency.so.1",
+                "nested/library.dylib",
+                "msync.pdb",
+                "msync.dbg",
+                "msync",
+            ):
+                (publish / relative).write_bytes(relative.encode())
+            destination = root / "bin"
+            build.copy_native_libraries(publish, destination)
+            actual = {
+                path.relative_to(destination).as_posix()
+                for path in destination.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(
+                actual,
+                {
+                    "libe_sqlite3.so",
+                    "e_sqlite3.dll",
+                    "libdependency.so.1",
+                    "nested/library.dylib",
+                },
+            )
+
     def test_archives_are_repeatable_and_keep_payload_paths(self) -> None:
         temporary = build.ROOT / ".temp"
         temporary.mkdir(exist_ok=True)

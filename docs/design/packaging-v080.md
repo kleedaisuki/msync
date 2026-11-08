@@ -42,6 +42,12 @@ The five standard-library modules are required. The installed SDK's actual
 `LICENSE.txt` and `ThirdPartyNotices.txt` are copied alongside product notices;
 Rust attribution is not represented as if Rust were linked into the new product.
 The bundled .NET notices may cover more SDK components than the native payload.
+Published native `.so`, `.dll`, `.dylib` and versioned `.so.*` dependencies are
+copied beside the executable with their relative layout; debug symbols are not
+part of this payload. This includes SQLitePCLRaw's native SQLite library.
+The installer installs that complete staged `bin/` payload, not just `msync.exe`.
+Product-specific Tomlyn/Microsoft.Data.Sqlite/SQLitePCLRaw attribution accompanies
+the SDK notices under `native-dependencies/`.
 
 Each portable package includes `manifest.sha256`. Sorted archive entries and
 fixed `SOURCE_DATE_EPOCH` timestamps make packaging repeatable for identical
