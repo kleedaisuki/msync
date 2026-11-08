@@ -160,6 +160,29 @@ before treating the allocation as total. Small tables use allocation-free
 slice comparison; larger tables use a linear ordinal set. Unselected invalid
 constructors are still removed by ordinary CFG reachability.
 
+### Linear literal-effect normal form
+
+Real 1,024-statement transfer scripts justified a further applicability proof:
+functions with no parameters, captures or locals, containing only scalar
+literals, Transfer/LocalTransfer, Pop and a terminal Return have no CFG joins,
+alias versions or callable analysis to discover. `LinearEffectOptimization`
+checks their complete typed operand stack in one pass. It removes only a pure
+literal and its eventual Pop, retaining every transfer, discarded-result Pop,
+source span and effect order. Invalid operand kinds, calls, qualification,
+PathJoin and control-flow instructions use the ordinary graph pipeline.
+There is no statement-count cutoff or alternate execution semantics.
+
+Unchanged dense function/constant tables preserve their existing identities
+and basic blocks rather than rebuilding equivalent relocation maps. The fast
+form still uses the normal interpreter, resource dependencies and artifact
+writer. `tests/ConstantInterner` checks instruction identity and stack cleanup;
+`tests/Msync.EndToEnd/linear_effect_journey.py` checks actual literal transfers,
+discarded literals, qualified-path fallback and selected runtime errors through
+source, relocatable and executable artifacts, including execution from a cwd
+different from the executable's bound context. The first two fixtures use bare
+filename atoms deliberately; a `./name` expression contains PathJoin and tests
+the ordinary pipeline instead.
+
 ## Research connections and validation model
 
 [Wegman and Zadeck's conditional constant propagation](https://research.ibm.com/publications/constant-propagation-with-conditional-branches--1)
