@@ -24,6 +24,10 @@ on:
         description: Optional comma-separated valid workloads for the previous C# image
         type: string
         default: ''
+      wsl:
+        description: Exercise an owned WSL1 distro when the Windows host supports it
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -70,6 +74,16 @@ jobs:
         run: |
           $version = python packaging/build.py --version
           ./packaging/windows/test.ps1 -InstallerPath "dist/msync-$version-windows-x86_64-setup.exe"
+      - name: Install the pinned native Windows console fixture dependency
+        id: conpty
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.package.outcome == 'success' && hashFiles('tests/Msync.EndToEnd/windows_terminal_journey.py') != '' }}
+        run: python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
+      - name: Exercise actual Windows console editing and foreground input ownership
+        if: ${{ !cancelled() && steps.conpty.outcome == 'success' }}
+        run: python tests/Msync.EndToEnd/windows_terminal_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-console.json
+      - name: Exercise the actual Windows to WSL home and path projection
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.package.outcome == 'success' && github.event_name == 'workflow_dispatch' && inputs.wsl && hashFiles('packaging/wsl_journey.py') != '' }}
+        run: python packaging/wsl_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/wsl.json
       - name: Build the preserved optimized Rust baseline on this same runner
         id: rust
         if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.benchmark && steps.package.outcome == 'success' }}
