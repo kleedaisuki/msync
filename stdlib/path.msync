@@ -1,0 +1,4 @@
+# Path operators retain raw spelling and selected endpoint identity.
+fn join(base: Path | String, child: Path | String) { base / child };
+fn qualify(connection: Connection, path: Path | String) { connection::path };
+fn identity(path: Path | String) { path };

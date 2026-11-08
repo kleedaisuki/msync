@@ -1,0 +1,7 @@
+# Boolean composition remains ordinary source code.
+fn identity(value: Bool) { value };
+fn negate(value: Bool) { not value };
+fn both(left: Bool, right: Bool) { left and right };
+fn either(left: Bool, right: Bool) { left or right };
+fn xor(left: Bool, right: Bool) { left != right };
+fn implies(left: Bool, right: Bool) { not left or right };

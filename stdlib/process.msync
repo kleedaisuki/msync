@@ -1,0 +1,5 @@
+# Process calls use exact argv; these functions inspect a completed process value.
+native fn stdout(process: Process) -> String;
+native fn stderr(process: Process) -> String;
+native fn success(process: Process) -> Bool;
+native fn exit_code(process: Process) -> Number;

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>msync</AssemblyName>
+    <RootNamespace>Msync.Cli</RootNamespace>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Msync.Compiler/Msync.Compiler.csproj" />
+    <ProjectReference Include="../Msync.Runtime/Msync.Runtime.csproj" />
+    <EmbeddedResource Include="../../stdlib/*.msync" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
+    <PackageReference Include="Tomlyn" Version="2.10.1" />
+  </ItemGroup>
+</Project>

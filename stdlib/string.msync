@@ -1,0 +1,14 @@
+# Unicode text operations use the platform string implementation.
+native fn contains(text: String, part: String) -> Bool;
+native fn starts_with(text: String, prefix: String) -> Bool;
+native fn ends_with(text: String, suffix: String) -> Bool;
+native fn concat(left: String, right: String) -> String;
+native fn trim(text: String) -> String;
+native fn trim_start(text: String) -> String;
+native fn trim_end(text: String) -> String;
+native fn to_lowercase(text: String) -> String;
+native fn to_uppercase(text: String) -> String;
+native fn replace(text: String, from: String, to: String) -> String;
+native fn split(text: String, separator: String) -> Range<String>;
+fn empty(text: String) { text == "" };
+fn equal(left: String, right: String) { left == right };
