@@ -228,6 +228,25 @@ def remote_selector(journey: Journey) -> None:
     )
 
 
+def lazy_no_demand(journey: Journey) -> None:
+    (journey.directory / "input").write_bytes(b"input bytes")
+
+    def verify() -> None:
+        for name in ("marker-call", "marker-argument", "marker-item"):
+            assert not (journey.directory / name).exists(), name
+
+    journey.run(
+        'fn source() { "effect" -> ./marker-call; [./input] };\n'
+        "let first = source() | $std::ranges::take(0); first -> ./dest1/;\n"
+        "fn values(x) { [x] };\n"
+        'let second = values({ "effect" -> ./marker-argument; ./input }) '
+        "| $std::ranges::take(0); second -> ./dest2/;\n"
+        'let third = [{ "effect" -> ./marker-item; ./input }] '
+        "| $std::ranges::take(0); third -> ./dest3/;\n",
+        verify,
+    )
+
+
 CASES: dict[str, Callable[[Journey], None]] = {
     "posix-backslash": posix_backslash,
     "annotated-return": annotated_return,
@@ -236,6 +255,7 @@ CASES: dict[str, Callable[[Journey], None]] = {
     "remote-replace": remote_replace,
     "remote-overlap": remote_overlap,
     "remote-selector": remote_selector,
+    "lazy-no-demand": lazy_no_demand,
 }
 
 

@@ -172,3 +172,11 @@ The same fresh managed image still fails the two remote-tree cases, which have
 been reported directly to the transport/runtime owners. Those cases and a final
 Native AOT acceptance remain pending. The harness now records a distribution
 digest in addition to the apphost hash so managed DLL changes are identifiable.
+
+The `lazy-no-demand` case additionally passed source, `.mso`, and `.mexe` on a
+fresh compiler-owner managed build (distribution SHA-256
+`25717a0e05a22703c932c38e5649a7438bd508680b612eee5f97009d7c368832`).
+It independently observes that `take(0)` does not evaluate an effectful
+range-returning function, an effectful argument to that function, or an effectful
+literal range item. All three marker files remain absent; the retained result
+is `.temp/review-v080/regressions-5scnzp94/results.json`.
