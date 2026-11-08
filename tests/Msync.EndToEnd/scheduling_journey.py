@@ -94,7 +94,7 @@ def run_case(
     *,
     absent: Sequence[str] = (),
     executable: bool = False,
-    after_region: bool = False,
+    after_regions: int = 0,
 ) -> None:
     directory.mkdir()
     source = directory / "schedule.msync"
@@ -104,22 +104,24 @@ def run_case(
     )
     checked = invoke(binary, directory, ["check", str(source)])
     assert checked.returncode == 0, (name, checked.stdout, checked.stderr)
-    if after_region:
+    if after_regions:
         planned = invoke(binary, directory, ["plan", str(source)])
         assert planned.returncode == 0, (name, planned.stderr)
         markers = [
-            line.split()[2:4]
+            line.split()[2:]
             for line in planned.stdout.splitlines()
             if "Barrier" in line
         ]
-        assert markers.count(["2", "1"]) == 1, (
+        starts = [marker[2] for marker in markers if marker[:2] == ["2", "1"]]
+        ends = [marker[2] for marker in markers if marker[:2] == ["2", "0"]]
+        assert len(starts) == after_regions and len(set(starts)) == after_regions, (
             name,
-            "missing After region start",
+            "missing or duplicated After region identity",
             markers,
         )
-        assert markers.count(["2", "0"]) == 1, (
+        assert set(starts) == set(ends), (
             name,
-            "missing After region end",
+            "unmatched After region identity",
             markers,
         )
     arguments = ["run", str(source)]
@@ -162,7 +164,7 @@ def journeys(
         expected: dict[str, str],
         *,
         absent: Sequence[str] = (),
-        after_region: bool = False,
+        after_regions: int = 0,
     ) -> None:
         nonlocal count
         if selected_cases and name not in selected_cases:
@@ -175,7 +177,7 @@ def journeys(
             expected,
             absent=absent,
             executable=executable,
-            after_region=after_region,
+            after_regions=after_regions,
         )
         count += 1
 
@@ -263,7 +265,16 @@ def journeys(
         '"open" -> ./background.gate; acquire background::stdout -> ./stdout;\n'
         f"let verifier = {child_call(after, 'verifier', required_file='stdout')}; verifier::stdout -> ./verified;",
         {"stdout": "background", "verified": "verifier"},
-        after_region=True,
+        after_regions=1,
+    )
+    broken = directory / "acquire-break"
+    case(
+        "acquire-break",
+        f"let background = release {child_call(broken, 'background', gated=True)};\n"
+        'acquire loop { acquire { background::stdout -> ./stdout; "open" -> ./background.gate; break; }; };\n'
+        f"let verifier = {child_call(broken, 'verifier', required_file='stdout')}; verifier::stdout -> ./verified;",
+        {"stdout": "background", "verified": "verifier"},
+        after_regions=2,
     )
     branch = directory / "unselected"
     case(
