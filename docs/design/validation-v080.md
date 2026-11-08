@@ -1,5 +1,14 @@
 # v0.8 independent user acceptance
 
+## Current accepted state
+
+The final extracted Linux Native AOT package passes **16/16 focused changed-
+contract journeys**, each through source, source-free `.mso`, and bound `.mexe`
+execution (96 actual CLI subprocesses). The earlier defects recorded below are
+preserved as regression rationale; all identified language/artifact failures
+have been corrected. Unchanged earlier successful contracts were not subjected
+to another full sweep. See the final-package section for the frozen identity.
+
 ## Contract and ownership
 
 The 0.8 rewrite changes source grammar, host implementation and artifact format
@@ -128,7 +137,7 @@ Frozen package file-manifest SHA-256:
 `db53241818655591412d2ce767ff153c3675f3f15871dc25678f439ce981af16`.
 The harness preserves adjacent native dependencies such as `libe_sqlite3.so`.
 
-The remaining package failure exposed an embedded-standard-library/compiler
+The initial package failure exposed an embedded-standard-library/compiler
 revision mismatch: loading `ranges.msync` rejected `native fn of(value) ->
 Range;` against the variadic `ranges.of` signature. The compiler source already
 accepts the variadic declaration layout; a rebuilt package requires only the
@@ -225,3 +234,49 @@ The actual Rust probe is retained below `.temp/acceptance-v080/unicode-rust-base
 its useful expected bytes are persistent in the harness, so fixture cleanup does
 not lose the regression. Corrected managed manifest SHA-256:
 `df3c789899e8c619faa630d0b9122b78dc4a791d926ebba53a0d2025f2be56b7`.
+
+
+## Scalar ordering and final packaged acceptance
+
+An independent old/new CLI comparison exposed UTF-16 ordering as a compatibility
+regression: U+10000 must sort after U+E000, matching Rust's UTF-8/scalar order.
+Two persistent journeys first failed the old C# image and now pass the final
+Native AOT image:
+
+1. Constant expressions, typed runtime function parameters, and a closure
+   capturing a runtime-selected String all use scalar ordering. The parameter
+   check includes a common prefix whose last UTF-16 code unit is a shared high
+   surrogate (U+10001 versus U+10000), so an optimized comparison must not decode
+   a low surrogate as a new scalar.
+2. Native directory iteration visits U+E000 before U+10000. Files are created in
+   the opposite order; sequential overwrites observe the actual iteration order
+   rather than merely asserting that both names were enumerated.
+
+The final extracted-package selection passed all **16** journeys:
+
+| Changed contract | Journeys |
+| --- | ---: |
+| Native range callback / variadic source declaration | 1 |
+| Nullable `?`, `is not`, residual match artifact validation | 4 |
+| Both runtime function alternatives | 2 |
+| Anchored raw Path and partial nontext regex matching | 5 |
+| Full Unicode casing, regex, native filename | 1 |
+| Generic type-dependent incompatible branches | 1 |
+| Scalar comparison and native directory order | 2 |
+
+Frozen executable SHA-256:
+`ca5c2eb2aebe1397f4ec3a745a6e76dcfcf598723ba1046523f183012263f38b`.
+Frozen executable plus native-dependency manifest SHA-256:
+`413c858b40ca599e085cec35179183a3d56439f70045b9f2ec6e27fd5959cf15`.
+The image was taken from the actual extracted package, not a managed surrogate.
+Every selected successful program was checked without effects, executed from
+source, compiled and bound without effects, had its source removed, and then
+executed from both binary stages with exact file-byte assertions.
+
+The exact selection is recorded in
+`.temp/acceptance-v080/final-native-changed-contracts.json`; it is reproducible
+using `tests/Acceptance/language_journeys.py BINARY --artifacts` with the sixteen
+case names listed by that report. The former stale-variadic package failure is
+resolved in this actual image, as are nullable-regex verifier false rejections.
+Ruff, strict mypy, and strict isolated C# builds passed for the final harness and
+its managed validation inputs. No selected acceptance failure remains open.

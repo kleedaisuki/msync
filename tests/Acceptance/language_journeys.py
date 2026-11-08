@@ -38,6 +38,32 @@ UNICODE_SIGMA_SOURCE: str = "ΟΣ ΟΣΑ ΟΣ́ ΟΣ́Α Σ ΟΣ’ ΟΣ’Α Ο
 
 JOURNEYS: tuple[Journey, ...] = (
     Journey(
+        "unicode_scalar_order_constant_and_runtime",
+        'if "𐀀" > "\ue000" and "\ue000" < "𐀀" and not ("𐀀" < "\ue000") '
+        '{ "scalar constants" -> constants.txt; } else { "wrong" -> constants.txt; }; '
+        "fn larger(left: String, right: String) { left > right }; "
+        'if larger("prefix𐀀", "prefix\ue000") and not larger("prefix\ue000", "prefix𐀀") and larger("prefix𐀁", "prefix𐀀") '
+        '{ "scalar parameters" -> parameters.txt; } else { "wrong" -> parameters.txt; }; '
+        'let captured = if exists ./input.txt { "𐀀" } else { "\ue000" }; '
+        "fn capture_larger(value: String) { captured > value }; "
+        'if capture_larger("\ue000") { "scalar capture" -> capture.txt; } '
+        'else { "wrong" -> capture.txt; };',
+        {
+            "constants.txt": b"scalar constants",
+            "parameters.txt": b"scalar parameters",
+            "capture.txt": b"scalar capture",
+        },
+        {"input.txt": b"present"},
+        artifacts=True,
+    ),
+    Journey(
+        "unicode_scalar_native_directory_order",
+        "for file in $std::fs::directory_iterator(./names) { file -> order.txt; };",
+        {"order.txt": b"astral last"},
+        {"names/𐀀": b"astral last", "names/\ue000": b"bmp first"},
+        artifacts=True,
+    ),
+    Journey(
         "regex_nullable_absent_selects_fallback",
         "let file? = if exists ./input.txt { ./input.txt } else { null }; "
         'let text = match file { <.+> => { file -> copied.txt; "matched" }, '

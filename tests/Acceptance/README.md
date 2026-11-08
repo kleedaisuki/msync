@@ -26,6 +26,7 @@ when an unchanged contract has already passed.
 | Scopes and connections | Branch/Range scope projections preserve member unions; lexical lookup is distinct from endpoint qualification |
 | Ordinary builtin-named files | Loading `$std` does not hide physical `file`, `path`, `pwd` or `std` files |
 | Literal and Path transfers | String source is exact UTF-8 data; explicit Path source reads a file |
+| Scalar String order | Constant folding, runtime/captured comparison and directory iteration preserve Unicode scalar order |
 | Full Unicode strings | Legacy full casing/FinalSigma/ligatures, regex and supplementary-plane filenames retain exact bytes |
 | Relocatable/executable artifacts | Artifacts execute after deleting the source, without reparsing it |
 
