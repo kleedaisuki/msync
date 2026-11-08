@@ -41,6 +41,7 @@ internal static class Program
           --check                       Check formatting without changing it
           --stdout                      Print formatted source
           --syntax 0.8                  Select the current grammar
+          --color auto|always|never      Select interactive color policy
           --config FILE                 Read a specific TOML configuration
           --no-config                   Disable configuration discovery
           --trace FILE                  Write opt-in JSONL telemetry ('-' is stderr)
@@ -77,7 +78,7 @@ internal static class Program
             };
             if (options.Syntax is not (null or "0.8" or "0.8.0")) return await Legacy(args);
             telemetry = TelemetrySession.TryOpen(configuration, options.Command, options.File, options.TracePath, options.TelemetryDatabase, options.NoTelemetry);
-            if (options.Command == "repl") return Complete(await Repl(options, telemetry), telemetry);
+            if (options.Command == "repl") return Complete(await Repl(options, telemetry, configuration), telemetry);
             if (options.Command == "doctor") return Complete(Doctor(), telemetry);
             string file = options.File ?? throw new ArgumentException("A source or artifact filename is required; use --help for commands.");
             if (options.Command == "fmt") return Complete(Format(file, options), telemetry);
@@ -182,51 +183,8 @@ internal static class Program
         return 0;
     }
 
-    private static async Task<int> Repl(Options options, TelemetrySession? telemetry = null)
-    {
-        bool interactive = !Console.IsInputRedirected;
-        if (interactive) Console.WriteLine("msync 0.8.0 — /help for commands; /quit to leave");
-        string pending = "";
-        CompilerSession compiler = new(optimization: options.Optimization);
-        ExecutionSession execution = new(RuntimeOptions(options, null, telemetry));
-        while (true)
-        {
-            if (interactive) Console.Write(pending.Length == 0 ? "> " : "· ");
-            string? line = Console.ReadLine();
-            if (line is null) return 0;
-            if (pending.Length == 0 && line is "/quit" or "/exit") return 0;
-            if (pending.Length == 0 && line is "/help" or "/?") { Console.WriteLine("Submit brace-delimited expressions. /quit exits; /help shows commands."); continue; }
-            pending += line + "\n";
-            try
-            {
-                Module module = compiler.Compile(pending);
-                Value result = await execution.ExecuteAsync(module);
-                if (result is not NullValue) Console.WriteLine(result);
-                pending = "";
-            }
-            catch (SyntaxException) when (Incomplete(pending)) { }
-            catch (Exception error) when (error is SyntaxException or CompileException or MsyncException or IOException)
-            { Console.Error.WriteLine(error.Message); pending = ""; }
-        }
-    }
-
-    private static bool Incomplete(string source)
-    {
-        int braces = 0;
-        bool quote = false;
-        for (int i = 0; i < source.Length; i++)
-        {
-            if (source[i] == '"')
-            {
-                if (quote && i + 1 < source.Length && source[i + 1] == '"') { i++; continue; }
-                quote = !quote;
-            }
-            if (quote) continue;
-            if (source[i] is '{' or '(' or '[') braces++;
-            if (source[i] is '}' or ')' or ']') braces--;
-        }
-        return quote || braces > 0;
-    }
+    private static Task<int> Repl(Options options, TelemetrySession? telemetry, Configuration configuration) =>
+        new ReplSession(RuntimeOptions(options, null, telemetry), options.Optimization, configuration.Color).RunAsync();
 
     private static int Doctor()
     {
@@ -293,6 +251,7 @@ internal static class Program
                     case "-n": case "--dry-run": dryRun = true; break;
                     case "--source-file": source = Next(); break;
                     case "--syntax": syntax = Next(); overrides["language.syntax"] = syntax; break;
+                    case "--color": overrides["ui.color"] = Next(); break;
                     case "--jobs": jobs = int.Parse(Next(), CultureInfo.InvariantCulture); if (jobs < 1) throw new ArgumentException("--jobs must be positive."); overrides["execution.jobs"] = jobs; break;
                     case "--buffer-size": overrides["execution.buffer_size"] = Next(); break;
                     case "--memory-limit": overrides["execution.memory_limit"] = Next(); break;

@@ -91,8 +91,6 @@ specialize item and callback results at each use. The compiler does not require
 a Runtime assembly reference. An unqualified native name may select a unique
 registered suffix, such as `exists` resolving `fs.exists`.
 
-## Lazy ranges and artifacts
-
 ## Submission completeness and regex boundaries
 
 `SyntaxException.IsIncomplete` distinguishes an unfinished submission from a
@@ -156,3 +154,23 @@ Focused compiler invariants live in `tests/Msync.Compiler.Tests`; actual source,
 source-free .mso/.mexe, callback, nullable, filesystem and recursive journeys live
 in `tests/Acceptance` and `tests/Review`. Formatting and strict local compilation
 are developer checks, not remote publication quality gates.
+
+## Persistent execution-prefix state
+
+A CompilerSession can reuse a parsed submission and expose its visible binding
+names for native editing without parsing or inferring on every keystroke.
+The original Compile(string) entrypoint remains available.
+
+Persistent entry slots use a private uninitialized sentinel distinct from Null.
+After a runtime error or cancellation, the compiler reconciles source-ordered
+root declarations against stores that actually completed. Completed prefix
+bindings survive; an unfinished shadow reveals the preceding initialized
+binding, including an earlier declaration in the same submission. Actual Null
+values remain initialized values. Function, constant and local identities stay
+stable; completed filesystem operations are not reversed.
+
+Only interactive CompilerSession instances retain declaration metadata. Ordinary
+source compilation allocates no binding journal, and execution adds no per-load
+or per-store validation. Reconciliation scans declarations only after failure.
+The real-process submission journey covers prefix values, repeated shadows,
+legitimate Null values, multiline recovery and captured paths across /cd.

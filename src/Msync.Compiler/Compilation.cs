@@ -17,10 +17,12 @@ internal sealed partial class Compilation(string source, string sourceName, int 
     private int nextTemplate;
 
     public Module Run() => Submit(source);
+    public IReadOnlyCollection<string> BindingNames => sessionEnvironment.Keys.ToArray();
 
-    public Module Submit(string text)
+    public Module Submit(string text, Document? parsedDocument = null)
     {
-        var document = Parser.Parse(text, sourceName);
+        var document = parsedDocument ?? Parser.Parse(text, sourceName);
+        PrepareSessionBindings();
         Frame frame = new(text, sourceName, sessionEnvironment) { Locals = sessionLocals };
         if (functions.Count == 0) functions.Add(new("<main>", 0, 0, [], TypeRef.Null));
         var previousFunctions = functions.ToArray();
@@ -29,7 +31,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         var previousKeys = templates.Select(template => template.Specializations.Keys.ToHashSet()).ToArray();
         try
         {
-            var result = Statements(frame, document.Statements);
+            var result = Statements(frame, document.Statements, submittedBindings is not null);
             frame.Emit(OpCode.Return);
             functions[0] = new("<main>", 0, frame.Locals, frame.Code.ToArray(), result.Type);
             sessionEnvironment = frame.Environment;
@@ -63,7 +65,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         return result;
     }
 
-    private Info Statements(Frame frame, IReadOnlyList<Statement> statements)
+    private Info Statements(Frame frame, IReadOnlyList<Statement> statements, bool trackBindings = false)
     {
         Info result = new(TypeRef.Null);
         bool hasValue = false;
@@ -118,6 +120,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
                 default: throw new InvalidOperationException($"Unknown statement {statement.GetType().Name}.");
             }
             terminated |= result.Type.Kind == TypeKind.Never;
+            if (trackBindings) RecordSessionBinding(statement, frame.Environment);
         }
         if (!hasValue) frame.Emit(OpCode.Null);
         return terminated ? new(new(TypeKind.Never)) : result;

@@ -1,9 +1,19 @@
 using Msync.Core;
+using Msync.Compiler.Syntax;
 
 namespace Msync.Compiler;
 
-public sealed class CompilerSession(string sourceName = "<repl>", int optimization = 1)
+public sealed class CompilerSession
 {
-    private readonly Compilation compilation = new("", sourceName, optimization);
+    private readonly Compilation compilation;
+    public CompilerSession(string sourceName = "<repl>", int optimization = 1)
+    {
+        compilation = new("", sourceName, optimization);
+        compilation.EnableSessionBindings();
+    }
     public Module Compile(string submission) => compilation.Submit(submission);
+    public Module Compile(string submission, Document? document) => compilation.Submit(submission, document);
+    public IReadOnlyCollection<string> BindingNames => compilation.BindingNames;
+    public void AcceptSubmission() => compilation.AcceptSubmission();
+    public void ReconcileSubmission(Func<int, bool> initialized) => compilation.ReconcileSubmission(initialized);
 }
