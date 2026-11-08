@@ -81,7 +81,7 @@ test('blocks and match arms remain expressions independent of indentation', () =
     hasScope('match file { <.+> => {}, _ => {} };', '<.+>', 'string.regexp.msync');
     hasScope('match decltype(file) { Path => {}, _ => {} };', 'Path', 'support.type.msync');
     hasScope('scope hello { item: true, };', 'scope', 'storage.type.namespace.msync');
-    hasScope('scope hello { item: true, };', 'hello', 'entity.name.namespace.msync');
+    hasScope('scope hello { item: true, };', 'hello', 'entity.name.type.msync');
     hasScope('let hello = scope { item: true };', 'scope', 'keyword.control.msync');
 });
 
@@ -222,4 +222,22 @@ test('manifest, brace editing, snippets and semantic fallback remain consistent'
     const roles = new Map(manifest.contributes.semanticTokenTypes.map(type => [type.id, type.superType]));
     assert.equal(roles.get('protocol'), 'type');
     assert.equal(roles.get('endpoint'), 'string');
+});
+
+
+test('direct function and Scope values have semantic-compatible lexical fallbacks', () => {
+    for (const line of ['let callback = fn (item) { item };', 'callback: fn (item) { item },']) {
+        hasScope(line, 'callback', 'entity.name.function.msync');
+    }
+    for (const line of ['scope MyClass {', 'let MyClass = scope {', 'MyClass: scope {']) {
+        hasScope(line, 'MyClass', 'entity.name.type.msync');
+    }
+    hasScope('new: fn() { scope { x: ~/.codex } },', 'new', 'entity.name.function.msync');
+    hasScope('let callback = fn (item) { item };', 'item', 'variable.parameter.msync');
+    const manifest = require('../package.json');
+    assert.equal(manifest.contributes.configurationDefaults['[msync]']['editor.semanticHighlighting.enabled'], true);
+    assert.equal(manifest.contributes.configurationDefaults['[msync]']['editor.defaultFormatter'], 'msync.msync-language');
+    const mappings = manifest.contributes.semanticTokenScopes[0].scopes;
+    assert.deepEqual(mappings.function, ['entity.name.function.msync']);
+    assert.deepEqual(mappings.type, ['entity.name.type.msync']);
 });

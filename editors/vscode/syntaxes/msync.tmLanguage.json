@@ -31,6 +31,9 @@
       "include": "#lookups"
     },
     {
+      "include": "#typed-bindings"
+    },
+    {
       "include": "#bindings"
     },
     {
@@ -348,7 +351,7 @@
           "name": "storage.type.namespace.msync"
         },
         "3": {
-          "name": "entity.name.namespace.msync"
+          "name": "entity.name.type.msync"
         }
       }
     },
@@ -366,6 +369,46 @@
     "types": {
       "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:Range|String|Function|Scope|Path|Process|Connection|Null|Bool|Type|Number)(?![\\p{L}\\p{N}_./\\\\-])",
       "name": "support.type.msync"
+    },
+    "typed-bindings": {
+      "patterns": [
+        {
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(let)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(\\?)?(?=\\s*=\\s*fn\\b)",
+          "captures": {
+            "1": {
+              "name": "storage.type.variable.msync"
+            },
+            "3": {
+              "name": "entity.name.function.msync"
+            },
+            "4": {
+              "name": "keyword.operator.nullable.msync"
+            }
+          }
+        },
+        {
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])([\\p{L}_][\\p{L}\\p{N}_]*)(?=\\s*:(?!:)\\s*fn\\b)",
+          "name": "entity.name.function.msync"
+        },
+        {
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(let)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(\\?)?(?=\\s*=\\s*scope\\b)",
+          "captures": {
+            "1": {
+              "name": "storage.type.variable.msync"
+            },
+            "3": {
+              "name": "entity.name.type.msync"
+            },
+            "4": {
+              "name": "keyword.operator.nullable.msync"
+            }
+          }
+        },
+        {
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])([\\p{L}_][\\p{L}\\p{N}_]*)(?=\\s*:(?!:)\\s*scope\\b)",
+          "name": "entity.name.type.msync"
+        }
+      ]
     }
   }
 }

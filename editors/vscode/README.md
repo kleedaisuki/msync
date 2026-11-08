@@ -3,8 +3,9 @@
 This extension provides native TextMate highlighting for `.msync` files and an
 LSP client for **msync 0.8**. The lexical grammar remains available while the
 server starts or when the executable is missing. Type diagnostics, completion,
-hover, navigation, document symbols, formatting and semantic tokens are
-negotiated with the installed compiler, not reimplemented by the extension.
+inferred signatures on hover, navigation, document symbols, formatting and
+semantic tokens are negotiated with the installed compiler, not reimplemented
+by the extension.
 
 ## Install and develop
 
@@ -84,6 +85,43 @@ match file {
   and requests source from the running executable, independent of checkout or
   installation layout. The compiler remains the authority for semantics.
 
+### Inferred colors and inspection
+
+Function values use the theme's **function** color, including scope members and
+aliases such as `let callback = Module::operation;`. Lexical Scope values use the
+**type** color, including values returned by a constructor-like function. Colors
+come from your VS Code theme; the extension does not impose a dark-only palette.
+Semantic highlighting is enabled by default for msync and can still be disabled
+in your language-specific editor settings. Before inference finishes, direct
+`fn` and `scope` declarations retain matching TextMate fallback roles.
+
+Hover a name to inspect its actual inferred type, function signature or Scope
+members. Generic functions acquire parameter and result types from their calls;
+inspection never executes the program. A Scope is a lexical collection, not a
+physical Connection:
+
+```text
+scope MyClass {
+    new: fn() { scope { x: ~/.codex } },
+    get: fn(instance) { instance::x },
+};
+let instance = MyClass::new();
+MyClass::get(instance) -> ./;
+```
+
+Keep the constructor's Scope when passing it to `get`. Adding `::x` to the
+binding selects the Path instead, so `instance::x` inside `get` can no longer
+select a Scope member. Diagnostics identify the failing expression and retain
+the call context rather than repeating the document URI in the message.
+
+**Format Document** uses the compiler's formatter with an 80-column target.
+Arguments and expressions wrap at syntax boundaries. Nested blocks keep their
+four-space indentation; less horizontal room causes earlier wrapping, not a
+flattened block structure. Indivisible paths, identifiers, URLs, literal contents
+and comments may exceed the target rather than changing their meaning. The
+extension selects this formatter for msync by default without changing other
+languages' formatting preferences.
+
 ## Verification
 
 `npm test` uses the actual `vscode-textmate` engine and Oniguruma WASM. It checks
@@ -100,13 +138,16 @@ MSYNC_TEST_SERVER_PATH=/absolute/path/to/msync xvfb-run -a npm run test:integrat
 
 Omit `xvfb-run -a` on an existing X11 desktop. The runner isolates HOME,
 configuration, temporary files, editor profiles and the test workspace under the
-repository `.temp`. It records executable and adjacent managed-assembly SHA-256 values, VS Code
-version, logs and phases.
+repository `.temp`. It records executable and adjacent managed-assembly SHA-256
+values, VS Code version, logs and phases.
 `MSYNC_TEST_VSCODE_EXECUTABLE` reuses an installed test editor;
 `MSYNC_TEST_VSCODE_VERSION` selects a download version. The journey exercises a
 nullable diagnostic and a correcting edit, brace formatting, generic-function
 navigation, completion, hover, symbols, UTF-16 semantic ranges and server restart.
-A transfer fixture must remain unexecuted throughout. `MSYNC_TEST_PROTOCOL_ONLY=1`
+The screenshot regression additionally checks constructor-returned Scope values,
+function/Scope aliases, inferred semantic roles, useful hovers, 80-column
+formatting and member-access diagnostics with call context. A transfer fixture
+must remain unexecuted throughout. `MSYNC_TEST_PROTOCOL_ONLY=1`
 selects the narrower semantic URI journey, including incomplete edits.
 
 The 0.8 native-host journey passed on 2026-11-08 using VS Code **1.144.0**, the
@@ -121,8 +162,16 @@ These automated Xvfb runs exercise the actual Extension Development Host; they
 are not a human visual review. The historical 0.7 evidence is not used as
 acceptance of the rewritten compiler.
 
+The product-polish host journey in `.temp/vscode-host-RWZxVr` additionally
+validated all six constructor/member/alias semantic roles, displayed the Scope's
+`new`/`get` members and the function result signature, wrapped the long call to
+42 columns, and reported a Path-versus-Scope member error with the actual generic
+call context. It used VS Code 1.144.0 and fingerprinted the development compiler
+assemblies in its isolated run metadata.
+
 References:
 [VS Code syntax highlighting](https://code.visualstudio.com/api/language-extensions/syntax-highlight-guide),
+[semantic highlighting and theme fallback](https://code.visualstudio.com/api/language-extensions/semantic-highlight-guide),
 [language configuration](https://code.visualstudio.com/api/language-extensions/language-configuration-guide),
 [LSP extension guide](https://code.visualstudio.com/api/language-extensions/language-server-extension-guide),
 [official extension testing](https://code.visualstudio.com/api/working-with-extensions/testing-extension),

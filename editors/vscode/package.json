@@ -1,7 +1,7 @@
 {
   "name": "msync-language",
   "displayName": "msync Language",
-  "description": "msync 0.8 syntax highlighting and language-server support",
+  "description": "Inferred types, actionable diagnostics, navigation and formatting for msync 0.8",
   "version": "0.8.0",
   "publisher": "msync",
   "license": "GPL-3.0-only",
@@ -82,10 +82,22 @@
           ],
           "endpoint": [
             "string.unquoted.endpoint.msync"
+          ],
+          "function": [
+            "entity.name.function.msync"
+          ],
+          "type": [
+            "entity.name.type.msync"
           ]
         }
       }
-    ]
+    ],
+    "configurationDefaults": {
+      "[msync]": {
+        "editor.semanticHighlighting.enabled": true,
+        "editor.defaultFormatter": "msync.msync-language"
+      }
+    }
   },
   "scripts": {
     "test": "node --test test/*.test.cjs",

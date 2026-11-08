@@ -116,6 +116,76 @@ async function run() {
             value => value && value.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'identity'));
         await effectsAreAbsent(workspace);
         await record('restart-and-no-runtime-effects');
+
+        const polishSource = [
+            'scope MyClass {',
+            '    new: fn() { scope { x: ~/.codex } },',
+            '    get: fn(some) { some::x }',
+            '};',
+            'let my_instance = MyClass::new();',
+            'let construct = MyClass::new;',
+            'let ClassAlias = MyClass;',
+            'MyClass::get(my_instance) -> ./;',
+            'let c = $std::bool::both(MyClass::get(my_instance) == ~/.codex, MyClass::get(my_instance) != ./);',
+            '',
+        ].join('\n');
+        const polishFile = path.join(workspace, 'typed-scope.msync');
+        await fs.writeFile(polishFile, polishSource);
+        document = await vscode.workspace.openTextDocument(vscode.Uri.file(polishFile));
+        await vscode.window.showTextDocument(document);
+        const flattenHover = items => items.flatMap(item => item.contents.map(content => typeof content === 'string' ? content : content.value)).join('\n');
+        const scopePosition = document.positionAt(polishSource.indexOf('MyClass'));
+        const scopeHover = await until('inferred Scope hover with members', async () =>
+            flattenHover(await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, scopePosition) || []),
+        value => /Scope/.test(value) && /new/.test(value) && /get/.test(value));
+        const getPosition = document.positionAt(polishSource.lastIndexOf('get(my_instance)') + 1);
+        const functionHover = flattenHover(await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, getPosition) || []);
+        assert.match(functionHover, /fn.*get\(/);
+        assert.doesNotMatch(functionHover, /msync 0\.8 typed expression/);
+        await record('inferred-scope-and-function-hover', { scopeHover, functionHover });
+
+        const expected = [
+            ['MyClass', 'type'], ['new:', 'function'], ['get:', 'function'],
+            ['my_instance', 'type'], ['construct', 'function'], ['ClassAlias', 'type'],
+        ];
+        const actualRoles = await until('inferred semantic roles on scope/function aliases', async () => {
+            const roles = new Map();
+            const legend = await vscode.commands.executeCommand('vscode.provideDocumentSemanticTokensLegend', document.uri);
+            const semantic = await vscode.commands.executeCommand('vscode.provideDocumentSemanticTokens', document.uri);
+            if (!legend || !semantic) return roles;
+            let line = 0;
+            let character = 0;
+            for (let index = 0; index < semantic.data.length; index += 5) {
+                line += semantic.data[index];
+                character = semantic.data[index] === 0 ? character + semantic.data[index + 1] : semantic.data[index + 1];
+                roles.set(document.offsetAt(new vscode.Position(line, character)), legend.tokenTypes[semantic.data[index + 3]]);
+            }
+            return roles;
+        }, roles => expected.every(([text, type]) => roles.get(polishSource.indexOf(text)) === type));
+        await record('inferred-semantic-roles', { roles: expected.map(([text]) => ({ text, type: actualRoles.get(polishSource.indexOf(text)) })) });
+        assert.equal(vscode.languages.getDiagnostics(document.uri).length, 0);
+        const polishEdits = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, { insertSpaces: true, tabSize: 4 });
+        const polishFormat = new vscode.WorkspaceEdit();
+        polishFormat.set(document.uri, polishEdits);
+        assert.ok(await vscode.workspace.applyEdit(polishFormat));
+        assert.ok(document.getText().split(/\r?\n/).every(line => line.length <= 80));
+        await record('eighty-column-formatting', { maximumWidth: Math.max(...document.getText().split(/\r?\n/).map(line => line.length)) });
+
+        const instanceSource = document.getText();
+        const instanceStart = instanceSource.indexOf('MyClass::new()');
+        const invalidInstance = new vscode.WorkspaceEdit();
+        invalidInstance.insert(document.uri, document.positionAt(instanceStart + 'MyClass::new()'.length), '::x');
+        assert.ok(await vscode.workspace.applyEdit(invalidInstance));
+        const typedErrors = await until('contextual member diagnostic', () => vscode.languages.getDiagnostics(document.uri),
+            values => values.some(value => /Path/.test(value.message)));
+        const memberError = typedErrors.find(value => /Path/.test(value.message));
+        assert.doesNotMatch(memberError.message, /file:\/\//);
+        assert.match(memberError.message, /Scope/);
+        assert.match(memberError.message, /[Hh]elp/);
+        assert.ok(memberError.relatedInformation && memberError.relatedInformation.length);
+        await record('contextual-member-diagnostic', { message: memberError.message, related: memberError.relatedInformation.map(item => item.message) });
+        await effectsAreAbsent(workspace);
+
     } catch (error) {
         await fs.writeFile(path.join(runRoot, 'failure.json'), JSON.stringify({
             error: error instanceof Error ? error.stack : String(error),
