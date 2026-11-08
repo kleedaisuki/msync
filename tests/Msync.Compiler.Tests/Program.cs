@@ -62,3 +62,4 @@ var arithmeticElse = (BlockExpr)arithmeticIf.Else!;
 var arithmeticCall = ((CallExpr)((ExpressionStatement)arithmeticElse.Statements[0]).Expression).Arguments[0];
 if (arithmeticCall is not BinaryExpr { Operator: "-" }) throw new Exception("Arithmetic recursion operand parsed as a Path");
 Console.WriteLine("Arithmetic recursion syntax ok");
+SemanticChecks.Run();
