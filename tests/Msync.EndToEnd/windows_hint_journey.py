@@ -33,10 +33,10 @@ def run(binary: Path, directory: Path, log: Path) -> list[str]:
             terminal.key(source)
             terminal.until(
                 lambda: (
-                    "get" in terminal.plain[text_start:]
+                    suffix in terminal.plain[text_start:]
                     and GHOST.search(terminal.raw[raw_start:]) is not None
                 ),
-                "bright-black binding ghost suffix",
+                "bright-black completion ghost suffix",
             )
 
         hint('"TYPED" -> selected_tar')
