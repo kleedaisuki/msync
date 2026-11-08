@@ -101,3 +101,42 @@ python3 tests/Acceptance/language_journeys.py \
 
 Frozen managed file-manifest SHA-256:
 `4111ddc2914333ebf32f7428b64cc31c46b71cd981e0d4c2d0a68858ba467726`.
+
+
+## Native AOT target-runtime selection
+
+A focused nine-journey run against the actual Linux Native AOT package accepted
+eight journeys, including the corrected countdown recursion. The selection
+covered actual child Process execution, inferred recursion, regex matching,
+artifact relocation/binding, Path/String parameter conversion, false transfer
+results, and unevaluated transfer typing. This is target-runtime evidence, not
+a repeat of every unchanged managed-language check.
+
+```sh
+python3 tests/Acceptance/language_journeys.py \
+  artifacts/package/msync-0.8.0-linux-x86_64/bin/msync --artifacts \
+  --case regex_path_and_fallback --case native_range_callback \
+  --case inferred_recursive_function --case recursive_function \
+  --case path_call_returns_real_process --case artifact_context_relocation \
+  --case path_parameter_coerces_filename_string \
+  --case transfer_false_runs_else_and_keeps_target \
+  --case decltype_transfer_does_not_execute \
+  --output .temp/acceptance-v080/native-aot-target-results.json
+```
+
+Frozen package file-manifest SHA-256:
+`db53241818655591412d2ce767ff153c3675f3f15871dc25678f439ce981af16`.
+The harness preserves adjacent native dependencies such as `libe_sqlite3.so`.
+
+The remaining package failure exposed an embedded-standard-library/compiler
+revision mismatch: loading `ranges.msync` rejected `native fn of(value) ->
+Range;` against the variadic `ranges.of` signature. The compiler source already
+accepts the variadic declaration layout; a rebuilt package requires only the
+failed callback journey to be repeated.
+
+A separate first-class-function probe accepted a returned closure retaining its
+captured argument, including both source-free artifact stages. Choosing between
+two anonymous functions in a runtime `if` still failed with `Function value has
+no inferred callable signature`; the concrete reproduction was sent to the
+compiler owner. That is a missing callable-alternative model, not a reason to
+restrict legal function-valued conditionals.

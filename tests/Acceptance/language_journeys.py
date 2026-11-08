@@ -34,6 +34,21 @@ class Journey:
 
 JOURNEYS: tuple[Journey, ...] = (
     Journey(
+        "returned_function_captures_argument",
+        "fn make(value) { fn() { value } }; "
+        'let get = make("captured"); get() -> result.txt;',
+        {"result.txt": b"captured"},
+        artifacts=True,
+    ),
+    Journey(
+        "runtime_function_alternatives",
+        'let action = if exists ./input.txt { fn() { "present" } } '
+        'else { fn() { "absent" } }; action() -> result.txt;',
+        {"result.txt": b"present"},
+        {"input.txt": b"input"},
+        artifacts=True,
+    ),
+    Journey(
         "path_call_returns_real_process",
         "__VERSION_PROCESS__ child::stdout -> result.txt;",
         {"result.txt": f"msync 0.8.0{os.linesep}".encode()},
@@ -554,6 +569,12 @@ def main() -> int:
         shutil.copytree(binary.parent, snapshot, dirs_exist_ok=True)
     else:
         shutil.copy2(binary, snapshot / binary.name)
+        for dependency in binary.parent.iterdir():
+            if dependency.is_file() and (
+                dependency.suffix in {".so", ".dll", ".dylib"}
+                or ".so." in dependency.name
+            ):
+                shutil.copy2(dependency, snapshot / dependency.name)
     frozen_binary = snapshot / binary.name
     snapshot_files = {
         str(path.relative_to(snapshot)): hashlib.sha256(path.read_bytes()).hexdigest()
