@@ -109,16 +109,11 @@ def recursive_capture(journey: Journey) -> None:
     )
 
 
-def remote_process(journey: Journey) -> None:
-    if os.name == "nt":
-        return
+def prepare_remote(journey: Journey) -> tuple[Path, Path, Path]:
     tools = journey.directory / "tools"
     home = journey.directory / "remote-home"
     tools.mkdir()
     home.mkdir()
-    printf = shutil.which("printf")
-    assert printf is not None
-    shutil.copy2(printf, home / "tool")
     shim = tools / "ssh"
     shim.write_text(
         f"#!{sys.executable}\n"
@@ -141,6 +136,16 @@ def remote_process(journey: Journey) -> None:
         MSYNC_SSH_CONFIG=str(configuration),
         REVIEW_SSH_CALLS=str(calls),
     )
+    return home, calls, configuration
+
+
+def remote_process(journey: Journey) -> None:
+    if os.name == "nt":
+        return
+    home, calls, configuration = prepare_remote(journey)
+    printf = shutil.which("printf")
+    assert printf is not None
+    shutil.copy2(printf, home / "tool")
 
     def verify() -> None:
         journey.expect("out", b"REMOTE OK")
@@ -160,12 +165,64 @@ def remote_process(journey: Journey) -> None:
     )
 
 
+def remote_replace(journey: Journey) -> None:
+    if os.name == "nt":
+        return
+    prepare_remote(journey)
+    source = journey.directory / "source"
+    target = journey.directory / "target"
+    source.mkdir()
+    target.mkdir()
+    (source / "file").write_bytes(b"replacement bytes")
+    (target / "obsolete").write_bytes(b"old bytes")
+
+    def verify() -> None:
+        journey.expect("target/file", b"replacement bytes")
+        assert not (target / "obsolete").exists()
+
+    journey.run(
+        f'let remote = ssh://loopback; ./source -> remote::"{target}/.";\n',
+        verify,
+    )
+
+
+def remote_overlap(journey: Journey) -> None:
+    if os.name == "nt":
+        return
+    prepare_remote(journey)
+    source = journey.directory / "source"
+    source.mkdir()
+    (source / "file").write_bytes(b"source snapshot bytes")
+
+    def verify() -> None:
+        journey.expect("source/backup/file", b"source snapshot bytes")
+        assert not list((source / "backup").rglob(".msync-*"))
+
+    journey.run(
+        f'let remote = ssh://loopback; remote::"{source}" -> remote::"{source}/backup/.";\n',
+        verify,
+    )
+
+
 CASES: dict[str, Callable[[Journey], None]] = {
     "posix-backslash": posix_backslash,
     "annotated-return": annotated_return,
     "recursive-capture": recursive_capture,
     "remote-process": remote_process,
+    "remote-replace": remote_replace,
+    "remote-overlap": remote_overlap,
 }
+
+
+def distribution_digest(directory: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(directory.rglob("*")):
+        if not path.is_file():
+            continue
+        digest.update(path.relative_to(directory).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()
 
 
 def main() -> None:
@@ -193,6 +250,7 @@ def main() -> None:
             outcomes[name] = f"failed: {error}"
     report = {
         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "distribution_sha256": distribution_digest(frozen),
         "fixtures": str(root),
         "outcomes": outcomes,
     }

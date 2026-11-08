@@ -24,7 +24,7 @@ frozen CLI copied the decoy bytes `wrong` instead of `correct`.
 
 Remedy: one shared endpoint/platform-aware path-join operation across the
 interpreter and executable lowering. Preserve all nonseparator characters.
-Runtime owner reports this correction is on disk; focused rerun is pending.
+The shared join correction passed the focused source and artifact rerun below.
 
 ### P1: Function return annotations do not convert the returned value
 
@@ -42,7 +42,8 @@ not have a reachable fallthrough value.
 
 Remedy: convert both tail and explicit-return paths to the declared result
 type, and account for terminal control flow in block inference. Compiler owner
-has exact fixtures and is implementing the correction.
+corrected both conversion paths and terminal control-flow inference; the focused
+source and artifact rerun below passed.
 
 ### P1: Recursive closure calls capture caller-local shadows
 
@@ -60,7 +61,8 @@ recurse(false) -> ./out;
 
 The requested lexical closure semantics require `outer`. Capture ownership
 must use retained slots or a retained self closure, not caller-name lookup.
-Compiler owner has the reproducer and is implementing the correction.
+Compiler owner corrected original capture-slot ownership; the focused source
+and artifact rerun below passed.
 
 ### P1: Remote Path calls do not resolve home-relative executables
 
@@ -73,8 +75,36 @@ explicit SSH configuration/URI-port handling used by transfer calls.
 Remedy: share native SSH client construction and endpoint path expansion while
 preserving exact argv. A shell-executing SSH shim establishes command/argument
 behavior; it is deliberately not reported as real authentication evidence.
-The regression also checks configured `-F` and URI `-p` arguments. Runtime owner
-is integrating the shared launcher with the transport owner.
+The regression also checks configured `-F` and URI `-p` arguments. The shared
+launcher correction passed the focused source and artifact rerun below.
+
+### P1: Remote tree replacement keeps the `/.` marker as a pathname
+
+The shell upload/copy/relay paths pass the source-level destination marker `/.`
+unchanged into `rm -rf "$target"`. GNU rm refuses to remove a directory spelled
+with a final `.` component. Further, deriving `${target%/*}` from that spelling
+places the owned stage *inside* the directory selected for removal. A normal
+`./source -> remote::"/absolute/target/."` fails instead of replacing old target
+children. The native shell reproduced the exact `refusing to remove '.' or '..'
+directory` diagnostic.
+
+Remedy: resolve the marker to the selected directory before deriving its parent
+and placing the owned stage, then apply replacement to that actual directory.
+The transport owner is integrating the correction.
+
+### P2: Same-endpoint remote directory snapshots include their new stage
+
+`CopyScript` stages a remote same-endpoint source with `cp -a "$source"
+"$stage/payload"`, after creating the stage under the destination parent. For a
+destination inside source, the stage is itself now inside source; native cp
+rejects copying the directory into itself. Local transfers have an overlap-only
+snapshot path, so this is also an endpoint inconsistency. The reproducer uses a
+finite source directory and a `source/backup/.` destination, not a symlink cycle.
+
+Remedy: capture the selected source before creating visible destination work, or
+place this overlap-only owned snapshot outside the selected source. Do not put
+snapshots on disjoint normal copies or prohibit ordinary overlapping trees.
+The transport owner is integrating the correction.
 
 ## Initial evidence and scope
 
@@ -98,4 +128,27 @@ those are not requirements of the normal-user transfer model.
 
 ## Focused correction verification
 
-Pending integration of the four directly reported findings.
+The compiler-owner's managed CLI build at
+`.temp/build-compiler/bin/Msync.Cli/debug/msync` passed the following targeted
+review commands after the owners' corrections:
+
+```sh
+python3 tests/Review/runtime_journeys.py BINARY --artifacts \
+  --case annotated-return --case recursive-capture
+python3 tests/Review/runtime_journeys.py BINARY --artifacts \
+  --case posix-backslash --case remote-process
+```
+
+These establish real source, `.mso`, and `.mexe` execution, including tail and
+explicit return conversions in both directions, original recursive capture
+ownership, both leading/trailing POSIX backslash preservation, remote HOME
+executable resolution and explicit SSH configuration/URI port argv. The SSH shim
+executes a real native shell but does not claim authentication or session-count
+coverage. Exact result records are
+`.temp/review-v080/regressions-rzn8u62g/results.json` and
+`.temp/review-v080/regressions-0v_r1prd/results.json`.
+
+The same fresh managed image still fails the two remote-tree cases, which have
+been reported directly to the transport/runtime owners. Those cases and a final
+Native AOT acceptance remain pending. The harness now records a distribution
+digest in addition to the apphost hash so managed DLL changes are identifiable.
