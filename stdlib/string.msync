@@ -1,4 +1,4 @@
-# Unicode text operations use the platform string implementation.
+# Unicode casing uses the embedded Unicode 17.0 scalar tables.
 native fn contains(text: String, part: String) -> Bool;
 native fn starts_with(text: String, prefix: String) -> Bool;
 native fn ends_with(text: String, suffix: String) -> Bool;
