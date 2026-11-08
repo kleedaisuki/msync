@@ -139,9 +139,12 @@ internal sealed partial class Compilation
         }
     }
 
-    internal Compilation ForkForEditor(string text, Action<SourceSpan, Info, string?, bool> observer)
+    internal Compilation ForkForEditor(string text, Action<SourceSpan, Info, string?, bool> observer, Func<int, Msync.Core.Value?>? resolveValue = null)
     {
-        Compilation fork = new(text, sourceName, 0, observer) { editorIsolated = true, sessionEnvironment = sessionEnvironment, sessionLocals = sessionLocals };
+        EditorSnapshot snapshot = new();
+        var environment = sessionEnvironment.ToImmutableDictionary(pair => pair.Key,
+            pair => snapshot.Binding(pair.Value, resolveValue?.Invoke(pair.Value.Slot)), StringComparer.Ordinal);
+        Compilation fork = new(text, sourceName, 0, observer) { editorIsolated = true, sessionEnvironment = environment, sessionLocals = sessionLocals };
         fork.constants.AddRange(constants);
         foreach (var pair in constantIndices) fork.constantIndices.Add(pair.Key, pair.Value);
         fork.functions.AddRange(functions);

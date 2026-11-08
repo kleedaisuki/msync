@@ -48,9 +48,10 @@ public static class EditorCompiler
 
     public static EditorAnalysis Analyze(string source, string sourceName) => Analyze(source, sourceName, null);
 
-    internal static EditorAnalysis Analyze(string source, Compilation session) => Analyze(source, session.EditorSourceName, session);
+    internal static EditorAnalysis Analyze(string source, Compilation session, Func<int, Value?>? resolveValue = null) =>
+        Analyze(source, session.EditorSourceName, session, resolveValue);
 
-    private static EditorAnalysis Analyze(string source, string sourceName, Compilation? session)
+    private static EditorAnalysis Analyze(string source, string sourceName, Compilation? session, Func<int, Value?>? resolveValue = null)
     {
         Dictionary<SourceSpan, SemanticOccurrence> syntax = [];
         Dictionary<SourceSpan, Observation> inferred = [];
@@ -74,7 +75,7 @@ public static class EditorCompiler
                 observation.Concrete |= concrete;
                 observation.Values[(info.Type, info.Function?.Id, info.NativeName, info.Scope, info.TypeValue, info.KnownConnection, info.KnownPath, info.KnownText)] = info;
             };
-            compilation = session is null ? new(source, sourceName, 0, observer) : session.ForkForEditor(source, observer);
+            compilation = session is null ? new(source, sourceName, 0, observer) : session.ForkForEditor(source, observer, resolveValue);
             compilation.AnalyzeDocument(document);
             diagnostic ??= compilation.EditorDiagnostic;
             int incomplete = parsed.IncompleteStart ?? parsed.Error?.Span.Start ?? source.Length;

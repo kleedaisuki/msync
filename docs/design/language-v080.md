@@ -298,3 +298,23 @@ reconciliation and lexical shadowing therefore govern both execution and hints.
 `tests/Msync.Compiler.Tests --editor-endpoints` covers literal/builtin aliases,
 nested members, ambiguous joins, generic/captured/Range endpoint isolation,
 unchanged type specialization counts and accepted/reconciled prompt snapshots.
+
+A REPL can pass `ExecutionSession.GetLocalValue` to
+`CompilerSession.AnalyzeEditor(submission, resolveAcceptedValue)`. The fork then
+hydrates accepted Path/Connection/String facts from initialized root values and
+Scope fields. A captured Path retains its actual working directory, home and
+native projection after `/cd`; completion does not rebind its spelling against
+the current process directory. Function captures are hydrated by matching the
+actual FunctionValue and zipping its capture vector in Template capture order,
+never by interpreting function-frame slot numbers as root-local indexes.
+Unobserved captured Paths remain unknown instead of acquiring a guessed cwd.
+
+The fork owns snapshots of accepted Template signature dictionaries and capture
+metadata as well as its own specialization cache. Previously returned analyses
+therefore remain stable when a later real submission adds a specialization;
+concurrent caret queries read no mutable live Template state. Value observation
+never enumerates a Range or invokes a callable, and it does not enlarge static
+Scope capabilities or specialize code on runtime Bool values. The focused
+`tests/PathProjection --editor-session` journey executes accepted declarations,
+changes cwd/home, checks direct/Scope/captured/returned-closure projections, and
+then executes new real generic calls after editor-only probes.
