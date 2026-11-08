@@ -63,3 +63,63 @@ for framing, UTF-16 positions and incremental edits, and Microsoft's
 [Native AOT restrictions](https://learn.microsoft.com/dotnet/core/deploying/native-aot/)
 for static serialization and native deployment. Compiler/session ownership is
 shared with the language contract rather than inferred from editor token roles.
+
+## Native interactive terminal input
+
+`InteractivePrompt` adapts [PrettyPrompt 6.0.5](https://github.com/waf/PrettyPrompt/tree/b7bbd3da5fbc1af53d1e0e6977ce43760a138ca1)
+instead of implementing another terminal renderer. The editor owns cursor
+movement, deletion, history navigation, multi-line rendering, selection and
+clipboard interaction. It is created only for actual terminal input/output;
+redirected input and `TERM=dumb` retain the plain submission reader. Help,
+configuration inspection, script execution and LSP do not construct a prompt or
+create its history file.
+
+The adapter supplies pure lexical highlighting, compiler-owned binding names,
+and local filesystem completion. Completing a pathname with spaces inserts an
+explicit Path expression, not a bare String that would transfer literal text.
+`$local::` and `$pwd::` remain local completion contexts; unknown/remote qualifiers
+never enumerate, authenticate or probe an endpoint. Completion opens on Tab or
+Ctrl+Space and commits on Tab/Enter. Trigger and commit are deliberately distinct
+inside PrettyPrompt: binding Tab to both operations causes an open menu to
+re-trigger rather than insert the selected item.
+
+Enter inserts a soft newline only when the real source parser reports incomplete
+input. Comments and regex characters cannot create a second brace-counting
+grammar. Shift+Enter remains an explicit newline. Ctrl+C abandons the current
+input, while an empty Ctrl+D/Ctrl+Z produces an explicit end-of-input result.
+The returned cancellation token belongs to that submitted operation.
+
+Input ownership is exclusive. Upstream `KeyPress.ReadForever` is a synchronous
+iterator over `Console.ReadKey`, not a background reader. When `ReadAsync`
+returns, that iterator is disposed and the library restores its prompt-scoped
+terminal modes before the interpreter starts a native process or SSH client.
+No keyboard producer can consume a later native credential or process response.
+Only the cancellation owner remains active during execution.
+
+History uses a versioned `history-v08` file in the selected history directory;
+the new base64-line format does not overwrite a Rust history file. An unavailable
+history directory reports its actual path/cause and leaves the in-memory editor
+usable. `NO_COLOR` is honored by the upstream editor, and the adapter can request
+plain highlighting/completion formatting without replacing console rendering.
+PrettyPrompt and its TextCopy/embedded Wcwidth dependencies are Native AOT
+compatible in the actual published executable; their source attribution ships
+with the package.
+
+`tests/Msync.EndToEnd/terminal_journey.py` creates a real Linux controlling PTY,
+responds to terminal cursor-position queries, and drives editing rather than
+submitting already-complete pipe lines. The original frozen `ca5c2e...` package
+demonstrably ignored LeftArrow: Backspace then deleted the closing quote, leaving
+the submission trapped in continuation input. Its retained terminal transcript is
+`.temp/terminal-journey/1794129772127995865/terminal.log`.
+
+The integrated native image
+`6310460bfbed956b23b98147398487ca843cd02df6492168d679ee61157183f4`
+passes cursor editing, UpArrow history, whitespace-path Tab completion,
+Ctrl+C input recovery, comment-containing multi-line functions, foreground native
+child stdin, Ctrl+C during child work, persisted history after restart and Ctrl+D
+exit. The child writes a ready file before reading stdin; its exact received bytes
+establish ownership independently of the prompt renderer. The same session's
+12 warm submit-to-result samples had median 0.235 ms and nearest-rank p95
+0.358 ms. The first prompt took 10.46 ms including process/PTY initialization.
+The focused result is `.temp/terminal-native-full-results.json`; these terminal
+observations are separate from the paired Rust/native workload benchmarks.
