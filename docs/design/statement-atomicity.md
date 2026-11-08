@@ -167,3 +167,24 @@ one-flush path. Native canonical resource paths detect overlap through directory
 symlinks. Same-object no-op requires actual filesystem identity, not Windows
 case folding, and does not treat a destination symlink as an ordinary hard-link
 alias: replacing that entry must still replace the link itself.
+
+### Compiled CLI and artifact transport proof
+
+`tests/Msync.Transfer.Tests/cli_ssh_journeys.py` closes the source-to-transport
+integration path using real loopback OpenSSH. It compiles a deferred remote
+selector and a deferred recursive native iterator, each composed with an ordinary
+`fs.is_regular_file` callback and `ranges.take(2)`. Each program executes from
+source, relocatable `.mso`, and bound `.mexe`: all **six executions used exactly
+one native SSH client, one authentication and one server exec session**, with no
+scp. Compilation and binding opened no endpoint. Different bytes before every
+stage prove that artifacts did not cache transferred data; different execution
+working directories prove `.mso` relocation and `.mexe` context retention. The
+accepted managed image was freshly built from the integrated source with strict
+analysis and no warnings. The same runner accepts the packaged Native AOT image
+for final binary acceptance without treating an engine-only test as compiler
+integration evidence.
+
+Filesystem and selected-path traversal order uses the shared
+`TextSemantics.Ordinal` Unicode scalar comparer, matching the Rust baseline
+rather than UTF-16 code-unit order. This affects enumeration/admission order,
+not dictionary key equality, native filesystem identity, or Windows case rules.

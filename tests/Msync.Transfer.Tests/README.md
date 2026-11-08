@@ -40,3 +40,19 @@ native alias configuration, process counting, and owned daemon lifetime. Product
 code has no dependency on that fixture or Python. The current link/mode journeys
 run on Unix; native Windows installation, filesystem behavior and WSL transport
 are separate platform acceptance work.
+
+## Compiled CLI/OpenSSH integration
+
+```sh
+python3 tests/Msync.Transfer.Tests/cli_ssh_journeys.py /absolute/path/to/msync
+```
+
+This smaller end-to-end proof runs a deferred selector function and a deferred
+recursive directory iterator, each followed by an ordinary typed native metadata
+predicate and `ranges.take(2)`. Both programs run as source, `.mso`, and `.mexe`.
+Each of the six executions must use exactly one actual SSH client,
+authentication and exec session; compile and binding must use none. The fixture
+changes source bytes between stages, runs the relocatable object from a new cwd,
+and runs the bound executable from another cwd, checking both transferred bytes
+and the respective context semantics. The command accepts managed apphosts and
+published Native AOT executables without rebuilding or changing them.
