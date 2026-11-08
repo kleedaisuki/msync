@@ -35,6 +35,9 @@ internal static class Program
           -O0, -O1, -O2                 Machine-independent optimization level
           --source-file FILE            Explicit source identity for binding
           --jobs N                      Runtime copy/process concurrency
+          --buffer-size N               Transfer buffer size (for example 64KiB)
+          --memory-limit N              Aggregate payload-buffer budget
+          --spool-limit N               Process output limit, or unlimited
           --check                       Check formatting without changing it
           --stdout                      Print formatted source
           --syntax 0.8                  Select the current grammar
@@ -64,7 +67,14 @@ internal static class Program
             Configuration configuration = Configuration.Load(options.ConfigPath, options.NoConfig, options.Overrides);
             if (options.Command == "config") { configuration.Dump(Console.Out); return 0; }
             configuration.Validate();
-            options = options with { Jobs = configuration.Jobs, Syntax = configuration.Syntax };
+            options = options with
+            {
+                Jobs = configuration.Jobs,
+                Syntax = configuration.Syntax,
+                BufferSize = configuration.BufferSize,
+                MemoryLimit = checked((long)configuration.MemoryLimit),
+                SpoolLimit = configuration.SpoolLimit is { } limit ? checked((long)limit) : null
+            };
             if (options.Syntax is not (null or "0.8" or "0.8.0")) return await Legacy(args);
             telemetry = TelemetrySession.TryOpen(configuration, options.Command, options.File, options.TracePath, options.TelemetryDatabase, options.NoTelemetry);
             if (options.Command == "repl") return Complete(await Repl(options, telemetry), telemetry);
@@ -88,7 +98,7 @@ internal static class Program
             if (options.Command == "bind-ir")
             {
                 string? sourceFile = options.SourceFile is null ? null : Path.GetFullPath(options.SourceFile);
-                Module bound = Binding.Bind(module, new(Environment.CurrentDirectory, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), sourceFile));
+                Module bound = Binding.Bind(module, new(Environment.CurrentDirectory, HostContext.HomeDirectory, sourceFile));
                 Write(bound, options.Output ?? Path.ChangeExtension(file, ".mexe"));
                 return Complete(0, telemetry);
             }
@@ -98,14 +108,14 @@ internal static class Program
             Console.CancelKeyPress += cancel;
             try
             {
-                Interpreter interpreter = new(module, new(SourceFile: options.SourceFile ?? (binary || file == "-" ? null : Path.GetFullPath(file)), DryRun: options.DryRun, Jobs: options.Jobs, Observe: telemetry is null ? null : telemetry.Observe));
+                Interpreter interpreter = new(module, RuntimeOptions(options, options.SourceFile ?? (binary || file == "-" ? null : Path.GetFullPath(file)), telemetry));
                 await interpreter.ExecuteAsync(cancellation.Token);
                 return Complete(interpreter.FailedTransfers == 0 ? 0 : 1, telemetry);
             }
             finally { Console.CancelKeyPress -= cancel; }
         }
         catch (OperationCanceledException error) { telemetry?.Finish("cancelled", error); Console.Error.WriteLine("msync: operation cancelled"); return 130; }
-        catch (Exception error) when (error is CompileException or SyntaxException or MsyncException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException)
+        catch (Exception error) when (error is CompileException or SyntaxException or MsyncException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or FormatException or OverflowException)
         {
             telemetry?.Finish("error", error);
             Console.Error.WriteLine($"msync: {error.Message}");
@@ -120,6 +130,10 @@ internal static class Program
         telemetry?.Finish(code == 0 ? "ok" : "error");
         return code;
     }
+
+    private static ExecutionOptions RuntimeOptions(Options options, string? sourceFile, TelemetrySession? telemetry) =>
+        new(SourceFile: sourceFile, DryRun: options.DryRun, Jobs: options.Jobs, BufferSize: options.BufferSize,
+            MemoryLimit: options.MemoryLimit, SpoolLimit: options.SpoolLimit, Observe: telemetry is null ? null : telemetry.Observe);
 
     private static EditorDiagnostic? CheckForEditor(string source, string? name)
     {
@@ -173,8 +187,8 @@ internal static class Program
         bool interactive = !Console.IsInputRedirected;
         if (interactive) Console.WriteLine("msync 0.8.0 — /help for commands; /quit to leave");
         string pending = "";
-        CompilerSession compiler = new();
-        ExecutionSession execution = new(new(DryRun: options.DryRun, Jobs: options.Jobs, Observe: telemetry is null ? null : telemetry.Observe));
+        CompilerSession compiler = new(optimization: options.Optimization);
+        ExecutionSession execution = new(RuntimeOptions(options, null, telemetry));
         while (true)
         {
             if (interactive) Console.Write(pending.Length == 0 ? "> " : "· ");
@@ -250,6 +264,10 @@ internal static class Program
         string? ConfigPath, bool NoConfig, IReadOnlyDictionary<string, object> Overrides,
         string? TracePath, string? TelemetryDatabase, bool NoTelemetry)
     {
+        public int BufferSize { get; init; } = 65536;
+        public long MemoryLimit { get; init; } = 67108864;
+        public long? SpoolLimit { get; init; }
+
         public static Options Parse(string[] args)
         {
             string command = args.Length == 0 ? "repl" : "run";
@@ -271,6 +289,9 @@ internal static class Program
                     case "--source-file": source = Next(); break;
                     case "--syntax": syntax = Next(); overrides["language.syntax"] = syntax; break;
                     case "--jobs": jobs = int.Parse(Next(), CultureInfo.InvariantCulture); if (jobs < 1) throw new ArgumentException("--jobs must be positive."); overrides["execution.jobs"] = jobs; break;
+                    case "--buffer-size": overrides["execution.buffer_size"] = Next(); break;
+                    case "--memory-limit": overrides["execution.memory_limit"] = Next(); break;
+                    case "--spool-limit": overrides["execution.spool_limit"] = Next(); break;
                     case "--check": formattingCheck = true; break;
                     case "--stdout": stdout = true; break;
                     case "-O0": optimization = 0; break;
