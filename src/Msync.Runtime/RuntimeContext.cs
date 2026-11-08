@@ -4,7 +4,10 @@ namespace Msync.Runtime;
 
 public sealed record ExecutionOptions(string? WorkingDirectory = null, string? SourceFile = null, bool DryRun = false,
     TextWriter? Output = null, TextWriter? Error = null, int Jobs = 4, int BufferSize = 65536, long MemoryLimit = 67108864,
-    long? SpoolLimit = null, Action<RuntimeObservation>? Observe = null);
+    long? SpoolLimit = null, Action<RuntimeObservation>? Observe = null)
+{
+    public Action<MsyncException>? ReportError { get; init; }
+}
 
 public sealed record RuntimeObservation(string Phase, string Outcome, string? Source = null, string? Destination = null, string? Detail = null, long DurationNanoseconds = 0);
 
@@ -21,6 +24,7 @@ public sealed class RuntimeContext
     public long MemoryLimit { get; }
     public long? SpoolLimit { get; }
     public Action<RuntimeObservation>? Observe { get; }
+    public Action<MsyncException>? ReportError { get; }
     public RuntimeContext(ExecutionOptions? options = null, BindingContext? binding = null)
     {
         options ??= new();
@@ -30,6 +34,7 @@ public sealed class RuntimeContext
         DryRun = options.DryRun;
         Output = options.Output ?? Console.Out;
         Error = options.Error ?? Console.Error;
+        ReportError = options.ReportError;
         Jobs = options.Jobs;
         BufferSize = options.BufferSize; MemoryLimit = options.MemoryLimit; SpoolLimit = options.SpoolLimit; Observe = options.Observe;
     }

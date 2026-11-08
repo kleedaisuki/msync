@@ -422,10 +422,15 @@ public sealed class Interpreter
         {
             Interlocked.Increment(ref failedTransfers);
             context.Observe?.Invoke(new("transfer", "failure", SourceLabel(source), destination.ToString(), error.ToString(), (long)(Stopwatch.GetElapsedTime(started).TotalMilliseconds * 1_000_000)));
-            var location = span is { } origin ? $"{origin.Source}:{origin.Start}: " : "";
-            await context.Error.WriteLineAsync($"{location}transfer {SourceLabel(source)} -> {destination}: {error.Message}");
-            for (var cause = error.InnerException; cause is not null; cause = cause.InnerException)
-                await context.Error.WriteLineAsync($"  caused by {cause.Message}");
+            if (context.ReportError is { } report)
+                report(new MsyncException($"Cannot transfer {SourceLabel(source)} -> {destination}.", span, error));
+            else
+            {
+                var location = span is { } origin ? $"{origin.Source}:{origin.Start}: " : "";
+                await context.Error.WriteLineAsync($"{location}transfer {SourceLabel(source)} -> {destination}: {error.Message}");
+                for (var cause = error.InnerException; cause is not null; cause = cause.InnerException)
+                    await context.Error.WriteLineAsync($"  caused by {cause.Message}");
+            }
             return false;
         }
     }

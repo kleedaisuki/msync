@@ -101,6 +101,23 @@ try
     Check(await interpreter.ExecuteAsync() is BoolValue { Data: false }, "Operational transfer failure did not yield false");
     Check(interpreter.FailedTransfers == 1 && errors.ToString().Contains("missing", StringComparison.Ordinal), "Failed transfer lost accounting or diagnostic");
     Check(await File.ReadAllTextAsync(Path.Combine(root, "b")) == "klee\n世界", "Failed transfer damaged existing destination");
+    List<MsyncException> reports = [];
+    var origin = new SourceSpan("copy-fixture.msync", 18, 12);
+    var attributedMissing = missing with
+    {
+        Functions = [missing.Functions[0] with
+        {
+            Instructions = missing.Functions[0].Instructions.Select(i => i.Op == OpCode.Transfer ? i with { Span = origin } : i).ToArray()
+        }]
+    };
+    using var callbackErrors = new StringWriter();
+    var reporting = new Interpreter(attributedMissing, new(WorkingDirectory: root, Error: callbackErrors) { ReportError = reports.Add });
+    Check(await reporting.ExecuteAsync() is BoolValue { Data: false }, "Reporting a transfer changed its false result");
+    Check(reporting.FailedTransfers == 1 && reports.Count == 1, "Structured transfer reporting lost failure accounting");
+    Check(reports[0].Span == origin && reports[0].InnerException is IOException, "Structured transfer reporting lost operand provenance or native cause");
+    Check(callbackErrors.ToString().Length == 0, "Structured transfer reporting also wrote the fallback error stream");
+    Check(await File.ReadAllTextAsync(Path.Combine(root, "b")) == "klee\n世界", "Structured reporting damaged an existing destination");
+
     if (!OperatingSystem.IsWindows())
     {
         Directory.CreateDirectory(Path.Combine(root, "real"));
