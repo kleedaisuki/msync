@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -5,42 +6,16 @@ using System.Text.RegularExpressions;
 
 namespace Msync.Cli;
 
-internal sealed record EditorDiagnostic(string Message, int Line, int Column);
+internal sealed record EditorDiagnostic(string Message, int Line, int Column, int? Offset = null, int Length = 1);
 
 internal sealed partial class LanguageServer(
     Func<string, string?, EditorDiagnostic?> check,
     Func<string, string> format)
 {
-    private readonly Dictionary<string, string> documents = new(StringComparer.Ordinal);
-    private readonly Stream input = Console.OpenStandardInput();
+    private readonly Dictionary<string, EditorDocument> documents = new(StringComparer.Ordinal);
+    private readonly Stream input = new BufferedStream(Console.OpenStandardInput(), 16384);
     private readonly Stream output = Console.OpenStandardOutput();
     private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "Bool", "Range", "String", "Function", "Scope", "Path", "Process", "Connection", "Null", "Number"];
-
-    public int Run()
-    {
-        while (Read() is { } request)
-        {
-            using (request)
-            {
-                JsonElement root = request.RootElement;
-                string method = root.TryGetProperty("method", out JsonElement m) ? m.GetString() ?? "" : "";
-                JsonNode? id = root.TryGetProperty("id", out JsonElement requestId) ? JsonNode.Parse(requestId.GetRawText()) : null;
-                JsonElement parameters = root.TryGetProperty("params", out JsonElement p) ? p : default;
-                if (method == "exit") return 0;
-                try
-                {
-                    if (id is not null) Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = Handle(method, parameters) });
-                    else Notify(method, parameters);
-                }
-                catch (Exception error) when (error is JsonException or KeyNotFoundException or ArgumentException)
-                {
-                    if (id is not null) Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id.DeepClone(), ["error"] = new JsonObject { ["code"] = -32602, ["message"] = error.Message } });
-                    else Console.Error.WriteLine($"LSP {method}: {error.Message}");
-                }
-            }
-        }
-        return 0;
-    }
 
     private JsonNode? Handle(string method, JsonElement p)
     {
@@ -54,48 +29,21 @@ internal sealed partial class LanguageServer(
             return JsonValue.Create(StandardSource(uri));
         }
         string documentUri = p.TryGetProperty("textDocument", out JsonElement td) ? td.GetProperty("uri").GetString()! : "";
-        string text = documents.GetValueOrDefault(documentUri, "");
-        if (method == "textDocument/formatting") return new JsonArray(new JsonObject { ["range"] = Range(text, 0, text.Length), ["newText"] = format(text) });
-        if (method == "textDocument/completion") return Completions(text, p);
-        if (method == "textDocument/semanticTokens/full") return SemanticTokens(text);
-        if (method == "textDocument/documentSymbol") return Symbols(text);
-        if (method == "textDocument/definition") return Definition(documentUri, text, p);
-        if (method == "textDocument/hover") return new JsonObject { ["contents"] = new JsonObject { ["kind"] = "markdown", ["value"] = $"`{Word(text, Offset(text, p.GetProperty("position")))}` — msync 0.8 typed expression" } };
+        EditorDocument document = documents.GetValueOrDefault(documentUri) ?? new("", 0, 0);
+        string text = document.Source.Text;
+        if (method == "textDocument/formatting") return new JsonArray(new JsonObject { ["range"] = document.Source.Range(0, text.Length), ["newText"] = format(text) });
+        if (method == "textDocument/completion") return Completions(document.Source, p);
+        if (method == "textDocument/semanticTokens/full") return SemanticTokens(document.Source);
+        if (method == "textDocument/documentSymbol") return Symbols(document.Source);
+        if (method == "textDocument/definition") return Definition(documentUri, document.Source, p);
+        if (method == "textDocument/hover") return new JsonObject { ["contents"] = new JsonObject { ["kind"] = "markdown", ["value"] = $"`{Word(text, Offset(document.Source, p.GetProperty("position")))}` — msync 0.8 typed expression" } };
         return null;
     }
 
-    private void Notify(string method, JsonElement p)
+    private static JsonArray Completions(SourceText source, JsonElement p)
     {
-        if (method is not ("textDocument/didOpen" or "textDocument/didChange" or "textDocument/didClose")) return;
-        JsonElement td = p.GetProperty("textDocument");
-        string uri = td.GetProperty("uri").GetString()!;
-        if (method == "textDocument/didClose") documents.Remove(uri);
-        else if (method == "textDocument/didOpen") documents[uri] = td.GetProperty("text").GetString()!;
-        else
-        {
-            string text = documents.GetValueOrDefault(uri, "");
-            foreach (JsonElement change in p.GetProperty("contentChanges").EnumerateArray())
-            {
-                string replacement = change.GetProperty("text").GetString()!;
-                if (!change.TryGetProperty("range", out JsonElement range)) { text = replacement; continue; }
-                int start = Offset(text, range.GetProperty("start"));
-                int end = Offset(text, range.GetProperty("end"));
-                text = string.Concat(text.AsSpan(0, start), replacement, text.AsSpan(end));
-            }
-            documents[uri] = text;
-        }
-        JsonArray diagnostics = [];
-        if (documents.TryGetValue(uri, out string? source) && check(source, uri) is { } diagnostic)
-        {
-            int line = Math.Max(0, diagnostic.Line - 1), column = Math.Max(0, diagnostic.Column - 1);
-            diagnostics.Add((JsonNode)new JsonObject { ["range"] = new JsonObject { ["start"] = Position(line, column), ["end"] = Position(line, column + 1) }, ["severity"] = 1, ["source"] = "msync", ["message"] = diagnostic.Message });
-        }
-        Write(new JsonObject { ["jsonrpc"] = "2.0", ["method"] = "textDocument/publishDiagnostics", ["params"] = new JsonObject { ["uri"] = uri, ["diagnostics"] = diagnostics } });
-    }
-
-    private static JsonArray Completions(string text, JsonElement p)
-    {
-        int offset = Offset(text, p.GetProperty("position"));
+        string text = source.Text;
+        int offset = Offset(source, p.GetProperty("position"));
         string prefix = text[..offset];
         IEnumerable<string> words = Keywords.Concat(Declaration().Matches(text).Select(m => m.Groups[2].Value));
         Match standard = StandardMember().Match(prefix);
@@ -112,9 +60,10 @@ internal sealed partial class LanguageServer(
         return items;
     }
 
-    private static JsonNode? Definition(string uri, string text, JsonElement p)
+    private static JsonNode? Definition(string uri, SourceText sourceText, JsonElement p)
     {
-        int offset = Offset(text, p.GetProperty("position"));
+        string text = sourceText.Text;
+        int offset = Offset(sourceText, p.GetProperty("position"));
         string word = Word(text, offset);
         int start = offset;
         while (start > 0 && (char.IsLetterOrDigit(text[start - 1]) || text[start - 1] == '_')) start--;
@@ -127,7 +76,7 @@ internal sealed partial class LanguageServer(
             return null;
         }
         foreach (Match match in Declaration().Matches(text))
-            if (match.Groups[2].Value == word) return new JsonObject { ["uri"] = uri, ["range"] = Range(text, match.Groups[2].Index, match.Groups[2].Length) };
+            if (match.Groups[2].Value == word) return new JsonObject { ["uri"] = uri, ["range"] = sourceText.Range(match.Groups[2].Index, match.Groups[2].Length) };
         return null;
     }
 
@@ -143,56 +92,68 @@ internal sealed partial class LanguageServer(
         return module;
     }
 
-    private static JsonArray Symbols(string text)
+    private static JsonArray Symbols(SourceText source)
     {
         JsonArray symbols = [];
-        foreach (Match match in Declaration().Matches(text))
+        foreach (Match match in Declaration().Matches(source.Text))
         {
-            JsonObject range = Range(text, match.Groups[2].Index, match.Groups[2].Length);
+            JsonObject range = source.Range(match.Groups[2].Index, match.Groups[2].Length);
             symbols.Add((JsonNode)new JsonObject { ["name"] = match.Groups[2].Value, ["kind"] = match.Groups[1].Value == "fn" ? 12 : 13, ["range"] = range, ["selectionRange"] = range.DeepClone() });
         }
         return symbols;
     }
 
-    private static JsonObject SemanticTokens(string text)
+    private static JsonObject SemanticTokens(SourceText source)
     {
-        JsonArray data = [];
+        string text = source.Text;
+        List<int> data = [];
         int previousLine = 0, previousColumn = 0;
-        foreach (Match match in LexicalTokens().Matches(text))
+        foreach (ValueMatch match in LexicalTokens().EnumerateMatches(text))
         {
-            if (match.Groups["uri"].Success)
+            ReadOnlySpan<char> token = text.AsSpan(match.Index, match.Length);
+            bool comment = token[0] == '#' || token.StartsWith("//", StringComparison.Ordinal);
+            bool quoted = token[0] == '"';
+            int separator = !comment && !quoted ? token.IndexOf("://", StringComparison.Ordinal) : -1;
+            if (separator >= 0)
             {
-                int separator = match.Value.IndexOf("://", StringComparison.Ordinal);
                 AddToken(match.Index, separator, 6);
                 AddToken(match.Index + separator, 3, 8);
                 AddToken(match.Index + separator + 3, match.Length - separator - 3, 7);
                 continue;
             }
-            int type = match.Groups["comment"].Success ? 5 : match.Groups["string"].Success ? 4 : match.Groups["operator"].Success ? 8 :
-                Keywords.Contains(match.Value, StringComparer.Ordinal) ? char.IsUpper(match.Value[0]) ? 3 : 0 :
+            int type = comment ? 5 : quoted ? 4 : "?:-=!/$|".AsSpan().Contains(token[0]) ? 8 :
+                IsKeyword(token) ? char.IsUpper(token[0]) ? 3 : 0 :
                 match.Index > 0 && text[match.Index - 1] == '$' ? 9 : 2;
             AddToken(match.Index, match.Length, type);
         }
-        return new JsonObject { ["data"] = data };
+        JsonNode? encoded = JsonSerializer.SerializeToNode(data.ToArray(), LanguageServerJson.Default.Int32Array);
+        return new JsonObject { ["data"] = encoded };
 
         void AddToken(int offset, int length, int type)
         {
             int end = offset + length;
             while (offset < end)
             {
-                int newline = text.IndexOf('\n', offset, end - offset);
+                int relative = text.AsSpan(offset, end - offset).IndexOfAny('\r', '\n');
+                int newline = relative < 0 ? -1 : offset + relative;
                 int tokenEnd = newline < 0 ? end : newline;
-                if (tokenEnd > offset && text[tokenEnd - 1] == '\r') tokenEnd--;
                 if (tokenEnd > offset)
                 {
-                    (int line, int column) = Coordinates(text, offset);
-                    data.Add((JsonNode?)JsonValue.Create(line - previousLine)); data.Add((JsonNode?)JsonValue.Create(line == previousLine ? column - previousColumn : column));
-                    data.Add((JsonNode?)JsonValue.Create(tokenEnd - offset)); data.Add((JsonNode?)JsonValue.Create(type)); data.Add((JsonNode?)JsonValue.Create(0));
+                    (int line, int column) = source.Coordinates(offset);
+                    data.Add(line - previousLine); data.Add(line == previousLine ? column - previousColumn : column);
+                    data.Add(tokenEnd - offset); data.Add(type); data.Add(0);
                     previousLine = line; previousColumn = column;
                 }
-                offset = newline < 0 ? end : newline + 1;
+                offset = newline < 0 ? end : newline + (text[newline] == '\r' && newline + 1 < end && text[newline + 1] == '\n' ? 2 : 1);
             }
         }
+    }
+
+    private static bool IsKeyword(ReadOnlySpan<char> token)
+    {
+        foreach (string keyword in Keywords)
+            if (token.SequenceEqual(keyword)) return true;
+        return false;
     }
 
     internal static string StandardSource(string uri)
@@ -227,20 +188,11 @@ internal sealed partial class LanguageServer(
 
     private void Write(JsonNode value)
     {
-        byte[] bytes = Encoding.UTF8.GetBytes(value.ToJsonString());
-        output.Write(Encoding.ASCII.GetBytes($"Content-Length: {bytes.Length}\r\n\r\n"));
-        output.Write(bytes);
+        ArrayBufferWriter<byte> buffer = new();
+        using (Utf8JsonWriter writer = new(buffer)) value.WriteTo(writer);
+        output.Write(Encoding.ASCII.GetBytes($"Content-Length: {buffer.WrittenCount}\r\n\r\n"));
+        output.Write(buffer.WrittenSpan);
         output.Flush();
-    }
-
-    private static int Offset(string text, JsonElement position)
-    {
-        int target = position.GetProperty("line").GetInt32(), line = 0, offset = 0;
-        while (offset < text.Length && line < target) if (text[offset++] == '\n') line++;
-        int end = text.IndexOf('\n', offset);
-        if (end < 0) end = text.Length;
-        if (end > offset && text[end - 1] == '\r') end--;
-        return Math.Min(end, offset + position.GetProperty("character").GetInt32());
     }
 
     private static (int Line, int Column) Coordinates(string text, int offset)

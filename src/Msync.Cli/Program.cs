@@ -61,7 +61,7 @@ internal static class Program
         try
         {
             if (args.Length != 0 && args[0] == "legacy") return await Legacy(args[1..]);
-            if (args.Contains("--language-server", StringComparer.Ordinal)) return new LanguageServer(CheckForEditor, source => Formatter.Format(source)).Run();
+            if (args.Contains("--language-server", StringComparer.Ordinal)) return await new LanguageServer(CheckForEditor, source => Formatter.Format(source)).RunAsync();
             if (args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal)) { Console.WriteLine(Help); return 0; }
             if (args.Contains("--version", StringComparer.Ordinal) || args.Contains("-V", StringComparer.Ordinal)) { Console.WriteLine("msync 0.8.0"); return 0; }
             Options options = Options.Parse(args);
@@ -139,8 +139,8 @@ internal static class Program
     private static EditorDiagnostic? CheckForEditor(string source, string? name)
     {
         try { _ = SourceCompiler.Compile(source, name); return null; }
-        catch (CompileException error) { return new(error.Message, error.Line, error.Column); }
-        catch (SyntaxException error) { return new(error.Message, error.Line, error.Column); }
+        catch (CompileException error) { return new(error.Message, error.Line, error.Column, error.Span.Start, error.Span.Length); }
+        catch (SyntaxException error) { return new(error.Message, error.Line, error.Column, error.Span.Start, error.Span.Length); }
     }
 
     private static bool IsArtifact(string file) => file.EndsWith(".mso", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".mexe", StringComparison.OrdinalIgnoreCase);

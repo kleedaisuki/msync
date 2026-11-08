@@ -36,6 +36,73 @@ protocol, `://` operator, and complete address separately; quoted URI text stays
 a String. Tokens spanning actual newlines split into legal single-line UTF-16
 regions. Transport errors belong to stderr, never JSON-RPC stdout.
 
+## Responsive document processing
+
+LSP input, analysis and publication have separate ownership. A buffered input
+reader emits messages to one protocol event loop; only that loop updates open
+documents or writes protocol frames. One compiler worker consumes the latest
+pending snapshot per URI. Replacing a pending snapshot does not enqueue another
+copy, and different documents retain independent pending work. No debounce sleep
+or arbitrary source-size cap is needed to keep completion and shutdown responsive.
+
+Each open document retains immutable source text, its client version, a
+monotonically increasing internal generation and a line-start index. Completed
+diagnostics publish only for that same generation, including across close/reopen
+where client versions may repeat. Published diagnostics carry the client version;
+stale incoming versions do not replace newer source. Shutdown stops admission
+without waiting for an already-running pure compiler call.
+
+The line index makes token/symbol range conversion logarithmic instead of
+rescanning from the start for every token. UTF-16 offsets, LF, CRLF and lone CR
+share this representation. Semantic-token enumeration uses BCL ValueMatch spans
+rather than per-token Match/Group graphs, and numeric arrays use source-generated
+JSON metadata. Protocol output writes UTF-8 directly through Utf8JsonWriter,
+avoiding a complete intermediate UTF-16 JSON string and transcoding copy.
+
+The actual stdio lifecycle journey is
+`tests/Msync.EndToEnd/lsp_analysis_journey.py`: superseded analysis, stale versions,
+close/reopen identity, multiple documents, astral text, line endings, exact source
+diagnostic spans, and shutdown with analysis pending. The latency companion runs
+real native processes with 1,000/4,000-line documents and sixteen successive edits.
+
+The ownership model follows [Roslyn immutable snapshots](https://learn.microsoft.com/en-us/dotnet/csharp/roslyn-sdk/work-with-workspace)
+and the [LSP versioned diagnostic contract](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#publishDiagnosticsParams).
+[BCL Channels](https://learn.microsoft.com/en-us/dotnet/core/extensions/channels)
+provide the native producer/consumer mechanism. The relevant insight from
+[Lamport's event ordering](https://lamport.azurewebsites.net/pubs/time-clocks.pdf)
+is causal identity rather than wall-clock delays: completion of old work is not
+authority to replace a newer document. This server is not a distributed-clock
+implementation or a claim of incremental type inference.
+
+### Native latency evidence
+
+The preserved 0.8 delivery baseline is native image `ca5c2eb2...`; the final
+product candidate is `b89d9da5687c8ef526e7659f1c99e53cb21beb03f16305d776e94f07dbc39794`.
+The maintained latency runner freezes the complete adjacent payload and records
+hashes. These are real stdio measurements on the same Linux host, not isolated
+provider calls or performance thresholds in CI.
+
+| Actual request/workload | Delivery baseline ms | Responsive snapshot ms |
+| --- | ---: | ---: |
+| 1,000-line semantic tokens | 60.659 | 7.862 |
+| 4,000-line semantic tokens | 832.186 | 23.830 |
+| 4,000-line open then hover | 145.376 | 1.437 |
+| Sixteen edits plus completion, 4,000 lines | 2663.783 | 113.358 |
+
+The first source-index/coalescing pass still took 74.601 ms for the 4,000-line
+token response. Replacing Match/Group allocations with ValueMatch enumeration
+and writing UTF-8 directly reduced that to 23.830 ms. Source-generated integer
+array JSON preserves the protocol shape without runtime reflection. The burst
+comparison also includes the independently measured compiler improvements; it
+must not attribute all reduced work to the protocol loop alone. A large response
+still costs time proportional to its token/output count.
+
+Raw records are `.temp/product-latency/lsp-before.json`,
+`lsp-after-final.json` and `lsp-after-frozen.json`. The final native lifecycle
+journey observed 1.496 ms for hover following superseded analysis and 2.180 ms
+for shutdown while analysis was pending, and verified versions, source spans,
+close/reopen identity and multiple-document progress.
+
 ## Verification
 
 `tests/Msync.EndToEnd/journeys.py` checks scope-held functions, option order,
