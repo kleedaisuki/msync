@@ -172,6 +172,33 @@ def run(binary: Path, workspace: Path, *, negotiate: bool) -> dict[str, Any]:
         assert again["kind"] == 3 and "fn choose" in again["detail"], again
         assert "boolean value" not in documentation(again).lower(), again
 
+        receiver_source = (
+            "scope Functions { entry: fn(value: Path) { value } };\n"
+            "scope Paths { entry: ./source };\n"
+            "Functions::entry(./source);\n"
+            "Functions::entry;\n"
+            "Paths::entry;\n"
+        )
+        notify(client, second_uri, 3, receiver_source)
+        assert diagnostics(client, second_uri, 3)["diagnostics"] == []
+        receiver_items: list[dict[str, Any]] = []
+        for row, column in ((3, 11), (4, 7)):
+            response, _ = client.request(
+                "textDocument/completion",
+                {
+                    "textDocument": {"uri": second_uri},
+                    "position": {"line": row, "character": column},
+                },
+            )
+            receiver_items.append(selected(items(response), "entry"))
+        function_entry, _ = resolve(client, receiver_items[0], supported)
+        path_entry, _ = resolve(client, receiver_items[1], supported)
+        assert function_entry["kind"] == 3 and "fn entry" in function_entry["detail"], (
+            function_entry
+        )
+        assert path_entry["kind"] == 6 and "Path" in path_entry["detail"], path_entry
+        assert "filesystem path" in documentation(path_entry).lower(), path_entry
+
         # A changed generation must neither reuse token bytes nor reinterpret old data.
         changed = "let choose = ./replacement;\n"
         notify(client, uri, 3, changed)
@@ -213,6 +240,7 @@ def run(binary: Path, workspace: Path, *, negotiate: bool) -> dict[str, Any]:
             for message in client.notifications
         ), client.notifications
         observations["current_shadow_stale_close_reopen_isolation"] = True
+        observations["same_label_receiver_isolation"] = True
         observations["source_effects"] = 0
         return observations
     finally:
