@@ -96,3 +96,27 @@ Keep an artifact-level DAG discriminator in optimizer performance checks.
 Code-size heuristics must remain optimization choices, never source-language
 validity limits. Interleave simplification so transient graph size, reaching
 state size and retained local slots do not erase the benefit of a tiny final IR.
+
+## Selected Scope construction failures
+
+A final accepted-artifact discriminator revealed another concrete elimination
+error: `True, False, MakeScope(A=2, Text="x\0x"), Pop, Null, Return` passes
+`Artifact.Validate`, throws during selected construction at O0, and was removed
+by O1/O2/O3 to `Null, Return`. The duplicate-name case is not produced by the new
+source frontend, but accepting an older binary then optimizing away its selected
+failure changes the binary execution contract.
+
+The correction belongs in operation totality proofs: ordinary unique-member
+Scope construction is removable; duplicate-member construction can fail. Its
+exceptional behavior must reach graph roots and interprocedural summaries.
+Marking every Scope allocation effectful would discard the ordinary optimization
+benefit; globally rejecting accepted objects would also change unselected-branch
+behavior instead of preserving selected execution semantics.
+
+A separate mutable-identity discriminator passed at O0/O1/O2/O3: construct a
+Scope with `field`, capture its binding location in setter/getter closures,
+rebind it to a Scope with only `other`, and discard the delayed getter's result.
+All variants retain the selected `Scope has no member 'field'` error, including
+optimized paths which inline both closures through `GetCapture` and fresh
+`InitializeLocal` locations. This check did not establish a defect in the current
+`HasDeclaredMember`/mutable-origin exclusion mechanism.
