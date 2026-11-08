@@ -44,6 +44,10 @@ a backslash remains a POSIX filename character, including SSH/WSL on Windows.
 
 ## Execution and effects
 
+The interpreter traverses the actual selected BasicBlocks using a precomputed
+PC-to-block lookup, not a flat source replay or planner-only block annotation.
+Each selected effect block lowers runtime-known local transfer operands to the
+local executable operation; jump/loop/return outcomes select the next block.
 The interpreter is async stack bytecode, not a JIT: Native AOT disallows runtime
 IL generation. Pure constant folding handles boolean operations, arithmetic,
 string concatenation and type identity. Basic blocks split at control-flow and
@@ -89,7 +93,7 @@ retain actual outcomes rather than generic error labels.
 Unicode binary round trips, pure-fold equivalence, branch-target compaction,
 source/object/executable cwd ownership, read-after-write and symlink-alias
 scheduling, Bool failure + existing-target preservation, Process stdout and actual
-spool budget. The current checkpoint passes **221 assertions**. Run with isolated
+spool budget, lazy `take(0)` and lazy values escaping a REPL submission. The current checkpoint passes **226 assertions**. Run with isolated
 build outputs when other agents are compiling:
 
 ```

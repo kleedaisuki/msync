@@ -10,9 +10,11 @@ public sealed class Interpreter
 {
     private readonly Module module;
     private readonly RuntimeContext context;
+    private readonly BasicBlock[][] blocks;
     private readonly List<PendingTransfer> transfers = [];
     private readonly SemaphoreSlim slots;
     private readonly HashSet<IAsyncDisposable> iterators = [];
+    private readonly Dictionary<string, IReadOnlyDictionary<int, int>> dispatchTables = [];
     private int failedTransfers;
     public int FailedTransfers => failedTransfers;
     private sealed record ResourceKey(string Endpoint, string Path);
@@ -24,6 +26,10 @@ public sealed class Interpreter
         context = new(options, module.Context);
         this.module = module.Stage == ArtifactStage.Relocatable
             ? Binding.Bind(module, new(context.WorkingDirectory, context.HomeDirectory, context.SourceFile)) : module;
+        if (this.module.Blocks is null) this.module = Optimizer.FormBlocks(this.module);
+        blocks = this.module.Functions.Select(function => new BasicBlock[function.Instructions.Count]).ToArray();
+        foreach (var block in this.module.Blocks!)
+            for (var pc = block.Start; pc < block.End; pc++) blocks[block.Function][pc] = block;
         slots = new(Math.Max(1, Math.Min(context.Jobs, (int)Math.Min(int.MaxValue, context.MemoryLimit / Math.Max(1, context.BufferSize)))));
     }
     public static ValueTask<Value> ExecuteAsync(Module module, ExecutionOptions? options = null, CancellationToken cancellationToken = default)
@@ -39,7 +45,7 @@ public sealed class Interpreter
     }
     internal async ValueTask<Value> ExecuteEntryAsync(Value[] locals, int startInstruction, CancellationToken cancellationToken)
     {
-        try { return await RunCodeAsync(module.Functions[module.EntryPoint], locals, startInstruction, cancellationToken); }
+        try { return await RunCodeAsync(module.EntryPoint, locals, startInstruction, cancellationToken); }
         finally { await DrainAsync(); foreach (var iterator in iterators) await iterator.DisposeAsync(); }
     }
     private async ValueTask<Value> InvokeAsync(Value callee, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
@@ -65,11 +71,32 @@ public sealed class Interpreter
         Array.Fill(locals, Value.Null);
         for (var i = 0; i < captures.Count; i++) locals[i] = captures[i];
         for (var i = 0; i < arguments.Count; i++) locals[function.CaptureCount + i] = arguments[i];
-        return RunCodeAsync(function, locals, 0, cancellationToken);
+        return RunCodeAsync(functionIndex, locals, 0, cancellationToken);
     }
-    private async ValueTask<Value> RunCodeAsync(FunctionCode function, Value[] locals, int startInstruction, CancellationToken cancellationToken)
+    private async ValueTask<Value> RunCodeAsync(int functionIndex, Value[] locals, int startInstruction, CancellationToken cancellationToken)
     {
+        var function = module.Functions[functionIndex];
         List<Value> stack = [];
+        var pc = startInstruction;
+        while (pc < function.Instructions.Count)
+        {
+            var block = blocks[functionIndex][pc];
+            var outcome = await RunBlockAsync(function, locals, stack, pc, block, cancellationToken);
+            if (outcome.Returned) return outcome.Value!;
+            pc = outcome.Next;
+        }
+        await DrainAsync();
+        return stack.Count == 0 ? Value.Null : stack[^1];
+    }
+    private readonly record struct BlockOutcome(int Next, Value? Value = null, bool Returned = false);
+    private static Instruction SpecializeBlockInstruction(Instruction instruction, List<Value> stack)
+    {
+        if (instruction.Op != OpCode.Transfer || stack.Count < 2) return instruction;
+        static bool Local(Value value) => value is StringValue or PathValue { Connection: null or { Kind: ConnectionKind.Local } };
+        return Local(stack[^1]) && Local(stack[^2]) ? instruction with { Op = OpCode.LocalTransfer } : instruction;
+    }
+    private async ValueTask<BlockOutcome> RunBlockAsync(FunctionCode function, Value[] locals, List<Value> stack, int startInstruction, BasicBlock block, CancellationToken cancellationToken)
+    {
         Value Pop() { var value = stack[^1]; stack.RemoveAt(stack.Count - 1); return value; }
         Value[] PopMany(int count)
         {
@@ -78,10 +105,11 @@ public sealed class Interpreter
             return values;
         }
         var code = function.Instructions;
-        for (var pc = startInstruction; pc < code.Count; pc++)
+        var pc = startInstruction;
+        for (; pc < block.End; pc++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var instruction = code[pc];
+            var instruction = pc == block.Start ? SpecializeBlockInstruction(code[pc], stack) : code[pc];
             try
             {
                 switch (instruction.Op)
@@ -104,19 +132,20 @@ public sealed class Interpreter
                         break;
                     case OpCode.MakeClosure: stack.Add(new FunctionValue(instruction.A, PopMany(instruction.B))); break;
                     case OpCode.SpecializeClosure:
-                        stack.Add(((FunctionValue)Pop()) with { Function = instruction.A }); break;
+                        stack.Add(Specialize((FunctionValue)Pop(), instruction)); break;
                     case OpCode.Call:
                     case OpCode.ProcessCall:
                         {
                             await DrainAsync();
                             var arguments = PopMany(instruction.A); var callee = Pop();
-                            if (instruction.Op == OpCode.Call && instruction.B != 0) callee = ((FunctionValue)callee) with { Function = instruction.B - 1 };
+                            if (instruction.Op == OpCode.Call && instruction.Text is not null && callee is FunctionValue { NativeName: null } dynamicFunction) callee = Specialize(dynamicFunction, instruction);
+                        else if (instruction.Op == OpCode.Call && instruction.B != 0) callee = ((FunctionValue)callee) with { Function = instruction.B - 1 };
                             stack.Add(await InvokeAsync(callee, arguments, cancellationToken)); break;
                         }
                     case OpCode.NativeCall:
-                        await DrainAsync();
+                        if (RequiresFrontierJoin(instruction.Text!)) await DrainAsync();
                         stack.Add(await InvokeNativeAsync(instruction.Text!, PopMany(instruction.A), cancellationToken)); break;
-                    case OpCode.Return: await DrainAsync(); return stack.Count == 0 ? Value.Null : Pop();
+                    case OpCode.Return: await DrainAsync(); return new(pc, stack.Count == 0 ? Value.Null : Pop(), true);
                     case OpCode.LoadBuiltin: stack.Add(Builtin(instruction.Text!)); break;
                     case OpCode.Convert:
                         {
@@ -153,7 +182,10 @@ public sealed class Interpreter
                             stack.Add(left with { Raw = PathSemantics.Join(left, right) }); break;
                         }
                     case OpCode.SelectPath:
-                        stack.Add(new RangeValue(SelectAsync(context.AsPath(Pop()), instruction.Text!, cancellationToken), TypeRef.Path)); break;
+                    {
+                        var directory = context.AsPath(Pop());
+                        stack.Add(new RangeValue(SelectAsync(directory, instruction.Text!, cancellationToken), TypeRef.Path, new PathSelection(directory, instruction.Text!))); break;
+                    }
                     case OpCode.Transfer:
                     case OpCode.LocalTransfer:
                         {
@@ -174,7 +206,7 @@ public sealed class Interpreter
                     case OpCode.RegexMatch:
                         {
                             var pattern = instruction.Text ?? Text(Pop()); var value = Pop();
-                            stack.Add(Regex.IsMatch(value is PathValue path ? path.LocalPath(context.WorkingDirectory, context.HomeDirectory) : Text(value), pattern, RegexOptions.CultureInvariant) ? Value.True : Value.False); break;
+                            stack.Add(Regex.IsMatch(Text(value), pattern, RegexOptions.CultureInvariant) ? Value.True : Value.False); break;
                         }
                     case OpCode.Equal:
                     case OpCode.NotEqual:
@@ -219,9 +251,23 @@ public sealed class Interpreter
             { throw new MsyncException(error.Message, instruction.Span, error); }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception)
             { throw new MsyncException($"{instruction.Op} in '{function.Name}': {error.Message}", instruction.Span, error); }
+            if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.IteratorNext)
+                return new(pc + 1);
         }
-        await DrainAsync();
-        return stack.Count == 0 ? Value.Null : Pop();
+        return new(pc);
+    }
+    private FunctionValue Specialize(FunctionValue function, Instruction instruction)
+    {
+        if (function.NativeName is not null) return function;
+        if (instruction.Text is null) return function with { Function = instruction.A };
+        if (!dispatchTables.TryGetValue(instruction.Text, out var targets))
+        {
+            targets = instruction.Text.Split(';', StringSplitOptions.RemoveEmptyEntries).Select(pair => pair.Split(':'))
+                .ToDictionary(pair => int.Parse(pair[0], System.Globalization.CultureInfo.InvariantCulture), pair => int.Parse(pair[1], System.Globalization.CultureInfo.InvariantCulture));
+            dispatchTables.Add(instruction.Text, targets);
+        }
+        return targets.TryGetValue(function.Function, out var target) ? function with { Function = target }
+            : throw new MsyncException($"Function #{function.Function} has no compiled specialization in this dispatch table", instruction.Span);
     }
     private Value Capture(Value value) => value is PathValue path ? path with { WorkingDirectory = path.WorkingDirectory ?? context.WorkingDirectory, HomeDirectory = path.HomeDirectory ?? context.HomeDirectory } : value;
     private Value Builtin(string name)
@@ -335,6 +381,9 @@ public sealed class Interpreter
         catch { if (!process.HasExited) process.Kill(entireProcessTree: true); throw; }
         return Encoding.UTF8.GetString(output.GetBuffer(), 0, checked((int)output.Length));
     }
+    private static bool RequiresFrontierJoin(string nativeName) => !NativeSignatures.TryGet(nativeName, out var signature)
+        || signature.Effect != NativeEffect.Pure
+        || signature.Parameters.Any(parameter => (parameter.Kind & (TypeKind.Range | TypeKind.Function)) != 0);
     private async ValueTask<Value> InvokeNativeAsync(string name, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
     {
         try { return await NativeRegistry.InvokeAsync(name, arguments, context, InvokeAsync, cancellationToken); }
@@ -357,15 +406,15 @@ public sealed class Interpreter
         try
         {
             var result = local ? await TransferEngine.CopyLocalAsync(source, destination, context, cancellationToken) : await TransferEngine.CopyAsync(source, destination, context, cancellationToken);
-            context.Observe?.Invoke(new("transfer", result ? "success" : "failure", source.ToString(), destination.ToString(), DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(started).TotalMilliseconds * 1_000_000)));
+            context.Observe?.Invoke(new("transfer", result ? "success" : "failure", SourceLabel(source), destination.ToString(), DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(started).TotalMilliseconds * 1_000_000)));
             return result;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         {
             Interlocked.Increment(ref failedTransfers);
-            context.Observe?.Invoke(new("transfer", "failure", source.ToString(), destination.ToString(), error.ToString(), (long)(Stopwatch.GetElapsedTime(started).TotalMilliseconds * 1_000_000)));
+            context.Observe?.Invoke(new("transfer", "failure", SourceLabel(source), destination.ToString(), error.ToString(), (long)(Stopwatch.GetElapsedTime(started).TotalMilliseconds * 1_000_000)));
             var location = span is { } origin ? $"{origin.Source}:{origin.Start}: " : "";
-            await context.Error.WriteLineAsync($"{location}transfer {source} -> {destination}: {error.Message}");
+            await context.Error.WriteLineAsync($"{location}transfer {SourceLabel(source)} -> {destination}: {error.Message}");
             for (var cause = error.InnerException; cause is not null; cause = cause.InnerException)
                 await context.Error.WriteLineAsync($"  caused by {cause.Message}");
             return false;
@@ -408,6 +457,7 @@ public sealed class Interpreter
         var results = await Task.WhenAll(pending.Select(p => p.Task));
         if (results.Any(result => !result)) throw new MsyncException("One or more file transfers failed; completed files remain in place and the operation can be retried");
     }
+    private static string SourceLabel(Value value) => value is StringValue text ? $"literal ({Encoding.UTF8.GetByteCount(text.Data)} UTF-8 bytes)" : value.ToString()!;
     private static bool AsBool(Value value) => value is BoolValue boolean ? boolean.Data : throw new MsyncException($"Condition requires Bool, received {value.Type}");
     private static string Text(Value value) => value switch { StringValue s => s.Data, PathValue p => p.Raw, NumberValue n => n.ToString(), BoolValue b => b.ToString(), _ => throw new MsyncException($"Cannot convert {value.Type} to String") };
     private static int Compare(Value left, Value right) => (left, right) switch

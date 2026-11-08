@@ -46,7 +46,9 @@ public sealed record PathValue(string Raw, string? WorkingDirectory = null, Conn
     }
     public override string ToString() => Connection is null || Connection.Kind == ConnectionKind.Local ? Raw : $"{Connection}::{Raw}";
 }
-public sealed record RangeValue(IAsyncEnumerable<Value> Items, TypeRef ItemType) : Value
+public sealed record PathSelection(PathValue Directory, string Pattern);
+
+public sealed record RangeValue(IAsyncEnumerable<Value> Items, TypeRef ItemType, PathSelection? Selection = null) : Value
 {
     public RangeValue(IEnumerable<Value> items, TypeRef itemType) : this(Enumerate(items), itemType) { }
     private static async IAsyncEnumerable<Value> Enumerate(IEnumerable<Value> items)

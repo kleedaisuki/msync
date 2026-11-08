@@ -2,7 +2,7 @@ namespace Msync.Core;
 
 internal static class BytecodeValidation
 {
-    private readonly record struct Item(TypeRef Type, int? Function = null, bool Iterator = false);
+    private readonly record struct Item(TypeRef Type, int? Function = null, bool Iterator = false, Value? Constant = null);
     private sealed record State(Item[] Stack, Item?[] Locals);
     internal static void Validate(Module module)
     {
@@ -39,16 +39,17 @@ internal static class BytecodeValidation
                 if (item.Iterator || (item.Type.Kind & kinds) == TypeKind.Never)
                     throw Error($"expected {new TypeRef(kinds)}, found {(item.Iterator ? "iterator" : item.Type)}");
             }
-            void Push(TypeRef type) => stack.Add(new(type));
+            void Push(TypeRef type, Value? constant = null) => stack.Add(new(type, Constant: constant));
             bool terminal = false;
             List<int> next = [];
             switch (instruction.Op)
             {
                 case OpCode.Nop: break;
                 case OpCode.Constant:
-                    var constant = module.Constants[instruction.A]; stack.Add(new(constant.Type, constant is FunctionValue { NativeName: null } f ? f.Function : null)); break;
-                case OpCode.Null: Push(TypeRef.Null); break;
-                case OpCode.True: case OpCode.False: Push(TypeRef.Bool); break;
+                    var constant = module.Constants[instruction.A]; stack.Add(new(constant.Type, constant is FunctionValue { NativeName: null } f ? f.Function : null, Constant: constant)); break;
+                case OpCode.Null: Push(TypeRef.Null, Value.Null); break;
+                case OpCode.True: Push(TypeRef.Bool, Value.True); break;
+                case OpCode.False: Push(TypeRef.Bool, Value.False); break;
                 case OpCode.LoadLocal:
                     stack.Add(locals[instruction.A] ?? throw Error($"local {instruction.A} is not defined on every incoming path")); break;
                 case OpCode.StoreLocal: locals[instruction.A] = Pop(); break;
@@ -58,7 +59,13 @@ internal static class BytecodeValidation
                 case OpCode.Jump: next.Add(instruction.A); terminal = true; break;
                 case OpCode.JumpIfFalse:
                 case OpCode.JumpIfTrue:
-                    Require(Pop(), TypeKind.Bool); next.Add(instruction.A); break;
+                    var condition = Pop(); Require(condition, TypeKind.Bool);
+                    if (condition.Constant is BoolValue known)
+                    {
+                        if (known.Data == (instruction.Op == OpCode.JumpIfTrue)) { next.Add(instruction.A); terminal = true; }
+                    }
+                    else next.Add(instruction.A);
+                    break;
                 case OpCode.Return:
                     if (stack.Count > 1) throw Error($"return leaves {stack.Count} values on the operand stack");
                     terminal = true; break;
@@ -111,8 +118,10 @@ internal static class BytecodeValidation
                 case OpCode.Transfer:
                 case OpCode.LocalTransfer:
                     Require(Pop(), TypeKind.Path | TypeKind.String); Require(Pop(), TypeKind.Path | TypeKind.String | TypeKind.Range); Push(TypeRef.Bool); break;
-                case OpCode.Not: Require(Pop(), TypeKind.Bool); Push(TypeRef.Bool); break;
-                case OpCode.IsNull: Pop(); Push(TypeRef.Bool); break;
+                case OpCode.Not:
+                    var boolean = Pop(); Require(boolean, TypeKind.Bool); Push(TypeRef.Bool, boolean.Constant is BoolValue b ? b.Data ? Value.False : Value.True : null); break;
+                case OpCode.IsNull:
+                    var tested = Pop(); Push(TypeRef.Bool, tested.Type == TypeRef.Null ? Value.True : !tested.Type.Nullable ? Value.False : null); break;
                 case OpCode.IsType: Require(Pop(), TypeKind.Type); Pop(); Push(TypeRef.Bool); break;
                 case OpCode.RegexMatch:
                     if (instruction.Text is null) Require(Pop(), TypeKind.String | TypeKind.Path);
@@ -149,7 +158,7 @@ internal static class BytecodeValidation
             Item Join(Item left, Item right)
             {
                 if (left.Iterator != right.Iterator) throw new MsyncException($"Invalid iterator ownership at bytecode join in '{function.Name}'");
-                return new(TypeRef.Union(left.Type, right.Type), left.Function == right.Function ? left.Function : null, left.Iterator);
+                return new(TypeRef.Union(left.Type, right.Type), left.Function == right.Function ? left.Function : null, left.Iterator, left.Constant == right.Constant ? left.Constant : null);
             }
             for (var i = 0; i < stack.Count; i++) { mergedStack[i] = Join(previous.Stack[i], stack[i]); changed |= mergedStack[i] != previous.Stack[i]; }
             for (var i = 0; i < locals.Length; i++)

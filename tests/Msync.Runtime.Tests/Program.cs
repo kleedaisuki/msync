@@ -19,7 +19,7 @@ Reject(Program([], new(OpCode.Pop), new(OpCode.Return)), "stack underflow");
 Reject(Program([], new(OpCode.LoadLocal, 0), new(OpCode.Return)), "not defined");
 Reject(Program([], new(OpCode.True), new(OpCode.GetIterator), new(OpCode.Return)), "expected Range");
 Reject(Program([], new(OpCode.Null), new(OpCode.Not), new(OpCode.Return)), "expected Bool");
-Reject(Program([], new(OpCode.True), new(OpCode.JumpIfFalse, 4), new(OpCode.True), new(OpCode.Jump, 5), new(OpCode.Nop), new(OpCode.Return)), "stack heights disagree");
+Reject(new Module([], [new FunctionCode("main", 1, 2, [new(OpCode.LoadLocal, 0), new(OpCode.JumpIfFalse, 4), new(OpCode.True), new(OpCode.Jump, 5), new(OpCode.Nop), new(OpCode.Return)], TypeRef.Any, ParameterTypes: [TypeRef.Bool])]), "stack heights disagree");
 Check(PathSemantics.Join(new PathValue("left\\", Connection: new(ConnectionKind.Ssh, "host")), "leaf") == "left\\/leaf", "Remote path join erased a POSIX backslash");
 var random = new Random(413);
 for (int i = 0; i < 100; i++)
@@ -57,6 +57,18 @@ try
     Check(!File.Exists(Path.Combine(other, "a")), "Executable artifact relocated frozen cwd");
     await Run(writes, new(WorkingDirectory: other));
     Check(File.Exists(Path.Combine(other, "c")), "Relocatable module failed to bind current cwd");
+    var lazyConstants = new Value[] { new StringValue("lazy"), new PathValue("lazy-flag"), new NumberValue(0) };
+    var thunk = new FunctionCode("lazy-item", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Transfer), new(OpCode.Pop), new(OpCode.Constant, 1), new(OpCode.Return)], TypeRef.Path);
+    var lazy = new Module(lazyConstants, [new("main", 0, 1, [new(OpCode.MakeClosure, 1), new(OpCode.MakeLazyRange, 1, Text: "1"), new(OpCode.Constant, 2), new(OpCode.NativeCall, 2, Text: "ranges.take"), new(OpCode.NativeCall, 1, Text: "ranges.empty"), new(OpCode.Return)], TypeRef.Bool), thunk]);
+    Check(await Run(lazy, new(WorkingDirectory: root)) is BoolValue { Data: true }, "Lazy take(0) did not produce empty Range");
+    Check(!File.Exists(Path.Combine(root, "lazy-flag")), "Lazy item executed before first demand");
+    var session = new ExecutionSession(new(WorkingDirectory: root));
+    var firstSubmission = new Module(lazyConstants, [new("main", 0, 1, [new(OpCode.MakeClosure, 1), new(OpCode.MakeLazyRange, 1, Text: "1"), new(OpCode.StoreLocal, 0), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null), thunk]);
+    await session.ExecuteAsync(firstSubmission);
+    Check(!File.Exists(Path.Combine(root, "lazy-flag")), "Stored REPL range evaluated eagerly");
+    var secondSubmission = new Module(lazyConstants, [new("main", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.NativeCall, 1, Text: "ranges.first"), new(OpCode.Return)], TypeRef.Path), thunk]);
+    Check(await session.ExecuteAsync(secondSubmission) is PathValue { Raw: "lazy-flag" }, "Escaping lazy range lost originating module/callback");
+    Check(await File.ReadAllTextAsync(Path.Combine(root, "lazy-flag")) == "lazy", "Escaping lazy range could not perform selected callback I/O");
     var errors = new StringWriter();
     var missing = Program([new PathValue("missing"), new PathValue("b")], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Transfer), new(OpCode.Return));
     var interpreter = new Interpreter(missing, new(WorkingDirectory: root, Error: errors));

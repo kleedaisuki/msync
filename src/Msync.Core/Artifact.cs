@@ -46,7 +46,7 @@ public static class Artifact
         });
         var module = new Module(constants, functions, entry, stage, context, optimization);
         Validate(module);
-        return Optimizer.Optimize(module, optimization);
+        return Optimizer.FormBlocks(module);
     }
     public static void Write(Module module, string path)
     {

@@ -7,9 +7,10 @@ public static class Optimizer
         if (level is < 0 or > 3) throw new MsyncException($"Optimization level must be 0, 1, 2, or 3; received {level}");
         var constants = module.Constants.ToList();
         var functions = module.Functions.Select(f => level == 0 ? f : FoldBranches(FoldConstants(f, constants))).ToArray();
-        var blocks = functions.SelectMany((f, index) => Partition(f, index)).ToArray();
-        return module with { Constants = constants, Functions = functions, OptimizationLevel = level, Blocks = blocks };
+        return FormBlocks(module with { Constants = constants, Functions = functions, OptimizationLevel = level });
     }
+    public static Module FormBlocks(Module module) => module with
+    { Blocks = module.Functions.SelectMany((function, index) => Partition(function, index)).ToArray() };
     private static FunctionCode FoldConstants(FunctionCode function, List<Value> constants)
     {
         var code = function.Instructions.ToArray();
