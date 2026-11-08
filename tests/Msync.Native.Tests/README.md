@@ -33,7 +33,7 @@ all hosts and retain endpoint identity without invoking transport.
   model in `legacy/src/execution/native_fs_path.rs` rather than `GetFullPath`,
   which would resolve lexical operations against the host working directory.
 
-The initial integration passes 118 assertions. It also checks the legacy status
+The initial integration passes 120 assertions. It also checks the legacy status
 labels (`regular`, `block`, `character`, `unknown`), octal/aggregate permission
 flags, String-as-filename native copy arguments and zero-argument `ranges.of()`. Native Windows filesystem API
 bindings compile with the same project; actual Windows execution is a separate
@@ -60,3 +60,9 @@ values also retain a selector plan, so a finite transfer can combine discovery
 and bytes in the same native channel. Recursive plans retain their recursive
 discovery marker through native adaptors; selected basename collision preflight
 continues to follow ordinary finite Range transfer semantics.
+
+Directory names use the shared Unicode scalar ordinal comparer, matching Rust's
+UTF-8 lexical ordering rather than UTF-16 code-unit ordering. Local and remote
+fixtures place BMP private-use U+E000 before supplementary U+10000, including
+names with a shared prefix. Dictionary equality and platform-specific identity
+rules are not changed by this sorting correction.

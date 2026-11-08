@@ -98,7 +98,7 @@ public static partial class NativeRegistry
     {
         string script = RemotePrelude + "\n" + (recursive ? "find \"$p\" -mindepth 1 -print0" : "find \"$p\" -mindepth 1 -maxdepth 1 -print0");
         string output = await TransferEngine.RunCommandAsync(path.Connection!, script, [path.Raw], token);
-        foreach (string name in output.Split('\0', StringSplitOptions.RemoveEmptyEntries).Order(StringComparer.Ordinal))
+        foreach (string name in output.Split('\0', StringSplitOptions.RemoveEmptyEntries).Order(TextSemantics.Ordinal))
         {
             token.ThrowIfCancellationRequested();
             yield return path with { Raw = name };

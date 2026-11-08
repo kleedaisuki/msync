@@ -249,7 +249,7 @@ public static partial class NativeRegistry
         [EnumeratorCancellation] CancellationToken token)
     {
         string[] entries = Directory.GetFileSystemEntries(local);
-        Array.Sort(entries, StringComparer.Ordinal);
+        Array.Sort(entries, TextSemantics.Ordinal);
         foreach (string entry in entries)
         {
             token.ThrowIfCancellationRequested();

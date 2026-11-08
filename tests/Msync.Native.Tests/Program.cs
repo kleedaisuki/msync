@@ -82,6 +82,11 @@ try
     var entries = await Collect(await Call("fs.recursive_directory_iterator", P("input")));
     Equal(2, entries.Count);
     Equal("input/sub", ((PathValue)entries[0]).Raw.Replace('\\', '/'));
+    Directory.CreateDirectory(Path.Combine(root, "ordering"));
+    string[] orderedNames = ["a", "same-\uE000", "same-\U00010000", "\uE000", "\U00010000"];
+    foreach (string name in orderedNames.Reverse()) await File.WriteAllTextAsync(Path.Combine(root, "ordering", name), name);
+    List<Value> orderedLocal = await Collect(await Call("fs.directory_iterator", P("ordering")));
+    Equal(string.Join('|', orderedNames), string.Join('|', orderedLocal.Cast<PathValue>().Select(path => Path.GetFileName(path.Raw))));
     Equal(Value.True, await Call("fs.remove_all", P("input")));
     Equal(Value.False, await Call("fs.remove_all", P("input")));
 
@@ -141,6 +146,11 @@ try
             RangeValue recursiveProjected = (RangeValue)await Call("ranges.take", recursiveDirectory, new NumberValue(1));
             Equal(true, recursiveProjected.Selection?.Recursive);
             Equal(1, (await Collect(recursiveProjected)).Count);
+            PathValue remoteOrdering = remoteDirectory with { Raw = remoteDirectory.Raw + "/ordering" };
+            Directory.CreateDirectory(remoteOrdering.Raw);
+            foreach (string name in orderedNames.Reverse()) await File.WriteAllTextAsync(Path.Combine(remoteOrdering.Raw, name), name);
+            List<Value> orderedRemote = await Collect(await Call("fs.directory_iterator", remoteOrdering));
+            Equal(string.Join('|', orderedNames), string.Join('|', orderedRemote.Cast<PathValue>().Select(path => Path.GetFileName(path.Raw))));
             Equal(Value.True, await Call("fs.remove_all", remoteDirectory));
             Equal(Value.False, await Call("fs.exists", remoteDirectory));
         }
