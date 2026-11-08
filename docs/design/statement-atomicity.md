@@ -74,3 +74,47 @@ must not be cloned simply to defend against hypothetical interference.
 registry tests to actual copy, overwrite, retry, native path and one-channel SSH
 journeys. The [cost audit](safety-cost-audit.md) retains why the old design was
 removed. Published v0.6.5 artifacts and historical measurements are unchanged.
+
+## C# v0.8 implementation
+
+`Msync.Runtime.TransferEngine` implements the same retry contract without calling
+the retained Rust binary. Ordinary local files use an owned same-parent stage,
+stream through the configured buffer, apply metadata, flush once, and replace
+with `File.Move(overwrite: true)`. Literal writes preserve an existing target's
+permissions. Directory entries merge, symlinks retain their raw targets, and
+completed entries are not rolled back. A proven same-node transfer is a no-op;
+only actual tree overlap retains a temporary input copy before publication.
+This avoids both self-destructive `tree -> tree/.` and recursively discovering a
+new destination when a tree is copied into one of its descendants. Snapshot
+scratch belongs to the live operation and does not become a recovery registry.
+
+The native transport uses one selected `ssh` or `wsl.exe` process. Uploads use
+[`System.Formats.Tar`](https://learn.microsoft.com/en-us/dotnet/api/system.formats.tar?view=net-10.0)
+PAX entries rather than requiring a client tar executable. GNU tar and small POSIX
+shell helpers carry metadata and bytes over the same channel; the helpers install
+ordinary files by rename and retain unrelated directory children. The producer's
+exit status and an upload completion marker must both succeed. No compile/check,
+artifact binding, or unselected branch starts these helpers. Native OpenSSH owns
+host aliases, agent/key handling, host verification and prompts; the existing
+`MSYNC_SSH_CONFIG` selection is passed through as `ssh -F`.
+
+Path data is always passed as literal argv, not interpolated into shell source.
+Shell command substitutions use a non-newline sentinel when preserving path
+values: ordinary Unix filenames ending in newlines are not silently truncated.
+Archive entries are consumed sequentially before advancing `TarReader`, following
+its documented streaming lifetime. Native process execution reuses the same
+transport argument builder, including port/config handling and remote home
+expansion, instead of introducing a second interpretation of connection values.
+
+`tests/Msync.Transfer.Tests` contains focused engine journeys;
+`ssh_journeys.py` reuses the real loopback OpenSSH fixture kept with the Rust
+baseline. The accepted C# run completed fifteen remote operations with
+exactly fifteen ssh clients, fifteen public-key authentications, fifteen server exec
+sessions and zero scp clients, with ControlMaster disabled. It checked ordinary
+upload, literal overwrite, symlink/dangling-link trees, download, same-endpoint
+copy, finite cohorts in both directions, a trailing-newline/Unicode/quote filename,
+a genuine incompatible-parent failure followed by retry, and actual upload/self/ancestor
+tree replacement plus finite descendant-tree copy. Overlapping remote tree copies
+retain their input beside the source tree, outside the selected source, rather
+than recursively capturing their newly created output. This is protocol and
+Linux filesystem evidence, not a Windows/WSL or WAN performance measurement.
