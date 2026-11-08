@@ -110,11 +110,28 @@ def document(rows: int, suffix: str = "") -> str:
     return "".join(f"let item_{index} = {index};\n" for index in range(rows)) + suffix
 
 
-def measure(binary: Path, rows: int, burst: int) -> dict[str, object]:
+def measure(
+    binary: Path, rows: int, burst: int, *, resolve_documentation: bool = True
+) -> dict[str, object]:
     client = Client(binary)
     uri = "file:///msync-lsp-latency.msync"
     try:
-        _, initialization = client.request("initialize", {"capabilities": {}})
+        capabilities = (
+            {
+                "textDocument": {
+                    "completion": {
+                        "completionItem": {
+                            "resolveSupport": {"properties": ["documentation"]}
+                        }
+                    }
+                }
+            }
+            if resolve_documentation
+            else {}
+        )
+        initialized, initialization = client.request(
+            "initialize", {"capabilities": capabilities}
+        )
         source = document(rows)
         client.send(
             "textDocument/didOpen",
@@ -127,14 +144,19 @@ def measure(binary: Path, rows: int, burst: int) -> dict[str, object]:
                 }
             },
         )
-        _, open_hover = client.request(
+        hovered, open_hover = client.request(
             "textDocument/hover",
             {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 5}},
         )
+        assert "item_0: Number" in hovered["contents"]["value"], hovered
         tokens, token_time = client.request(
             "textDocument/semanticTokens/full", {"textDocument": {"uri": uri}}
         )
         assert len(tokens["data"]) // 5 == rows * 3, len(tokens["data"])
+        repeated, repeat_time = client.request(
+            "textDocument/semanticTokens/full", {"textDocument": {"uri": uri}}
+        )
+        assert repeated == tokens, "Unchanged document tokens changed between requests"
         started = time.perf_counter_ns()
         for version in range(2, burst + 2):
             client.send(
@@ -156,14 +178,31 @@ def measure(binary: Path, rows: int, burst: int) -> dict[str, object]:
         burst_time = (time.perf_counter_ns() - started) / 1_000_000
         labels = {item["label"] for item in completions}
         assert f"newest_{burst + 1}" in labels, labels
+        selected = next(
+            item for item in completions if item["label"] == f"newest_{burst + 1}"
+        )
+        resolve_time: float | None = None
+        provider = initialized["capabilities"]["completionProvider"]
+        if provider.get("resolveProvider"):
+            detailed, resolve_time = client.request("completionItem/resolve", selected)
+            assert detailed["label"] == selected["label"], detailed
+            assert "Bool" in detailed["detail"] and detailed.get("documentation"), (
+                detailed
+            )
         return {
             "rows": rows,
             "burst": burst,
             "initialize_ms": initialization,
             "open_hover_ms": open_hover,
             "semantic_tokens_ms": token_time,
+            "repeated_semantic_tokens_ms": repeat_time,
             "completion_after_burst_ms": completion,
             "whole_burst_ms": burst_time,
+            "completion_payload_bytes": len(
+                json.dumps(completions, ensure_ascii=False).encode("utf-8")
+            ),
+            "selected_completion_resolve_ms": resolve_time,
+            "documentation_resolve_negotiated": resolve_documentation,
             "diagnostics_before_response": len(client.notifications),
         }
     finally:
@@ -175,6 +214,11 @@ def main() -> None:
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--rows", type=int, action="append")
     parser.add_argument("--burst", type=int, default=16)
+    parser.add_argument(
+        "--eager-documentation",
+        action="store_true",
+        help="Use a legacy client without completion documentation resolution",
+    )
     parser.add_argument("--output", required=True, type=Path)
     arguments = parser.parse_args()
     root = ROOT / ".temp/product-latency"
@@ -188,7 +232,12 @@ def main() -> None:
         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
         "binary": str(frozen / binary.name),
         "measurements": [
-            measure(frozen / binary.name, rows, arguments.burst)
+            measure(
+                frozen / binary.name,
+                rows,
+                arguments.burst,
+                resolve_documentation=not arguments.eager_documentation,
+            )
             for rows in arguments.rows or [1000, 4000]
         ],
     }

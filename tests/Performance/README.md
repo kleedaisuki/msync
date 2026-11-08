@@ -98,3 +98,39 @@ then runs matched 31-pair startup, small check, 1,024-transfer check and file-co
 controls. Runtime IDs and NuGet locks remain explicit; diagnostics are not
 stripped, and the source checkout/product settings are never changed.
 This is an optional mechanism study, not a release prerequisite or CI gate.
+
+## Typed editor response comparison
+
+`editor_latency.py` compares two frozen native payloads on the same execution
+host. Build both revisions with the same pinned SDK/toolchain for a causal
+optimization comparison; a different runner's image is a product control, not
+an interchangeable source-only baseline.
+
+```sh
+python3 tests/Performance/editor_latency.py \
+  --baseline /absolute/path/to/before/msync \
+  --candidate /absolute/path/to/after/msync \
+  --baseline-source BEFORE_REVISION --candidate-source AFTER_REVISION \
+  --samples 7 --case realistic --case flat128 --case flat4000 \
+  --output .temp/editor-latency-comparison/paired.json
+```
+
+Each sample creates an actual stdio LSP process. Baseline/candidate order is
+randomized within each pair, and complete adjacent payloads are frozen and
+fingerprinted. The realistic case includes a first-ever canonical standard
+library query, typed functions/Scopes, repeated tokens, selected completion
+details, shadows and close/reopen isolation, without executing source effects.
+The flat cases retain the 128/4,000-binding edit-burst workload and negotiate
+documentation resolution like the editor. Selected-item resolution is timed
+separately from the initial candidate response. Legacy clients without the
+capability remain covered by `lsp_response_journey.py`.
+
+Reports retain raw samples, p50/p95, payload sizes, source labels and the last
+active case if a later observation fails. With seven samples, p95 is a
+descriptive interpolated tail observation, not a confidence bound or a quality
+threshold. Use `--case` to avoid rerunning unaffected workloads. Do not run an
+editor host, compiler build or another benchmark concurrently with measurements.
+
+The verification scripts use fully typed protocol helpers in the end-to-end
+directory; static checking the cross-directory runner uses
+`MYPYPATH=tests/Msync.EndToEnd mypy --strict tests/Performance/editor_latency.py`.
