@@ -40,6 +40,10 @@ on:
         description: Exercise the actual Windows console fixture
         type: boolean
         default: true
+      polish_phases:
+        description: Optional polish groups portable,authentication,presentation_console,hints_console,wsl
+        type: string
+        default: ''
       polish_only:
         description: Build native packages and exercise changed diagnostics, insight and formatter contracts only
         type: boolean
@@ -73,6 +77,23 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.14'
+      - name: Select changed polish contract groups
+        id: polish
+        if: inputs.polish_only
+        shell: python
+        env:
+          POLISH_PHASES: ${{ inputs.polish_phases }}
+        run: |
+          import os
+          groups: set[str] = {'portable', 'authentication', 'presentation_console', 'hints_console', 'wsl'}
+          requested: str = os.environ['POLISH_PHASES']
+          selected: set[str] = {part.strip() for part in requested.split(',')} if requested else groups
+          unknown: set[str] = selected - groups
+          if unknown:
+              raise ValueError(f'Unknown polish groups: {sorted(unknown)}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              for group in sorted(groups):
+                  output.write(f'{group}={str(group in selected).lower()}\n')
       - name: Install native Linux prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev openssh-server
@@ -101,7 +122,7 @@ jobs:
           shutil.copytree(source.parent, target, dirs_exist_ok=True)
           assert hashlib.sha256((target / 'msync.exe').read_bytes()).hexdigest() == metadata['binary_sha256']
       - name: Exercise changed terminal, compiler insight and formatter user journeys
-        if: inputs.polish_only && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
+        if: inputs.polish_only && steps.polish.outputs.portable == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
         shell: python
         env:
           PACKAGE_RID: ${{ matrix.rid }}
@@ -116,7 +137,7 @@ jobs:
               arguments.extend(['--native-origin', 'artifacts/reused-native/baseline.json'])
           subprocess.run(arguments, check=True)
       - name: Exercise the actual native authentication helper and cancellation
-        if: ${{ !cancelled() && inputs.polish_only && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.authentication == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         shell: python
         env:
           PACKAGE_RID: ${{ matrix.rid }}
@@ -133,17 +154,17 @@ jobs:
               shutil.copytree(binary.parent, payload, dirs_exist_ok=True)
               subprocess.run(['dotnet', 'run', '--project', 'tests/Msync.Authentication.Tests/Msync.Authentication.Tests.csproj', '-c', 'Release', '--artifacts-path', 'artifacts/auth-contract', '-p:RestoreLockedMode=true', '--', str(payload / binary.name)], check=True)
       - name: Install the pinned console transport for changed Windows presentation
-        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        if: ${{ !cancelled() && inputs.polish_only && (steps.polish.outputs.presentation_console == 'true' || steps.polish.outputs.hints_console == 'true') && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: |
           python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
       - name: Exercise actual Windows auto-color and diagnostic console output
-        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.presentation_console == 'true' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: python tests/Msync.EndToEnd/windows_presentation_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-presentation.json
       - name: Exercise actual Windows ghost rendering and explicit hint acceptance
-        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.hints_console == 'true' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: python tests/Msync.EndToEnd/windows_hint_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-hints.json
       - name: Exercise changed actual WSL directory completion on one owned endpoint
-        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.wsl == 'true' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: python packaging/wsl_journey.py --binary artifacts/publish/win-x64/msync.exe --completion-only --output .temp/platform-results/wsl-completion.json
       - name: Exercise typed language, process, session and stdio editor journeys
         if: inputs.reuse_run == '' && !inputs.wsl_only && !inputs.polish_only
