@@ -1,5 +1,33 @@
 # Configuration, provenance, and pre-effect diagnostics
 
+## C# 0.8 implementation
+
+The current loader is `src/Msync.Cli/Configuration.cs`; the original Rust loader
+is preserved under `legacy/src/config.rs`. Discovery, one-file selection,
+relative-path anchoring, environment/CLI precedence, source provenance and
+side-effect-free inspection retain the contracts below. The default grammar is
+now `0.8`; selecting an older grammar reaches the explicit legacy CLI boundary.
+
+Use [Tomlyn 2.10.1](https://github.com/xoofx/Tomlyn/tree/2.10.1)'s actual TOML
+parser and source-generated `TomlTable` metadata, not a line-oriented subset or
+reflection-based object mapping. Configuration errors retain the parser's
+filename and the property's real source coordinates. Inactive observer options
+are evaluated only when an observer is admitted. Effective runtime invariants
+are checked after CLI overrides; `config` can print invalid numeric settings for
+repair and its output is parseable TOML, including escaped native paths.
+
+`tests/Configuration/cli_journeys.py` exercises the real executable in isolated
+HOME/XDG/APPDATA environments. Its first integrated run passed 11 journeys:
+defaults without state creation, cwd-policy exclusion, canonical/fallback
+selection and bypass, explicit precedence/provenance, relative paths without
+observer/state creation, environment override, conflicting/missing selection,
+malformed canonical and help/version bypass, actual unknown-key coordinates,
+repairable inspection plus effective override, and inspection round-trip.
+Results: `.temp/configuration-v080/journey-7kj3u0kc/results.json`.
+This record concerns loader/CLI behavior; actual runtime observers and resource
+limits have their own execution acceptance rather than being inferred from a
+configuration dump.
+
 ## Boundary
 
 Configuration changes application policy, not DSL meaning or object contracts.
