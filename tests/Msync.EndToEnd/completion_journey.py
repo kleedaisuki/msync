@@ -79,12 +79,33 @@ def native_run(
     )
 
 
+def quote(text: str) -> str:
+    return '"' + text.replace('"', '""') + '"'
+
+
+def path_expression(raw: str) -> str:
+    """Expected binding-independent Path spelling, distinct from a String."""
+    if os.name == "nt":
+        return "$local::" + quote(raw)
+    if raw.startswith("~/"):
+        return "~/" + "/".join(
+            quote(part) if part not in {"", ".", ".."} else part
+            for part in raw[2:].split("/")
+        )
+    absolute = raw.startswith("/")
+    parts = raw[1:].split("/") if absolute else raw.removeprefix("./").split("/")
+    return ("/" if absolute else "./") + "/".join(
+        quote(part) if part not in {"", ".", ".."} else part for part in parts
+    )
+
+
 def run(binary: Path, directory: Path) -> dict[str, int]:
     workspace = directory / "workspace"
     home = directory / "home"
     workspace.mkdir()
     (home / ".ssh/hosts.d").mkdir(parents=True)
     (workspace / "plain.txt").write_text("PLAIN", encoding="utf-8")
+    (workspace / "two words.txt").write_bytes(b"SOURCE_BYTES_NOT_FILENAME")
     names = [
         "space name.txt",
         "semi;colon",
@@ -102,6 +123,7 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         (workspace / name).write_text("fixture", encoding="utf-8")
     if os.name != "nt":
         (workspace / "colon:name").write_text("colon", encoding="utf-8")
+        (workspace / "report::20").write_text("colons", encoding="utf-8")
     (workspace / "nested").mkdir()
     (directory / "parent-file.txt").write_text("parent", encoding="utf-8")
     (home / "home-file.txt").write_text("home", encoding="utf-8")
@@ -162,42 +184,90 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         )
         cases = [
             ("./pl" + CARET, "./plain.txt", "Path"),
-            ("./spa" + CARET, '"./space name.txt"', "String"),
-            ("./semi" + CARET, './"semi;colon"', "Path"),
+            ("./spa" + CARET, "./space name.txt", "String"),
+            ("./semi" + CARET, "./semi;colon", "Path"),
             ("./可" + CARET, "./可莉.txt", "Path"),
             ("./😀" + CARET, "./😀file.txt", "Path"),
             ("./hash" + CARET, "./hash#name", "Path"),
-            ("./cash" + CARET, './"cash$money"', "Path"),
-            ("./tru" + CARET, './"true"', "Path"),
-            ("./1" + CARET, './"12"', "Path"),
+            ("./cash" + CARET, "./cash$money", "Path"),
+            ("./tru" + CARET, "./true", "Path"),
+            ("./1" + CARET, "./12", "Path"),
             ("../pa" + CARET, "../parent-file.txt", "Path"),
             ("~/ho" + CARET, "~/home-file.txt", "Path"),
             ("./nest" + CARET, "./nested/", "Path"),
-            ('"./pl' + CARET + '"', '"./plain.txt"', "String"),
+            ('"./pl' + CARET + '"', "./plain.txt", "String"),
             ("./pl" + CARET + "NOT_A_SUFFIX", "./plain.txt", "Path"),
+            ("./two w" + CARET, "./two words.txt", "String"),
         ]
         if os.name != "nt":
-            cases.append(("./quo" + CARET, './"quote""name"', "Path"))
-            cases.append(("./colo" + CARET, './"colon:name"', "Path"))
-        else:
-            cases = [
-                (
-                    fragment,
-                    '$local::"./' + expression[3:-1] + '"'
-                    if expression.startswith('./"')
-                    else expression,
-                    expected,
-                )
-                for fragment, expression, expected in cases
-            ]
+            cases.append(("./quo" + CARET, './quote"name', "Path"))
+            cases.append(("./colo" + CARET, "./colon:name", "Path"))
+            cases.append(('"./quo' + CARET + '"', './quote"name', "String"))
+            cases.append(('"./report::2' + CARET + '"', "./report::20", "String"))
+            cases.append(('./"report::2' + CARET + '"', "./report::20", "Path"))
         absolute_prefix = str(workspace / "pl")
         absolute_target = str(workspace / "plain.txt")
         if not any(character.isspace() for character in absolute_target):
             cases.append((absolute_prefix + CARET, absolute_target, "Path"))
-        if os.name != "nt":
-            cases.append(('"./quo' + CARET + '"', '"./quote""name"', "String"))
-        for fragment, expression, expected in cases:
+        for fragment, raw, expected in cases:
+            expression = quote(raw) if expected == "String" else path_expression(raw)
             selected(fragment, expression, expected)
+
+        (workspace / "two words.txt").write_bytes(b"SOURCE_BYTES_NOT_FILENAME")
+        (workspace / "alpha").write_bytes(b"SELECTED_ALPHA")
+        (workspace / "other").write_bytes(b"WRONG_SHADOWED_BINDING")
+
+        def transfer(
+            marked: str,
+            basename: str,
+            expected: bytes,
+            destination: str,
+            expected_type: str,
+        ) -> None:
+            text, items = complete(marked)
+            matches = [
+                item
+                for item in items
+                if basename in item.get("textEdit", {}).get("newText", "")
+            ]
+            assert len(matches) == 1, (marked, items)
+            item = matches[0]
+            assert expected_type in item.get("detail", ""), item
+            edited = apply_edit(text, item["textEdit"])
+            source = workspace / "transfer-completed.msync"
+            source.write_text(edited, encoding="utf-8")
+            result = subprocess.run(
+                [str(binary), "--no-config", "run", str(source)],
+                cwd=workspace,
+                env=environment,
+                capture_output=True,
+                check=False,
+                timeout=15,
+            )
+            assert result.returncode == 0, (edited, result.stderr)
+            assert (workspace / destination).read_bytes() == expected, edited
+
+        transfer(
+            "./two w" + CARET + " -> ./space-output;\n",
+            "two words.txt",
+            b"SOURCE_BYTES_NOT_FILENAME",
+            "space-output",
+            "Path",
+        )
+        transfer(
+            "let alpha = ./other;\n./al" + CARET + " -> ./identity-output;\n",
+            "alpha",
+            b"SELECTED_ALPHA",
+            "identity-output",
+            "Path",
+        )
+        transfer(
+            '"./two w' + CARET + '" -> ./literal-output;\n',
+            "two words.txt",
+            b"./two words.txt",
+            "literal-output",
+            "String",
+        )
         _, hosts = complete("let selected = ssh://" + CARET + ";\n")
         replacements = {item.get("textEdit", {}).get("newText", "") for item in hosts}
         assert {
@@ -240,7 +310,70 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
             "applied_path_completions": len(cases),
             "ssh_alias_sources": 2,
             "noncode_contexts": 3,
+            "completion_actual_io_oracles": 3,
         }
+    finally:
+        client.close()
+
+
+def lexical_scope_queries(binary: Path, directory: Path) -> dict[str, int]:
+    client = Client(binary, cwd=directory)
+    uri = (directory / "scope-editing.msync").as_uri()
+    library = "scope Library { run: fn(value: Path) { value }, ready: true };\n"
+    cases: list[tuple[str, dict[str, str], set[str] | None]] = [
+        ("fn outer(file: Path) { fi" + CARET, {"file": "Path"}, None),
+        (
+            library
+            + "let captured = Library;\nfn outer(file: Path) { let inner = captured; inner::"
+            + CARET,
+            {"run": "fn run", "ready": "Bool"},
+            {"run", "ready"},
+        ),
+        (library + "fn outer() { let Library = ./; Library::" + CARET, {}, set()),
+        (
+            "scope Outer { Inner: scope { run: fn(x) { x }, active: true } };\nOuter::Inner::"
+            + CARET,
+            {"run": "fn run", "active": "Bool"},
+            {"run", "active"},
+        ),
+        (
+            "fn make() { scope { run: fn(x) { x }, active: true } };\nmake()::" + CARET,
+            {"run": "fn run", "active": "Bool"},
+            {"run", "active"},
+        ),
+        (
+            library + "fn outer(file: Path) { Library::run(fi" + CARET,
+            {"file": "Path"},
+            None,
+        ),
+    ]
+    try:
+        client.request(
+            "initialize", {"rootUri": directory.as_uri(), "capabilities": {}}
+        )
+        for version, (marked, expected, exact) in enumerate(cases, 1):
+            offset = marked.index(CARET)
+            text = marked.replace(CARET, "")
+            notify(client, uri, version, text, opening=version == 1)
+            response, _ = client.request(
+                "textDocument/completion",
+                {
+                    "textDocument": {"uri": uri},
+                    "position": lsp_position(text, offset),
+                },
+            )
+            items = {item["label"]: item for item in response}
+            for name, detail in expected.items():
+                assert name in items and detail in (items[name].get("detail") or ""), (
+                    marked,
+                    name,
+                    items,
+                )
+            if exact:
+                assert set(items) == exact, (marked, items)
+            elif exact == set():
+                assert not set(items).intersection({"run", "ready"}), (marked, items)
+        return {"nested_lexical_scope_queries": len(cases)}
     finally:
         client.close()
 
@@ -262,11 +395,15 @@ def remote_queries(
         )
 
         def query(
-            prefix: str, *, alias: bool = False
+            prefix: str, *, alias: bool = False, shadowed: bool = False
         ) -> tuple[str, list[dict[str, Any]]]:
             nonlocal version
             version += 1
             declaration = f"let remote = {endpoint};\n" if alias else ""
+            if shadowed:
+                declaration += (
+                    "{ let remote = ssh://msync-unselected.invalid; null; };\n"
+                )
             qualifier = "remote" if alias else endpoint
             fragment = qualifier + "::" + remote + "/" + prefix
             text = (
@@ -283,8 +420,10 @@ def remote_queries(
             )
             return text, cast(list[dict[str, Any]], response)
 
-        def chosen(prefix: str, basename: str, *, alias: bool = False) -> str:
-            text, items = query(prefix, alias=alias)
+        def chosen(
+            prefix: str, basename: str, *, alias: bool = False, shadowed: bool = False
+        ) -> str:
+            text, items = query(prefix, alias=alias, shadowed=shadowed)
             matches = [
                 item
                 for item in items
@@ -300,11 +439,13 @@ def remote_queries(
 
         chosen("pl", "plain.txt")
         chosen("spa", "space name.txt", alias=True)
+        chosen("pl", "plain.txt", alias=True, shadowed=True)
         change("touch " + shlex.quote(remote + "/plain-new-after-query.txt"))
         chosen("pl", "plain-new-after-query.txt")
         return {
-            "remote_endpoint_queries": 3,
-            "remote_alias_completion": 1,
+            "remote_endpoint_queries": 4,
+            "remote_alias_completion": 2,
+            "restored_outer_endpoint_after_shadow": 1,
             "remote_refresh_visible": 1,
         }
     finally:
@@ -391,6 +532,7 @@ def main() -> None:
         binary = arguments.binary.resolve()
         working = Path(directory).resolve()
         result = run(binary, working)
+        result.update(lexical_scope_queries(binary, working))
         if arguments.wsl_distro:
             result.update(wsl(binary, working, arguments.wsl_distro))
         if arguments.ssh_fixture:

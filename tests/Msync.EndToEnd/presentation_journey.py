@@ -196,6 +196,9 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
         )
         client.input.flush()
         checks = [
+            ("fn", 0, "function"),
+            ("scope", 0, "type"),
+            ("scope", 1, "variable"),
             ("MyClass", 0, "type"),
             ("MyClass", 1, "type"),
             ("new", 0, "function"),
@@ -206,8 +209,8 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
             ("make", 1, "function"),
             ("Alias", 0, "type"),
             ("Alias", 1, "type"),
-            ("instance", 0, "type"),
-            ("instance", 1, "type"),
+            ("instance", 0, "variable"),
+            ("instance", 1, "variable"),
         ]
         for spelling, count, expected in checks:
             location = position(source, spelling, count)
