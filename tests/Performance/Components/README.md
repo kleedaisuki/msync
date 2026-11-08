@@ -93,6 +93,64 @@ building another candidate. For managed comparisons, keep tiered compilation
 and warm-up policy identical (the follow-up study used
 `DOTNET_TieredCompilation=0`).
 
+## Staged optimizer cost and residual program
+
+`--optimizer-pipeline` measures the optimizer itself as well as its output. The
+same probe source can be built against two product revisions; no new production
+API or alternate evaluator is needed. All default workloads are valid in the
+previous C# baseline: straight-line generic calls, nested Scope factories with
+captured methods, finite literal loops, and repeated branch expressions. The
+optional `mutable_scopes` workload uses the new mutable-field contract and is
+candidate-only, not a fabricated old-language comparison.
+
+The explicit `call_dag` case builds valid direct-call bytecode:
+`f0(v) = v + 1`, `fN(v) = fN-1(v) + fN-1(v)`, entry `fN(2)`.
+Here `--sizes` denotes depths (use `4 8 12`, not ordinary binding counts).
+There is no invented source-compilation timing for this case. Its optimize,
+bind and actual execution phases expose expansion before DCE in linked/object
+programs; the expected Number is independently `3 * 2^depth`. This complements
+source functions that capture their callee and therefore exercise a different
+inlining path. A large final-IR reduction does not justify exponential optimizer
+work or retained dead local slots.
+
+```sh
+/path/to/native/msync-components --optimizer-pipeline \
+  --sizes 1,32,128,512 --levels 0,1,2,3 --samples 15 --warmups 3 \
+  --output .temp/optimizer-performance/components.json
+
+python3 tests/Performance/optimizer_pipeline.py \
+  --baseline /path/to/baseline/msync-components \
+  --candidate /path/to/candidate/msync-components \
+  --baseline-source BASELINE_REVISION --candidate-source CANDIDATE_REVISION \
+  --sizes 1 32 128 512 --samples 15 --candidate-case mutable_scopes \
+  --output .temp/optimizer-performance/paired.json
+```
+
+The paired driver alternates AB/BA fresh processes. Inside each process the
+probe warms each API independently and calibrates repeated operations to about
+2 ms per sample. It reports complete source compilation, optimization of the
+same O0 module, contextual binding, and actual relocatable/executable VM runs at
+each O0–O3 level. These stages overlap in responsibilities and must not be summed
+as disjoint phase times. p50/p95 use linearly interpolated empirical quantiles;
+all observations, allocations and timed GC counts are retained.
+
+Both stages record constants, functions, locals, blocks, instructions, opcode
+counts and serialized byte sizes. Every level is executed before measurement,
+including `.mso`/`.mexe` codec roundtrips, and checked against an independent
+expected Path suffix (or the direct-call Number oracle). Scope instances are
+recreated by the production runtime, not cached by the probe. Fixture writing,
+verification and serialization for
+shape reporting are outside timed intervals. The run phases contain no user
+filesystem I/O, isolating interpreter and graph work; the actual CLI and copy
+journeys remain necessary for user-visible latency and I/O conclusions.
+
+Use `--case`, `--sizes` and `--levels` to test a scaling hypothesis without
+repeating accepted measurements. The paired report is checkpointed before and
+after each image; an exception retains previous samples and the active case.
+Builds, editor hosts and other benchmarks must be stopped during the agreed
+measurement window. Component and CLI native identities are distinct and are
+never substituted for one another.
+
 `tests/Msync.Compiler.Tests --editor-lookups` compares a selected `Resolve`
 result with full `At` output for lexical bindings, shadows, incomplete functions,
 Scope/factory members, polymorphic common members, Path joins and Process fields.
