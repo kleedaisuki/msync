@@ -282,6 +282,22 @@ def diagnose_download(
         check=False,
     )
     trace: dict[str, object] = {"command": asdict(traced), **read_trace(trace_path)}
+    serial_trace = diagnostics / f"serial-{stage}.jsonl"
+    serial = runner.run(
+        [
+            str(binary),
+            "--no-config",
+            "run",
+            str(artifact),
+            "--jobs",
+            "1",
+            "--trace",
+            str(serial_trace),
+        ],
+        directory=directory,
+        environment=environment,
+        check=False,
+    )
     prefix = [wsl, "--distribution", distro, "--exec", "sh", "-c"]
     state = runner.run(
         [
@@ -303,6 +319,7 @@ def diagnose_download(
         "stage": stage,
         "state": asdict(state),
         "traced_reexecution": trace,
+        "serial_reexecution": {"command": asdict(serial), **read_trace(serial_trace)},
     }
     for label, path, parent, name, raw, payload in (
         (
