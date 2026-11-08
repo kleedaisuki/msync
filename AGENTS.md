@@ -7,7 +7,8 @@
   embedded standard sources and fixtures; old syntax and object formats retain
   their semantics through that explicit compatibility boundary.
 - Braces own blocks, `;` discards values, and a block tail is its result.
-  Bindings are mutable locations; shadowing creates a new lexical identity.
+  Binding values are mutable but inferred/declared storage types are immutable;
+  assignment checks the fixed constraint. Shadowing creates a new lexical identity.
   Closures share captured locations and Scope aliases share instance identity.
   `Null` is a real value type; nullable bindings and Scope fields require explicit
   admission (`field?: null`) and postfix `value?` means

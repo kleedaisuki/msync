@@ -4,7 +4,8 @@
 
 The November 9 language requirement supersedes the earlier immutable-binding
 decision in the 0.8 notes. `let`, parameters, named declarations and Scope fields
-are mutable storage locations. A new declaration still shadows rather than
+are mutable storage locations with immutable types: assignment changes a value,
+never its storage type. A new declaration still shadows rather than
 modifying an older lexical declaration. Null admission remains explicit and now
 also applies to Scope fields:
 
@@ -70,20 +71,24 @@ This preserves ordinary language ordering without locks on every scalar access.
 
 ## Inference and nullable flow facts
 
-A storage descriptor owns its optional annotation and Null admission. A flow
+A storage descriptor owns its fixed inferred/annotated type and Null admission. A flow
 fact describes the current reaching value. Neither can substitute for the other:
 
 * An annotation constrains every store, including executable Path/String
   conversion where the existing conversion contract requires it.
-* An unannotated location is inferred from reachable stores rather than frozen
-  to the initializer's type. Sequential assignment updates its current fact;
-  control-flow merges join the possible incoming facts. Loop headers and
-  recursive summaries use a worklist until their finite domains stabilize.
+* Infer an unannotated storage type at compilation, then keep it fixed. Normal
+  initialization provides that type; assignment checks compatibility and never
+  widens it. A written union constraint admits its stated alternatives but is
+  itself immutable. Sequential assignment updates known-value facts within that
+  constraint; control-flow merges join incoming facts, not storage types.
+  Loop headers and recursive summaries use a worklist for those facts.
 * `?` permits a Null store. A currently non-null value does not remove that
   permission; a currently Null value does not prohibit a later non-null store.
 * A nullable Null initializer supplies no non-null payload evidence. Represent
-  its payload as an inference variable until actual stores or constraints
-  supply evidence. Do not conflate this with the closed singleton Null domain
+  its payload as a compile-time inference variable until stores or constraints
+  supply evidence, then freeze the solved payload type. Check all relevant
+  stores against that solution; this is inference, not runtime type evolution.
+  Do not conflate the initial hole with the closed singleton Null domain
   or silently give every operation permission through Any.
 * That payload/shape inference variable belongs to the relevant allocation
   instantiation and is shared by its aliases. Do not couple unrelated objects
@@ -102,11 +107,13 @@ Maintain evolving facts separately or replace immutable descriptors. The same
 rule applies to speculative REPL analysis, which must not mutate accepted
 session bindings or templates.
 
-Generic specialization includes the relevant captured storage domains and
+Generic specialization uses the fixed captured storage types and relevant
 callable alternatives. A function that reads a mutable captured location must
 not permanently bake in its definition-time payload or callable identity.
-Finite checked alternatives can use precomputed runtime dispatch to monomorphic
-entries. Recursive identities are reserved before lowering. Returning a closure
+Type facts remain valid across compatible writes; constant and callable-identity
+facts do not. Function-valued locations can have multiple checked callable
+identities despite retaining type Function; those alternatives can use precomputed
+runtime dispatch to monomorphic entries. Recursive identities are reserved before lowering. Returning a closure
 keeps its cells alive; returning a Scope keeps its identity and field locations
 alive. Across REPL submissions, live slots and accepted storage contracts are
 authoritative; invalidate assumptions when a later submission updates them.

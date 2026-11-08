@@ -45,8 +45,9 @@ exist. Loading an artifact does not authorize reusing stale observations.
 * Braces define expression blocks. A trailing expression supplies the value;
   `;` discards a value and an empty/discard-only block evaluates to `null`.
   Whitespace and indentation do not establish syntax structure.
-* `let` introduces a mutable lexical location; another `let` shadows it with a
-  new identity. Assignments update the selected location. Scope aliases share
+* `let` introduces a mutable lexical location with an immutable inferred or
+  declared type; another `let` shadows it with a new identity. Assignments
+  update the selected value without widening its type. Scope aliases share
   instance identity and field mutations. `_` discards a value without
   introducing a nullable binding. The November 9 requirement supersedes the
   earlier immutable model; see [mutable state and effects](mutable-state-and-effects-v080.md).

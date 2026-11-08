@@ -12,8 +12,9 @@ declarations also produce `Null`. A terminating `return` or `break` has internal
 `Never` type, so an unreachable block tail does not widen a function result with
 an artificial Null case.
 
-`let` introduces a mutable lexical location, and a later declaration may shadow
-it with a different identity. Assignment updates the existing location. Scope
+`let` introduces a mutable lexical location with an immutable inferred or
+declared type, and a later declaration may shadow it with a different identity.
+Assignment updates the existing value and checks, never widens, its storage type. Scope
 aliases share an instance and its mutable field locations. The November 9
 requirement supersedes the original immutable model; the full inference,
 aliasing and optimization contract is in
@@ -37,8 +38,8 @@ in ordinary boolean comparisons. `is null`, `is not null`, and postfix `?` test
 null identity. In particular **`value?` means `value is null`**, not its negation.
 A binding must explicitly admit null with `?` or a nullable annotation. Scope
 fields likewise require `?`, for example `scope { filename?: null }`. A nullable
-Null initializer does not freeze the inferred payload to Null: later stores
-supply its non-null type evidence. Branch
+Null initializer leaves a compile-time payload inference hole: store constraints
+supply its non-null type evidence, then the solved storage type is fixed. Branch
 refinement removes null from the other branch, and a null arm in `match` removes
 that case from the following catch-all. Conditions remain strictly Bool.
 
