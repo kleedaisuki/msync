@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Sequence
+from contextlib import closing
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,7 +81,7 @@ def journey(binary: Path, workspace: Path) -> None:
     assert (workspace / "output.txt").read_bytes() == payload
     database = workspace / "telemetry.sqlite"
     run(binary, ["run", "sync.mso", "--telemetry-db", str(database)], workspace)
-    with sqlite3.connect(database) as connection:
+    with closing(sqlite3.connect(database)) as connection:
         assert connection.execute("PRAGMA application_id").fetchone() == (0x4D53594E,)
         assert connection.execute("PRAGMA user_version").fetchone() == (1,)
         assert connection.execute("SELECT status FROM sessions").fetchall() == [
