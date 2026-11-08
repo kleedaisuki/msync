@@ -9,12 +9,38 @@ internal static class NativeFileIdentity
     internal static void MoveLink(string source, string target)
     {
         // File.Move checks File.Exists, which follows directory links instead of moving their entries.
-        bool success = OperatingSystem.IsWindows() ? MoveFile(NativeFileMetadata.WindowsPath(source), NativeFileMetadata.WindowsPath(target), 1) : Rename(source, target) == 0;
-        if (!success)
+        int error = OperatingSystem.IsWindows() ? MoveLinkWindows(source, target)
+            : Rename(source, target) == 0 ? 0 : Marshal.GetLastPInvokeError();
+        if (error != 0)
         {
-            var cause = new Win32Exception(Marshal.GetLastPInvokeError());
+            var cause = new Win32Exception(error);
             throw new IOException($"Cannot publish symbolic link '{target}': {cause.Message}", cause);
         }
+    }
+
+    private static int MoveLinkWindows(string source, string target)
+    {
+        source = NativeFileMetadata.WindowsPath(source);
+        target = NativeFileMetadata.WindowsPath(target);
+        if (MoveFile(source, target, 1)) return 0;
+        int error = Marshal.GetLastPInvokeError();
+        if (error != 5) return error;
+
+        // Rust std uses this handle-based POSIX rename when MoveFileEx cannot replace a directory link.
+        using SafeFileHandle link = CreateFile(source, 0x00010000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+        if (link.IsInvalid) return Marshal.GetLastPInvokeError();
+        int nameOffset = (int)Marshal.OffsetOf<RenameInformation>(nameof(RenameInformation.FileName));
+        byte[] bytes = new byte[checked(nameOffset + (target.Length + 1) * sizeof(char))];
+        RenameInformation information = new()
+        {
+            Flags = 3,
+            RootDirectory = IntPtr.Zero,
+            FileNameLength = checked((uint)(target.Length * sizeof(char))),
+            FileName = '\0'
+        };
+        MemoryMarshal.Write(bytes, in information);
+        MemoryMarshal.AsBytes(target.AsSpan()).CopyTo(bytes.AsSpan(nameOffset));
+        return SetFileInformationByHandle(link, 22, bytes, (uint)bytes.Length) ? 0 : Marshal.GetLastPInvokeError();
     }
 
     internal static void DeleteLink(string path, bool directory)
@@ -88,6 +114,9 @@ internal static class NativeFileIdentity
     [DllImport("kernel32.dll", EntryPoint = "MoveFileExW", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool MoveFile(string source, string target, uint flags);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetFileInformationByHandle(SafeFileHandle file, int informationClass, [In] byte[] information, uint size);
     [DllImport("kernel32.dll", EntryPoint = "RemoveDirectoryW", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool RemoveDirectory(string path);
@@ -105,6 +134,15 @@ internal static class NativeFileIdentity
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetFileInformationByHandle(SafeFileHandle file, out FileInformation information);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct RenameInformation
+    {
+        public uint Flags;
+        public IntPtr RootDirectory;
+        public uint FileNameLength;
+        public char FileName;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct FileInformation

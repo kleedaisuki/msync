@@ -154,13 +154,25 @@ no dependency proof authorizes authenticating or executing an unselected branch.
 The directional analogy follows [LLVM's motion rules](https://llvm.org/docs/Atomics.html)
 without adding CPU atomic pairing or importing a memory model into file copying.
 
-Symbolic-link publication renames the owned same-directory stage as an entry,
-using native `rename`/`MoveFileEx`; public `File.Move` first tests `File.Exists`,
-which treats a link to an existing directory as a non-file. Link targets and their
-contents are never removed to publish or clean up a link. Ordinary real-directory
-destination checks remain distinct from replacement of a symbolic-link entry.
-Focused source/object/executable journeys live in
-`tests/SchedulingGraph/PathNamespaceChecks.cs` (`--namespace-only`).
+Symbolic-link publication renames the owned same-directory stage as an entry;
+public `File.Move` first tests `File.Exists`, which treats a link to an existing
+directory as a non-file. Unix uses native `rename`. Windows initially uses
+`MoveFileEx`, but an existing directory-link destination requires the same
+handle-based fallback as [Rust std](https://github.com/rust-lang/rust/blob/master/library/std/src/sys/fs/windows.rs#L1256-L1326).
+Native Windows run 42514423642 proved that initial link publication and privilege
+succeeded while retransmission failed with `ERROR_ACCESS_DENIED`.
+
+On that failure, open the staged entry with `DELETE`, all three sharing flags,
+`OPEN_REPARSE_POINT | BACKUP_SEMANTICS`; apply `FileRenameInfoEx` (Win32 class 22)
+with replacement and POSIX flags. The typed Unicode header supplies the actual
+FileName offset (20 bytes on x64/ARM64, 12 on x86); UTF-16 length excludes the
+NUL while the buffer includes it. Capture the native result before disposing the
+handle. This is an atomic entry replacement, not a delete-then-move operation.
+Link targets and their contents are never removed or modified to publish a link;
+ordinary real-directory destination checks remain distinct. The focused
+source/object/executable journeys in `tests/SchedulingGraph/PathNamespaceChecks.cs`
+(`--namespace-only`) cover retransmission, retargeting, obstruction/retry, future
+alias ordering, and Unicode/spaced native paths without skipping symlinks.
 
 A consumed `->` yields Bool. Operational I/O/permission/native-process failures
 yield false, preserve source/destination/cause diagnostics, and increment failed

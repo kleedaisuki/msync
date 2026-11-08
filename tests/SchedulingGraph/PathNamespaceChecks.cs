@@ -19,7 +19,7 @@ internal static class PathNamespaceChecks
 
     private static async Task DirectoryLinkLifecycle(string directory, string mode)
     {
-        string root = Path.Combine(directory, "links");
+        string root = Path.Combine(directory, "links-可莉 folder");
         string source = Path.Combine(root, "source");
         string destination = Path.Combine(root, "destination");
         string first = Path.Combine(root, "target-first");
