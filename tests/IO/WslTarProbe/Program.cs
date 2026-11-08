@@ -71,7 +71,7 @@ foreach (string producer in new[] { "wsl", "wsl-ack", "native-self" })
         {
             if (!barrier || acknowledged) return;
             acknowledged = true;
-            await process.StandardInput.WriteLineAsync(success ? "MSYNC-ARCHIVE-RECEIVED" : "MSYNC-ARCHIVE-REJECTED");
+            await process.StandardInput.WriteAsync(success ? "MSYNC-ARCHIVE-RECEIVED\n" : "MSYNC-ARCHIVE-REJECTED\n");
             await process.StandardInput.FlushAsync();
             process.StandardInput.Close();
         }
