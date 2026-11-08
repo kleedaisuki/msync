@@ -83,10 +83,14 @@ public static class Artifact
     public static void Validate(Module module)
     {
         if (module.EntryPoint < 0 || module.EntryPoint >= module.Functions.Count) throw new MsyncException("Bytecode entrypoint does not identify a function");
+        if ((module.Stage == ArtifactStage.Executable) != (module.Context is not null)) throw new MsyncException("Bytecode stage and binding context disagree");
+        foreach (var constant in module.Constants) ValidateConstant(constant, module);
         foreach (var function in module.Functions)
         {
             if (function.ParameterCount < 0 || function.CaptureCount < 0 || function.LocalCount < function.ParameterCount + function.CaptureCount)
                 throw new MsyncException($"Invalid local layout for function '{function.Name}'");
+            if (function.ParameterTypes is { } parameterTypes && parameterTypes.Count != function.ParameterCount)
+                throw new MsyncException($"Parameter type table disagrees with function '{function.Name}'");
             foreach (var instruction in function.Instructions)
             {
                 if (instruction.Op is OpCode.LoadLocal or OpCode.StoreLocal or OpCode.IteratorNext && (instruction.A < 0 || instruction.A >= function.LocalCount))
@@ -99,14 +103,46 @@ public static class Artifact
                     throw new MsyncException($"Invalid jump target {instruction.A}", instruction.Span);
                 if (instruction.Op == OpCode.IteratorNext && (instruction.B < 0 || instruction.B > function.Instructions.Count))
                     throw new MsyncException($"Invalid iterator target {instruction.B}", instruction.Span);
+                if (instruction.Op is OpCode.Call or OpCode.SpecializeClosure && instruction.Text is not null)
+                {
+                    foreach (var (source, target) in FunctionDispatch.Parse(instruction.Text))
+                    {
+                        if (source < 0 || source >= module.Functions.Count || target < 0 || target >= module.Functions.Count)
+                            throw new MsyncException("Compiled dispatch table refers to a missing function", instruction.Span);
+                        if (module.Functions[source].CaptureCount != module.Functions[target].CaptureCount)
+                            throw new MsyncException("Compiled dispatch alternative changes closure capture layout", instruction.Span);
+                    }
+                }
             }
         }
         BytecodeValidation.Validate(module);
+    }
+    private static void ValidateConstant(Value value, Module module)
+    {
+        switch (value)
+        {
+            case FunctionValue { NativeName: not null } native:
+                if (!NativeSignatures.TryGet(native.NativeName, out _)) throw new MsyncException($"Bytecode native function '{native.NativeName}' is not registered");
+                break;
+            case FunctionValue function:
+                if (function.Function < 0 || function.Function >= module.Functions.Count) throw new MsyncException($"Bytecode function constant #{function.Function} does not identify a function");
+                if ((function.Captures?.Count ?? 0) != module.Functions[function.Function].CaptureCount) throw new MsyncException("Bytecode function constant capture layout disagrees with function");
+                foreach (var capture in function.Captures ?? []) ValidateConstant(capture, module);
+                break;
+            case ScopeValue scope:
+                foreach (var member in scope.Members.Values) ValidateConstant(member, module);
+                break;
+            case ConnectionValue connection when !Enum.IsDefined(connection.Kind):
+                throw new MsyncException($"Bytecode connection kind {(byte)connection.Kind} is not defined");
+            case PathValue { Connection: not null } path: ValidateConstant(path.Connection, module); break;
+        }
     }
     private static T[] ReadArray<T>(BinaryReader reader, Func<BinaryReader, T> read)
     {
         var count = reader.ReadInt32();
         if (count < 0) throw new MsyncException("Negative bytecode table length");
+        if (reader.BaseStream.CanSeek && count > reader.BaseStream.Length - reader.BaseStream.Position)
+            throw new MsyncException("Bytecode table length exceeds remaining artifact bytes");
         var items = new T[count]; for (var i = 0; i < count; i++) items[i] = read(reader); return items;
     }
     private static void WriteArray<T>(BinaryWriter writer, IReadOnlyList<T> values, Action<BinaryWriter, T> write)

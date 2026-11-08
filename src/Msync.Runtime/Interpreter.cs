@@ -139,7 +139,7 @@ public sealed class Interpreter
                             await DrainAsync();
                             var arguments = PopMany(instruction.A); var callee = Pop();
                             if (instruction.Op == OpCode.Call && instruction.Text is not null && callee is FunctionValue { NativeName: null } dynamicFunction) callee = Specialize(dynamicFunction, instruction);
-                        else if (instruction.Op == OpCode.Call && instruction.B != 0) callee = ((FunctionValue)callee) with { Function = instruction.B - 1 };
+                            else if (instruction.Op == OpCode.Call && instruction.B != 0) callee = ((FunctionValue)callee) with { Function = instruction.B - 1 };
                             stack.Add(await InvokeAsync(callee, arguments, cancellationToken)); break;
                         }
                     case OpCode.NativeCall:
@@ -164,10 +164,10 @@ public sealed class Interpreter
                             stack.Add(new RangeValue(LazyItemsAsync(values, instruction.Text, cancellationToken), type)); break;
                         }
                     case OpCode.DeferRange:
-                        stack.Add(new RangeValue(DeferredRangeAsync(Pop(), cancellationToken), TypeRef.Any)); break;
+                        stack.Add(CreateDeferredRange(Pop())); break;
                     case OpCode.MakeScope:
                         {
-                            var values = PopMany(instruction.A); var names = instruction.Text?.Split('\0') ?? [];
+                            var values = PopMany(instruction.A); var names = instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
                             stack.Add(new ScopeValue(names.Select((name, i) => KeyValuePair.Create(name, values[i])).ToDictionary())); break;
                         }
                     case OpCode.GetMember: stack.Add(Member(Pop(), instruction.Text!)); break;
@@ -182,10 +182,10 @@ public sealed class Interpreter
                             stack.Add(left with { Raw = PathSemantics.Join(left, right) }); break;
                         }
                     case OpCode.SelectPath:
-                    {
-                        var directory = context.AsPath(Pop());
-                        stack.Add(new RangeValue(SelectAsync(directory, instruction.Text!, cancellationToken), TypeRef.Path, new PathSelection(directory, instruction.Text!))); break;
-                    }
+                        {
+                            var directory = context.AsPath(Pop());
+                            stack.Add(new RangeValue(SelectAsync(directory, instruction.Text!, cancellationToken), TypeRef.Path, new PathSelection(directory, instruction.Text!))); break;
+                        }
                     case OpCode.Transfer:
                     case OpCode.LocalTransfer:
                         {
@@ -206,7 +206,7 @@ public sealed class Interpreter
                     case OpCode.RegexMatch:
                         {
                             var pattern = instruction.Text ?? Text(Pop()); var value = Pop();
-                            stack.Add(Regex.IsMatch(Text(value), pattern, RegexOptions.CultureInvariant) ? Value.True : Value.False); break;
+                            stack.Add(value is PathValue or StringValue && Regex.IsMatch(Text(value), pattern, RegexOptions.CultureInvariant) ? Value.True : Value.False); break;
                         }
                     case OpCode.Equal:
                     case OpCode.NotEqual:
@@ -262,8 +262,7 @@ public sealed class Interpreter
         if (instruction.Text is null) return function with { Function = instruction.A };
         if (!dispatchTables.TryGetValue(instruction.Text, out var targets))
         {
-            targets = instruction.Text.Split(';', StringSplitOptions.RemoveEmptyEntries).Select(pair => pair.Split(':'))
-                .ToDictionary(pair => int.Parse(pair[0], System.Globalization.CultureInfo.InvariantCulture), pair => int.Parse(pair[1], System.Globalization.CultureInfo.InvariantCulture));
+            targets = FunctionDispatch.Parse(instruction.Text);
             dispatchTables.Add(instruction.Text, targets);
         }
         return targets.TryGetValue(function.Function, out var target) ? function with { Function = target }
@@ -354,9 +353,18 @@ public sealed class Interpreter
             yield return mask is null || mask[i] == '1' ? await InvokeAsync(values[i], [], cancellationToken) : values[i];
         }
     }
-    private async IAsyncEnumerable<Value> DeferredRangeAsync(Value thunk, [EnumeratorCancellation] CancellationToken cancellationToken)
+    private RangeValue CreateDeferredRange(Value thunk)
     {
-        var range = await InvokeAsync(thunk, [], cancellationToken) as RangeValue ?? throw new MsyncException("Deferred range function did not return Range");
+        Task<RangeValue>? resolved = null;
+        async Task<RangeValue> Evaluate(CancellationToken cancellationToken) => await InvokeAsync(thunk, [], cancellationToken) as RangeValue
+            ?? throw new MsyncException("Deferred range function did not return Range");
+        ValueTask<RangeValue> Resolve(CancellationToken cancellationToken) => new(resolved ??= Evaluate(cancellationToken));
+        return new RangeValue(EnumerateDeferredRangeAsync(Resolve), TypeRef.Any, Resolve: Resolve);
+    }
+    private static async IAsyncEnumerable<Value> EnumerateDeferredRangeAsync(Func<CancellationToken, ValueTask<RangeValue>> resolve,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var range = await resolve(cancellationToken);
         await foreach (var value in range.Items.WithCancellation(cancellationToken)) yield return value;
     }
     private sealed class SpoolBudget(long? limit)

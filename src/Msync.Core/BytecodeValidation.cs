@@ -73,7 +73,7 @@ internal static class BytecodeValidation
                     if (instruction.B != module.Functions[instruction.A].CaptureCount) throw Error("closure capture layout disagrees with function");
                     PopMany(instruction.B); stack.Add(new(TypeRef.Function, instruction.A)); break;
                 case OpCode.SpecializeClosure:
-                    Require(Pop(), TypeKind.Function); stack.Add(new(TypeRef.Function, instruction.A)); break;
+                    Require(Pop(), TypeKind.Function); stack.Add(new(TypeRef.Function, instruction.Text is null ? instruction.A : null)); break;
                 case OpCode.Call:
                 case OpCode.ProcessCall:
                     {
@@ -105,7 +105,7 @@ internal static class BytecodeValidation
                     Push(new(TypeKind.Range)); break;
                 case OpCode.DeferRange: Require(Pop(), TypeKind.Function); Push(new(TypeKind.Range)); break;
                 case OpCode.MakeScope:
-                    if ((instruction.Text is null ? 0 : instruction.Text.Split('\0').Length) != instruction.A) throw Error("scope member names disagree with value count");
+                    if ((instruction.Text is null ? 0 : instruction.Text.Split('\0', StringSplitOptions.RemoveEmptyEntries).Length) != instruction.A) throw Error("scope member names disagree with value count");
                     PopMany(instruction.A); Push(TypeRef.Scope); break;
                 case OpCode.GetMember: Require(Pop(), TypeKind.Scope | TypeKind.Connection | TypeKind.Process); Push(TypeRef.Any); break;
                 case OpCode.Qualify: Require(Pop(), TypeKind.String | TypeKind.Path); Require(Pop(), TypeKind.Connection | TypeKind.Scope); Push(TypeRef.Path); break;
@@ -122,10 +122,14 @@ internal static class BytecodeValidation
                     var boolean = Pop(); Require(boolean, TypeKind.Bool); Push(TypeRef.Bool, boolean.Constant is BoolValue b ? b.Data ? Value.False : Value.True : null); break;
                 case OpCode.IsNull:
                     var tested = Pop(); Push(TypeRef.Bool, tested.Type == TypeRef.Null ? Value.True : !tested.Type.Nullable ? Value.False : null); break;
-                case OpCode.IsType: Require(Pop(), TypeKind.Type); Pop(); Push(TypeRef.Bool); break;
+                case OpCode.IsType:
+                    var expected = Pop(); Require(expected, TypeKind.Type); var actual = Pop();
+                    var actualType = actual.Constant is TypeValue knownType ? knownType.Data : actual.Type;
+                    var expectedType = (expected.Constant as TypeValue)?.Data;
+                    Push(TypeRef.Bool, expectedType is null ? null : expectedType.Accepts(actualType) ? Value.True : (expectedType.Kind & actualType.Kind) == 0 ? Value.False : null); break;
                 case OpCode.RegexMatch:
                     if (instruction.Text is null) Require(Pop(), TypeKind.String | TypeKind.Path);
-                    Require(Pop(), TypeKind.String | TypeKind.Path); Push(TypeRef.Bool); break;
+                    var regexInput = Pop(); Push(TypeRef.Bool, (regexInput.Type.Kind & (TypeKind.String | TypeKind.Path)) == 0 ? Value.False : null); break;
                 case OpCode.Equal:
                 case OpCode.NotEqual:
                 case OpCode.Less:

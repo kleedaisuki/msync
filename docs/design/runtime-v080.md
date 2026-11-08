@@ -59,8 +59,9 @@ Discarded scalar transfers may run concurrently. Each admitted transfer records
 its source-read and destination-write resources; overlapping read/write or
 write/write work retains program order. Local resource identity resolves existing
 filesystem aliases. Remote work on the same endpoint is serialized unless its
-independence is established, without remote preflight/authentication. Calls,
-filesystem observations, branches, loops and return drain the admitted frontier.
+independence is established, without remote preflight/authentication. Opaque calls, demanding callback/range calls, filesystem observations, branches,
+loops and return drain the admitted frontier. Immediate pure native capabilities
+without Range/Function parameters do not globally join unrelated work.
 `Jobs` bounds work; the configured payload budget additionally bounds copy slots.
 This permits the dominant independent-copy workload without guessing that an
 opaque process or native mutation has no effects.
@@ -77,7 +78,19 @@ zero-argument closures for effectful elements; a compact mask distinguishes them
 `DeferRange` invokes a range-producing closure on first demand, including its
 arguments. The source compiler therefore does not spend effects on `take(0)`.
 A REPL session retains local values; lazy values keep their originating compiled
-module/context alive rather than looking up a later process cwd.
+module/context alive rather than looking up a later process cwd. Deferred call
+resolution memoizes the resulting range on first demand, so repeated consumers
+do not reevaluate the source call's arguments/body.
+
+`RangeValue.Selection` retains `PathSelection` origin (directory, .NET regex,
+recursive traversal and composed native adaptor projection). A deferred range's
+`Resolve` exposes that origin only when selected work demands it. The transfer
+owner discovers names, runs the same .NET regex/adaptors/callbacks and sends its
+chosen paths over one native SSH duplex channel, then receives the archive on
+that channel. A session-scoped query service lets filesystem predicates use the
+same selected channel rather than separately authenticate. Zero-demand `take(0)`
+does not resolve its source, enumerate or authenticate. See the real native SSH
+fixture beside `tests/Msync.Transfer.Tests`.
 
 Path calls return a completed Process value with exact argv, captured stdout,
 stderr and exit code. Remote calls share the native SSH/WSL command builder with
@@ -93,7 +106,7 @@ retain actual outcomes rather than generic error labels.
 Unicode binary round trips, pure-fold equivalence, branch-target compaction,
 source/object/executable cwd ownership, read-after-write and symlink-alias
 scheduling, Bool failure + existing-target preservation, Process stdout and actual
-spool budget, lazy `take(0)` and lazy values escaping a REPL submission. The current checkpoint passes **226 assertions**. Run with isolated
+spool budget, lazy `take(0)` and lazy values escaping a REPL submission. The current checkpoint passes **231 assertions**. Run with isolated
 build outputs when other agents are compiling:
 
 ```
