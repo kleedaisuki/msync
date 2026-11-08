@@ -8,9 +8,9 @@ August 7, 2026, not GCC 17 development. See the [release table][releases], the
 The internals [Tree SSA][trees] and [RTL][rtl] explanations describe mechanisms;
 the tagged pipeline, rather than a moving manual, establishes pass ordering.
 
-This is a source audit of the integrated `e7be48a` implementation, rechecked at
-`ec6743a` with the feature-summary driver tuning in progress on November 9,
-2026. Earlier `f57e4d1` / `c1efa32` findings are superseded below. The production
+This is a source audit of the integrated `e7be48a` implementation, updated
+through `97f149c` after finite evaluation, IPA and constant-pool integration on
+November 9, 2026. Earlier `f57e4d1` / `c1efa32` findings are superseded below. The production
 callsites and direct rewrite mechanisms were inspected independently. Test
 counts are the implementation owners' current local acceptance records, not a
 new cross-platform performance claim. The separate [mutable-state contract][state]
@@ -53,7 +53,7 @@ last columns are msync design conclusions from the inspected source.
 | PRE / code hoisting; `-ftree-pre`, `-fcode-hoisting` | Reuse expressions already available on some predecessors by edge insertion; never introduce errors/effects on previously unselected paths | `GlobalRedundancy` inserts materializable total expressions on missing predecessor edges, explicitly splitting taken critical edges. It preserves existing operand stacks and applies a result-slot cost model: cheap arithmetic usually reuses existing locations; repeated or string expressions can justify new slots. Not arbitrary speculative native/path/field hoisting |
 | Predicate simplification, jump threading; `pass_thread_jumps`, `-ftree-vrp` | Track `is null`, Bool/type tests, equality and finite alternatives per edge; invalidate facts on writes and modifying calls | Integrated Bool/Null/type/equality edge refinement and constant branch elimination with alias-write invalidation. Numeric intervals, range-based relational implication and general path-duplicating jump threading are not implemented |
 | IPA effects; `-fipa-pure-const`, `-fipa-modref`, `-fipa-reference` | Fixed-point call summaries must distinguish reads/writes/captures, errors, divergence, enumeration and invocation ownership | `EffectAnalysis.FunctionEffects` fixed-point flags are consumed by graph DCE; recursive SCCs and backward edges preserve divergence, and alias/capture mutation is observable. These are useful coarse summaries, not GCC-equivalent field/location-sensitive mod/ref sets |
-| Direct-call discovery / IPA CP / clones; `-fipa-cp`, `-fipa-cp-clone` | Callable identity plus argument types specializes generics; constant arguments need value specialization or inlining, not type specialization alone | Generic type specialization, actual callable discovery and graph native-call lowering are integrated. `InterproceduralSpecialization` now exists as WIP for constant-control clones and dead-argument signatures, but has no audited production callsite yet; do not count it complete |
+| Direct-call discovery / IPA CP / clones; `-fipa-cp`, `-fipa-cp-clone` | Callable identity plus argument types specializes generics; constant arguments need value specialization or inlining, not type specialization alone | Generic type specialization, actual callable discovery and graph native-call lowering are integrated. O2/O3 `InterproceduralSpecialization` clones known direct callees for constant control arguments and removes unused cloned inputs; it preserves argument evaluation, captures, escaping callback signatures and invocation ownership. Actual product oracle: 120 contracts |
 | Early/single-use/indirect inlining | Splice fresh invocation slots, preserve capture-cell references, relocate branch targets; do not erase scheduler ownership boundaries | `FunctionInlining` is integrated as one wave between outer graph fixed-point rounds. It stages arguments/captures in fresh invocation slots, excludes recursive SCCs and protects scheduler ownership boundaries. Graph lowering identifies native callees from actual values, not an untrusted Call.B hint |
 | Escape / SRA / IPA SRA; `-ftree-sra`, `-fipa-sra` | Replace a nonescaping Scope's fields with scalar definitions, including intervening field stores; preserve instance identity when observable | `ScopeScalarization` is integrated: per-field scalar slots and versions, raw-cell identity, read/write forwarding, alias/unknown-call invalidation and local live-out escape checks. Region is one basic block. Escaped Scope reads may forward while actual writes remain. Arbitrary CFG field phi nodes and IPA aggregate parameter splitting are not implemented |
 | Reachability / section GC / constant merging | Prune unreachable functions, constants and dispatch references; merge only immutable payloads | `LocalSlotCompaction` removes unused non-prefix frame slots and remaps every slot opcode; captured/parameter prefix and live REPL storage remain stable. `ModuleOptimization.Compact` prunes and relocates function/constant/dispatch reachability. `ValueRepresentation` separates bit-exact Number literal identity from source equality: signed zero/NaN representation must not be collapsed |
@@ -87,14 +87,16 @@ O1/O2/O3:
     LoopOptimization               [iteration]
     recompute FunctionEffects
     GraphOptimization / DCE        [with effect summaries]
+    CompileTimeEvaluation          [O2/O3, certified finite pure bodies]
     LocalSlotCompaction
+    InterproceduralSpecialization  [O2/O3, direct constant-control/dead inputs]
     one FunctionInlining wave
   until structural stability
   DirectionalNormalization         [plain directional markers]
   GlobalRedundancy                  [O2/O3 + branched body]
   ValueNumbering                    [O1+]
   recompute FunctionEffects
-  GraphOptimization cleanup
+  GraphOptimization cleanup        [reuse valid identity/effect-epoch results]
   LocalSlotCompaction
   ModuleOptimization.Compact
   FormBlocks
@@ -156,12 +158,13 @@ that reaching constants or value-number keys have identical representations.
 ## Priorities, acceptance and latency
 
 The integrated graph, predicate, field forwarding, redundancy and loop passes
-address ordinary nested Scope/function/standard-library composition. The next
-in-flight additions are known-finite pure compile-time evaluation and IPA
-constant-control cloning/dead-parameter removal. Their implementation files
-(`CompileTimeEvaluation`, `InterproceduralSpecialization`) were present but had
-no production optimizer callsite at this audit; their separate owners must
-provide integration and residual-bytecode evidence before marking them adopted.
+address ordinary nested Scope/function/standard-library composition. Known-finite
+pure compile-time evaluation and IPA constant-control cloning/dead-parameter
+removal are now integrated at O2/O3. Product-level tests require 200-item pure
+loops to become literal returns, and effectful constant-control callees to lose
+their unused branch and unused input without erasing their owner-return join.
+See [finite evaluation](../../tests/CompileTimeEvaluation/README.md) and
+[IPA specialization](../../tests/InterproceduralSpecialization/README.md).
 Do not replace missing applicable passes with a statement that all GCC options
 or every possible optimization has been implemented.
 
@@ -169,8 +172,8 @@ Semantic applicability and adoption benefit are different questions:
 
 | Remaining family | Fit and current decision |
 | --- | --- |
-| Constant-control IPA clones / dead parameters | Appropriate for config Bool and callback-wrapper calls, especially where inlining cannot erase an invocation ownership boundary. Active implementation, pending production integration; cloning needs a growth budget and fixed callable/capture identities |
-| Finite pure compile-time evaluation | Appropriate for structurally certified finite loops and total supported scalar operations. Active implementation, pending integration; no arbitrary recursive interpreter at compilation, filesystem read or authentication |
+| Constant-control IPA clones / dead parameters | Adopted for known direct calls under a code-growth budget. Original callable definitions remain when escaping; runtime effects in unused actual arguments are retained |
+| Finite pure compile-time evaluation | Adopted for certified finite eager-range loops and supported scalar operations. Certification precedes evaluation; no arbitrary iteration cap, recursive interpreter, filesystem read or authentication |
 | Dynamic loop unswitching | Semantically suitable for a Bool/type/null predicate proven invariant across cell/field/callback writes. Not adopted in this wave: no measured branch-dispatch bottleneck in dominant path/range I/O loops justifies cloning and analysis cost. Finite MakeRange expansion does not cover this family |
 | Numeric induction / strength reduction | Generic IEEE Number recurrence replacement is unsound under rounding, signed zero and NaN behavior. A proven exact bounded integral subdomain could enable a future subset; no such domain is claimed today |
 | General sibling/mutual tail calls | Semantically possible with frame/cell and invocation-owner lifetime proof. No production recursive family requiring that generalization was established, so current implementation intentionally supports self-tail reuse only |
