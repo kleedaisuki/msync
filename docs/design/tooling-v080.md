@@ -296,10 +296,9 @@ Scope declaration names and their aliases retain the type role. Comments and
 inert hints are gray. The `fn` and `scope` tokens remain keywords in every
 declaration form. Source gutters use blue, repairs use green, and actual primary
 errors use bold red. Colors come from the terminal's own palette rather than a
-fixed RGB background. `auto` tests the stream being rendered: redirected stdout
-does not
-turn off color on terminal stderr, and terminal stdout does not color piped
-stderr. `always` explicitly emits SGR; `never`, `NO_COLOR`, and automatic
+fixed RGB background. With `auto`, detection follows the rendered stream. Piping
+stdout does not disable color on terminal stderr; terminal stdout does not color
+piped stderr. `always` explicitly emits SGR; `never`, `NO_COLOR`, and automatic
 `TERM=dumb` disable it. Source formatting, binary bytecode, TOML configuration,
 LSP frames, and ordinary program values remain undecorated.
 

@@ -116,17 +116,44 @@ def terminal_palette(binary: Path, directory: Path) -> dict[str, int]:
         terminal.finish(directory / "palette-terminal.raw")
 
 
+def windows_palette(binary: Path, directory: Path) -> dict[str, int]:
+    from windows_terminal_journey import Terminal
+
+    terminal = Terminal(binary, directory, color=True)
+    try:
+        terminal.until(lambda: "> " in terminal.plain, "palette ConPTY prompt")
+        raw_start = len(terminal.raw)
+        terminal.key(
+            'fn palette(file: Path) -> Path { file }; let plain = true; "PALETTE_READY"'
+        )
+        raw = terminal.raw[raw_start:]
+        assert re.search(r"\x1b\[[0-9;]*36mfn", raw), raw
+        assert re.search(r"\x1b\[[0-9;]*33mpalette", raw), raw
+        assert re.search(r"\x1b\[[0-9;]*35mPath", raw), raw
+        assert re.search(r"\x1b\[[0-9;]*32m", raw), raw
+        assert not re.search(r"\x1b\[[0-9;]*(?:34|94)m", raw), raw
+        terminal.send("\r")
+        terminal.prompt(terminal.line("PALETTE_READY"))
+        terminal.send("\x04")
+        terminal.exit()
+        return {"actual_conpty_palette_roles": 5, "source_preserved": 1}
+    finally:
+        terminal.finish(directory / "palette-terminal.raw")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
     arguments = parser.parse_args()
     binary = arguments.binary.resolve()
     result = shared_guide(binary)
-    if os.name == "posix":
-        parent = ROOT / ".temp/repl-palette"
-        parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="journey-", dir=parent) as temporary:
+    parent = ROOT / ".temp/repl-palette"
+    parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="journey-", dir=parent) as temporary:
+        if os.name == "posix":
             result.update(terminal_palette(binary, Path(temporary)))
+        elif os.name == "nt":
+            result.update(windows_palette(binary, Path(temporary)))
     print(json.dumps(result, indent=2))
 
 
