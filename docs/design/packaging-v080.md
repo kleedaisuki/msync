@@ -2,47 +2,54 @@
 
 ## Current complete local delivery set
 
-The presentation/completion product source is `a4437d6`, still version 0.8.0.
-[The final native Windows/Linux run](https://github.com/kleedaisuki/msync/actions/runs/42496053973)
+The current editor-latency product source is `f0f7b85`, still version 0.8.0.
+[The focused native Windows/Linux run](https://github.com/kleedaisuki/msync/actions/runs/42500088180)
 passed both target operating systems. The four accepted assets are collated under
 `dist/`; no public release, tag or pull request was created.
 
 | Asset | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `msync-0.8.0-linux-x86_64.tar.gz` | 5,713,409 | `d1a3a8f65f114e32abbf3be8aac86ceb13a41f0f378e28a03223101eb864ece1` |
-| `msync-0.8.0-windows-x86_64-setup.exe` | 6,381,728 | `5904ecdd13c6926a5346672b95a685c88d9862fd7326799cc9f64b35b01aa79e` |
-| `msync-0.8.0-windows-x86_64.zip` | 6,177,198 | `cfb427397c4f7e4bafffc9ab58e1d9822f82422f32a6f19f1653fc9d47619f3f` |
+| `msync-0.8.0-linux-x86_64.tar.gz` | 5,723,207 | `edb1aa4cff7cd0f078ee25ca000e4c89ced536209c838b9328225410551cb10e` |
+| `msync-0.8.0-windows-x86_64-setup.exe` | 6,389,019 | `7d8bdfc241a67a9c01bf352211ea2f0a449cc578fd8d7f1735c9c96be523a61a` |
+| `msync-0.8.0-windows-x86_64.zip` | 6,187,099 | `855c300e1df00efd2596e9ab239609923a8b65cf428563ac26ba0481d37a367e` |
 | `msync-language-0.8.0.vsix` | 125,157 | `b4d2b91bdd31c34b2e7ecf0ccdc60e4e9f2b6a6c0c5ada8c1887286b11a7de7a` |
 
 `dist/SHA256SUMS` covers exactly these four. Both portable manifests were verified
 completely after extraction: 219 entries each, including all 59 tracked files of
 the modified MPL-2.0 prompt source. Packaged C# source bytes match the repository.
 The accepted Linux executable is SHA-256
-`0245361762f477559a7ba1cf97bb1a86b475a940f69f5df55c63739c813c7bdc`;
+`8793d3bac69f25db91c33452dae7ea2bd1e61e91cf7bc4c6a67eff05d6501b9f`;
 the accepted Windows executable is SHA-256
-`b5e9dfeb60417b5cf324df9d1a75101dc493427c36ebb7304ae6531cbe53230c`.
+`6a1f809b07fd272440407237e5b922e5634760a2ef329c30ace5c710c389cd97`.
 
-The final selected native contracts cover local and nested lexical completion,
-captured Path aliases and actual remote directory observations. Linux uses a
-real encrypted loopback SSH server. Windows uses native OpenSSH with encrypted
-keys and product/key paths containing spaces, against one owned WSL1 guest SSH
-server. Both exercised host confirmation, passphrase entry, one retained
-session, refreshed directory contents, cancellation and dismissal without
-reprompting. Actual WSL directory queries and stored-Path reads passed, and the
-owned distribution was unregistered successfully. Windows ConPTY separately
-proved inert ghost text, explicit RightArrow acceptance, Scope/function member
-completion and standard-library function hints.
+The current selected native contracts cover typed presentation and diagnostics,
+latest-snapshot/cancellation semantics, eager and negotiated lazy completion
+resolution, stale/current Scope ownership, repeated semantic-token responses,
+and contextual completion. Linux completion uses a real retained SSH endpoint.
+These four changed editor journeys plus installed-layout smoke passed on both
+hosts; unchanged formatter/skill/WSL/authentication/console matrices were not
+repeated. Matched same-host native performance results belong to
+[the editor latency note](editor-latency-v080.md), with their own exact image
+identities rather than attributing measurements to a different platform build.
 
-The broader native presentation, diagnostics, 80-column formatter, skill guide,
-POSIX PTY and finite Windows color policies were accepted at source `7ec8bc0` in
-[the preceding focused run](https://github.com/kleedaisuki/msync/actions/runs/42491769332).
-The subsequent qualification repair targeted endpoint completion, so those
-accepted scenarios were retained rather than repeated as a blanket regression.
-The final VS Code 1.144.0 host ran against the exact accepted Linux native image
-at `.temp/vscode-host-0D2PYd`: all 18 semantic roles, four Scope field types,
+The preceding [a4437d6 delivery](https://github.com/kleedaisuki/msync/actions/runs/42496053973)
+established actual Windows native OpenSSH host confirmation, encrypted-key
+passphrase entry, one retained session, refreshed directory contents, cancellation
+and dismissal. It also verified actual WSL directory queries and stored-Path reads
+with owned-distribution cleanup, plus ConPTY inert ghost text, RightArrow
+acceptance and lexical Scope/function hints. The earlier formatter/skill and
+terminal-color records remain in
+[the original presentation run](https://github.com/kleedaisuki/msync/actions/runs/42491769332).
+These historical records were retained; this performance follow-up does not
+claim another complete transport or installation regression.
+
+The final VS Code 1.144.0 host ran against the exact current accepted Linux image
+at `.temp/vscode-host-OSgLQb`: all 18 semantic roles, four Scope field types,
 meaningful hovers, contextual diagnostics, UTF-16 ranges and formatting passed.
-The VSIX contains the same tested client, grammar, snippets and documentation.
-Raw collation metadata is `.temp/final-polish-delivery-v080.json`.
+All eight VSIX payload members match that same tested client, grammar, snippets,
+licenses and documentation. The client source did not change, so its identical
+accepted VSIX bytes were retained instead of generating a timestamp-only archive.
+Raw collation metadata is `.temp/final-editor-perf-delivery-v080.json`.
 
 Earlier installer/upgrade, transfer metadata, bulk WSL and foreground-input
 acceptance remain recorded in the sections below and the associated design
@@ -116,14 +123,16 @@ For local targeted work use `python scripts/check_local.py --journey polish`.
 For the actual platform run, dispatch `ci.yml` with `platform=both`,
 `polish_only=true`, `benchmark=false`, `wsl=true`, `console=true`. The latter
 select the changed endpoint/console journeys, not the earlier transfer/editing
-matrices. A final
+matrices. `polish_phases=editor` selects only presentation, analysis lifecycle,
+response/resolve caching and contextual completion (with actual SSH on Linux).
+It excludes formatter, skill, authentication, WSL and console suites. A final
 source-freeze commit can carry `[skip ci]` to avoid redundant automatic broad
 runs while preserving explicit workflow dispatch. For fixture-only diagnostics,
 `reuse_run=RUN` with `polish_only=true` reuses that recorded Windows payload
 without publishing another native image. The report distinguishes the fixture
 checkout revision from the original native source revision and image SHA-256;
 the complete downloaded artifact identity is retained alongside it.
-`polish_phases` can select only `portable`, `completion`, `authentication`,
+`polish_phases` can select only `portable`, `editor`, `completion`, `authentication`,
 `presentation_console`, `hints_console`, or `wsl` (comma-separated); an empty
 selection runs all groups. One validated group map controls admission so a
 fixture-only retry can run only the failed console/endpoint contracts. The
