@@ -24,9 +24,12 @@ internal static class GlobalRedundancy
     }
 
     internal static FunctionCode Optimize(Module module, FunctionCode function, List<Value> constants) =>
-        new Analysis(module, function, constants).Optimize();
+        OptimizeWithPool(module, function, constants, new(constants));
 
-    private sealed class Analysis(Module module, FunctionCode function, List<Value> constants)
+    internal static FunctionCode OptimizeWithPool(Module module, FunctionCode function, List<Value> constants, ConstantInterner interner) =>
+        new Analysis(module, function, constants, interner).Optimize();
+
+    private sealed class Analysis(Module module, FunctionCode function, List<Value> constants, ConstantInterner interner)
     {
         private readonly IReadOnlyList<Instruction> code = function.Instructions;
         private readonly Dictionary<(int Kind, int Position, int Slot), int> identities = [];
@@ -374,9 +377,7 @@ internal static class GlobalRedundancy
 
         private int Constant(Value value)
         {
-            var index = ValueRepresentation.IndexOf(constants, value);
-            if (index >= 0) return index;
-            index = constants.Count; constants.Add(value); return index;
+            return interner.Intern(value);
         }
 
         private FunctionCode Rewrite(Dictionary<Expression, int> slots, Dictionary<int, int> replacements,

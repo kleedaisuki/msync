@@ -23,6 +23,7 @@ public static class EffectAnalysis
         OpCode.Transfer or OpCode.LocalTransfer => InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.MayFail,
         OpCode.GetIterator or OpCode.IteratorNext => InstructionEffect.Read | InstructionEffect.Invoke | InstructionEffect.MayFail,
         OpCode.SetMember => InstructionEffect.Write | InstructionEffect.MayFail,
+        OpCode.MakeScope when ScopeConstructionMayFail(instruction) => InstructionEffect.MayFail,
         OpCode.GetMember or OpCode.Qualify or OpCode.Convert or OpCode.RegexMatch => InstructionEffect.MayFail,
         OpCode.SpecializeClosure => InstructionEffect.MayFail,
         OpCode.LoadCell => InstructionEffect.Capture,
@@ -30,6 +31,36 @@ public static class EffectAnalysis
         OpCode.Barrier or OpCode.Acquire => InstructionEffect.Control | InstructionEffect.Invoke,
         _ => InstructionEffect.None
     };
+
+    internal static bool ScopeConstructionMayFail(Instruction instruction)
+    {
+        if (instruction.A < 2 || instruction.Text is not { } names) return false;
+        if (instruction.A > 4)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var name in names.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+                if (!seen.Add(name)) return true;
+            return false;
+        }
+        // Most source-owned scopes have only a few fields. Compare their slices
+        // directly; large standard namespaces use the linear set path above.
+        var source = names.AsSpan();
+        for (var start = 0; start < source.Length;)
+        {
+            var separator = source[start..].IndexOf('\0');
+            var end = separator < 0 ? source.Length : start + separator;
+            var member = source[start..end];
+            for (var next = end + 1; member.Length > 0 && next < source.Length;)
+            {
+                var nextSeparator = source[next..].IndexOf('\0');
+                var nextEnd = nextSeparator < 0 ? source.Length : next + nextSeparator;
+                if (member.SequenceEqual(source[next..nextEnd])) return true;
+                next = nextEnd + 1;
+            }
+            start = end + 1;
+        }
+        return false;
+    }
 
     // Enumeration is an invocation of the range's deferred source and callbacks,
     // not merely a read of the adapter object returned by a pure native function.
@@ -59,7 +90,7 @@ public static class EffectAnalysis
     public static IReadOnlyList<InstructionEffect> FunctionEffects(Module module)
     {
         var summaries = new InstructionEffect[module.Functions.Count];
-        var targets = module.Functions.Select(function => FunctionInlining.Targets(function, module.Constants, requireKnownCallee: true)).ToArray();
+        var targets = module.Functions.Select(function => FunctionInlining.Targets(function, module.Constants, requireKnownCallee: true, layouts: module.Functions)).ToArray();
         var recursive = FunctionInlining.Recursive(targets);
         var callers = new List<int>[summaries.Length];
         for (var i = 0; i < callers.Length; i++) callers[i] = [];

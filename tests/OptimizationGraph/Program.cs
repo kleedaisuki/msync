@@ -124,6 +124,25 @@ async Task SemanticChecks()
     // These are valid bytecode inputs whose selected operation throws. Removing
     // a discarded value must not erase the operation's runtime diagnostic.
     await Differential("missing-member", Program([], new(OpCode.MakeScope, 0, Text: ""), new(OpCode.GetMember, Text: "missing"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)));
+    await Differential("duplicate-scope", Program([], new(OpCode.True), new(OpCode.False), new(OpCode.MakeScope, 2, Text: "field\0field"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)));
+    await Differential("duplicate-large-scope", Program([], new(OpCode.True), new(OpCode.True), new(OpCode.True), new(OpCode.True), new(OpCode.True),
+        new(OpCode.True), new(OpCode.MakeScope, 6, Text: "a\0b\0c\0d\0e\0a"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)));
+    await Differential("unselected-duplicate-scope", Program([], new(OpCode.False), new(OpCode.JumpIfFalse, 7), new(OpCode.True), new(OpCode.False),
+        new(OpCode.MakeScope, 2, Text: "field\0field"), new(OpCode.Pop), new(OpCode.Jump, 7), new(OpCode.Null), new(OpCode.Return)));
+    await Differential("duplicate-scope-callee", new Module([new FunctionValue(1)],
+        [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Call, 0, 2), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null),
+            new("bad", 0, 0, [new(OpCode.True), new(OpCode.False), new(OpCode.MakeScope, 2, Text: "field\0field"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)], OptimizationLevel: 0));
+    await Differential("constant-closure-mutable-capture", new Module(
+        [new FunctionValue(1, [new ScopeValue(new Dictionary<string, Value> { ["count"] = new NumberValue(0) })]), new NumberValue(1)],
+        [new("main", 0, 1, [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadLocal, 0), new(OpCode.Call, 0, 2),
+            new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.Call, 0, 2), new(OpCode.Return)], TypeRef.Number),
+            new("increment", 0, 2, [new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "count"), new(OpCode.Constant, 1), new(OpCode.Add),
+                new(OpCode.InitializeLocal, 1), new(OpCode.LoadLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.SetMember, Text: "count"),
+                new(OpCode.Pop), new(OpCode.LoadLocal, 1), new(OpCode.Return)], TypeRef.Number, CaptureCount: 1)], OptimizationLevel: 0), expectedValue: "Number:2");
+    await Differential("specialized-frame-capacity", new Module([new FunctionValue(2, [Value.True, Value.False, Value.Null])],
+        [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Call, 0, 2), new(OpCode.Return)], TypeRef.Null),
+            new("small", 0, 0, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null),
+            new("captured", 0, 3, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, CaptureCount: 3)], OptimizationLevel: 0));
     await Differential("invalid-regex", Program([new StringValue("text")], new(OpCode.Constant, 0), new(OpCode.RegexMatch, Text: "["), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)));
     await Differential("ieee-signed-zero", Program([new NumberValue(1), new NumberValue(0)],
         new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Divide),

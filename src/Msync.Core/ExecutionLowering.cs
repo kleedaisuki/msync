@@ -7,10 +7,11 @@ public static class ExecutionLowering
         if (module.Context is null) throw new MsyncException("Executable lowering requires a bound context");
         if (module.Functions.All(FunctionAnalysis.LiteralBody)) return module.Blocks is null ? Optimizer.FormBlocks(module) : module;
         var constants = module.Constants.ToList();
-        var functions = module.Functions.Select(function => LowerFunction(function, constants, module.Context)).ToArray();
+        var interner = new ConstantInterner(constants);
+        var functions = module.Functions.Select(function => LowerFunction(function, constants, module.Context, interner)).ToArray();
         return Optimizer.FormBlocks(module with { Constants = constants, Functions = functions });
     }
-    private static FunctionCode LowerFunction(FunctionCode function, List<Value> constants, BindingContext context)
+    private static FunctionCode LowerFunction(FunctionCode function, List<Value> constants, BindingContext context, ConstantInterner interner)
     {
         var code = function.Instructions.ToArray();
         var targets = code.SelectMany(i => i.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue ? [i.A] : i.Op == OpCode.IteratorNext ? new[] { i.B } : []).ToHashSet();
@@ -44,7 +45,7 @@ public static class ExecutionLowering
                             "wsl" => new(ConnectionKind.Wsl),
                             _ => null
                         };
-                        if (value is not null) { var index = ValueRepresentation.IndexOf(constants, value); if (index < 0) { index = constants.Count; constants.Add(value); } code[pc] = new(OpCode.Constant, index, Span: instruction.Span); }
+                        if (value is not null) code[pc] = new(OpCode.Constant, interner.Intern(value), Span: instruction.Span);
                         stack.Add(value); break;
                     }
                 case OpCode.Convert:

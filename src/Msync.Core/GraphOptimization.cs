@@ -3,12 +3,13 @@ namespace Msync.Core;
 /// <summary>Reaching definitions and backwards demand over the executable stack CFG.</summary>
 internal static class GraphOptimization
 {
-    internal static FunctionCode Optimize(Module module, FunctionCode function, List<Value> constants, IReadOnlyList<InstructionEffect>? summaries = null)
+    internal static FunctionCode Optimize(Module module, FunctionCode function, List<Value> constants, IReadOnlyList<InstructionEffect>? summaries = null, ConstantInterner? interner = null)
     {
+        interner ??= new(constants);
         var previous = function;
         while (true)
         {
-            var graph = new Graph(module, previous, constants, summaries);
+            var graph = new Graph(module, previous, constants, summaries, interner);
             var next = graph.Rewrite();
             if (next.Instructions.SequenceEqual(previous.Instructions)) return next;
             previous = next;
@@ -37,7 +38,7 @@ internal static class GraphOptimization
         internal State Copy() => new([.. Stack], (DefinitionSet[])Locals.Clone());
     }
 
-    private sealed class Graph(Module module, FunctionCode function, List<Value> constants, IReadOnlyList<InstructionEffect>? summaries)
+    private sealed class Graph(Module module, FunctionCode function, List<Value> constants, IReadOnlyList<InstructionEffect>? summaries, ConstantInterner interner)
     {
         private readonly Node[] nodes = function.Instructions.Select((instruction, index) => new Node(instruction, index)).ToArray();
         private readonly State?[] states = new State?[function.Instructions.Count + 1];
@@ -239,7 +240,7 @@ internal static class GraphOptimization
             if (instruction.Op == OpCode.Call && left is FunctionValue { NativeName: not null } native) node.NativeName = native.NativeName;
             node.Constant = instruction.Op switch
             {
-                OpCode.Constant => constants[instruction.A] is ScopeValue or CellValue ? null : constants[instruction.A],
+                OpCode.Constant => ConstantInterner.IsImmutable(constants[instruction.A]) ? constants[instruction.A] : null,
                 OpCode.True => Value.True,
                 OpCode.False => Value.False,
                 OpCode.Null => Value.Null,
@@ -508,13 +509,15 @@ internal static class GraphOptimization
             return node.Instruction.Op switch
             {
                 OpCode.Nop or OpCode.Constant or OpCode.Null or OpCode.True or OpCode.False or OpCode.LoadLocal or OpCode.LoadStorage or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.LoadCell or OpCode.Dup or OpCode.Pop => false,
-                OpCode.MakeClosure or OpCode.MakeScope or OpCode.MakeRange or OpCode.MakeLazyRange or OpCode.DeferRange or OpCode.IsNull or OpCode.SelectPath => false,
+                OpCode.MakeClosure or OpCode.MakeRange or OpCode.MakeLazyRange or OpCode.DeferRange or OpCode.IsNull or OpCode.SelectPath => false,
+                OpCode.MakeScope => EffectAnalysis.ScopeConstructionMayFail(node.Instruction),
                 OpCode.SetMember => false,
                 OpCode.NativeCall => EffectAnalysis.NativeEffects(node.Instruction.Text) != InstructionEffect.None,
                 OpCode.PathJoin => !CompatiblePathOperands(node),
                 OpCode.Convert => Resolve(node.Inputs[0]) is not (PathValue or StringValue),
                 OpCode.Call when node.NativeName is not null => EffectAnalysis.NativeEffects(node.NativeName) != InstructionEffect.None,
-                OpCode.Call when node.Instruction.B > 0 && summaries is not null && Resolve(node.Inputs[0]) is FunctionValue { NativeName: null } =>
+                OpCode.Call when node.Instruction.B > 0 && summaries is not null && Resolve(node.Inputs[0]) is FunctionValue { NativeName: null } callee
+                    && (callee.Captures?.Count ?? 0) <= module.Functions[node.Instruction.B - 1].LocalCount =>
                     (summaries[node.Instruction.B - 1] & ~InstructionEffect.Capture) != InstructionEffect.None,
                 OpCode.GetMember => !HasDeclaredMember(node),
                 OpCode.LoadBuiltin => node.Instruction.Text?.TrimStart('$') is not ("std" or "local" or "pwd" or "file" or "env" or "path" or "wsl" or "view" or "views" or "ranges"),
@@ -580,9 +583,13 @@ internal static class GraphOptimization
                     if (condition.Data == (instruction.Op == OpCode.JumpIfTrue)) emitted.Add(new(OpCode.Jump, instruction.A, Span: instruction.Span));
                     continue;
                 }
-                if (node.Constant is { } value && HasOutput(instruction)) emitted.Add(Literal(value, instruction.Span));
+                if (node.Constant is { } value && HasOutput(instruction))
+                    emitted.Add(instruction.Op == OpCode.Constant && value is not (BoolValue or NullValue)
+                        ? instruction : Literal(value, instruction.Span));
                 else emitted.Add(node.NativeName is null ? instruction : new(OpCode.NativeCall, instruction.A, Text: node.NativeName, Span: instruction.Span));
-                if (HasOutput(instruction) && node.LiveOutputs == 0) emitted.Add(new(OpCode.Pop, Span: instruction.Span));
+                if (HasOutput(instruction) && node.LiveOutputs == 0)
+                    emitted.Add(pc + 1 < nodes.Length && nodes[pc + 1].Instruction.Op == OpCode.Pop
+                        ? nodes[pc + 1].Instruction : new(OpCode.Pop, Span: instruction.Span));
                 if (node.NativeName is not null && node.Constant is null && node.Inputs[0].Overlaps(demanded))
                 {
                     if (node.LiveOutputs != 0)
@@ -612,9 +619,7 @@ internal static class GraphOptimization
         {
             if (value is NullValue) return new(OpCode.Null, Span: span);
             if (value is BoolValue boolean) return new(boolean.Data ? OpCode.True : OpCode.False, Span: span);
-            var index = ValueRepresentation.IndexOf(constants, value);
-            if (index < 0) { index = constants.Count; constants.Add(value); }
-            return new(OpCode.Constant, index, Span: span);
+            return new(OpCode.Constant, interner.Intern(value), Span: span);
         }
 
         private static bool HasOutput(Instruction instruction) => instruction.Op == OpCode.Acquire ? instruction.A != 0 : instruction.Op is not (OpCode.Nop or OpCode.Pop or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.Return or OpCode.Barrier);

@@ -10,6 +10,9 @@ internal static class CompileTimeEvaluation
     }
 
     internal static FunctionCode Optimize(Module module, FunctionCode function, List<Value> constants)
+        => OptimizeWithPool(module, function, constants, new(constants));
+
+    internal static FunctionCode OptimizeWithPool(Module module, FunctionCode function, List<Value> constants, ConstantInterner interner)
     {
         if (module.PreserveLocals || function.ParameterCount != 0 || function.CaptureCount != 0
             || !function.Instructions.Any(instruction => instruction.Op == OpCode.IteratorNext)
@@ -24,9 +27,7 @@ internal static class CompileTimeEvaluation
         else if (result is BoolValue boolean) literal = new(boolean.Data ? OpCode.True : OpCode.False, Span: span);
         else
         {
-            var index = ValueRepresentation.IndexOf(constants, result);
-            if (index < 0) { index = constants.Count; constants.Add(result); }
-            literal = new(OpCode.Constant, index, Span: span);
+            literal = new(OpCode.Constant, interner.Intern(result), Span: span);
         }
         return function with { Instructions = [literal, new(OpCode.Return, Span: span)] };
     }

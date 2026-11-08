@@ -133,6 +133,33 @@ negative zero and NaN payloads without changing range `contains`/`find`/`unique`
 or ordinary comparison semantics. A successful `x == 0` predicate therefore
 does not replace x by a particular signed-zero representation.
 
+### Literal stability and append-only constant indexing
+
+The ordinary transfer-script probe exposed a quadratic cost which pure-call
+benchmarks did not reveal: emission re-interned every unchanged `Constant`
+with a linear scan of the entire module pool, on every graph wave and again
+while binding. Existing literal instructions now retain their original index.
+Only newly folded values request the lazy `ConstantInterner`, shared by the
+round's functions and synchronized with append-only additions from other
+passes. Predicate propagation, PRE, finite-loop evaluation and contextual
+endpoint lowering use the same indexed mechanism. Mutable allocations and
+closures containing mutable captures are neither merged nor duplicated by
+constant propagation.
+
+An unchanged discarded-effect result also retains its original adjacent Pop
+instruction. This preserves diagnostic metadata and the transfer scheduler's
+discarded-result convention, while avoiding a second whole-graph wave caused
+solely by manufacturing a different Pop source span. Final cleanup reuses a
+known graph fixed point after local-slot renaming when its function identity
+and interprocedural effect epoch remain valid.
+
+Duplicate Scope member names are a selected construction error in existing
+objects, not an excuse to reject every object or retain every allocation.
+Graph demand and callable summaries require the member table's uniqueness
+before treating the allocation as total. Small tables use allocation-free
+slice comparison; larger tables use a linear ordinal set. Unselected invalid
+constructors are still removed by ordinary CFG reachability.
+
 ## Research connections and validation model
 
 [Wegman and Zadeck's conditional constant propagation](https://research.ibm.com/publications/constant-propagation-with-conditional-branches--1)

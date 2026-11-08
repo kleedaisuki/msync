@@ -3,7 +3,10 @@ namespace Msync.Core;
 internal static class PredicateOptimization
 {
     internal static FunctionCode Optimize(Module module, FunctionCode function, List<Value> constants) =>
-        new Analysis(module, function, constants).Rewrite();
+        OptimizeWithPool(module, function, constants, new(constants));
+
+    internal static FunctionCode OptimizeWithPool(Module module, FunctionCode function, List<Value> constants, ConstantInterner interner) =>
+        new Analysis(module, function, constants, interner).Rewrite();
 
     private enum Test : byte { Boolean, Null, Type, Equal }
     private sealed record Predicate(Test Test, int Subject, Value? Value = null, TypeRef? Type = null, bool Negated = false);
@@ -16,7 +19,7 @@ internal static class PredicateOptimization
         internal State Copy() => new(Stack.ToList(), Locals.ToArray());
     }
 
-    private sealed class Analysis(Module module, FunctionCode function, List<Value> constants)
+    private sealed class Analysis(Module module, FunctionCode function, List<Value> constants, ConstantInterner interner)
     {
         private readonly IReadOnlyList<Instruction> code = function.Instructions;
         private readonly State?[] states = new State?[function.Instructions.Count + 1];
@@ -27,7 +30,6 @@ internal static class PredicateOptimization
         private readonly Queue<int> work = new();
         private readonly int[] aliasable = CaptureAliases(function);
         private readonly Dictionary<(int Block, int Slot, bool Stack, bool Invalidation), int> identities = [];
-        private Dictionary<Value, int>? literalIndices;
         private int nextIdentity = -function.LocalCount - 1;
 
         internal FunctionCode Rewrite()
@@ -115,14 +117,16 @@ internal static class PredicateOptimization
                         case OpCode.False: Push(new(TypeRef.Bool, identity, Value.False)); break;
                         case OpCode.LoadLocal: Push(state.Locals[instruction.A]); break;
                         case OpCode.LoadCell: case OpCode.LoadStorage: Push(Unknown(state.Locals[instruction.A].Type)); break;
-                        case OpCode.StoreLocal: case OpCode.InitializeLocal:
+                        case OpCode.StoreLocal:
+                        case OpCode.InitializeLocal:
                             state.Locals[instruction.A] = Pop();
                             if (instruction.Op == OpCode.StoreLocal && Array.IndexOf(aliasable, instruction.A) >= 0) Invalidate();
                             break;
                         case OpCode.Pop: Pop(); break;
                         case OpCode.Dup: var duplicate = Pop(); state.Stack.Add(duplicate); Push(duplicate); break;
                         case OpCode.Jump: Merge(instruction.A, state); goto EndBlock;
-                        case OpCode.JumpIfFalse: case OpCode.JumpIfTrue:
+                        case OpCode.JumpIfFalse:
+                        case OpCode.JumpIfTrue:
                             var condition = Pop(); conditions[pc] = condition;
                             if (condition.Constant is BoolValue known)
                             {
@@ -157,7 +161,8 @@ internal static class PredicateOptimization
                         case OpCode.GetIterator: Pop(); Push(Unknown(new(TypeKind.Range))); break;
                         case OpCode.IteratorNext:
                             Invalidate(); Merge(instruction.B, state); Push(Unknown(TypeRef.Any)); Merge(pc + 1, state); goto EndBlock;
-                        case OpCode.Transfer: case OpCode.LocalTransfer:
+                        case OpCode.Transfer:
+                        case OpCode.LocalTransfer:
                             var operands = PopMany(2);
                             if ((operands[0].Type.Kind & TypeKind.Range) != 0) Invalidate();
                             Push(Unknown(TypeRef.Bool)); break;
@@ -262,15 +267,7 @@ internal static class PredicateOptimization
         {
             if (value is NullValue) return new(OpCode.Null, Span: span);
             if (value is BoolValue boolean) return new(boolean.Data ? OpCode.True : OpCode.False, Span: span);
-            if (literalIndices is null)
-            {
-                literalIndices = new(ValueRepresentation.Comparer);
-                for (var slot = 0; slot < constants.Count; slot++)
-                    if (Immutable(constants[slot])) literalIndices.TryAdd(constants[slot], slot);
-            }
-            if (!literalIndices.TryGetValue(value, out var index))
-            { index = constants.Count; constants.Add(value); literalIndices.Add(value, index); }
-            return new(OpCode.Constant, index, Span: span);
+            return new(OpCode.Constant, interner.Intern(value), Span: span);
         }
 
         private static bool Immutable(Value value) => value is NullValue or BoolValue or NumberValue or StringValue or PathValue or TypeValue or ConnectionValue;
@@ -316,9 +313,13 @@ internal static class PredicateOptimization
             if (comparison is { } order)
                 constant = op switch
                 {
-                    OpCode.Equal => Bool(order == 0), OpCode.NotEqual => Bool(order != 0),
-                    OpCode.Less => Bool(order < 0), OpCode.LessEqual => Bool(order <= 0),
-                    OpCode.Greater => Bool(order > 0), OpCode.GreaterEqual => Bool(order >= 0), _ => constant
+                    OpCode.Equal => Bool(order == 0),
+                    OpCode.NotEqual => Bool(order != 0),
+                    OpCode.Less => Bool(order < 0),
+                    OpCode.LessEqual => Bool(order <= 0),
+                    OpCode.Greater => Bool(order > 0),
+                    OpCode.GreaterEqual => Bool(order >= 0),
+                    _ => constant
                 };
             var isComparison = op is OpCode.Equal or OpCode.NotEqual or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual;
             Predicate? predicate = null;
@@ -396,8 +397,15 @@ internal static class PredicateOptimization
                 case OpCode.ProcessCall: Consume(instruction.A + 1); stack.Add(false); break;
                 case OpCode.NativeCall: Consume(instruction.A); stack.Add(instruction.Text?.StartsWith("ranges.", StringComparison.Ordinal) == true); break;
                 case OpCode.Acquire: if (instruction.A != 0) { var acquired = Pop(); stack.Add(acquired); } break;
-                case OpCode.GetMember: case OpCode.SpecializeClosure: case OpCode.Not: case OpCode.IsNull: case OpCode.Negate:
-                case OpCode.Convert: case OpCode.SelectPath: case OpCode.GetIterator: case OpCode.DeferRange: Pop(); stack.Add(false); break;
+                case OpCode.GetMember:
+                case OpCode.SpecializeClosure:
+                case OpCode.Not:
+                case OpCode.IsNull:
+                case OpCode.Negate:
+                case OpCode.Convert:
+                case OpCode.SelectPath:
+                case OpCode.GetIterator:
+                case OpCode.DeferRange: Pop(); stack.Add(false); break;
                 case OpCode.RegexMatch: Consume(instruction.Text is null ? 2 : 1); stack.Add(false); break;
                 default: Consume(2); stack.Add(false); break;
             }

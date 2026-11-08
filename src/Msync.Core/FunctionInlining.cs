@@ -2,12 +2,12 @@ namespace Msync.Core;
 
 internal static class FunctionInlining
 {
-    private sealed record Shape(int? Function = null, IReadOnlyDictionary<string, Shape?>? Members = null);
+    private sealed record Shape(int? Function = null, IReadOnlyDictionary<string, Shape?>? Members = null, int? Captures = null);
 
     internal static Module Inline(Module module, int level)
     {
         var functions = module.Functions.ToArray();
-        var targets = functions.Select(f => Targets(f, module.Constants, requireKnownCallee: true)).ToArray();
+        var targets = functions.Select(f => Targets(f, module.Constants, requireKnownCallee: true, layouts: functions)).ToArray();
         var recursive = Recursive(targets);
         var uses = new int[functions.Length];
         foreach (var target in targets.SelectMany(t => t.Values)) uses[target]++;
@@ -139,7 +139,8 @@ internal static class FunctionInlining
         return recursive;
     }
 
-    internal static Dictionary<int, int> Targets(FunctionCode function, IReadOnlyList<Value> constants, bool requireKnownCallee = false)
+    internal static Dictionary<int, int> Targets(FunctionCode function, IReadOnlyList<Value> constants, bool requireKnownCallee = false,
+        IReadOnlyList<FunctionCode>? layouts = null)
     {
         var targets = new Dictionary<int, int>();
         if (!function.Instructions.Any(instruction => instruction.Op == OpCode.Call)) return targets;
@@ -160,18 +161,19 @@ internal static class FunctionInlining
             switch (instruction.Op)
             {
                 case OpCode.Nop: break;
-                case OpCode.Constant: stack.Add(constants[instruction.A] is FunctionValue { NativeName: null } f ? new(f.Function) : null); break;
+                case OpCode.Constant: stack.Add(constants[instruction.A] is FunctionValue { NativeName: null } f ? new(f.Function, Captures: f.Captures?.Count ?? 0) : null); break;
                 case OpCode.Null: case OpCode.True: case OpCode.False: case OpCode.LoadBuiltin: stack.Add(null); break;
                 case OpCode.LoadLocal: stack.Add(locals[instruction.A]); break;
                 case OpCode.LoadCell: case OpCode.LoadStorage: stack.Add(null); break;
                 case OpCode.StoreLocal: case OpCode.InitializeLocal: locals[instruction.A] = Pop(); break;
                 case OpCode.Pop: Pop(); break;
                 case OpCode.Dup: var item = Pop(); stack.Add(item); stack.Add(item); break;
-                case OpCode.MakeClosure: PopMany(instruction.B); stack.Add(new(instruction.A)); break;
+                case OpCode.MakeClosure: PopMany(instruction.B); stack.Add(new(instruction.A, Captures: instruction.B)); break;
                 case OpCode.SpecializeClosure:
                     var specialized = Pop();
-                    stack.Add(instruction.Text is null ? new(instruction.A) : specialized?.Function is { } original
-                        && FunctionDispatch.Parse(instruction.Text).TryGetValue(original, out var mapped) ? new(mapped) : null); break;
+                    stack.Add(instruction.Text is null && (specialized?.Function is not null || !requireKnownCallee)
+                        ? new(instruction.A, Captures: specialized?.Captures) : instruction.Text is not null && specialized?.Function is { } original
+                            && FunctionDispatch.Parse(instruction.Text).TryGetValue(original, out var mapped) ? new(mapped, Captures: specialized.Captures) : null); break;
                 case OpCode.MakeScope:
                     var values = PopMany(instruction.A); var names = instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
                     stack.Add(new(Members: names.Select((name, i) => KeyValuePair.Create(name, values[i])).ToDictionary())); break;
@@ -182,7 +184,7 @@ internal static class FunctionInlining
                         ? instruction.B - 1 : instruction.Text is null ? closure?.Function : null;
                     if (instruction.Text is not null && closure?.Function is { } identity
                         && FunctionDispatch.Parse(instruction.Text).TryGetValue(identity, out var dispatched)) target = dispatched;
-                    if (target is { } known) targets[pc] = known;
+                    if (target is { } known && (layouts is null || closure?.Captures is not { } count || count <= layouts[known].LocalCount)) targets[pc] = known;
                     stack.Add(null); Array.Clear(locals); break;
                 case OpCode.NativeCall: PopMany(instruction.A); stack.Add(null); Array.Clear(locals); break;
                 case OpCode.ProcessCall: PopMany(instruction.A + 1); stack.Add(null); Array.Clear(locals); break;
