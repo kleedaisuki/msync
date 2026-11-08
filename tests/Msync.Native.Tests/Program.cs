@@ -135,6 +135,12 @@ try
             RangeValue directDirectory = (RangeValue)await Call("fs.directory_iterator", remoteDirectory);
             Equal(remoteDirectory, directDirectory.Selection?.Directory);
             Equal(3, (await Collect(directDirectory)).Count);
+            RangeValue recursiveDirectory = (RangeValue)await Call("fs.recursive_directory_iterator", remoteDirectory);
+            Equal(remoteDirectory, recursiveDirectory.Selection?.Directory);
+            Equal(true, recursiveDirectory.Selection?.Recursive);
+            RangeValue recursiveProjected = (RangeValue)await Call("ranges.take", recursiveDirectory, new NumberValue(1));
+            Equal(true, recursiveProjected.Selection?.Recursive);
+            Equal(1, (await Collect(recursiveProjected)).Count);
             Equal(Value.True, await Call("fs.remove_all", remoteDirectory));
             Equal(Value.False, await Call("fs.exists", remoteDirectory));
         }
