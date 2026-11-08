@@ -17,6 +17,7 @@ internal sealed class Configuration
     public ulong MemoryLimit => Unsigned("execution.memory_limit");
     public ulong? SpoolLimit => settings["execution.spool_limit"].Value is "unlimited" ? null : Unsigned("execution.spool_limit");
     public string Syntax => Text("language.syntax");
+    public string Color => Text("ui.color");
     public string? StateDirectory => OptionalText("execution.state_dir");
     public bool TelemetryEnabled => settings["telemetry.enabled"].Value is true;
     public string TelemetryBackend => Text("telemetry.backend");
@@ -111,14 +112,25 @@ internal sealed class Configuration
 
     private static string? Discover()
     {
-        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        string baseDirectory = OperatingSystem.IsWindows()
-            ? Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData)
-            : Environment.GetEnvironmentVariable("XDG_CONFIG_HOME") is { Length: > 0 } xdg ? xdg : Path.Combine(home, ".config");
-        string canonical = Path.Combine(baseDirectory, "msync", "config.toml");
-        if (Present(canonical)) return canonical;
+        string home = HostContext.HomeDirectory;
+        string baseDirectory = ConfigDirectory(home);
+        if (baseDirectory.Length != 0)
+        {
+            string canonical = Path.Combine(baseDirectory, "msync", "config.toml");
+            if (Present(canonical)) return canonical;
+        }
+        if (home.Length == 0) return null;
         string fallback = Path.Combine(home, ".msync", "config.toml");
         return Present(fallback) ? fallback : null;
+    }
+
+    private static string ConfigDirectory(string home)
+    {
+        if (OperatingSystem.IsWindows())
+            return Environment.GetEnvironmentVariable("APPDATA") is { Length: > 0 } appData ? appData
+                : Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData, Environment.SpecialFolderOption.DoNotVerify);
+        if (Environment.GetEnvironmentVariable("XDG_CONFIG_HOME") is { Length: > 0 } xdg) return xdg;
+        return home.Length == 0 ? "" : Path.Combine(home, ".config");
     }
 
     private static bool Present(string path)
@@ -186,7 +198,7 @@ internal sealed class Configuration
             ["telemetry.max_records_per_session"] = long.MaxValue,
             ["telemetry.max_database_bytes"] = long.MaxValue
         };
-        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string home = HostContext.HomeDirectory;
         if (home.Length != 0) values["execution.state_dir"] = Path.Combine(home, ".msync", "state");
         return values.ToDictionary(pair => pair.Key, pair => new Setting(pair.Value, "default"), StringComparer.Ordinal);
     }

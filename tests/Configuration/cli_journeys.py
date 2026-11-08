@@ -67,6 +67,9 @@ def run(binary: Path, directory: Path) -> list[str]:
     defaults = journey.config("--no-config")
     assert section(defaults, "execution")["jobs"] == 4
     assert section(defaults, "language")["syntax"] == "0.8"
+    assert section(defaults, "execution")["state_dir"] == str(
+        journey.home / ".msync/state"
+    )
     assert not (journey.home / ".msync").exists()
     passed.append("default inspection has no state side effects")
 
@@ -76,7 +79,9 @@ def run(binary: Path, directory: Path) -> list[str]:
 
     journey.write(journey.fallback, "[execution]\njobs = 3\n")
     assert section(journey.config(), "execution")["jobs"] == 3
-    journey.write(journey.canonical, "[execution]\njobs = 7\n[progress]\ndelay_ms = 300\n")
+    journey.write(
+        journey.canonical, "[execution]\njobs = 7\n[progress]\ndelay_ms = 300\n"
+    )
     assert section(journey.config(), "execution")["jobs"] == 7
     assert section(journey.config("--no-config"), "execution")["jobs"] == 4
     passed.append("canonical configuration supersedes fallback; bypass works")
