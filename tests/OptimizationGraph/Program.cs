@@ -13,7 +13,8 @@ string root = Path.Combine(Environment.CurrentDirectory, ".temp", "optimization-
 Directory.CreateDirectory(root);
 try
 {
-    if (args.Contains("--mutable", StringComparer.Ordinal)) await MutableChecks();
+    if (args.Contains("--directional", StringComparer.Ordinal)) { assertions += DirectionalChecks.Run(); await DirectionalTransfers(); }
+    else if (args.Contains("--mutable", StringComparer.Ordinal)) await MutableChecks();
     else
     {
         await SemanticChecks();
@@ -246,4 +247,29 @@ async Task ValueNumberingChecks()
     [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.MakeClosure, 1), new(OpCode.Call), new(OpCode.Pop), new(OpCode.Return)], TypeRef.Number),
      new("empty-return", 0, 0, [new(OpCode.Return)], TypeRef.Null)], Semantics: ModuleSemantics.Legacy);
     await Differential("legacy-empty-return", emptyReturn, expectedValue: "Number:7");
+}
+
+
+async Task DirectionalTransfers()
+{
+    int sample = 0;
+    foreach (int[] events in new int[][] { [0, 1, 0, 2, 0], [1, 0, 2, 0, 1, 0], [0, 2, 0, 1, 0], [2, 1, 0, 1, 2, 0] })
+    {
+        List<Value> constants = [new PathValue("output"), new PathValue("observed")];
+        List<Instruction> instructions = [];
+        int transfer = 0;
+        foreach (int item in events)
+        {
+            if (item != 0) { instructions.Add(new(OpCode.Barrier, item)); continue; }
+            int literal = constants.Count;
+            constants.Add(new StringValue("bytes-" + transfer++));
+            instructions.Add(new(OpCode.Constant, literal)); instructions.Add(new(OpCode.Constant, 0));
+            instructions.Add(new(OpCode.Transfer)); instructions.Add(new(OpCode.Pop));
+        }
+        instructions.Add(new(OpCode.Constant, 0)); instructions.Add(new(OpCode.Constant, 1));
+        instructions.Add(new(OpCode.Transfer)); instructions.Add(new(OpCode.Pop));
+        instructions.Add(new(OpCode.Null)); instructions.Add(new(OpCode.Return));
+        await Differential("directional-bytes-" + sample++, new Module(constants,
+            [new("directional-bytes", 0, 0, instructions, TypeRef.Null)], OptimizationLevel: 0), writes: true, expectedValue: "null");
+    }
 }

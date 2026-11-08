@@ -31,3 +31,11 @@ filesystem publication must invalidate stale facts. Raw-cell alias bytecode,
 escaped field storage, legacy empty-stack returns and the distinct signs of
 IEEE-754 zero are compared with explicit level-0 execution and independent
 expected results.
+
+Run `--directional` to exhaustively compare Before/After transfer placement for
+all event sequences of lengths 2–7. Each moved transfer must remain inside its
+original legal marker interval. An independent dynamic program computes the
+minimum number of nondecreasing transfer groups; source-owned marker/transfer
+identities must remain ordered. Paired admission identities and legacy module
+semantics remain opaque. Four byte-level differential cases also cover repeated
+publication and read-after-write across mixed directional markers.
