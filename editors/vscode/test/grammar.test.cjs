@@ -40,30 +40,30 @@ function hasScope(line, word, expected) {
 
 test('named, anonymous and native functions retain callable and parameter roles', () => {
     for (const line of ['fn copy(file: Path | String, des) {', 'item: fn copy(file: Path | String, des) {', 'native fn copy(file: Path | String, des) -> Bool;']) {
-        hasScope(line, 'fn', 'storage.type.function.msync');
+        hasScope(line, 'fn', 'entity.name.function.msync');
         hasScope(line, 'copy', 'entity.name.function.msync');
         hasScope(line, 'file', 'variable.parameter.msync');
-        hasScope(line, 'Path', 'support.type.msync');
-        hasScope(line, 'String', 'support.type.msync');
+        hasScope(line, 'Path', 'entity.name.type.msync');
+        hasScope(line, 'String', 'entity.name.type.msync');
     }
-    hasScope('let callback = fn (file) { file };', 'fn', 'storage.type.function.msync');
+    hasScope('let callback = fn (file) { file };', 'fn', 'entity.name.function.msync');
     hasScope('let callback = fn (file) { file };', 'file', 'variable.parameter.msync');
     hasScope('item: fn SomeOperation { true },', 'SomeOperation', 'entity.name.function.msync');
     hasScope('let result = copy(input, output);', 'copy', 'entity.name.function.msync');
-    hasScope('native fn exists(path: Path) -> Bool;', 'native', 'keyword.control.msync');
+    hasScope('native fn exists(path: Path) -> Bool;', 'native', 'keyword.other.msync');
 });
 
 test('let bindings, nullable tests and types have independent scopes', () => {
     hasScope('let file? = null;', 'let', 'storage.type.variable.msync');
     hasScope('let file? = null;', 'file', 'variable.other.readwrite.msync');
-    hasScope('let file? = null;', '?', 'keyword.operator.nullable.msync');
+    hasScope('let file? = null;', '?', 'keyword.control.msync');
     hasScope('let file? = null;', 'null', 'constant.language.null.msync');
     for (const type of ['Range', 'String', 'Function', 'Scope', 'Path', 'Process', 'Connection', 'Null', 'Bool']) {
-        hasScope(`let value: ${type} = input;`, type, 'support.type.msync');
+        hasScope(`let value: ${type} = input;`, type, 'entity.name.type.msync');
     }
     hasScope('if file is not null { file -> target };', 'is', 'keyword.operator.logical.msync');
-    hasScope('if file? {} else { file -> target };', '?', 'keyword.operator.msync');
-    hasScope('let kind = decltype(file);', 'decltype', 'keyword.control.msync');
+    hasScope('if file? {} else { file -> target };', '?', 'keyword.control.msync');
+    hasScope('let kind = decltype(file);', 'decltype', 'keyword.other.msync');
     for (const word of ['async', 'await', 'delete', 'macro', 'symbol', 'boolean']) {
         assert.ok(!scopes(`${word} item;`, word).some(scope => /keyword|storage.type/.test(scope)));
     }
@@ -79,10 +79,10 @@ test('blocks and match arms remain expressions independent of indentation', () =
     hasScope(line, '}', 'punctuation.section.block.end.msync');
     hasScope(line, ';', 'punctuation.separator.msync');
     hasScope('match file { <.+> => {}, _ => {} };', '<.+>', 'string.regexp.msync');
-    hasScope('match decltype(file) { Path => {}, _ => {} };', 'Path', 'support.type.msync');
-    hasScope('scope hello { item: true, };', 'scope', 'storage.type.namespace.msync');
+    hasScope('match decltype(file) { Path => {}, _ => {} };', 'Path', 'entity.name.type.msync');
+    hasScope('scope hello { item: true, };', 'scope', 'entity.name.type.msync');
     hasScope('scope hello { item: true, };', 'hello', 'entity.name.type.msync');
-    hasScope('let hello = scope { item: true };', 'scope', 'keyword.control.msync');
+    hasScope('let hello = scope { item: true };', 'scope', 'variable.other.readwrite.msync');
 });
 
 test('paths preserve namespace, lookup, composition and callback roles', () => {
@@ -229,8 +229,9 @@ test('direct function and Scope values have semantic-compatible lexical fallback
     for (const line of ['let callback = fn (item) { item };', 'callback: fn (item) { item },']) {
         hasScope(line, 'callback', 'entity.name.function.msync');
     }
-    for (const line of ['scope MyClass {', 'let MyClass = scope {', 'MyClass: scope {']) {
-        hasScope(line, 'MyClass', 'entity.name.type.msync');
+    hasScope('scope MyClass {', 'MyClass', 'entity.name.type.msync');
+    for (const line of ['let my_instance = scope {', 'my_instance: scope {']) {
+        hasScope(line, 'my_instance', 'variable.other.readwrite.msync');
     }
     hasScope('new: fn() { scope { x: ~/.codex } },', 'new', 'entity.name.function.msync');
     hasScope('let callback = fn (item) { item };', 'item', 'variable.parameter.msync');
@@ -240,4 +241,27 @@ test('direct function and Scope values have semantic-compatible lexical fallback
     const mappings = manifest.contributes.semanticTokenScopes[0].scopes;
     assert.deepEqual(mappings.function, ['entity.name.function.msync']);
     assert.deepEqual(mappings.type, ['entity.name.type.msync']);
+});
+
+
+test('type/function/control-flow palettes agree before and after inference', () => {
+    for (const line of ['fn named() {', 'let callback = fn () {', 'entry: fn named() {', 'entry: fn () {']) {
+        hasScope(line, 'fn', 'entity.name.function.msync');
+    }
+    hasScope('scope SomeClass { remote: ssh://forge, };', 'scope', 'entity.name.type.msync');
+    hasScope('scope SomeClass { remote: ssh://forge, };', 'SomeClass', 'entity.name.type.msync');
+    hasScope('let value: Scope = SomeClass;', 'Scope', 'entity.name.type.msync');
+    hasScope('let value = scope { remote: ssh://forge, };', 'scope', 'variable.other.readwrite.msync');
+    hasScope('let value = scope { remote: ssh://forge, };', 'remote', 'variable.other.readwrite.msync');
+    for (const word of ['if', 'else', 'match']) {
+        hasScope(`${word} value {}`, word, 'keyword.control.msync');
+    }
+    hasScope('if value? {} else {}', '?', 'keyword.control.msync');
+    hasScope('let value? = null;', '?', 'keyword.control.msync');
+    hasScope('fn pass(value?: Path) { value }', '?', 'keyword.control.msync');
+    const manifest = require('../package.json');
+    assert.ok(manifest.contributes.semanticTokenTypes.some(type => type.id === 'controlKeyword' && type.superType === 'keyword'));
+    const mappings = manifest.contributes.semanticTokenScopes[0].scopes;
+    assert.deepEqual(mappings.variable, ['variable.other.readwrite.msync']);
+    assert.deepEqual(mappings.controlKeyword, ['keyword.control.msync']);
 });

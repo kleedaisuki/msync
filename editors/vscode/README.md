@@ -88,12 +88,19 @@ match file {
 ### Inferred colors and inspection
 
 Function values use the theme's **function** color, including scope members and
-aliases such as `let callback = Module::operation;`. Lexical Scope values use the
-**type** color, including values returned by a constructor-like function. Colors
+aliases such as `let callback = Module::operation;`, and the `fn` keyword uses
+that same role. Named `scope Name { ... }` declarations and their aliases use the
+**type** color, matching explicit type names. Anonymous `scope { ... }` keywords
+and their resulting values use the ordinary **identifier** color, including
+instances returned by constructor-like functions. Their inferred type is still
+Scope: hover and completion retain their declared members. Colors
 come from your VS Code theme; the extension does not impose a dark-only palette.
 Semantic highlighting is enabled by default for msync and can still be disabled
 in your language-specific editor settings. Before inference finishes, direct
 `fn` and `scope` declarations retain matching TextMate fallback roles.
+`if`, `else`, `match` and the null-test `?` use the theme's separate
+**control-flow keyword** role; no RGB colors are hardcoded. Every Scope member
+can be inspected, including scalar and Connection-valued members.
 
 Hover a name to inspect its actual inferred type, function signature or Scope
 members. Generic functions acquire parameter and result types from their calls;
@@ -173,12 +180,13 @@ These automated Xvfb runs exercise the actual Extension Development Host; they
 are not a human visual review. The historical 0.7 evidence is not used as
 acceptance of the rewritten compiler.
 
-The product-polish host journey in `.temp/vscode-host-RWZxVr` additionally
-validated all six constructor/member/alias semantic roles, displayed the Scope's
-`new`/`get` members and the function result signature, wrapped the long call to
-42 columns, and reported a Path-versus-Scope member error with the actual generic
-call context. It used VS Code 1.144.0 and fingerprinted the development compiler
-assemblies in its isolated run metadata.
+The refined product-polish host journey in `.temp/vscode-host-IP92gO` validated
+18 semantic roles: named Scope declarations and aliases, anonymous Scope
+keywords and instances, function keywords and values, explicit types, control
+flow and `?`. It inspected Connection, Bool, String and Path members, displayed
+`fn get(some: Scope) -> Path`, wrapped the long call to 42 columns, and retained
+the typed call context on the failing member expression. It used VS Code 1.144.0
+and fingerprinted the development compiler assemblies in its isolated metadata.
 
 References:
 [VS Code syntax highlighting](https://code.visualstudio.com/api/language-extensions/syntax-highlight-guide),

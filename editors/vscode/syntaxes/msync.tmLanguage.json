@@ -101,7 +101,7 @@
           "name": "meta.function.msync",
           "beginCaptures": {
             "1": {
-              "name": "storage.type.function.msync"
+              "name": "entity.name.function.msync"
             },
             "3": {
               "name": "entity.name.function.msync"
@@ -124,7 +124,11 @@
               "name": "variable.parameter.msync"
             },
             {
-              "match": "[?:|]",
+              "match": "\\?",
+              "name": "keyword.control.msync"
+            },
+            {
+              "match": "[:|]",
               "name": "keyword.operator.msync"
             },
             {
@@ -139,7 +143,7 @@
           "name": "meta.function.msync",
           "beginCaptures": {
             "1": {
-              "name": "storage.type.function.msync"
+              "name": "entity.name.function.msync"
             },
             "2": {
               "name": "punctuation.definition.parameters.begin.msync"
@@ -159,7 +163,11 @@
               "name": "variable.parameter.msync"
             },
             {
-              "match": "[?:|]",
+              "match": "\\?",
+              "name": "keyword.control.msync"
+            },
+            {
+              "match": "[:|]",
               "name": "keyword.operator.msync"
             },
             {
@@ -172,7 +180,7 @@
           "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(fn)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(?=\\s*\\{)",
           "captures": {
             "1": {
-              "name": "storage.type.function.msync"
+              "name": "entity.name.function.msync"
             },
             "3": {
               "name": "entity.name.function.msync"
@@ -280,7 +288,7 @@
           "name": "variable.other.readwrite.msync"
         },
         "4": {
-          "name": "keyword.operator.nullable.msync"
+          "name": "keyword.control.msync"
         }
       }
     },
@@ -299,7 +307,19 @@
           "name": "keyword.operator.logical.msync"
         },
         {
-          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:scope|native|fn|let|return|global|drop|include|execute|if|else|for|in|loop|break|match|decltype|release|acquire|acqrel)(?![\\p{L}\\p{N}_./\\\\-])",
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:native|let|global|drop|include|execute|decltype|release|acquire|acqrel)(?![\\p{L}\\p{N}_./\\\\-])",
+          "name": "keyword.other.msync"
+        },
+        {
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])fn(?![\\p{L}\\p{N}_./\\\\-])",
+          "name": "entity.name.function.msync"
+        },
+        {
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])scope(?![\\p{L}\\p{N}_./\\\\-])",
+          "name": "variable.other.readwrite.msync"
+        },
+        {
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:if|else|match|for|in|loop|break|return)(?![\\p{L}\\p{N}_./\\\\-])",
           "name": "keyword.control.msync"
         }
       ]
@@ -313,8 +333,16 @@
       "name": "constant.numeric.count.msync"
     },
     "operators": {
-      "match": "::|->|=>|==|!=|<=|>=|[=<>|/$?]",
-      "name": "keyword.operator.msync"
+      "patterns": [
+        {
+          "match": "\\?",
+          "name": "keyword.control.msync"
+        },
+        {
+          "match": "::|->|=>|==|!=|<=|>=|[=<>|/$]",
+          "name": "keyword.operator.msync"
+        }
+      ]
     },
     "punctuation": {
       "patterns": [
@@ -348,7 +376,7 @@
       "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(scope)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(?=\\s*\\{)",
       "captures": {
         "1": {
-          "name": "storage.type.namespace.msync"
+          "name": "entity.name.type.msync"
         },
         "3": {
           "name": "entity.name.type.msync"
@@ -368,7 +396,7 @@
     },
     "types": {
       "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:Range|String|Function|Scope|Path|Process|Connection|Null|Bool|Type|Number)(?![\\p{L}\\p{N}_./\\\\-])",
-      "name": "support.type.msync"
+      "name": "entity.name.type.msync"
     },
     "typed-bindings": {
       "patterns": [
@@ -382,31 +410,13 @@
               "name": "entity.name.function.msync"
             },
             "4": {
-              "name": "keyword.operator.nullable.msync"
+              "name": "keyword.control.msync"
             }
           }
         },
         {
           "match": "(?<![\\p{L}\\p{N}_./\\\\:-])([\\p{L}_][\\p{L}\\p{N}_]*)(?=\\s*:(?!:)\\s*fn\\b)",
           "name": "entity.name.function.msync"
-        },
-        {
-          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(let)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(\\?)?(?=\\s*=\\s*scope\\b)",
-          "captures": {
-            "1": {
-              "name": "storage.type.variable.msync"
-            },
-            "3": {
-              "name": "entity.name.type.msync"
-            },
-            "4": {
-              "name": "keyword.operator.nullable.msync"
-            }
-          }
-        },
-        {
-          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])([\\p{L}_][\\p{L}\\p{N}_]*)(?=\\s*:(?!:)\\s*scope\\b)",
-          "name": "entity.name.type.msync"
         }
       ]
     }

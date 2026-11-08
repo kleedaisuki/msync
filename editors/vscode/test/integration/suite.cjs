@@ -125,6 +125,12 @@ async function run() {
             'let my_instance = MyClass::new();',
             'let construct = MyClass::new;',
             'let ClassAlias = MyClass;',
+            'scope SomeClass { remote: ssh://forge, enabled: true, title: "forge", root: ~/.codex, };',
+            'let anonymous = scope { remote: ssh://forge, };',
+            'let first: Scope = anonymous;',
+            'let maybe? = if true { anonymous } else { null };',
+            'if maybe? {} else {};',
+            'let matched = match true { true => { first }, false => { anonymous } };',
             'MyClass::get(my_instance) -> ./;',
             'let c = $std::bool::both(MyClass::get(my_instance) == ~/.codex, MyClass::get(my_instance) != ./);',
             '',
@@ -146,7 +152,12 @@ async function run() {
 
         const expected = [
             ['MyClass', 'type'], ['new:', 'function'], ['get:', 'function'],
-            ['my_instance', 'type'], ['construct', 'function'], ['ClassAlias', 'type'],
+            ['my_instance', 'variable'], ['construct', 'function'], ['ClassAlias', 'type'],
+            ['scope MyClass', 'type'], ['fn()', 'function'], ['fn(some)', 'function'],
+            ['SomeClass', 'type'], ['remote: ssh', 'variable'],
+            ['anonymous', 'variable'], ['scope { remote', 'variable'], ['Scope =', 'type'],
+            ['if true', 'controlKeyword'], ['else { null', 'controlKeyword'],
+            ['? {}', 'controlKeyword'], ['match true', 'controlKeyword'],
         ];
         const actualRoles = await until('inferred semantic roles on scope/function aliases', async () => {
             const roles = new Map();
@@ -163,6 +174,15 @@ async function run() {
             return roles;
         }, roles => expected.every(([text, type]) => roles.get(polishSource.indexOf(text)) === type));
         await record('inferred-semantic-roles', { roles: expected.map(([text]) => ({ text, type: actualRoles.get(polishSource.indexOf(text)) })) });
+        const fieldHovers = {};
+        for (const [name, type] of [['remote', 'Connection'], ['enabled', 'Bool'], ['title', 'String'], ['root', 'Path']]) {
+            const position = document.positionAt(polishSource.indexOf(name + ':'));
+            const hover = flattenHover(await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, position) || []);
+            assert.ok(hover.includes(`${name}: ${type}`), `${name} hover: ${hover}`);
+            fieldHovers[name] = hover;
+        }
+        assert.match(fieldHovers.remote, /physical endpoint/i);
+        await record('all-scope-member-types', { fieldHovers });
         assert.equal(vscode.languages.getDiagnostics(document.uri).length, 0);
         const polishEdits = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, { insertSpaces: true, tabSize: 4 });
         const polishFormat = new vscode.WorkspaceEdit();

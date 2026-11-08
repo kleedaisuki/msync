@@ -71,6 +71,11 @@
         "id": "endpoint",
         "superType": "string",
         "description": "The address portion of an unquoted endpoint URI, including its user, host, port and path."
+      },
+      {
+        "id": "controlKeyword",
+        "superType": "keyword",
+        "description": "Conditional and matching control flow, including the null-test question mark."
       }
     ],
     "semanticTokenScopes": [
@@ -88,6 +93,12 @@
           ],
           "type": [
             "entity.name.type.msync"
+          ],
+          "variable": [
+            "variable.other.readwrite.msync"
+          ],
+          "controlKeyword": [
+            "keyword.control.msync"
           ]
         }
       }
