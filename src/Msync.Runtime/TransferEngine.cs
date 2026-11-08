@@ -399,6 +399,9 @@ public static partial class TransferEngine
         return CreateShellProcessStartInfo(connection, ShellProgram.Source(launch), [executable, .. arguments], redirectInput: false);
     }
 
+    public static ProcessStartInfo CreateRemoteShellProcessStartInfo(ConnectionValue connection) =>
+        CreateShellProcessStartInfo(connection, "exec sh -s", [], redirectInput: true);
+
     private static Process Start(ConnectionValue connection, string script, IReadOnlyList<string> args, bool redirectInput)
     {
         ProcessStartInfo info = CreateShellProcessStartInfo(connection, script, args, redirectInput: true);
