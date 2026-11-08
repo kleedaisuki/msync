@@ -34,6 +34,7 @@ def main() -> int:
     }
     for name, script in (
         ("presentation", "presentation_journey.py"),
+        ("lsp-analysis", "lsp_analysis_journey.py"),
         ("formatter", "formatter_journey.py"),
         ("skill", "skill_journey.py"),
     ):
