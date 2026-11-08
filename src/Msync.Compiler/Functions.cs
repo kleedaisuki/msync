@@ -74,12 +74,18 @@ internal sealed partial class Compilation
         }
         string key = string.Join(';', arguments.Select(argument => InfoKey(argument)));
         if (specializations.TryGetValue(key, out var existing)) return existing;
+        if (activeEditorSpecializations?.Contains(template.Syntax) == true)
+        {
+            var guarded = template.Syntax.ReturnType is null ? UnknownInfo : new Info(ResolveType(caller, template.Syntax.ReturnType));
+            return new(-1, guarded, arguments.Select(argument => argument.Type).ToArray());
+        }
         int id = specializations.Count == 0 && !caller.EditorProbe ? template.Id : functions.Count;
         if (id == functions.Count) functions.Add(functions[template.Id]);
         var asserted = template.Syntax.ReturnType is null ? null : ResolveType(caller, template.Syntax.ReturnType);
         Specialization specialization = new(id, new(asserted ?? new TypeRef(TypeKind.Never)), arguments.Select(info => info.Type).ToArray());
         specializations[key] = specialization;
-        Frame frame = new(template.Source, template.SourceName)
+        var environment = editorDefinitions is not null && editorDefinitions.TryGetValue(template, out var definition) ? definition.Environment : null;
+        Frame frame = new(template.Source, template.SourceName, environment)
         {
             ExpectedReturn = asserted,
             ContextOwner = template.Syntax.Body.Span,
@@ -132,6 +138,7 @@ internal sealed partial class Compilation
         if (caller.EditorReportErrors) editorCalledTemplates?.Add(template);
         CaptureContext(frame, template.Syntax.Body.Span.Start);
         Info result;
+        activeEditorSpecializations?.Add(template.Syntax);
         try
         {
             result = Block(frame, template.Syntax.Body);
@@ -150,6 +157,7 @@ internal sealed partial class Compilation
                     : $"while checking this call with {string.Join(", ", template.Syntax.Parameters.Zip(arguments, (p, a) => $"{p.Name}: {a.Type}"))}"));
             throw;
         }
+        finally { activeEditorSpecializations?.Remove(template.Syntax); }
         frame.Emit(OpCode.Return);
         specialization.Result = result;
         functions[id] = new(template.Syntax.Name ?? $"<lambda{template.Id}>", arguments.Count, frame.Locals, frame.Code.ToArray(), result.Type,

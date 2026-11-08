@@ -95,7 +95,7 @@ internal sealed partial class Compilation
         if (binary.Operator == "/")
         {
             int start = binary.OperatorSpan?.End ?? binary.Right.Span.Start;
-            CaptureReceiver(frame, new(start, binary.Right.Span.End - start), left, EditorReceiverKind.PathJoin);
+            CaptureReceiver(frame, new(start, binary.Right.Span.End - start), left, EditorReceiverKind.PathJoin, binary);
         }
         if (binary.Operator == "/" && binary.Right is PathExpr { Path: var pattern } && pattern.StartsWith('<') && pattern.EndsWith('>'))
         {
@@ -173,7 +173,7 @@ internal sealed partial class Compilation
             ? StandardModule(frame, "ranges", binary.Left.Span) : Expression(frame, binary.Left);
         int start = binary.OperatorSpan?.End ?? binary.Right.Span.Start;
         CaptureReceiver(frame, new(start, binary.Right.Span.End - start), left);
-        if (frame.EditorRecovery && binary.Right is MissingExpr) return UnknownInfo;
+        if (frame.EditorRecovery && binary.Right is MissingExpr && left.Type != TypeRef.Connection) return UnknownInfo;
         var member = binary.Right switch { NameExpr name => name.Name, PathExpr path => path.Path, StringExpr text => text.Value, _ => null };
         if ((left.Type == TypeRef.Scope || left.Type == TypeRef.Process) && member is null)
             throw Error(frame, $"A {left.Type} member must be selected by name.", binary.Right.Span,
@@ -204,7 +204,10 @@ internal sealed partial class Compilation
                 help: left.Type == TypeRef.Path
                     ? "Pass the Scope itself, not one of its Path members. An unbound bare name is a Path; use $local, $wsl or an SSH connection for endpoint qualification."
                     : "Use a Scope value for member access, or a Connection value for endpoint qualification.", code: "E0206");
-        var right = Expression(frame, binary.Right); Require(frame, right.Type, PathCompatible, binary.Right.Span);
+        var first = BeginPhysicalPathFlow(frame, binary);
+        var right = Expression(frame, binary.Right);
+        CompletePhysicalPathFlow(binary.Right, first, left.KnownConnection);
+        Require(frame, right.Type, PathCompatible, binary.Right.Span);
         frame.Emit(OpCode.Qualify, span: binary.Span); return new(TypeRef.Path, KnownPath: QualifiedPath(left, right));
     }
 
@@ -224,9 +227,14 @@ internal sealed partial class Compilation
         if (observe is null) return null;
         var path = LiteralPath(right);
         if (path is null || left.KnownConnection is not { } connection) return null;
-        return connection.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl || connection is { Kind: ConnectionKind.Local, Address.Length: 0 }
-            ? PathSemantics.Qualify(path, connection) : null;
+        return QualifyKnownPath(path, connection);
     }
+
+    internal static bool HasStaticPathProjection(ConnectionValue? connection) =>
+        connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } or { Kind: ConnectionKind.Local, Address.Length: 0 };
+
+    internal static PathValue? QualifyKnownPath(PathValue path, ConnectionValue? connection) =>
+        HasStaticPathProjection(connection) ? PathSemantics.Qualify(path, connection!) : null;
 
     private Info Scope(Frame frame, ScopeExpr scope, bool named = false)
     {

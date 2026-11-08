@@ -165,6 +165,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
     private Info Expression(Frame frame, Expr expression)
     {
         CaptureContext(frame, expression.Span.Start);
+        CapturePathLeaf(frame, expression);
         var before = frame.Environment;
         Info result;
         try { result = InferExpression(frame, expression); }

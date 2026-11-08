@@ -142,3 +142,53 @@ than adopting the paper's general Statix/SDF3 framework. The paper's formal
 soundness and completeness results do not automatically transfer to this
 implementation; the concrete contracts above and real editing journeys are
 the acceptance criteria.
+
+## Physical path-flow ownership
+
+A physical qualifier applies to the value produced by its right operand, not
+merely to adjacent source text. Grouping can place a slash receiver inside that
+operand: `remote::(folder/)` still completes against the remote endpoint. Quoted
+and whitespace-separated leaf values likewise retain their physical owner even
+when a lexical completion fragment no longer includes `remote::`.
+
+The collector records path-leaf and slash-expression identities during the real
+inference invocation. On qualification unwind it follows only transparent value
+flow: path joins, nested physical qualification, block tails, conditional result
+branches and match-arm values. It does not enter calls, callable bodies,
+conditions, discriminants, discarded statements or lexical Scope member-name
+lookup. Physical receiver ranges are clipped to these value domains, so a wide
+outer source span cannot make a call argument authenticate to the wrong host.
+
+Invocation checkpoints keep independent generic contexts separate; outer known
+qualifiers replace inner known endpoint ownership only within that invocation.
+At the caret, `HasPhysicalOwner` distinguishes ordinary local values from an
+opaque physical operand, and `PhysicalEndpoint` is present only when all
+applicable concrete contexts agree. Unknown/contextual inner projections cannot
+be turned back into a literal directory by an outer known endpoint: `$env` and
+other contextual projections may change the actual path spelling. Known path
+receivers reuse Core `PathSemantics.Qualify`, including its cwd/home/projection
+ownership rules. Ordinary compilation records none of this editor-only state.
+
+`tests/Msync.Compiler.Tests --qualified-contexts` covers grouped/quoted values,
+aliases, nested local/SSH/WSL qualification, result branches, non-value-flow
+boundaries, lexical member lookup, opaque and polymorphic owners, and unchanged
+relocatable artifact bytes. The real SSH journey uses distinct local and remote
+cwd entries so a successful query to the wrong filesystem cannot pass.
+
+## Finite editor specialization
+
+Malformed or incomplete syntax can create an unknown-dependent recursive
+specialization chain with new inferred argument shapes. Editor inference tracks
+active FunctionExpr identities from the finite parsed document. An already
+reserved specialization key is always reused first, preserving ordinary
+same-key recursion; only a new specialization re-entering an active source
+function returns its declared result type or an opaque unknown result. There is
+no arbitrary depth limit, and normal source compilation maintains no active
+editor set. Editor call frames reuse the full declaration environment for
+visible names, while executable capture slots retain their original ownership.
+
+`tests/Msync.EndToEnd/lsp_probe_recovery.py` opens the actual malformed keyword
+parameter case in a separate LSP process, checks its diagnostic and unrelated
+Scope hover, then applies a valid change and checks a Bool hover in the same
+surviving process. This tests user editing recovery, not only a caught exception
+inside a unit-test process.

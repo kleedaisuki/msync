@@ -1,11 +1,15 @@
 using System.Collections.Immutable;
 using Msync.Compiler.Syntax;
+using Msync.Core;
+using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 
 namespace Msync.Compiler;
 
 public enum EditorReceiverKind { Member, PathJoin }
 public sealed record EditorContext(IReadOnlyList<SemanticMember> Bindings, SemanticMember? Receiver,
-    EditorReceiverKind ReceiverKind = EditorReceiverKind.Member);
+    EditorReceiverKind ReceiverKind = EditorReceiverKind.Member, ConnectionValue? PhysicalEndpoint = null, bool HasPhysicalOwner = false);
+
+internal readonly record struct EditorPathFlowStart(int Selections, int Leaves);
 
 internal sealed record EditorCallTrace(string SourceName, string Source, SourceSpan Span,
     IReadOnlyList<Parameter> Parameters, IReadOnlyList<Msync.Core.TypeRef> Types, EditorCallTrace? Parent)
@@ -17,12 +21,77 @@ internal sealed record EditorCallTrace(string SourceName, string Source, SourceS
 internal sealed class EditorContextCollector
 {
     private sealed record Snapshot(SourceSpan Owner, bool IncludesEnd, int Point, ImmutableDictionary<string, Binding> Bindings, bool Concrete);
-    private sealed record Selection(SourceSpan Span, Info Receiver, bool Concrete, EditorReceiverKind Kind);
+    private sealed record Selection(SourceSpan Span, Info Receiver, bool Concrete, EditorReceiverKind Kind, Expr? Expression,
+        IReadOnlyList<SourceSpan>? PhysicalDomains = null);
+    private sealed record PathLeaf(Expr Expression, bool Concrete, bool HasOwner = false, ConnectionValue? Endpoint = null);
     private readonly List<Snapshot> snapshots = [];
     private readonly List<Selection> selections = [];
+    private readonly List<PathLeaf> leaves = [];
+    private readonly HashSet<Expr> physicalExpressions = new(ReferenceEqualityComparer.Instance);
 
     public void Capture(Frame frame, int point) => snapshots.Add(new(frame.ContextOwner, frame.ContextIncludesEnd, point, frame.Environment, frame.EditorReportErrors));
-    public void Select(Frame frame, SourceSpan span, Info receiver, EditorReceiverKind kind) => selections.Add(new(span, receiver, frame.EditorReportErrors, kind));
+    public void Leaf(Frame frame, Expr expression) => leaves.Add(new(expression, frame.EditorReportErrors));
+    public EditorPathFlowStart BeginPhysicalPathFlow(Expr expression)
+    {
+        physicalExpressions.Add(expression);
+        return new(selections.Count, leaves.Count);
+    }
+    public void Select(Frame frame, SourceSpan span, Info receiver, EditorReceiverKind kind, Expr? expression) =>
+        selections.Add(new(span, receiver, frame.EditorReportErrors, kind, expression));
+
+    public void QualifyPathFlow(Expr expression, EditorPathFlowStart first, ConnectionValue? connection)
+    {
+        HashSet<Expr> flow = new(ReferenceEqualityComparer.Instance);
+        CollectPathFlow(expression, flow);
+        List<SourceSpan> domains = [];
+        for (int index = first.Leaves; index < leaves.Count; index++)
+        {
+            PathLeaf leaf = leaves[index];
+            if (!flow.Contains(leaf.Expression)) continue;
+            bool unknown = leaf.HasOwner && !Compilation.HasStaticPathProjection(leaf.Endpoint)
+                || !Compilation.HasStaticPathProjection(connection);
+            leaves[index] = leaf with { HasOwner = true, Endpoint = unknown ? null : connection };
+            domains.Add(leaf.Expression.Span);
+        }
+        selections[first.Selections - 1] = selections[first.Selections - 1] with { PhysicalDomains = domains };
+        for (int index = first.Selections; index < selections.Count; index++)
+        {
+            Selection selection = selections[index];
+            if (selection.Kind != EditorReceiverKind.PathJoin || selection.Expression is null || !flow.Contains(selection.Expression)) continue;
+            var path = selection.Receiver.KnownPath ?? (selection.Receiver.KnownText is { } text ? new PathValue(text) : null);
+            if (path is null) continue;
+            var receiver = selection.Receiver with { KnownPath = Compilation.QualifyKnownPath(path, connection), KnownText = null };
+            selections[index] = selection with { Receiver = receiver };
+        }
+    }
+
+    private void CollectPathFlow(Expr expression, HashSet<Expr> flow)
+    {
+        switch (expression)
+        {
+            case BinaryExpr { Operator: "/" } joined:
+                flow.Add(joined);
+                CollectPathFlow(joined.Left, flow);
+                CollectPathFlow(joined.Right, flow);
+                break;
+            case BinaryExpr { Operator: "::" } qualified when physicalExpressions.Contains(qualified):
+                CollectPathFlow(qualified.Right, flow);
+                break;
+            case BlockExpr { Statements.Count: > 0 } block when block.Statements[^1] is ExpressionStatement { Discarded: false } tail:
+                CollectPathFlow(tail.Expression, flow);
+                break;
+            case IfExpr conditional:
+                CollectPathFlow(conditional.Then, flow);
+                if (conditional.Else is not null) CollectPathFlow(conditional.Else, flow);
+                break;
+            case MatchExpr matched:
+                foreach (MatchArm arm in matched.Arms) CollectPathFlow(arm.Value, flow);
+                break;
+            case PathExpr or StringExpr or NameExpr or MissingExpr:
+                flow.Add(expression);
+                break;
+        }
+    }
 
     public EditorContext At(int offset)
     {
@@ -37,15 +106,25 @@ internal sealed class EditorContextCollector
             if (latest.Any(item => item.Concrete)) latest = latest.Where(item => item.Concrete).ToArray();
             bindings = latest.Select(item => item.Bindings).ToArray();
         }
-        var receivers = selections.Where(item => item.Span.Start <= offset && offset <= item.Span.End).ToArray();
+        var receivers = selections.Where(item => item.Span.Start <= offset && offset <= item.Span.End
+            && (item.PhysicalDomains is null || item.PhysicalDomains.Any(span => span.Start <= offset && offset <= span.End))).ToArray();
         if (receivers.Length != 0)
         {
             int width = receivers.Min(item => item.Span.Length);
             receivers = receivers.Where(item => item.Span.Length == width).ToArray();
             if (receivers.Any(item => item.Concrete)) receivers = receivers.Where(item => item.Concrete).ToArray();
         }
+        var owners = leaves.Where(item => item.HasOwner && item.Expression.Span.Start <= offset && offset <= item.Expression.Span.End).ToArray();
+        if (owners.Length != 0)
+        {
+            int width = owners.Min(item => item.Expression.Span.Length);
+            owners = owners.Where(item => item.Expression.Span.Length == width).ToArray();
+            if (owners.Any(item => item.Concrete)) owners = owners.Where(item => item.Concrete).ToArray();
+        }
+        ConnectionValue? endpoint = owners.Length == 0 ? null : owners[0].Endpoint;
+        if (endpoint is not null && owners.Any(item => item.Endpoint != endpoint)) endpoint = null;
         return EditorCompiler.DescribeContext(bindings, receivers.Select(item => item.Receiver).ToArray(),
-            receivers.Length == 0 ? EditorReceiverKind.Member : receivers[0].Kind);
+            receivers.Length == 0 ? EditorReceiverKind.Member : receivers[0].Kind, endpoint, owners.Length != 0);
     }
 }
 
@@ -56,6 +135,7 @@ internal sealed partial class Compilation
     private readonly List<Template>? editorDefinitionOrder = observe is null ? null : [];
     private readonly HashSet<Template>? editorCalledTemplates = observe is null ? null : [];
     private readonly Dictionary<Template, Dictionary<string, Specialization>>? probeSpecializations = observe is null ? null : [];
+    private readonly HashSet<FunctionExpr>? activeEditorSpecializations = observe is null ? null : new(ReferenceEqualityComparer.Instance);
     private SourceDiagnostic? editorDiagnostic;
     private bool editorIsolated;
     internal IReadOnlyDictionary<string, Info> BuiltinInfos()
@@ -76,9 +156,20 @@ internal sealed partial class Compilation
     {
         if (editorContexts is not null && IsCurrentSource(frame)) editorContexts.Capture(frame, point);
     }
-    private void CaptureReceiver(Frame frame, SourceSpan span, Info receiver, EditorReceiverKind kind = EditorReceiverKind.Member)
+    private void CaptureReceiver(Frame frame, SourceSpan span, Info receiver, EditorReceiverKind kind = EditorReceiverKind.Member, Expr? expression = null)
     {
-        if (editorContexts is not null && IsCurrentSource(frame)) editorContexts.Select(frame, span, receiver, kind);
+        if (editorContexts is not null && IsCurrentSource(frame)) editorContexts.Select(frame, span, receiver, kind, expression);
+    }
+    private void CapturePathLeaf(Frame frame, Expr expression)
+    {
+        if (editorContexts is not null && IsCurrentSource(frame) && expression is PathExpr or StringExpr or NameExpr or MissingExpr)
+            editorContexts.Leaf(frame, expression);
+    }
+    private EditorPathFlowStart BeginPhysicalPathFlow(Frame frame, Expr expression) => editorContexts is not null && IsCurrentSource(frame)
+        ? editorContexts.BeginPhysicalPathFlow(expression) : new(-1, -1);
+    private void CompletePhysicalPathFlow(Expr expression, EditorPathFlowStart first, ConnectionValue? connection)
+    {
+        if (first.Selections >= 0) editorContexts!.QualifyPathFlow(expression, first, connection);
     }
     private void EditorFailure(Frame frame, CompileException error)
     {

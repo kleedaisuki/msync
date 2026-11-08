@@ -1,4 +1,5 @@
 using Msync.Compiler.Syntax;
+if (args.Contains("--qualified-contexts", StringComparer.Ordinal)) { QualificationContextChecks.Run(); return; }
 if (args.Contains("--regex-spans", StringComparer.Ordinal)) { RegexPresentationChecks.Run(); return; }
 if (args.Contains("--static-paths", StringComparer.Ordinal)) { StaticPathChecks.Run(); return; }
 if (args.Contains("--editor-contexts", StringComparer.Ordinal)) { ContextChecks.Run(); return; }

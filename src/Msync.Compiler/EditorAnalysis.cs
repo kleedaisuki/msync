@@ -39,13 +39,14 @@ public static class EditorCompiler
     }
 
     internal static EditorContext DescribeContext(IReadOnlyList<System.Collections.Immutable.ImmutableDictionary<string, Binding>> environments,
-        IReadOnlyList<Info> receivers, EditorReceiverKind kind = EditorReceiverKind.Member)
+        IReadOnlyList<Info> receivers, EditorReceiverKind kind = EditorReceiverKind.Member,
+        ConnectionValue? physicalEndpoint = null, bool hasPhysicalOwner = false)
     {
         Dictionary<ScopeInfo, ScopeDescription> scopes = [];
         SemanticMember[] bindings = environments.Count == 0 ? [] : environments[0].Keys.Where(name => !name.StartsWith('$') && environments.All(environment => environment.ContainsKey(name)))
             .Select(name => DescribeMember(name, environments.Select(environment => environment[name].Info), scopes, members: true)).ToArray();
         SemanticMember? receiver = receivers.Count == 0 ? null : DescribeMember("", receivers, scopes, members: true);
-        return new(bindings, receiver, kind);
+        return new(bindings, receiver, kind, physicalEndpoint, hasPhysicalOwner);
     }
 
     internal static IReadOnlyList<SemanticMember> DescribeBindings(IReadOnlyDictionary<string, Binding> bindings)
