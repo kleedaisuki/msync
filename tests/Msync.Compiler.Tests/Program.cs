@@ -1,4 +1,5 @@
 using Msync.Compiler.Syntax;
+if (args.Contains("--branch-joins", StringComparer.Ordinal)) { SemanticChecks.RunBranches(); return; }
 string[] examples = [
 "fn copy() { ~/.codex -> $wsl::~/.codex }; let replace = fn (file, des) { file -> des };",
 "scope ScopeName { item: ~/.codex, ready: true, op: fn SomeOperation { true }, nested: scope { file: ~/.codex, }, }; let ScopeName2 = scope { item: true, };",
@@ -63,3 +64,4 @@ var arithmeticCall = ((CallExpr)((ExpressionStatement)arithmeticElse.Statements[
 if (arithmeticCall is not BinaryExpr { Operator: "-" }) throw new Exception("Arithmetic recursion operand parsed as a Path");
 Console.WriteLine("Arithmetic recursion syntax ok");
 SemanticChecks.Run();
+SemanticChecks.RunBranches();

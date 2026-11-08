@@ -121,6 +121,120 @@ internal static class SemanticChecks
         });
         if (failures.Count > 0) throw new InvalidOperationException("Semantic checks failed:\n" + string.Join("\n", failures));
     }
+    public static void RunBranches()
+    {
+        List<string> failures = [];
+        void Check(string name, Action action)
+        {
+            try { action(); Console.WriteLine($"branch semantic ok: {name}"); }
+            catch (Exception error) { failures.Add($"{name}: {error.Message}"); }
+        }
+        Check("structural Scope if joins", () =>
+        {
+            const string definitions = "let selected = if true { scope { item: ~/left, flag: true, nested: scope { value: \"left\", }, leftOnly: true, } } else { scope { item: ~/right, flag: false, nested: scope { value: \"right\", }, rightOnly: false, } }; ";
+            AssertType(Accept(definitions + "selected::nested::value"), TypeRef.String);
+            AssertType(Accept(definitions + "selected::item"), TypeRef.Path);
+            AssertType(Accept(definitions + "selected::flag"), TypeRef.Bool);
+            Reject(definitions + "selected::leftOnly");
+            Reject(definitions + "selected::rightOnly");
+            AssertType(Accept("let selected = if true { scope { item: ~/left, } } else { scope { item: \"right\", } }; selected::item"), TypeRef.Union(TypeRef.Path, TypeRef.String));
+        });
+        Check("structural Scope match joins", () =>
+        {
+            const string definitions = "let selected = match true { true => { scope { item: ~/left, leftOnly: true, } }, false => { scope { item: ~/right, rightOnly: false, } } }; ";
+            AssertType(Accept(definitions + "selected::item"), TypeRef.Path);
+            Reject(definitions + "selected::leftOnly");
+            Reject(definitions + "selected::rightOnly");
+        });
+        Check("same source function alias survives joins", () =>
+        {
+            var module = Accept("fn identity(value) { value }; let action = if true { identity } else { identity }; action(\"text\"); action(~/document)");
+            AssertType(module, TypeRef.Path);
+            Require(module.Functions.Count(function => function.Name == "identity") == 2, "Same callable joined alias must retain generic specialization.");
+        });
+        Check("multiple generic callable branch alternatives", () =>
+        {
+            var module = Accept("let action = if true { fn(value) { value } } else { fn(value) { value } }; action(\"text\"); action(~/document)");
+            AssertType(module, TypeRef.Path);
+            var mappings = Dispatches(module, OpCode.Call).ToArray();
+            Require(mappings.Length == 2, "Both generic calls need their own dispatch mapping.");
+            Require(mappings.All(mapping => mapping.Count == 2), "Each branch function must be in every dispatch.");
+            Require(mappings[0].Keys.Order().SequenceEqual(mappings[1].Keys.Order()), "Dispatch must retain the original closure identities across argument types.");
+            Require(mappings[0].Values.All(target => module.Functions[target].ReturnType == TypeRef.String), "String call dispatched to a wrong specialization.");
+            Require(mappings[1].Values.All(target => module.Functions[target].ReturnType == TypeRef.Path), "Path call dispatched to a wrong specialization.");
+            Require(!mappings[0].Values.Intersect(mappings[1].Values).Any(), "Different argument types must not reuse the wrong specialization targets.");
+            var repeated = Accept("let action = if true { fn(value) { value } } else { fn(value) { value } }; action(\"first\"); action(\"second\")");
+            AssertType(repeated, TypeRef.String);
+            var repeatedMappings = Dispatches(repeated, OpCode.Call).ToArray();
+            Require(repeatedMappings.Length == 2 && repeatedMappings[0].OrderBy(pair => pair.Key).SequenceEqual(repeatedMappings[1].OrderBy(pair => pair.Key)), "Repeated same-type calls should reuse their specialization dispatch.");
+        });
+        Check("match callable alternatives retain result union", () =>
+        {
+            var module = Accept("let action = match true { true => { fn() { \"text\" } }, false => { fn() { ~/document } } }; action()");
+            AssertType(module, TypeRef.Union(TypeRef.Path, TypeRef.String));
+            Require(Dispatches(module, OpCode.Call).Single().Count == 2, "Match function alternatives need typed dispatch.");
+            Reject("let action = if true { fn(value) { value } } else { fn() { true } }; action(true)");
+        });
+        Check("Scope function members retain callable alternatives", () =>
+        {
+            var module = Accept("let selected = if true { scope { action: fn(value) { value }, } } else { scope { action: fn(value) { value }, } }; selected::action(\"text\"); selected::action(~/document)");
+            AssertType(module, TypeRef.Path);
+            Require(Dispatches(module, OpCode.Call).Count() == 2, "Structural Scope function members lost their callable dispatch.");
+        });
+        Check("generic source function receives action alternatives", () =>
+        {
+            var module = Accept("fn apply(action, value) { action(value) }; let action = if true { fn(value) { value } } else { fn(value) { value } }; apply(action, \"text\"); apply(action, ~/document)");
+            AssertType(module, TypeRef.Path);
+            var applications = module.Functions.Where(function => function.Name == "apply").ToArray();
+            Require(applications.Length == 2, "Generic apply must specialize for the two value argument types.");
+            Require(applications.Any(function => function.ReturnType == TypeRef.String) && applications.Any(function => function.ReturnType == TypeRef.Path), "Generic source calls lost branch return types.");
+            Require(applications.All(function => function.Instructions.Any(instruction => instruction.Op == OpCode.Call && !string.IsNullOrEmpty(instruction.Text))), "Action alternatives lost dispatch inside generic source functions.");
+            AssertType(Accept("fn apply(action, value) { action(value) }; let action = if true { $std::string::to_lowercase } else { $std::string::to_uppercase }; apply(action, \"Text\")"), TypeRef.String);
+        });
+        Check("callback alternatives across item types", () =>
+        {
+            var module = Accept("let action = if true { fn(value) { value / child } } else { fn(value) { value / other } }; let texts = $std::ranges::transform([\"one\"], action); $std::ranges::transform([~/one], action)");
+            AssertType(module, new(TypeKind.Range, TypeRef.Path));
+            var mappings = Dispatches(module, OpCode.SpecializeClosure).ToArray();
+            Require(mappings.Length == 2 && mappings.All(mapping => mapping.Count == 2), "Callback branch alternatives need two complete specialization maps.");
+            Require(mappings.SelectMany(mapping => mapping.Values).Any(target => module.Functions[target].ParameterTypes?.Single() == TypeRef.String), "String callback specialization missing.");
+            Require(mappings.SelectMany(mapping => mapping.Values).Any(target => module.Functions[target].ParameterTypes?.Single() == TypeRef.Path), "Path callback specialization missing.");
+            Reject("let predicate = if true { fn(value) { true } } else { fn(value) { value } }; $std::ranges::filter([~/one], predicate)");
+        });
+        Check("native Function aliases survive joins", () =>
+        {
+            var same = Accept("let lower = $std::string::to_lowercase; let action = if true { lower } else { lower }; action(\"TEXT\")");
+            AssertType(same, TypeRef.String);
+            var different = Accept("let action = if true { $std::string::to_lowercase } else { $std::string::to_uppercase }; action(\"Text\")");
+            AssertType(different, TypeRef.String);
+            Require(different.Constants.OfType<FunctionValue>().Any(value => value.NativeName == "string.to_lowercase") && different.Constants.OfType<FunctionValue>().Any(value => value.NativeName == "string.to_uppercase"), "Native branch identities missing from the binary value table.");
+            Require(different.Functions.SelectMany(function => function.Instructions).All(instruction => instruction.Op != OpCode.ProcessCall), "A native function alias became a callable Path.");
+            AssertType(Accept("let selected = if true { scope { action: $std::string::to_lowercase, } } else { scope { action: $std::string::to_uppercase, } }; selected::action(\"Text\")"), TypeRef.String);
+            AssertType(Accept("let action = match true { true => { $std::string::to_lowercase }, false => { $std::string::to_uppercase } }; action(\"Text\")"), TypeRef.String);
+            AssertType(Accept("let action = if true { $std::string::to_lowercase } else { $std::string::to_uppercase }; $std::ranges::transform([\"Text\"], action)"), new(TypeKind.Range, TypeRef.String));
+            var mixed = Accept("let action = if true { fn(value) { value } } else { $std::string::to_uppercase }; action(\"Text\")");
+            AssertType(mixed, TypeRef.String);
+            Require(Dispatches(mixed, OpCode.Call).Single().Count == 1, "Mixed source/native calls must map the source closure while preserving native identity.");
+        });
+        if (failures.Count > 0) throw new InvalidOperationException("Branch semantic checks failed:\n" + string.Join("\n", failures));
+    }
+    private static IEnumerable<Dictionary<int, int>> Dispatches(Module module, OpCode opcode)
+    {
+        foreach (var instruction in module.Functions.SelectMany(function => function.Instructions).Where(instruction => instruction.Op == opcode && !string.IsNullOrEmpty(instruction.Text)))
+        {
+            Dictionary<int, int> mapping = [];
+            foreach (string entry in instruction.Text!.Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var pair = entry.Split(':');
+                Require(pair.Length == 2, $"Invalid specialization dispatch pair '{entry}'.");
+                int source = int.Parse(pair[0], System.Globalization.CultureInfo.InvariantCulture);
+                int target = int.Parse(pair[1], System.Globalization.CultureInfo.InvariantCulture);
+                Require(source >= 0 && source < module.Functions.Count && target >= 0 && target < module.Functions.Count, "Dispatch references a nonexistent function.");
+                Require(mapping.TryAdd(source, target), "Dispatch has conflicting entries for one closure.");
+            }
+            yield return mapping;
+        }
+    }
     private static Module Accept(string source) => Frontend.Compile(source, "semantic-check.msync", optimization: 0);
     private static void Reject(string source)
     {
