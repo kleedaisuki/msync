@@ -61,7 +61,7 @@ internal sealed partial class Compilation
         {
             var members = left.Scope.Members.Where(member => right.Scope.Members.ContainsKey(member.Key))
                 .ToDictionary(member => member.Key, member => Join(member.Value, right.Scope.Members[member.Key]));
-            scope = new(members);
+            scope = new(members, left.Scope.Named && right.Scope.Named);
         }
         IReadOnlyList<Info>? alternatives = null;
         if (left.Type.WithoutNull == TypeRef.Function && right.Type.WithoutNull == TypeRef.Function &&
@@ -72,7 +72,20 @@ internal sealed partial class Compilation
             left.NativeName == right.NativeName ? left.NativeName : null, alternatives,
             left.Element is null || right.Element is null ? left.Element ?? right.Element : Join(left.Element, right.Element),
             left.KnownBool == right.KnownBool ? left.KnownBool : null,
-            left.KnownConnection == right.KnownConnection ? left.KnownConnection : null);
+            left.KnownConnection == right.KnownConnection ? left.KnownConnection : null,
+            left.EditorUnknown || right.EditorUnknown,
+            left.KnownPath == right.KnownPath ? left.KnownPath : null,
+            left.KnownText == right.KnownText ? left.KnownText : null);
+    }
+    private Info Retype(Info info, TypeRef target)
+    {
+        if (target.Accepts(info.Type)) return info with { Type = target };
+        return (target.Kind & ~TypeKind.Null) switch
+        {
+            TypeKind.Path => info with { Type = target, KnownPath = observe is null ? null : LiteralPath(info), KnownText = null },
+            TypeKind.String => info with { Type = target, KnownPath = null, KnownText = info.KnownText ?? info.KnownPath?.NativeText },
+            _ => info with { Type = target }
+        };
     }
     private static void Convert(Frame frame, TypeRef actual, TypeRef expected, SourceSpan span)
     {

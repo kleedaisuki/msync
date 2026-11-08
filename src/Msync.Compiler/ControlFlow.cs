@@ -10,9 +10,18 @@ internal sealed partial class Compilation
     private Info Block(Frame frame, BlockExpr block)
     {
         var old = frame.Environment;
-        var result = Statements(frame, block.Statements);
-        frame.Environment = old;
-        return result;
+        var owner = frame.ContextOwner;
+        bool includesEnd = frame.ContextIncludesEnd;
+        frame.ContextOwner = block.Span;
+        frame.ContextIncludesEnd = block.EditorIncomplete;
+        CaptureContext(frame, block.Span.Start);
+        try
+        {
+            var result = Statements(frame, block.Statements);
+            CaptureContext(frame, block.Span.End);
+            return result;
+        }
+        finally { frame.Environment = old; frame.ContextOwner = owner; frame.ContextIncludesEnd = includesEnd; }
     }
     private Info Conditional(Frame frame, IfExpr conditional)
     {
@@ -24,6 +33,15 @@ internal sealed partial class Compilation
             var selected = test.KnownBool.Value ? Block(frame, conditional.Then)
                 : conditional.Else is null ? Emit(frame, OpCode.Null, TypeRef.Null, conditional.Span) : Expression(frame, conditional.Else);
             frame.Environment = before;
+            if (frame.EditorRecovery)
+            {
+                Frame probe = CloneFrame(frame);
+                probe.EditorProbe = true;
+                probe.EditorReportErrors = false;
+                probe.Environment = Refined(probe, conditional.Condition, !test.KnownBool.Value);
+                if (!test.KnownBool.Value) _ = Block(probe, conditional.Then);
+                else if (conditional.Else is not null) _ = Expression(probe, conditional.Else);
+            }
             return selected;
         }
         int otherwise = frame.Emit(OpCode.JumpIfFalse);
@@ -98,7 +116,7 @@ internal sealed partial class Compilation
         {
             CheckConversion(frame, result.Type, frame.ExpectedReturn, returned.Span);
             Convert(frame, result.Type, frame.ExpectedReturn, returned.Span);
-            result = result with { Type = frame.ExpectedReturn };
+            result = Retype(result, frame.ExpectedReturn);
         }
         frame.Returns.Add(result); frame.Emit(OpCode.Return, span: returned.Span); frame.Emit(OpCode.Null);
         return new(new(TypeKind.Never));

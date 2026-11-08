@@ -5,7 +5,7 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 
 namespace Msync.Compiler;
 
-internal sealed partial class Compilation(string source, string sourceName, int optimization, Action<SourceSpan, Info, string?>? observe = null)
+internal sealed partial class Compilation(string source, string sourceName, int optimization, Action<SourceSpan, Info, string?, bool>? observe = null)
 {
     private readonly List<Value> constants = [];
     private readonly Dictionary<Value, int> constantIndices = [];
@@ -23,6 +23,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
     public Module Submit(string text, Document? parsedDocument = null)
     {
         var document = parsedDocument ?? Parser.Parse(text, sourceName);
+        if (document.EditorError is { } syntax) throw syntax;
         PrepareSessionBindings();
         Frame frame = new(text, sourceName, sessionEnvironment) { Locals = sessionLocals };
         if (functions.Count == 0) functions.Add(new("<main>", 0, 0, [], TypeRef.Null));
@@ -74,59 +75,19 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         foreach (var statement in statements)
         {
             if (hasValue) frame.Emit(OpCode.Pop);
-            switch (statement)
+            CaptureContext(frame, statement.Span.Start);
+            var before = frame.Environment;
+            try { result = Statement(frame, statement); }
+            catch (CompileException error) when (frame.EditorRecovery)
             {
-                case LetStatement let:
-                    result = Expression(frame, let.Value);
-                    if (let.Pattern is not WildcardPattern && let.Pattern is not NamePattern { Name: "_" })
-                    {
-                        var asserted = let.Type is null ? null : ResolveType(frame, let.Type);
-                        bool nullable = let.Nullable || asserted?.Nullable == true;
-                        if (result.Type.Nullable && !nullable)
-                            throw Error(frame, "A possibly null value requires an explicit '?' binding or a null-refining branch.", let.Value.Span,
-                                label: $"this value may be Null ({result.Type})",
-                                help: "Add '?' after the binding name to admit Null, or use 'if value is not null' before binding.",
-                                fix: let.Pattern is NamePattern bound ? new("Allow Null in this binding", new(bound.Span.End, 0), "?") : null,
-                                code: "E0201");
-                        if (asserted is not null)
-                        {
-                            if (let.Nullable) asserted = asserted.WithNull;
-                            CheckConversion(frame, result.Type, asserted, let.Value.Span);
-                            Convert(frame, result.Type, asserted, let.Value.Span);
-                            result = result with { Type = asserted.Kind == TypeKind.Range && asserted.Element is null ? result.Type : asserted };
-                        }
-                        else if (let.Nullable) result = result with { Type = result.Type.WithNull };
-                    }
-                    BindPattern(frame, let.Pattern, result);
-                    frame.Emit(OpCode.Null);
-                    result = new(TypeRef.Null);
-                    hasValue = true;
-                    break;
-                case FunctionDeclaration declaration:
-                    result = Function(frame, declaration.Function);
-                    if (declaration.Function.NameSpan is { } functionName) Observe(frame, functionName, result, declaration.Name);
-                    Store(frame, declaration.Name, result);
-                    frame.Emit(OpCode.Null); result = new(TypeRef.Null); hasValue = true;
-                    break;
-                case NativeDeclaration native:
-                    result = Native(frame, native, null);
-                    if (native.NameSpan is { } nativeName) Observe(frame, nativeName, result, native.Name);
-                    Store(frame, native.Name, result);
-                    frame.Emit(OpCode.Null); result = new(TypeRef.Null); hasValue = true;
-                    break;
-                case ScopeDeclaration declaration:
-                    result = Scope(frame, declaration.Scope);
-                    if (declaration.NameSpan is { } scopeName) Observe(frame, scopeName, result, declaration.Name);
-                    Store(frame, declaration.Name, result);
-                    frame.Emit(OpCode.Null); result = new(TypeRef.Null); hasValue = true;
-                    break;
-                case ExpressionStatement expression:
-                    result = Expression(frame, expression.Expression);
-                    if (expression.Discarded && result.Type.Kind != TypeKind.Never) { frame.Emit(OpCode.Pop); frame.Emit(OpCode.Null); result = new(TypeRef.Null); }
-                    hasValue = true;
-                    break;
-                default: throw new InvalidOperationException($"Unknown statement {statement.GetType().Name}.");
+                EditorFailure(frame, error);
+                frame.Environment = before;
+                if (statement is LetStatement let) BindUnknownPattern(frame, let.Pattern);
+                frame.Emit(OpCode.Null);
+                result = UnknownInfo;
             }
+            hasValue = true;
+            CaptureContext(frame, statement.Span.End);
             terminated |= result.Type.Kind == TypeKind.Never;
             if (trackBindings) RecordSessionBinding(statement, frame.Environment);
         }
@@ -134,15 +95,93 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         return terminated ? new(new(TypeKind.Never)) : result;
     }
 
+    private Info Statement(Frame frame, Statement statement) => statement switch
+    {
+        LetStatement let => Let(frame, let),
+        FunctionDeclaration declaration => Declare(frame, declaration.Name, Function(frame, declaration.Function), declaration.Function.NameSpan),
+        NativeDeclaration native => Declare(frame, native.Name, Native(frame, native, null), native.NameSpan),
+        ScopeDeclaration declaration => Declare(frame, declaration.Name, Scope(frame, declaration.Scope, named: true), declaration.NameSpan),
+        ExpressionStatement expression => StatementExpression(frame, expression),
+        _ => throw new InvalidOperationException($"Unknown statement {statement.GetType().Name}.")
+    };
+
+    private Info Declare(Frame frame, string name, Info info, SourceSpan? span)
+    {
+        if (span is { } location) Observe(frame, location, info, name);
+        Store(frame, name, info);
+        frame.Emit(OpCode.Null);
+        return new(TypeRef.Null);
+    }
+
+    private Info Let(Frame frame, LetStatement let)
+    {
+        Info result = BindingInfo(frame, let, Expression(frame, let.Value));
+        BindPattern(frame, let.Pattern, result);
+        frame.Emit(OpCode.Null);
+        return new(TypeRef.Null);
+    }
+
+    private Info BindingInfo(Frame frame, LetStatement let, Info result)
+    {
+        if (let.Pattern is WildcardPattern or NamePattern { Name: "_" }) return result;
+        var asserted = let.Type is null ? null : ResolveType(frame, let.Type);
+        bool nullable = let.Nullable || asserted?.Nullable == true;
+        if (!result.EditorUnknown && result.Type.Nullable && !nullable)
+            throw Error(frame, "A possibly null value requires an explicit '?' binding or a null-refining branch.", let.Value.Span,
+                label: $"this value may be Null ({result.Type})",
+                help: "Add '?' after the binding name to admit Null, or use 'if value is not null' before binding.",
+                fix: let.Pattern is NamePattern bound ? new("Allow Null in this binding", new(bound.Span.End, 0), "?") : null,
+                code: "E0201");
+        if (asserted is null) return let.Nullable ? result with { Type = result.Type.WithNull } : result;
+        if (let.Nullable) asserted = asserted.WithNull;
+        if (!result.EditorUnknown)
+        {
+            CheckConversion(frame, result.Type, asserted, let.Value.Span);
+            Convert(frame, result.Type, asserted, let.Value.Span);
+        }
+        return Retype(result, asserted.Kind == TypeKind.Range && asserted.Element is null ? result.Type : asserted) with { EditorUnknown = false };
+    }
+
+    private Info StatementExpression(Frame frame, ExpressionStatement expression)
+    {
+        Info result = Expression(frame, expression.Expression);
+        if (!expression.Discarded || result.Type.Kind == TypeKind.Never) return result;
+        frame.Emit(OpCode.Pop);
+        frame.Emit(OpCode.Null);
+        return new(TypeRef.Null);
+    }
+
+    private void BindUnknownPattern(Frame frame, Pattern pattern)
+    {
+        if (pattern is NamePattern { Name: not ("" or "_") } name)
+        {
+            Store(frame, name.Name, UnknownInfo);
+            Observe(frame, name.Span, UnknownInfo, name.Name);
+        }
+        if (pattern is TuplePattern tuple)
+            foreach (Pattern item in tuple.Items) BindUnknownPattern(frame, item);
+    }
+
     private Info Expression(Frame frame, Expr expression)
     {
-        Info result = InferExpression(frame, expression);
+        CaptureContext(frame, expression.Span.Start);
+        var before = frame.Environment;
+        Info result;
+        try { result = InferExpression(frame, expression); }
+        catch (CompileException error) when (frame.EditorRecovery)
+        {
+            EditorFailure(frame, error);
+            frame.Environment = before;
+            result = UnknownInfo;
+        }
         Observe(frame, expression.Span, result, expression is NameExpr name ? name.Name : null);
         return result;
     }
 
     private Info InferExpression(Frame frame, Expr expression) => expression switch
     {
+        MissingExpr when frame.EditorRecovery => UnknownInfo,
+        MissingExpr => throw new SyntaxException("Expected an expression.", frame.Source, frame.SourceName, expression.Span, isIncomplete: true),
         BoolExpr value => Emit(frame, value.Value ? OpCode.True : OpCode.False, TypeRef.Bool, expression.Span),
         NullExpr => Emit(frame, OpCode.Null, TypeRef.Null, expression.Span),
         StringExpr value => Constant(frame, new StringValue(value.Value), expression.Span),

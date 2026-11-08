@@ -128,7 +128,7 @@ internal static class DiagnosticChecks
         {
             string source = prefix + tail;
             EditorParseResult parsed = Parser.ParseForEditor(source, "file:///editing.msync");
-            Check(parsed.Error is not null && parsed.Document.Statements.Count == 1, "partial parse lost complete statements or included the malformed tail");
+            Check(parsed.Error is not null && parsed.Document.Statements.Count >= 1, "partial parse lost earlier complete statements");
             Check(parsed.Document.Statements[0].Span.End == prefix.TrimEnd().Length, "partial parse changed original source coordinates");
             EditorAnalysis analysis = EditorCompiler.Analyze(source, "file:///editing.msync");
             Check(analysis.Diagnostic?.Code == parsed.Error!.Diagnostic.Code, "prefix inference replaced the original syntax diagnostic");

@@ -14,7 +14,7 @@ internal sealed class Lexer(string source, string sourceName)
         catch (SyntaxException incomplete)
         {
             error = incomplete;
-            tokens.Add(new(TokenKind.End, "", new(incomplete.Span.Start, 0)));
+            tokens.Add(new(TokenKind.End, "", new(source.Length, 0)));
             return tokens;
         }
     }

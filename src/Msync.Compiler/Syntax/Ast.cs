@@ -6,7 +6,10 @@ public readonly record struct SourceSpan(int Start, int Length)
     public static SourceSpan Cover(SourceSpan first, SourceSpan last) => new(first.Start, last.End - first.Start);
 }
 
-public sealed record Document(IReadOnlyList<Statement> Statements, SourceSpan Span);
+public sealed record Document(IReadOnlyList<Statement> Statements, SourceSpan Span)
+{
+    public SyntaxException? EditorError { get; init; }
+}
 public abstract record Node(SourceSpan Span);
 public abstract record Statement(SourceSpan Span) : Node(Span);
 public sealed record LetStatement(Pattern Pattern, bool Nullable, TypeSyntax? Type, Expr Value, SourceSpan Span) : Statement(Span);
@@ -21,6 +24,7 @@ public sealed record ScopeDeclaration(string Name, ScopeExpr Scope, SourceSpan S
 }
 public sealed record ExpressionStatement(Expr Expression, bool Discarded, SourceSpan Span) : Statement(Span);
 public abstract record Expr(SourceSpan Span) : Node(Span);
+public sealed record MissingExpr(SourceSpan Span) : Expr(Span);
 public sealed record NameExpr(string Name, SourceSpan Span) : Expr(Span);
 public sealed record PathExpr(string Path, SourceSpan Span) : Expr(Span);
 public sealed record StringExpr(string Value, SourceSpan Span) : Expr(Span);
@@ -28,9 +32,15 @@ public sealed record BoolExpr(bool Value, SourceSpan Span) : Expr(Span);
 public sealed record NullExpr(SourceSpan Span) : Expr(Span);
 public sealed record NumberExpr(long Value, SourceSpan Span) : Expr(Span);
 public sealed record UnaryExpr(string Operator, Expr Operand, SourceSpan Span) : Expr(Span);
-public sealed record BinaryExpr(string Operator, Expr Left, Expr Right, SourceSpan Span) : Expr(Span);
+public sealed record BinaryExpr(string Operator, Expr Left, Expr Right, SourceSpan Span) : Expr(Span)
+{
+    public SourceSpan? OperatorSpan { get; init; }
+}
 public sealed record CallExpr(Expr Callee, IReadOnlyList<Expr> Arguments, SourceSpan Span) : Expr(Span);
-public sealed record BlockExpr(IReadOnlyList<Statement> Statements, SourceSpan Span) : Expr(Span);
+public sealed record BlockExpr(IReadOnlyList<Statement> Statements, SourceSpan Span) : Expr(Span)
+{
+    public bool EditorIncomplete { get; init; }
+}
 public sealed record IfExpr(Expr Condition, BlockExpr Then, Expr? Else, SourceSpan Span) : Expr(Span);
 public sealed record MatchExpr(Expr Value, IReadOnlyList<MatchArm> Arms, SourceSpan Span) : Expr(Span);
 public sealed record ForExpr(Pattern Pattern, Expr Source, BlockExpr Body, SourceSpan Span) : Expr(Span);
@@ -38,7 +48,10 @@ public sealed record FunctionExpr(string? Name, IReadOnlyList<Parameter> Paramet
 {
     public SourceSpan? NameSpan { get; init; }
 }
-public sealed record ScopeExpr(IReadOnlyList<ScopeMember> Members, Expr? Value, SourceSpan Span) : Expr(Span);
+public sealed record ScopeExpr(IReadOnlyList<ScopeMember> Members, Expr? Value, SourceSpan Span) : Expr(Span)
+{
+    public bool EditorIncomplete { get; init; }
+}
 public sealed record RangeExpr(IReadOnlyList<Expr> Items, SourceSpan Span) : Expr(Span);
 public sealed record TypeExpr(TypeSyntax Type, SourceSpan Span) : Expr(Span);
 public sealed record LoopExpr(BlockExpr Body, SourceSpan Span) : Expr(Span);

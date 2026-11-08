@@ -21,6 +21,11 @@ internal sealed partial class Compilation
             [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, captures.Length));
         Template template = new(id, function, captures, frame.Source, frame.SourceName);
         templates.Add(template);
+        if (editorDefinitions is not null && IsCurrentSource(frame))
+        {
+            editorDefinitions[template] = (frame.Environment, frame.Locals);
+            editorDefinitionOrder!.Add(template);
+        }
         EmitClosure(frame, template);
         Info info = new(TypeRef.Function, template);
         if (function.NameSpan is { } name) Observe(frame, name, info, function.Name);
@@ -62,21 +67,35 @@ internal sealed partial class Compilation
                 "function declared here"));
             throw error;
         }
+        var specializations = template.Specializations;
+        if (caller.EditorProbe)
+        {
+            if (!probeSpecializations!.TryGetValue(template, out specializations)) probeSpecializations[template] = specializations = [];
+        }
         string key = string.Join(';', arguments.Select(argument => InfoKey(argument)));
-        if (template.Specializations.TryGetValue(key, out var existing)) return existing;
-        int id = template.Specializations.Count == 0 ? template.Id : functions.Count;
+        if (specializations.TryGetValue(key, out var existing)) return existing;
+        int id = specializations.Count == 0 && !caller.EditorProbe ? template.Id : functions.Count;
         if (id == functions.Count) functions.Add(functions[template.Id]);
         var asserted = template.Syntax.ReturnType is null ? null : ResolveType(caller, template.Syntax.ReturnType);
         Specialization specialization = new(id, new(asserted ?? new TypeRef(TypeKind.Never)), arguments.Select(info => info.Type).ToArray());
-        template.Specializations[key] = specialization;
-        Frame frame = new(template.Source, template.SourceName) { ExpectedReturn = asserted };
+        specializations[key] = specialization;
+        Frame frame = new(template.Source, template.SourceName)
+        {
+            ExpectedReturn = asserted,
+            ContextOwner = template.Syntax.Body.Span,
+            ContextIncludesEnd = template.Syntax.Body.EditorIncomplete,
+            EditorRecovery = caller.EditorRecovery,
+            EditorProbe = caller.EditorProbe,
+            EditorReportErrors = caller.EditorReportErrors,
+            EditorCallTrace = caller.EditorRecovery ? new(caller.SourceName, caller.Source, span, template.Syntax.Parameters, specialization.ParameterTypes, caller.EditorCallTrace) : null
+        };
         frame.SelfCaptureSlots[template.Id] = Enumerable.Range(0, template.Captures.Count).ToArray();
         foreach (var capture in template.Captures) frame.Bind(capture.Key, new(frame.Allocate(), capture.Value.Info));
         for (int index = 0; index < arguments.Count; index++)
         {
             var parameter = template.Syntax.Parameters[index];
             var argument = arguments[index];
-            var info = argument with { KnownBool = null, KnownConnection = null, Element = ForgetEndpoint(argument.Element) };
+            var info = argument with { KnownBool = null, KnownConnection = null, KnownPath = null, KnownText = null, Element = ForgetEndpoint(argument.Element) };
             if (parameter.Type is not null)
             {
                 var type = ResolveType(frame, parameter.Type);
@@ -94,7 +113,7 @@ internal sealed partial class Compilation
                     frame.Emit(OpCode.LoadLocal, parameterSlot);
                     Convert(frame, info.Type, type, span);
                     frame.Emit(OpCode.StoreLocal, parameterSlot);
-                    info = info with { Type = type };
+                    info = Retype(info, type);
                 }
             }
             else if (info.Type.Nullable && !parameter.Nullable)
@@ -110,6 +129,8 @@ internal sealed partial class Compilation
             frame.Bind(parameter.Name, new(frame.Allocate(), info));
         }
         if (template.Syntax.Name is not null) frame.Bind(template.Syntax.Name, new(-1, new(TypeRef.Function, template), template));
+        if (caller.EditorReportErrors) editorCalledTemplates?.Add(template);
+        CaptureContext(frame, template.Syntax.Body.Span.Start);
         Info result;
         try
         {
@@ -119,7 +140,7 @@ internal sealed partial class Compilation
             {
                 CheckConversion(frame, result.Type, asserted, template.Syntax.Body.Span);
                 Convert(frame, result.Type, asserted, template.Syntax.Body.Span);
-                result = result with { Type = asserted };
+                result = Retype(result, asserted);
             }
         }
         catch (CompileException error)
@@ -255,13 +276,13 @@ internal sealed partial class Compilation
     }
     private static IEnumerable<Info> CallableChoices(Info info) => info.Alternatives is null ? [info] : info.Alternatives;
     // Scope/callable identities already specialize their immutable captures. Scalar
-    // and Range-item endpoints do not belong to the type-shared argument frame.
+    // and Range-item literal values do not belong to the type-shared argument frame.
     private static Info? ForgetEndpoint(Info? info)
     {
         if (info is null) return null;
         var element = ForgetEndpoint(info.Element);
-        return info.KnownConnection is null && ReferenceEquals(info.Element, element) ? info
-            : info with { KnownConnection = null, Element = element };
+        return info.KnownConnection is null && info.KnownPath is null && info.KnownText is null && ReferenceEquals(info.Element, element) ? info
+            : info with { KnownConnection = null, KnownPath = null, KnownText = null, Element = element };
     }
     private static string InfoKey(Info info) => $"{info.Type}:{info.Function?.Id}:{info.NativeName}:{(info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope))}:{string.Join(',', info.Alternatives?.Select(InfoKey) ?? [])}:{(info.Element is null ? "" : InfoKey(info.Element))}";
 

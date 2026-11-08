@@ -5,9 +5,9 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 
 namespace Msync.Compiler;
 
-internal sealed record Info(TypeRef Type, Template? Function = null, ScopeInfo? Scope = null, TypeRef? TypeValue = null, string? NativeName = null, IReadOnlyList<Info>? Alternatives = null, Info? Element = null, bool? KnownBool = null, ConnectionValue? KnownConnection = null);
+internal sealed record Info(TypeRef Type, Template? Function = null, ScopeInfo? Scope = null, TypeRef? TypeValue = null, string? NativeName = null, IReadOnlyList<Info>? Alternatives = null, Info? Element = null, bool? KnownBool = null, ConnectionValue? KnownConnection = null, bool EditorUnknown = false, PathValue? KnownPath = null, string? KnownText = null);
 internal sealed record Binding(int Slot, Info Info, Template? Self = null);
-internal sealed record ScopeInfo(IReadOnlyDictionary<string, Info> Members);
+internal sealed record ScopeInfo(IReadOnlyDictionary<string, Info> Members, bool Named = false);
 internal sealed class Template(int id, FunctionExpr syntax, IReadOnlyList<KeyValuePair<string, Binding>> captures, string source, string sourceName)
 {
     public int Id { get; } = id;
@@ -28,6 +28,12 @@ internal sealed class Frame(string source, string sourceName, ImmutableDictionar
     public string Source { get; } = source;
     public string SourceName { get; } = sourceName;
     public ImmutableDictionary<string, Binding> Environment { get; set; } = environment ?? ImmutableDictionary<string, Binding>.Empty;
+    public SourceSpan ContextOwner { get; set; } = new(0, source.Length);
+    public bool ContextIncludesEnd { get; set; } = true;
+    public bool EditorRecovery { get; set; }
+    public bool EditorProbe { get; set; }
+    public bool EditorReportErrors { get; set; }
+    public EditorCallTrace? EditorCallTrace { get; set; }
     public List<Instruction> Code { get; } = [];
     public int Locals { get; set; }
     public List<Info> Returns { get; } = [];

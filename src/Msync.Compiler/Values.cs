@@ -19,7 +19,7 @@ internal sealed partial class Compilation
             constantIndices.Add(value, index);
         }
         frame.Emit(OpCode.Constant, index, span: span);
-        return new(value.Type, KnownConnection: value as ConnectionValue);
+        return new(value.Type, KnownConnection: value as ConnectionValue, KnownPath: value as PathValue, KnownText: (value as StringValue)?.Data);
     }
     private Info TypeConstant(Frame frame, TypeRef type, SourceSpan span)
     {
@@ -92,6 +92,11 @@ internal sealed partial class Compilation
         if (binary.Operator == "|") return Pipe(frame, binary);
         if (binary.Operator is "and" or "or") return Logical(frame, binary);
         var left = Expression(frame, binary.Left);
+        if (binary.Operator == "/")
+        {
+            int start = binary.OperatorSpan?.End ?? binary.Right.Span.Start;
+            CaptureReceiver(frame, new(start, binary.Right.Span.End - start), left);
+        }
         if (binary.Operator == "/" && binary.Right is PathExpr { Path: var pattern } && pattern.StartsWith('<') && pattern.EndsWith('>'))
         {
             Require(frame, left.Type, PathCompatible, binary.Left.Span);
@@ -104,7 +109,7 @@ internal sealed partial class Compilation
         {
             case "/":
                 Require(frame, left.Type, PathCompatible, binary.Left.Span); Require(frame, right.Type, PathCompatible, binary.Right.Span);
-                frame.Emit(OpCode.PathJoin, span: binary.Span); return new(TypeRef.Path);
+                frame.Emit(OpCode.PathJoin, span: binary.Span); return new(TypeRef.Path, KnownPath: JoinedPath(left, right));
             case "->":
                 Require(frame, left.Type, new(TypeKind.Path | TypeKind.String | TypeKind.Range), binary.Left.Span);
                 if (left.Type.Element is not null) Require(frame, left.Type.Element, PathCompatible, binary.Left.Span);
@@ -166,6 +171,9 @@ internal sealed partial class Compilation
     {
         var left = binary.Left is NameExpr alias && alias.Name is "view" or "views" or "ranges" && !frame.Environment.ContainsKey(alias.Name)
             ? StandardModule(frame, "ranges", binary.Left.Span) : Expression(frame, binary.Left);
+        int start = binary.OperatorSpan?.End ?? binary.Right.Span.Start;
+        CaptureReceiver(frame, new(start, binary.Right.Span.End - start), left);
+        if (frame.EditorRecovery && binary.Right is MissingExpr) return UnknownInfo;
         var member = binary.Right switch { NameExpr name => name.Name, PathExpr path => path.Path, StringExpr text => text.Value, _ => null };
         if ((left.Type == TypeRef.Scope || left.Type == TypeRef.Process) && member is null)
             throw Error(frame, $"A {left.Type} member must be selected by name.", binary.Right.Span,
@@ -200,25 +208,55 @@ internal sealed partial class Compilation
                     ? "Pass the Scope itself, not one of its Path members. An unbound bare name is a Path; use $local, $wsl or an SSH connection for endpoint qualification."
                     : "Use a Scope value for member access, or a Connection value for endpoint qualification.", code: "E0206");
         var right = Expression(frame, binary.Right); Require(frame, right.Type, PathCompatible, binary.Right.Span);
-        frame.Emit(OpCode.Qualify, span: binary.Span); return new(TypeRef.Path);
+        frame.Emit(OpCode.Qualify, span: binary.Span); return new(TypeRef.Path, KnownPath: QualifiedPath(left, right));
     }
 
-    private Info Scope(Frame frame, ScopeExpr scope)
+    private static PathValue? LiteralPath(Info info) => info.KnownPath
+        ?? (info.KnownText is { } text ? new PathValue(text) : null);
+
+    private PathValue? JoinedPath(Info left, Info right)
+    {
+        if (observe is null) return null;
+        var path = LiteralPath(left);
+        Value? item = right.KnownPath is { } rightPath ? rightPath : right.KnownText is { } text ? new StringValue(text) : null;
+        return path is not null && item is not null ? PathSemantics.JoinValue(path, item) : null;
+    }
+
+    private PathValue? QualifiedPath(Info left, Info right)
+    {
+        if (observe is null) return null;
+        var path = LiteralPath(right);
+        if (path is null || left.KnownConnection is not { } connection) return null;
+        return connection.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl || connection is { Kind: ConnectionKind.Local, Address.Length: 0 }
+            ? PathSemantics.Qualify(path, connection) : null;
+    }
+
+    private Info Scope(Frame frame, ScopeExpr scope, bool named = false)
     {
         var old = frame.Environment;
+        var owner = frame.ContextOwner;
+        bool includesEnd = frame.ContextIncludesEnd;
+        frame.ContextOwner = scope.Span;
+        frame.ContextIncludesEnd = scope.EditorIncomplete;
+        CaptureContext(frame, scope.Span.Start);
         Dictionary<string, Info> members = [];
         List<string> keys = [];
         foreach (var member in scope.Members)
         {
+            CaptureContext(frame, member.Span.Start);
             var info = Expression(frame, member.Value);
             if (member.NameSpan is { } memberName) Observe(frame, memberName, info, member.Name);
             frame.Emit(OpCode.Dup); Store(frame, member.Name, info);
             keys.Add(member.Name); members[member.Name] = info;
+            CaptureContext(frame, member.Span.End);
         }
         if (scope.Value is not null) { Expression(frame, scope.Value); frame.Emit(OpCode.Pop); }
         frame.Emit(OpCode.MakeScope, keys.Count, text: string.Join('\0', keys), span: scope.Span);
+        CaptureContext(frame, scope.Span.End);
         frame.Environment = old;
-        return new(TypeRef.Scope, Scope: new(members));
+        frame.ContextOwner = owner;
+        frame.ContextIncludesEnd = includesEnd;
+        return new(TypeRef.Scope, Scope: new(members, named));
     }
 
 

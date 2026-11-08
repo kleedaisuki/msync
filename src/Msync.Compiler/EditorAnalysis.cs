@@ -5,43 +5,82 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 namespace Msync.Compiler;
 
 public sealed record SemanticMember(string Name, string Type, string Signature, string Description,
-    IReadOnlyList<SemanticMember>? Members = null, ConnectionValue? Endpoint = null);
+    IReadOnlyList<SemanticMember>? Members = null, ConnectionValue? Endpoint = null, string SemanticRole = "variable",
+    PathValue? KnownPath = null, string? KnownText = null);
 public sealed record SemanticOccurrence(SourceSpan Span, string Type, string Signature, string Description,
-    IReadOnlyList<SemanticMember>? Members = null, ConnectionValue? Endpoint = null);
+    IReadOnlyList<SemanticMember>? Members = null, ConnectionValue? Endpoint = null, string SemanticRole = "variable",
+    PathValue? KnownPath = null, string? KnownText = null);
 public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrences, SourceDiagnostic? Diagnostic,
-    IReadOnlyList<SemanticMember>? RecoveryBindings = null, int? RecoveryStart = null);
+    IReadOnlyList<SemanticMember>? RecoveryBindings = null, int? RecoveryStart = null)
+{
+    internal EditorContextCollector? Contexts { get; init; }
+    public EditorContext At(int offset) => Contexts?.At(offset) ?? new(RecoveryBindings ?? [], null);
+}
 
 public static class EditorCompiler
 {
+    private static readonly Lazy<IReadOnlyList<SemanticMember>> builtins = new(CreateBuiltinBindings);
+    public static IReadOnlyList<SemanticMember> BuiltinBindings => builtins.Value;
+
+    private static IReadOnlyList<SemanticMember> CreateBuiltinBindings()
+    {
+        Compilation compilation = new("", "<builtins>", 0);
+        Dictionary<ScopeInfo, ScopeDescription> scopes = [];
+        return compilation.BuiltinInfos().Select(pair => DescribeMember(pair.Key, [pair.Value], scopes, members: true)).ToArray();
+    }
+
+    internal static EditorContext DescribeContext(IReadOnlyList<System.Collections.Immutable.ImmutableDictionary<string, Binding>> environments,
+        IReadOnlyList<Info> receivers)
+    {
+        Dictionary<ScopeInfo, ScopeDescription> scopes = [];
+        SemanticMember[] bindings = environments.Count == 0 ? [] : environments[0].Keys.Where(name => !name.StartsWith('$') && environments.All(environment => environment.ContainsKey(name)))
+            .Select(name => DescribeMember(name, environments.Select(environment => environment[name].Info), scopes, members: true)).ToArray();
+        SemanticMember? receiver = receivers.Count == 0 ? null : DescribeMember("", receivers, scopes, members: true);
+        return new(bindings, receiver);
+    }
+
     internal static IReadOnlyList<SemanticMember> DescribeBindings(IReadOnlyDictionary<string, Binding> bindings)
     {
         Dictionary<ScopeInfo, ScopeDescription> scopes = [];
         return bindings.Where(pair => !pair.Key.StartsWith('$')).Select(pair => DescribeMember(pair.Key, [pair.Value.Info], scopes, members: true)).ToArray();
     }
 
-    public static EditorAnalysis Analyze(string source, string sourceName)
+    public static EditorAnalysis Analyze(string source, string sourceName) => Analyze(source, sourceName, null);
+
+    internal static EditorAnalysis Analyze(string source, Compilation session) => Analyze(source, session.EditorSourceName, session);
+
+    private static EditorAnalysis Analyze(string source, string sourceName, Compilation? session)
     {
         Dictionary<SourceSpan, SemanticOccurrence> syntax = [];
         Dictionary<SourceSpan, Observation> inferred = [];
         SourceDiagnostic? diagnostic = null;
-        IReadOnlyDictionary<string, Binding>? recovery = null;
+        IReadOnlyList<SemanticMember>? recovery = null;
         int? recoveryStart = null;
+        Compilation? compilation = null;
         try
         {
             EditorParseResult parsed = Parser.ParseForEditor(source, sourceName);
             Document document = parsed.Document;
             diagnostic = parsed.Error?.Diagnostic;
             Seed(document.Statements, source, syntax);
-            Compilation compilation = new(source, sourceName, 0, (span, info, name) =>
+            Action<SourceSpan, Info, string?, bool> observer = (span, info, name, concrete) =>
             {
                 if (!inferred.TryGetValue(span, out var observation)) inferred[span] = observation = new(name);
-                observation.Values[(info.Type, info.Function?.Id, info.NativeName, info.Scope, info.TypeValue, info.KnownConnection)] = info;
-            });
-            _ = compilation.Submit(source, document);
-            if (parsed.Error is not null)
+                if (concrete && !observation.Concrete) observation.Values.Clear();
+                if (!concrete && observation.Concrete) return;
+                observation.Concrete |= concrete;
+                observation.Values[(info.Type, info.Function?.Id, info.NativeName, info.Scope, info.TypeValue, info.KnownConnection, info.KnownPath, info.KnownText)] = info;
+            };
+            compilation = session is null ? new(source, sourceName, 0, observer) : session.ForkForEditor(source, observer);
+            compilation.AnalyzeDocument(document);
+            diagnostic ??= compilation.EditorDiagnostic;
+            int incomplete = parsed.IncompleteStart ?? parsed.Error?.Span.Start ?? source.Length;
+            if (parsed.Error is not null && (compilation.EditorDiagnostic is null
+                || compilation.EditorDiagnostic.SourceName == sourceName && compilation.EditorDiagnostic.Span.Start >= incomplete))
             {
-                recovery = compilation.EditorBindings;
-                recoveryStart = document.Statements.Count == 0 ? 0 : document.Statements[^1].Span.End;
+                recoveryStart = document.Statements.Where(statement => statement.Span.Start < incomplete)
+                    .Select(statement => statement.Span.End).DefaultIfEmpty(0).Max();
+                recovery = compilation.EditorContexts!.At(recoveryStart.Value).Bindings;
             }
         }
         catch (CompileException error) { diagnostic ??= error.Diagnostic; }
@@ -49,14 +88,15 @@ public static class EditorCompiler
         Dictionary<ScopeInfo, ScopeDescription> scopeDescriptions = [];
         foreach (var (span, observation) in inferred)
             syntax[span] = Describe(span, observation.Name, observation.Values.Values, scopeDescriptions);
-        var bindings = recovery?.Select(pair => DescribeMember(pair.Key, [pair.Value.Info], scopeDescriptions, members: true)).ToArray();
-        return new(syntax.Values.OrderBy(item => item.Span.Start).ThenBy(item => item.Span.Length).ToArray(), diagnostic, bindings, recoveryStart);
+        return new(syntax.Values.OrderBy(item => item.Span.Start).ThenBy(item => item.Span.Length).ToArray(), diagnostic, recovery, recoveryStart)
+        { Contexts = compilation?.EditorContexts };
     }
 
     private sealed class Observation(string? name)
     {
         public string? Name { get; } = name;
-        public Dictionary<(TypeRef, int?, string?, ScopeInfo?, TypeRef?, ConnectionValue?), Info> Values { get; } = [];
+        public bool Concrete { get; set; }
+        public Dictionary<(TypeRef, int?, string?, ScopeInfo?, TypeRef?, ConnectionValue?, PathValue?, string?), Info> Values { get; } = [];
     }
 
     private sealed record ScopeDescription(SemanticMember[] Members, string Text);
@@ -65,6 +105,7 @@ public static class EditorCompiler
         Dictionary<ScopeInfo, ScopeDescription> scopeDescriptions, bool members = true)
     {
         Info[] choices = values.ToArray();
+        bool unknown = choices.Any(value => value.EditorUnknown);
         TypeRef type = choices.Select(value => value.Type).Aggregate(TypeRef.Union);
         string signature = string.Join("\n", choices.Select(value => Signature(name, value)).Distinct(StringComparer.Ordinal));
         string description = type.WithoutNull == TypeRef.Path ? "A filesystem path. Bare unbound names denote Paths. Calling a Path starts a Process."
@@ -82,7 +123,7 @@ public static class EditorCompiler
         var native = choices.Select(value => value.NativeName).FirstOrDefault(value => value is not null);
         if (native is not null) description += $"\n\nNative standard-library function `{native}`.";
         SemanticMember[]? contents = null;
-        if (members && choices.Any(value => value.Scope is not null))
+        if (members && !unknown && choices.Any(value => value.Scope is not null))
         {
             ScopeInfo[] scopes = choices.Where(value => value.Scope is not null).Select(value => value.Scope!).ToArray();
             if (scopes.Length == 1)
@@ -105,13 +146,21 @@ public static class EditorCompiler
         }
         var endpoint = choices[0].KnownConnection;
         if (endpoint is not null && choices.Any(info => info.KnownConnection != endpoint)) endpoint = null;
-        return new(span, type.ToString(), signature, description, contents, endpoint);
+        var path = choices[0].KnownPath;
+        if (path is not null && choices.Any(info => info.KnownPath != path)) path = null;
+        var text = choices[0].KnownText;
+        if (text is not null && choices.Any(info => info.KnownText != text)) text = null;
+        if (unknown) description = "The type depends on an incomplete expression or an uninstantiated generic parameter.";
+        string role = unknown ? "variable" : type.WithoutNull == TypeRef.Function ? "function"
+            : type == TypeRef.Type || type.WithoutNull == TypeRef.Scope && choices.All(info => info.Scope?.Named == true) ? "type" : "variable";
+        return new(span, unknown ? "unknown" : type.ToString(), signature, description, contents, endpoint, role,
+            unknown ? null : path, unknown ? null : text);
     }
 
     private static SemanticMember DescribeMember(string name, IEnumerable<Info> choices, Dictionary<ScopeInfo, ScopeDescription> scopeDescriptions, bool members = false)
     {
         var item = Describe(default, name, choices, scopeDescriptions, members);
-        return new(name, item.Type, item.Signature, item.Description, item.Members, item.Endpoint);
+        return new(name, item.Type, item.Signature, item.Description, item.Members, item.Endpoint, item.SemanticRole, item.KnownPath, item.KnownText);
     }
 
     private static string MemberList(IEnumerable<SemanticMember> items) =>
@@ -119,6 +168,7 @@ public static class EditorCompiler
 
     private static string Signature(string? name, Info info)
     {
+        if (info.EditorUnknown) return name is null ? "unknown" : $"{name}: unknown";
         if (info.Alternatives is { } alternatives)
             return string.Join("\n", alternatives.Select(alternative => Signature(name, alternative)).Distinct(StringComparer.Ordinal));
         if (info.Function is { } template)
@@ -160,7 +210,7 @@ public static class EditorCompiler
                 case NativeDeclaration native:
                     Add(native.NameSpan, "Function", FunctionSignature(native.Name, native.Parameters, Slice(source, native.ReturnType.Span), source));
                     break;
-                case ScopeDeclaration scope: Add(scope.NameSpan, "Scope", $"{scope.Name}: Scope"); break;
+                case ScopeDeclaration scope: Add(scope.NameSpan, "Scope", $"{scope.Name}: Scope", "type"); break;
                 case FunctionExpr { Name: { } name } function:
                     Add(function.NameSpan, "Function", FunctionSignature(name, function.Parameters,
                         function.ReturnType is { } namedResult ? Slice(source, namedResult.Span) : "inferred at call", source));
@@ -178,11 +228,12 @@ public static class EditorCompiler
             }
             Seed(Compilation.Children(node), source, occurrences);
         }
-        void Add(SourceSpan? span, string type, string signature)
+        void Add(SourceSpan? span, string type, string signature, string? role = null)
         {
             if (span is { } location) occurrences[location] = new(location, type, signature,
                 type == "Function" ? "A callable value. Its generic body is checked when specialized by a call."
-                    : "A lexical Scope. Select its declared members with `::`.");
+                    : "A lexical Scope. Select its declared members with `::`.",
+                SemanticRole: role ?? (type == "Function" ? "function" : "variable"));
         }
     }
 }
@@ -191,7 +242,7 @@ internal sealed partial class Compilation
 {
     private void Observe(Frame frame, SourceSpan span, Info info, string? name = null)
     {
-        if (observe is null || frame.SourceName != sourceName) return;
-        observe(span, info, name);
+        if (observe is null || !IsCurrentSource(frame)) return;
+        observe(span, info, name, frame.EditorReportErrors);
     }
 }

@@ -1,19 +1,25 @@
 namespace Msync.Compiler.Syntax;
 
-public sealed record EditorParseResult(Document Document, SyntaxException? Error);
+public sealed record EditorParseResult(Document Document, SyntaxException? Error, int? IncompleteStart = null);
 
 public sealed class Parser
 {
     private readonly string source;
     private readonly string sourceName;
     private readonly IReadOnlyList<Token> tokens;
+    private readonly bool editorMode;
+    private SyntaxException? firstError;
+    private int errorCount;
+    private int? incompleteRoot;
     private int position;
     private Parser(string source, string sourceName) : this(source, sourceName, new Lexer(source, sourceName).Lex()) { }
-    private Parser(string source, string sourceName, IReadOnlyList<Token> tokens)
+    private Parser(string source, string sourceName, IReadOnlyList<Token> tokens, bool editorMode = false, SyntaxException? firstError = null)
     {
         this.source = source;
         this.sourceName = sourceName;
         this.tokens = tokens;
+        this.editorMode = editorMode;
+        this.firstError = firstError;
     }
     public static Document Parse(string source, string sourceName = "<source>")
     {
@@ -25,14 +31,15 @@ public sealed class Parser
     public static EditorParseResult ParseForEditor(string source, string sourceName = "<source>")
     {
         var tokens = new Lexer(source, sourceName).LexForEditor(out SyntaxException? error);
-        Parser parser = new(source, sourceName, tokens);
+        Parser parser = new(source, sourceName, tokens, editorMode: true, error);
         List<Statement> statements = [];
         try { _ = parser.Statements(TokenKind.End, statements); }
         catch (SyntaxException syntax)
         {
             if (error is null || syntax.Span.Start < error.Span.Start) error = syntax;
         }
-        return new(new(statements, new(0, source.Length)), error);
+        SyntaxException? first = parser.firstError ?? error;
+        return new(new(statements, new(0, source.Length)) { EditorError = first }, first, parser.incompleteRoot);
     }
     private Token Current => tokens[position];
     private Token Previous => tokens[Math.Max(0, position - 1)];
@@ -44,11 +51,21 @@ public sealed class Parser
     private bool TakeWord(string value) { if (!Word(value)) return false; position++; return true; }
     private Token Require(TokenKind kind, string message)
     {
-        if (!At(kind)) throw Error(message);
+        if (!At(kind))
+        {
+            Fail(message);
+            return new(kind, "", new(Current.Span.Start, 0));
+        }
         return Next();
+    }
+    private void Fail(string message)
+    {
+        SyntaxException error = Error(message);
+        if (!editorMode) throw error;
     }
     private SyntaxException Error(string message)
     {
+        if (editorMode) errorCount++;
         string found = At(TokenKind.End) ? "end of input" : $"'{Current.Text}'";
         SyntaxException error = new($"{message} Found {found}.", source, sourceName, Current.Span, At(TokenKind.End));
         if (message.StartsWith("Expected ';'", StringComparison.Ordinal) || message.StartsWith("Expected ','", StringComparison.Ordinal))
@@ -74,6 +91,7 @@ public sealed class Parser
             error.Diagnostic.Related.Add(new(sourceName, source, opening.Span, $"this '{opening.Text}' is still open"));
         }
         else if (At(TokenKind.End)) error.Diagnostic = error.Diagnostic with { Help = "Complete the expression before submitting it." };
+        if (editorMode && (firstError is null || error.Span.Start < firstError.Span.Start)) firstError = error;
         return error;
     }
 
@@ -95,9 +113,14 @@ public sealed class Parser
         while (!At(end) && !At(TokenKind.End))
         {
             if (Take(TokenKind.Semicolon)) continue;
+            int before = position;
+            int errors = errorCount;
+            int start = Current.Span.Start;
             result.Add(Statement(end));
+            if (editorMode && end == TokenKind.End && errors != errorCount) incompleteRoot ??= start;
+            if (editorMode && position == before) Next();
         }
-        if (end != TokenKind.End && At(TokenKind.End)) throw Error("Expected '}' to close the block.");
+        if (end != TokenKind.End && At(TokenKind.End)) Fail("Expected '}' to close the block.");
         return result;
     }
     private Statement Statement(TokenKind end)
@@ -129,13 +152,13 @@ public sealed class Parser
         }
         var expression = Expression();
         bool discarded = Take(TokenKind.Semicolon);
-        if (!discarded && !At(end) && !At(TokenKind.End)) throw Error("Expected ';' between expressions.");
+        if (!discarded && !At(end) && !At(TokenKind.End)) Fail("Expected ';' between expressions.");
         return new ExpressionStatement(expression, discarded, SourceSpan.Cover(start, Previous.Span));
     }
     private NativeDeclaration Native()
     {
         var start = Next().Span;
-        if (!TakeWord("fn")) throw Error("Expected 'fn' after 'native'.");
+        if (!TakeWord("fn")) Fail("Expected 'fn' after 'native'.");
         Token name = Require(TokenKind.Atom, "Expected a native function name.");
         var parameters = Parameters();
         Require(TokenKind.Arrow, "Expected '->' and the native result type.");
@@ -156,7 +179,7 @@ public sealed class Parser
             string? op = Operator();
             int precedence = Precedence(op);
             if (op is null || precedence < minimum) break;
-            Next();
+            Token operation = Next();
             if (op == "is" && TakeWord("not")) op = "is not";
             Expr right;
             if (op == "/" && IsExpressionEnd()) right = new PathExpr("", Previous.Span);
@@ -166,7 +189,7 @@ public sealed class Parser
                 right = IsIdentifier(member.Text) ? new NameExpr(member.Text, member.Span) : new PathExpr(member.Text, member.Span);
             }
             else right = Expression(precedence + 1);
-            left = new BinaryExpr(op, left, right, SourceSpan.Cover(left.Span, right.Span));
+            left = new BinaryExpr(op, left, right, SourceSpan.Cover(left.Span, right.Span)) { OperatorSpan = operation.Span };
         }
         return left;
     }
@@ -238,7 +261,7 @@ public sealed class Parser
         if (Take(TokenKind.LeftBracket))
         {
             List<Expr> items = [];
-            while (!At(TokenKind.RightBracket))
+            while (!At(TokenKind.RightBracket) && !At(TokenKind.End))
             {
                 items.Add(Expression());
                 if (!Take(TokenKind.Comma)) break;
@@ -254,7 +277,11 @@ public sealed class Parser
         }
         if (Take(TokenKind.String)) return new StringExpr(token.Text, token.Span);
         if (Take(TokenKind.Regex)) return new PathExpr("<" + token.Text + ">", token.Span);
-        if (!At(TokenKind.Atom)) throw Error("Expected an expression.");
+        if (!At(TokenKind.Atom))
+        {
+            Fail("Expected an expression.");
+            return new MissingExpr(new(Current.Span.Start, 0));
+        }
         if (TypeNames.Contains(token.Text)) { var type = ParseType(); return new TypeExpr(type, type.Span); }
         Next();
         if (CanContinuePath(token.Text) && At(TokenKind.Atom) && CanContinuePath(Current.Text) && ContinuesBarePath())
@@ -276,7 +303,7 @@ public sealed class Parser
     private CallExpr Call(Expr callee)
     {
         Next(); List<Expr> args = [];
-        while (!At(TokenKind.RightParen))
+        while (!At(TokenKind.RightParen) && !At(TokenKind.End))
         {
             args.Add(Expression());
             if (!Take(TokenKind.Comma)) break;
@@ -288,8 +315,8 @@ public sealed class Parser
     {
         var start = Require(TokenKind.LeftBrace, "Expected '{'.").Span;
         var statements = Statements(TokenKind.RightBrace);
-        Require(TokenKind.RightBrace, "Expected '}'.");
-        return new(statements, SourceSpan.Cover(start, Previous.Span));
+        Token close = Require(TokenKind.RightBrace, "Expected '}'.");
+        return new(statements, SourceSpan.Cover(start, close.Span)) { EditorIncomplete = close.Text.Length == 0 };
     }
     private FunctionExpr Function()
     {
@@ -303,7 +330,7 @@ public sealed class Parser
     private IReadOnlyList<Parameter> Parameters()
     {
         Require(TokenKind.LeftParen, "Expected '('."); List<Parameter> result = [];
-        while (!At(TokenKind.RightParen))
+        while (!At(TokenKind.RightParen) && !At(TokenKind.End))
         {
             var name = Require(TokenKind.Atom, "Expected a parameter name.");
             bool nullable = Take(TokenKind.Question);
@@ -319,20 +346,24 @@ public sealed class Parser
         Require(TokenKind.LeftBrace, "Expected '{' after scope.");
         List<ScopeMember> members = [];
         Expr? value = null;
-        while (!At(TokenKind.RightBrace))
+        while (!At(TokenKind.RightBrace) && !At(TokenKind.End))
         {
             if ((At(TokenKind.Atom) || At(TokenKind.String)) && Peek().Kind == TokenKind.Colon)
             {
                 var name = Next(); Next(); var member = Expression();
                 members.Add(new(name.Text, member, SourceSpan.Cover(name.Span, member.Span)) { NameSpan = name.Span });
-                if (!Take(TokenKind.Comma) && !At(TokenKind.RightBrace)) throw Error("Expected ',' after a scope member.");
+                if (!Take(TokenKind.Comma) && !At(TokenKind.RightBrace)) Fail("Expected ',' after a scope member.");
                 continue;
             }
             value = Expression(); Take(TokenKind.Comma); Take(TokenKind.Semicolon);
-            if (!At(TokenKind.RightBrace)) throw Error("A scope's final value must be its last expression.");
+            if (!At(TokenKind.RightBrace))
+            {
+                Fail("A scope's final value must be its last expression.");
+                if (editorMode && !At(TokenKind.End)) Next();
+            }
         }
-        Require(TokenKind.RightBrace, "Expected '}' after scope members.");
-        return new(members, value, SourceSpan.Cover(start, Previous.Span));
+        Token close = Require(TokenKind.RightBrace, "Expected '}' after scope members.");
+        return new(members, value, SourceSpan.Cover(start, close.Span)) { EditorIncomplete = close.Text.Length == 0 };
     }
     private IfExpr If(SourceSpan start)
     {
@@ -344,13 +375,13 @@ public sealed class Parser
     {
         var value = Expression(); Require(TokenKind.LeftBrace, "Expected '{' after match value.");
         List<MatchArm> arms = [];
-        while (!At(TokenKind.RightBrace))
+        while (!At(TokenKind.RightBrace) && !At(TokenKind.End))
         {
             var pattern = ParsePattern(true);
             Require(TokenKind.FatArrow, "Expected '=>' after match pattern.");
             var armValue = Expression();
             arms.Add(new(pattern, armValue, SourceSpan.Cover(pattern.Span, armValue.Span)));
-            if (!Take(TokenKind.Comma) && !At(TokenKind.RightBrace)) throw Error("Expected ',' between match arms.");
+            if (!Take(TokenKind.Comma) && !At(TokenKind.RightBrace)) Fail("Expected ',' between match arms.");
         }
         Require(TokenKind.RightBrace, "Expected '}' after match arms.");
         return new(value, arms, SourceSpan.Cover(start, Previous.Span));
@@ -358,7 +389,7 @@ public sealed class Parser
     private ForExpr For(SourceSpan start)
     {
         var pattern = ParsePattern(false);
-        if (!TakeWord("in")) throw Error("Expected 'in' after the loop binding.");
+        if (!TakeWord("in")) Fail("Expected 'in' after the loop binding.");
         var values = Expression(); var body = Block();
         return new(pattern, values, body, SourceSpan.Cover(start, body.Span));
     }
@@ -369,7 +400,7 @@ public sealed class Parser
         {
             var close = token.Kind == TokenKind.LeftParen ? TokenKind.RightParen : TokenKind.RightBracket;
             List<Pattern> items = [];
-            while (!At(close)) { items.Add(ParsePattern(matching)); if (!Take(TokenKind.Comma)) break; }
+            while (!At(close) && !At(TokenKind.End)) { items.Add(ParsePattern(matching)); if (!Take(TokenKind.Comma)) break; }
             Require(close, "Expected the pattern's closing delimiter.");
             return new TuplePattern(items, SourceSpan.Cover(token.Span, Previous.Span));
         }

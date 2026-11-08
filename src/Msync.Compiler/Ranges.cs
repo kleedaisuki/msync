@@ -36,7 +36,17 @@ internal sealed partial class Compilation
     };
     private static Frame CloneFrame(Frame frame)
     {
-        Frame clone = new(frame.Source, frame.SourceName, frame.Environment) { Locals = frame.Locals, ExpectedReturn = frame.ExpectedReturn };
+        Frame clone = new(frame.Source, frame.SourceName, frame.Environment)
+        {
+            Locals = frame.Locals,
+            ExpectedReturn = frame.ExpectedReturn,
+            ContextOwner = frame.ContextOwner,
+            ContextIncludesEnd = frame.ContextIncludesEnd,
+            EditorRecovery = frame.EditorRecovery,
+            EditorProbe = frame.EditorProbe,
+            EditorReportErrors = frame.EditorReportErrors,
+            EditorCallTrace = frame.EditorCallTrace
+        };
         foreach (var pair in frame.SelfCaptureSlots) clone.SelfCaptureSlots[pair.Key] = pair.Value;
         return clone;
     }

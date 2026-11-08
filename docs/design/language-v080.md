@@ -229,21 +229,45 @@ polymorphic hover aggregation, exact semantic identifier spans and uncalled
 nested declarations. Actual CLI/LSP and extension-host journeys exercise the
 same structures through the installed user interfaces.
 
-Editor snapshots may end halfway through a statement. `Parser.ParseForEditor`
-retains only fully parsed top-level statements before the first grammar error;
-it returns that partial Document together with the original SyntaxException.
-An unclosed String or regex retains the lexer's earlier complete tokens and its
-original literal diagnostic. No delimiter is invented and no semicolon/string
-scan synthesizes source. The normal `Parse` entrypoint remains strict.
+Editor snapshots may end inside a function, Scope initializer, binding,
+qualified selection or call argument. `Parser.ParseForEditor` retains the enclosing
+syntax with grammar-owned missing expressions and missing delimiter tokens,
+while preserving the first original lexer/parser diagnostic and source ranges.
+The ordinary `Parse` entrypoint remains strict; recovered trees never enter the
+normal source/artifact compilation path.
 
-Editor analysis infers the retained prefix against the original complete source
-and source offsets. It preserves the syntax diagnostic while keeping prior
-Scope/function hovers and member types. Successful prefix inference exposes
-`RecoveryBindings` from the actual final lexical environment and `RecoveryStart`
-at the last completed statement boundary. Consumers can resolve a simple
-incomplete top-level qualifier using those bindings without guessing from an
-older same-name occurrence. Incomplete nested statements contribute no local
-bindings; prefix semantic failure exposes no recovery environment.
+`EditorAnalysis.At(caret)` queries immutable lexical snapshots recorded by the
+same inference helpers used for ordinary compilation. It returns actual visible
+bindings and the inferred receiver of `::`, including returned-Scope chains.
+Snapshots retain persistent environment roots plus lexical owner/point offsets;
+member/signature rendering occurs only for the requested caret, with a local
+cache, not for every environment at every expression. Completed lexical owners
+use half-open bounds, so closing a function cannot leak its parameters outside.
+Incomplete owners include the end-of-input caret.
+
+Uncalled generic bodies are explored only in isolated editor frames: annotations
+provide known parameter capabilities, unannotated parameters stay explicitly
+unknown, and local bindings still shadow outer names. The editor definition
+environment retains all visible outer names, not only names already selected as
+runtime captures. Called generic contexts retain actual argument types; when
+several instantiations share a source receiver, completion exposes only members
+available in every applicable alternative. Speculative observations never replace
+concrete observations from actual calls. Statically unselected branches can be
+explored for editing without changing the selected executable branch.
+
+`CompilerSession.AnalyzeEditor` forks compiler-owned tables and immutable binding
+roots. Its probe specialization cache is separate from live Template caches;
+editing a new argument type cannot install a function-table identity into the
+running session. It does not interpret user source or replay prior effects.
+Focused tests compare later real module functions, constants and instructions
+against a session that performed no probes. Tolerant diagnostics retain the
+active generic call chain, so source recovery does not erase call-site guidance.
+
+Presentation origin is independent of structural type. A named `scope Name {}`
+and its aliases have the type presentation role; an anonymous Scope value and a
+constructor-returned instance have the ordinary variable role. Both still have
+semantic type Scope and permit heterogeneous, independently inferred fields.
+Functions use the function role regardless of named/anonymous spelling.
 
 ### Static endpoint hints and live prompt bindings
 

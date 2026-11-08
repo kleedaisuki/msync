@@ -1,4 +1,7 @@
 using Msync.Compiler.Syntax;
+if (args.Contains("--static-paths", StringComparer.Ordinal)) { StaticPathChecks.Run(); return; }
+if (args.Contains("--editor-contexts", StringComparer.Ordinal)) { ContextChecks.Run(); return; }
+if (args.Contains("--presentation-roles", StringComparer.Ordinal)) { PresentationChecks.Run(); return; }
 if (args.Contains("--editor-endpoints", StringComparer.Ordinal)) { EndpointChecks.Run(); return; }
 if (args.Contains("--diagnostics", StringComparer.Ordinal)) { DiagnosticChecks.Run(); return; }
 if (args.Contains("--semantic", StringComparer.Ordinal)) { SemanticChecks.Run(); return; }
