@@ -80,7 +80,7 @@ internal sealed partial class Compilation
         if (!storage.Contracts.TryGetValue(signature, out var contract))
         {
             RememberCallableStorage(storage);
-            contract = new(result, frame.Source, frame.SourceName, span);
+            contract = new(CallableSignatureResult(frame, callee, arguments, result), frame.Source, frame.SourceName, span);
             storage.Contracts = storage.Contracts.Add(signature, contract);
         }
         int id = freeMutableCalls.TryDequeue(out var reused) ? reused : mutableCalls.Count;
@@ -219,6 +219,51 @@ internal sealed partial class Compilation
 
     private static bool CompatibleResult(Info expected, Info actual) => CompatibleResult(expected, actual, []);
 
+    private Info CallableSignatureResult(Frame caller, Info callee, IReadOnlyList<Info> arguments, Info result)
+    {
+        if (callee.Function is not { } function || function.Syntax.ReturnType is not null) return result with { Storage = null };
+        if (!Accessor(function.Syntax.Body)) return result.Storage?.Type is { } type ? result with { Type = type } : result;
+        Frame frame = new(function.Source, function.SourceName) { Facts = caller.Facts, EditorProbe = true };
+        foreach (var (name, binding) in function.Captures)
+        {
+            var info = DeferredCapture(caller, binding);
+            frame.Bind(name, binding with { Slot = frame.Allocate(), Info = info });
+            InstallCaptureFacts(frame, info);
+        }
+        for (int index = 0; index < arguments.Count; index++)
+        {
+            var parameter = function.Syntax.Parameters[index];
+            var info = CaptureInfo(arguments[index]);
+            if (parameter.Type is { } annotation)
+            {
+                var type = ResolveType(frame, annotation);
+                if (parameter.Nullable) type = type.WithNull;
+                if (!type.Accepts(info.Type)) info = Retype(info, type);
+            }
+            frame.Bind(parameter.Name, new(frame.Allocate(), info, Constraint: info.Type));
+        }
+        try
+        {
+            var signature = Block(frame, function.Syntax.Body);
+            foreach (var returned in frame.Returns) signature = Join(signature, returned);
+            return signature;
+        }
+        catch (CompileException) { return result.Storage?.Type is { } type ? result with { Type = type } : result; }
+    }
+
+    private static bool Accessor(Node node) => node switch
+    {
+        NameExpr or PathExpr or StringExpr or NumberExpr or BoolExpr or NullExpr or TypeExpr => true,
+        BlockExpr block => block.Statements.Count == 0 || block.Statements.Count == 1 && Accessor(block.Statements[0]),
+        ExpressionStatement statement => Accessor(statement.Expression),
+        ReturnExpr { Value: not null } returned => Accessor(returned.Value),
+        UnaryExpr { Operator: "?" or "not" or "$" } unary => Accessor(unary.Operand),
+        BinaryExpr { Operator: "::" or "is" or "is not" or "and" or "or" } binary => Accessor(binary.Left) && Accessor(binary.Right),
+        IfExpr conditional => Accessor(conditional.Condition) && Accessor(conditional.Then) && (conditional.Else is null || Accessor(conditional.Else)),
+        MatchExpr match => Accessor(match.Value) && match.Arms.All(arm => Accessor(arm.Value)),
+        _ => false
+    };
+
     private static bool CompatibleResult(Info expected, Info actual, HashSet<(object, object)> visited)
     {
         if (!expected.Type.Accepts(actual.Type)) return false;
@@ -244,8 +289,10 @@ internal sealed partial class Compilation
         return Describe(info);
     }
 
-    private static void CheckCallableResult(MutableCall call, Info candidate, Info result)
+    private void CheckCallableResult(MutableCall call, Info candidate, Info result)
     {
+        result = CallableSignatureResult(call.Caller, candidate, call.Arguments, result);
+        if (call.Result.Storage?.Type is { } type) call.Result = call.Result with { Type = type };
         if (call.Result.Type.Kind == TypeKind.Never) call.Result = result;
         if (call.Caller.EditorRecovery && (call.Result.EditorUnknown || result.EditorUnknown)) return;
         if (CompatibleResult(call.Result, result)) return;

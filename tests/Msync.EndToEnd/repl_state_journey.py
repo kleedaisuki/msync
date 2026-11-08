@@ -62,6 +62,44 @@ EXAMPLES: tuple[Example, ...] = (
         ("prefix", "after"),
     ),
     Example(
+        "guarded-getter-contract",
+        (
+            'let object = scope { field?: "before", read: fn { if field is null { "empty" } else { field } } };',
+            "object::field = null;",
+            "object::read()",
+            'object::field = "after";',
+            "object::read()",
+            "object::field = null;",
+            "object::read()",
+        ),
+        ("empty", "after", "empty"),
+        errors=0,
+    ),
+    Example(
+        "scalar-getter-contract",
+        (
+            'let field? = "before"; fn read() { field };',
+            "field = null;",
+            "read() is null",
+            'field = "after";',
+            "read()",
+        ),
+        ("true", "after"),
+        errors=0,
+    ),
+    Example(
+        "match-getter-contract",
+        (
+            'let object = scope { field?: "before", read: fn { match field { null => { "empty" }, _ => { field } } } };',
+            "object::field = null;",
+            "object::read()",
+            'object::field = "after";',
+            "object::read()",
+        ),
+        ("empty", "after"),
+        errors=0,
+    ),
+    Example(
         "scope-method-write-prefix",
         (
             'let object = scope { field: "before", write: fn { field = "prefix"; }, read: fn { field } };',
@@ -196,15 +234,23 @@ def run(binary: Path, example: Example, work: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--case", action="append", default=[], dest="cases")
     args = parser.parse_args()
     binary = args.binary.resolve()
+    selected: set[str] = set(args.cases)
+    unknown: set[str] = selected - {example.name for example in EXAMPLES}
+    if unknown:
+        raise ValueError(f"Unknown cases: {sorted(unknown)}")
+    examples: tuple[Example, ...] = tuple(
+        example for example in EXAMPLES if not selected or example.name in selected
+    )
     temp = ROOT / ".temp"
     temp.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="repl-state-", dir=temp) as directory:
         work = Path(directory)
-        for example in EXAMPLES:
+        for example in examples:
             run(binary, example, work)
-    print(f"PASS: {len(EXAMPLES)} real REPL mutable prefix/recovery journeys")
+    print(f"PASS: {len(examples)} real REPL mutable prefix/recovery journeys")
 
 
 if __name__ == "__main__":
