@@ -111,6 +111,12 @@ jobs:
           from pathlib import Path
           binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
           subprocess.run(['python', 'packaging/polish_journeys.py', '--binary', str(binary), '--output', '.temp/platform-results'], check=True)
+      - name: Install the pinned console transport for changed Windows presentation
+        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        run: python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
+      - name: Exercise actual Windows auto-color and diagnostic console output
+        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        run: python tests/Msync.EndToEnd/windows_presentation_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-presentation.json
       - name: Exercise typed language, process, session and stdio editor journeys
         if: inputs.reuse_run == '' && !inputs.wsl_only && !inputs.polish_only
         shell: python
