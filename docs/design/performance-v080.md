@@ -907,3 +907,109 @@ repair must retain original constant indices or use a compilation-owned hashed
 interner with the existing bit-exact representation comparer. Faster dead-pure
 examples do not compensate for hundreds of milliseconds spent optimizing an
 ordinary 1,024-transfer script.
+
+### Constant indices, shared interning and fixed-point reuse
+
+Source `97f149c857b34a1c45bd37bea10938dbe6c7f522` repairs that mechanism. Existing
+Constant instructions retain their original indices. Only newly folded values
+enter a lazy, compilation-owned hashed interner using bit-exact representation
+equality; graph waves/functions and the other folding passes share it. Stable
+adjacent-Pop metadata and explicit graph/effect epochs avoid redundant cleanup
+waves. The deterministic 1,024-constant check also proves that loading existing
+constants does not initialize the interner at all.
+
+The exact source archive is SHA-256
+`3c5459014fab5783e3e1814eed8fa22d8d7b694a3c7a167feb15cfad57444d09`;
+its native Components image is
+`e38080f355ff3dbf47d7bdb150336346533520580a2f90f3c56b1da35e41b345`.
+The measurement probe remains `14930a9`. Source, typed IR and complete O0 object
+fingerprints for both transfer sizes remain identical to the control
+(`pool-o0-fingerprints.json`). The source also contains unrelated O2+ family
+integration; the default-O1 transfer comparison has no function/capture/loop
+opportunities and keeps the raw input identical.
+
+Three paired native observations give:
+
+| Ordinary transfer phase | DefinitionSet before p50 ms | Repair after p50 ms | Allocated MB/op, before → after |
+| --- | ---: | ---: | ---: |
+| 128: source compilation | 5.330 | 2.841 | 1.833 → 1.402 |
+| 128: raw optimization | 4.754 | 1.598 | 1.355 → 0.914 |
+| 128: bind and lower | 15.934 | 2.062 | 1.557 → 1.188 |
+| 1,024: source compilation | 275.595 | 40.056 | 14.809 → 11.326 |
+| 1,024: raw optimization | 255.686 | 25.597 | 10.959 → 7.415 |
+| 1,024: bind and lower | 864.601 | 26.190 | 12.435 → 9.553 |
+
+Raw records are `pool-transfers.json`, `pool-tiny-transfer.json` and
+`pool-values.json`. These are source-free artifact/phase observations, not final
+packaged CLI timings. A separate seven-pair real CLI check of 1,024 ordinary
+transfer statements compares the accepted `2b43454` product's actual default O1
+with the `97f149c` candidate at explicit O2: p50/p95 is 19.306/20.678 versus
+32.520/40.699 ms (`preclosing-check1024.json`). That remaining regression against
+the current C# product is not hidden by the much larger improvement against the
+initial graph implementation. It motivates a bounded linear normal-form path
+for literal/effect-only functions, which have no CFG/alias opportunities worth
+materializing the complete graph for. Final product comparison follows that
+decision and the independently accepted REPL/Windows fixes.
+
+### O1, O2 and O3: cost, live computation and default policy
+
+The same `97f149c` native image was measured in three independent processes with
+level orders 1/2/3, 2/3/1 and 3/1/2. Three samples and three API warmups per
+process yield nine observations per level; no native image/toolchain change is
+mixed into the comparison. Raw data: `final-levels/summary.json`.
+
+| Workload / phase | O1 p50 ms | O2 p50 ms | O3 p50 ms |
+| --- | ---: | ---: | ---: |
+| 128 calls: complete compilation | 4.537 | 4.908 | 6.552 |
+| 128 calls: raw optimization | 0.710 | 0.780 | 0.896 |
+| 128 Scopes: complete compilation | 7.890 | 7.562 | 7.503 |
+| 128 Scopes: raw optimization | 1.073 | 1.076 | 1.069 |
+| 1,024 transfers: complete compilation | 36.000 | 43.136 | 36.951 |
+| 1,024 transfers: raw optimization | 18.584 | 19.055 | 19.152 |
+| 1,024 transfers: bind and lower | 22.924 | 22.581 | 24.388 |
+
+These common workloads have the same executable shapes at all three levels:
+two instructions for calls, 14 for the captured-method Scope, and 514 for the
+128-transfer program. Small median differences are not an execution-benefit
+claim. O2 adds only about 34 KB of raw-optimization allocation at 1,024 transfers
+while enabling the extra CTFE, IPA and global-redundancy families. The product
+decision is **default O2**, explicit O1 for latency-oriented experimentation,
+and explicit O3 when its larger transformation/growth costs are worthwhile.
+Actual older-product default O1 remains labeled as such in comparisons.
+
+To activate the additional families rather than merely time identical residual
+programs, the `bd546ce` measurement-only probe adds a live 200-item sum. Its
+uncaptured zero-argument function computes 1 through 200 in original order; the
+caller returns the expected Path only when the result is 20,100. Both artifact
+stages and their roundtrips execute that independent oracle. The same `97f149c`
+product code is used at all levels with the identical extended probe.
+The extended native image SHA-256 is
+`5fe9a7cce2a2e8e44d2d7161def8a130635e37559d733a6c0ab8840d273ff83e`;
+the extension/source manifest is `levels-source.json`.
+
+| Consumed finite computation | O1 | O2 | O3 |
+| --- | ---: | ---: | ---: |
+| Executable instructions / functions / locals | 223 / 2 / 3 | 2 / 1 / 0 | 2 / 1 / 0 |
+| Executable artifact bytes | 12,912 | 292 | 292 |
+| Complete compilation p50 ms | 1.449 | 0.950 | 0.858 |
+| Bind and lower p50 ms | 0.912 | 0.026 | 0.023 |
+| Prepared VM p50 ms | 0.1590 | 0.00162 | 0.00159 |
+| Prepared VM allocated bytes/run | 108,536 | 1,656 | 1,656 |
+
+This 15-sample native result (`finite-sum-levels.json`) removes a real consumed
+computation, not dead loop output. O2/O3 give the same residual program; their
+small timing difference is noise rather than a reason to default to O3.
+
+An independent actual CLI IPA example uses
+`write(mode: Bool, unused, destination: Path)` with two known-true calls, one
+receiving a transfer-producing argument. O1 retains three formal parameters,
+one branch and 29 executable instructions. O2 retains the invocation boundary
+but specializes a one-argument clone, removes the unselected literal/branch, and
+leaves 20 instructions. Source, `.mso` and `.mexe` execution each produce all
+three exact file payloads, including the effect of the removed unused formal.
+Plans and bytes are under `level-activation/ipa/report.json`. That CLI image is
+the `97f149c` candidate (SHA `686743f4e64abb81484ee9ba64f2be5fdbc2641981ac5001a3a7356c7a0b14f8`),
+not the later REPL/Windows-fixed closing payload. Its parser still lacked `-O3`;
+`1d8839b` repairs that user-facing option and final native acceptance owns its
+coverage. The O3 Core pipeline itself is exercised by the native component
+comparison above.
