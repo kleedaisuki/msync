@@ -97,7 +97,9 @@ is packaged from the same tested source. Native package and VSIX version remain
 
 For local targeted work use `python scripts/check_local.py --journey polish`.
 For the actual platform run, dispatch `ci.yml` with `platform=both`,
-`polish_only=true`, `benchmark=false`, `wsl=false`, `console=false`. A final
+`polish_only=true`, `benchmark=false`, `wsl=true`, `console=true`. The latter
+select the changed endpoint/console journeys, not the earlier transfer/editing
+matrices. A final
 source-freeze commit can carry `[skip ci]` to avoid redundant automatic broad
 runs while preserving explicit workflow dispatch.
 
