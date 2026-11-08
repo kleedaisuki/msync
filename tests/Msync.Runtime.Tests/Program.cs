@@ -35,6 +35,8 @@ using (var dispatchStream = new MemoryStream())
     Artifact.Write(dispatch, dispatchStream); dispatchStream.Position = 0;
     Check(await Run(Artifact.Read(dispatchStream)) is StringValue { Data: "argument" }, "Compiled first-class dispatch lost selected signature or argument");
 }
+Check(await Run(Program([new StringValue("\U00010000"), new StringValue("\uE000")], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Greater), new(OpCode.Return))) is BoolValue { Data: true }, "String order changed from Unicode scalar order to UTF-16 code-unit order");
+Check(await Run(Program([new PathValue("\U00010000"), new PathValue("\uE000")], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Greater), new(OpCode.Return))) is BoolValue { Data: true }, "Path lexical order differs from native string conversion order");
 var random = new Random(413);
 for (int i = 0; i < 100; i++)
 {

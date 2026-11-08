@@ -106,7 +106,7 @@ retain actual outcomes rather than generic error labels.
 Unicode binary round trips, pure-fold equivalence, branch-target compaction,
 source/object/executable cwd ownership, read-after-write and symlink-alias
 scheduling, Bool failure + existing-target preservation, Process stdout and actual
-spool budget, lazy `take(0)` and lazy values escaping a REPL submission. The current checkpoint passes **232 assertions**. Run with isolated
+spool budget, lazy `take(0)` and lazy values escaping a REPL submission. The current checkpoint passes **234 assertions**. Run with isolated
 build outputs when other agents are compiling:
 
 ```

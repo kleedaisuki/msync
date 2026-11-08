@@ -473,7 +473,7 @@ public sealed class Interpreter
         (NumberValue l, NumberValue r) => l.Data.CompareTo(r.Data),
         (BoolValue l, BoolValue r) => l.Data.CompareTo(r.Data),
         (TypeValue l, TypeValue r) => l.Data == r.Data ? 0 : 1,
-        (StringValue or PathValue, StringValue or PathValue) => string.CompareOrdinal(Text(left), Text(right)),
+        (StringValue or PathValue, StringValue or PathValue) => TextSemantics.CompareOrdinal(Text(left), Text(right)),
         _ => throw new MsyncException($"Cannot compare {left.Type} and {right.Type}; null supports only 'is' and 'is not'")
     };
 }
