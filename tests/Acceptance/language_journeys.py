@@ -33,6 +33,22 @@ class Journey:
 
 JOURNEYS: tuple[Journey, ...] = (
     Journey(
+        "inferred_recursive_function",
+        'fn settle(value) { if value { "done" } else { settle(true) } }; '
+        "settle(false) -> result.txt;",
+        {"result.txt": b"done"},
+        artifacts=True,
+    ),
+    Journey(
+        "native_range_callback",
+        "let chosen = [./input.txt, ./missing.txt] | "
+        "$std::ranges::filter(fn(file: Path) { exists file }); "
+        "for file in chosen { file -> selected/; };",
+        {"selected/input.txt": b"selected bytes"},
+        {"input.txt": b"selected bytes"},
+        artifacts=True,
+    ),
+    Journey(
         "decltype_process_does_not_launch",
         'let kind = decltype(./program-that-does-not-exist("arg")); '
         'if kind is Process { "typed process" -> result.txt; } '

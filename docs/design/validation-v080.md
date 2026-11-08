@@ -67,3 +67,20 @@ Number, found Path` rather than executing recursion. The unchanged successful
 journeys are accepted; correction will be checked by the focused recursion
 selection rather than another full managed sweep. Native AOT execution remains
 a separate target-runtime check.
+
+
+An incremental two-journey run additionally accepted inferred recursive functions
+without return annotations and a real source callback passed to the lazy native
+`$std::ranges::filter`, then consumed by a file-copy loop. Each passed source,
+source-free `.mso` and bound `.mexe` execution. This isolates the countdown
+failure to numeric subtraction rather than recursive specialization itself.
+
+```sh
+python3 tests/Acceptance/language_journeys.py \
+  src/Msync.Cli/bin/Debug/net10.0/msync --artifacts \
+  --case inferred_recursive_function --case native_range_callback \
+  --output .temp/acceptance-v080/incremental-recursion-callback.json
+```
+
+The frozen managed file-manifest SHA-256 for this incremental run is
+`4111ddc2914333ebf32f7428b64cc31c46b71cd981e0d4c2d0a68858ba467726`.
