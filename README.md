@@ -7,7 +7,8 @@ implementation remains buildable in [`legacy/`](legacy/README.md).
 
 ## Build and run
 
-Development requires the .NET 10 SDK. A published executable does not require an
+Development requires the .NET SDK pinned in `global.json` (currently 10.0.403).
+A published executable does not require an
 installed .NET runtime. Native AOT publishing additionally requires the platform
 native compiler toolchain documented by
 [Microsoft](https://learn.microsoft.com/dotnet/core/deploying/native-aot/).

@@ -228,7 +228,7 @@ def build(
                 rid,
                 "--self-contained",
                 "true",
-                "-p:PublishAot=true",
+                "-p:RestoreLockedMode=true",
                 "-o",
                 str(publish),
             ]

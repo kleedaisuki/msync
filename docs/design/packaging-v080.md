@@ -27,6 +27,31 @@ and includes the exact executable rather than a framework-dependent build.
 Published binaries and staged payloads live under `artifacts/`; distributable
 archives live under `dist/`. Disposable journey workspaces live under `.temp/`.
 
+## Dependency graph ownership
+
+`global.json` pins SDK 10.0.403, including its ILCompiler/ILLink 10.0.14 tool
+packages. CI installs that exact SDK rather than selecting a moving `10.0.x`.
+SDK upgrades and dependency-lock updates are one deliberate maintenance change.
+NuGet's canonical `packages.lock.json` pins the ordinary development graph.
+Targeted publication uses `packages.linux-x64.lock.json` or
+`packages.win-x64.lock.json`, selected by `RuntimeIdentifier` in the common build
+properties. This separates actual platform graphs instead of letting a native
+publish overwrite the ordinary development lock. No runtime packs for the other
+platform are needed during an ordinary development build.
+
+The CLI project owns `PublishAot=true`. The packaging command does not pass that
+property globally to project references, which would incorrectly add executable
+AOT compiler packages to every class library. Publication uses
+`RestoreLockedMode=true`: dependency changes require a deliberate lock update,
+not an incidental version upgrade in a package job.
+
+To update the three graphs, restore the solution normally and with
+`-p:RuntimeIdentifier=linux-x64` / `-p:RuntimeIdentifier=win-x64`. `dotnet restore
+-r` sets the plural `RuntimeIdentifiers` restore hint and does not select the
+RID-specific lock property. Restore on Linux can resolve the Windows graph;
+it does not claim that cross-OS Native AOT compilation is supported. The scheme
+uses the documented [NuGet lock-file properties](https://learn.microsoft.com/nuget/consume-packages/package-references-in-project-files#locking-dependencies).
+
 `packaging/smoke.py` exercises the executable as a user: compile a typed function,
 check/dry-run without writes, run the source, remove the source, then execute the
 `.mso` and `.mexe` artifacts and compare exact UTF-8 payload bytes. A telemetry-enabled
