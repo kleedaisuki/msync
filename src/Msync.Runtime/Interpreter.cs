@@ -289,6 +289,7 @@ public sealed class Interpreter
             "env" => new ConnectionValue(ConnectionKind.Environment),
             "path" => new ConnectionValue(ConnectionKind.SearchPath),
             "std" => new ScopeValue(new[] { "fs", "path", "bool", "string", "ranges", "process" }.ToDictionary(n => n, n => NativeScope(n))),
+            // Existing objects retain their builtin identities; current source exposes only $std::ranges.
             "view" or "views" or "ranges" => NativeScope("ranges"),
             _ => throw new MsyncException($"Unknown builtin '${name}'")
         };

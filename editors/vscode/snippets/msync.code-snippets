@@ -8,7 +8,7 @@
   "Range loop": { "prefix": "for", "body": ["for ${1:item} in ${2:root}/<${3:.+}> {", "    $0", "};"], "description": "Iterate a lazy range" },
   "Value loop": { "prefix": "loop", "body": ["let ${1:result} = loop {", "    break ${2:\"done\"};", "};"], "description": "Evaluate a loop result" },
   "Ordered range": { "prefix": "range", "body": ["[${1:\"first\"}, ${2:true}, \\$local::${3:path}]"], "description": "Construct an ordered typed range" },
-  "View pipeline": { "prefix": "viewfilter", "body": ["${1:items} | \\$std::ranges::filter(${2:predicate})"], "description": "Apply a builtin lazy view" },
+  "Range pipeline": { "prefix": "rangefilter", "body": ["${1:items} | \\$std::ranges::filter(${2:predicate})"], "description": "Filter a lazy range through the standard library" },
   "Namespace": { "prefix": "scope", "body": ["scope ${1:module} {", "    ${2:item}: ${3:value},", "};"], "description": "Declare a lexical namespace" },
   "Directory predicate": { "prefix": "isdir", "body": ["\\$std::fs::is_directory(${1:path})"], "description": "Inspect a directory at its selected endpoint" },
   "Native function": { "prefix": "native", "body": ["native fn ${1:name}(${2:argument}: ${3:Path}) -> ${4:Bool};"], "description": "Declare a typed host-implemented function" },

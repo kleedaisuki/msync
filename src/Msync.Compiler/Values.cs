@@ -41,7 +41,7 @@ internal sealed partial class Compilation
             return binding.Info;
         }
         if (reference && name == "std") return Standard(frame, span);
-        if (reference && name is "view" or "views" or "ranges") return StandardModule(frame, "ranges", span);
+        if (reference && RemovedRangeAlias(name)) throw RangeAliasError(frame, "$" + name, span);
         if (reference && name is "local" or "wsl" or "pwd" or "file" or "env" or "path")
         {
             frame.Emit(OpCode.LoadBuiltin, text: name, span: span);
@@ -58,6 +58,10 @@ internal sealed partial class Compilation
         }
         return Path(frame, name, span);
     }
+    private static bool RemovedRangeAlias(string name) => name is "view" or "views" or "ranges";
+    private static CompileException RangeAliasError(Frame frame, string name, SourceSpan span) =>
+        Error(frame, $"The predefined range alias '{name}' has been removed.", span,
+            help: "Use '$std::ranges' for range functions, or declare your own lexical binding explicitly.", code: "E0210");
     private static class KnownEndpoints
     {
         public static readonly ConnectionValue Local = new(ConnectionKind.Local);
@@ -169,8 +173,9 @@ internal sealed partial class Compilation
 
     private Info Select(Frame frame, BinaryExpr binary)
     {
-        var left = binary.Left is NameExpr alias && alias.Name is "view" or "views" or "ranges" && !frame.Environment.ContainsKey(alias.Name)
-            ? StandardModule(frame, "ranges", binary.Left.Span) : Expression(frame, binary.Left);
+        if (binary.Left is NameExpr alias && RemovedRangeAlias(alias.Name) && !frame.Environment.ContainsKey(alias.Name))
+            throw RangeAliasError(frame, alias.Name, alias.Span);
+        var left = Expression(frame, binary.Left);
         int start = binary.OperatorSpan?.End ?? binary.Right.Span.Start;
         CaptureReceiver(frame, new(start, binary.Right.Span.End - start), left);
         if (frame.EditorRecovery && binary.Right is MissingExpr && left.Type != TypeRef.Connection) return UnknownInfo;

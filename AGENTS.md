@@ -80,9 +80,11 @@
   Do not probe a computed Scope and synthesize it again on fallback: nested
   lexical calls can multiply that work. Keep ordinary scalar types compact;
   finite Bool/String/Path unions do not need a heap vector in every expression.
-- `$std::ranges::` is the canonical typed range API; `$view::` remains its
-  compatible primitive scope. Preserve working aliases and source-owned operand
-  diagnostics. New typed object operations must
+- `$std::ranges::` is the only predefined range namespace in current 0.8 source.
+  The former `$view`, `$views`, `$ranges` and unbound bare range aliases are not
+  source/compiler/editor entrypoints. Old binary LoadBuiltin identities retain
+  runtime compatibility; user-declared lexical names are still ordinary values.
+  Preserve source-owned operand diagnostics. New typed object operations must
   negotiate `typed_values_v2`, including exported values and intermediate types.
   See [the type contract](docs/design/type-system-v065.md).
 - An implicit finite Range transfer is one selected transfer operation, not an

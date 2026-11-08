@@ -106,9 +106,9 @@ test('paths preserve namespace, lookup, composition and callback roles', () => {
     }
     hasScope('let config = $wsl::codex(config.toml);', 'wsl', 'entity.name.namespace.msync');
     hasScope('let config = $wsl::codex(config.toml);', 'codex', 'entity.name.function.msync');
-    for (const namespace of ['$view', 'views', 'ranges', '$std::ranges']) {
-        hasScope(`items | ${namespace}::filter(present)`, 'filter', 'support.function.range.msync');
-    }
+    hasScope('items | $std::ranges::filter(present)', 'filter', 'support.function.range.msync');
+    for (const namespace of ['$view', '$views', '$ranges', 'view', 'views', 'ranges'])
+        assert.ok(!scopes(`items | ${namespace}::filter(present)`, 'filter').includes('support.function.range.msync'));
     for (const word of ['or', 'not', 'and', 'delete', 'true', 'fn', 'match', 'Path']) {
         assert.ok(!scopes(`root/${word}/file -> output;`, word).some(scope => /keyword|constant\.language|support.type/.test(scope)));
     }
@@ -133,7 +133,7 @@ test('comparisons and comments are shielded by literal Strings and regex classes
         hasScope(`"可莉"${operator}"琴"`, operator, 'keyword.operator.msync');
     }
     assert.ok(!scopes('left<right', '<').includes('string.regexp.msync'));
-    hasScope('root/<[>#]+\\.txt> | views::take(1) # note', '# note', 'comment.line.number-sign.msync');
+    hasScope('root/<[>#]+\\.txt> | $std::ranges::take(1) # note', '# note', 'comment.line.number-sign.msync');
     hasScope('let file = path; // note', '// note', 'comment.line.double-slash.msync');
     hasScope('"// # text";', '//', 'string.quoted.double.msync');
     hasScope('let file = root/<[//#]+>;', '[//#]', 'constant.other.character-class.regexp.msync');

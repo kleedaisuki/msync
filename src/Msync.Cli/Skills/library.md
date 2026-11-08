@@ -23,9 +23,8 @@ Range callbacks are `fn` values. Lazy ranges evaluate only demanded elements;
 constructing a range does not imply executing every effectful item.
 
 ```msync
-let ranges = $std::ranges;
-let selected = ranges::filter([true, false], fn(value) { value });
-let first = ranges::take(selected, 1);
+let selected = $std::ranges::filter([true, false], fn(value) { value });
+let first = $std::ranges::take(selected, 1);
 ```
 
 The editor can navigate to these same embedded sources through versioned

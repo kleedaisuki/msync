@@ -158,7 +158,6 @@ internal sealed partial class Compilation
         Frame frame = new(source, sourceName);
         var standard = Standard(frame, new(0, 0));
         Dictionary<string, Info> values = new(StringComparer.Ordinal) { ["$std"] = standard };
-        foreach (string name in new[] { "view", "views", "ranges" }) values["$" + name] = standard.Scope!.Members["ranges"];
         foreach (string name in new[] { "local", "wsl", "pwd", "file", "env", "path" }) values["$" + name] = Name(frame, name, new(0, 0), reference: true);
         return values;
     }

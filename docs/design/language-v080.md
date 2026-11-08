@@ -49,6 +49,22 @@ constant; the operand's effects never enter the caller's instruction stream.
 
 ## Functions and namespaces
 
+### Canonical range namespace
+
+`$std::ranges` is the only predefined source entrypoint for range operations.
+The former `$view`, `$views`, `$ranges`, and unbound bare `view::`, `views::`,
+or `ranges::` conveniences have been removed. Using one reports source-owned
+diagnostic `E0210` with the canonical migration spelling, rather than silently
+interpreting the removed builtin as a filesystem Path. A user may still declare
+an ordinary lexical binding with any of those names; it has no implicit
+namespace status.
+
+The editor's root catalog, TextMate range-function fallback, snippets and
+embedded skill examples use the same canonical namespace. Existing binary
+objects keep their original `LoadBuiltin` identities in the runtime and bytecode
+validator. This private read-compatibility boundary is not another source alias
+and is not advertised as a completion candidate.
+
 Named/anonymous `fn` is the one callable source construct. Parameters may state
 capability constraints such as `Path | String`; omitted types specialize from
 arguments. A template captures only referenced outer bindings, by value, at its
