@@ -41,7 +41,7 @@ String literal cannot exhaust the String/Path domain; a type arm or `_` is neede
 Regex arms are partial predicates over Path/String: Null, Bool and other
 nontext values fall through rather than being stringified. A matched binding
 narrows to its text domain, so nullable or heterogeneous subjects remain useful
-with a fallback arm. Literal patterns are validated by the host regex engine
+with a fallback arm. Source regex patterns are validated by the host regex engine
 during compilation. Regex matching projects Path values into native strings.
 `decltype(expr)` checks
 and infers the expression in a nonexecuted compilation frame and emits a Type
