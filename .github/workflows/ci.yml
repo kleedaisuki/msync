@@ -7,6 +7,11 @@ on:
     paths: ['src/**', 'stdlib/**', 'tests/**', 'packaging/**', 'Directory.Build.props', 'global.json', '.github/workflows/ci.yml']
   workflow_dispatch:
     inputs:
+      platform:
+        description: Select the affected native platform
+        type: choice
+        options: [both, windows, linux]
+        default: both
       benchmark:
         description: Compare optimized Rust and Native AOT on each native runner
         type: boolean
@@ -24,11 +29,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-22.04
-            rid: linux-x64
-          - os: windows-latest
-            rid: win-x64
+        include: ${{ fromJSON((inputs.platform == 'windows' && '[{"os":"windows-latest","rid":"win-x64"}]') || (inputs.platform == 'linux' && '[{"os":"ubuntu-22.04","rid":"linux-x64"}]') || '[{"os":"ubuntu-22.04","rid":"linux-x64"},{"os":"windows-latest","rid":"win-x64"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,6 +43,7 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
       - name: Build and exercise the actual Native AOT package
+        id: package
         run: python packaging/build.py --rid ${{ matrix.rid }} --smoke
       - name: Exercise typed language, process, session and stdio editor journeys
         shell: python
@@ -54,16 +56,17 @@ jobs:
           binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
           subprocess.run(['python', 'packaging/platform_journeys.py', '--binary', str(binary), '--output', '.temp/platform-results'], check=True)
       - name: Exercise per-user installer ownership and upgrade lifecycle
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.package.outcome == 'success' }}
         shell: pwsh
         run: |
           $version = python packaging/build.py --version
           ./packaging/windows/test.ps1 -InstallerPath "dist/msync-$version-windows-x86_64-setup.exe"
       - name: Build the preserved optimized Rust baseline on this same runner
-        if: github.event_name == 'workflow_dispatch' && inputs.benchmark
+        id: rust
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.benchmark && steps.package.outcome == 'success' }}
         run: cargo build --release --locked --manifest-path legacy/Cargo.toml --bin msync --target-dir artifacts/legacy-target
       - name: Measure paired native product journeys without a timing quality gate
-        if: github.event_name == 'workflow_dispatch' && inputs.benchmark
+        if: ${{ !cancelled() && steps.rust.outcome == 'success' }}
         shell: python
         env:
           PACKAGE_RID: ${{ matrix.rid }}
@@ -78,15 +81,17 @@ jobs:
           subprocess.run([*common, '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-cli.json'], check=True)
           subprocess.run([*common, '--case', 'check-batch', '--statements', '1024', '--output', '.temp/platform-results/paired-compiler-1024.json'], check=True)
       - name: Publish the bounded native Windows copy mechanism probe
-        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.benchmark && hashFiles('tests/IO/WindowsCopyProbe/WindowsCopyProbe.csproj') != ''
+        id: copy-probe
+        if: ${{ !cancelled() && runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.benchmark && steps.package.outcome == 'success' && hashFiles('tests/IO/WindowsCopyProbe/WindowsCopyProbe.csproj') != '' }}
         run: dotnet publish tests/IO/WindowsCopyProbe/WindowsCopyProbe.csproj -c Release -r win-x64 --artifacts-path artifacts/io-probe -o artifacts/windows-copy-probe -p:RestoreLockedMode=true
       - name: Compare Windows copy mechanisms and cancellation outside product timings
-        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.benchmark && hashFiles('tests/IO/WindowsCopyProbe/WindowsCopyProbe.csproj') != ''
+        if: ${{ !cancelled() && steps.copy-probe.outcome == 'success' }}
         run: artifacts/windows-copy-probe/WindowsCopyProbe.exe --output .temp/platform-results/windows-copy-probe.json
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: native-${{ matrix.rid }}-${{ github.sha }}
+          include-hidden-files: true
           if-no-files-found: ignore
           path: |
             dist/*
