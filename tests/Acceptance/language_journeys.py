@@ -28,9 +28,78 @@ class Journey:
     artifacts: bool = False
     run_exit: int = 0
     diagnostic: str | None = None
+    relocation: bool = False
 
 
 JOURNEYS: tuple[Journey, ...] = (
+    Journey(
+        "decltype_process_does_not_launch",
+        'let kind = decltype(./program-that-does-not-exist("arg")); '
+        'if kind is Process { "typed process" -> result.txt; } '
+        'else { "wrong" -> result.txt; };',
+        {"result.txt": b"typed process"},
+        artifacts=True,
+    ),
+    Journey(
+        "type_union_exhaustive_match_narrows",
+        'let value = if exists ./input.txt { ./input.txt } else { "fallback" }; '
+        "let _ = match value { Path => { value -> result.txt }, "
+        "String => { value -> result.txt } };",
+        {"result.txt": b"typed bytes"},
+        {"input.txt": b"typed bytes"},
+        artifacts=True,
+    ),
+    Journey(
+        "type_union_nonexhaustive_match_rejected",
+        'let value = if exists ./input.txt { ./input.txt } else { "fallback" }; '
+        "let _ = match value { Path => {} };",
+        {},
+        accepted=False,
+    ),
+    Journey(
+        "artifact_context_relocation",
+        "./input.txt -> ./result.txt;",
+        {"result.txt": b"source context"},
+        {"input.txt": b"source context"},
+        artifacts=True,
+        relocation=True,
+    ),
+    Journey(
+        "brace_blocks_ignore_indentation",
+        'fn echo(value) {\n            let inner = {\n "discarded";\n'
+        "                    value\n  };\ninner\n};\n"
+        'let text = echo("braces");\n            text -> result.txt;',
+        {"result.txt": b"braces"},
+        artifacts=True,
+    ),
+    Journey(
+        "missing_statement_semicolon_rejected",
+        "let first = true\nlet second = false;",
+        {},
+        accepted=False,
+    ),
+    Journey(
+        "path_parameter_coerces_filename_string",
+        "fn copy_file(file: Path, target: Path) { file -> target }; "
+        'copy_file("input.txt", "result.txt");',
+        {"result.txt": b"actual file bytes"},
+        {"input.txt": b"actual file bytes"},
+        artifacts=True,
+    ),
+    Journey(
+        "path_binding_coerces_filename_string",
+        'let file: Path = "input.txt"; file -> result.txt;',
+        {"result.txt": b"actual file bytes"},
+        {"input.txt": b"actual file bytes"},
+        artifacts=True,
+    ),
+    Journey(
+        "string_binding_coerces_path_to_raw_text",
+        "let text: String = ./input.txt; text -> result.txt;",
+        {"result.txt": b"./input.txt"},
+        {"input.txt": b"actual file bytes"},
+        artifacts=True,
+    ),
     Journey(
         "transfer_false_runs_else_and_keeps_target",
         "let copied = ./missing.txt -> ./target.txt; "
@@ -295,6 +364,49 @@ def clear_outputs(journey: Journey, directory: Path) -> None:
         (directory / name).unlink(missing_ok=True)
 
 
+def check_relocation(cli: Sequence[str], directory: Path) -> list[dict[str, object]]:
+    commands: list[dict[str, object]] = []
+    compiled_at = directory / "compiled-at"
+    bound_at = directory / "bound-at"
+    executed_at = directory / "executed-at"
+    for folder in (compiled_at, bound_at, executed_at):
+        folder.mkdir()
+    (compiled_at / "input.txt").write_bytes(b"wrong compiler context")
+    (bound_at / "input.txt").write_bytes(b"relocated context")
+    source = compiled_at / "portable.msync"
+    source.write_text("./input.txt -> ./result.txt;", encoding="utf-8")
+    portable = compiled_at / "portable.mso"
+    executable = compiled_at / "frozen.mexe"
+    compiled = execute([*cli, "compile", str(source), "-o", str(portable)], compiled_at)
+    commands.append(describe(compiled))
+    require_success(compiled)
+    source.unlink()
+    ran = execute([*cli, "run-ir", str(portable)], bound_at)
+    commands.append(describe(ran))
+    require_success(ran)
+    if (bound_at / "result.txt").read_bytes() != b"relocated context":
+        raise AssertionError(
+            "Relocatable .mso retained compiler cwd instead of execution cwd"
+        )
+    if (compiled_at / "result.txt").exists():
+        raise AssertionError("Relocatable .mso wrote into compiler cwd")
+    bound = execute([*cli, "bind-ir", str(portable), "-o", str(executable)], bound_at)
+    commands.append(describe(bound))
+    require_success(bound)
+    (bound_at / "result.txt").unlink()
+    (bound_at / "input.txt").write_bytes(b"fresh bytes after binding")
+    ran_bound = execute([*cli, "run-ir", str(executable)], executed_at)
+    commands.append(describe(ran_bound))
+    require_success(ran_bound)
+    if (bound_at / "result.txt").read_bytes() != b"fresh bytes after binding":
+        raise AssertionError(
+            "Executable .mexe lost bound cwd or retained stale input bytes"
+        )
+    if (executed_at / "result.txt").exists():
+        raise AssertionError("Executable .mexe relocated to its later execution cwd")
+    return commands
+
+
 def run_journey(
     journey: Journey, cli: Sequence[str], directory: Path, artifacts: bool
 ) -> dict[str, object]:
@@ -357,6 +469,8 @@ def run_journey(
                 assert_run(journey, ran_artifact)
                 assert_files(journey, directory)
                 clear_outputs(journey, directory)
+        if artifacts and journey.relocation:
+            commands.extend(check_relocation(cli, directory))
         report["passed"] = True
     except (AssertionError, OSError, subprocess.TimeoutExpired) as error:
         report["passed"] = False
