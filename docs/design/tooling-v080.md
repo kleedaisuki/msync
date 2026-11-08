@@ -123,3 +123,28 @@ establish ownership independently of the prompt renderer. The same session's
 0.358 ms. The first prompt took 10.46 ms including process/PTY initialization.
 The focused result is `.temp/terminal-native-full-results.json`; these terminal
 observations are separate from the paired Rust/native workload benchmarks.
+
+The final coherent CLI image
+`c3c87eb1b644f9edfff225ee59306656ee2d46f6ad6c9ad990bd1004837ab377`
+passes that actual PTY workflow after session recovery and cancellation ownership
+were integrated. A cancelled native child leaves an already-executed String
+binding usable and restores an older binding whose new Process-valued shadow
+was never stored. A later prompt still calls the earlier multi-line function.
+Its first prompt took 12.724 ms; 12 warm submit-to-result samples had median
+0.219 ms and nearest-rank p95 0.334 ms. The retained report is
+`.temp/terminal-full-final.json`.
+
+Three focused selections independently pass on the same image:
+`--case qualified-completion` copies the exact bytes of a whitespace pathname
+through both `$local::` and `$pwd::`; `--case history-access` reports an unusable
+history path while preserving the unrelated file and retaining a working editor;
+`--case color-policy` honors configured `color = "never"` without relying on
+`NO_COLOR`. Reports are `.temp/terminal-{qualified,history,color}-final.json`.
+The default history path is `~/.msync/history-v08`, independent of transfer scratch
+configuration.
+
+Submission returns the editor's actual source buffer captured at the configured
+submit key, not PrettyPrompt's host-newline-normalized presentation result.
+This preserves multi-line String data and exact parser-cache identity on Windows.
+All submit bindings use the same `KeyBindings` instance as the editor; a
+completion commit or soft newline cannot be mistaken for a source submission.

@@ -272,7 +272,13 @@ def run(binary: Path, directory: Path) -> dict[str, object]:
             "Path('work-ready').write_text('ready')\ntime.sleep(60)\n",
             encoding="utf-8",
         )
-        terminal.key(b'let waiting = /usr/bin/python3("./wait-foreground.py");')
+        terminal.evaluate(
+            'let waiting = "OLD_WAITING"; "WAITING_READY"', "WAITING_READY"
+        )
+        terminal.key(
+            b'let terminal_prefix = "PREFIX_OK"; '
+            b'let waiting = /usr/bin/python3("./wait-foreground.py");'
+        )
         terminal.send(b"\r")
         terminal.until(
             lambda: (directory / "work-ready").exists(), "native child started work"
@@ -284,6 +290,8 @@ def run(binary: Path, directory: Path) -> dict[str, object]:
             "Ctrl-C cancels active work",
         )
         terminal.prompt(start)
+        terminal.evaluate("terminal_prefix", "PREFIX_OK")
+        terminal.evaluate("waiting", "OLD_WAITING")
         terminal.evaluate("terminal_fn()", "MULTILINE_OK")
         for index in range(12):
             marker = f"LATENCY_{index}"
