@@ -119,16 +119,22 @@ def source(distro: str) -> str:
     return f"""let remote = wsl://{distro};
 let home = ~/.codex/config.toml;
 let relative = ./dir/file;
+let large = ~/.codex/large.bin;
+let empty = ~/.codex/empty;
 let home_text: String = remote::home;
 let relative_text: String = remote::relative;
 home_text -> raw-home.txt;
 relative_text -> raw-relative.txt;
 home -> remote::home;
 relative -> remote::relative;
+large -> remote::large;
+empty -> remote::empty;
 remote::home -> downloaded-home-after.txt;
 remote::~/.codex/config.toml -> downloaded-home-before.txt;
 remote::relative -> downloaded-relative-after.txt;
 remote::./dir/file -> downloaded-relative-before.txt;
+remote::large -> downloaded-large.bin;
+remote::empty -> downloaded-empty;
 """
 
 
@@ -142,12 +148,16 @@ def local_environment(directory: Path) -> dict[str, str]:
     return environment
 
 
-def payloads(directory: Path, label: str) -> tuple[bytes, bytes]:
+def payloads(directory: Path, label: str) -> tuple[bytes, bytes, bytes, bytes]:
     home = f"{label}: Windows home to WSL home 可莉\n".encode()
     relative = f"{label}: relative endpoint payload 雪\n".encode()
+    pattern = bytes(range(256))
+    large = pattern * 5000 + pattern[:123]
     (directory / "home/.codex/config.toml").write_bytes(home)
     (directory / "dir/file").write_bytes(relative)
-    return home, relative
+    (directory / "home/.codex/large.bin").write_bytes(large)
+    (directory / "home/.codex/empty").write_bytes(b"")
+    return home, relative, large, b""
 
 
 def invoke_msync(
@@ -164,7 +174,9 @@ def invoke_msync(
     )
 
 
-def verify_outputs(directory: Path, home: bytes, relative: bytes) -> None:
+def verify_outputs(
+    directory: Path, home: bytes, relative: bytes, large: bytes, empty: bytes
+) -> None:
     expected: dict[str, bytes] = {
         "raw-home.txt": b"~/.codex/config.toml",
         "raw-relative.txt": b"./dir/file",
@@ -172,6 +184,8 @@ def verify_outputs(directory: Path, home: bytes, relative: bytes) -> None:
         "downloaded-home-before.txt": home,
         "downloaded-relative-after.txt": relative,
         "downloaded-relative-before.txt": relative,
+        "downloaded-large.bin": large,
+        "downloaded-empty": empty,
     }
     for name, data in expected.items():
         path = directory / name
@@ -268,7 +282,7 @@ def diagnose_download(
     distro: str,
     directory: Path,
     environment: dict[str, str],
-    expected: tuple[bytes, bytes],
+    expected: tuple[bytes, bytes, bytes, bytes],
     stage: str,
     process_probe: Path | None,
 ) -> dict[str, object]:
@@ -500,7 +514,10 @@ def transfer_journeys(
             "--exec",
             "sh",
             "-c",
-            '[ ! -e "$HOME/.codex/config.toml" ] && cat "$HOME/.codex/sibling"',
+            (
+                '[ ! -e "$HOME/.codex/config.toml" ] && [ ! -e "$HOME/.codex/large.bin" ] && '
+                '[ ! -e "$HOME/.codex/empty" ] && cat "$HOME/.codex/sibling"'
+            ),
         ]
     )
     assert remote_before.stdout == "keep remote sibling", remote_before
@@ -561,6 +578,26 @@ def transfer_journeys(
             remote.stdout.encode()
             == expected[0] + b"\nMSYNC-SIBLING\nkeep remote sibling"
         ), remote
+        sizes = runner.run(
+            [
+                wsl,
+                "--distribution",
+                distro,
+                "--exec",
+                "sh",
+                "-c",
+                (
+                    'stat -c %s -- "$HOME/.codex/large.bin" "$HOME/.codex/empty"; '
+                    'sha256sum -- "$HOME/.codex/large.bin"'
+                ),
+            ],
+            directory=cwd,
+        )
+        assert sizes.stdout.split()[:3] == [
+            str(len(expected[2])),
+            "0",
+            hashlib.sha256(expected[2]).hexdigest(),
+        ], sizes
         reports.append(
             {
                 "stage": stage,
@@ -568,6 +605,9 @@ def transfer_journeys(
                 "bound_directory": str(bound),
                 "home_sha256": hashlib.sha256(expected[0]).hexdigest(),
                 "relative_sha256": hashlib.sha256(expected[1]).hexdigest(),
+                "large_bytes": len(expected[2]),
+                "large_sha256": hashlib.sha256(expected[2]).hexdigest(),
+                "empty_bytes": len(expected[3]),
                 "home_and_relative_before_after_qualification": "passed",
                 "first_trace_path": str(first_trace),
             }
