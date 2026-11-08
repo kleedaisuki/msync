@@ -643,3 +643,74 @@ that not-yet-published binding to be visible, contradicting the language's
 lexical declaration boundary. Both native images completed the corrected
 fixture. LSP records are `.temp/product-polish/latency/accepted0245-lsp128.json`,
 `accepted0245-lsp.json`, and `baseline82c-lsp.json`.
+
+## Matched typed-editor latency follow-up (2026-11-09)
+
+The next iteration compares **the same useful typed behavior**, not the old
+placeholder hover. Source `1e7e15a` was archived under the repository's `.temp`
+and both images were published on the same Linux host, with SDK 10.0.403,
+Release Native AOT and the same dependency locks. The candidate product changes
+are Core `0204b7e`, compiler `29d6bb5` and LSP `f78cee1`.
+
+| Local native image | SHA-256 |
+| --- | --- |
+| Baseline | `04e0e7c0e45b11585bf26b8ce04bfbeb47c40f034209a9e7a330e419f5fb52ef` |
+| Candidate | `178b3b81ebbe5fa93056b9e4a91c8af0adc92fc37df0fa81bcb3a5e5f8803821` |
+
+`tests/Performance/editor_latency.py` freezes both complete payloads, alternates
+image order, checks actual responses, and records seven pairs per case. Its
+realistic script includes functions, Scopes, captured paths and cold standard
+library completion. Raw samples, request payloads and identities are retained in
+`.temp/editor-latency-v080/paired-results.json`; the following are p50 / p95 ms:
+
+| Actual request/workload | Baseline | Candidate |
+| --- | ---: | ---: |
+| Realistic typed completion | 4.056 / 4.387 | 2.129 / 2.336 |
+| 128 bindings: open then typed hover | 4.011 / 4.844 | 1.961 / 2.201 |
+| 128 bindings: sixteen edits plus completion | 12.601 / 15.235 | 6.985 / 9.345 |
+| 4,000 bindings: open then typed hover | 137.250 / 167.565 | 63.818 / 70.069 |
+| 4,000 bindings: first semantic tokens | 52.024 / 57.308 | 47.695 / 62.412 |
+| 4,000 bindings: repeated semantic tokens | 26.674 / 60.181 | 11.455 / 12.985 |
+| 4,000 bindings: sixteen edits plus completion | 405.326 / 452.397 | 259.972 / 270.010 |
+
+Documentation is now resolved for the selected item when the client advertises
+that LSP capability. The 46-item realistic response falls from 7,368 to 2,823
+bytes; fetching its selected useful documentation costs an additional
+0.504 / 0.624 ms. The 4,000-binding response falls from 752,189 to 384,250 bytes;
+its selected resolution costs 3.815 / 5.421 ms. Clients without the capability
+still receive complete eager documentation. This is not removal of the help.
+
+The mechanism is reduced repeated representation work:
+
+- Scalar type names no longer enumerate flags and construct LINQ pipelines.
+  Immutable no-op nullability/union operations reuse the existing value.
+- A single inferred observation is stored directly; only real alternatives
+  require an alternative dictionary. Single-value rendering avoids temporary
+  arrays and shares full Scope member descriptions.
+- Selected completion resolution queries one name in the actual lexical
+  context, rather than rendering all visible bindings again.
+- Semantic-token data belongs to its exact document generation. An immutable
+  JSON element can be serialized repeatedly without rescanning declarations or
+  sharing mutable JSON-node parents.
+
+The Core native single-image control measured scalar formatting
+647.955 ns / 352.261 bytes to 9.050 ns / zero bytes per operation. All 65,536
+underlying flag values, nested Range text and 20,000 recursive union/acceptance
+properties retain the old value/string behavior. This is consistent with
+[Enum.GetValues returning an array](https://learn.microsoft.com/en-us/dotnet/api/system.enum.getvalues?view=net-10.0),
+not an assumption that a cached enum table makes every call allocation-free.
+
+Managed component attribution (fixed `DOTNET_TieredCompilation=0`, nine samples)
+shows scalar analysis allocations 34.05 to 12.35 MB, Path analysis 52.74 to
+20.09 MB, Scope analysis 90.77 to 36.59 MB, and final Scope-context query 11.05
+to 1.61 MB at size 4,000. EventPipe identified descriptor construction and GC
+work; these are component/allocation observations, not native user latencies.
+An old/current public-semantic snapshot over all UTF-16 offsets of eight mixed
+fixtures is byte-identical (1,022,184 bytes each). Existing physical-owner,
+malformed-editor recovery and actual accepted-REPL-value contracts also pass.
+
+Not every tail improved: first 4,000-binding token p95 is slightly worse, and a
+9.668 ms realistic first-token outlier was retained. Seven pairs are descriptive
+observations rather than a universal tail guarantee or a CI timing threshold.
+The simpler allocation/caching changes deliver the measured improvement without
+an incremental type checker, arbitrary cancellation budget, or weaker inference.
