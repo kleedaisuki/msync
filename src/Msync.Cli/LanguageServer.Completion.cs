@@ -37,7 +37,9 @@ internal sealed partial class LanguageServer
             var context = SourceCompletion.Find(document.Source.Text, offset,
                 resolveEndpoint: name => CompletionEndpoint(editorContext, name),
                 receiverPath: knownPath,
-                unknownPathReceiver: (receiver?.Type is "Path" or "Path?" or "String" or "String?" or "unknown") && knownPath is null);
+                unknownPathReceiver: (receiver?.Type is "Path" or "Path?" or "String" or "String?" or "unknown") && knownPath is null,
+                physicalEndpoint: editorContext?.PhysicalEndpoint,
+                unknownPhysicalOwner: editorContext?.HasPhysicalOwner == true && editorContext.PhysicalEndpoint is null);
             result = context is null ? Completions(document, request, editorContext)
                 : SourceItems(document.Source, context,
                     await service.CompleteAsync(context, Environment.CurrentDirectory, HostContext.HomeDirectory, work.Cancellation.Token));
