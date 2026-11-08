@@ -5,17 +5,19 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import platform
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +43,7 @@ class Command:
 class CommandFailed(RuntimeError):
     def __init__(self, command: Command) -> None:
         self.command = command
+        self.diagnostics: dict[str, object] | None = None
         status = "timed out" if command.timed_out else f"exited {command.returncode}"
         super().__init__(
             f"{command.arguments!r} {status}: {command.stdout}\n{command.stderr}"
@@ -177,6 +180,168 @@ def verify_outputs(directory: Path, home: bytes, relative: bytes) -> None:
     assert (directory / "dir/sibling").read_bytes() == b"keep local sibling"
 
 
+def capture_binary(
+    runner: Runner,
+    arguments: list[str],
+    directory: Path,
+    environment: dict[str, str],
+    destination: Path,
+    expected: bytes,
+    stdin_mode: Literal["devnull", "closed-pipe"] = "devnull",
+) -> dict[str, object]:
+    started = time.perf_counter()
+    result = subprocess.run(
+        arguments,
+        cwd=directory,
+        env=environment,
+        input=b"" if stdin_mode == "closed-pipe" else None,
+        stdin=subprocess.DEVNULL if stdin_mode == "devnull" else None,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    destination.write_bytes(result.stdout)
+    runner.commands.append(
+        Command(
+            arguments,
+            str(directory),
+            result.returncode,
+            f"Raw {len(result.stdout)} bytes retained in {destination}",
+            decode(result.stderr),
+            time.perf_counter() - started,
+        )
+    )
+    report: dict[str, object] = {
+        "returncode": result.returncode,
+        "bytes": len(result.stdout),
+        "sha256": hashlib.sha256(result.stdout).hexdigest(),
+        "header_hex": result.stdout[:128].hex(),
+        "path": str(destination),
+        "stderr": decode(result.stderr),
+        "payload_matches": result.stdout == expected,
+        "stdin": stdin_mode,
+    }
+    if destination.suffix == ".tar":
+        try:
+            with tarfile.open(fileobj=io.BytesIO(result.stdout)) as archive:
+                members: list[dict[str, object]] = []
+                for entry in archive:
+                    stream = archive.extractfile(entry) if entry.isfile() else None
+                    if stream is None:
+                        continue
+                    with stream:
+                        data = stream.read()
+                    members.append(
+                        {
+                            "name": entry.name,
+                            "bytes": len(data),
+                            "sha256": hashlib.sha256(data).hexdigest(),
+                            "payload_matches": data == expected,
+                        }
+                    )
+                report["tar_members"] = members
+        except tarfile.TarError as error:
+            report["tar_error"] = str(error)
+    return report
+
+
+def diagnose_download(
+    runner: Runner,
+    wsl: str,
+    distro: str,
+    directory: Path,
+    environment: dict[str, str],
+    expected: tuple[bytes, bytes],
+    stage: str,
+) -> dict[str, object]:
+    diagnostics = runner.directory / "diagnostics"
+    diagnostics.mkdir(exist_ok=True)
+    prefix = [wsl, "--distribution", distro, "--exec", "sh", "-c"]
+    state = runner.run(
+        [
+            *prefix,
+            (
+                'printf "HOME=%s\\nPWD=%s\\n" "$HOME" "$PWD"; '
+                'ls -ld -- "$HOME/.codex" ./dir; '
+                'for p in "$HOME/.codex/config.toml" ./dir/file; do '
+                'if [ -e "$p" ] || [ -L "$p" ]; then '
+                'stat -c "%F|%s|%a|%y|%n" -- "$p"; sha256sum -- "$p"; '
+                'else printf "MISSING|%s\\n" "$p"; fi; done'
+            ),
+        ],
+        directory=directory,
+        environment=environment,
+        check=False,
+    )
+    reports: dict[str, object] = {"stage": stage, "state": asdict(state)}
+    for label, path, parent, name, raw, payload in (
+        (
+            "home",
+            '"$HOME/.codex/config.toml"',
+            '"$HOME/.codex"',
+            "config.toml",
+            "~/.codex/config.toml",
+            expected[0],
+        ),
+        ("relative", "./dir/file", "./dir", "file", "./dir/file", expected[1]),
+    ):
+        item: dict[str, object] = {}
+        commands = {
+            "cat": (f"cat -- {path}", ".bin"),
+            "gnu": (f"exec tar --format=gnu -cpf - -C {parent} ./{name}", ".tar"),
+            "pax": (f"exec tar --format=pax -cpf - -C {parent} ./{name}", ".tar"),
+        }
+        for kind, (script, extension) in commands.items():
+            destination = diagnostics / f"{stage}-{label}-{kind}{extension}"
+            try:
+                item[kind] = capture_binary(
+                    runner,
+                    [*prefix, script],
+                    directory,
+                    environment,
+                    destination,
+                    payload,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                item[kind] = {"error": type(error).__name__, "message": str(error)}
+        for mode in ("devnull", "closed-pipe"):
+            destination = diagnostics / f"{stage}-{label}-download-{mode}.tar"
+            try:
+                item[f"download-{mode}"] = capture_binary(
+                    runner,
+                    [*prefix, DOWNLOAD_PAX, "sh", raw],
+                    directory,
+                    environment,
+                    destination,
+                    payload,
+                    stdin_mode=mode,
+                )
+            except (OSError, subprocess.TimeoutExpired) as error:
+                item[f"download-{mode}"] = {
+                    "error": type(error).__name__,
+                    "message": str(error),
+                }
+        reports[label] = item
+    return reports
+
+
+DOWNLOAD_PAX = r"""set -eu
+expand() {
+    case "$1" in
+        '~') printf '%s' "$HOME" ;;
+        '~/'*) printf '%s/%s' "$HOME" "${1#\~/}" ;;
+        /*) printf '%s' "$1" ;;
+        *) printf '%s/%s' "$PWD" "$1" ;;
+    esac
+}
+s0=$(expand "$1"; printf .); s0=${s0%.}
+[ -e "$s0" ] || [ -L "$s0" ]
+while [ "${s0%/}" != "$s0" ] && [ "$s0" != / ]; do s0=${s0%/}; done
+p0=${s0%/*}; n0=${s0##*/}
+exec tar --format=pax -cpf - -C "$p0" "./$n0"
+"""
+
+
 def transfer_journeys(
     runner: Runner,
     binary: Path,
@@ -225,7 +390,19 @@ def transfer_journeys(
         ("mso", object_file, second, second, data_b),
         ("mexe", executable, second, first, data_a),
     ):
-        invoke_msync(runner, binary, cwd, environments[cwd], ["run", str(artifact)])
+        try:
+            invoke_msync(runner, binary, cwd, environments[cwd], ["run", str(artifact)])
+        except CommandFailed as error:
+            try:
+                error.diagnostics = diagnose_download(
+                    runner, wsl, distro, cwd, environments[cwd], expected, stage
+                )
+            except OSError as diagnostic_error:
+                error.diagnostics = {
+                    "error": type(diagnostic_error).__name__,
+                    "message": str(diagnostic_error),
+                }
+            raise
         verify_outputs(bound, *expected)
         assert (first / "dir/sibling").read_bytes() == b"keep local sibling"
         assert (second / "dir/sibling").read_bytes() == b"keep local sibling"
@@ -361,6 +538,8 @@ def exercise(binary: Path, output: Path) -> int:
         CommandFailed,
     ) as error:
         report["error"] = {"kind": type(error).__name__, "message": str(error)}
+        if isinstance(error, CommandFailed) and error.diagnostics is not None:
+            report["diagnostics"] = error.diagnostics
         return 1
     finally:
         if attempted_import:
