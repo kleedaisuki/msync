@@ -12,8 +12,12 @@ internal sealed partial class Compilation
     }
     private Info Constant(Frame frame, Value value, SourceSpan span)
     {
-        int index = constants.IndexOf(value);
-        if (index < 0) { index = constants.Count; constants.Add(value); }
+        if (!constantIndices.TryGetValue(value, out int index))
+        {
+            index = constants.Count;
+            constants.Add(value);
+            constantIndices.Add(value, index);
+        }
         frame.Emit(OpCode.Constant, index, span: span);
         return new(value.Type);
     }

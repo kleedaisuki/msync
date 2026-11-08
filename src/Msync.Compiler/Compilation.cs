@@ -7,6 +7,7 @@ namespace Msync.Compiler;
 internal sealed partial class Compilation(string source, string sourceName, int optimization)
 {
     private readonly List<Value> constants = [];
+    private readonly Dictionary<Value, int> constantIndices = [];
     private readonly List<FunctionCode> functions = [];
     private readonly List<Template> templates = [];
     private Dictionary<string, Binding> sessionEnvironment = [];
@@ -37,6 +38,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         catch
         {
             functions.Clear(); functions.AddRange(previousFunctions);
+            for (int i = previousConstants; i < constants.Count; i++) constantIndices.Remove(constants[i]);
             constants.RemoveRange(previousConstants, constants.Count - previousConstants);
             templates.RemoveRange(previousTemplates, templates.Count - previousTemplates);
             for (int i = 0; i < templates.Count; i++)
