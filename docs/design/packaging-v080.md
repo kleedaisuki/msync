@@ -2,61 +2,66 @@
 
 ## Current complete local delivery set
 
-The current editor-latency product source is `f0f7b85`, still version 0.8.0.
-[The focused native Windows/Linux run](https://github.com/kleedaisuki/msync/actions/runs/42500088180)
-passed both target operating systems. The four accepted assets are collated under
-`dist/`; no public release, tag or pull request was created.
+The current mutable-state/effect pipeline source is `372296b`, still version
+0.8.0. Default compilation is O2; O1 remains explicit for lower compilation cost,
+and O3 is an explicit tier. Current artifacts use format 3 with independent
+format-1/2 reading compatibility. No public release, tag or pull request was
+created.
 
 | Asset | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `msync-0.8.0-linux-x86_64.tar.gz` | 5,723,207 | `edb1aa4cff7cd0f078ee25ca000e4c89ced536209c838b9328225410551cb10e` |
-| `msync-0.8.0-windows-x86_64-setup.exe` | 6,389,019 | `7d8bdfc241a67a9c01bf352211ea2f0a449cc578fd8d7f1735c9c96be523a61a` |
-| `msync-0.8.0-windows-x86_64.zip` | 6,187,099 | `855c300e1df00efd2596e9ab239609923a8b65cf428563ac26ba0481d37a367e` |
-| `msync-language-0.8.0.vsix` | 125,157 | `b4d2b91bdd31c34b2e7ecf0ccdc60e4e9f2b6a6c0c5ada8c1887286b11a7de7a` |
+| `msync-0.8.0-linux-x86_64.tar.gz` | 6,349,717 | `c45310ec364bcff2a51bc2e6b34f44d240e4f429f152ade24c096b0bae53e799` |
+| `msync-0.8.0-windows-x86_64-setup.exe` | 6,815,534 | `01f4b5207c4e6594b7fc744dd4107f4563b0c684b89befb2cdf31bd8b631c5df` |
+| `msync-0.8.0-windows-x86_64.zip` | 6,831,521 | `46b2857b8f9c289db7e4b43da335f4c4b6c950982aaffa537aac3ca3b504c899` |
+| `msync-language-0.8.0.vsix` | 125,182 | `f9f8103a8f1ee7f9259ea8348624d65219069f87c06029594b00fb1f1d73be68` |
 
 `dist/SHA256SUMS` covers exactly these four. Both portable manifests were verified
-completely after extraction: 219 entries each, including all 59 tracked files of
+completely after extraction: 225 entries each, including all 59 tracked files of
 the modified MPL-2.0 prompt source. Packaged C# source bytes match the repository.
 The accepted Linux executable is SHA-256
-`8793d3bac69f25db91c33452dae7ea2bd1e61e91cf7bc4c6a67eff05d6501b9f`;
+`6106c20a0c9e119f917419a07db2e5b7f7e383138e0d4f4ccf7bd65acb0e9225`;
 the accepted Windows executable is SHA-256
-`6a1f809b07fd272440407237e5b922e5634760a2ef329c30ace5c710c389cd97`.
+`8cb08a0d75c361ccbd5c5481641f818f00d7702509f3d90b40367019ed0affa3`.
+They were copied unchanged from
+[the final native publication](https://github.com/kleedaisuki/msync/actions/runs/42518195849).
 
-The current selected native contracts cover typed presentation and diagnostics,
-latest-snapshot/cancellation semantics, eager and negotiated lazy completion
-resolution, stale/current Scope ownership, repeated semantic-token responses,
-and contextual completion. Linux completion uses a real retained SSH endpoint.
-These four changed editor journeys plus installed-layout smoke passed on both
-hosts; unchanged formatter/skill/WSL/authentication/console matrices were not
-repeated. Matched same-host native performance results belong to
-[the editor latency measurements](performance-v080.md#matched-typed-editor-latency-follow-up-2026-11-09), with their own exact image
-identities rather than attributing measurements to a different platform build.
+Acceptance is incremental by changed contract. The initial
+[state run](https://github.com/kleedaisuki/msync/actions/runs/42514423642)
+passed mutable source/object/executable byte programs, causal process scheduling,
+all selected optimizer equivalence projects, old format-2 captures, presentation
+and navigation. It exposed a nullable getter schema error, the stale format-2
+writer assertion and Windows directory-link replacement failure. Those were
+corrected and the exact failed contracts, O2 defaults/O3 options and old format-1
+execution passed on both hosts in
+[the closing run](https://github.com/kleedaisuki/msync/actions/runs/42516326981).
+The Windows namespace program verified real symlink creation, retransmission,
+retargeting, nonempty-directory obstruction preservation, owned-stage cleanup,
+retry, tree replacement and future-alias WAR ordering without a blanket skip.
 
-The preceding [a4437d6 delivery](https://github.com/kleedaisuki/msync/actions/runs/42496053973)
-established actual Windows native OpenSSH host confirmation, encrypted-key
-passphrase entry, one retained session, refreshed directory contents, cancellation
-and dismissal. It also verified actual WSL directory queries and stored-Path reads
-with owned-distribution cleanup, plus ConPTY inert ghost text, RightArrow
-acceptance and lexical Scope/function hints. The earlier formatter/skill and
-terminal-color records remain in
-[the original presentation run](https://github.com/kleedaisuki/msync/actions/runs/42491769332).
-These historical records were retained; this performance follow-up does not
-claim another complete transport or installation regression.
+The final Core-only linear normal form then received its own focused
+source/`.mso`/`.mexe` bytes, bound-cwd, source-span/error and structural proof.
+The direct-atom fixture was corrected to exercise that fast path rather than
+falling back through `PathJoin`: all twelve actual Linux cases passed against
+the final image, and
+[the Windows fixture-only follow-up](https://github.com/kleedaisuki/msync/actions/runs/42519245409)
+reused the identical Windows image without a native rebuild or repeated Core
+matrix. That report distinguishes native source `372296b` from fixture source
+`3b8cb6a`. Matched performance and platform observations are recorded in
+[the performance note](performance-v080.md), retaining exact image identities.
 
-The final VS Code 1.144.0 host ran against the exact current accepted Linux image
-at `.temp/vscode-host-OSgLQb`: all 18 semantic roles, four Scope field types,
-meaningful hovers, contextual diagnostics, UTF-16 ranges and formatting passed.
-All eight VSIX payload members match that same tested client, grammar, snippets,
-licenses and documentation. The client source did not change, so its identical
-accepted VSIX bytes were retained instead of generating a timestamp-only archive.
-Raw collation metadata is `.temp/final-editor-perf-delivery-v080.json`.
+The real VS Code 1.144.0 host ran against the final Linux image at
+`.temp/vscode-host-A1eJY4`. It passed three editing revisions of a 5,001-declaration
+outline, meaningful typed navigation/hover, all eighteen semantic roles,
+UTF-16 ranges, nullable diagnostics, formatting and restart without runtime
+effects. All eight VSIX payload files were compared with that tested client,
+grammar, snippets, documentation and notices. Raw collation metadata is
+`.temp/final-mutable-pipeline-delivery-v080.json`.
 
-Earlier installer/upgrade, transfer metadata, bulk WSL and foreground-input
-acceptance remain recorded in the sections below and the associated design
-notes. Same-host Rust/current/previous-C# measurements are retained in
-[the performance note](performance-v080.md). Native payloads are copied unchanged
-from accepted platform artifacts; documentation updates do not trigger native
-republication.
+Earlier native SSH/WSL authentication, installer upgrade, transfer metadata,
+foreground ownership and editing records remain in the associated design notes.
+Their accepted evidence was retained instead of running an unrelated blanket
+matrix for every subsequent optimizer change. Documentation updates do not
+trigger native republication.
 
 The product is published from `src/Msync.Cli/Msync.Cli.csproj` using .NET 10
 Native AOT. The independent Rust implementation in `legacy/` remains a semantic
