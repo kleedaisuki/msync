@@ -245,6 +245,21 @@ def capture_binary(
     return report
 
 
+def read_trace(path: Path) -> dict[str, object]:
+    report: dict[str, object] = {"path": str(path)}
+    if not path.is_file():
+        return report
+    data = path.read_bytes()
+    report["sha256"] = hashlib.sha256(data).hexdigest()
+    try:
+        report["records"] = [
+            json.loads(line) for line in data.decode("utf-8").splitlines()
+        ]
+    except (json.JSONDecodeError, UnicodeDecodeError) as error:
+        report["parse_error"] = str(error)
+    return report
+
+
 def diagnose_download(
     runner: Runner,
     binary: Path,
@@ -265,15 +280,7 @@ def diagnose_download(
         environment=environment,
         check=False,
     )
-    trace: dict[str, object] = {"command": asdict(traced), "path": str(trace_path)}
-    if trace_path.is_file():
-        try:
-            trace["records"] = [
-                json.loads(line)
-                for line in trace_path.read_text(encoding="utf-8").splitlines()
-            ]
-        except json.JSONDecodeError as error:
-            trace["parse_error"] = str(error)
+    trace: dict[str, object] = {"command": asdict(traced), **read_trace(trace_path)}
     prefix = [wsl, "--distribution", distro, "--exec", "sh", "-c"]
     state = runner.run(
         [
@@ -407,13 +414,22 @@ def transfer_journeys(
     )
     assert remote_before.stdout == "keep remote sibling", remote_before
     reports: list[dict[str, object]] = []
+    diagnostics = runner.directory / "diagnostics"
+    diagnostics.mkdir(exist_ok=True)
     for stage, artifact, cwd, bound, expected in (
         ("source", document, first, first, data_a),
         ("mso", object_file, second, second, data_b),
         ("mexe", executable, second, first, data_a),
     ):
+        first_trace = diagnostics / f"first-{stage}.jsonl"
         try:
-            invoke_msync(runner, binary, cwd, environments[cwd], ["run", str(artifact)])
+            invoke_msync(
+                runner,
+                binary,
+                cwd,
+                environments[cwd],
+                ["run", str(artifact), "--trace", str(first_trace)],
+            )
         except CommandFailed as error:
             try:
                 error.diagnostics = diagnose_download(
@@ -432,6 +448,7 @@ def transfer_journeys(
                     "error": type(diagnostic_error).__name__,
                     "message": str(diagnostic_error),
                 }
+            error.diagnostics["first_invocation_trace"] = read_trace(first_trace)
             raise
         verify_outputs(bound, *expected)
         assert (first / "dir/sibling").read_bytes() == b"keep local sibling"
@@ -460,6 +477,7 @@ def transfer_journeys(
                 "home_sha256": hashlib.sha256(expected[0]).hexdigest(),
                 "relative_sha256": hashlib.sha256(expected[1]).hexdigest(),
                 "home_and_relative_before_after_qualification": "passed",
+                "first_trace_path": str(first_trace),
             }
         )
         if document.exists():
