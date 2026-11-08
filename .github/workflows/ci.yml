@@ -203,7 +203,7 @@ jobs:
         if: ${{ !cancelled() && steps.state-components.outcome == 'success' }}
         run: artifacts/state-components/msync-components.exe --optimizer-pipeline --cases transfers --sizes 128,1024 --levels 1 --samples 7 --warmups 3 --output .temp/platform-results/optimizer-transfer-components.json
       - name: Compare selected Windows Rust, editing-control and current native journeys
-        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.state == 'true' && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && inputs.polish_only && (steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true') && runner.os == 'Windows' && steps.package.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: python packaging/windows_threeway.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/final-threeway.json
