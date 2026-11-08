@@ -368,3 +368,23 @@ owner can use a synchronous ordinary-file read because compilation cannot overla
 that read and the execution cancellation handler is not installed until later;
 stdin remains asynchronous. Native Windows uses the same published probe and
 runner so IOCP first-use behavior is measured rather than inferred from Linux.
+
+The actual whole CLI was then measured with 31 alternating pairs, old integrated
+image `c3c87e...` versus the source-read candidate
+`b89d9da5687c8ef526e7659f1c99e53cb21beb03f16305d776e94f07dbc39794`.
+The added `check-source-4k` / `check-source-64k` cases contain the same ordinary
+transfer plus Unicode comments, padded to exact UTF-8 sizes:
+
+| Whole CLI control | Async-before p50 / p95 ms | Sync-after p50 / p95 ms |
+| --- | ---: | ---: |
+| Version/startup | 9.868 / 11.703 | 9.284 / 11.270 |
+| Tiny source check | 10.955 / 12.312 | 9.691 / 12.283 |
+| 4 KiB source check | 11.378 / 12.765 | 9.763 / 11.167 |
+| 64 KiB source check | 12.288 / 14.646 | 10.734 / 13.068 |
+
+Raw results: `.temp/performance-v080/current/cli-source-read-before-after.json`.
+The full product saves about 1.55–1.62 ms in the source-size controls. The startup
+control also shifts slightly with integrated-image layout/noise, so those totals
+are not treated as a source-read-only decomposition. The independent same-image
+primitive experiment supplies that causal check. Unicode/BOM/CRLF, stdin, legacy
+stdin delegation and actual read-error journeys passed in the final native image.

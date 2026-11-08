@@ -85,3 +85,6 @@ contain Chinese and astral characters. Both modes print the actual UTF-16 count.
 Full decoded text equality and SHA-256 are checked separately, outside timing.
 This isolates first BCL read/worker/IOCP costs without compiler or configuration
 work. It does not claim to measure physical cold-disk latency.
+The optional CLI cases `--case check-source-4k --case check-source-64k` then
+measure the full product pipeline with exact-size Unicode-comment sources,
+separately from the same-image primitive probe.

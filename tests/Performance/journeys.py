@@ -32,6 +32,7 @@ VALUE_CASES = {
     "values-object": ("run", "object"),
     "values-bound": ("run-ir", "bound"),
 }
+SOURCE_CASES = {"check-source-4k": 4096, "check-source-64k": 65536}
 
 
 @dataclass(frozen=True)
@@ -173,6 +174,7 @@ def prepare(
     ordinary_bytes: int | None = None,
     statements: int = 128,
     include_values: bool = False,
+    include_sources: bool = False,
 ) -> Path:
     workspace = root / image.name
     workspace.mkdir(parents=True, exist_ok=True)
@@ -243,12 +245,27 @@ def prepare(
             ]
         )
         invoke(image, ["--no-config", *binding], workspace)
+    if include_sources:
+        statement = source(image, scripts["small"]).encode()
+        unit = "可莉𐐀 source text ".encode()
+        for count in SOURCE_CASES.values():
+            remaining = count - len(statement) - 3
+            comment = unit * (remaining // len(unit)) + b" " * (remaining % len(unit))
+            (workspace / f"source-{count}.msync").write_bytes(
+                statement + b"# " + comment + b"\n"
+            )
     return workspace
 
 
 def arguments(image: Image, case: str, workspace: Path) -> list[str]:
     if case == "startup":
         return ["--version"]
+    if case in SOURCE_CASES:
+        return [
+            "--no-config",
+            "check",
+            str(workspace / f"source-{SOURCE_CASES[case]}.msync"),
+        ]
     if case in VALUE_CASES:
         command, kind = VALUE_CASES[case]
         extensions = {
@@ -394,7 +411,9 @@ def main() -> None:
     parser.add_argument(
         "--aot", type=Path, required=True, help="Native AOT 0.8.0 executable"
     )
-    parser.add_argument("--case", choices=(*CASES, *VALUE_CASES), action="append")
+    parser.add_argument(
+        "--case", choices=(*CASES, *VALUE_CASES, *SOURCE_CASES), action="append"
+    )
     parser.add_argument("--samples", type=int, default=31)
     parser.add_argument("--warmups", type=int, default=3)
     parser.add_argument("--files", type=int, default=256)
@@ -426,6 +445,7 @@ def main() -> None:
             options.file_bytes,
             options.statements,
             any(case in VALUE_CASES for case in options.case or ()),
+            any(case in SOURCE_CASES for case in options.case or ()),
         )
         for image in images
     }
