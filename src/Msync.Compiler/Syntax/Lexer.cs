@@ -131,7 +131,11 @@ internal sealed class Lexer(string source, string sourceName)
         {
             char c = source[position];
             if (uri && c == '[') brackets++;
-            if (uri && c == ']') brackets--;
+            if (uri && c == ']')
+            {
+                if (brackets == 0) break;
+                brackets--;
+            }
             string delimiters = uri ? "{}(),;?\"$|<>!" : "{}()[],;?\"$|<>!";
             if (char.IsWhiteSpace(c) || delimiters.Contains(c, StringComparison.Ordinal)) break;
             if (uri && brackets == 0 && c == ':' && position + 1 < source.Length && source[position + 1] == ':') break;

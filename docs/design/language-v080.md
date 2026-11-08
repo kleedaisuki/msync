@@ -244,3 +244,33 @@ at the last completed statement boundary. Consumers can resolve a simple
 incomplete top-level qualifier using those bindings without guessing from an
 older same-name occurrence. Incomplete nested statements contribute no local
 bindings; prefix semantic failure exposes no recovery environment.
+
+### Static endpoint hints and live prompt bindings
+
+Editor descriptors may retain an `Endpoint` Connection identity from a literal
+SSH/WSL URI or a builtin endpoint. Aliases and lexical Scope members preserve
+that identity. A control-flow join retains it only when both alternatives name
+the same Connection; aggregation across generic source occurrences likewise
+requires every observed choice to have that same non-null identity. This is
+static metadata, not a filesystem observation or permission to execute source.
+Neither inference nor binding description starts a process or authenticates.
+
+Endpoint identity does not enter the specialization key or emitted bytecode.
+A generic parameter therefore forgets its scalar endpoint identity, including
+identities nested in Range item metadata, before body inference. Otherwise a
+type-shared `identity(firstHost)` specialization could incorrectly advertise the
+first host for `identity(secondHost)`, or carry it into a returned closure.
+Immutable Scope/callable captures remain safe because their identities already
+participate in the established specialization key. A function that statically
+returns a literal Connection can retain that literal result normally.
+
+`CompilerSession.DescribeBindings()` renders the current accepted/reconciled
+lexical environment into an independent semantic snapshot: names, types,
+callable signatures, nested members and known endpoint identities. It performs
+no recompilation and excludes compiler-internal slots such as `$std` (an
+explicit user alias of the standard Scope remains visible). The prompt requests
+a snapshot once before editing, not for every keystroke. Execution-prefix
+reconciliation and lexical shadowing therefore govern both execution and hints.
+`tests/Msync.Compiler.Tests --editor-endpoints` covers literal/builtin aliases,
+nested members, ambiguous joins, generic/captured/Range endpoint isolation,
+unchanged type specialization counts and accepted/reconciled prompt snapshots.

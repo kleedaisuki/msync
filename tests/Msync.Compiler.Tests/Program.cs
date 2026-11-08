@@ -1,4 +1,5 @@
 using Msync.Compiler.Syntax;
+if (args.Contains("--editor-endpoints", StringComparer.Ordinal)) { EndpointChecks.Run(); return; }
 if (args.Contains("--diagnostics", StringComparer.Ordinal)) { DiagnosticChecks.Run(); return; }
 if (args.Contains("--semantic", StringComparer.Ordinal)) { SemanticChecks.Run(); return; }
 if (args.Contains("--regex-unions", StringComparer.Ordinal)) { SemanticChecks.RunRegexUnions(); return; }

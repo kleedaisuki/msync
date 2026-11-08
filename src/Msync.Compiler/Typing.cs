@@ -71,7 +71,8 @@ internal sealed partial class Compilation
             scope, left.TypeValue == right.TypeValue ? left.TypeValue : null,
             left.NativeName == right.NativeName ? left.NativeName : null, alternatives,
             left.Element is null || right.Element is null ? left.Element ?? right.Element : Join(left.Element, right.Element),
-            left.KnownBool == right.KnownBool ? left.KnownBool : null);
+            left.KnownBool == right.KnownBool ? left.KnownBool : null,
+            left.KnownConnection == right.KnownConnection ? left.KnownConnection : null);
     }
     private static void Convert(Frame frame, TypeRef actual, TypeRef expected, SourceSpan span)
     {

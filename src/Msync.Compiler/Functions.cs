@@ -75,7 +75,8 @@ internal sealed partial class Compilation
         for (int index = 0; index < arguments.Count; index++)
         {
             var parameter = template.Syntax.Parameters[index];
-            var info = arguments[index] with { KnownBool = null };
+            var argument = arguments[index];
+            var info = argument with { KnownBool = null, KnownConnection = null, Element = ForgetEndpoint(argument.Element) };
             if (parameter.Type is not null)
             {
                 var type = ResolveType(frame, parameter.Type);
@@ -253,6 +254,15 @@ internal sealed partial class Compilation
         return (result ?? new(new(TypeKind.Never)), string.Join(';', mappings.Distinct()));
     }
     private static IEnumerable<Info> CallableChoices(Info info) => info.Alternatives is null ? [info] : info.Alternatives;
+    // Scope/callable identities already specialize their immutable captures. Scalar
+    // and Range-item endpoints do not belong to the type-shared argument frame.
+    private static Info? ForgetEndpoint(Info? info)
+    {
+        if (info is null) return null;
+        var element = ForgetEndpoint(info.Element);
+        return info.KnownConnection is null && ReferenceEquals(info.Element, element) ? info
+            : info with { KnownConnection = null, Element = element };
+    }
     private static string InfoKey(Info info) => $"{info.Type}:{info.Function?.Id}:{info.NativeName}:{(info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope))}:{string.Join(',', info.Alternatives?.Select(InfoKey) ?? [])}:{(info.Element is null ? "" : InfoKey(info.Element))}";
 
 

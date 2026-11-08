@@ -19,7 +19,7 @@ internal sealed partial class Compilation
             constantIndices.Add(value, index);
         }
         frame.Emit(OpCode.Constant, index, span: span);
-        return new(value.Type);
+        return new(value.Type, KnownConnection: value as ConnectionValue);
     }
     private Info TypeConstant(Frame frame, TypeRef type, SourceSpan span)
     {
@@ -45,9 +45,27 @@ internal sealed partial class Compilation
         if (reference && name is "local" or "wsl" or "pwd" or "file" or "env" or "path")
         {
             frame.Emit(OpCode.LoadBuiltin, text: name, span: span);
-            return new(TypeRef.Connection);
+            ConnectionValue connection = name switch
+            {
+                "wsl" => KnownEndpoints.Wsl,
+                "env" => KnownEndpoints.Environment,
+                "path" => KnownEndpoints.SearchPath,
+                "pwd" => KnownEndpoints.WorkingDirectory,
+                "file" => KnownEndpoints.SourceFile,
+                _ => KnownEndpoints.Local
+            };
+            return new(TypeRef.Connection, KnownConnection: connection);
         }
         return Path(frame, name, span);
+    }
+    private static class KnownEndpoints
+    {
+        public static readonly ConnectionValue Local = new(ConnectionKind.Local);
+        public static readonly ConnectionValue WorkingDirectory = new(ConnectionKind.Local, "pwd");
+        public static readonly ConnectionValue SourceFile = new(ConnectionKind.Local, "file");
+        public static readonly ConnectionValue Wsl = new(ConnectionKind.Wsl);
+        public static readonly ConnectionValue Environment = new(ConnectionKind.Environment);
+        public static readonly ConnectionValue SearchPath = new(ConnectionKind.SearchPath);
     }
     private Info Unary(Frame frame, UnaryExpr unary)
     {

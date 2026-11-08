@@ -5,14 +5,20 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 namespace Msync.Compiler;
 
 public sealed record SemanticMember(string Name, string Type, string Signature, string Description,
-    IReadOnlyList<SemanticMember>? Members = null);
+    IReadOnlyList<SemanticMember>? Members = null, ConnectionValue? Endpoint = null);
 public sealed record SemanticOccurrence(SourceSpan Span, string Type, string Signature, string Description,
-    IReadOnlyList<SemanticMember>? Members = null);
+    IReadOnlyList<SemanticMember>? Members = null, ConnectionValue? Endpoint = null);
 public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrences, SourceDiagnostic? Diagnostic,
     IReadOnlyList<SemanticMember>? RecoveryBindings = null, int? RecoveryStart = null);
 
 public static class EditorCompiler
 {
+    internal static IReadOnlyList<SemanticMember> DescribeBindings(IReadOnlyDictionary<string, Binding> bindings)
+    {
+        Dictionary<ScopeInfo, ScopeDescription> scopes = [];
+        return bindings.Where(pair => !pair.Key.StartsWith('$')).Select(pair => DescribeMember(pair.Key, [pair.Value.Info], scopes, members: true)).ToArray();
+    }
+
     public static EditorAnalysis Analyze(string source, string sourceName)
     {
         Dictionary<SourceSpan, SemanticOccurrence> syntax = [];
@@ -29,7 +35,7 @@ public static class EditorCompiler
             Compilation compilation = new(source, sourceName, 0, (span, info, name) =>
             {
                 if (!inferred.TryGetValue(span, out var observation)) inferred[span] = observation = new(name);
-                observation.Values[(info.Type, info.Function?.Id, info.NativeName, info.Scope, info.TypeValue)] = info;
+                observation.Values[(info.Type, info.Function?.Id, info.NativeName, info.Scope, info.TypeValue, info.KnownConnection)] = info;
             });
             _ = compilation.Submit(source, document);
             if (parsed.Error is not null)
@@ -50,7 +56,7 @@ public static class EditorCompiler
     private sealed class Observation(string? name)
     {
         public string? Name { get; } = name;
-        public Dictionary<(TypeRef, int?, string?, ScopeInfo?, TypeRef?), Info> Values { get; } = [];
+        public Dictionary<(TypeRef, int?, string?, ScopeInfo?, TypeRef?, ConnectionValue?), Info> Values { get; } = [];
     }
 
     private sealed record ScopeDescription(SemanticMember[] Members, string Text);
@@ -83,7 +89,7 @@ public static class EditorCompiler
             {
                 if (!scopeDescriptions.TryGetValue(scopes[0], out var summary))
                 {
-                    var items = scopes[0].Members.Select(pair => DescribeMember(pair.Key, [pair.Value], scopeDescriptions)).ToArray();
+                    var items = scopes[0].Members.Select(pair => DescribeMember(pair.Key, [pair.Value], scopeDescriptions, members: true)).ToArray();
                     scopeDescriptions[scopes[0]] = summary = new(items, MemberList(items));
                 }
                 contents = summary.Members;
@@ -93,17 +99,19 @@ public static class EditorCompiler
             {
                 contents = scopes.SelectMany(scope => scope.Members).GroupBy(member => member.Key, StringComparer.Ordinal)
                     .Where(group => scopes.All(scope => scope.Members.ContainsKey(group.Key)))
-                    .Select(group => DescribeMember(group.Key, group.Select(pair => pair.Value), scopeDescriptions)).ToArray();
+                    .Select(group => DescribeMember(group.Key, group.Select(pair => pair.Value), scopeDescriptions, members: true)).ToArray();
                 description += MemberList(contents);
             }
         }
-        return new(span, type.ToString(), signature, description, contents);
+        var endpoint = choices[0].KnownConnection;
+        if (endpoint is not null && choices.Any(info => info.KnownConnection != endpoint)) endpoint = null;
+        return new(span, type.ToString(), signature, description, contents, endpoint);
     }
 
     private static SemanticMember DescribeMember(string name, IEnumerable<Info> choices, Dictionary<ScopeInfo, ScopeDescription> scopeDescriptions, bool members = false)
     {
         var item = Describe(default, name, choices, scopeDescriptions, members);
-        return new(name, item.Type, item.Signature, item.Description, item.Members);
+        return new(name, item.Type, item.Signature, item.Description, item.Members, item.Endpoint);
     }
 
     private static string MemberList(IEnumerable<SemanticMember> items) =>
