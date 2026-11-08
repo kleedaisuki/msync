@@ -114,9 +114,10 @@ jobs:
           suffix: str = '.exe' if os.name == 'nt' else ''
           aot: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync' + suffix)
           rust: Path = Path('artifacts/legacy-target/release') / ('msync' + suffix)
-          common: list[str] = ['python', 'tests/Performance/journeys.py', '--rust', str(rust), '--aot', str(aot), '--samples', '31', '--warmups', '3']
-          subprocess.run([*common, '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-cli.json'], check=True)
-          subprocess.run([*common, '--case', 'check-batch', '--statements', '1024', '--output', '.temp/platform-results/paired-compiler-1024.json'], check=True)
+          common: list[str] = ['python', 'tests/Performance/journeys.py', '--rust', str(rust), '--aot', str(aot), '--warmups', '3']
+          subprocess.run([*common, '--samples', '31', '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-cli.json'], check=True)
+          subprocess.run([*common, '--samples', '31', '--case', 'check-batch', '--statements', '1024', '--output', '.temp/platform-results/paired-compiler-1024.json'], check=True)
+          subprocess.run([*common, '--samples', '9', '--case', 'check-values', '--case', 'values-object', '--case', 'values-bound', '--statements', '1024', '--output', '.temp/platform-results/paired-values-1024.json'], check=True)
           subprocess.run(['python', 'tests/Performance/interactive.py', '--rust', str(rust), '--aot', str(aot), '--samples', '31', '--warmups', '3', '--bindings', '128', '--output', '.temp/platform-results/paired-interactive.json'], check=True)
       - name: Fetch the recorded previous C# image for this native platform
         id: previous
@@ -143,14 +144,15 @@ jobs:
           import subprocess
           from pathlib import Path
           aot: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
-          common: list[str] = ['python', 'tests/Performance/journeys.py', '--previous-aot', os.environ['PREVIOUS_NATIVE'], '--aot', str(aot), '--samples', '31', '--warmups', '3']
+          common: list[str] = ['python', 'tests/Performance/journeys.py', '--previous-aot', os.environ['PREVIOUS_NATIVE'], '--aot', str(aot), '--warmups', '3']
           selected: list[str] = []
           cases: str = os.environ['PREVIOUS_WINDOWS_CASES'] if os.name == 'nt' and os.environ['PREVIOUS_WINDOWS_CASES'] else os.environ['PREVIOUS_AOT_CASES']
           for case in cases.split(','):
               if case.strip():
                   selected.extend(['--case', case.strip()])
-          subprocess.run([*common, *selected, '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-aot-before-after.json'], check=True)
-          subprocess.run([*common, '--case', 'check-batch', '--statements', '1024', '--output', '.temp/platform-results/paired-aot-compiler-1024.json'], check=True)
+          subprocess.run([*common, '--samples', '31', *selected, '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-aot-before-after.json'], check=True)
+          subprocess.run([*common, '--samples', '31', '--case', 'check-batch', '--statements', '1024', '--output', '.temp/platform-results/paired-aot-compiler-1024.json'], check=True)
+          subprocess.run([*common, '--samples', '9', '--case', 'check-values', '--case', 'values-object', '--case', 'values-bound', '--statements', '1024', '--output', '.temp/platform-results/paired-aot-values-1024.json'], check=True)
           subprocess.run(['python', 'tests/Performance/interactive.py', '--previous-aot', os.environ['PREVIOUS_NATIVE'], '--aot', str(aot), '--samples', '31', '--warmups', '3', '--bindings', '128', '--output', '.temp/platform-results/paired-aot-interactive.json'], check=True)
       - name: Publish the bounded native Windows copy mechanism probe
         id: copy-probe
