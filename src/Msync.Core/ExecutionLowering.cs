@@ -47,21 +47,20 @@ public static class ExecutionLowering
                 case OpCode.Convert:
                     {
                         var value = Pop();
-                        stack.Add(instruction.Text == "Path" && value is StringValue text ? new PathValue(text.Data, context.WorkingDirectory, HomeDirectory: context.HomeDirectory) : instruction.Text == "String" && value is PathValue path ? new StringValue(path.Raw) : value);
+                        stack.Add(instruction.Text == "Path" && value is StringValue text ? new PathValue(text.Data, context.WorkingDirectory, HomeDirectory: context.HomeDirectory) : instruction.Text == "String" && value is PathValue path ? new StringValue(path.NativeText) : value);
                         break;
                     }
                 case OpCode.PathJoin:
                     {
                         var right = Pop(); var left = Pop();
                         var path = left is PathValue p ? p : left is StringValue s ? new PathValue(s.Data, context.WorkingDirectory, HomeDirectory: context.HomeDirectory) : null;
-                        var text = right switch { PathValue rightPath => rightPath.Raw, StringValue rightText => rightText.Data, _ => null };
-                        stack.Add(path is null || text is null ? null : path with { Raw = PathSemantics.Join(path, text) }); break;
+                        stack.Add(path is null || right is not (PathValue or StringValue) ? null : PathSemantics.JoinValue(path, right)); break;
                     }
                 case OpCode.Qualify:
                     {
                         var item = Pop(); var connection = Pop() as ConnectionValue;
                         var path = item is PathValue p ? p : item is StringValue s ? new PathValue(s.Data, context.WorkingDirectory, HomeDirectory: context.HomeDirectory) : null;
-                        stack.Add(connection is null || path is null ? null : path with { Connection = connection }); break;
+                        stack.Add(connection is null || path is null ? null : PathSemantics.Qualify(path, connection)); break;
                     }
                 case OpCode.Transfer:
                 case OpCode.LocalTransfer:

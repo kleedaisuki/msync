@@ -32,7 +32,7 @@ public static partial class NativeRegistry
         if (name is "directory_iterator" or "recursive_directory_iterator")
             return new RangeValue(RemoteDirectory(path, name == "recursive_directory_iterator", token), TypeRef.Path,
                 new PathSelection(path, ".*", Recursive: name == "recursive_directory_iterator"));
-        List<string> rawArgs = args.Select(value => value is BoolValue boolean ? boolean.Data ? "true" : "false" : Text(value)).ToList();
+        List<string> rawArgs = args.Select(value => value is BoolValue boolean ? boolean.Data ? "true" : "false" : value is PathValue argument ? argument.Raw : Text(value)).ToList();
         if (name == "set_permissions") rawArgs[1] = Convert.ToString(PermissionMode(rawArgs[1]), 8);
         if (args.Count > 1 && args[1] is PathValue second && second.Connection is not null && second.Connection != connection)
             throw new MsyncException($"fs.{name} requires paths on the same connection, received '{connection}' and '{second.Connection}'");
@@ -42,7 +42,7 @@ public static partial class NativeRegistry
         string result = lineTerminated && output.EndsWith('\n') ? output[..^1] : output;
         if (name is "status" or "symlink_status") return new StringValue(result);
         if (name == "permissions") return new RangeValue(RemotePermissions(result).Select(flag => (Value)new StringValue(flag)), TypeRef.String);
-        if (name is "absolute" or "canonical" or "weakly_canonical" or "read_symlink" or "relative" or "proximate") return path with { Raw = result };
+        if (name is "absolute" or "canonical" or "weakly_canonical" or "read_symlink" or "relative" or "proximate") return path.WithRaw(result);
         if (name is "exists" or "is_regular_file" or "is_directory" or "is_symlink" or "is_block_file" or "is_character_file" or "is_fifo" or "is_socket" or "is_other" or "is_empty" or "is_readonly" or "equivalent" or "create_directory" or "create_directories" or "remove" or "remove_all")
             return Bool(result == "true");
         return Value.Null;
@@ -101,7 +101,7 @@ public static partial class NativeRegistry
         foreach (string name in output.Split('\0', StringSplitOptions.RemoveEmptyEntries).Order(TextSemantics.Ordinal))
         {
             token.ThrowIfCancellationRequested();
-            yield return path with { Raw = name };
+            yield return path.WithRaw(name);
         }
     }
 }

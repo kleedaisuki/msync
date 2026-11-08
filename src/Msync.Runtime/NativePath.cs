@@ -1,17 +1,17 @@
 namespace Msync.Runtime;
 
-internal sealed class NativePath(string source, bool windows)
+internal sealed class NativePath(string source, bool windows, char? separator = null)
 {
     public string Source { get; } = source;
     public bool Windows { get; } = windows;
-    public char Separator => Windows ? '\\' : '/';
+    public char Separator => separator ?? (Windows ? '\\' : '/');
     public string RootName { get; } = source[..RootEnd(source, windows)];
     public bool RootDirectory => Source.Length > RootName.Length && IsSeparator(Source[RootName.Length]);
     public string Relative => Source[RootName.Length..].TrimStart(Windows ? ['/', '\\'] : ['/']);
     public bool IsAbsolute => RootDirectory && (!Windows || RootName.Length > 0);
     public string Root => RootName + (RootDirectory ? Separator.ToString() : "");
     public string Filename => Relative.Split(Windows ? ['/', '\\'] : ['/']).Last();
-    public string Preferred => Windows ? Source.Replace('/', '\\') : Source;
+    public string Preferred => Windows ? Source.Replace('/', Separator).Replace('\\', Separator) : Source;
     public string RemoveFilename => Source[..(Source.Length - Filename.Length)];
     public string[] Parts => Relative.Split(Windows ? ['/', '\\'] : ['/'], StringSplitOptions.RemoveEmptyEntries);
 

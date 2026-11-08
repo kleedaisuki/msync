@@ -10,8 +10,9 @@ syntax trees to the interpreter. Recursion uses specialized forward references.
 The `Null` value is distinct from Bool. Iterator state, live processes, handles,
 transport sessions and lazy enumerators cannot be embedded as constants.
 
-The binary container has independent format version **1** and language-semantics
-version **0.8.0**. It is not JSON or serialized source. The decoder validates table
+The binary container has independent format version **2** and language-semantics
+version **0.8.0**. The reader also accepts format 1; its original path constants
+have no additional local spelling. It is not JSON or serialized source. The decoder validates table
 references, layouts and reachable stack/control-flow shape before execution.
 Bytecode dataflow rejects stack underflow, mismatched join heights, uninitialized
 locals, invalid iterator ownership, invalid closure layouts and impossible
@@ -41,6 +42,34 @@ spelling remains available to lexical standard-library operations; actual local
 I/O prefixes the captured cwd without erasing native `symlink/../file` traversal.
 `PathSemantics` chooses separators from endpoint plus platform, not host alone:
 a backslash remains a POSIX filename character, including SSH/WSL on Windows.
+
+### Symbolic paths and local native spelling
+
+An unbound Path carries source-owned `Raw` spelling, captured cwd/home anchors,
+and an optional `LocalSpelling`. A source `/` join remains `/` in the symbolic
+spelling. On Windows its local projection uses native separators, so a binding
+of `~/.codex` can be used locally as `~\\.codex` and later qualified onto SSH/WSL
+as `~/.codex`. Qualifying before or after that binding yields the same remote
+Path. Qualification discards the local spelling and local anchors, not arbitrary
+backslashes in the source. A literal POSIX filename such as `left\\` still joins
+to `left\\/leaf` remotely; a global backslash replacement cannot express this.
+
+`PathSemantics.JoinValue` and `Qualify` are shared by the VM and executable
+lowering. Native Path-to-String conversion, regex matching and local I/O consume
+the local spelling; generic lexical inspection and remote operations use Raw.
+Derived path operations use `WithRaw` so a changed pathname cannot retain the
+previous path's local projection. Windows lexical operations and directory
+iteration derive both spellings together; POSIX joins allocate no second string.
+The public four-argument constructor and deconstruction remain available.
+
+Format 2 adds the optional spelling to serialized Path values, including nested
+scope values and function captures. Format 1 remains readable without guessing
+or rewriting its existing path bytes. The retained binary fixture was produced
+by the original frozen 0.8 format-1 native CLI from stdin, so it contains no
+machine-local diagnostic path. `tests/PathProjection` checks simulated Windows
+grammar on every host, physical projected I/O, nested format-2 round trips,
+format-1 loading, and source/object/executable qualification. The native Windows
+platform journeys separately execute the same language-level distinction.
 
 ## Execution and effects
 

@@ -178,8 +178,8 @@ public sealed class Interpreter
                         }
                     case OpCode.PathJoin:
                         {
-                            var right = Text(Pop()); var left = context.AsPath(Pop());
-                            stack.Add(left with { Raw = PathSemantics.Join(left, right) }); break;
+                            var right = Pop(); var left = context.AsPath(Pop());
+                            stack.Add(PathSemantics.JoinValue(left, right)); break;
                         }
                     case OpCode.SelectPath:
                         {
@@ -306,9 +306,10 @@ public sealed class Interpreter
         if (connection.Kind == ConnectionKind.Local && connection.Address == "file")
         {
             var source = context.SourceFile ?? throw new MsyncException("$file requires a named source file");
-            path = path with { Raw = path.Raw switch { "this" => source, "parent" => Path.GetDirectoryName(source)!, _ => Path.Combine(Path.GetDirectoryName(source)!, path.Raw) } };
+            path = path.WithRaw(path.Raw switch { "this" => source, "parent" => Path.GetDirectoryName(source)!, _ => Path.Combine(Path.GetDirectoryName(source)!, path.NativeText) });
         }
-        return path with { Connection = connection, WorkingDirectory = path.WorkingDirectory ?? context.WorkingDirectory, HomeDirectory = connection.Kind == ConnectionKind.Local ? path.HomeDirectory ?? context.HomeDirectory : null };
+        var qualified = PathSemantics.Qualify(path, connection);
+        return connection.Kind == ConnectionKind.Local ? qualified with { WorkingDirectory = qualified.WorkingDirectory ?? context.WorkingDirectory, HomeDirectory = qualified.HomeDirectory ?? context.HomeDirectory } : qualified;
     }
     private string FindExecutable(string name)
     {
@@ -467,7 +468,7 @@ public sealed class Interpreter
     }
     private static string SourceLabel(Value value) => value is StringValue text ? $"literal ({Encoding.UTF8.GetByteCount(text.Data)} UTF-8 bytes)" : value.ToString()!;
     private static bool AsBool(Value value) => value is BoolValue boolean ? boolean.Data : throw new MsyncException($"Condition requires Bool, received {value.Type}");
-    private static string Text(Value value) => value switch { StringValue s => s.Data, PathValue p => p.Raw, NumberValue n => n.ToString(), BoolValue b => b.ToString(), _ => throw new MsyncException($"Cannot convert {value.Type} to String") };
+    private static string Text(Value value) => value switch { StringValue s => s.Data, PathValue p => p.NativeText, NumberValue n => n.ToString(), BoolValue b => b.ToString(), _ => throw new MsyncException($"Cannot convert {value.Type} to String") };
     private static int Compare(Value left, Value right) => (left, right) switch
     {
         (NumberValue l, NumberValue r) => l.Data.CompareTo(r.Data),
@@ -480,12 +481,15 @@ public sealed class Interpreter
 
 public sealed class ExecutionSession(ExecutionOptions? options = null)
 {
+    private sealed record UninitializedValue : Value { public override TypeRef Type => new(TypeKind.Never); }
+    private static readonly Value Uninitialized = new UninitializedValue();
     private Value[] locals = [];
+    public bool IsLocalInitialized(int slot) => (uint)slot < (uint)locals.Length && !ReferenceEquals(locals[slot], Uninitialized);
     public ValueTask<Value> ExecuteAsync(Module module, int startInstruction = 0, CancellationToken cancellationToken = default)
     {
         var count = module.Functions[module.EntryPoint].LocalCount;
         var previousLength = locals.Length; Array.Resize(ref locals, count);
-        for (var i = previousLength; i < count; i++) locals[i] = Value.Null;
+        for (var i = previousLength; i < count; i++) locals[i] = Uninitialized;
         return new Interpreter(module, options).ExecuteEntryAsync(locals, startInstruction, cancellationToken);
     }
 }

@@ -5,7 +5,7 @@ namespace Msync.Core;
 public static class Artifact
 {
     private static readonly byte[] Magic = "MSYNCBC\0"u8.ToArray();
-    public const ushort FormatVersion = 1;
+    public const ushort FormatVersion = 2;
     public const string LanguageVersion = "0.8.0";
     public static Module Read(string path)
     {
@@ -19,7 +19,7 @@ public static class Artifact
         using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
         if (!reader.ReadBytes(Magic.Length).AsSpan().SequenceEqual(Magic)) throw new MsyncException("Not an msync binary bytecode artifact");
         var version = reader.ReadUInt16();
-        if (version != FormatVersion) throw new MsyncException($"Unsupported msync bytecode format {version}; supported format is {FormatVersion}");
+        if (version is not (1 or FormatVersion)) throw new MsyncException($"Unsupported msync bytecode format {version}; supported formats are 1 and {FormatVersion}");
         var language = reader.ReadString();
         if (language != LanguageVersion) throw new MsyncException($"Unsupported bytecode language semantics {language}; expected {LanguageVersion}");
         var stage = (ArtifactStage)reader.ReadByte();
@@ -28,7 +28,7 @@ public static class Artifact
         var entry = reader.ReadInt32();
         BindingContext? context = reader.ReadBoolean() ? new(reader.ReadString(), reader.ReadString(), ReadOptional(reader)) : null;
         if ((stage == ArtifactStage.Executable) != (context is not null)) throw new MsyncException("Executable artifacts require a binding context; relocatable artifacts must not contain one");
-        var constants = ReadArray(reader, ReadValue);
+        var constants = ReadArray(reader, r => ReadValue(r, version));
         var functions = ReadArray(reader, r =>
         {
             var name = r.ReadString(); var parameters = r.ReadInt32(); var locals = r.ReadInt32(); var captures = r.ReadInt32();
@@ -153,17 +153,17 @@ public static class Artifact
     { var kind = (TypeKind)reader.ReadUInt16(); return new(kind, reader.ReadBoolean() ? ReadType(reader) : null); }
     private static void WriteType(BinaryWriter writer, TypeRef type)
     { writer.Write((ushort)type.Kind); writer.Write(type.Element is not null); if (type.Element is not null) WriteType(writer, type.Element); }
-    private static Value ReadValue(BinaryReader reader) => reader.ReadByte() switch
+    private static Value ReadValue(BinaryReader reader, ushort version) => reader.ReadByte() switch
     {
         0 => Value.Null,
         1 => new BoolValue(reader.ReadBoolean()),
         2 => new StringValue(reader.ReadString()),
         3 => new NumberValue(reader.ReadDouble()),
-        4 => new PathValue(reader.ReadString(), ReadOptional(reader), reader.ReadBoolean() ? ReadConnection(reader) : null, ReadOptional(reader)),
+        4 => new PathValue(reader.ReadString(), ReadOptional(reader), reader.ReadBoolean() ? ReadConnection(reader) : null, ReadOptional(reader), version >= 2 ? ReadOptional(reader) : null),
         5 => ReadConnection(reader),
         6 => new TypeValue(ReadType(reader)),
-        7 => new FunctionValue(reader.ReadInt32(), ReadArray(reader, ReadValue), ReadOptional(reader)),
-        8 => new ScopeValue(ReadArray(reader, r => KeyValuePair.Create(r.ReadString(), ReadValue(r))).ToDictionary()),
+        7 => new FunctionValue(reader.ReadInt32(), ReadArray(reader, r => ReadValue(r, version)), ReadOptional(reader)),
+        8 => new ScopeValue(ReadArray(reader, r => KeyValuePair.Create(r.ReadString(), ReadValue(r, version))).ToDictionary()),
         var tag => throw new MsyncException($"Unknown bytecode constant kind {tag}")
     };
     private static ConnectionValue ReadConnection(BinaryReader reader) => new((ConnectionKind)reader.ReadByte(), reader.ReadString());
@@ -177,7 +177,7 @@ public static class Artifact
             case NumberValue n: writer.Write((byte)3); writer.Write(n.Data); break;
             case PathValue p:
                 writer.Write((byte)4); writer.Write(p.Raw); WriteOptional(writer, p.WorkingDirectory); writer.Write(p.Connection is not null);
-                if (p.Connection is not null) WriteConnection(writer, p.Connection); WriteOptional(writer, p.HomeDirectory); break;
+                if (p.Connection is not null) WriteConnection(writer, p.Connection); WriteOptional(writer, p.HomeDirectory); WriteOptional(writer, p.LocalSpelling); break;
             case ConnectionValue c: writer.Write((byte)5); WriteConnection(writer, c); break;
             case TypeValue t: writer.Write((byte)6); WriteType(writer, t.Data); break;
             case FunctionValue f: writer.Write((byte)7); writer.Write(f.Function); WriteArray(writer, f.Captures ?? [], WriteValue); WriteOptional(writer, f.NativeName); break;

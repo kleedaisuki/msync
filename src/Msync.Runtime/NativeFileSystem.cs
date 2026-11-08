@@ -5,14 +5,17 @@ namespace Msync.Runtime;
 
 public static partial class NativeRegistry
 {
-    private static async ValueTask<Value> FileSystemAsync(string operation, IReadOnlyList<Value> args, RuntimeContext context, CancellationToken token)
+    private static async ValueTask<Value> FileSystemAsync(string operation, IReadOnlyList<Value> args, RuntimeContext context, CancellationToken token, NativeEffect effect)
     {
         if (operation == "temp_directory_path") return new PathValue(Path.GetTempPath(), context.WorkingDirectory);
         if (operation == "current_path") return new PathValue(context.WorkingDirectory, context.WorkingDirectory);
         if (operation == "status_known") return Bool(Text(args[0]) != "none");
         PathValue path = context.AsPath(args[0]);
-        Value? lexical = LexicalOperation(operation, args, path, context);
-        if (lexical is not null) return lexical;
+        if (effect == NativeEffect.Pure)
+        {
+            Value? lexical = LexicalOperation(operation, args, path, context);
+            if (lexical is not null) return lexical;
+        }
         if (operation is "copy" or "copy_file") return Bool(await TransferEngine.CopyAsync(operation == "copy_file" ? context.AsPath(args[0]) : args[0], context.AsPath(args[1]), context, token));
         if (path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl)
             return await RemoteFileSystemAsync(operation, args, path, context, token);
@@ -24,36 +27,26 @@ public static partial class NativeRegistry
 
     private static Value? LexicalOperation(string name, IReadOnlyList<Value> args, PathValue path, RuntimeContext context)
     {
-        NativePath value = new(path.Raw, LocalWindows(path));
-        string? text = name switch
-        {
-            "root_name" => value.RootName,
-            "root_directory" => value.RootDirectory ? value.Separator.ToString() : "",
-            "root_path" => value.Root,
-            "relative_path" => value.Relative,
-            "parent_path" => value.Parent,
-            "filename" => value.Filename,
-            "stem" => NativePath.SplitExtension(value.Filename).Stem,
-            "extension" => NativePath.SplitExtension(value.Filename).Extension,
-            "lexically_normal" => value.Normal(),
-            "remove_filename" => value.RemoveFilename,
-            "make_preferred" => value.Preferred,
-            "concat" => path.Raw + Text(args[1]),
-            "append" => value.Append(Text(args[1])),
-            "replace_filename" => new NativePath(value.RemoveFilename, value.Windows).Append(Text(args[1])),
-            "replace_extension" => path.Raw[..(path.Raw.Length - NativePath.SplitExtension(value.Filename).Extension.Length)] + Extension(Text(args[1])),
-            _ => null
-        };
-        if (text is not null) return path with { Raw = text };
+        bool projected = path.Connection is null && LocalWindows(path);
+        NativePath value = new(path.Raw, LocalWindows(path), projected ? '/' : null);
+        bool binaryText = name is "concat" or "append" or "replace_filename" or "replace_extension";
+        string? rawArgument = binaryText ? args[1] is PathValue argumentPath ? argumentPath.Raw : Text(args[1]) : null;
+        string? nativeArgument = projected && binaryText ? Text(args[1]) : rawArgument;
+        string? text = LexicalText(name, value, rawArgument);
+        if (text is not null) return path.WithRaw(text, projected ? LexicalText(name, new(path.NativeText, true), nativeArgument) : null);
         if (name is "lexically_relative" or "lexically_proximate")
         {
             PathValue basis = context.AsPath(args[1]);
             string relative = path.Connection == basis.Connection ? value.RelativeTo(new NativePath(basis.Raw, value.Windows)) : "";
-            return path with { Raw = name == "lexically_proximate" && relative.Length == 0 ? path.Raw : relative };
+            string? nativeRelative = projected && path.Connection == basis.Connection ? new NativePath(path.NativeText, true).RelativeTo(new NativePath(basis.NativeText, true)) : null;
+            bool original = name == "lexically_proximate" && relative.Length == 0;
+            return original ? path : path.WithRaw(relative, nativeRelative);
         }
-        if (name == "components") return new RangeValue(value.Components().Select(component => (Value)(path with { Raw = component })), TypeRef.Path);
+        if (name == "components") return new RangeValue(projected
+            ? value.Components().Zip(new NativePath(path.NativeText, true).Components(), (raw, local) => (Value)path.WithRaw(raw, local))
+            : value.Components().Select(component => (Value)path.WithRaw(component)), TypeRef.Path);
         if (name is "string" or "native" or "generic_string")
-            return new StringValue(name == "generic_string" && value.Windows ? path.Raw.Replace('\\', '/') : path.Raw);
+            return new StringValue(name == "generic_string" && value.Windows ? path.Raw.Replace('\\', '/') : name == "generic_string" ? path.Raw : path.NativeText);
         bool? result = name switch
         {
             "has_root_name" => value.RootName.Length > 0,
@@ -72,6 +65,26 @@ public static partial class NativeRegistry
         return result is bool answer ? Bool(answer) : null;
     }
 
+    private static string? LexicalText(string name, NativePath value, string? argument) => name switch
+    {
+        "root_name" => value.RootName,
+        "root_directory" => value.RootDirectory ? value.Separator.ToString() : "",
+        "root_path" => value.Root,
+        "relative_path" => value.Relative,
+        "parent_path" => value.Parent,
+        "filename" => value.Filename,
+        "stem" => NativePath.SplitExtension(value.Filename).Stem,
+        "extension" => NativePath.SplitExtension(value.Filename).Extension,
+        "lexically_normal" => value.Normal(),
+        "remove_filename" => value.RemoveFilename,
+        "make_preferred" => value.Preferred,
+        "concat" => value.Source + argument,
+        "append" => value.Append(argument!),
+        "replace_filename" => new NativePath(value.RemoveFilename, value.Windows, value.Separator).Append(argument!),
+        "replace_extension" => value.Source[..(value.Source.Length - NativePath.SplitExtension(value.Filename).Extension.Length)] + Extension(argument!),
+        _ => null
+    };
+
     private static string Extension(string extension) => extension.Length == 0 || extension.StartsWith('.') ? extension : "." + extension;
 
     private static Value LocalFileSystem(string name, IReadOnlyList<Value> args, PathValue path, string local, RuntimeContext context)
@@ -81,15 +94,15 @@ public static partial class NativeRegistry
         if (name == "is_other") return Bool(Status(local, false) is not ("regular" or "directory" or "symlink" or "not_found"));
         if (name.StartsWith("is_", StringComparison.Ordinal) && name is not ("is_empty" or "is_readonly"))
             return Bool(Status(local, name == "is_symlink") == (name switch { "is_regular_file" => "regular", "is_block_file" => "block", "is_character_file" => "character", _ => name[3..] }));
-        if (name == "absolute") return path with { Raw = local, WorkingDirectory = context.WorkingDirectory };
+        if (name == "absolute") return path.WithRaw(local) with { WorkingDirectory = context.WorkingDirectory };
         if (name is "canonical" or "weakly_canonical")
-            return path with { Raw = Canonical(local, name == "canonical"), WorkingDirectory = context.WorkingDirectory };
+            return path.WithRaw(Canonical(local, name == "canonical")) with { WorkingDirectory = context.WorkingDirectory };
         if (name is "relative" or "proximate")
         {
             string first = Canonical(local, false), second = Canonical(context.LocalPath(args[1]), false);
-            return path with { Raw = Path.GetRelativePath(second, first) };
+            return path.WithRaw(Path.GetRelativePath(second, first));
         }
-        if (name == "read_symlink") return path with { Raw = new FileInfo(local).LinkTarget ?? new DirectoryInfo(local).LinkTarget ?? throw new IOException($"'{local}' is not a symbolic link") };
+        if (name == "read_symlink") return path.WithRaw(new FileInfo(local).LinkTarget ?? new DirectoryInfo(local).LinkTarget ?? throw new IOException($"'{local}' is not a symbolic link"));
         if (name == "is_empty")
         {
             string kind = Status(local, false);
@@ -145,8 +158,8 @@ public static partial class NativeRegistry
                 else File.Move(local, destination, true);
                 return Value.Null;
             case "create_hard_link": NativeFileIdentity.CreateHardLink(destination, local); return Value.Null;
-            case "create_symlink": File.CreateSymbolicLink(destination, path.Raw); return Value.Null;
-            case "create_directory_symlink": Directory.CreateSymbolicLink(destination, path.Raw); return Value.Null;
+            case "create_symlink": File.CreateSymbolicLink(destination, path.NativeText); return Value.Null;
+            case "create_directory_symlink": Directory.CreateSymbolicLink(destination, path.NativeText); return Value.Null;
             case "copy_symlink":
                 string target = new FileInfo(local).LinkTarget ?? new DirectoryInfo(local).LinkTarget ?? throw new IOException($"'{local}' is not a symbolic link");
                 File.CreateSymbolicLink(destination, target); return Value.Null;
@@ -254,7 +267,9 @@ public static partial class NativeRegistry
         {
             token.ThrowIfCancellationRequested();
             string name = Path.GetFileName(entry);
-            PathValue child = path with { Raw = new NativePath(path.Raw, LocalWindows(path)).Append(name) };
+            bool projected = path.Connection is null && LocalWindows(path);
+            string raw = new NativePath(path.Raw, LocalWindows(path), projected ? '/' : null).Append(name);
+            PathValue child = path.WithRaw(raw, projected ? new NativePath(path.NativeText, true).Append(name) : null);
             yield return child;
             FileAttributes attributes = File.GetAttributes(entry);
             if (!recursive || (attributes & FileAttributes.Directory) == 0 || (attributes & FileAttributes.ReparsePoint) != 0) continue;

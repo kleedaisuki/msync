@@ -18,7 +18,7 @@ public static partial class NativeRegistry
         string operation = separator < 0 ? name : name[(separator + 1)..];
         return group switch
         {
-            "fs" => await FileSystemAsync(operation, arguments, context, cancellationToken),
+            "fs" => await FileSystemAsync(operation, arguments, context, cancellationToken, signature.Effect),
             "string" => StringOperation(operation, arguments),
             "bool" => BooleanOperation(operation, arguments),
             "path" => PathOperation(operation, arguments, context),
@@ -31,7 +31,7 @@ public static partial class NativeRegistry
     private static string Text(Value value) => value switch
     {
         StringValue text => text.Data,
-        PathValue path => path.Raw,
+        PathValue path => path.NativeText,
         _ => throw new MsyncException($"Expected String or Path, received {value.Type}")
     };
     private static bool Boolean(Value value) => value is BoolValue boolean ? boolean.Data : throw new MsyncException($"Expected Bool, received {value.Type}");
@@ -79,8 +79,8 @@ public static partial class NativeRegistry
     private static Value PathOperation(string name, IReadOnlyList<Value> args, RuntimeContext context) => name switch
     {
         "identity" => context.AsPath(args[0]),
-        "join" => context.AsPath(args[0]) with { Raw = new NativePath(Text(args[0]), LocalWindows(context.AsPath(args[0]))).Append(Text(args[1])) },
-        "qualify" => args[0] is ConnectionValue connection ? context.AsPath(args[1]) with { Connection = connection, WorkingDirectory = null, HomeDirectory = null } : throw new MsyncException("path.qualify expects Connection"),
+        "join" => PathSemantics.JoinValue(context.AsPath(args[0]), args[1]),
+        "qualify" => args[0] is ConnectionValue connection ? PathSemantics.Qualify(context.AsPath(args[1]), connection) : throw new MsyncException("path.qualify expects Connection"),
         _ => throw new MsyncException($"Unknown path native '{name}'")
     };
 

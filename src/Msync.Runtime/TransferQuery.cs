@@ -66,7 +66,7 @@ public static partial class TransferEngine
     private static async Task<IReadOnlyList<Value>> ApplySelectionAsync(PathSelection selection, IReadOnlyList<string> names,
         Process process, CancellationToken cancellationToken)
     {
-        IEnumerable<Value> values = names.Select(name => selection.Directory with { Raw = selection.Directory.Raw.TrimEnd('/') + "/" + name });
+        IEnumerable<Value> values = names.Select(name => selection.Directory.WithRaw(selection.Directory.Raw.TrimEnd('/') + "/" + name));
         RangeValue discovered = new(values, TypeRef.Path);
         List<Value> results = [];
         SelectedQuery? previous = ActiveQuery.Value;
