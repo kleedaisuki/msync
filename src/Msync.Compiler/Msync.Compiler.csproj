@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><IsAotCompatible>true</IsAotCompatible></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Msync.Core/Msync.Core.csproj" /></ItemGroup>
+  <ItemGroup><EmbeddedResource Include="../../stdlib/*.msync" Link="Stdlib/%(Filename)%(Extension)" /></ItemGroup>
+</Project>
