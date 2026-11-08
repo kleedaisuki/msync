@@ -122,6 +122,17 @@ and comments may exceed the target rather than changing their meaning. The
 extension selects this formatter for msync by default without changing other
 languages' formatting preferences.
 
+## SSH authentication during completion
+
+A selected remote path completion can ask the native SSH client to inspect that
+endpoint. The editor displays its original prompt with the endpoint identity:
+passwords and passphrases use a hidden input box; host-key confirmation offers
+explicit Yes/No choices; security-key touch notices do not block the client.
+Cancelling the request or restarting the server closes its owned prompt. Prompts
+from different endpoints are queued rather than replacing each other. Responses
+are returned directly to native SSH, not written to the output channel or stored
+in extension settings.
+
 ## Verification
 
 `npm test` uses the actual `vscode-textmate` engine and Oniguruma WASM. It checks

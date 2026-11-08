@@ -2,8 +2,10 @@
 
 const vscode = require('vscode');
 const { LanguageClient } = require('vscode-languageclient/node');
+const { registerSshPrompts } = require('./ssh-prompts.cjs');
 
 let client;
+let sshPrompts;
 let enabled = false;
 let lifecycle = Promise.resolve();
 
@@ -24,6 +26,8 @@ function startupMessage(message) {
 async function stop() {
     const running = client;
     client = undefined;
+    sshPrompts?.dispose();
+    sshPrompts = undefined;
     if (running) await running.dispose();
 }
 
@@ -45,11 +49,15 @@ async function start() {
             { scheme: 'msync-stdlib', language: 'msync' },
         ],
         outputChannelName: 'msync Language Server',
+        initializationOptions: { sshPrompt: true },
     });
+    const prompts = registerSshPrompts(vscode, candidate);
     try {
         await candidate.start();
         client = candidate;
+        sshPrompts = prompts;
     } catch (error) {
+        prompts.dispose();
         await candidate.dispose();
         const detail = error instanceof Error ? error.message : String(error);
         startupMessage(`Cannot start msync language services: ${detail}. Install msync or configure msync.serverPath, then use msync: Restart Language Server. Syntax highlighting remains available.`);

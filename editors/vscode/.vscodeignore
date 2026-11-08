@@ -6,3 +6,4 @@ node_modules/**
 extension.cjs
 package-lock.json
 build.cjs
+ssh-prompts.cjs

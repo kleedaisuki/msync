@@ -21,6 +21,8 @@ function harness(command = 'msync', startError) {
             this.requests = [];
             created.push(this);
         }
+        onRequest() { return { dispose() {} }; }
+        onNotification() { return { dispose() {} }; }
         async start() {
             this.started += 1;
             if (startError) throw startError;
@@ -83,6 +85,7 @@ test('activation launches stdio client without shell and registers user/library 
         { scheme: 'file', language: 'msync' }, { scheme: 'untitled', language: 'msync' },
         { scheme: 'msync-stdlib', language: 'msync' },
     ]);
+    assert.deepEqual(client.args[3].initializationOptions, { sshPrompt: true });
     assert.equal(context.subscriptions.length, 3);
     assert.equal(client.started, 1);
     assert.equal(errors.length, 0);
