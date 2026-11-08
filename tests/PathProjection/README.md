@@ -23,7 +23,7 @@ let file = ./legacy-input; file
 
 It is an actual format-1 object with source name `-`, not a version-2 artifact
 whose header was edited. The executable reads it with the current versioned
-decoder; every newly written object uses format 2 and retains optional local
+decoder; every newly written object uses the current `Artifact.FormatVersion` and retains optional local
 spelling through nested values. Transient fixtures stay below root `.temp`.
 
 The accepted-value editor journey uses the real VM and persistent compiler:

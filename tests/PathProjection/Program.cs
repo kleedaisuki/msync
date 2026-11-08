@@ -54,10 +54,10 @@ Module Constant(Value value) => new([value], [new("main", 0, 0,
 using (MemoryStream stream = new())
 {
     Artifact.Write(Constant(new ScopeValue(new Dictionary<string, Value> { ["file"] = relative })), stream);
-    Equal(2, (int)BitConverter.ToUInt16(stream.ToArray(), 8), "New path projection did not use format 2");
+    Equal((int)Artifact.FormatVersion, (int)BitConverter.ToUInt16(stream.ToArray(), 8), "New path projection did not use the current artifact format");
     stream.Position = 0;
     ScopeValue loaded = (ScopeValue)Artifact.Read(stream).Constants[0];
-    Equal(relative, (PathValue)loaded.Members["file"], "Format 2 lost nested path projection");
+    Equal(relative, (PathValue)loaded.Members["file"], "Current format lost nested path projection");
 }
 using (MemoryStream stream = new())
 {
@@ -66,7 +66,7 @@ using (MemoryStream stream = new())
          new("captured", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Path, CaptureCount: 1)]);
     Artifact.Write(closure, stream); stream.Position = 0;
     FunctionValue loaded = (FunctionValue)Artifact.Read(stream).Constants[0];
-    Equal(relative, (PathValue)loaded.Captures![0], "Format 2 lost captured path projection");
+    Equal(relative, (PathValue)loaded.Captures![0], "Current format lost captured path projection");
 }
 using (Stream fixture = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("Msync.PathProjection.Tests.Fixtures.path-v1.mso")!)
 {
