@@ -20,7 +20,7 @@ internal sealed partial class LanguageServer(
     private bool hierarchicalDocumentSymbols;
     private bool completionResolveDocumentation;
     private long serverRequest;
-    private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "return", "break", "loop", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "Bool", "Range", "String", "Function", "Scope", "Path", "Process", "Connection", "Null", "Number"];
+    private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "return", "break", "loop", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", .. LanguageTypes.Names];
 
     private JsonNode? Handle(string method, JsonElement p)
     {
@@ -59,7 +59,7 @@ internal sealed partial class LanguageServer(
         if (method == "textDocument/completion") return Completions(document, p, lazyDocumentation: completionResolveDocumentation);
         if (method == "textDocument/semanticTokens/full") return SemanticTokens(document);
         if (method == "textDocument/documentSymbol") return Symbols(documentUri, document);
-        if (method == "textDocument/definition") return Definition(documentUri, document.Source, p);
+        if (method == "textDocument/definition") return Definition(document, p);
         if (method == "textDocument/hover") return Hover(document, p);
         if (method == "textDocument/codeAction") return CodeActions(documentUri, document, p);
         return null;
@@ -69,12 +69,14 @@ internal sealed partial class LanguageServer(
         bool lazyDocumentation = false)
     {
         int offset = Offset(document.Source, parameters.GetProperty("position"));
+        if (document.Analysis?.IsTypePosition(offset) == true) return TypeCompletions(document.Source, offset);
         context ??= document.Analysis?.At(offset);
         JsonArray items = MemberCompletions(CompletionMembers(context), document.Generation, offset, lazyDocumentation);
-        if (context?.Receiver is not null && context.ReceiverKind == EditorReceiverKind.Member) return items;
+        if (context?.Receiver is not null && context.ReceiverKind == EditorReceiverKind.Member)
+            return NameCompletions(document.Source, offset, items);
         foreach (string keyword in Keywords)
             items.Add((JsonNode)Completion(keyword, null, null, null, keyword: true));
-        return items;
+        return NameCompletions(document.Source, offset, items);
     }
 
     private static IEnumerable<SemanticMember> CompletionMembers(EditorContext? context) =>
@@ -101,90 +103,89 @@ internal sealed partial class LanguageServer(
         JsonObject item = new()
         {
             ["label"] = name,
-            ["kind"] = keyword ? 14 : semanticRole switch { "function" => 3, "type" => 7, _ => type is "Function" or "Function?" ? 3 : 6 },
-            ["detail"] = signature
+            ["kind"] = keyword ? 14 : semanticRole switch { "function" => 3, "type" => 7, _ => type is "Function" or "Function?" ? 3 : 6 }
         };
+        if (signature is not null) item["detail"] = signature;
         if (description is not null) item["documentation"] = Documentation(description);
         return item;
     }
 
     private static JsonObject Documentation(string text) => new() { ["kind"] = "markdown", ["value"] = text };
 
-    private static JsonArray SourceItems(SourceText source, SourceCompletionContext context, IReadOnlyList<SourceCompletionItem> candidates)
+    private static JsonArray SourceItems(SourceText source, SourceCompletionContext context, IReadOnlyList<SourceCompletionItem> candidates, JsonArray? items = null)
     {
-        JsonArray items = [];
+        items ??= [];
         foreach (var item in candidates)
-            items.Add((JsonNode)new JsonObject
+        {
+            JsonObject candidate = new()
             {
                 ["label"] = item.Label,
                 ["kind"] = context.Kind == SourceCompletionKind.Ssh ? 18 : item.IsDirectory ? 19 : 17,
                 ["detail"] = item.Detail,
                 ["filterText"] = item.FilterText ?? context.Qualifier + (context.Quoted ? "\"" : "") + item.Label,
-                ["documentation"] = item.Detail.StartsWith("String", StringComparison.Ordinal)
-                    ? new JsonObject
-                    {
-                        ["kind"] = "markdown",
-                        ["value"] = "A String preserves whitespace exactly. On the left of `->`, a String writes literal text. To read this file, bind it as a Path:\n\n```msync\nlet file: Path = " + item.Replacement + ";\n```"
-                    } : null,
                 ["textEdit"] = new JsonObject { ["range"] = source.Range(context.Start, context.Length), ["newText"] = item.Replacement }
-            });
+            };
+            if (item.Detail.StartsWith("String", StringComparison.Ordinal))
+                candidate["documentation"] = Documentation("A String preserves literal text, including whitespace. On the left of `->` it writes that text. Keep a Path prefix such as `./`, or bind the completed value with a `Path` annotation, when you intend to read a file.");
+            items.Add((JsonNode)candidate);
+        }
         return items;
     }
 
-    private static JsonNode? Definition(string uri, SourceText sourceText, JsonElement p)
+    private static JsonNode? Definition(EditorDocument document, JsonElement parameters)
     {
-        string text = sourceText.Text;
-        int offset = Offset(sourceText, p.GetProperty("position"));
-        string word = Word(text, offset);
-        int start = offset;
-        while (start > 0 && (char.IsLetterOrDigit(text[start - 1]) || text[start - 1] == '_')) start--;
-        if (StandardModule(text[..start]) is { } module)
+        int offset = Offset(document.Source, parameters.GetProperty("position"));
+        var definitions = document.Analysis?.DefinitionsAt(offset) ?? [];
+        if (definitions.Count == 0) return null;
+        JsonObject Location(EditorLocation location) => new()
         {
-            string target = $"msync-stdlib:///0.8.0/{module}.msync";
-            string source = StandardSource(target);
-            foreach (Match match in Declaration().Matches(source))
-                if (match.Groups[2].Value == word) return new JsonObject { ["uri"] = target, ["range"] = Range(source, match.Groups[2].Index, match.Groups[2].Length) };
-            return null;
-        }
-        foreach (Match match in Declaration().Matches(text))
-            if (match.Groups[2].Value == word) return new JsonObject { ["uri"] = uri, ["range"] = sourceText.Range(match.Groups[2].Index, match.Groups[2].Length) };
-        return null;
-    }
-
-    private static string? StandardModule(string prefix)
-    {
-        Match qualifier = StandardQualifier().Match(prefix);
-        if (!qualifier.Success) return null;
-        if (qualifier.Groups["module"].Success) return qualifier.Groups["module"].Value;
-        string alias = qualifier.Groups["alias"].Value;
-        string? module = null;
-        foreach (Match declaration in StandardAlias().Matches(prefix))
-            if (declaration.Groups[1].Value == alias) module = declaration.Groups[2].Value;
-        return module;
+            ["uri"] = DocumentUri(location.SourceName),
+            ["range"] = new SourceText(location.Source).Range(location.Span.Start, location.Span.Length)
+        };
+        return definitions.Count == 1 ? Location(definitions[0])
+            : new JsonArray(definitions.Select(location => (JsonNode)Location(location)).ToArray());
     }
 
     private JsonArray Symbols(string uri, EditorDocument document)
     {
-        SourceText source = document.Source;
         JsonArray symbols = [];
-        var inferred = (document.Analysis?.Occurrences ?? []).GroupBy(item => item.Span.Start)
-            .ToDictionary(group => group.Key, group => group.MinBy(item => item.Span.Length)!);
-        foreach (Match match in Declaration().Matches(source.Text))
+        var inferred = (document.Analysis?.Occurrences ?? []).ToDictionary(item => item.Span);
+        foreach (var declaration in document.Analysis?.Symbols ?? []) Add(declaration, symbols, null);
+        return symbols;
+
+        void Add(EditorSymbol declaration, JsonArray target, string? container)
         {
-            JsonObject range = source.Range(match.Groups[2].Index, match.Groups[2].Length);
-            inferred.TryGetValue(match.Groups[2].Index, out var occurrence);
-            int kind = occurrence?.SemanticRole switch { "function" => 12, "type" => 5, _ => match.Groups[1].Value switch { "fn" => 12, "scope" => 5, _ => 13 } };
-            JsonObject symbol = new() { ["name"] = match.Groups[2].Value, ["kind"] = kind };
+            inferred.TryGetValue(declaration.SelectionSpan, out var occurrence);
+            int kind = occurrence?.SemanticRole switch
+            {
+                "function" => 12,
+                "type" => 5,
+                _ => declaration.Kind switch { EditorSymbolKind.Function => 12, EditorSymbolKind.Scope => 5, EditorSymbolKind.Field => 8, _ => 13 }
+            };
+            JsonObject symbol = new() { ["name"] = declaration.Name, ["kind"] = kind };
             if (hierarchicalDocumentSymbols)
             {
-                symbol["range"] = range;
-                symbol["selectionRange"] = range.DeepClone();
+                symbol["range"] = document.Source.Range(declaration.Span.Start, declaration.Span.Length);
+                symbol["selectionRange"] = document.Source.Range(declaration.SelectionSpan.Start, declaration.SelectionSpan.Length);
                 if (occurrence is not null) symbol["detail"] = occurrence.Signature;
+                if (declaration.Children.Count != 0)
+                {
+                    JsonArray children = [];
+                    foreach (var child in declaration.Children) Add(child, children, declaration.Name);
+                    symbol["children"] = children;
+                }
+                target.Add((JsonNode)symbol);
+                return;
             }
-            else symbol["location"] = new JsonObject { ["uri"] = uri, ["range"] = range };
-            symbols.Add((JsonNode)symbol);
+            symbol["location"] = new JsonObject
+            {
+                ["uri"] = uri,
+                ["range"] = document.Source.Range(declaration.SelectionSpan.Start, declaration.SelectionSpan.Length)
+            };
+            if (container is not null) symbol["containerName"] = container;
+            target.Add((JsonNode)symbol);
+            foreach (var child in declaration.Children) Add(child, target, declaration.Name);
         }
-        return symbols;
     }
 
     private static JsonObject SemanticTokens(EditorDocument document)
@@ -333,12 +334,6 @@ internal sealed partial class LanguageServer(
         return text[start..end];
     }
 
-    [GeneratedRegex(@"\b(fn|let|scope)\s+([\p{L}_][\p{L}\p{N}_]*)", RegexOptions.CultureInvariant)]
-    private static partial Regex Declaration();
-    [GeneratedRegex(@"(?:\$std::(?<module>\w+)|(?<alias>\w+))::\w*$", RegexOptions.CultureInvariant)]
-    private static partial Regex StandardQualifier();
-    [GeneratedRegex(@"\blet\s+(\w+)\s*=\s*\$std::(\w+)\s*;", RegexOptions.CultureInvariant)]
-    private static partial Regex StandardAlias();
     [GeneratedRegex("""(?<comment>(?<!\S)(?:\#|//)[^\r\n]*)|(?<string>"(?:[^"]|"")*")|(?<uri>[A-Za-z][A-Za-z0-9+.-]*://[^\s;{}(),"]*)|(?<word>[\p{L}_][\p{L}\p{N}_]*)|(?<operator>::|->|=>|==|!=|[?=/$|])""", RegexOptions.CultureInvariant)]
     private static partial Regex LexicalTokens();
 }

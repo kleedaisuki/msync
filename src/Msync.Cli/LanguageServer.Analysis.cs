@@ -97,7 +97,8 @@ internal sealed partial class LanguageServer
         if (method == "shutdown") StopAnalysis();
         try
         {
-            if (id is not null && (method is "textDocument/hover" or "textDocument/semanticTokens/full" or "textDocument/completion")
+            if (id is not null && (method is "textDocument/hover" or "textDocument/semanticTokens/full" or "textDocument/completion"
+                or "textDocument/documentSymbol" or "textDocument/definition")
                 && parameters.TryGetProperty("textDocument", out var descriptor)
                 && documents.TryGetValue(descriptor.GetProperty("uri").GetString()!, out var document)
                 && document.Analysis is null)

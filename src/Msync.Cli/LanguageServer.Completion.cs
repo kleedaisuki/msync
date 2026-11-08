@@ -29,25 +29,41 @@ internal sealed partial class LanguageServer
         try
         {
             work.Cancellation.Token.ThrowIfCancellationRequested();
-            EditorDocument document = work.Document;
-            int offset = Offset(document.Source, request.GetProperty("position"));
-            var editorContext = document.Analysis?.At(offset);
-            var receiver = editorContext?.Receiver;
-            var knownPath = receiver?.KnownPath ?? (receiver?.KnownText is { } text ? new PathValue(text) : null);
-            var context = SourceCompletion.Find(document.Source.Text, offset,
-                resolveEndpoint: name => CompletionEndpoint(editorContext, name),
-                receiverPath: knownPath,
-                unknownPathReceiver: (receiver?.Type is "Path" or "Path?" or "String" or "String?" or "unknown") && knownPath is null,
-                physicalEndpoint: editorContext?.PhysicalEndpoint,
-                unknownPhysicalOwner: editorContext?.HasPhysicalOwner == true && editorContext.PhysicalEndpoint is null);
-            result = context is null ? Completions(document, request, editorContext, completionResolveDocumentation)
-                : SourceItems(document.Source, context,
-                    await service.CompleteAsync(context, Environment.CurrentDirectory, HostContext.HomeDirectory, work.Cancellation.Token));
+            result = await CompletionItemsAsync(work, request, service);
         }
         catch (Exception failure) when (failure is OperationCanceledException or IOException or UnauthorizedAccessException
             or ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception or MsyncException)
         { error = failure; }
         if (!events.Writer.TryWrite(new CompletionEvent(work, result, error))) work.Cancellation.Dispose();
+    }
+
+    private async Task<JsonArray> CompletionItemsAsync(CompletionWork work, JsonElement request, SourceCompletionService service)
+    {
+        EditorDocument document = work.Document;
+        int offset = Offset(document.Source, request.GetProperty("position"));
+        var insight = document.Analysis?.At(offset);
+        string? sourceFile = Uri.TryCreate(work.Uri, UriKind.Absolute, out var uri) && uri.IsFile ? uri.LocalPath : null;
+        JsonArray? items = null;
+        var builtin = BuiltinCompletion.Find(document.Source.Text, offset, insight);
+        if (builtin is not null)
+        {
+            items = BuiltinItems(document.Source, builtin, BuiltinCompletion.Complete(builtin, Environment.CurrentDirectory, sourceFile));
+            if (!BuiltinCompletion.IncludesDirectoryEntries(builtin)) return items;
+        }
+        var receiver = insight?.Receiver;
+        var knownPath = receiver?.KnownPath ?? (receiver?.KnownText is { } text ? new PathValue(text) : null);
+        var context = SourceCompletion.Find(document.Source.Text, offset,
+            resolveEndpoint: name => CompletionEndpoint(insight, name),
+            receiverPath: knownPath,
+            unknownPathReceiver: (receiver?.Type is "Path" or "Path?" or "String" or "String?" or "unknown") && knownPath is null,
+            physicalEndpoint: insight?.PhysicalEndpoint,
+            unknownPhysicalOwner: insight?.HasPhysicalOwner == true && insight.PhysicalEndpoint is null,
+            boundNames: insight?.Bindings.Select(binding => binding.Name).ToHashSet(StringComparer.Ordinal),
+            sourceFile: sourceFile);
+        if (context is null)
+            return items ?? (PromptSyntax.InsideLiteral(document.Source.Text, offset) ? [] : Completions(document, request, insight, completionResolveDocumentation));
+        return SourceItems(document.Source, context,
+            await service.CompleteAsync(context, Environment.CurrentDirectory, HostContext.HomeDirectory, work.Cancellation.Token), items);
     }
 
     private static ConnectionValue? CompletionEndpoint(EditorContext? context, string name)

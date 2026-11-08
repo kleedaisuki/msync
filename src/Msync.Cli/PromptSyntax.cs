@@ -6,7 +6,7 @@ namespace Msync.Cli;
 
 internal static class PromptSyntax
 {
-    internal static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "return", "break", "loop", "Bool", "Range", "String", "Function", "Scope", "Path", "Process", "Connection", "Null", "Type", "Number", "Int"];
+    internal static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "return", "break", "loop", .. LanguageTypes.Names];
     internal static readonly string[] Builtins = ["$std", "$local", "$wsl", "$pwd", "$file", "$path", "$env"];
     internal static readonly string[] Commands = ["/help", "/?", "/syntax", "/quit", "/exit", "/clear", "/pwd", "/cd"];
 
@@ -145,7 +145,7 @@ internal static class PromptSyntax
     {
         if (caret == 0 || caret != text.Length) return null;
         int start = caret;
-        while (start > 0 && (char.IsLetterOrDigit(text[start - 1]) || text[start - 1] is '_' or '$' or ':' or '/')) start--;
+        while (start > 0 && (!Msync.Compiler.Syntax.NameSyntax.Boundary(text[start - 1]) || text[start - 1] is '$' or ':' or '/')) start--;
         string prefix = text[start..caret];
         if (prefix.Length > 0 && !InsideLiteral(text, start))
         {
@@ -159,7 +159,9 @@ internal static class PromptSyntax
             if (single is not null) return new(single[prefix.Length..]);
         }
         string source = text.TrimEnd();
-        string? message = source.EndsWith("->", StringComparison.Ordinal) ? "destination: Path or String; '->' returns Bool"
+        string? message = source.EndsWith("->", StringComparison.Ordinal) ? Msync.Compiler.Syntax.TypeSyntaxFacts.IsReturnTypeArrow(source)
+                ? "return type: choose a type, union or nullable type; finish with { result }"
+                : "destination: Path or String; '->' returns Bool"
             : source.EndsWith("=", StringComparison.Ordinal) && !source.EndsWith("==", StringComparison.Ordinal) ? "provide a value; use fn (...) { ... } for a function"
             : source.EndsWith("is", StringComparison.Ordinal) ? "null | not null | Type; '?' also means is null"
             : source.EndsWith("fn", StringComparison.Ordinal) ? "fn name(parameters) { result }; omit ';' on the result"

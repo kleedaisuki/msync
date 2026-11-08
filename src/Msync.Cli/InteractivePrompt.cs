@@ -1,4 +1,5 @@
 using Msync.Compiler;
+using Msync.Compiler.Syntax;
 using Msync.Core;
 using PrettyPrompt;
 using PrettyPrompt.Completion;
@@ -100,12 +101,14 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
         private IReadOnlyDictionary<string, SemanticMember> bindings = new Dictionary<string, SemanticMember>(StringComparer.Ordinal);
         private IReadOnlyDictionary<string, SemanticMember>? completionBindings;
         private EditorContext? insight;
+        private IReadOnlySet<string> boundNames = new HashSet<string>(StringComparer.Ordinal);
 
         internal void RefreshBindings(IReadOnlyList<SemanticMember> values)
         {
             bindings = Flatten(values);
             completionBindings = null;
             insight = null;
+            boundNames = bindings.Keys.ToHashSet(StringComparer.Ordinal);
         }
 
         private static IReadOnlyDictionary<string, SemanticMember> Flatten(IReadOnlyList<SemanticMember> values)
@@ -141,6 +144,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
             {
                 insight = analyze(text).At(caret);
                 completionBindings = Flatten(insight.Bindings);
+                boundNames = completionBindings.Keys.ToHashSet(StringComparer.Ordinal);
             }
             if (key.ConsoleKeyInfo.Key == ConsoleKey.Enter && key.ConsoleKeyInfo.Modifiers == 0 && incomplete(text))
                 key = new(new ConsoleKeyInfo('\n', ConsoleKey.Enter, shift: true, alt: false, control: false));
@@ -156,6 +160,17 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
 
         protected override Task<TextSpan> GetSpanToReplaceByCompletionAsync(string text, int caret, CancellationToken cancellationToken)
         {
+            if (BuiltinCompletion.Find(text, caret, insight) is { } builtin)
+            {
+                if (BuiltinCompletion.IncludesDirectoryEntries(builtin) && FindSource(text, caret) is { } physical)
+                    return Task.FromResult(new TextSpan(physical.Start, physical.Length));
+                return Task.FromResult(new TextSpan(builtin.Start, builtin.Length));
+            }
+            if (insight?.IsTypePosition == true)
+            {
+                var name = NameSyntax.SpanAt(text, caret);
+                return Task.FromResult(new TextSpan(name.Start, name.Length));
+            }
             if (FindSource(text, caret) is { } context)
                 return Task.FromResult(new TextSpan(context.Start, context.Length));
             int start = caret, end = caret;
@@ -181,12 +196,35 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
                 && (receiver.Type.Contains("Path", StringComparison.Ordinal) || receiver.Type.Contains("String", StringComparison.Ordinal) || receiver.Type == "Unknown");
             return SourceCompletion.Find(text, caret, includeBarePaths: true, resolveEndpoint: ResolveEndpoint,
                 receiverPath: path, unknownPathReceiver: unknown, physicalEndpoint: insight?.PhysicalEndpoint,
-                unknownPhysicalOwner: insight?.HasPhysicalOwner == true && insight.PhysicalEndpoint is null);
+                unknownPhysicalOwner: insight?.HasPhysicalOwner == true && insight.PhysicalEndpoint is null,
+                boundNames: boundNames);
         }
 
         protected override async Task<IReadOnlyList<CompletionItem>> GetCompletionItemsAsync(string text, int caret, TextSpan spanToBeReplaced, CancellationToken cancellationToken)
         {
+            if (BuiltinCompletion.Find(text, caret, insight) is { } builtin)
+            {
+                List<CompletionItem> builtinItems = BuiltinCompletion.Complete(builtin, Environment.CurrentDirectory)
+                    .Select(candidate => (CompletionItem)new CaretCompletionItem(candidate.Replacement, displayText: candidate.Label,
+                        filterText: candidate.FilterText ?? candidate.Label,
+                        getExtendedDescription: _ => Task.FromResult<FormattedString>(candidate.Detail)))
+                    .ToList();
+                if (BuiltinCompletion.IncludesDirectoryEntries(builtin) && FindSource(text, caret) is { } physical)
+                    foreach (var candidate in await CompleteSourceAsync(physical, cancellationToken))
+                        if (!builtinItems.Any(item => item.DisplayText == candidate.Label))
+                            builtinItems.Add(new CaretCompletionItem(candidate.Replacement, displayText: candidate.Label,
+                                filterText: candidate.FilterText ?? candidate.Label,
+                                getExtendedDescription: _ => Task.FromResult<FormattedString>(candidate.Detail)));
+                return builtinItems;
+            }
             string prefix = text[spanToBeReplaced.Start..caret];
+            if (insight?.IsTypePosition == true)
+                return LanguageTypes.Names.Where(name => name.StartsWith(prefix, StringComparison.Ordinal))
+                    .Select(name => new CaretCompletionItem(name,
+                        getExtendedDescription: _ => Task.FromResult<FormattedString>("Built-in type " + name)))
+                    .ToArray();
+            SourceCompletionContext? sourceContext = FindSource(text, caret);
+            if (sourceContext is null && PromptSyntax.InsideLiteral(text, caret)) return [];
             IReadOnlyDictionary<string, SemanticMember> symbols = completionBindings ?? bindings;
             IReadOnlyList<SemanticMember>? members = insight?.Receiver?.Members;
             if (members is not null) symbols = members.ToDictionary(member => member.Name, StringComparer.Ordinal);
@@ -194,12 +232,12 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
                 : prefix.StartsWith('$') ? PromptSyntax.Builtins.Concat(symbols.Keys) : PromptSyntax.Keywords.Concat(names()).Concat(symbols.Keys);
             if (spanToBeReplaced.Start == 0 && prefix.StartsWith('/')) words = PromptSyntax.Commands;
             List<CompletionItem> items = words.Where(word => word.StartsWith(prefix, StringComparison.Ordinal))
-                .Distinct(StringComparer.Ordinal).Order(TextSemantics.Ordinal).Select(word => new CompletionItem(word,
+                .Distinct(StringComparer.Ordinal).Order(TextSemantics.Ordinal).Select(word => (CompletionItem)new CaretCompletionItem(word,
                     getExtendedDescription: _ => Task.FromResult<FormattedString>(symbols.TryGetValue(word, out var binding) ? binding.Signature : word))).ToList();
             if (members is not null) return items;
-            if (FindSource(text, caret) is { } context)
+            if (sourceContext is { } context)
                 foreach (var candidate in await CompleteSourceAsync(context, cancellationToken))
-                    items.Add(new CompletionItem(candidate.Replacement, displayText: candidate.Label,
+                    items.Add(new CaretCompletionItem(candidate.Replacement, displayText: candidate.Label,
                         filterText: candidate.FilterText ?? prefix + candidate.Label[context.Prefix.Length..].Replace("\"", "\"\"", StringComparison.Ordinal),
                         getExtendedDescription: _ => Task.FromResult<FormattedString>(candidate.Detail)));
             return items;
