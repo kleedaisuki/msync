@@ -313,10 +313,10 @@ public sealed class Interpreter
     private string FindExecutable(string name)
     {
         if (name.Contains(Path.DirectorySeparatorChar) || name.Contains(Path.AltDirectorySeparatorChar)) return Path.GetFullPath(name, context.WorkingDirectory);
-        var extensions = OperatingSystem.IsWindows() ? (Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.CMD;.BAT").Split(';') : [""];
+        var extensions = OperatingSystem.IsWindows() && !Path.HasExtension(name) ? (Environment.GetEnvironmentVariable("PATHEXT") ?? ".EXE;.CMD;.BAT").Split(';') : [""];
         foreach (var directory in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
             foreach (var extension in extensions)
-            { var candidate = Path.Combine(directory, name + extension); if (File.Exists(candidate)) return candidate; }
+            { var candidate = Path.Combine(Path.IsPathRooted(directory) ? directory : Path.Combine(context.WorkingDirectory, directory), name + extension); if (File.Exists(candidate)) return candidate; }
         throw new MsyncException($"Executable '{name}' was not found on PATH");
     }
     private async ValueTask<Value> RunProcessAsync(PathValue executable, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)

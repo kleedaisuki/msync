@@ -83,6 +83,16 @@ try
     var secondSubmission = new Module(lazyConstants, [new("main", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.NativeCall, 1, Text: "ranges.first"), new(OpCode.Return)], TypeRef.Path), thunk]);
     Check(await session.ExecuteAsync(secondSubmission) is PathValue { Raw: "lazy-flag" }, "Escaping lazy range lost originating module/callback");
     Check(await File.ReadAllTextAsync(Path.Combine(root, "lazy-flag")) == "lazy", "Escaping lazy range could not perform selected callback I/O");
+    var previousPath = Environment.GetEnvironmentVariable("PATH");
+    try
+    {
+        Directory.CreateDirectory(Path.Combine(root, "tools"));
+        await File.WriteAllTextAsync(Path.Combine(root, "tools", "program.exe"), "executable lookup fixture");
+        Environment.SetEnvironmentVariable("PATH", "tools");
+        var lookup = Program([new PathValue("program.exe")], new(OpCode.LoadBuiltin, Text: "path"), new(OpCode.Constant, 0), new(OpCode.Qualify), new(OpCode.Return));
+        Check(await Run(lookup, new(WorkingDirectory: root)) is PathValue found && found.Raw == Path.Combine(root, "tools", "program.exe"), "PATH lookup lost explicit executable extension or captured cwd");
+    }
+    finally { Environment.SetEnvironmentVariable("PATH", previousPath); }
     var errors = new StringWriter();
     var missing = Program([new PathValue("missing"), new PathValue("b")], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Transfer), new(OpCode.Return));
     var interpreter = new Interpreter(missing, new(WorkingDirectory: root, Error: errors));
