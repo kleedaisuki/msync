@@ -1,6 +1,12 @@
 using Msync.Core;
 using Msync.Runtime;
 
+if (args.Contains("--mutable-compat", StringComparer.Ordinal))
+{
+    await MutableStateChecks.RunCompatibility();
+    return;
+}
+
 int assertions = 0;
 void Check(bool condition, string message)
 {
