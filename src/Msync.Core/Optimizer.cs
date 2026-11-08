@@ -8,13 +8,18 @@ public static class Optimizer
         if (level == 0) return FormBlocks(module with { OptimizationLevel = level });
         if (module.Functions.All(FunctionAnalysis.LiteralBody))
             return FormBlocks(ModuleOptimization.Compact(LocalSlotCompaction.Compact(module with { OptimizationLevel = level })));
-        var preparation = module.Functions.Select(_ => new Dictionary<FunctionCode, FunctionCode>(ReferenceEqualityComparer.Instance)).ToArray();
-        var graphs = module.Functions.Select(_ => new Dictionary<FunctionCode, (int Epoch, FunctionCode Result)>(ReferenceEqualityComparer.Instance)).ToArray();
+        var preparation = module.Functions.Select(_ => new Dictionary<FunctionCode, FunctionCode>(ReferenceEqualityComparer.Instance)).ToList();
+        var graphs = module.Functions.Select(_ => new Dictionary<FunctionCode, (int Epoch, FunctionCode Result)>(ReferenceEqualityComparer.Instance)).ToList();
         IReadOnlyList<InstructionEffect>? previousEffects = null;
         var effectEpoch = 0;
         var current = module with { OptimizationLevel = level, Blocks = null };
         while (true)
         {
+            while (preparation.Count < current.Functions.Count)
+            {
+                preparation.Add(new(ReferenceEqualityComparer.Instance));
+                graphs.Add(new(ReferenceEqualityComparer.Instance));
+            }
             if (current.Functions.All(FunctionAnalysis.LiteralBody))
                 return FormBlocks(ModuleOptimization.Compact(LocalSlotCompaction.Compact(current)));
             var constants = current.Constants.ToList();
@@ -39,10 +44,12 @@ public static class Optimizer
             var effects = EffectAnalysis.FunctionEffects(prepared);
             if (previousEffects is null || !effects.SequenceEqual(previousEffects)) { effectEpoch++; previousEffects = effects; }
             var functions = prepared.Functions.Select((function, index) => prepared.PreserveLocals && index == prepared.EntryPoint
-                || FunctionAnalysis.LiteralBody(function) ? function : Graph(function, index)).ToArray();
+                || FunctionAnalysis.LiteralBody(function) ? function : Evaluate(Graph(function, index))).ToArray();
             var reduced = LocalSlotCompaction.Compact(prepared with { Constants = constants, Functions = functions });
-            var inlined = FunctionInlining.Inline(reduced, level);
-            if (inlined.Functions.Select((function, index) => function.Instructions.SequenceEqual(current.Functions[index].Instructions)).All(equal => equal))
+            var specialized = level >= 2 ? InterproceduralSpecialization.Optimize(reduced, level) : reduced;
+            var inlined = FunctionInlining.Inline(specialized, level);
+            if (inlined.Functions.Count == current.Functions.Count
+                && inlined.Functions.Select((function, index) => function.Instructions.SequenceEqual(current.Functions[index].Instructions)).All(equal => equal))
             {
                 var numbered = inlined with
                 {
@@ -78,6 +85,10 @@ public static class Optimizer
                 graphs[index][result] = (effectEpoch, result);
                 return result;
             }
+
+            FunctionCode Evaluate(FunctionCode function) => level >= 2
+                && (FunctionAnalysis.Features(function) & FunctionFeatures.Iteration) != 0
+                ? CompileTimeEvaluation.Optimize(prepared, function, constants) : function;
         }
     }
     private static FunctionCode Unchanged(FunctionCode previous, FunctionCode next) => next.LocalCount == previous.LocalCount
