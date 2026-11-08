@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import stat
 import subprocess
 import tempfile
 from collections.abc import Sequence
+from ctypes import wintypes
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,6 +35,42 @@ def invoke(binary: Path, arguments: Sequence[str], cwd: Path) -> None:
 def writable(path: Path) -> None:
     if path.exists():
         path.chmod(stat.S_IREAD | stat.S_IWRITE)
+
+
+def set_link_timestamp(path: Path, nanoseconds: int) -> None:
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    set_file_time = kernel.SetFileTime
+    set_file_time.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+    ]
+    set_file_time.restype = wintypes.BOOL
+    close_handle = kernel.CloseHandle
+    close_handle.argtypes = [wintypes.HANDLE]
+    close_handle.restype = wintypes.BOOL
+    handle: int | None = create_file(str(path), 0x100, 7, None, 3, 0x02200000, None)
+    if handle is None or handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        ticks = nanoseconds // 100 + 116_444_736_000_000_000
+        modified = wintypes.FILETIME(ticks & 0xFFFF_FFFF, ticks >> 32)
+        if not set_file_time(handle, None, None, ctypes.byref(modified)):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        close_handle(handle)
 
 
 def main() -> None:
@@ -138,7 +176,7 @@ def main() -> None:
                 results["symlink"] = {"available": False, "reason": str(error)}
             else:
                 link_time = source_time + 200_000
-                os.utime(link, ns=(link_time, link_time), follow_symlinks=False)
+                set_link_timestamp(link, link_time)
                 (root / "link.msync").write_text(
                     "./source-link -> ./copied-link;\n", encoding="utf-8"
                 )
