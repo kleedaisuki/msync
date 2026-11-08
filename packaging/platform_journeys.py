@@ -164,6 +164,46 @@ def main() -> int:
             output,
         ),
         run_phase(
+            "lsp-analysis",
+            [
+                sys.executable,
+                "tests/Msync.EndToEnd/lsp_analysis_journey.py",
+                "--binary",
+                str(binary),
+            ],
+            output,
+        ),
+        run_phase(
+            "submission",
+            [
+                sys.executable,
+                "tests/Msync.EndToEnd/submission_journey.py",
+                "--binary",
+                str(binary),
+            ],
+            output,
+        ),
+        run_phase(
+            "regex-boundary",
+            [
+                sys.executable,
+                "tests/Msync.EndToEnd/regex_boundary_journey.py",
+                "--binary",
+                str(binary),
+            ],
+            output,
+        ),
+        run_phase(
+            "source-input",
+            [
+                sys.executable,
+                "tests/Msync.EndToEnd/source_input_journey.py",
+                "--binary",
+                str(binary),
+            ],
+            output,
+        ),
+        run_phase(
             "configuration",
             [sys.executable, "tests/Configuration/cli_journeys.py", str(binary)],
             output,
