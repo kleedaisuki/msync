@@ -80,7 +80,6 @@ def main() -> None:
         "configuration": [
             sys.executable,
             "tests/Configuration/cli_journeys.py",
-            "--binary",
             binary,
         ],
         "telemetry": [
