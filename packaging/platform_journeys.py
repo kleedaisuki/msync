@@ -133,6 +133,17 @@ def main() -> int:
             output,
         ),
         run_phase(
+            "directory-metadata",
+            [
+                sys.executable,
+                "tests/IO/directory_metadata.py",
+                str(binary),
+                "--output",
+                str(output / "directory-metadata.json"),
+            ],
+            output,
+        ),
+        run_phase(
             "cli",
             [
                 sys.executable,

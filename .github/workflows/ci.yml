@@ -20,6 +20,10 @@ on:
         description: Optional recorded native CI run for same-host previous-C# comparison
         type: string
         default: ''
+      previous_aot_cases:
+        description: Optional comma-separated valid workloads for the previous C# image
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -103,6 +107,7 @@ jobs:
         shell: python
         env:
           PREVIOUS_NATIVE: ${{ steps.previous.outputs.binary }}
+          PREVIOUS_AOT_CASES: ${{ inputs.previous_aot_cases }}
           PACKAGE_RID: ${{ matrix.rid }}
         run: |
           import os
@@ -110,7 +115,11 @@ jobs:
           from pathlib import Path
           aot: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
           common: list[str] = ['python', 'tests/Performance/journeys.py', '--previous-aot', os.environ['PREVIOUS_NATIVE'], '--aot', str(aot), '--samples', '31', '--warmups', '3']
-          subprocess.run([*common, '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-aot-before-after.json'], check=True)
+          selected: list[str] = []
+          for case in os.environ['PREVIOUS_AOT_CASES'].split(','):
+              if case.strip():
+                  selected.extend(['--case', case.strip()])
+          subprocess.run([*common, *selected, '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-aot-before-after.json'], check=True)
           subprocess.run([*common, '--case', 'check-batch', '--statements', '1024', '--output', '.temp/platform-results/paired-aot-compiler-1024.json'], check=True)
           subprocess.run(['python', 'tests/Performance/interactive.py', '--previous-aot', os.environ['PREVIOUS_NATIVE'], '--aot', str(aot), '--samples', '31', '--warmups', '3', '--bindings', '128', '--output', '.temp/platform-results/paired-aot-interactive.json'], check=True)
       - name: Publish the bounded native Windows copy mechanism probe
