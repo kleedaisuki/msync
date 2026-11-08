@@ -165,15 +165,25 @@ internal sealed class Configuration
     {
         Dictionary<string, object> values = new(StringComparer.Ordinal)
         {
-            ["execution.jobs"] = 4L, ["execution.max_streams"] = 16L,
-            ["execution.buffer_size"] = 65536L, ["execution.memory_limit"] = 67108864L,
-            ["execution.spool_limit"] = "unlimited", ["language.syntax"] = "0.8", ["ui.color"] = "auto",
-            ["progress.delay_ms"] = 200L, ["progress.interval_ms"] = 250L,
-            ["telemetry.enabled"] = false, ["telemetry.backend"] = "sqlite",
-            ["telemetry.queue_capacity"] = 4096L, ["telemetry.batch_size"] = 128L,
-            ["telemetry.flush_interval_ms"] = 100L, ["telemetry.busy_timeout_ms"] = 1000L,
-            ["telemetry.synchronous_full"] = false, ["telemetry.sample_per_million"] = 1000000L,
-            ["telemetry.max_sessions"] = long.MaxValue, ["telemetry.max_records_per_session"] = long.MaxValue,
+            ["execution.jobs"] = 4L,
+            ["execution.max_streams"] = 16L,
+            ["execution.buffer_size"] = 65536L,
+            ["execution.memory_limit"] = 67108864L,
+            ["execution.spool_limit"] = "unlimited",
+            ["language.syntax"] = "0.8",
+            ["ui.color"] = "auto",
+            ["progress.delay_ms"] = 200L,
+            ["progress.interval_ms"] = 250L,
+            ["telemetry.enabled"] = false,
+            ["telemetry.backend"] = "sqlite",
+            ["telemetry.queue_capacity"] = 4096L,
+            ["telemetry.batch_size"] = 128L,
+            ["telemetry.flush_interval_ms"] = 100L,
+            ["telemetry.busy_timeout_ms"] = 1000L,
+            ["telemetry.synchronous_full"] = false,
+            ["telemetry.sample_per_million"] = 1000000L,
+            ["telemetry.max_sessions"] = long.MaxValue,
+            ["telemetry.max_records_per_session"] = long.MaxValue,
             ["telemetry.max_database_bytes"] = long.MaxValue
         };
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
