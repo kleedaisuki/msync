@@ -6,6 +6,9 @@ overwrites its source with a new fixed-length generation token, so stale outputs
 cannot pass. Warm overwrite samples alternate AB/BA; no cache eviction or shell
 is involved. The timings include startup, compilation, scheduling, I/O and CLI
 output capture. This is development infrastructure, never a product dependency.
+P95 linearly interpolates sorted samples at index (n - 1) * 0.95 (type 7).
+Seven samples give only a coarse tail estimate; sample count and maximum remain
+alongside it, and the raw samples are retained.
 """
 
 from __future__ import annotations
@@ -122,6 +125,14 @@ def invoke(
     )
 
 
+def percentile(values: Sequence[float], quantile: float) -> float:
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * quantile
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+
 def summaries(samples: Sequence[Sample]) -> list[dict[str, object]]:
     groups: dict[tuple[str, str, int], list[float]] = {}
     for sample in samples:
@@ -136,6 +147,7 @@ def summaries(samples: Sequence[Sample]) -> list[dict[str, object]]:
             "size": size,
             "samples": len(values),
             "median_ms": statistics.median(values),
+            "p95_ms": percentile(values, 0.95),
             "minimum_ms": min(values),
             "maximum_ms": max(values),
             "milliseconds": values,
@@ -187,6 +199,8 @@ def main() -> None:
         "jobs": options.jobs,
         "warmups": options.warmups,
         "measurement_samples": options.samples,
+        "percentile_method": "type 7: linear interpolation at sorted index (n - 1) * p; "
+        "small sample tails are coarse estimates",
         "method": "fresh 64-byte source per invocation; warm overwrite; AB/BA; "
         "all output bytes verified outside timing; captured CLI output",
     }
