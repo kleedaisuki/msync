@@ -179,6 +179,9 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         "Host lab-alias\n  HostName also-never-contact.invalid\n",
         encoding="utf-8",
     )
+    (home / ".ssh/known_hosts").write_text(
+        "2001:db8::1 ssh-ed25519 AAAA\n", encoding="utf-8"
+    )
     environment = dict(os.environ)
     environment.update(
         HOME=str(home),
@@ -358,6 +361,18 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
                 apply_edit(text, matches[0]["textEdit"]),
                 "Connection",
             )
+        ipv6, ipv6_items = complete(
+            "let selected = ssh://user@[2001" + CARET + "];\ndecltype(selected)\n"
+        )
+        ipv6_edits = [
+            item
+            for item in ipv6_items
+            if item.get("textEdit", {}).get("newText") == "[2001:db8::1]"
+        ]
+        assert len(ipv6_edits) == 1, ipv6_items
+        ipv6_completed = apply_edit(ipv6, ipv6_edits[0]["textEdit"])
+        assert "ssh://user@[2001:db8::1]" in ipv6_completed, ipv6_completed
+        native_run(binary, environment, workspace, ipv6_completed, "Connection")
         for marked in [
             "# ./pl" + CARET,
             "// ssh://for" + CARET,

@@ -306,7 +306,7 @@ internal static class SourceCompletion
         int at = text.LastIndexOf('@', caret - 1, caret - start);
         if (at >= start) start = at + 1;
         int end = start, brackets = 0;
-        while (end < text.Length && !Boundary(text[end]))
+        while (end < text.Length && (!Boundary(text[end]) || text[end] is '[' or ']'))
         {
             if (text[end] == '[') brackets++;
             if (text[end] == ']') brackets--;
