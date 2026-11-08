@@ -1013,3 +1013,107 @@ not the later REPL/Windows-fixed closing payload. Its parser still lacked `-O3`;
 `1d8839b` repairs that user-facing option and final native acceptance owns its
 coverage. The O3 Core pipeline itself is exercised by the native component
 comparison above.
+
+## Final default-O2 product: same-host Rust/C# controls
+
+The bounded linear-effect repair is `0c17264`; final package source
+`372296b2a72821a888c01502f445376f611fd392` adds only platform workflow selection.
+It accepts only a proven straight-line scalar stack with no locals, parameters,
+captures, calls, branches or unsupported operations. Typed transfer operands,
+original transfer-result Pops, spans and effect order are retained. Other shapes
+use the ordinary graph pipeline. In particular, a source spelling that lowers
+to PathJoin is not silently treated as the simpler literal-only shape.
+
+Seven paired actual CLI checks of 1,024 literal transfers compare the functionally
+accepted pre-repair default-O2 package (`f009`, SHA
+`74e62569108e65e42a4076a1ed5559256de70d83f05d175ac064173babd894ee`)
+with the final package: **35.508 / 41.940 → 24.404 / 28.127 ms p50 / p95**.
+That measured 11 ms median reduction supports adopting the bounded path.
+`final-native/nf-profit.json` retains every sample. The final source/object/
+executable byte, metadata and error-fallback journeys pass on both native OSes;
+their final fixture uses direct filename atoms rather than `./` spellings that
+correctly select the full graph fallback.
+
+Final image identities:
+
+| Role | Linux SHA-256 | Windows SHA-256 |
+| --- | --- | --- |
+| Optimized Rust 0.7.3 | `dc9a283064556fe517682afa5077d0228bb29e4f6c2150f1dbdbdc519634ad44` | `ccdfa5ef1dc3655147241ea55ad3cfd1197c1bc2e1463ac4e49434666aa83c05` |
+| Accepted C# `2b43454`, actual default O1 | `4a0a861a3656f69320845e25c72407c1c884c6765df670c76eead58900a05fc8` | `f255f77212e6437503b4358e13a73f1b2ff30c88910ae91bd515f08f22925502` |
+| Final C# `372296b`, actual default O2 | `6106c20a0c9e119f917419a07db2e5b7f7e383138e0d4f4ccf7bd65acb0e9225` | `8cb08a0d75c361ccbd5c5481641f818f00d7702509f3d90b40367019ed0affa3` |
+
+The Linux comparison runs all three frozen native payloads on the same Debian
+host used above, with Python 3.15.2. Three warmups precede 31 samples per image
+for the small/value CLI cases and nine for the 1,024-transfer check and tree.
+The six-round ABC/BCA/CAB/CBA/ACB/BAC rotation balances image positions; each
+version uses its actual syntax and object format. Exact bytes, tree member
+counts, native modes and nanosecond modification times are checked outside
+timing. Values are p50 / p95 milliseconds:
+
+| Linux actual journey | Rust 0.7.3 | Current C# O1 | Final C# O2 |
+| --- | ---: | ---: | ---: |
+| Startup | 3.565 / 4.253 | 10.604 / 12.656 | 11.902 / 13.365 |
+| Check one transfer | 4.655 / 5.952 | 11.066 / 13.829 | 12.140 / 16.643 |
+| Check 128 transfers | 24.180 / 27.970 | 12.655 / 14.683 | 14.444 / 18.903 |
+| Check 1,024 transfers | 1881.037 / 2032.875 | 21.428 / 24.818 | 24.057 / 30.632 |
+| 4 KiB copy, source | 9.009 / 10.413 | 15.320 / 17.224 | 16.724 / 20.353 |
+| 4 KiB copy, object | 8.936 / 10.244 | 14.870 / 18.945 | 16.167 / 18.987 |
+| Check 128 function bindings | 6.818 / 7.916 | 13.406 / 16.561 | 23.038 / 27.988 |
+| 128 bindings and write, source | 10.777 / 11.777 | 18.207 / 20.985 | 27.213 / 34.299 |
+| 128 bindings and write, object | 10.255 / 11.234 | 16.791 / 18.464 | 15.964 / 18.449 |
+| 128 bindings and write, executable | 8.995 / 10.497 | 15.254 / 18.788 | 15.396 / 16.803 |
+| 256 × 4 KiB tree, object | 342.106 / 363.451 | 362.966 / 394.853 | 371.705 / 399.982 |
+
+This is not a claim of universal superiority over the previous C# product.
+Final startup and one-file source operations cost about 1.3–1.4 ms more on this
+host. The 128-binding source/check path costs another 9–10 ms, whereas object
+execution improves slightly and executable startup dominates the nearly equal
+bound case. The extra cost is observed in compilation/checking, not a measured
+new I/O bottleneck; these data do not isolate a single frontend mechanism.
+The tree distributions overlap broadly (final range 304–407 ms); their medians
+remain reported rather than replaced by a favorable sample. The large Rust
+transfer-check result is specific to this explicit 1,024-statement workload,
+not an extrapolation to all Rust programs or bulk transfer throughput.
+
+Native Windows Server 2025, four AMD64 CPUs and Python 3.14.10 independently
+compare the same product roles with three warmups and nine samples. These
+figures are same-runner comparisons, never ratios against the Linux host:
+
+| Windows actual journey | Rust 0.7.3 | Current C# O1 | Final C# O2 |
+| --- | ---: | ---: | ---: |
+| Check 128 function bindings | 6.387 / 6.997 | 10.056 / 10.685 | 12.018 / 13.070 |
+| 128 bindings and write, source | 9.796 / 62.495 | 12.425 / 13.165 | 15.025 / 15.565 |
+| 128 bindings and write, object | 8.495 / 9.145 | 11.093 / 11.513 | 10.947 / 11.259 |
+| 128 bindings and write, executable | 7.670 / 8.124 | 10.857 / 11.017 | 10.260 / 10.681 |
+| 4 KiB copy, source | 8.776 / 8.994 | 12.010 / 12.537 | 12.087 / 12.489 |
+
+The preserved Rust source-run tail outlier is included. Windows reproduces the
+source-compilation tradeoff and small object/bound improvement; ordinary file
+copy is approximately unchanged against current C# in this phase.
+
+Finally, the real source-inclusive scheduler probe overwrites its 64-byte input
+generation before **every** run and checks every destination after completion.
+It uses four jobs, one warmup and three measured AB/BA pairs:
+
+| Linux workload | Current C# p50 / p95 ms | Final C# p50 / p95 ms |
+| --- | ---: | ---: |
+| 100 independent copies | 71.055 / 77.081 | 80.308 / 80.994 |
+| 1,000 independent copies | 658.999 / 666.310 | 638.231 / 668.564 |
+| 100 dependent-chain copies | 155.384 / 167.862 | 166.299 / 172.749 |
+| 1,000 dependent-chain copies | 1439.394 / 1528.183 | 1545.291 / 1596.479 |
+
+The chain cost is retained as an observed tradeoff, not declared a speedup.
+This probe includes source compilation, startup, scheduling and I/O, so the
+difference is not attributed solely to the resource DAG. Three-sample p95 is
+descriptive, not a tail guarantee. The separate structural 100/1,000-file probe
+establishes linear resource-index visits; that property does not prove a lower
+whole-process latency by itself.
+
+Complete Linux records and frozen origins are
+`.temp/optimizer-performance/final-native/{origins,threeway-cli,threeway-check1024,threeway-tree,scheduler}.json`.
+Windows records are under
+`artifacts/ci/42518195849/windows/native-win-x64-372296b2a72821a888c01502f445376f611fd392/.temp/platform-results/final-threeway.json`.
+No further product rebuild is implied by these notes: the accepted package
+hashes above, VSIX, real VS Code host and cross-platform functional acceptance
+belong to the integration record. For repeated execution, compile/bind once and
+reuse `.mexe`; do not infer its latency from the slower complete-source path.
