@@ -30,7 +30,8 @@ class WslAuthFixture:
         self.password: str = password
         self.native_ssh: Path = Path(os.environ["WINDIR"]) / "System32" / "OpenSSH"
         identifier: str = uuid.uuid4().hex
-        self.guest: str = "/tmp/msync-auth-" + identifier
+        # OpenSSH StrictModes checks key ancestors, so /tmp is not an auth root.
+        self.guest: str = "/home/msync-auth-" + identifier
         self.user: str = "msync_auth_" + identifier[:8]
         self.remote: str = self.guest + "/remote"
         self.config: Path = self.root / "ssh_config"
