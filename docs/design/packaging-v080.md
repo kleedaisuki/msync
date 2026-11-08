@@ -142,6 +142,26 @@ authentication, not already accepted formatting/guide/color scenarios. The
 current [workflow-dispatch contract](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onworkflow_dispatchinputs)
 allows 25 inputs; this workflow uses 11.
 
+## Mutable-state and optimizer native acceptance
+
+The `state` selection in `ci.yml` targets the mutable language and effect-aware
+execution pipeline without repeating the accepted editing or transport matrix.
+It runs actual CLI mutable programs through source, relocatable and bound
+artifacts, causal process scheduling, persistent REPL recovery, and focused
+presentation/navigation checks. `packaging/state_contracts.py` separately labels
+managed equivalence/structural checks, old format-1/2 compatibility and actual
+namespace/symlink publication on each target OS; Windows requires the real
+symlink operations rather than silently skipping those cases.
+
+Windows also publishes one Native AOT Components observation image and retains
+raw O1 optimizer timings/allocations for tiny/32/128 call/Scope workloads and
+128/1024 ordinary-transfer compilation. Those are observations, not timing
+thresholds. The selected Windows CLI comparison uses the recorded Rust 0.7.3
+image from run `42471357057`, the frozen C# editing image from `42506951530`,
+and the current native payload on the same runner. Their exact source/hash
+identities are recorded by `packaging/windows_threeway.py`; no Cargo rebuild is
+needed, and an expired optional historical artifact is reported explicitly.
+
 ## Dependency graph ownership
 
 `global.json` pins SDK 10.0.403, including its ILCompiler/ILLink 10.0.14 tool

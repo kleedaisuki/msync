@@ -21,6 +21,7 @@ class Contract:
 
 
 OPTIMIZER_CONTRACTS = (
+    Contract("constant-interner", "ConstantInterner/ConstantInterner.csproj"),
     Contract(
         "optimization-graph", "OptimizationGraph/Msync.OptimizationGraph.Tests.csproj"
     ),
