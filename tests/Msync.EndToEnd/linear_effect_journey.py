@@ -34,17 +34,17 @@ def journey(binary: Path, root: Path) -> int:
     fixtures: list[tuple[str, str, dict[str, bytes]]] = [
         (
             "literal-chain",
-            '"alpha 世界" -> ./alpha; "beta" -> ./beta; ./alpha -> ./copy;',
+            '"alpha 世界" -> alpha.bin; "beta" -> beta.bin; alpha.bin -> copy.bin;',
             {
-                "alpha": "alpha 世界".encode(),
-                "beta": b"beta",
-                "copy": "alpha 世界".encode(),
+                "alpha.bin": "alpha 世界".encode(),
+                "beta.bin": b"beta",
+                "copy.bin": "alpha 世界".encode(),
             },
         ),
         (
             "discarded-literals",
-            '"discarded"; ./not-read; "chosen" -> ./chosen;',
-            {"chosen": b"chosen"},
+            '"discarded"; not-read.bin; "chosen" -> chosen.bin;',
+            {"chosen.bin": b"chosen"},
         ),
         (
             "qualified-fallback",
