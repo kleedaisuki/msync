@@ -12,7 +12,7 @@ public static partial class TransferEngine
         ConnectionValue sourceConnection = Remote(selection.Directory)!;
         ConnectionValue? targetConnection = Remote(destination);
         bool sameEndpoint = sourceConnection == targetConnection;
-        bool replace = destination.Raw.EndsWith("/.", StringComparison.Ordinal);
+        bool replace = IsReplacement(destination);
         string script = SelectionPrelude + SelectionQueryScript + SelectionDecode + (sameEndpoint ? "\nset -- \"$destination_raw\" \"$selection_mode\" \"$@\"\n" + CohortInstallScript : SelectionArchive);
         using Process source = Start(sourceConnection, script, [selection.Directory.Raw, destination.Raw, Mode(container: true, replace), selection.Recursive ? "recursive" : "flat"], redirectInput: true);
         using CancellationTokenRegistration registration = cancellationToken.Register(() => Kill(source));
@@ -91,10 +91,10 @@ public static partial class TransferEngine
             TransferFiles.RemoveNode(target);
             Directory.CreateDirectory(target);
             foreach (var source in sources)
-                await TransferFiles.CopyNodeAsync(source.Source, Path.Combine(target, Basename(source.Path.Raw)), cancellationToken, context.BufferSize);
+                await TransferFiles.CopyNodeAsync(source.Source, Path.Combine(target, Basename(source.Path)), cancellationToken, context.BufferSize);
             return;
         }
-        var retained = sources.Select(source => (Name: Basename(source.Path.Raw), Nodes: TransferOverlap.CaptureTree(source.Source))).ToArray();
+        var retained = sources.Select(source => (Name: Basename(source.Path), Nodes: TransferOverlap.CaptureTree(source.Source))).ToArray();
         string parent = Path.GetDirectoryName(target) ?? ".";
         Directory.CreateDirectory(parent);
         string stage = Path.Combine(parent, $".msync-{Guid.NewGuid():N}");

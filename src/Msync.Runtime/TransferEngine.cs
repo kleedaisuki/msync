@@ -29,8 +29,8 @@ public static partial class TransferEngine
         }
         else sources.Add(source);
         if (sources.Count == 0) return true;
-        bool container = cohort || EndsInSeparator(target.Raw);
-        bool replace = target.Raw.EndsWith("/.", StringComparison.Ordinal) || OperatingSystem.IsWindows() && target.Raw.EndsWith("\\.", StringComparison.Ordinal);
+        bool container = cohort || EndsInSeparator(target);
+        bool replace = IsReplacement(target);
         ValidateNames(sources, container);
         ConnectionValue? remoteTarget = Remote(target);
         PathValue[] remoteSources = sources.OfType<PathValue>().Where(path => Remote(path) is not null).ToArray();
@@ -70,8 +70,8 @@ public static partial class TransferEngine
         if (source is RangeValue { Resolve: not null } or RangeValue { Selection: not null })
             return await CopyAsync(source, destination, context, cancellationToken);
         PathValue target = context.AsPath(destination);
-        bool container = source is RangeValue || EndsInSeparator(target.Raw);
-        bool replace = target.Raw.EndsWith("/.", StringComparison.Ordinal) || OperatingSystem.IsWindows() && target.Raw.EndsWith("\\.", StringComparison.Ordinal);
+        bool container = source is RangeValue || EndsInSeparator(target);
+        bool replace = IsReplacement(target);
         if (context.DryRun)
         {
             await context.Output.WriteLineAsync($"{source} -> {target}");
@@ -136,7 +136,7 @@ public static partial class TransferEngine
         {
             if (source is not PathValue path)
                 throw new MsyncException("A container transfer requires Path sources with basenames; a String source is literal data.");
-            string name = Basename(path.Raw);
+            string name = Basename(path);
             if (!names.Add(name)) throw new MsyncException($"Selected sources collide at destination name '{name}'.");
         }
     }
@@ -152,19 +152,19 @@ public static partial class TransferEngine
     private static string TargetPath(PathValue target, Value source, RuntimeContext context, bool container)
     {
         string path = target.LocalPath(context.WorkingDirectory, context.HomeDirectory);
-        if (target.Raw.EndsWith("/.", StringComparison.Ordinal) || OperatingSystem.IsWindows() && target.Raw.EndsWith("\\.", StringComparison.Ordinal))
-            path = path.Length == 2 ? Path.DirectorySeparatorChar.ToString() : path[..^2];
-        return container && source is PathValue item ? Path.Combine(path, Basename(item.Raw)) : path;
+        if (IsReplacement(target)) path = Path.GetDirectoryName(path)!;
+        return container && source is PathValue item ? Path.Combine(path, Basename(item)) : path;
     }
 
-    private static string Basename(string path) => Path.GetFileName(path.TrimEnd('/', OperatingSystem.IsWindows() ? '\\' : '/'));
-    private static bool EndsInSeparator(string path) => path.EndsWith('/') || OperatingSystem.IsWindows() && path.EndsWith('\\');
+    private static string Basename(PathValue path) => PathSemantics.FileName(path);
+    private static bool EndsInSeparator(PathValue path) => path.Raw.EndsWith('/') || PathSemantics.UsesWindowsPaths(path) && path.Raw.EndsWith('\\');
+    private static bool IsReplacement(PathValue path) => path.Raw.EndsWith("/.", StringComparison.Ordinal) || PathSemantics.UsesWindowsPaths(path) && path.Raw.EndsWith("\\.", StringComparison.Ordinal);
     private static ConnectionValue? Remote(PathValue path) => path.Connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } connection ? connection : null;
 
     private static async Task UploadAsync(IReadOnlyList<Value> sources, PathValue target, RuntimeContext context, bool container, bool replace, bool cohort, CancellationToken cancellationToken)
     {
         ConnectionValue connection = Remote(target)!;
-        string name = sources[0] is PathValue first ? Basename(first.Raw) : "";
+        string name = sources[0] is PathValue first ? Basename(first) : "";
         string[] args = [target.Raw, Mode(container, replace), name, cohort ? "cohort" : "single", sources[0] is StringValue ? "literal" : "filesystem"];
         using Process process = Start(connection, UploadScript, args, redirectInput: true);
         using CancellationTokenRegistration registration = cancellationToken.Register(() => Kill(process));
@@ -178,7 +178,7 @@ public static partial class TransferEngine
                     foreach (Value source in sources)
                     {
                         PathValue path = (PathValue)source;
-                        await WriteArchiveNodeAsync(writer, path.LocalPath(context.WorkingDirectory, context.HomeDirectory), "payload/" + Basename(path.Raw), cancellationToken);
+                        await WriteArchiveNodeAsync(writer, path.LocalPath(context.WorkingDirectory, context.HomeDirectory), "payload/" + Basename(path), cancellationToken);
                     }
                 }
                 else if (sources[0] is PathValue path)
@@ -254,7 +254,7 @@ public static partial class TransferEngine
         using TarReader reader = new(archive, leaveOpen: true);
         string? root = null;
         string destination = target.LocalPath(context.WorkingDirectory, context.HomeDirectory);
-        if (replace && target.Raw.EndsWith("/.", StringComparison.Ordinal)) destination = destination[..^2];
+        if (replace) destination = Path.GetDirectoryName(destination)!;
         bool initialized = false;
         List<(string Path, TarEntry Entry)> directories = [];
         while (await reader.GetNextEntryAsync(copyData: false, cancellationToken) is { } entry)
@@ -345,7 +345,7 @@ public static partial class TransferEngine
         ConnectionValue sourceConnection = Remote(paths[0])!;
         ConnectionValue destinationConnection = Remote(target)!;
         using Process download = Start(sourceConnection, DownloadScript(paths.Length), paths.Select(path => path.Raw).ToArray(), redirectInput: false);
-        string name = Basename(paths[0].Raw);
+        string name = Basename(paths[0]);
         string[] args = [target.Raw, Mode(container, replace), name, cohort ? "cohort" : "single", "filesystem"];
         using Process upload = Start(destinationConnection, RelayScript, args, redirectInput: true);
         using CancellationTokenRegistration registration = cancellationToken.Register(() => { Kill(download); Kill(upload); });
