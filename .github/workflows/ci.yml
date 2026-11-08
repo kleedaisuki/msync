@@ -74,6 +74,15 @@ jobs:
         run: |
           $version = python packaging/build.py --version
           ./packaging/windows/test.ps1 -InstallerPath "dist/msync-$version-windows-x86_64-setup.exe"
+      - name: Verify native path projection and historical artifact decoding on this host
+        if: ${{ !cancelled() && steps.package.outcome == 'success' && hashFiles('tests/PathProjection/Msync.PathProjection.Tests.csproj') != '' }}
+        shell: python
+        run: |
+          import subprocess
+          from pathlib import Path
+          subprocess.run(['dotnet', 'build', 'tests/PathProjection/Msync.PathProjection.Tests.csproj', '-c', 'Release', '--artifacts-path', 'artifacts/path-projection-contract', '-p:RestoreLockedMode=true'], check=True)
+          contract: Path = Path('artifacts/path-projection-contract/bin/Msync.PathProjection.Tests/release/Msync.PathProjection.Tests.dll')
+          subprocess.run(['dotnet', str(contract)], check=True)
       - name: Install the pinned native Windows console fixture dependency
         id: conpty
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.package.outcome == 'success' && hashFiles('tests/Msync.EndToEnd/windows_terminal_journey.py') != '' }}
