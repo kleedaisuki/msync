@@ -148,7 +148,10 @@ def measure(binary: Path, rows: int, burst: int) -> dict[str, object]:
             )
         completions, completion = client.request(
             "textDocument/completion",
-            {"textDocument": {"uri": uri}, "position": {"line": rows, "character": 4}},
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": rows + 1, "character": 0},
+            },
         )
         burst_time = (time.perf_counter_ns() - started) / 1_000_000
         labels = {item["label"] for item in completions}
