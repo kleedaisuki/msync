@@ -453,6 +453,68 @@ def alias_path_queries(binary: Path, directory: Path) -> dict[str, int]:
         client.close()
 
 
+def compressed_scope_queries(binary: Path, directory: Path) -> dict[str, int]:
+    home = directory / "compact-home"
+    (home / ".ssh").mkdir(parents=True)
+    (home / ".ssh/config").write_text(
+        "Host forge\n HostName never-contact.invalid\n", encoding="utf-8"
+    )
+    (directory / "space compact.txt").write_bytes(b"SPACE")
+    environment = dict(os.environ)
+    environment.update(HOME=str(home), USERPROFILE=str(home), NO_COLOR="1")
+    client = Client(binary, cwd=directory, environment=environment)
+    uri = (directory / "compact-scope.msync").as_uri()
+    cases = [
+        (
+            "scope C {remote:ssh://for" + CARET + "};",
+            "ssh://forge",
+            "remote",
+            "Connection",
+        ),
+        (
+            "scope C {root:./spa" + CARET + "};",
+            '"./space compact.txt"',
+            "root",
+            "String",
+        ),
+    ]
+    try:
+        client.request(
+            "initialize", {"rootUri": directory.as_uri(), "capabilities": {}}
+        )
+        for version, (marked, replacement, member, expected_type) in enumerate(
+            cases, 1
+        ):
+            offset = marked.index(CARET)
+            text = marked.replace(CARET, "")
+            notify(client, uri, version, text, opening=version == 1)
+            response, _ = client.request(
+                "textDocument/completion",
+                {
+                    "textDocument": {"uri": uri},
+                    "position": lsp_position(text, offset),
+                },
+            )
+            matches = [
+                item
+                for item in response
+                if item.get("textEdit", {}).get("newText") == replacement
+            ]
+            assert len(matches) == 1, (marked, replacement, response)
+            edited = apply_edit(text, matches[0]["textEdit"])
+            assert edited == "scope C {" + member + ":" + replacement + "};", edited
+            native_run(
+                binary,
+                environment,
+                directory,
+                edited + f"\nlet selected = C::{member};\ndecltype(selected)\n",
+                expected_type,
+            )
+        return {"compact_scope_field_completions": len(cases)}
+    finally:
+        client.close()
+
+
 def remote_queries(
     binary: Path,
     directory: Path,
@@ -657,6 +719,7 @@ def main() -> None:
         result = run(binary, working)
         result.update(lexical_scope_queries(binary, working))
         result.update(alias_path_queries(binary, working))
+        result.update(compressed_scope_queries(binary, working))
         if arguments.wsl_distro:
             result.update(wsl(binary, working, arguments.wsl_distro))
         if arguments.ssh_fixture:
