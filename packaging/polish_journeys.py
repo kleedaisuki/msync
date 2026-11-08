@@ -35,6 +35,7 @@ def main() -> int:
             "completion",
             "editing-regression",
             "reference",
+            "identifier-return",
             "navigation",
             "repl-palette",
             "terminal-detail",
@@ -80,6 +81,7 @@ def main() -> int:
         ("completion", "completion_journey.py"),
         ("editing-regression", "editing_regression_journey.py"),
         ("reference", "reference_journey.py"),
+        ("identifier-return", "identifier_return_journey.py"),
         ("navigation", "navigation_journey.py"),
         ("repl-palette", "repl_palette_journey.py"),
     ]

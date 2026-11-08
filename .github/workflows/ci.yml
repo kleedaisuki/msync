@@ -157,7 +157,7 @@ jobs:
                   for phase in ('presentation', 'lsp-analysis', 'lsp-response', 'completion'):
                       arguments.extend(['--phase', phase])
               if os.environ['POLISH_EDITING'] == 'true':
-                  for phase in ('editing-regression', 'completion', 'reference', 'navigation', 'repl-palette'):
+                  for phase in ('editing-regression', 'completion', 'reference', 'identifier-return', 'navigation', 'repl-palette'):
                       arguments.extend(['--phase', phase])
                   if os.name != 'nt':
                       arguments.extend(['--phase', 'terminal-detail'])
