@@ -204,6 +204,30 @@ def remote_overlap(journey: Journey) -> None:
     )
 
 
+def remote_selector(journey: Journey) -> None:
+    if os.name == "nt":
+        return
+    _, calls, _ = prepare_remote(journey)
+    source = journey.directory / "source"
+    source.mkdir()
+    (source / "a").write_bytes(b"alpha")
+    (source / "b").write_bytes(b"beta")
+    executions = 0
+
+    def verify() -> None:
+        nonlocal executions
+        executions += 1
+        journey.expect("out/a", b"alpha")
+        journey.expect("out/b", b"beta")
+        observed = len(calls.read_text(encoding="utf-8").splitlines())
+        assert observed == executions, ("native SSH clients", executions, observed)
+
+    journey.run(
+        f'let remote = ssh://loopback; (remote::"{source}" / <.+>) -> ./out/;\n',
+        verify,
+    )
+
+
 CASES: dict[str, Callable[[Journey], None]] = {
     "posix-backslash": posix_backslash,
     "annotated-return": annotated_return,
@@ -211,6 +235,7 @@ CASES: dict[str, Callable[[Journey], None]] = {
     "remote-process": remote_process,
     "remote-replace": remote_replace,
     "remote-overlap": remote_overlap,
+    "remote-selector": remote_selector,
 }
 
 

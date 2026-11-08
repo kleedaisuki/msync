@@ -106,6 +106,26 @@ place this overlap-only owned snapshot outside the selected source. Do not put
 snapshots on disjoint normal copies or prohibit ordinary overlapping trees.
 The transport owner is integrating the correction.
 
+### P1: Implicit remote selection authenticates metadata separately
+
+`(remote::"/absolute/source" / <.+>) -> ./out/;` is one implicit finite Range
+transfer. `SelectAsync` first asks the remote filesystem native for an iterator;
+enumerating it opens an SSH process. `TransferEngine` then opens another native
+SSH process for the selected payload. The initial CLI copied the correct `a`
+and `b` bytes but launched two clients instead of one. This violates the
+authoritative transfer admission model: metadata and bytes for one selected
+finite transfer belong to one native SSH channel. The existing direct runtime
+cohort fixtures supply already-enumerated Path values, so do not cover this
+source-level selector journey.
+
+Remedy: preserve a selected endpoint query in the range model until transfer
+admission, and exchange enumeration, selection and payload on that one live
+channel. Keep the language's regex semantics rather than translating it
+unconditionally to an incompatible server regex dialect. Explicit `for` loops
+retain their separate iteration semantics. The runtime owner has this finding.
+The `remote-selector` review case asserts both copied bytes and exact native
+client launches from source and source-free artifacts.
+
 ## Initial evidence and scope
 
 The initial frozen managed CLI distribution was copied under
