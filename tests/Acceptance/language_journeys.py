@@ -377,6 +377,7 @@ JOURNEYS: tuple[Journey, ...] = (
         'if value is not null { value -> result.txt; } else { "missing" -> result.txt; };',
         {"result.txt": b"input"},
         {"input.txt": b"input"},
+        artifacts=True,
     ),
     Journey("null_equality_rejected", "let equal = null == null;", {}, accepted=False),
     Journey(

@@ -4,7 +4,7 @@
 
 The final extracted Linux Native AOT package passes **16/16 focused changed-
 contract journeys**, each through source, source-free `.mso`, and bound `.mexe`
-execution (96 actual CLI subprocesses). The earlier defects recorded below are
+execution. The earlier defects recorded below are
 preserved as regression rationale; all identified language/artifact failures
 have been corrected. Unchanged earlier successful contracts were not subjected
 to another full sweep. See the final-package section for the frozen identity.
@@ -274,7 +274,12 @@ source, compiled and bound without effects, had its source removed, and then
 executed from both binary stages with exact file-byte assertions.
 
 The exact selection is recorded in
-`.temp/acceptance-v080/final-native-changed-contracts.json`; it is reproducible
+`.temp/acceptance-v080/final-native-changed-contracts.json`, with the focused
+`is not null` artifact extension in
+`.temp/acceptance-v080/final-native-is-not-artifacts.json`. That existing case
+initially exercised source only; its artifact flag was corrected, and only that
+case was rerun against the identical executable/dependency manifest. The other
+fifteen accepted journeys were not repeated. The selection is reproducible
 using `tests/Acceptance/language_journeys.py BINARY --artifacts` with the sixteen
 case names listed by that report. The former stale-variadic package failure is
 resolved in this actual image, as are nullable-regex verifier false rejections.
