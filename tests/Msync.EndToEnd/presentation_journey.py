@@ -196,9 +196,9 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
         )
         client.input.flush()
         checks = [
-            ("fn", 0, "function"),
-            ("scope", 0, "type"),
-            ("scope", 1, "variable"),
+            ("fn", 0, "keyword"),
+            ("scope", 0, "keyword"),
+            ("scope", 1, "keyword"),
             ("MyClass", 0, "type"),
             ("MyClass", 1, "type"),
             ("new", 0, "function"),
