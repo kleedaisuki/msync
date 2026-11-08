@@ -60,6 +60,7 @@ internal static class Program
 
     public static int Main(string[] args)
     {
+        if (EditorAnalysisProbe.TryRun(args)) return 0;
         if (SourceReadProbe.TryRun(args)) return 0;
         if (TypeValueChecks.TryRun(args)) return 0;
         if (args.Contains("--check-interner", StringComparer.Ordinal)) { InternerChecks.Run(); return 0; }

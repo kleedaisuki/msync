@@ -16,6 +16,8 @@ public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrence
     internal EditorContextCollector? Contexts { get; init; }
     public IReadOnlyList<SourceSpan> RegexSpans { get; init; } = [];
     public EditorContext At(int offset) => Contexts?.At(offset) ?? new(RecoveryBindings ?? [], null);
+    public SemanticMember? Resolve(int offset, string name) => Contexts is { } contexts ? contexts.Resolve(offset, name)
+        : RecoveryBindings?.FirstOrDefault(binding => binding.Name == name);
 }
 
 public static class EditorCompiler
@@ -35,7 +37,7 @@ public static class EditorCompiler
     {
         Compilation compilation = new("", "<builtins>", 0);
         Dictionary<ScopeInfo, ScopeDescription> scopes = [];
-        return compilation.BuiltinInfos().Select(pair => DescribeMember(pair.Key, [pair.Value], scopes, members: true)).ToArray();
+        return compilation.BuiltinInfos().Select(pair => DescribeMember(pair.Key, pair.Value, scopes, members: true)).ToArray();
     }
 
     internal static EditorContext DescribeContext(IReadOnlyList<System.Collections.Immutable.ImmutableDictionary<string, Binding>> environments,
@@ -43,8 +45,13 @@ public static class EditorCompiler
         ConnectionValue? physicalEndpoint = null, bool hasPhysicalOwner = false)
     {
         Dictionary<ScopeInfo, ScopeDescription> scopes = [];
-        SemanticMember[] bindings = environments.Count == 0 ? [] : environments[0].Keys.Where(name => !name.StartsWith('$') && environments.All(environment => environment.ContainsKey(name)))
-            .Select(name => DescribeMember(name, environments.Select(environment => environment[name].Info), scopes, members: true)).ToArray();
+        SemanticMember[] bindings = environments.Count switch
+        {
+            0 => [],
+            1 => DescribeBindings(environments[0], scopes),
+            _ => environments[0].Keys.Where(name => !name.StartsWith('$') && environments.All(environment => environment.ContainsKey(name)))
+                .Select(name => DescribeMember(name, environments.Select(environment => environment[name].Info), scopes, members: true)).ToArray()
+        };
         SemanticMember? receiver = receivers.Count == 0 ? null : DescribeMember("", receivers, scopes, members: true);
         return new(bindings, receiver, kind, physicalEndpoint, hasPhysicalOwner);
     }
@@ -52,8 +59,30 @@ public static class EditorCompiler
     internal static IReadOnlyList<SemanticMember> DescribeBindings(IReadOnlyDictionary<string, Binding> bindings)
     {
         Dictionary<ScopeInfo, ScopeDescription> scopes = [];
-        return bindings.Where(pair => !pair.Key.StartsWith('$')).Select(pair => DescribeMember(pair.Key, [pair.Value.Info], scopes, members: true)).ToArray();
+        return DescribeBindings(bindings, scopes);
     }
+
+    internal static SemanticMember? ResolveContext(IReadOnlyList<System.Collections.Immutable.ImmutableDictionary<string, Binding>> environments,
+        IReadOnlyList<Info> receivers, EditorReceiverKind kind, string name)
+    {
+        Dictionary<ScopeInfo, ScopeDescription> scopes = [];
+        if (kind == EditorReceiverKind.Member && receivers.Count != 0)
+        {
+            if (receivers.Any(receiver => receiver.EditorUnknown)) return null;
+            if (receivers.All(receiver => receiver.Type == TypeRef.Process))
+                return processMembers.Value.FirstOrDefault(member => member.Name == name);
+            var shapes = receivers.Where(receiver => receiver.Scope is not null).Select(receiver => receiver.Scope!).ToArray();
+            return shapes.Length == 0 || shapes.Any(shape => !shape.Members.ContainsKey(name)) ? null
+                : DescribeMember(name, shapes.Select(shape => shape.Members[name]), scopes, members: true);
+        }
+        if (name.StartsWith('$') || environments.Count == 0 || environments.Any(environment => !environment.ContainsKey(name))) return null;
+        return environments.Count == 1 ? DescribeMember(name, environments[0][name].Info, scopes, members: true)
+            : DescribeMember(name, environments.Select(environment => environment[name].Info), scopes, members: true);
+    }
+
+    private static SemanticMember[] DescribeBindings(IReadOnlyDictionary<string, Binding> bindings,
+        Dictionary<ScopeInfo, ScopeDescription> scopes) => bindings.Where(pair => !pair.Key.StartsWith('$'))
+        .Select(pair => DescribeMember(pair.Key, pair.Value.Info, scopes, members: true)).ToArray();
 
     public static EditorAnalysis Analyze(string source, string sourceName) => Analyze(source, sourceName, null);
 
@@ -79,10 +108,7 @@ public static class EditorCompiler
             Action<SourceSpan, Info, string?, bool> observer = (span, info, name, concrete) =>
             {
                 if (!inferred.TryGetValue(span, out var observation)) inferred[span] = observation = new(name);
-                if (concrete && !observation.Concrete) observation.Values.Clear();
-                if (!concrete && observation.Concrete) return;
-                observation.Concrete |= concrete;
-                observation.Values[(info.Type, info.Function?.Id, info.NativeName, info.Scope, info.TypeValue, info.KnownConnection, info.KnownPath, info.KnownText)] = info;
+                observation.Add(info, concrete);
             };
             compilation = session is null ? new(source, sourceName, 0, observer) : session.ForkForEditor(source, observer, resolveValue);
             compilation.AnalyzeDocument(document);
@@ -100,7 +126,9 @@ public static class EditorCompiler
         catch (SyntaxException error) { diagnostic ??= error.Diagnostic; }
         Dictionary<ScopeInfo, ScopeDescription> scopeDescriptions = [];
         foreach (var (span, observation) in inferred)
-            syntax[span] = Describe(span, observation.Name, observation.Values.Values, scopeDescriptions);
+            syntax[span] = observation.Multiple is { } alternatives
+                ? Describe(span, observation.Name, alternatives.Values, scopeDescriptions)
+                : Describe(span, observation.Name, observation.Single!, scopeDescriptions);
         return new(syntax.Values.OrderBy(item => item.Span.Start).ThenBy(item => item.Span.Length).ToArray(), diagnostic, recovery, recoveryStart)
         { Contexts = compilation?.EditorContexts, RegexSpans = regexSpans };
     }
@@ -108,31 +136,64 @@ public static class EditorCompiler
     private sealed class Observation(string? name)
     {
         public string? Name { get; } = name;
-        public bool Concrete { get; set; }
-        public Dictionary<(TypeRef, int?, string?, ScopeInfo?, TypeRef?, ConnectionValue?, PathValue?, string?), Info> Values { get; } = [];
+        private bool concrete;
+        public Info? Single { get; private set; }
+        public Dictionary<(TypeRef, int?, string?, ScopeInfo?, TypeRef?, ConnectionValue?, PathValue?, string?), Info>? Multiple { get; private set; }
+
+        public void Add(Info info, bool isConcrete)
+        {
+            if (!isConcrete && concrete) return;
+            if (isConcrete && !concrete) { Single = null; Multiple = null; }
+            concrete |= isConcrete;
+            if (Multiple is { } alternatives) { alternatives[Key(info)] = info; return; }
+            if (Single is null || Key(Single) == Key(info)) { Single = info; return; }
+            Multiple = new() { [Key(Single)] = Single, [Key(info)] = info };
+            Single = null;
+        }
+
+        private static (TypeRef, int?, string?, ScopeInfo?, TypeRef?, ConnectionValue?, PathValue?, string?) Key(Info info) =>
+            (info.Type, info.Function?.Id, info.NativeName, info.Scope, info.TypeValue, info.KnownConnection, info.KnownPath, info.KnownText);
     }
 
-    private sealed record ScopeDescription(SemanticMember[] Members, string Text);
+    private const string ScopeExplanation = "A lexical Scope. Select a declared member with `::`; a Scope is not a physical endpoint.";
+    private sealed record ScopeDescription(SemanticMember[] Members, string Text)
+    {
+        public string Description { get; } = ScopeExplanation + Text;
+    }
+
+    private static SemanticOccurrence Describe(SourceSpan span, string? name, Info info,
+        Dictionary<ScopeInfo, ScopeDescription> scopeDescriptions, bool members = true)
+    {
+        string type = info.Type.ToString();
+        string signature = Signature(name, info);
+        string description = Description(info.Type, info.EditorUnknown);
+        SemanticMember[]? contents = members && !info.EditorUnknown && info.Type == TypeRef.Process ? processMembers.Value : null;
+        if (members && !info.EditorUnknown && info.Scope is { } shape)
+        {
+            if (!scopeDescriptions.TryGetValue(shape, out var summary))
+            {
+                var items = shape.Members.Select(pair => DescribeMember(pair.Key, pair.Value, scopeDescriptions, members: true)).ToArray();
+                scopeDescriptions[shape] = summary = new(items, MemberList(items));
+            }
+            contents = summary.Members;
+            description = info.Type == TypeRef.Scope ? summary.Description : description + summary.Text;
+        }
+        if (!info.EditorUnknown && info.NativeName is { } native) description += $"\n\nNative standard-library function `{native}`.";
+        string role = info.EditorUnknown ? "variable" : info.Type.WithoutNull == TypeRef.Function ? "function"
+            : info.Type == TypeRef.Type || info.Type.WithoutNull == TypeRef.Scope && info.Scope?.Named == true ? "type" : "variable";
+        return new(span, info.EditorUnknown ? "unknown" : type, signature, description, contents,
+            info.KnownConnection, role, info.EditorUnknown ? null : info.KnownPath, info.EditorUnknown ? null : info.KnownText);
+    }
 
     private static SemanticOccurrence Describe(SourceSpan span, string? name, IEnumerable<Info> values,
         Dictionary<ScopeInfo, ScopeDescription> scopeDescriptions, bool members = true)
     {
         Info[] choices = values.ToArray();
+        if (choices.Length == 1) return Describe(span, name, choices[0], scopeDescriptions, members);
         bool unknown = choices.Any(value => value.EditorUnknown);
         TypeRef type = choices.Select(value => value.Type).Aggregate(TypeRef.Union);
         string signature = string.Join("\n", choices.Select(value => Signature(name, value)).Distinct(StringComparer.Ordinal));
-        string description = type.WithoutNull == TypeRef.Path ? "A filesystem path. Bare unbound names denote Paths. Calling a Path starts a Process."
-            : type.WithoutNull == TypeRef.Scope ? "A lexical Scope. Select a declared member with `::`; a Scope is not a physical endpoint."
-            : type.WithoutNull == TypeRef.Connection ? "A physical endpoint. Qualify a filesystem path with `connection::path`."
-            : type.WithoutNull == TypeRef.Function ? "A callable value. Unannotated parameters are specialized from each call's argument types."
-            : type == TypeRef.Type ? "A type value. `decltype(expression)` infers without executing the expression."
-            : type.WithoutNull == TypeRef.Bool ? "A boolean value: `true` or `false`. Conditions require Bool; Null is not a boolean."
-            : type.WithoutNull == TypeRef.String ? "A text value. Transferring a String writes its bytes; a Path reads a file."
-            : type.WithoutNull == TypeRef.Process ? "A process value. Inspect `stdout`, `stderr`, `exit_code` or `success` with `::`."
-            : type == TypeRef.Null ? "The absence of a value. Test with `is null` or `is not null`; postfix `?` means `is null`."
-            : $"Inferred type: `{type}`. Inspection does not execute this expression.";
-        if (type.Nullable && type != TypeRef.Null)
-            description += " Handle Null before using the value; postfix `?` tests whether it is Null.";
+        string description = Description(type, unknown: false);
         var native = choices.Select(value => value.NativeName).FirstOrDefault(value => value is not null);
         if (native is not null) description += $"\n\nNative standard-library function `{native}`.";
         SemanticMember[]? contents = null;
@@ -144,11 +205,11 @@ public static class EditorCompiler
             {
                 if (!scopeDescriptions.TryGetValue(scopes[0], out var summary))
                 {
-                    var items = scopes[0].Members.Select(pair => DescribeMember(pair.Key, [pair.Value], scopeDescriptions, members: true)).ToArray();
+                    var items = scopes[0].Members.Select(pair => DescribeMember(pair.Key, pair.Value, scopeDescriptions, members: true)).ToArray();
                     scopeDescriptions[scopes[0]] = summary = new(items, MemberList(items));
                 }
                 contents = summary.Members;
-                description += summary.Text;
+                description = type == TypeRef.Scope ? summary.Description : description + summary.Text;
             }
             else
             {
@@ -169,6 +230,31 @@ public static class EditorCompiler
             : type == TypeRef.Type || type.WithoutNull == TypeRef.Scope && choices.All(info => info.Scope?.Named == true) ? "type" : "variable";
         return new(span, unknown ? "unknown" : type.ToString(), signature, description, contents, endpoint, role,
             unknown ? null : path, unknown ? null : text);
+    }
+
+    private static string Description(TypeRef type, bool unknown)
+    {
+        if (unknown) return "The type depends on an incomplete expression or an uninstantiated generic parameter.";
+        TypeRef core = type.WithoutNull;
+        string description = core == TypeRef.Path ? "A filesystem path. Bare unbound names denote Paths. Calling a Path starts a Process."
+            : core == TypeRef.Scope ? ScopeExplanation
+            : core == TypeRef.Connection ? "A physical endpoint. Qualify a filesystem path with `connection::path`."
+            : core == TypeRef.Function ? "A callable value. Unannotated parameters are specialized from each call's argument types."
+            : type == TypeRef.Type ? "A type value. `decltype(expression)` infers without executing the expression."
+            : core == TypeRef.Bool ? "A boolean value: `true` or `false`. Conditions require Bool; Null is not a boolean."
+            : core == TypeRef.String ? "A text value. Transferring a String writes its bytes; a Path reads a file."
+            : core == TypeRef.Process ? "A process value. Inspect `stdout`, `stderr`, `exit_code` or `success` with `::`."
+            : type == TypeRef.Null ? "The absence of a value. Test with `is null` or `is not null`; postfix `?` means `is null`."
+            : type == TypeRef.Number ? "Inferred type: `Number`. Inspection does not execute this expression."
+            : $"Inferred type: `{type}`. Inspection does not execute this expression.";
+        return type.Nullable && type != TypeRef.Null
+            ? description + " Handle Null before using the value; postfix `?` tests whether it is Null." : description;
+    }
+
+    private static SemanticMember DescribeMember(string name, Info choice, Dictionary<ScopeInfo, ScopeDescription> scopeDescriptions, bool members = false)
+    {
+        var item = Describe(default, name, choice, scopeDescriptions, members);
+        return new(name, item.Type, item.Signature, item.Description, item.Members, item.Endpoint, item.SemanticRole, item.KnownPath, item.KnownText);
     }
 
     private static SemanticMember DescribeMember(string name, IEnumerable<Info> choices, Dictionary<ScopeInfo, ScopeDescription> scopeDescriptions, bool members = false)

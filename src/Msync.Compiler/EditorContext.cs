@@ -93,7 +93,22 @@ internal sealed class EditorContextCollector
         }
     }
 
+    private sealed record SelectedContext(IReadOnlyList<ImmutableDictionary<string, Binding>> Bindings,
+        Info[] Receivers, EditorReceiverKind Kind, ConnectionValue? Endpoint, bool HasOwner);
+
     public EditorContext At(int offset)
+    {
+        var selected = SelectAt(offset);
+        return EditorCompiler.DescribeContext(selected.Bindings, selected.Receivers, selected.Kind, selected.Endpoint, selected.HasOwner);
+    }
+
+    public SemanticMember? Resolve(int offset, string name)
+    {
+        var selected = SelectAt(offset);
+        return EditorCompiler.ResolveContext(selected.Bindings, selected.Receivers, selected.Kind, name);
+    }
+
+    private SelectedContext SelectAt(int offset)
     {
         var containing = snapshots.Where(item => item.Owner.Start <= offset && (offset < item.Owner.End || item.IncludesEnd && offset == item.Owner.End) && item.Point <= offset).ToArray();
         IReadOnlyList<ImmutableDictionary<string, Binding>> bindings = [];
@@ -123,7 +138,7 @@ internal sealed class EditorContextCollector
         }
         ConnectionValue? endpoint = owners.Length == 0 ? null : owners[0].Endpoint;
         if (endpoint is not null && owners.Any(item => item.Endpoint != endpoint)) endpoint = null;
-        return EditorCompiler.DescribeContext(bindings, receivers.Select(item => item.Receiver).ToArray(),
+        return new(bindings, receivers.Select(item => item.Receiver).ToArray(),
             receivers.Length == 0 ? EditorReceiverKind.Member : receivers[0].Kind, endpoint, owners.Length != 0);
     }
 }
