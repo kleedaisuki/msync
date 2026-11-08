@@ -27,7 +27,13 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class Terminal:
-    def __init__(self, binary: Path, directory: Path) -> None:
+    def __init__(
+        self,
+        binary: Path,
+        directory: Path,
+        arguments: tuple[str, ...] = ("--no-config", "repl"),
+        no_color: bool = True,
+    ) -> None:
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
         environment = dict(os.environ)
@@ -35,12 +41,15 @@ class Terminal:
             HOME=str(directory / "home"),
             XDG_CONFIG_HOME=str(directory / "home/.config"),
             TERM="xterm-256color",
-            NO_COLOR="1",
         )
+        if no_color:
+            environment["NO_COLOR"] = "1"
+        else:
+            environment.pop("NO_COLOR", None)
         (directory / "home").mkdir(exist_ok=True)
 
         self.process: subprocess.Popen[bytes] = subprocess.Popen(
-            ["setsid", "--ctty", str(binary), "--no-config", "repl"],
+            ["setsid", "--ctty", str(binary), *arguments],
             cwd=directory,
             env=environment,
             stdin=slave,
@@ -284,9 +293,9 @@ def run(binary: Path, directory: Path) -> dict[str, object]:
         assert terminal.process.returncode == 0
     finally:
         terminal.finish(directory / "terminal.log")
-    histories = list((directory / "home").rglob("history-v08"))
-    assert len(histories) == 1, (
-        "Interactive history was not persisted in the user's home"
+    history = directory / "home/.msync/history-v08"
+    assert history.is_file(), (
+        "Interactive history was not persisted at its canonical path"
     )
     restored = Terminal(binary, directory)
     try:
@@ -320,16 +329,93 @@ def run(binary: Path, directory: Path) -> dict[str, object]:
     }
 
 
+def qualified_completion(binary: Path, directory: Path) -> dict[str, object]:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "qualified input.txt").write_text("QUALIFIED BYTES", encoding="utf-8")
+    terminal = Terminal(binary, directory)
+    try:
+        terminal.until(lambda: "> " in terminal.plain, "first prompt")
+        for index, qualifier in enumerate(("$local::", "$pwd::")):
+            terminal.key((qualifier + "./qual").encode())
+            terminal.key(b"\t")
+            terminal.key(b"\t")
+            marker = f"QUALIFIED_{index}"
+            terminal.key(f' -> ./result-{index}; "{marker}"'.encode())
+            terminal.send(b"\r")
+            terminal.prompt(terminal.line(marker))
+            assert (directory / f"result-{index}").read_text() == "QUALIFIED BYTES"
+        terminal.send(b"\x04")
+        terminal.process.wait(timeout=5)
+        assert terminal.process.returncode == 0
+    finally:
+        terminal.finish(directory / "terminal.log")
+    return {"journeys": ["$local and $pwd completion with whitespace paths"]}
+
+
+def history_access(binary: Path, directory: Path) -> dict[str, object]:
+    home = directory / "home"
+    home.mkdir(parents=True)
+    unrelated = home / ".msync"
+    unrelated.write_text("existing user data", encoding="utf-8")
+    terminal = Terminal(binary, directory)
+    try:
+        terminal.until(lambda: "> " in terminal.plain, "memory-only editor prompt")
+        assert "terminal history" in terminal.plain
+        assert str(unrelated) in terminal.plain
+        terminal.evaluate('"HISTORY_UNAVAILABLE_OK"', "HISTORY_UNAVAILABLE_OK")
+        terminal.send(b"\x04")
+        terminal.process.wait(timeout=5)
+        assert terminal.process.returncode == 0
+        assert unrelated.read_text() == "existing user data"
+    finally:
+        terminal.finish(directory / "terminal.log")
+    return {"journeys": ["unavailable history reports cause and preserves user data"]}
+
+
+def color_policy(binary: Path, directory: Path) -> dict[str, object]:
+    configuration = directory / "home/.config/msync/config.toml"
+    configuration.parent.mkdir(parents=True)
+    configuration.write_text('[ui]\ncolor = "never"\n', encoding="utf-8")
+    terminal = Terminal(binary, directory, arguments=("repl",), no_color=False)
+    try:
+        terminal.until(lambda: "> " in terminal.plain, "plain-color prompt")
+        terminal.evaluate('let paint = true; "COLOR_POLICY_OK"', "COLOR_POLICY_OK")
+        terminal.send(b"\x04")
+        terminal.process.wait(timeout=5)
+        assert terminal.process.returncode == 0
+        for code in re.findall(rb"\x1b\[([\d;]*)m", terminal.raw):
+            parameters = [int(part or b"0") for part in code.split(b";")]
+            assert not any(
+                30 <= value <= 38 or 90 <= value <= 97 for value in parameters
+            ), code
+    finally:
+        terminal.finish(directory / "terminal.log")
+    return {
+        "journeys": ["configured color=never suppresses highlighting without NO_COLOR"]
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--case",
+        choices=["full", "qualified-completion", "history-access", "color-policy"],
+        default="full",
+    )
     args = parser.parse_args()
     directory = ROOT / ".temp/terminal-journey" / str(time.time_ns())
     output = args.output or directory / "results.json"
     output.parent.mkdir(parents=True, exist_ok=True)
+    cases: dict[str, Callable[[Path, Path], dict[str, object]]] = {
+        "full": run,
+        "qualified-completion": qualified_completion,
+        "history-access": history_access,
+        "color-policy": color_policy,
+    }
     try:
-        report = run(args.binary.resolve(), directory)
+        report = cases[args.case](args.binary.resolve(), directory)
     except (AssertionError, subprocess.TimeoutExpired) as error:
         output.write_text(
             json.dumps({"error": str(error), "fixture": str(directory)}, indent=2)
@@ -337,6 +423,10 @@ def main() -> None:
             encoding="utf-8",
         )
         raise
+    report["binary_sha256"] = hashlib.sha256(
+        args.binary.resolve().read_bytes()
+    ).hexdigest()
+    report["fixture"] = str(directory)
     output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2))
 

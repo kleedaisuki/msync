@@ -15,6 +15,7 @@ internal readonly record struct TerminalInput(TerminalInputKind Kind, string Tex
 internal sealed partial class InteractivePrompt : IAsyncDisposable
 {
     private readonly Prompt prompt;
+    private readonly Callbacks callbacks;
     private readonly TextWriter error;
 
     public static bool IsSupported => !Console.IsInputRedirected && !Console.IsOutputRedirected
@@ -25,17 +26,22 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
     {
         this.error = error ?? Console.Error;
         string? history = HistoryPath(historyDirectory, this.error);
-        prompt = new(history, new Callbacks(incomplete, names, color), configuration: new PromptConfiguration(
-            prompt: "> ", completionBoxBorderFormat: color ? null : ConsoleFormat.None,
+        KeyBindings keys = new();
+        callbacks = new(incomplete, names, color, keys);
+        prompt = new(history, callbacks, configuration: new PromptConfiguration(
+            prompt: "> ", keyBindings: keys, completionBoxBorderFormat: color ? null : ConsoleFormat.None,
             selectedCompletionItemMarkSymbol: color ? null : new FormattedString(">")));
     }
 
     public async ValueTask<TerminalInput> ReadAsync()
     {
+        callbacks.Submission = null;
         PromptResult result = await prompt.ReadLineAsync();
         TerminalInputKind kind = result is EndOfInputResult ? TerminalInputKind.EndOfInput
             : result.IsSuccess ? TerminalInputKind.Text : TerminalInputKind.Cancelled;
-        return new(kind, result.Text, result.CancellationToken);
+        // PromptResult rewrites line endings on Windows; the compiler consumes the editor buffer.
+        string source = kind == TerminalInputKind.Text ? callbacks.Submission ?? result.Text : result.Text;
+        return new(kind, source, result.CancellationToken);
     }
 
     public async ValueTask DisposeAsync()
@@ -65,8 +71,9 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
 
     private sealed class EndOfInputResult() : KeyPressCallbackResult("", null);
 
-    private sealed partial class Callbacks(Func<string, bool> incomplete, Func<IReadOnlyCollection<string>> names, bool color) : PromptCallbacks
+    private sealed partial class Callbacks(Func<string, bool> incomplete, Func<IReadOnlyCollection<string>> names, bool color, KeyBindings keys) : PromptCallbacks
     {
+        internal string? Submission { get; set; }
         private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "Bool", "Range", "String", "Function", "Scope", "Path", "Process", "Connection", "Null", "Number"];
         private static readonly string[] Builtins = ["$std", "$local", "$wsl", "$pwd", "$file"];
         private static readonly string[] Commands = ["/help", "/quit", "/exit", "/clear", "/pwd", "/cd"];
@@ -84,6 +91,8 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
         {
             if (key.ConsoleKeyInfo.Key == ConsoleKey.Enter && key.ConsoleKeyInfo.Modifiers == 0 && incomplete(text))
                 key = new(new ConsoleKeyInfo('\n', ConsoleKey.Enter, shift: true, alt: false, control: false));
+            else if (keys.SubmitPrompt.Matches(key.ConsoleKeyInfo))
+                Submission = text;
             else if (key.ConsoleKeyInfo.Key == ConsoleKey.Tab && key.ConsoleKeyInfo.Modifiers == 0)
                 key = new(new ConsoleKeyInfo(' ', ConsoleKey.Spacebar, shift: false, alt: false, control: true));
             return Task.FromResult(key);
@@ -129,7 +138,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
                 foreach (string entry in Directory.EnumerateFileSystemEntries(directory).Order(TextSemantics.Ordinal))
                 {
                     string name = Path.GetFileName(entry);
-                    if (!name.StartsWith(leaf, StringComparison.Ordinal)) continue;
+                    if (!name.StartsWith(leaf, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) continue;
                     bool childDirectory = Directory.Exists(entry);
                     string raw = parent + name + (childDirectory ? Path.DirectorySeparatorChar : "");
                     string replacement = qualifier.Length == 0 ? PathExpression(raw) : qualifier + Quote(raw);
