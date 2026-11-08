@@ -1,5 +1,40 @@
 # v0.8 independent user acceptance
 
+## Final deployment boundary
+
+The extracted Linux Native AOT executable has SHA-256
+`ca5c2eb2aebe1397f4ec3a745a6e76dcfcf598723ba1046523f183012263f38b`.
+The final implementation is C#; the independently buildable Rust 0.7.3 baseline
+is retained under `legacy/`. Local strict solution compilation passes all eight
+projects with zero warnings/errors, and solution whitespace verification passes.
+
+The same frozen native payload passed six encrypted OpenSSH CLI journeys:
+deferred selectors and recursive iterators with typed filesystem callbacks,
+each through source, `.mso` and `.mexe`. Every transfer used one client,
+authentication and exec session, with zero scp clients; compile/bind opened zero
+clients. The result is `.temp/cli-transfer-ssh/s-vb71nwo7/cli-result.json`.
+
+The runtime-independent deployment runner is
+[`tests/Deployment/container_journey.py`](../../tests/Deployment/container_journey.py).
+It mounts the extracted package, not a developer build directory, in a pinned
+Ubuntu 22.04 base image without .NET or ICU. It checks compile/bind have no output
+effects, removes source before both binary executions, runs `.mexe` from another
+cwd, verifies exact Unicode bytes and native child stdout, and reads two actual
+SQLite sessions. All observations passed with the frozen native executable.
+The image is
+`ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11`;
+the retained result is `.temp/deployment-v080/native-z0lygwml/results.json`.
+
+```sh
+python3 tests/Deployment/container_journey.py /absolute/path/to/extracted/msync-package
+```
+
+The maintained runners preserve procedures and expected bytes beyond temporary
+fixture cleanup. Linux package and VSIX identities are recorded in
+[`packaging-v080.md`](packaging-v080.md). No public release/tag was created.
+Windows Native AOT and installer workflows are configured; these local Linux
+results are not presented as Windows execution evidence.
+
 ## Current accepted state
 
 The final extracted Linux Native AOT package passes **16/16 focused changed-
