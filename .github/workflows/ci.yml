@@ -85,6 +85,7 @@ jobs:
           common: list[str] = ['python', 'tests/Performance/journeys.py', '--rust', str(rust), '--aot', str(aot), '--samples', '31', '--warmups', '3']
           subprocess.run([*common, '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-cli.json'], check=True)
           subprocess.run([*common, '--case', 'check-batch', '--statements', '1024', '--output', '.temp/platform-results/paired-compiler-1024.json'], check=True)
+          subprocess.run(['python', 'tests/Performance/interactive.py', '--rust', str(rust), '--aot', str(aot), '--samples', '31', '--warmups', '3', '--bindings', '128', '--output', '.temp/platform-results/paired-interactive.json'], check=True)
       - name: Fetch the recorded previous C# image for this native platform
         id: previous
         if: ${{ !cancelled() && steps.package.outcome == 'success' && inputs.benchmark && inputs.baseline_run != '' }}
@@ -111,6 +112,7 @@ jobs:
           common: list[str] = ['python', 'tests/Performance/journeys.py', '--previous-aot', os.environ['PREVIOUS_NATIVE'], '--aot', str(aot), '--samples', '31', '--warmups', '3']
           subprocess.run([*common, '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-aot-before-after.json'], check=True)
           subprocess.run([*common, '--case', 'check-batch', '--statements', '1024', '--output', '.temp/platform-results/paired-aot-compiler-1024.json'], check=True)
+          subprocess.run(['python', 'tests/Performance/interactive.py', '--previous-aot', os.environ['PREVIOUS_NATIVE'], '--aot', str(aot), '--samples', '31', '--warmups', '3', '--bindings', '128', '--output', '.temp/platform-results/paired-aot-interactive.json'], check=True)
       - name: Publish the bounded native Windows copy mechanism probe
         id: copy-probe
         if: ${{ !cancelled() && runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.benchmark && steps.package.outcome == 'success' && hashFiles('tests/IO/WindowsCopyProbe/WindowsCopyProbe.csproj') != '' }}
