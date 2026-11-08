@@ -14,6 +14,7 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        if (await SshPromptBroker.TryRunHelperAsync(args) is { } helperExit) return helperExit;
         TelemetrySession? telemetry = null;
         SourceSnapshot? snapshot = null;
         string color = TerminalPresentation.RequestedColor(args);
