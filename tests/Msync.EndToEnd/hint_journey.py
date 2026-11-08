@@ -15,6 +15,39 @@ from terminal_journey import Terminal
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def semantic_prompt_cases(terminal: Terminal) -> dict[str, int]:
+    start = len(terminal.plain)
+    terminal.key(b"scope Current { get: fn(a) { a }, item: true }; Current::g")
+    terminal.key(b"\t")
+    terminal.key(b"\t")
+    terminal.key(b"(true)")
+    terminal.send(b"\r")
+    terminal.prompt(terminal.line("true", start))
+
+    start = len(terminal.plain)
+    terminal.key(b"fn draft() { let local = scope { field: true }; local::f")
+    terminal.key(b"\t")
+    terminal.key(b"\t")
+    terminal.key(b" }; draft()")
+    terminal.send(b"\r")
+    terminal.prompt(terminal.line("true", start))
+
+    start = len(terminal.plain)
+    terminal.key(b"$std::bool::bo")
+    terminal.until(
+        lambda: "th" in terminal.plain[start:], "embedded source function hint suffix"
+    )
+    terminal.key(b"\x1b[C")
+    terminal.key(b"(true, false)")
+    terminal.send(b"\r")
+    terminal.prompt(terminal.line("false", start))
+    return {
+        "unsubmitted_scope_member_completion": 1,
+        "unsubmitted_nested_function_completion": 1,
+        "embedded_standard_function_hint": 1,
+    }
+
+
 def run(binary: Path, directory: Path) -> dict[str, int]:
     terminal = Terminal(binary, directory, no_color=False)
     try:
@@ -48,6 +81,8 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         terminal.key(b"\x1b[C")
         terminal.send(b"\r")
         terminal.prompt(terminal.line("HINT_HISTORY_OK", start))
+
+        semantic = semantic_prompt_cases(terminal)
 
         target = directory / "completion-target.txt"
         target.write_text("OLD", encoding="utf-8")
@@ -130,6 +165,7 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
     finally:
         plain.finish(directory / "plain-terminal.raw")
     return {
+        **semantic,
         "ghost_keyword_acceptance": 1,
         "enter_preserves_typed_source": 1,
         "history_hint_acceptance": 1,
