@@ -15,10 +15,11 @@ internal static class SshTerminalPrompt
         if (request.Kind == "notice") { Console.Error.WriteLine(); return Task.FromResult<string?>(""); }
         StringBuilder answer = new();
         bool echo = request.Kind != "secret";
+        using CancellableConsoleInput input = new(cancellationToken);
         while (true)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            ConsoleKeyInfo key = Console.ReadKey(intercept: true);
+            ConsoleKeyInfo key = input.ReadKey();
             if (key.Key == ConsoleKey.Enter) { Console.Error.WriteLine(); return Task.FromResult<string?>(answer.ToString()); }
             if (key.Key == ConsoleKey.Escape || key.KeyChar is '\u0003' or '\u0004' or '\u001a')
             { Console.Error.WriteLine(); return Task.FromResult<string?>(null); }

@@ -20,8 +20,11 @@ internal sealed partial class LanguageServer
     {
         TaskCompletionSource<string?> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!events.Writer.TryWrite(new PromptAuthentication(prompt, completion, cancellationToken))) return null;
-        using var registration = cancellationToken.Register(() => events.Writer.TryWrite(new CancelAuthentication(prompt.Id)));
-        return await completion.Task.WaitAsync(cancellationToken);
+        try { return await completion.Task.WaitAsync(cancellationToken); }
+        finally
+        {
+            if (cancellationToken.IsCancellationRequested) events.Writer.TryWrite(new CancelAuthentication(prompt.Id));
+        }
     }
 
     private void HandleAuthentication(AuthEvent item)

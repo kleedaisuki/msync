@@ -46,9 +46,10 @@ internal sealed class SshPromptBroker : IAsyncDisposable
         {
             await using NamedPipeClientStream pipe = new(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
             await pipe.ConnectAsync();
-            string kind = Environment.GetEnvironmentVariable("SSH_ASKPASS_PROMPT") switch { "confirm" => "confirm", "none" => "notice", _ => "secret" };
+            string text = string.Join(' ', arguments);
+            string kind = PromptKind(Environment.GetEnvironmentVariable("SSH_ASKPASS_PROMPT"), text);
             await WriteAsync(pipe, kind, CancellationToken.None);
-            await WriteAsync(pipe, string.Join(' ', arguments), CancellationToken.None);
+            await WriteAsync(pipe, text, CancellationToken.None);
             string accepted = await ReadAsync(pipe, CancellationToken.None);
             string? value = accepted == "answer" ? await ReadAsync(pipe, CancellationToken.None) : null;
             await WriteAsync(pipe, "received", CancellationToken.None);
@@ -62,6 +63,18 @@ internal sealed class SshPromptBroker : IAsyncDisposable
             Console.Error.WriteLine($"msync SSH prompt: {error.Message}");
             return 1;
         }
+    }
+
+    private static string PromptKind(string? hint, string text)
+    {
+        if (hint == "confirm") return "confirm";
+        if (hint == "none") return "notice";
+        // OpenSSH's host-key confirm() uses RP_ECHO without the askpass permission hint.
+        // https://github.com/openssh/openssh-portable/blob/master/sshconnect.c
+        if (text.Contains("Are you sure you want to continue connecting (yes/no", StringComparison.Ordinal)
+            || text.StartsWith("Please type 'yes' or 'no':", StringComparison.Ordinal)
+            || text.StartsWith("Please type 'yes', 'no' or the fingerprint:", StringComparison.Ordinal)) return "confirm";
+        return "secret";
     }
 
     private async Task ListenAsync()

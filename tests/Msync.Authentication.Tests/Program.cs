@@ -10,6 +10,7 @@ await using (SshPromptBroker broker = new((prompt, _) => { prompts.Add(prompt); 
     foreach (var (hint, kind, text) in new[]
     {
         ("", "secret", "Enter passphrase for key '/home/Klee/.ssh/id_ed25519': "),
+        ("", "confirm", "The authenticity of host 'fixture' cannot be established.\nAre you sure you want to continue connecting (yes/no/[fingerprint])? "),
         ("confirm", "confirm", "The authenticity of host 'fixture' cannot be established.\nAre you sure you want to continue connecting?"),
         ("none", "notice", "Confirm user presence for key ED25519-SK SHA256:fixture")
     })
@@ -19,7 +20,7 @@ await using (SshPromptBroker broker = new((prompt, _) => { prompts.Add(prompt); 
         Check(result.ExitCode == 0 && result.Output == answer && result.Error == "", "actual helper answer bytes");
         Check(prompts[^1] is { Endpoint: "ssh://fixture" } observed && observed.Prompt == text && observed.Kind == kind, "native prompt context");
     }
-    Check(prompts.Select(prompt => prompt.Id).Distinct().Count() == 3, "prompt identities are not reused");
+    Check(prompts.Select(prompt => prompt.Id).Distinct().Count() == 4, "prompt identities are not reused");
     answer = null;
     var cancelled = await InvokeAsync(binary, broker, "Password:", "");
     Check(cancelled.ExitCode == 1 && cancelled.Output == "", "dismissal is not an empty password");
