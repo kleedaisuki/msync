@@ -27,7 +27,7 @@ def run(binary: Path, directory: Path, log: Path) -> list[str]:
         terminal.send("\r")
         terminal.prompt(start)
 
-        def hint(source: str) -> None:
+        def hint(source: str, suffix: str = "get") -> None:
             raw_start = len(terminal.raw)
             text_start = len(terminal.plain)
             terminal.key(source)
@@ -61,6 +61,34 @@ def run(binary: Path, directory: Path, log: Path) -> list[str]:
         terminal.prompt(start)
         assert not typed.exists()
         phases.append("RightArrow accepts the ghost as source")
+        terminal.evaluate(
+            'scope Current { get: fn(a) { a } }; "SCOPE_READY"', "SCOPE_READY"
+        )
+        start = len(terminal.plain)
+        terminal.key("Current::g")
+        terminal.key("\t")
+        terminal.key("\t")
+        terminal.key("(true)")
+        terminal.send("\r")
+        terminal.prompt(terminal.line("true", start))
+        phases.append("inferred scope callable member completion")
+
+        start = len(terminal.plain)
+        terminal.key("fn draft() { let local = scope { field: true }; local::f")
+        terminal.key("\t")
+        terminal.key("\t")
+        terminal.key(" }; draft()")
+        terminal.send("\r")
+        terminal.prompt(terminal.line("true", start))
+        phases.append("uncalled function lexical member completion")
+
+        hint("$std::bool::bo", "th")
+        terminal.key("\x1b[C")
+        terminal.key("(true, false)")
+        start = len(terminal.plain)
+        terminal.send("\r")
+        terminal.prompt(terminal.line("false", start))
+        phases.append("canonical standard function hint acceptance")
         terminal.send("\x04")
         terminal.exit()
         return phases
