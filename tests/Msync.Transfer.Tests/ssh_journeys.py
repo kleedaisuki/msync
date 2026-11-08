@@ -30,6 +30,8 @@ def main() -> None:
         environment: dict[str, str] = fixture.environment()
         environment["MSYNC_TRANSFER_WORK"] = str(fixture.root / "work")
         environment["MSYNC_TRANSFER_REMOTE"] = "Perf_Fixture"
+        environment["MSYNC_TRANSFER_SECOND_REMOTE"] = "Second_Fixture"
+        fixture.config.write_text(fixture.config.read_text().replace("Host Perf_Fixture", "Host Perf_Fixture Second_Fixture"))
         before_log: int = len(lines(fixture.log))
         result: subprocess.CompletedProcess[bytes] = subprocess.run(
             ["dotnet", str(test_dll.resolve())], cwd=ROOT, env=environment,
@@ -50,10 +52,10 @@ def main() -> None:
         (fixture.root / "result.json").write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(report, indent=2))
         assert result.returncode == 0, report
-        assert calls.count("ssh") == 15, report
+        assert calls.count("ssh") == 28, report
         assert calls.count("scp") == 0, report
-        assert report["authentications"] == 15, report
-        assert report["remote_sessions"] == 15, report
+        assert report["authentications"] == 28, report
+        assert report["remote_sessions"] == 28, report
 
 
 if __name__ == "__main__":

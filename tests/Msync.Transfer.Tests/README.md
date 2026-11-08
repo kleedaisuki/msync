@@ -16,12 +16,19 @@ python3 tests/Msync.Transfer.Tests/ssh_journeys.py
 
 The C# executable checks ordinary bytes and executable permissions, literal
 replacement preserving target permissions, directory links and dangling links,
-self-copy, descendant-copy input capture, and ancestor tree replacement. With
-`MSYNC_TRANSFER_REMOTE` selected, fifteen remote operations cover file/literal/tree
+self-copy, descendant-copy input capture, ancestor tree replacement, and actual
+mid-copy cancellation preserving the old target and removing the owned stage. With
+`MSYNC_TRANSFER_REMOTE` selected, the remote journeys cover file/literal/tree
 upload, tree download, same-endpoint copy, finite cohort upload/download,
 trailing-newline/Unicode/backslash/quote filenames, incompatible parent failure,
 and a successful ordinary retry, plus upload/self/ancestor tree replacement and
-finite descendant copy. The Python owner checks actual client launches,
+finite descendant copy. The suite also checks direct and recursive remote selectors,
+no-match/no-write behavior, negative-lookahead regexes, single-channel metadata
+predicates in deferred filter/reverse/take/transform chains, and endpoint-changing
+path transforms. `take(0)` must neither resolve nor enumerate its source. The
+current suite uses exactly 28 native SSH channels (including one channel per
+endpoint for the cross-endpoint relay); all filesystem-predicate queries remain
+on their already admitted selector channel. The Python owner checks actual client launches,
 authentications, and server exec-session counts, and records output under `.temp`.
 The root language acceptance suite separately exercises source compilation and
 artifact execution; this focused executable isolates transfer semantics from

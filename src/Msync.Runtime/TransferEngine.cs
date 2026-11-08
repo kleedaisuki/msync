@@ -5,7 +5,7 @@ using Msync.Core;
 
 namespace Msync.Runtime;
 
-public static class TransferEngine
+public static partial class TransferEngine
 {
     public static async Task<bool> CopyAsync(Value source, Value destination, RuntimeContext context, CancellationToken cancellationToken = default)
     {
@@ -15,6 +15,9 @@ public static class TransferEngine
             await context.Output.WriteLineAsync($"{source} -> {target}");
             return true;
         }
+        while (source is RangeValue { Resolve: not null } deferred) source = await deferred.Resolve(cancellationToken);
+        if (source is RangeValue { Selection: { Directory.Connection.Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } selection })
+            return await CopySelectionAsync(selection, target, context, cancellationToken);
         if (Remote(target) is null && (source is StringValue || source is PathValue { Connection: null or { Kind: ConnectionKind.Local } }))
             return await CopyLocalAsync(source, destination, context, cancellationToken);
         List<Value> sources = [];
@@ -34,7 +37,7 @@ public static class TransferEngine
         if (remoteTarget is not null)
         {
             if (remoteSources.Length == sources.Count && remoteSources.All(path => path.Connection == remoteTarget))
-                await CopyRemoteAsync(remoteSources, target, container, replace, cancellationToken);
+                await CopyRemoteAsync(remoteSources, target, container, replace, cohort, cancellationToken);
             else if (remoteSources.Length == 0)
                 await UploadAsync(sources, target, context, container, replace, cohort, cancellationToken);
             else
@@ -59,6 +62,8 @@ public static class TransferEngine
 
     public static async Task<bool> CopyLocalAsync(Value source, Value destination, RuntimeContext context, CancellationToken cancellationToken = default)
     {
+        if (source is RangeValue { Resolve: not null } or RangeValue { Selection: not null })
+            return await CopyAsync(source, destination, context, cancellationToken);
         PathValue target = context.AsPath(destination);
         bool container = source is RangeValue || EndsInSeparator(target.Raw);
         bool replace = target.Raw.EndsWith("/.", StringComparison.Ordinal) || OperatingSystem.IsWindows() && target.Raw.EndsWith("\\.", StringComparison.Ordinal);
@@ -76,6 +81,11 @@ public static class TransferEngine
         List<Value> items = [];
         await foreach (Value item in range.Items.WithCancellation(cancellationToken)) items.Add(item);
         ValidateNames(items, true);
+        if (replace)
+        {
+            await ReplaceLocalCohortAsync(items, target, context, cancellationToken);
+            return true;
+        }
         foreach (Value item in items)
             await CopyLocalItemAsync(item, TargetPath(target, item, context, true), context, true, replace, cancellationToken);
         return true;
@@ -104,6 +114,8 @@ public static class TransferEngine
 
     public static async Task<string> RunCommandAsync(ConnectionValue connection, string script, IReadOnlyList<string> args, CancellationToken cancellationToken = default)
     {
+        if (ActiveQuery.Value is { } selected && selected.Connection == connection)
+            return await selected.InvokeAsync(script, args, cancellationToken);
         using Process process = Start(connection, script, args, redirectInput: false);
         using CancellationTokenRegistration registration = cancellationToken.Register(() => Kill(process));
         string output = await process.StandardOutput.ReadToEndAsync(cancellationToken);
@@ -237,6 +249,8 @@ public static class TransferEngine
         using TarReader reader = new(archive, leaveOpen: true);
         string? root = null;
         string destination = target.LocalPath(context.WorkingDirectory, context.HomeDirectory);
+        if (replace && target.Raw.EndsWith("/.", StringComparison.Ordinal)) destination = destination[..^2];
+        bool initialized = false;
         List<(string Path, TarEntry Entry)> directories = [];
         while (await reader.GetNextEntryAsync(copyData: false, cancellationToken) is { } entry)
         {
@@ -246,6 +260,12 @@ public static class TransferEngine
             root ??= name.Split('/')[0];
             string relative = container || root.Length == 0 ? name : name == root ? "" : name[(root.Length + 1)..];
             string installed = Path.Combine(destination, relative);
+            if (!initialized && replace && container)
+            {
+                TransferFiles.RemoveNode(destination);
+                Directory.CreateDirectory(destination);
+            }
+            initialized = true;
             if (relative.Length == 0)
             {
                 if (replace)
@@ -303,11 +323,11 @@ public static class TransferEngine
         finally { File.Delete(stage); }
     }
 
-    private static async Task CopyRemoteAsync(IReadOnlyList<PathValue> sources, PathValue target, bool container, bool replace, CancellationToken cancellationToken)
+    private static async Task CopyRemoteAsync(IReadOnlyList<PathValue> sources, PathValue target, bool container, bool replace, bool cohort, CancellationToken cancellationToken)
     {
-        List<string> args = [target.Raw, Mode(container, replace), sources.Count > 1 ? "cohort" : "single"];
+        List<string> args = cohort ? [target.Raw, Mode(container, replace)] : [target.Raw, Mode(container, replace), "single"];
         args.AddRange(sources.Select(path => path.Raw));
-        string output = await RunCommandAsync(Remote(target)!, CopyScript, args, cancellationToken);
+        string output = await RunCommandAsync(Remote(target)!, cohort ? CohortInstallScript : CopyScript, args, cancellationToken);
         if (output != "MSYNC-DONE\n") throw new IOException($"Remote copy returned no completion: {output}");
     }
 
@@ -488,6 +508,7 @@ public static class TransferEngine
         shift 3
         for raw in "$@"; do
             source=$(expand "$raw"; printf .); source=${source%.}
+            while [ "${source%/}" != "$source" ] && [ "$source" != / ]; do source=${source%/}; done
             [ -e "$source" ] || [ -L "$source" ]
             target=$destination
             if [ "$mode" = replace ]; then target=${destination%/.}; [ -n "$target" ] || target=/; fi

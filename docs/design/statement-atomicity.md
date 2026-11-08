@@ -118,3 +118,41 @@ tree replacement plus finite descendant-tree copy. Overlapping remote tree copie
 retain their input beside the source tree, outside the selected source, rather
 than recursively capturing their newly created output. This is protocol and
 Linux filesystem evidence, not a Windows/WSL or WAN performance measurement.
+
+
+### Selected range discovery and native queries
+
+A runtime `PathSelection` descriptor retains the source directory, exact .NET
+regex, recursive traversal flag, and composed range adaptors; it does not contain
+source-language syntax. A deferred source keeps a demand-time resolver, so its
+function is evaluated once when the transfer is selected. `take(0)` removes the
+demand rather than opening the source endpoint and discarding its answer.
+
+One duplex native session emits NUL-separated relative path names. The client
+sorts names and evaluates the actual .NET regex and typed callback chain, then
+sends literal selected paths as octal-encoded protocol lines. The same process
+produces the archive or performs same-endpoint installation. Recursive directory
+iteration uses the same mechanism, preserving descendant paths until ordinary
+cohort basename collision preflight. No-match selection does not create a target
+or authenticate an unused destination endpoint.
+
+A callback's selected remote filesystem queries use a scoped, endpoint-matching
+`AsyncLocal` transport owner while the discovery session awaits final selection.
+The helper executes the same registered native shell operation and returns its
+status plus byte-count-framed output; the typed callback still executes in the
+bytecode VM. Native filesystem predicates therefore do not introduce separately
+authenticated helpers or a source interpreter. Other endpoint operations retain
+their own actual selected transport ownership. Transformations that produce
+paths outside the original endpoint finish discovery and dispatch their real
+resulting values normally instead of treating endpoint provenance as a rejection
+policy.
+
+The expanded encrypted OpenSSH suite passed with **28 clients, 28 public-key
+authentications, 28 exec sessions and zero scp clients**. This includes recursive
+selection, a deferred metadata filter followed by reverse/take/transform,
+negative-lookahead regexes, no-match and `take(0)` non-admission, a same-endpoint
+path transformation to another directory, a transformation to a captured local
+path, and collision detection before target creation. Multiple filesystem
+predicate calls remain inside the one selected source session. The C# local
+journey also cancels a real large-file copy after observing its owned stage,
+checks unchanged prior target bytes, and checks cleanup of that live stage.
