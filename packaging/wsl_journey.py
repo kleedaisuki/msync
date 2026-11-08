@@ -371,9 +371,41 @@ def diagnose_download(
         reports[label] = item
     if process_probe is not None:
         process_reports: dict[str, object] = {}
+        pattern = bytes(range(256))
+        large = pattern * 5000 + pattern[:123]
+        large_hash = hashlib.sha256(large).hexdigest()
+        full_format = "".join(f"\\{value:03o}" for value in pattern)
+        tail_format = "".join(f"\\{value:03o}" for value in pattern[:123])
+        generated = runner.run(
+            [
+                *prefix,
+                (
+                    'i=0; while [ "$i" -lt 5000 ]; do printf "$1"; i=$((i+1)); done > "$HOME/.codex/large-phase.bin"; '
+                    'printf "$2" >> "$HOME/.codex/large-phase.bin"; '
+                    'stat -c %s -- "$HOME/.codex/large-phase.bin"; sha256sum -- "$HOME/.codex/large-phase.bin"'
+                ),
+                "sh",
+                full_format,
+                tail_format,
+            ],
+            directory=directory,
+            environment=environment,
+            check=False,
+        )
+        oracle = generated.stdout.split()
+        reports["large_source"] = {
+            "command": asdict(generated),
+            "bytes": len(large),
+            "sha256": large_hash,
+            "oracle_matches": generated.returncode == 0
+            and len(oracle) >= 2
+            and oracle[0] == str(len(large))
+            and oracle[1] == large_hash,
+        }
         for label, raw in (
             ("home", "~/.codex/config.toml"),
             ("relative", "./dir/file"),
+            ("large", "~/.codex/large-phase.bin"),
         ):
             destination = diagnostics / f"native-process-{stage}-{label}"
             probe = runner.run(
@@ -396,6 +428,9 @@ def diagnose_download(
                 "command": asdict(probe),
                 "directory": str(destination),
             }
+            if label == "large":
+                result["expected_payload_bytes"] = len(large)
+                result["expected_payload_sha256"] = large_hash
             report_path = destination / "probe.json"
             if report_path.is_file():
                 try:
