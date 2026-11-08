@@ -90,7 +90,7 @@ directory` diagnostic.
 
 Remedy: resolve the marker to the selected directory before deriving its parent
 and placing the owned stage, then apply replacement to that actual directory.
-The transport owner is integrating the correction.
+The transport correction passed the final Native AOT source/artifact rerun below.
 
 ### P2: Same-endpoint remote directory snapshots include their new stage
 
@@ -104,7 +104,7 @@ finite source directory and a `source/backup/.` destination, not a symlink cycle
 Remedy: capture the selected source before creating visible destination work, or
 place this overlap-only owned snapshot outside the selected source. Do not put
 snapshots on disjoint normal copies or prohibit ordinary overlapping trees.
-The transport owner is integrating the correction.
+The transport correction passed the final Native AOT source/artifact rerun below.
 
 ### P1: Implicit remote selection authenticates metadata separately
 
@@ -122,9 +122,9 @@ Remedy: preserve a selected endpoint query in the range model until transfer
 admission, and exchange enumeration, selection and payload on that one live
 channel. Keep the language's regex semantics rather than translating it
 unconditionally to an incompatible server regex dialect. Explicit `for` loops
-retain their separate iteration semantics. The runtime owner has this finding.
-The `remote-selector` review case asserts both copied bytes and exact native
-client launches from source and source-free artifacts.
+retain their separate iteration semantics. The `remote-selector` review case asserts both copied bytes and exact native
+client launches from source and source-free artifacts; it passed the final
+Native AOT rerun below.
 
 ## Initial evidence and scope
 
@@ -168,10 +168,11 @@ coverage. Exact result records are
 `.temp/review-v080/regressions-rzn8u62g/results.json` and
 `.temp/review-v080/regressions-0v_r1prd/results.json`.
 
-The same fresh managed image still fails the two remote-tree cases, which have
-been reported directly to the transport/runtime owners. Those cases and a final
-Native AOT acceptance remain pending. The harness now records a distribution
-digest in addition to the apphost hash so managed DLL changes are identifiable.
+That intermediate managed image still failed the two remote-tree cases; those
+failures were reported directly to the transport/runtime owners and were
+corrected before the final native acceptance below. The harness records a
+distribution digest in addition to the apphost hash so managed DLL changes are
+identifiable.
 
 The `lazy-no-demand` case additionally passed source, `.mso`, and `.mexe` on a
 fresh compiler-owner managed build (distribution SHA-256
@@ -180,3 +181,29 @@ It independently observes that `take(0)` does not evaluate an effectful
 range-returning function, an effectful argument to that function, or an effectful
 literal range item. All three marker files remain absent; the retained result
 is `.temp/review-v080/regressions-5scnzp94/results.json`.
+
+
+## Final Native AOT review acceptance
+
+All seven directly reported defects are corrected in the tested native image.
+The eight focused journeys (the seven defect contracts plus zero-demand range
+effects) passed real source, source-free `.mso` and source-free `.mexe` execution
+against frozen Native AOT executable
+`.temp/performance-v080/local-sync-aot/msync`:
+
+- executable SHA-256:
+  `668e9897c8f82e593a586b7634448232109adb6cb2fbea1da6618f649b8b001d`;
+- complete native distribution digest:
+  `82318bf1e7057fcbcd7eb157e35560c0754b0a7cbe24521c9fa0b345fc7da969`;
+- remote tree/selection evidence:
+  `.temp/review-v080/regressions-0uc1l2ru/results.json`;
+- callable/path/laziness evidence:
+  `.temp/review-v080/regressions-d59ew42c/results.json`.
+
+The remote cases verify actual shell/tar/cp execution, output bytes, removal of
+obsolete replacement data, absence of live-stage leakage into an overlapping
+snapshot, and exactly one native SSH client launch per implicit selected
+transfer. They use a shell-executing SSH shim, so actual OpenSSH authentication,
+Windows native behavior and WAN performance belong to the separate transport,
+platform and performance acceptance records. No substantive finding from this
+review remains open on the tested implementation.
