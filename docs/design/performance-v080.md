@@ -298,3 +298,73 @@ Their byte-level result is retained in
 `.temp/performance-v080/current/block-validation-journeys.json`. A normal-path
 artifact load now pays for its actual CFG rather than for a locals snapshot at
 each straight-line instruction.
+
+### Compiler snapshots and the actual cold-CLI result
+
+The [native component investigation](performance-components-v080.md) identified
+two independent compiler costs after the validator fix: linear constant-pool
+searches on every insertion and whole lexical Dictionary copies on every call.
+Constants now retain their first-insertion vector IDs with a hash index, whose
+new entries are removed on a failed compilation. Lexical frames share persistent
+BCL immutable roots, with one binding-update path. Captures are discovered from
+actual referenced names and ordered by slot, never by randomized hash-map
+enumeration. The root changes are independent of runtime failure handling: the
+REPL retains its actually executed declaration prefix rather than rolling back
+filesystem work or initialized bindings.
+
+Across 31 native component samples, the combined compiler changes reduce the
+1,024-transfer compile median from 63.04 to 10.48 ms and the generic-binding
+median from 46.18 to 18.62 ms. The environment change alone reduces generic
+allocation from 21.58 to 5.64 MB and scoped allocation from 21.86 to 5.91 MB.
+One-operation controls do not regress. Seven actual source-free closure,
+recursion, Scope, lazy Range and nullable snapshot journeys pass, and two fresh
+native processes produce byte-identical capture artifacts. Exact build hashes,+p95 distributions, allocations and commands belong in that focused note.
+
+The optional `check-values` / `values-source` / `values-object` / `values-bound`
+CLI cases then exercise an actual generic identity function, 1,024 retained
+String bindings and publication of the last String as real file bytes. This is
+not a no-output timing stub. The frozen final package `ca5c2e...` is compared with
+the coherent integrated native candidate
+`c3c87eb1b644f9edfff225ee59306656ee2d46f6ad6c9ad990bd1004837ab377`.
+All cases verify exact output bytes outside timing; seven alternating paired
+samples and one warmup are used because a baseline artifact load consumes about
+700 ms and hundreds of MB, not because after-image samples are selectively timed.
+
+| Actual 1,024-binding CLI | Before p50 / p95 ms | After p50 / p95 ms |
+| --- | ---: | ---: |
+| Check source | 72.430 / 78.017 | 29.354 / 30.884 |
+| Execute source and publish result | 76.244 / 86.360 | 35.850 / 39.835 |
+| Load `.mso` and publish result | 724.137 / 740.491 | 25.657 / 28.669 |
+| Load `.mexe` and publish result | 707.671 / 740.469 | 21.544 / 29.080 |
+
+Raw results: `.temp/performance-v080/current/dense-cli-before-after.json`.
+The integrated image also includes editor/session/path work, so whole-process
+ratios are not attributed solely to one patch. The isolated native component
+measurements establish the validator and compiler mechanisms independently.
+The direct user result is approximately 28× faster relocatable-object execution
+and 33× faster bound-object execution for this retained-binding workload.
+
+### First source read: an avoidable asynchronous boundary
+
+`source_read.py` launches synchronous and asynchronous first-read modes in the
+**same** Native AOT component image. The timer includes process creation through
+the real UTF-16 count response. No compiler or configuration stage runs. Full
+decoded String equality, Unicode content and SHA-256 are checked outside timing.
+The files are warm in the OS cache; the BCL file reader/worker state is new in
+each native process.
+
+Linux, 31 alternating pairs, three warmups, image
+`2b7f1b93a5938d8cb23b63e54485ba633760e803425d3e12e318a7e6ba409d7e`:
+
+| UTF-8 source size | Sync p50 / p95 ms | Async p50 / p95 ms |
+| --- | ---: | ---: |
+| 4 KiB | 7.864 / 9.088 | 9.512 / 10.710 |
+| 64 KiB | 8.362 / 10.076 | 10.461 / 11.799 |
+
+Raw results: `.temp/performance-v080/current/source-read-linux.json`.
+This demonstrates 1.65–2.10 ms of avoidable first-read cost in this process shape.
+It is not a claim that the whole CLI's 4–6 ms Rust gap has one cause. The product
+owner can use a synchronous ordinary-file read because compilation cannot overlap
+that read and the execution cancellation handler is not installed until later;
+stdin remains asynchronous. Native Windows uses the same published probe and
+runner so IOCP first-use behavior is measured rather than inferred from Linux.

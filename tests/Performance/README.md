@@ -68,3 +68,20 @@ response is measured separately, not represented as a capability of 0.7.
 Only LSP initialization includes process creation; other requests use live
 sessions. Native stdout is parsed as the real protocol, never a timing stub.
 Use `--case`, `--bindings` and `--previous-aot` for affected-contract comparisons.
+
+## First source-file read
+
+Publish `tests/Performance/Components/Msync.Components.csproj` once with Native
+AOT on the target OS, then run:
+
+```sh
+python3 tests/Performance/source_read.py --binary /absolute/path/to/msync-components \
+  --samples 31 --warmups 3 --output .temp/performance-v080/source-read.json
+```
+
+The same executable has synchronous and asynchronous first-read modes. Each
+timed sample launches a fresh process; 4 KiB and 64 KiB valid UTF-8 fixtures
+contain Chinese and astral characters. Both modes print the actual UTF-16 count.
+Full decoded text equality and SHA-256 are checked separately, outside timing.
+This isolates first BCL read/worker/IOCP costs without compiler or configuration
+work. It does not claim to measure physical cold-disk latency.
