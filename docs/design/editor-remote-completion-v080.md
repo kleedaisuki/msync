@@ -35,6 +35,10 @@ quote, or the text `E` remains inside its typed record. The shell's three normal
 and hidden-entry glob families enumerate ordinary directory names without an
 external helper, temporary result files, a Python runtime, or a platform-size
 limit. An unreadable directory is a failed operation, not an empty listing.
+The caller's leaf prefix is a separate quoted argument. The shell applies a
+literal prefix match before per-entry metadata tests and emits only matching
+names, reducing metadata work and wire bytes for a narrowed completion. Glob
+metacharacters inside that prefix are filename data, not a new selection rule.
 The retained producer remains alive while the receiver consumes its records;
 this also avoids the early-exit stdout lifetime issue documented for native
 Windows WSL archive producers.
@@ -72,6 +76,11 @@ Cancelling a queued request preserved the admitted owner and proxy; cancelling
 the admitted request retired both native processes. This added one native
 client and no authentication. The final record is
 `.temp/remote-completion-ssh/s-gb9bfdan/result.json`.
+
+The prefix follow-up kept the same ownership checks and added literal `star*`
+and newline prefixes. Seven directory queries still used two authentications;
+the separate blocked-channel cancellation added a third client and no login.
+Its record is `.temp/remote-completion-ssh/s-dkrhkght/result.json`.
 
 The portable editor journeys and the native Windows WSL fixture own integrated
 completion acceptance. Their results should be attached to this protocol
