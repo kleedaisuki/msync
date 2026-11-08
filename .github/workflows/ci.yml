@@ -196,7 +196,7 @@ jobs:
               arguments.extend(['--contract', 'path-namespace'])
           subprocess.run(arguments, check=True)
       - name: Verify only changed linear normalization and constant interning
-        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.linear == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        if: ${{ !cancelled() && inputs.polish_only && inputs.reuse_run == '' && steps.polish.outputs.linear == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: python packaging/state_contracts.py --output .temp/platform-results/state-contracts --contract constant-interner
       - name: Publish the native Windows optimizer component observation image
         id: state-components
