@@ -100,8 +100,8 @@ internal static class SemanticChecks
             Require(function.CaptureCount == 1, "Capture only the referenced lexical root.");
             var main = module.Functions[0].Instructions;
             int closure = main.ToList().FindIndex(instruction => instruction.Op == OpCode.MakeClosure);
-            int initialRoot = main.First(instruction => instruction.Op == OpCode.StoreLocal).A;
-            Require(closure > 0 && main[closure - 1] is { Op: OpCode.LoadLocal } load && load.A == initialRoot, "Closure must load the original root binding, not a later shadow.");
+            int initialRoot = main.First(instruction => instruction.Op == OpCode.InitializeLocal).A;
+            Require(closure > 0 && main[closure - 1] is { Op: OpCode.LoadCell } load && load.A == initialRoot, "Closure must capture the original root binding cell, not a later shadow.");
         });
         Check("source-free binary roundtrip", () =>
         {

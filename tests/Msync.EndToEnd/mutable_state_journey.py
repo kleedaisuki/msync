@@ -20,6 +20,7 @@ class Example:
     name: str
     source: str
     expected: bytes
+    runtime_timeout: float = 30
 
 
 EXAMPLES: tuple[Example, ...] = (
@@ -175,6 +176,43 @@ EXAMPLES: tuple[Example, ...] = (
         b"last",
     ),
     Example(
+        "short-circuit-false-and",
+        'let value = "before"; if false and { value = "after"; true } { }; value -> ./result;',
+        b"before",
+    ),
+    Example(
+        "short-circuit-true-or",
+        'let value = "before"; if true or { value = "after"; false } { }; value -> ./result;',
+        b"before",
+    ),
+    Example(
+        "short-circuit-selected-and",
+        'let value? = null; if true and { value = "after"; true } { }; value -> ./result;',
+        b"after",
+    ),
+    Example(
+        "short-circuit-selected-or",
+        'let value? = null; if false or { value = "after"; true } { }; value -> ./result;',
+        b"after",
+    ),
+    Example(
+        "loop-live-callable",
+        'let operation = fn { "before" }; let results = ""; for item in [1, 2] { results = $std::string::concat(results, operation()); operation = fn { "after" }; }; results -> ./result;',
+        b"beforeafter",
+    ),
+    Example(
+        "loop-helper-write",
+        'let flag = true; fn stop() { flag = false; }; loop { if flag { stop(); } else { break; }; }; "done" -> ./result;',
+        b"done",
+        runtime_timeout=5,
+    ),
+    Example(
+        "recursive-capture-assignment",
+        'let first = fn { 0 }; fn walk(number) { let snapshot = number; if number == 3 { first = fn { snapshot }; }; if number == 0 { null } else { walk(number - 1) } }; walk(3); if first() == 3 { "three" -> ./result };',
+        b"three",
+        runtime_timeout=5,
+    ),
+    Example(
         "loop-capture-freshness",
         'let first = fn { "unset" }; let last = fn { "unset" }; for item in ["first", "last"] { let snapshot = item; if item == "first" { first = fn { snapshot }; } else { last = fn { item }; }; }; if first() == "first" and last() == "last" { "fresh" -> ./result };',
         b"fresh",
@@ -196,6 +234,16 @@ INVALID: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "inferred-field-type",
         'let object = scope { value: true }; object::value = "text";',
         ("Bool", "String"),
+    ),
+    (
+        "short-circuit-maybe-and",
+        'let value? = null; if exists ./missing and { value = "text"; true } { }; value -> ./result;',
+        ("Null",),
+    ),
+    (
+        "short-circuit-maybe-or",
+        'let value? = null; if exists ./input or { value = "text"; false } { }; value -> ./result;',
+        ("Null",),
     ),
     (
         "nullable-slot-branch-type",
@@ -290,7 +338,7 @@ def alias_properties(count: int) -> tuple[Example, ...]:
 
 
 def invoke(
-    binary: Path, directory: Path, arguments: list[str]
+    binary: Path, directory: Path, arguments: list[str], timeout: float = 30
 ) -> subprocess.CompletedProcess[str]:
     environment: dict[str, str] = dict(os.environ)
     environment["NO_COLOR"] = "1"
@@ -302,12 +350,14 @@ def invoke(
         text=True,
         encoding="utf-8",
         check=False,
-        timeout=30,
+        timeout=timeout,
     )
 
 
-def successful(binary: Path, directory: Path, arguments: list[str]) -> None:
-    result = invoke(binary, directory, arguments)
+def successful(
+    binary: Path, directory: Path, arguments: list[str], timeout: float = 30
+) -> None:
+    result = invoke(binary, directory, arguments, timeout=timeout)
     assert result.returncode == 0, (arguments, result.stdout, result.stderr)
 
 
@@ -324,7 +374,9 @@ def run_example(binary: Path, directory: Path, example: Example) -> int:
     assert not result.exists(), f"compilation executed the {example.name} program"
     stages = (source, relocatable, executable)
     for target in stages:
-        successful(binary, directory, ["run", str(target)])
+        successful(
+            binary, directory, ["run", str(target)], timeout=example.runtime_timeout
+        )
         assert result.read_bytes() == example.expected, (
             example.name,
             target.suffix,
