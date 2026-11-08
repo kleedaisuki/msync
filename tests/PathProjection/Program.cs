@@ -2,6 +2,7 @@ using Msync.Compiler;
 using Msync.Core;
 using Msync.Runtime;
 
+if (args.Contains("--windows-rooted", StringComparer.Ordinal)) { WindowsRootChecks.Run(); return; }
 if (args.Contains("--editor-session", StringComparer.Ordinal)) { await EditorSessionChecks.Run(); return; }
 if (args.Contains("--process-members", StringComparer.Ordinal)) { await EditorSessionChecks.RunProcessMembers(); return; }
 
