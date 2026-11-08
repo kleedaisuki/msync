@@ -19,13 +19,14 @@ when an unchanged contract has already passed.
 | Nullable declarations | Unmarked nullable binding is rejected; `?` tests is-null |
 | Flow refinement | Both `if` branches and `match null` permit only admitted operations |
 | Exhaustive match | Bool complete arms work; missing Bool/Null and regex-only matches fail |
-| Regex match | A Path uses its native text; fallback is necessary |
-| Type match and `decltype` | Types select arms; inspecting an effectful expression creates no file |
+| Regex match | Raw/native Path text is consistent with String conversion; Null/Bool select fallback; regex arms narrow nullable Paths |
+| Type match and `decltype` | Types select compatible generic arms; inspecting an effectful expression creates no file |
 | Generic functions | Calls specialize Path/String separately; callbacks carry actual functions |
 | Recursive functions | Recursive calls execute with changing arguments, not infinite expansion |
 | Scopes and connections | Branch/Range scope projections preserve member unions; lexical lookup is distinct from endpoint qualification |
 | Ordinary builtin-named files | Loading `$std` does not hide physical `file`, `path`, `pwd` or `std` files |
 | Literal and Path transfers | String source is exact UTF-8 data; explicit Path source reads a file |
+| Full Unicode strings | Legacy full casing/FinalSigma/ligatures, regex and supplementary-plane filenames retain exact bytes |
 | Relocatable/executable artifacts | Artifacts execute after deleting the source, without reparsing it |
 
 The integration team's broader suite owns packaging, SSH/WSL transport, generic

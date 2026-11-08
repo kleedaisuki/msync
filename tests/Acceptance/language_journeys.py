@@ -32,7 +32,83 @@ class Journey:
     relocation: bool = False
 
 
+UNICODE_CASE_SAMPLE: str = "ΑΣ Σςσ İıIißẞ Éé 𐐀𐐨 ﬃ և"
+UNICODE_SIGMA_SOURCE: str = "ΟΣ ΟΣΑ ΟΣ́ ΟΣ́Α Σ ΟΣ’ ΟΣ’Α ΟΣ\u200d ΟΣ\u200dΑ"
+
+
 JOURNEYS: tuple[Journey, ...] = (
+    Journey(
+        "regex_nullable_absent_selects_fallback",
+        "let file? = if exists ./input.txt { ./input.txt } else { null }; "
+        'let text = match file { <.+> => { file -> copied.txt; "matched" }, '
+        '_ => { "missing" } }; text -> result.txt;',
+        {"result.txt": b"missing"},
+        artifacts=True,
+    ),
+    Journey(
+        "regex_nullable_present_narrows_path",
+        "let file? = if exists ./input.txt { ./input.txt } else { null }; "
+        'let text = match file { <.+> => { file -> copied.txt; "matched" }, '
+        '_ => { "missing" } }; text -> result.txt;',
+        {"result.txt": b"matched", "copied.txt": b"nullable regex bytes"},
+        {"input.txt": b"nullable regex bytes"},
+        artifacts=True,
+    ),
+    Journey(
+        "regex_mixed_bool_selects_fallback",
+        "let value = if exists ./input.txt { ./input.txt } else { true }; "
+        'let text = match value { <.+> => { "wrong" }, _ => { "other" } }; '
+        "text -> result.txt;",
+        {"result.txt": b"other"},
+        artifacts=True,
+    ),
+    Journey(
+        "invalid_regex_rejected_before_execution",
+        "let _ = match ./input.txt { <(> => {}, _ => {} };",
+        {},
+        accepted=False,
+    ),
+    Journey(
+        "full_unicode_case_regex_and_native_filename",
+        f'$std::string::to_lowercase("{UNICODE_CASE_SAMPLE}") -> lower.txt; '
+        f'$std::string::to_uppercase("{UNICODE_CASE_SAMPLE}") -> upper.txt; '
+        f'$std::string::to_lowercase("{UNICODE_SIGMA_SOURCE}") -> sigma.txt; '
+        r'let word = match "可莉Σ" { <^\w+$> => { true }, _ => { false } }; '
+        'if word { "true" -> word.txt; } else { "false" -> word.txt; }; '
+        'let astral = match "𐐀𐐨" { <^.+$> => { true }, _ => { false } }; '
+        'if astral { "true" -> astral.txt; } else { "false" -> astral.txt; }; '
+        '"可莉𐐀𐐨" -> ./可莉𐐀𐐨.txt;',
+        {
+            "lower.txt": "ας σςσ i̇ıiißß éé 𐐨𐐨 ﬃ և".encode(),
+            "upper.txt": "ΑΣ ΣΣΣ İIIISSẞ ÉÉ 𐐀𐐀 FFI ԵՒ".encode(),
+            "sigma.txt": "ος οσα ος́ οσ́α σ ος’ οσ’α ος\u200d οσ\u200dα".encode(),
+            "word.txt": b"true",
+            "astral.txt": b"true",
+            "可莉𐐀𐐨.txt": "可莉𐐀𐐨".encode(),
+        },
+        artifacts=True,
+    ),
+    Journey(
+        "generic_type_dispatch_drops_incompatible_branches",
+        "fn choose(value) { if decltype(value) is Path { value -> copied.txt } "
+        "else { not value } }; "
+        "let first = choose(false); let second = choose(true); choose(./input.txt); "
+        'if first and not second { "booleans" -> bool.txt; } '
+        'else { "wrong" -> bool.txt; }; '
+        "fn choose_match(value) { match decltype(value) { "
+        "Path => { value -> matched.txt }, Bool => { not value } } }; "
+        "choose_match(./input.txt); "
+        'if choose_match(false) and not choose_match(true) { "matched bools" -> match-bool.txt; } '
+        'else { "wrong" -> match-bool.txt; };',
+        {
+            "copied.txt": b"typed bytes",
+            "matched.txt": b"typed bytes",
+            "bool.txt": b"booleans",
+            "match-bool.txt": b"matched bools",
+        },
+        {"input.txt": b"typed bytes"},
+        artifacts=True,
+    ),
     Journey(
         "scope_branch_member_union",
         "let chosen = if exists ./input.txt { scope { value: ./input.txt, } } "

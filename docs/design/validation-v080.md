@@ -176,3 +176,52 @@ Frozen managed file-manifest SHA-256:
 `2ae40f4febfd7751ef3527e1ea4b12d41496c238b85fca2a110cfb3fba891afa`.
 This selection replaces only the affected earlier conclusions; no unchanged
 full managed sweep was repeated.
+
+
+## Type-dependent generic control and partial regex predicates
+
+A generic function may dispatch on `decltype(value)` and use incompatible
+operations in different type-specialized branches: Path transfer in one branch,
+Boolean negation in the other. A focused source/`.mso`/`.mexe` journey accepted
+both `if` and exhaustive type `match` forms, calling each function with a Path
+and with both Boolean values. The latter distinguishes per-type specialization
+from accidentally freezing the first runtime Boolean value.
+Report: `.temp/acceptance-v080/generic-type-dispatch.json`.
+
+Regex patterns are partial text predicates, not implicit stringification for
+all types. A Path/Null scrutinee narrows to Path in the regex arm; actual Null
+and Bool values select the fallback. Mixed-Bool fallback and malformed-regex
+compile diagnostics passed immediately. The first nullable source journeys ran
+correctly but artifact emission rejected their unreachable Null transfer arms.
+The verifier now propagates RegexMatch's known-false result for known nontext
+inputs; both nullable present/absent cases pass all three stages.
+Report: `.temp/acceptance-v080/regex-nullable-verifier-corrected.json`;
+frozen managed manifest `df3c789899e8c619faa630d0b9122b78dc4a791d926ebba53a0d2025f2be56b7`.
+
+## Full Unicode compatibility, independent of ICU
+
+The expected casing bytes were obtained from the actual preserved Rust 0.7.3
+CLI, whose `string.to_lowercase`/`to_uppercase` use Rust's full Unicode casing.
+The independent journey covers dotted/dotless I, sharp S, contextual Greek
+FinalSigma across combining marks/apostrophes/ZWJ, Deseret supplementary-plane
+letters, Latin and Armenian ligature expansions, Unicode regex matching and an
+actual supplementary-plane filename.
+
+A retained pre-fix C# image demonstrably failed the expected lowercase bytes:
+.NET simple casing did not preserve full expansion or FinalSigma behavior.
+The official Unicode-table implementation now passes the exact legacy-derived
+expectations through source, source-free `.mso`, and bound `.mexe` execution.
+Globalization-invariant AOT configuration must not silently redefine language
+string semantics; ICU/default equivalence alone was never compatibility evidence.
+
+```sh
+python3 tests/Acceptance/language_journeys.py \
+  .temp/acceptance-v080/final-build/bin/Msync.Cli/debug/msync --artifacts \
+  --case full_unicode_case_regex_and_native_filename \
+  --output .temp/acceptance-v080/unicode-full-casing-corrected.json
+```
+
+The actual Rust probe is retained below `.temp/acceptance-v080/unicode-rust-baseline`;
+its useful expected bytes are persistent in the harness, so fixture cleanup does
+not lose the regression. Corrected managed manifest SHA-256:
+`df3c789899e8c619faa630d0b9122b78dc4a791d926ebba53a0d2025f2be56b7`.
