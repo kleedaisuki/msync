@@ -58,7 +58,7 @@ jobs:
           python-version: '3.14'
       - name: Install native Linux prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev openssh-server
       - name: Build and exercise the actual Native AOT package
         id: package
         run: python packaging/build.py --rid ${{ matrix.rid }} --smoke
@@ -72,6 +72,15 @@ jobs:
           from pathlib import Path
           binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
           subprocess.run(['python', 'packaging/platform_journeys.py', '--binary', str(binary), '--output', '.temp/platform-results'], check=True)
+      - name: Verify actual Windows file attributes, alternate streams and link ownership
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        run: python tests/IO/windows_file_metadata.py artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-file-metadata.json
+      - name: Verify Linux nanosecond metadata through actual local and SSH transfers
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.package.outcome == 'success' }}
+        run: python tests/IO/nanosecond_metadata.py artifacts/publish/linux-x64/msync --ssh --output .temp/platform-results/nanosecond-metadata.json
+      - name: Verify Linux overlapping sources and positive-progress cancellation
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.package.outcome == 'success' }}
+        run: python tests/IO/overlap_cancel.py artifacts/publish/linux-x64/msync --output .temp/platform-results/overlap-cancellation.json
       - name: Exercise per-user installer ownership and upgrade lifecycle
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.package.outcome == 'success' }}
         shell: pwsh
