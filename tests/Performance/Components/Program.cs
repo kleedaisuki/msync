@@ -61,6 +61,7 @@ internal static class Program
     public static int Main(string[] args)
     {
         if (SourceReadProbe.TryRun(args)) return 0;
+        if (TypeValueChecks.TryRun(args)) return 0;
         if (args.Contains("--check-interner", StringComparer.Ordinal)) { InternerChecks.Run(); return 0; }
         if (args.Contains("--check-snapshots", StringComparer.Ordinal)) { SnapshotChecks.Run(); return 0; }
         if (args.Contains("--emit-capture", StringComparer.Ordinal))

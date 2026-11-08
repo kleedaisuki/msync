@@ -134,3 +134,21 @@ editor host, compiler build or another benchmark concurrently with measurements.
 The verification scripts use fully typed protocol helpers in the end-to-end
 directory; static checking the cross-directory runner uses
 `MYPYPATH=tests/Msync.EndToEnd mypy --strict tests/Performance/editor_latency.py`.
+
+## Immutable type-value operations
+
+The component image includes a focused compatibility/property check and an
+optional same-image comparison with the previous type-value algorithms:
+
+```sh
+dotnet run --project tests/Performance/Components/Msync.Components.csproj -c Release -- --check-type-values
+/path/to/native/msync-components --check-type-values --benchmark-type-values > .temp/type-values-native.json
+```
+
+The check covers the complete 16-bit Kind formatting domain, recursive Range
+contents, null admission/removal, union structure and input admission. The
+benchmark uses mixed ordinary scalar types, nine warmed 20,000-operation samples,
+and reports all samples plus allocated bytes. Old and current algorithms execute
+in the same Native AOT image; this isolates primitive formatting/no-op allocation
+costs, not complete editor or CLI latency. JSON goes to stdout and the check's
+status goes to stderr. No performance threshold is an acceptance gate.
