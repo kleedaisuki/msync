@@ -214,6 +214,14 @@ internal static class OptimizerPipelineProbe
     private static string Source(string workload, int size)
     {
         StringBuilder text = new();
+        if (workload == "finite_sum")
+        {
+            text.Append("fn sum() { let value = 0; for item in [");
+            text.AppendJoin(",", Enumerable.Range(1, size));
+            text.AppendLine("] { value = value + item; }; value };");
+            string expected = ((double)size * (size + 1) / 2).ToString(CultureInfo.InvariantCulture);
+            return text.Append($"if sum() == {expected} {{ ./input_{size - 1} }} else {{ ./incorrect }}").ToString();
+        }
         if (workload == "transfers")
         {
             for (int index = 0; index < size; index++) text.AppendLine($"./source_{index} -> ./destination_{index};");

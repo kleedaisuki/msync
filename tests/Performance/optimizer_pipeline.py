@@ -150,7 +150,7 @@ def main() -> None:
         "--case", action="append", choices=(*CASES, "call_dag", "transfers")
     )
     parser.add_argument(
-        "--candidate-case", action="append", choices=("mutable_scopes",)
+        "--candidate-case", action="append", choices=("mutable_scopes", "finite_sum")
     )
     parser.add_argument("--sizes", nargs="+", type=int, default=[1, 32, 128])
     parser.add_argument("--levels", nargs="+", type=int, default=[0, 1, 2, 3])

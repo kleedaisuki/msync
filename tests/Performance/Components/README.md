@@ -121,6 +121,14 @@ roundtrips; it does not execute fixture paths that do not exist. Actual transfer
 bytes and publication behavior belong to the separate CLI/scheduler journeys,
 not a fabricated zero-I/O VM timing for this case.
 
+The explicit `finite_sum` case activates O2/O3 compile-time evaluation rather
+than measuring an unused loop: a zero-argument function adds 1 through N in order,
+and the caller selects the expected Path only if its result is `N * (N + 1) / 2`.
+Use `--cases finite_sum --sizes 200 --levels 1,2,3` on one final native image.
+The value must be consumed; a wrong sum takes the independently rejected Path.
+This is a new mutable-language workload, so the paired driver exposes it only
+as `--candidate-case finite_sum` when an older product control is also present.
+
 ```sh
 /path/to/native/msync-components --optimizer-pipeline \
   --sizes 1,32,128,512 --levels 0,1,2,3 --samples 15 --warmups 3 \
