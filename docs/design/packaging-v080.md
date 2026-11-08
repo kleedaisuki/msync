@@ -1,5 +1,39 @@
 # Native AOT packaging in v0.8
 
+## Current complete local delivery set
+
+The final product source is `8ca36bc`, including the bounded WSL archive-receipt
+protocol and the prepublication member-length check. The earlier image identities
+below retain their historical checkpoints; this is the current four-asset set
+under `dist/`. No public release, tag or pull request was created.
+
+| Asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `msync-0.8.0-linux-x86_64.tar.gz` | 5,244,319 | `56e01f75474e78bd29b9e9196d824fed296689e301eca9162860710fcdc0f98d` |
+| `msync-0.8.0-windows-x86_64-setup.exe` | 6,000,331 | `ea998935d715888d42049eb4ad89e13ad7d65e0314ce9bce269cacce5caeaa6d` |
+| `msync-0.8.0-windows-x86_64.zip` | 5,572,664 | `390f13a1cd0117b28fafa494513ab85a53795d9de43b5ccfe8bd8d74f8002753` |
+| `msync-language-0.8.0.vsix` | 122,831 | `fdf2f987a7582a9c0b2b6f5b4fe8ed6f63fdf0dc43575af57c2c24ad51bfd182` |
+
+`dist/SHA256SUMS` covers all four. Both portable-package manifests were verified
+completely after collation. The Linux executable is SHA-256
+`82c9139427ec7af91cde20c2eb80f99445c299ccce1845e08722aa3e0b47fc5e`;
+its final installed smoke and Ubuntu 22 container without .NET/ICU passed.
+The Windows executable is SHA-256
+`0f62a046456f64034619cb1bba9ce813e0b4ff774fd338d0ae558592d27ec135`,
+copied unchanged from [the accepted native Windows WSL run](https://github.com/kleedaisuki/msync/actions/runs/42480251334).
+Source/`.mso`/`.mexe` round trips cover small, empty and 1,280,123-byte all-byte
+payloads, home/relative path qualification, context rebinding and sibling data.
+Positive-progress interruption and endpoint failure preserve the previous target
+and retire the owned stage; owned distro cleanup succeeded.
+
+The actual Windows installer lifecycle/public 0.4 upgrade and ten-phase ConPTY
+editor acceptance were verified separately before the final WSL-only runtime
+repair; their installer/editor implementations are unchanged. The VSIX bytes
+remain those compared against the accepted production client assets. This set
+reuses accepted native payloads rather than rebuilding them for documentation
+updates. Actual same-host Rust/current/previous-C# measurements and component
+results are retained in [the performance note](performance-v080.md).
+
 The product is published from `src/Msync.Cli/Msync.Cli.csproj` using .NET 10
 Native AOT. The independent Rust implementation in `legacy/` remains a semantic
 baseline, not a dependency of the new executable or release payload.
