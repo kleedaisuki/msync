@@ -29,7 +29,7 @@ and contextual completion. Linux completion uses a real retained SSH endpoint.
 These four changed editor journeys plus installed-layout smoke passed on both
 hosts; unchanged formatter/skill/WSL/authentication/console matrices were not
 repeated. Matched same-host native performance results belong to
-[the editor latency note](editor-latency-v080.md), with their own exact image
+[the editor latency measurements](performance-v080.md), with their own exact image
 identities rather than attributing measurements to a different platform build.
 
 The preceding [a4437d6 delivery](https://github.com/kleedaisuki/msync/actions/runs/42496053973)
