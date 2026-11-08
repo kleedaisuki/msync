@@ -90,6 +90,42 @@ def terminal(binary: Path, cwd: Path) -> dict[str, int]:
     return {"help_color_modes": len(topics) * 4, "source_diagnostics": len(cases)}
 
 
+def runtime_diagnostics(binary: Path, cwd: Path) -> dict[str, int]:
+    cases = {
+        "transfer": "./missing-source -> ./untouched;\n",
+        "process": "./missing-program();\n",
+    }
+    for name, source in cases.items():
+        path = cwd / f"runtime-{name}.msync"
+        artifact = path.with_suffix(".mso")
+        path.write_text(source, encoding="utf-8")
+        compiled = invoke(binary, cwd, ["compile", str(path), "-o", str(artifact)])
+        assert compiled.returncode == 0, compiled.stderr
+        direct = invoke(binary, cwd, ["--color", "never", "run", str(path)])
+        assert direct.returncode != 0 and "error[E0300]" in direct.stderr, direct.stderr
+        assert path.name in direct.stderr and source.strip() in direct.stderr, (
+            direct.stderr
+        )
+        assert "^" in direct.stderr and "\x1b" not in direct.stderr, direct.stderr
+        if name == "transfer":
+            assert "help:" in direct.stderr, direct.stderr
+        path.unlink()
+        plain = invoke(binary, cwd, ["--color", "never", "run", str(artifact)])
+        colored = invoke(binary, cwd, ["--color", "always", "run", str(artifact)])
+        assert plain.returncode != 0 and colored.returncode == plain.returncode
+        assert path.name in plain.stderr and "source offset" in plain.stderr, (
+            plain.stderr
+        )
+        assert "1 |" not in plain.stderr, (
+            "Unavailable source must not become fabricated line data"
+        )
+        assert (
+            ANSI.search(colored.stderr) and ANSI.sub("", colored.stderr) == plain.stderr
+        )
+        assert not (cwd / "untouched").exists()
+    return {"runtime_diagnostic_stages": len(cases) * 2}
+
+
 def position(source: str, spelling: str, occurrence: int = 0) -> dict[str, int]:
     offset = -1
     for _ in range(occurrence + 1):
@@ -209,6 +245,21 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
             suggestions["Alias"]["kind"] == 7
             and "Scope" in suggestions["Alias"]["detail"]
         ), suggestions
+        member_position = position(source, "get", 1)
+        member_position["character"] += 1
+        members, _ = client.request(
+            "textDocument/completion",
+            {
+                "textDocument": {"uri": uri},
+                "position": member_position,
+            },
+        )
+        member_suggestions = {item["label"]: item for item in members}
+        assert set(member_suggestions) == {"get", "new"}, member_suggestions
+        assert (
+            member_suggestions["get"]["kind"] == 3
+            and "fn get" in member_suggestions["get"]["detail"]
+        ), member_suggestions
         definition, _ = client.request(
             "textDocument/definition",
             {
@@ -263,7 +314,7 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
             "inferred_token_sites": len(checks),
             "typed_hovers": 3,
             "quickfix_roundtrips": 1,
-            "inferred_completion_items": 2,
+            "inferred_completion_items": 4,
             "local_definition": 1,
         }
     finally:
@@ -280,6 +331,7 @@ def main() -> None:
         cwd = Path(directory)
         result = {
             **terminal(arguments.binary.resolve(), cwd),
+            **runtime_diagnostics(arguments.binary.resolve(), cwd),
             **editor(arguments.binary.resolve(), cwd),
         }
     print(json.dumps(result, indent=2))
