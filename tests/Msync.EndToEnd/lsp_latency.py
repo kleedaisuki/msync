@@ -19,12 +19,20 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class Client:
-    def __init__(self, binary: Path) -> None:
+    def __init__(
+        self,
+        binary: Path,
+        *,
+        cwd: Path | None = None,
+        environment: dict[str, str] | None = None,
+    ) -> None:
         self.process = subprocess.Popen(
             [str(binary), "--language-server"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            cwd=cwd,
+            env=environment,
         )
         assert self.process.stdin is not None and self.process.stdout is not None
         self.input: IO[bytes] = self.process.stdin
