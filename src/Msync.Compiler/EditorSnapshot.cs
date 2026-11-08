@@ -7,6 +7,12 @@ internal sealed class EditorSnapshot
 {
     private readonly Dictionary<(Info, Value?, bool), Info> infos = new(new IdentityComparer());
     private readonly Dictionary<(Template, FunctionValue?), Template> templates = [];
+    private readonly Dictionary<StorageConstraint, StorageConstraint> storage = [];
+    private StorageConstraint Storage(StorageConstraint constraint)
+    {
+        if (!storage.TryGetValue(constraint, out var result)) storage.Add(constraint, result = new(constraint.Type));
+        return result;
+    }
 
     private sealed class IdentityComparer : IEqualityComparer<(Info, Value?, bool)>
     {
@@ -19,11 +25,13 @@ internal sealed class EditorSnapshot
     public Binding Binding(Binding binding, Value? value, bool unprovenCapture = false) => binding with
     {
         Info = Info(binding.Info, value, unprovenCapture),
-        Self = binding.Self is null ? null : Template(binding.Self, value as FunctionValue)
+        Self = binding.Self is null ? null : Template(binding.Self, value as FunctionValue),
+        Storage = Storage(binding.Storage)
     };
 
     private Info Info(Info info, Value? value, bool unprovenCapture = false)
     {
+        if (value is CellValue cell) value = cell.Data;
         if (infos.TryGetValue((info, value, unprovenCapture), out var saved)) return saved;
         ScopeInfo? scope = info.Scope;
         if (scope is not null)
@@ -35,7 +43,13 @@ internal sealed class EditorSnapshot
                 Value? item = actual is not null && actual.Members.TryGetValue(name, out Value? found) ? found : null;
                 members[name] = Info(member, item, unprovenCapture && item is null);
             }
-            scope = new(members, scope.Named, scope.Origins);
+            scope = new(members, scope.Named, scope.Origins, scope.NullableMembers, scope.StorageTypes)
+            {
+                Identity = scope.Identity,
+                AllocationSite = scope.AllocationSite,
+                Storage = scope.Storage.ToDictionary(pair => pair.Key, pair => Storage(pair.Value), StringComparer.Ordinal),
+                FieldBindings = scope.FieldBindings.ToDictionary(pair => pair.Key, pair => pair.Value with { Storage = Storage(pair.Value.Storage) }, StringComparer.Ordinal)
+            };
         }
         var result = info with
         {

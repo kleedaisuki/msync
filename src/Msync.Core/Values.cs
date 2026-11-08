@@ -72,10 +72,48 @@ public sealed record RangeValue(IAsyncEnumerable<Value> Items, TypeRef ItemType,
     public override TypeRef Type => new(TypeKind.Range, ItemType);
     public override string ToString() => $"Range<{ItemType}>";
 }
-public sealed record ScopeValue(IReadOnlyDictionary<string, Value> Members) : Value
+public sealed record ScopeValue : Value
 {
+    private sealed class MemberView(IReadOnlyDictionary<string, Value> members) : IReadOnlyDictionary<string, Value>
+    {
+        public int Count => members.Count;
+        public IEnumerable<string> Keys => members.Keys;
+        public IEnumerable<Value> Values => members.Values.Select(Read);
+        public Value this[string name] => Read(members[name]);
+        public bool ContainsKey(string name) => members.ContainsKey(name);
+        public bool TryGetValue(string name, out Value value)
+        {
+            if (members.TryGetValue(name, out var stored)) { value = Read(stored); return true; }
+            value = Value.Null; return false;
+        }
+        public IEnumerator<KeyValuePair<string, Value>> GetEnumerator() =>
+            members.Select(pair => KeyValuePair.Create(pair.Key, Read(pair.Value))).GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+        private static Value Read(Value value) => value is CellValue cell ? cell.Data : value;
+    }
+    private readonly Dictionary<string, Value> fields;
+    public ScopeValue(IReadOnlyDictionary<string, Value> members)
+    {
+        fields = members as Dictionary<string, Value> ?? members.ToDictionary();
+        Members = new MemberView(fields);
+    }
+    public ScopeValue(IReadOnlyDictionary<string, Value> members, int allocationSite) : this(members) => AllocationSite = allocationSite;
+    public IReadOnlyDictionary<string, Value> Members { get; }
+    public int AllocationSite { get; init; }
+    public void SetMember(string name, Value value)
+    {
+        if (!fields.TryGetValue(name, out var previous)) throw new MsyncException($"Scope has no member '{name}'");
+        if (previous is CellValue cell) cell.Data = value;
+        else fields[name] = value;
+    }
     public override TypeRef Type => TypeRef.Scope;
     public override string ToString() => "scope { " + string.Join(", ", Members.Keys) + " }";
+}
+public sealed record CellValue(Value Data) : Value
+{
+    public Value Data { get; set; } = Data;
+    public override TypeRef Type => Data.Type;
+    public override string ToString() => Data.ToString() ?? "null";
 }
 public sealed record FunctionValue(int Function, IReadOnlyList<Value>? Captures = null, string? NativeName = null) : Value
 {
@@ -89,6 +127,7 @@ public sealed record TypeValue(TypeRef Data) : Value
 }
 public sealed record ProcessValue(int ExitCode, string StandardOutput, string StandardError) : Value
 {
+    public Task<ProcessValue>? Completion { get; init; }
     public override TypeRef Type => TypeRef.Process;
     public override string ToString() => $"Process(exit={ExitCode})";
 }

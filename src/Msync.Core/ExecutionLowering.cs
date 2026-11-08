@@ -27,8 +27,10 @@ public static class ExecutionLowering
                 case OpCode.True: stack.Add(Value.True); break;
                 case OpCode.False: stack.Add(Value.False); break;
                 case OpCode.Null: stack.Add(Value.Null); break;
-                case OpCode.LoadLocal: stack.Add(locals[instruction.A]); break;
-                case OpCode.StoreLocal: locals[instruction.A] = Pop(); break;
+                case OpCode.LoadLocal:
+                case OpCode.LoadStorage: stack.Add(locals[instruction.A]); break;
+                case OpCode.StoreLocal:
+                case OpCode.InitializeLocal: locals[instruction.A] = Pop(); break;
                 case OpCode.Pop: Pop(); break;
                 case OpCode.Dup: stack.Add(stack.Count == 0 ? null : stack[^1]); break;
                 case OpCode.LoadBuiltin:
@@ -41,7 +43,7 @@ public static class ExecutionLowering
                             "wsl" => new(ConnectionKind.Wsl),
                             _ => null
                         };
-                        if (value is not null) { var index = constants.IndexOf(value); if (index < 0) { index = constants.Count; constants.Add(value); } code[pc] = new(OpCode.Constant, index, Span: instruction.Span); }
+                        if (value is not null) { var index = ValueRepresentation.IndexOf(constants, value); if (index < 0) { index = constants.Count; constants.Add(value); } code[pc] = new(OpCode.Constant, index, Span: instruction.Span); }
                         stack.Add(value); break;
                     }
                 case OpCode.Convert:
@@ -60,7 +62,7 @@ public static class ExecutionLowering
                     {
                         var item = Pop(); var connection = Pop() as ConnectionValue;
                         var path = item is PathValue p ? p : item is StringValue s ? new PathValue(s.Data, context.WorkingDirectory, HomeDirectory: context.HomeDirectory) : null;
-                        stack.Add(connection is null || path is null ? null : PathSemantics.Qualify(path, connection)); break;
+                        stack.Add(connection is null || path is null ? null : PureEvaluation.Qualify(connection, path, context)); break;
                     }
                 case OpCode.Transfer:
                 case OpCode.LocalTransfer:

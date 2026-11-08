@@ -207,6 +207,7 @@ internal sealed partial class Compilation
             EditorReportErrors = true
         };
         if (functions.Count == 0) functions.Add(new("<main>", 0, 0, [], Msync.Core.TypeRef.Null));
+        SnapshotFacts(frame);
         CaptureContext(frame, 0);
         _ = Statements(frame, document.Statements);
         CaptureContext(frame, source.Length);

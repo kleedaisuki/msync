@@ -49,6 +49,10 @@ internal static class GraphOptimization
         private readonly HashSet<int> externalCells = Enumerable.Range(0, function.CaptureCount).ToHashSet();
         private readonly Dictionary<int, HashSet<int>> scopeWrites = [];
         private readonly Dictionary<int, HashSet<int>> cellWrites = [];
+        private readonly int[] cellParents = Enumerable.Range(0, function.LocalCount).ToArray();
+        private readonly Dictionary<int, List<int>> cellAliases = [];
+        private readonly HashSet<int> observedCells = [];
+        private readonly List<int>?[] localDefinitions = new List<int>?[function.LocalCount];
         private readonly HashSet<int> escapedScopes = [];
         private readonly Dictionary<int, List<int>> equivalent = [];
         private readonly int[] representatives = Enumerable.Range(0, function.Instructions.Count * 2).ToArray();
@@ -74,12 +78,16 @@ internal static class GraphOptimization
                 var node = nodes[pc];
                 node.LiveOutputs |= 1 << (token % 2);
                 Keep(pc);
-                if (node.Instruction.Op == OpCode.LoadCell)
+                if (node.Instruction.Op is OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage && mutableSlots.Contains(node.Instruction.A)
+                    && observedCells.Add(CellRoot(node.Instruction.A)))
                 {
-                    if (cellWrites.TryGetValue(node.Instruction.A, out var mutations))
-                        foreach (var mutation in mutations) Keep(mutation);
-                    for (var index = 0; index < nodes.Length; index++)
-                        if (nodes[index].Reachable && nodes[index].Instruction.Op is OpCode.StoreLocal or OpCode.InitializeLocal && nodes[index].Instruction.A == node.Instruction.A) Demand(index * 2);
+                    foreach (var slot in cellAliases[CellRoot(node.Instruction.A)])
+                    {
+                        if (cellWrites.TryGetValue(slot, out var mutations))
+                            foreach (var mutation in mutations) Keep(mutation);
+                        if (localDefinitions[slot] is { } definitions)
+                            foreach (var definition in definitions) Demand(definition * 2);
+                    }
                 }
                 if (scopeWrites.TryGetValue(pc, out var writes))
                     foreach (var write in writes) Keep(write);
@@ -208,7 +216,7 @@ internal static class GraphOptimization
             {
                 if (token < 0) return null;
                 var value = Resolve(nodes[token / 2]);
-                if (value is null || result is not null && result != value) return null;
+                if (value is null || result is not null && !ValueRepresentation.Same(result, value)) return null;
                 result = value;
             }
             return result;
@@ -295,7 +303,7 @@ internal static class GraphOptimization
                     if (targets is null || targets.Contains(allocation)) return null;
                 }
                 var value = Resolve(scope.Inputs[index]);
-                if (value is null || result is not null && result != value) return null;
+                if (value is null || result is not null && !ValueRepresentation.Same(result, value)) return null;
                 result = value;
             }
             return result;
@@ -352,24 +360,64 @@ internal static class GraphOptimization
             }
         }
 
+        private int CellRoot(int slot)
+        {
+            while (cellParents[slot] != slot)
+            {
+                cellParents[slot] = cellParents[cellParents[slot]];
+                slot = cellParents[slot];
+            }
+            return slot;
+        }
+
         private void DiscoverCellAliases()
         {
-            // Entry captures and inlined raw captures refer to another frame's
-            // storage. A write remains observable without a read in this frame.
-            bool Cell(HashSet<int> tokens, HashSet<int> seen)
+            // Raw capture and storage instructions can put the same cell into
+            // several slots. Demand and invalidation follow storage identity.
+            bool external = false;
+            void Origins(HashSet<int> tokens, HashSet<int> seen, HashSet<int> slots)
             {
                 foreach (var token in tokens)
                 {
                     if (token < 0 || !seen.Add(token)) continue;
                     var node = nodes[token / 2];
-                    if (node.Instruction.Op == OpCode.GetCapture) return true;
-                    if (node.Instruction.Op is OpCode.Dup or OpCode.LoadLocal or OpCode.InitializeLocal or OpCode.StoreLocal && Cell(node.Inputs[0], seen)) return true;
+                    if (node.Instruction.Op == OpCode.GetCapture) { external = true; continue; }
+                    if (node.Instruction.Op == OpCode.LoadCell || node.Instruction.Op == OpCode.LoadStorage && mutableSlots.Contains(node.Instruction.A))
+                    { slots.Add(node.Instruction.A); continue; }
+                    if (node.Instruction.Op is OpCode.Dup or OpCode.InitializeLocal)
+                        Origins(node.Inputs[0], seen, slots);
                 }
-                return false;
             }
-            foreach (var node in nodes.Where(node => node.Reachable && node.Instruction.Op == OpCode.InitializeLocal))
-                if (Cell(node.Inputs[0], [])) externalCells.Add(node.Instruction.A);
             mutableSlots.UnionWith(externalCells);
+            foreach (var node in nodes.Where(node => node.Reachable && node.Instruction.Op is OpCode.StoreLocal or OpCode.InitializeLocal))
+                (localDefinitions[node.Instruction.A] ??= []).Add(node.Index);
+            bool changed;
+            do
+            {
+                changed = false;
+                foreach (var node in nodes.Where(node => node.Reachable && node.Instruction.Op == OpCode.InitializeLocal))
+                {
+                    var slots = new HashSet<int>();
+                    external = false;
+                    Origins(node.Inputs[0], [], slots);
+                    var destination = node.Instruction.A;
+                    if (external) { changed |= externalCells.Add(destination); changed |= mutableSlots.Add(destination); }
+                    foreach (var source in slots)
+                    {
+                        changed |= mutableSlots.Add(destination);
+                        var left = CellRoot(source); var right = CellRoot(destination);
+                        if (left != right) { cellParents[right] = left; changed = true; }
+                    }
+                }
+            } while (changed);
+            foreach (var slot in mutableSlots)
+            {
+                var root = CellRoot(slot);
+                if (!cellAliases.TryGetValue(root, out var aliases)) cellAliases[root] = aliases = [];
+                aliases.Add(slot);
+            }
+            foreach (var aliases in cellAliases.Values)
+                if (aliases.Any(externalCells.Contains)) externalCells.UnionWith(aliases);
         }
 
         private void DiscoverEscapes()
@@ -554,7 +602,7 @@ internal static class GraphOptimization
         {
             if (value is NullValue) return new(OpCode.Null, Span: span);
             if (value is BoolValue boolean) return new(boolean.Data ? OpCode.True : OpCode.False, Span: span);
-            var index = constants.IndexOf(value);
+            var index = ValueRepresentation.IndexOf(constants, value);
             if (index < 0) { index = constants.Count; constants.Add(value); }
             return new(OpCode.Constant, index, Span: span);
         }

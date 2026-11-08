@@ -1,0 +1,305 @@
+using System.Collections.Immutable;
+using Msync.Compiler.Syntax;
+using Msync.Core;
+using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
+
+namespace Msync.Compiler;
+
+internal sealed partial class Compilation
+{
+    private static TypeRef? StorageType(TypeRef type, bool nullable) =>
+        type.WithoutNull.Kind == TypeKind.Never ? null : nullable ? type.WithNull : type;
+
+    private static Info Current(Frame frame, Binding binding) =>
+        Current(frame, frame.Facts.GetValueOrDefault(binding.Identity, binding.Info));
+
+    private static Info Current(Frame frame, Info info)
+    {
+        if (info.Scope is not { } scope) return info;
+        if (frame.Facts.TryGetValue(scope.Identity, out var current)) scope = current.Scope!;
+        return ReferenceEquals(info.Scope, scope) ? info : info with { Scope = scope };
+    }
+
+    private static void Refresh(Frame frame)
+    {
+        foreach (var (name, binding) in frame.Environment)
+        {
+            var info = Current(frame, binding);
+            if (!ReferenceEquals(info, binding.Info)) frame.Bind(name, binding with { Info = info });
+        }
+    }
+
+    private static void RestoreScope(Frame frame, ImmutableDictionary<string, Binding> environment)
+    {
+        frame.Environment = environment;
+        Refresh(frame);
+    }
+
+    private void Update(Frame frame, Binding binding, Info info)
+    {
+        frame.Facts = frame.Facts.SetItem(binding.Identity, info);
+        if (frame.FieldOwners.TryGetValue(binding.Identity, out var owners))
+        foreach (var (identity, field) in owners)
+        {
+            if (!frame.Facts.TryGetValue(identity, out var value) || value.Scope is not { } scope) continue;
+            var members = scope.Members.ToDictionary();
+            members[field] = info;
+            frame.Facts = frame.Facts.SetItem(identity, value with { Scope = scope with { Members = members } });
+        }
+        Refresh(frame);
+    }
+
+    private static void RegisterScope(Frame frame, ScopeInfo scope)
+    {
+        foreach (var (name, binding) in scope.FieldBindings)
+        {
+            if (!frame.FieldOwners.TryGetValue(binding.Identity, out var owners)) frame.FieldOwners.Add(binding.Identity, owners = []);
+            owners.Add((scope.Identity, name));
+        }
+    }
+
+    private Info StoreInfo(Frame frame, Info value, TypeRef? constraint, bool nullable, SourceSpan span, string name)
+    {
+        if (value.Type.Nullable && !nullable && !value.EditorUnknown)
+            throw Error(frame, $"'{name}' does not admit Null.", span,
+                label: $"this value may be Null ({value.Type})",
+                help: $"Add '?' to the declaration of '{name}', or handle Null before assigning.", code: "E0201");
+        if (constraint is null || value.EditorUnknown) return value;
+        CheckConversion(frame, value.Type, constraint, span);
+        if (constraint.Accepts(value.Type)) return value;
+        Convert(frame, value.Type, constraint, span);
+        return Retype(value, value.Type.Nullable ? constraint : constraint.WithoutNull);
+    }
+
+    private Info Assign(Frame frame, AssignmentExpr assignment)
+    {
+        if (assignment.Target is NameExpr name)
+        {
+            if (!frame.Environment.TryGetValue(name.Name, out var binding) || binding.Self is not null)
+                throw Error(frame, $"Cannot assign to undeclared binding '{name.Name}'.", name.Span,
+                    help: $"Declare it first with 'let {name.Name} = ...;'.", code: "E0211");
+            var value = Expression(frame, assignment.Value);
+            value = StoreInfo(frame, value, binding.Storage.Type, binding.AdmitsNull, assignment.Value.Span, name.Name);
+            if (binding.Storage.Type is null && StorageType(value.Type, binding.AdmitsNull) is { } solved)
+            {
+                Solve(binding.Storage, solved);
+                binding = binding with { Constraint = solved };
+                frame.Bind(name.Name, binding);
+            }
+            frame.Emit(OpCode.StoreLocal, binding.Slot, span: assignment.Span);
+            Update(frame, binding, value);
+            Observe(frame, name.Span, value, name.Name);
+            if (binding.Origin is { } origin) CaptureDefinition(frame, name.Span, [origin]);
+            frame.Emit(OpCode.Null);
+            return new(TypeRef.Null);
+        }
+        if (assignment.Target is BinaryExpr { Operator: "::" } member && MemberName(member.Right) is { } field)
+        {
+            var receiver = Current(frame, Expression(frame, member.Left));
+            int start = member.OperatorSpan?.End ?? member.Right.Span.Start;
+            CaptureReceiver(frame, new(start, member.Right.Span.End - start), receiver);
+            if (receiver.Scope is not { } scope || !scope.Members.TryGetValue(field, out var previous))
+                throw Error(frame, $"Cannot assign field '{field}' on {receiver.Type}.", member.Span,
+                    help: "Assign a declared member of a lexical Scope; endpoint-qualified paths are not fields.", code: "E0211");
+            var value = Expression(frame, assignment.Value);
+            bool nullable = scope.NullableMembers?.Contains(field) == true;
+            var storage = scope.Storage[field];
+            var constraint = storage.Type;
+            value = StoreInfo(frame, value, constraint, nullable, assignment.Value.Span, field);
+            if (constraint is null && StorageType(value.Type, nullable) is { } solved) Solve(storage, solved);
+            var members = scope.Members.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+            var types = scope.StorageTypes?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)
+                ?? scope.Members.ToDictionary(pair => pair.Key, pair => StorageType(pair.Value.Type, scope.NullableMembers?.Contains(pair.Key) == true), StringComparer.Ordinal);
+            members[field] = value;
+            types[field] = constraint ?? StorageType(value.Type, nullable);
+            var updated = scope with { Members = members, StorageTypes = types };
+            frame.Facts = frame.Facts.SetItem(scope.Identity, receiver with { Scope = updated });
+            if (scope.FieldBindings.TryGetValue(field, out var fieldBinding)) frame.Facts = frame.Facts.SetItem(fieldBinding.Identity, value);
+            Refresh(frame);
+            frame.Emit(OpCode.SetMember, text: field, span: assignment.Span);
+            Observe(frame, member.Right.Span, value, field);
+            if (scope.Origins?.TryGetValue(field, out var origins) == true) CaptureDefinition(frame, member.Right.Span, origins);
+            return new(TypeRef.Null);
+        }
+        throw Error(frame, "The left side of '=' is not writable.", assignment.Target.Span,
+            help: "Assign a binding name or a declared Scope member, such as 'object::field = value;'.", code: "E0211");
+    }
+
+    private static string? MemberName(Expr expression) => expression switch
+    {
+        NameExpr name => name.Name,
+        PathExpr path => path.Path,
+        StringExpr text => text.Value,
+        _ => null
+    };
+
+    private static Info? StorageInfo(Frame frame, Expr target) => target switch
+    {
+        NameExpr name when frame.Environment.TryGetValue(name.Name, out var binding) => Current(frame, binding),
+        BinaryExpr { Operator: "::" } member when MemberName(member.Right) is { } name
+            && StorageInfo(frame, member.Left)?.Scope is { } scope && scope.Members.TryGetValue(name, out var info) => Current(frame, info),
+        _ => null
+    };
+
+    private static ImmutableDictionary<string, Binding> RefineMember(Frame frame, Expr target, TypeRef type, bool positive)
+    {
+        if (target is not BinaryExpr { Operator: "::" } member || MemberName(member.Right) is not { } name
+            || StorageInfo(frame, member.Left)?.Scope is not { } scope || !scope.Members.TryGetValue(name, out var info))
+            return frame.Environment;
+        var narrowed = positive ? info.Type.Kind & type.Kind : info.Type.Kind & ~type.Kind;
+        var refined = info with { Type = new(narrowed, info.Type.Element) };
+        var members = scope.Members.ToDictionary();
+        members[name] = refined;
+        frame.Facts = frame.Facts.SetItem(scope.Identity, new(TypeRef.Scope, Scope: scope with { Members = members }));
+        if (scope.FieldBindings.TryGetValue(name, out var binding)) frame.Facts = frame.Facts.SetItem(binding.Identity, refined);
+        Refresh(frame);
+        return frame.Environment;
+    }
+
+    private static ImmutableDictionary<object, Info> JoinFacts(ImmutableDictionary<object, Info> left,
+        ImmutableDictionary<object, Info> right)
+    {
+        var result = left;
+        foreach (var (identity, info) in right)
+            result = result.SetItem(identity, result.TryGetValue(identity, out var previous) ? Join(previous, info) : info);
+        return result;
+    }
+
+    private static ImmutableDictionary<object, Info> SnapshotFacts(Frame frame)
+    {
+        void Scope(Info info)
+        {
+            if (info.Scope is not { } scope || frame.Facts.ContainsKey(scope.Identity)) return;
+            frame.Facts = frame.Facts.SetItem(scope.Identity, info);
+            RegisterScope(frame, scope);
+            foreach (var member in scope.Members.Values) Scope(member);
+        }
+        foreach (var binding in frame.Environment.Values)
+        {
+            var info = Current(frame, binding);
+            frame.Facts = frame.Facts.SetItem(binding.Identity, info);
+            Scope(info);
+        }
+        return frame.Facts;
+    }
+
+    private void PrepareLoop(Frame frame, Action<Frame> analyze)
+    {
+        var environment = frame.Environment;
+        var domain = SnapshotFacts(frame);
+        string Signature(ImmutableDictionary<object, Info> facts)
+        {
+            HashSet<object> scopes = [];
+            string Key(Info info)
+            {
+                if (info.Scope is { } scope)
+                {
+                    if (facts.TryGetValue(scope.Identity, out var current)) scope = current.Scope!;
+                    if (!scopes.Add(scope.Identity)) return "Scope";
+                    return "{" + string.Join(',', scope.Members.Select(pair => pair.Key + ':' + Key(pair.Value))) + "}";
+                }
+                return InfoKey(info);
+            }
+            return string.Join(';', environment.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => Key(facts.GetValueOrDefault(pair.Value.Identity, pair.Value.Info))));
+        }
+        var signature = Signature(domain);
+        while (true)
+        {
+            frame.Facts = domain;
+            RestoreScope(frame, environment);
+            var probe = CloneFrame(frame);
+            probe.EditorReportErrors = false;
+            analyze(probe);
+            var next = JoinFacts(domain, probe.Facts);
+            var updated = Signature(next);
+            domain = next;
+            if (updated == signature) break;
+            signature = updated;
+        }
+        frame.Facts = domain;
+        RestoreScope(frame, environment);
+        foreach (var binding in frame.Environment.Values)
+            if (Current(frame, binding).KnownBool is not null) frame.Facts = frame.Facts.SetItem(binding.Identity, CaptureInfo(Current(frame, binding)));
+        Refresh(frame);
+    }
+
+    private static void ApplyEffects(Frame frame, Specialization specialization)
+    {
+        frame.Facts = frame.Facts.SetItems(specialization.Effects);
+        Refresh(frame);
+    }
+
+    private Info InstantiateResult(Frame frame, Info result, Template template, IReadOnlyList<Info> arguments, SourceSpan span)
+    {
+        var allocation = (template, span.Start);
+        if (frame.Allocations.TryGetValue(allocation, out var saved)) return Current(frame, saved);
+        HashSet<object> external = [];
+        void Keep(Info info)
+        {
+            if (info.Scope is not { } scope || !external.Add(scope.Identity)) return;
+            foreach (var member in scope.Members.Values) Keep(member);
+        }
+        foreach (var argument in arguments) Keep(argument);
+        foreach (var capture in template.Captures) Keep(Current(frame, capture.Value));
+        var externalBindings = template.Captures.Select(pair => pair.Value.Identity).ToHashSet();
+        Dictionary<object, ScopeInfo> instances = [];
+        Dictionary<object, Binding> bindings = [];
+        Dictionary<Template, Template> callables = [];
+        Binding FreshBinding(Binding binding)
+        {
+            if (externalBindings.Contains(binding.Identity)) return binding;
+            if (bindings.TryGetValue(binding.Identity, out var existing)) return existing;
+            var fresh = binding with { Identity = new(), Storage = new(binding.Storage.Type) };
+            bindings.Add(binding.Identity, fresh);
+            fresh = fresh with { Info = Fresh(Current(frame, binding)) };
+            bindings[binding.Identity] = fresh;
+            frame.Facts = frame.Facts.SetItem(fresh.Identity, fresh.Info);
+            return fresh;
+        }
+        Template FreshFunction(Template function)
+        {
+            if (callables.TryGetValue(function, out var existing)) return existing;
+            List<KeyValuePair<string, Binding>> captures = [];
+            Template fresh = new(function.Id, function.Syntax, captures, function.Source, function.SourceName) { Instance = true };
+            callables.Add(function, fresh);
+            templates.Add(fresh);
+            foreach (var capture in function.Captures) captures.Add(new(capture.Key, FreshBinding(capture.Value)));
+            return fresh;
+        }
+        Info Fresh(Info info)
+        {
+            info = Current(frame, info);
+            if (info.Function is { } function) return info with { Function = FreshFunction(function) };
+            if (info.Scope is not { } scope || external.Contains(scope.Identity)) return info;
+            if (!instances.TryGetValue(scope.Identity, out var instance))
+            {
+                Dictionary<string, Info> members = [];
+                Dictionary<string, Binding> fields = [];
+                instance = scope with { Identity = new(), Members = members, FieldBindings = fields };
+                instances.Add(scope.Identity, instance);
+                foreach (var (name, binding) in scope.FieldBindings) fields[name] = FreshBinding(binding);
+                foreach (var (name, member) in scope.Members) members[name] = Fresh(member);
+                instance = instance with
+                {
+                    Storage = scope.Storage.ToDictionary(pair => pair.Key,
+                    pair => fields.TryGetValue(pair.Key, out var binding) ? binding.Storage : new StorageConstraint(pair.Value.Type), StringComparer.Ordinal)
+                };
+                instances[scope.Identity] = instance;
+                frame.Facts = frame.Facts.SetItem(instance.Identity, info with { Scope = instance });
+                RegisterScope(frame, instance);
+            }
+            return info with { Scope = instance };
+        }
+        var instance = Fresh(result);
+        if (instance.Scope is not null || instance.Function is not null) frame.Allocations[allocation] = instance;
+        return instance;
+    }
+
+    private readonly List<StorageConstraint> solvedStorage = [];
+    private void Solve(StorageConstraint storage, TypeRef type)
+    {
+        solvedStorage.Add(storage);
+        storage.Type = type;
+    }
+}

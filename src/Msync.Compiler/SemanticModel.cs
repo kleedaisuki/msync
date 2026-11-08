@@ -6,9 +6,27 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 namespace Msync.Compiler;
 
 internal sealed record Info(TypeRef Type, Template? Function = null, ScopeInfo? Scope = null, TypeRef? TypeValue = null, string? NativeName = null, IReadOnlyList<Info>? Alternatives = null, Info? Element = null, bool? KnownBool = null, ConnectionValue? KnownConnection = null, bool EditorUnknown = false, PathValue? KnownPath = null, string? KnownText = null);
-internal sealed record Binding(int Slot, Info Info, Template? Self = null, EditorLocation? Origin = null);
+internal sealed record Binding(int Slot, Info Info, Template? Self = null, EditorLocation? Origin = null,
+    bool AdmitsNull = false, TypeRef? Constraint = null)
+{
+    public object Identity { get; init; } = new();
+    public StorageConstraint Storage { get; init; } = new(Constraint);
+}
+internal sealed class StorageConstraint(TypeRef? type)
+{
+    public TypeRef? Type { get; set; } = type;
+}
 internal sealed record ScopeInfo(IReadOnlyDictionary<string, Info> Members, bool Named = false,
-    IReadOnlyDictionary<string, IReadOnlyList<EditorLocation>>? Origins = null);
+    IReadOnlyDictionary<string, IReadOnlyList<EditorLocation>>? Origins = null,
+    IReadOnlySet<string>? NullableMembers = null, IReadOnlyDictionary<string, TypeRef?>? StorageTypes = null)
+{
+    public object Identity { get; init; } = new();
+    public IReadOnlyDictionary<string, StorageConstraint> Storage { get; init; } =
+        Members.ToDictionary(pair => pair.Key, pair => new StorageConstraint(StorageTypes?.GetValueOrDefault(pair.Key)
+            ?? (pair.Value.Type.WithoutNull.Kind == TypeKind.Never ? null : pair.Value.Type)));
+    public IReadOnlyDictionary<string, Binding> FieldBindings { get; init; } = new Dictionary<string, Binding>();
+    public int AllocationSite { get; init; }
+}
 internal sealed class Template(int id, FunctionExpr syntax, IReadOnlyList<KeyValuePair<string, Binding>> captures, string source, string sourceName)
 {
     public int Id { get; } = id;
@@ -17,18 +35,25 @@ internal sealed class Template(int id, FunctionExpr syntax, IReadOnlyList<KeyVal
     public string Source { get; } = source;
     public string SourceName { get; } = sourceName;
     public Dictionary<string, Specialization> Specializations { get; } = [];
+    public bool Instance { get; init; }
 }
 internal sealed class Specialization(int id, Info result, IReadOnlyList<TypeRef> parameterTypes)
 {
     public int Id { get; } = id;
     public Info Result { get; set; } = result;
     public IReadOnlyList<TypeRef> ParameterTypes { get; } = parameterTypes;
+    public IReadOnlyDictionary<object, Info> Effects { get; set; } = new Dictionary<object, Info>();
 }
 internal sealed class Frame(string source, string sourceName, ImmutableDictionary<string, Binding>? environment = null)
 {
     public string Source { get; } = source;
     public string SourceName { get; } = sourceName;
     public ImmutableDictionary<string, Binding> Environment { get; set; } = environment ?? ImmutableDictionary<string, Binding>.Empty;
+    public ImmutableDictionary<object, Info> Facts { get; set; } = ImmutableDictionary<object, Info>.Empty;
+    public Dictionary<(int Start, string Name), Binding> Declarations { get; init; } = [];
+    public Dictionary<ScopeExpr, object> ScopeSites { get; init; } = new(ReferenceEqualityComparer.Instance);
+    public Dictionary<(Template Template, int Start), Info> Allocations { get; init; } = [];
+    public Dictionary<object, HashSet<(object Scope, string Member)>> FieldOwners { get; init; } = [];
     public SourceSpan ContextOwner { get; set; } = new(0, source.Length);
     public bool ContextIncludesEnd { get; set; } = true;
     public bool EditorRecovery { get; set; }
@@ -41,10 +66,16 @@ internal sealed class Frame(string source, string sourceName, ImmutableDictionar
     public TypeRef? ExpectedReturn { get; set; }
     public SourceSpan? ExpectedReturnSpan { get; set; }
     public Dictionary<int, int[]> SelfCaptureSlots { get; } = [];
+    public List<string> AcquireRegions { get; } = [];
+    public List<int> LoopAcquireDepths { get; } = [];
     public List<List<int>> Breaks { get; } = [];
     public List<List<Info>> BreakValues { get; } = [];
     public int Allocate() => Locals++;
-    public void Bind(string name, Binding binding) => Environment = Environment.SetItem(name, binding);
+    public void Bind(string name, Binding binding)
+    {
+        Environment = Environment.SetItem(name, binding);
+        Facts = Facts.SetItem(binding.Identity, binding.Info);
+    }
     public int Emit(OpCode op, int a = 0, int b = 0, string? text = null, SourceSpan? span = null)
     {
         Code.Add(new(op, a, b, text, span is null ? null : new Msync.Core.SourceSpan(SourceName, span.Value.Start, span.Value.Length)));

@@ -21,7 +21,7 @@ internal sealed partial class Compilation
             CaptureContext(frame, block.Span.End);
             return result;
         }
-        finally { frame.Environment = old; frame.ContextOwner = owner; frame.ContextIncludesEnd = includesEnd; }
+        finally { RestoreScope(frame, old); frame.ContextOwner = owner; frame.ContextIncludesEnd = includesEnd; }
     }
     private Info Conditional(Frame frame, IfExpr conditional)
     {
@@ -32,7 +32,7 @@ internal sealed partial class Compilation
             var before = frame.Environment; frame.Environment = Refined(frame, conditional.Condition, test.KnownBool.Value);
             var selected = test.KnownBool.Value ? Block(frame, conditional.Then)
                 : conditional.Else is null ? Emit(frame, OpCode.Null, TypeRef.Null, conditional.Span) : Expression(frame, conditional.Else);
-            frame.Environment = before;
+            RestoreScope(frame, before);
             if (frame.EditorRecovery)
             {
                 Frame probe = CloneFrame(frame);
@@ -46,14 +46,18 @@ internal sealed partial class Compilation
         }
         int otherwise = frame.Emit(OpCode.JumpIfFalse);
         var old = frame.Environment;
+        var incoming = SnapshotFacts(frame);
         frame.Environment = Refined(frame, conditional.Condition, true);
         var yes = Block(frame, conditional.Then);
+        var yesFacts = frame.Facts;
         int end = frame.Emit(OpCode.Jump);
         frame.Patch(otherwise, frame.Code.Count);
         frame.Environment = old;
+        frame.Facts = incoming;
         frame.Environment = Refined(frame, conditional.Condition, false);
         var no = conditional.Else is null ? Emit(frame, OpCode.Null, TypeRef.Null, conditional.Span) : Expression(frame, conditional.Else);
-        frame.Environment = old;
+        frame.Facts = yes.Type.Kind == TypeKind.Never ? frame.Facts : no.Type.Kind == TypeKind.Never ? yesFacts : JoinFacts(yesFacts, frame.Facts);
+        RestoreScope(frame, old);
         if (yes.Type.Kind == TypeKind.Never && no.Type.Kind != TypeKind.Never) frame.Environment = Refined(frame, conditional.Condition, false);
         if (no.Type.Kind == TypeKind.Never && yes.Type.Kind != TypeKind.Never) frame.Environment = Refined(frame, conditional.Condition, true);
         frame.Patch(end, frame.Code.Count);
@@ -68,18 +72,22 @@ internal sealed partial class Compilation
             var old = frame.Environment; frame.Environment = Refined(frame, logical.Left, positive);
             var both = Refined(frame, logical.Right, positive); frame.Environment = old; return both;
         }
-        string? name = null; TypeRef? type = null;
-        if (expression is UnaryExpr { Operator: "?", Operand: NameExpr nullable }) { name = nullable.Name; type = TypeRef.Null; }
-        if (expression is BinaryExpr { Operator: "is" or "is not", Left: NameExpr tested } binary)
+        Expr? target = null; TypeRef? type = null;
+        if (expression is UnaryExpr { Operator: "?" } nullable) { target = nullable.Operand; type = TypeRef.Null; }
+        if (expression is BinaryExpr { Operator: "is" or "is not" } binary)
         {
-            name = tested.Name;
+            target = binary.Left;
             if (binary.Right is NullExpr) type = TypeRef.Null;
             if (binary.Right is TypeExpr syntax) type = ResolveType(frame, syntax.Type);
             if (binary.Operator == "is not") positive = !positive;
         }
-        if (name is null || type is null || !result.TryGetValue(name, out var binding)) return result;
+        if (target is not NameExpr name || !result.TryGetValue(name.Name, out var binding))
+            return target is not null && type is not null ? RefineMember(frame, target, type, positive) : result;
+        if (type is null) return result;
         var narrowed = positive ? new TypeRef(binding.Info.Type.Kind & type.Kind, binding.Info.Type.Element) : new TypeRef(binding.Info.Type.Kind & ~type.Kind, binding.Info.Type.Element);
-        result = result.SetItem(name, binding with { Info = binding.Info with { Type = narrowed } });
+        var info = binding.Info with { Type = narrowed };
+        frame.Facts = frame.Facts.SetItem(binding.Identity, info);
+        result = result.SetItem(name.Name, binding with { Info = info });
         return result;
     }
 
@@ -91,9 +99,16 @@ internal sealed partial class Compilation
         int begin = frame.Code.Count;
         int next = frame.Emit(OpCode.IteratorNext, iterator);
         var old = frame.Environment;
+        var incoming = SnapshotFacts(frame);
+        PrepareLoop(frame, probe =>
+        {
+            BindPattern(probe, loop.Pattern, sourceInfo.Element ?? new(sourceInfo.Type.Element ?? TypeRef.Any));
+            Block(probe, loop.Body);
+        });
         BindPattern(frame, loop.Pattern, sourceInfo.Element ?? new(sourceInfo.Type.Element ?? TypeRef.Any));
         Block(frame, loop.Body); frame.Emit(OpCode.Pop);
-        frame.Environment = old;
+        frame.Facts = JoinFacts(incoming, frame.Facts);
+        RestoreScope(frame, old);
         frame.Emit(OpCode.Jump, begin);
         frame.Code[next] = frame.Code[next] with { B = frame.Code.Count };
         frame.Emit(OpCode.Null);
@@ -101,12 +116,23 @@ internal sealed partial class Compilation
     }
     private Info Loop(Frame frame, LoopExpr loop)
     {
+        var incoming = SnapshotFacts(frame);
+        PrepareLoop(frame, probe =>
+        {
+            probe.Breaks.Add([]); probe.BreakValues.Add([]);
+            probe.LoopAcquireDepths.Add(probe.AcquireRegions.Count);
+            Block(probe, loop.Body);
+        });
         int start = frame.Code.Count;
         List<int> exits = []; List<Info> values = [];
         frame.Breaks.Add(exits); frame.BreakValues.Add(values);
+        frame.LoopAcquireDepths.Add(frame.AcquireRegions.Count);
         Block(frame, loop.Body); frame.Emit(OpCode.Pop); frame.Emit(OpCode.Jump, start);
         foreach (int at in exits) frame.Patch(at, frame.Code.Count);
         frame.Breaks.RemoveAt(frame.Breaks.Count - 1); frame.BreakValues.RemoveAt(frame.BreakValues.Count - 1);
+        frame.LoopAcquireDepths.RemoveAt(frame.LoopAcquireDepths.Count - 1);
+        frame.Facts = JoinFacts(incoming, frame.Facts);
+        Refresh(frame);
         return values.Count == 0 ? new(new(TypeKind.Never)) : values.Aggregate(Join);
     }
     private Info Return(Frame frame, ReturnExpr returned)
@@ -118,6 +144,7 @@ internal sealed partial class Compilation
             Convert(frame, result.Type, frame.ExpectedReturn, returned.Span);
             result = Retype(result, frame.ExpectedReturn);
         }
+        CloseAcquireRegions(frame, 0, returned.Span);
         frame.Returns.Add(result); frame.Emit(OpCode.Return, span: returned.Span); frame.Emit(OpCode.Null);
         return new(new(TypeKind.Never));
     }
@@ -126,6 +153,7 @@ internal sealed partial class Compilation
         if (frame.Breaks.Count == 0) throw Error(frame, "break requires an enclosing loop.", broken.Span,
             label: "no loop to break out of", help: "Place break inside 'loop { ... }'. Use 'return value' to finish a function.", code: "E0207");
         var result = broken.Value is null ? Emit(frame, OpCode.Null, TypeRef.Null, broken.Span) : Expression(frame, broken.Value);
+        CloseAcquireRegions(frame, frame.LoopAcquireDepths[^1], broken.Span);
         frame.BreakValues[^1].Add(result); frame.Breaks[^1].Add(frame.Emit(OpCode.Jump)); frame.Emit(OpCode.Null);
         return new(new(TypeKind.Never));
     }
@@ -141,15 +169,18 @@ internal sealed partial class Compilation
             var before = frame.Environment;
             RefineMatchBinding(frame, match.Value, selected.Pattern, value, slot, value.Type);
             var chosen = Expression(frame, selected.Value);
-            frame.Environment = before; return chosen;
+            RestoreScope(frame, before); return chosen;
         }
         Info? result = null; List<int> ends = [];
         var old = frame.Environment;
+        var incoming = SnapshotFacts(frame);
+        ImmutableDictionary<object, Info>? outgoing = null;
         TypeRef remaining = value.Type;
         foreach (var arm in match.Arms)
         {
             if (KnownPattern(frame, value, arm.Pattern) == false) continue;
             frame.Environment = old;
+            frame.Facts = incoming;
             frame.Emit(OpCode.LoadLocal, slot);
             EmitPattern(frame, arm.Pattern, value, arm.Pattern.Span);
             int skip = frame.Emit(OpCode.JumpIfFalse);
@@ -157,13 +188,16 @@ internal sealed partial class Compilation
             if (arm.Pattern is NullPattern or TypePattern) remaining = new(remaining.Kind & ~refined.Kind, remaining.Element);
             if (match.Value is NameExpr name && frame.Environment.TryGetValue(name.Name, out var bound))
                 frame.Bind(name.Name, bound with { Info = bound.Info with { Type = refined } });
+            else frame.Environment = RefineMember(frame, match.Value, refined, true);
             if (arm.Pattern is NamePattern { Name: not "_" } capture) frame.Bind(capture.Name, new(slot, value with { Type = refined }));
             var branch = Expression(frame, arm.Value);
+            if (branch.Type.Kind != TypeKind.Never) outgoing = outgoing is null ? frame.Facts : JoinFacts(outgoing, frame.Facts);
             result = result is null ? branch : Join(result, branch);
             ends.Add(frame.Emit(OpCode.Jump));
             frame.Patch(skip, frame.Code.Count);
         }
-        frame.Environment = old;
+        frame.Facts = outgoing ?? incoming;
+        RestoreScope(frame, old);
         frame.Emit(OpCode.Null);
         foreach (int end in ends) frame.Patch(end, frame.Code.Count);
         return result ?? new(TypeRef.Null);
@@ -198,6 +232,7 @@ internal sealed partial class Compilation
         var refined = PatternType(frame, pattern, remaining);
         if (expression is NameExpr name && frame.Environment.TryGetValue(name.Name, out var binding))
             frame.Bind(name.Name, binding with { Info = binding.Info with { Type = value.Type == TypeRef.Type ? TypeRef.Type : refined } });
+        else frame.Environment = RefineMember(frame, expression, refined, true);
         if (pattern is NamePattern { Name: not "_" } capture) frame.Bind(capture.Name, new(slot, value with { Type = refined }));
     }
 

@@ -16,6 +16,8 @@ internal static class BytecodeValidation
         private readonly State?[] states = new State?[function.Instructions.Count + 1];
         private readonly Queue<int> work = new();
         private bool[] starts = [];
+        private readonly HashSet<int> cells = function.Instructions.Where(instruction => instruction.Op == OpCode.LoadCell)
+            .Select(instruction => instruction.A).ToHashSet();
 
         internal void Validate()
         {
@@ -89,14 +91,22 @@ internal static class BytecodeValidation
             switch (instruction.Op)
             {
                 case OpCode.Nop: break;
+                case OpCode.Barrier: break;
+                case OpCode.Acquire:
+                    if (instruction.A != 0) { var process = Pop(); Require(process, TypeKind.Process); stack.Add(process); }
+                    break;
                 case OpCode.Constant:
                     var constant = module.Constants[instruction.A]; stack.Add(new(constant.Type, constant is FunctionValue { NativeName: null } f ? f.Function : null, Constant: constant)); break;
                 case OpCode.Null: Push(TypeRef.Null, Value.Null); break;
                 case OpCode.True: Push(TypeRef.Bool, Value.True); break;
                 case OpCode.False: Push(TypeRef.Bool, Value.False); break;
                 case OpCode.LoadLocal:
-                    stack.Add(locals[instruction.A] ?? throw Error($"local {instruction.A} is not defined on every incoming path")); break;
-                case OpCode.StoreLocal: locals[instruction.A] = Pop(); break;
+                case OpCode.LoadCell:
+                case OpCode.LoadStorage:
+                    var local = locals[instruction.A] ?? throw Error($"local {instruction.A} is not defined on every incoming path");
+                    stack.Add(cells.Contains(instruction.A) ? local with { Constant = null, Function = null } : local); break;
+                case OpCode.StoreLocal:
+                case OpCode.InitializeLocal: locals[instruction.A] = Pop(); break;
                 case OpCode.Pop: Pop(); break;
                 case OpCode.Dup:
                     var duplicate = Pop(); stack.Add(duplicate); stack.Add(duplicate); break;
@@ -122,7 +132,7 @@ internal static class BytecodeValidation
                 case OpCode.ProcessCall:
                     {
                         PopMany(instruction.A); var callee = Pop(); Require(callee, TypeKind.Function | TypeKind.Path | TypeKind.String);
-                        var target = instruction.B == 0 ? callee.Function : instruction.B - 1;
+                        var target = instruction.Op == OpCode.ProcessCall ? null : instruction.B == 0 ? callee.Function : instruction.B - 1;
                         if (target is { } index)
                         {
                             if (index < 0 || index >= module.Functions.Count) throw Error($"callee {index} does not identify a function");
@@ -152,6 +162,8 @@ internal static class BytecodeValidation
                     if ((instruction.Text is null ? 0 : instruction.Text.Split('\0', StringSplitOptions.RemoveEmptyEntries).Length) != instruction.A) throw Error("scope member names disagree with value count");
                     PopMany(instruction.A); Push(TypeRef.Scope); break;
                 case OpCode.GetMember: Require(Pop(), TypeKind.Scope | TypeKind.Connection | TypeKind.Process); Push(TypeRef.Any); break;
+                case OpCode.SetMember: Pop(); Require(Pop(), TypeKind.Scope); Push(TypeRef.Null); break;
+                case OpCode.GetCapture: Require(Pop(), TypeKind.Function); Push(TypeRef.Any); break;
                 case OpCode.Qualify: Require(Pop(), TypeKind.String | TypeKind.Path); Require(Pop(), TypeKind.Connection | TypeKind.Scope); Push(TypeRef.Path); break;
                 case OpCode.PathJoin: Require(Pop(), TypeKind.String | TypeKind.Path); Require(Pop(), TypeKind.String | TypeKind.Path); Push(TypeRef.Path); break;
                 case OpCode.SelectPath: Require(Pop(), TypeKind.String | TypeKind.Path); Push(new(TypeKind.Range, TypeRef.Path)); break;
@@ -205,7 +217,7 @@ internal static class BytecodeValidation
             Item Join(Item left, Item right)
             {
                 if (left.Iterator != right.Iterator) throw new MsyncException($"Invalid iterator ownership at bytecode join in '{function.Name}'");
-                return new(TypeRef.Union(left.Type, right.Type), left.Function == right.Function ? left.Function : null, left.Iterator, left.Constant == right.Constant ? left.Constant : null);
+                return new(TypeRef.Union(left.Type, right.Type), left.Function == right.Function ? left.Function : null, left.Iterator, ValueRepresentation.Same(left.Constant, right.Constant) ? left.Constant : null);
             }
             for (var i = 0; i < stack.Count; i++) { mergedStack[i] = Join(previous.Stack[i], stack[i]); changed |= mergedStack[i] != previous.Stack[i]; }
             for (var i = 0; i < locals.Length; i++)

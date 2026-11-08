@@ -61,6 +61,7 @@ internal sealed partial class Compilation
         if (!libraries.Value.TryGetValue(name, out var library)) return StandardNativeModule(frame, name, span);
         Frame module = new(library.Source, $"msync-stdlib:///0.8.0/{name}.msync") { Locals = frame.Locals };
         List<string> keys = []; Dictionary<string, Info> members = [];
+        Dictionary<string, Binding> bindings = [];
         Dictionary<string, IReadOnlyList<EditorLocation>>? origins = editorContexts is null ? null : new(StringComparer.Ordinal);
         foreach (var statement in library.Document.Statements)
         {
@@ -79,13 +80,19 @@ internal sealed partial class Compilation
                 LetStatement { Pattern: NamePattern namePattern } => namePattern.Span,
                 _ => null
             };
-            module.Emit(OpCode.Dup); Store(module, memberName, info, nameSpan);
+            Store(module, memberName, info, nameSpan);
+            bindings[memberName] = module.Environment[memberName];
             if (origins is not null && module.Environment[memberName].Origin is { } origin) origins[memberName] = [origin];
             keys.Add(memberName); members[memberName] = info;
         }
+        foreach (var key in keys) module.Emit(OpCode.LoadStorage, bindings[key].Slot);
         module.Emit(OpCode.MakeScope, keys.Count, text: string.Join('\0', keys), span: span);
         frame.Code.AddRange(module.Code); frame.Locals = module.Locals;
-        var result = new Info(TypeRef.Scope, Scope: new(members, Origins: origins));
+        var result = new Info(TypeRef.Scope, Scope: new(members, Origins: origins)
+        {
+            FieldBindings = bindings,
+            Storage = bindings.ToDictionary(pair => pair.Key, pair => pair.Value.Storage, StringComparer.Ordinal)
+        });
         return result;
     }
     private Info StandardNativeModule(Frame frame, string name, SourceSpan span)

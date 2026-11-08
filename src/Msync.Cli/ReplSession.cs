@@ -61,13 +61,11 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
         catch (SyntaxException error) when (!editing && error.IsIncomplete) { pending = source; }
         catch (OperationCanceledException)
         {
-            compiler.ReconcileSubmission(execution.IsLocalInitialized);
             TerminalPresentation.Cancelled(color, interactive: true);
             pending = "";
         }
         catch (Exception error) when (error is SyntaxException or CompileException or MsyncException or IOException or UnauthorizedAccessException or ArgumentException)
         {
-            compiler.ReconcileSubmission(execution.IsLocalInitialized);
             TerminalPresentation.Error(error, color);
             pending = "";
         }
@@ -80,10 +78,24 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
         lock (cancellationGate) active = cancellation;
         try
         {
-            Module module = compiler.Compile(source, syntax.Take(source));
-            Value result = await execution.ExecuteAsync(module, cancellationToken: cancellation.Token);
-            compiler.AcceptSubmission();
-            if (result is not NullValue) Console.WriteLine(result);
+            Module module;
+            try { module = compiler.Compile(source, syntax.Take(source)); }
+            catch
+            {
+                compiler.ReconcileSubmission(_ => false);
+                throw;
+            }
+            try
+            {
+                Value result = await execution.ExecuteAsync(module, cancellationToken: cancellation.Token);
+                compiler.AcceptSubmission(execution.GetLocalValue);
+                if (result is not NullValue) Console.WriteLine(result);
+            }
+            catch
+            {
+                compiler.ReconcileSubmission(execution.IsLocalInitialized, execution.GetLocalValue);
+                throw;
+            }
         }
         finally { lock (cancellationGate) active = null; }
     }

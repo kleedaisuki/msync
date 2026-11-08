@@ -6,19 +6,16 @@ using Msync.Core;
 
 namespace Msync.Runtime;
 
-public sealed class Interpreter
+public sealed partial class Interpreter
 {
     private readonly Module module;
     private readonly RuntimeContext context;
     private readonly BasicBlock[][] blocks;
-    private readonly List<PendingTransfer> transfers = [];
     private readonly SemaphoreSlim slots;
     private readonly HashSet<IAsyncDisposable> iterators = [];
     private readonly Dictionary<string, IReadOnlyDictionary<int, int>> dispatchTables = [];
     private int failedTransfers;
     public int FailedTransfers => failedTransfers;
-    private sealed record ResourceKey(string Endpoint, string Path);
-    private sealed record PendingTransfer(Task<bool> Task, ResourceKey? Source, ResourceKey Destination);
     private sealed record IteratorValue(IAsyncEnumerator<Value> Iterator) : Value { public override TypeRef Type => TypeRef.Any; }
 
     public Interpreter(Module module, ExecutionOptions? options = null)
@@ -36,7 +33,7 @@ public sealed class Interpreter
         => new Interpreter(module, options).ExecuteAsync(cancellationToken);
     public async ValueTask<Value> ExecuteAsync(CancellationToken cancellationToken = default)
     {
-        try { return await RunFunctionAsync(module.EntryPoint, [], [], cancellationToken); }
+        try { return await ResolveResultAsync(await RunFunctionAsync(module.EntryPoint, [], [], cancellationToken)); }
         finally
         {
             await DrainAsync();
@@ -45,11 +42,13 @@ public sealed class Interpreter
     }
     internal async ValueTask<Value> ExecuteEntryAsync(Value[] locals, int startInstruction, CancellationToken cancellationToken)
     {
-        try { return await RunCodeAsync(module.EntryPoint, locals, startInstruction, cancellationToken); }
+        try { return await ResolveResultAsync(await RunCodeAsync(module.EntryPoint, locals, startInstruction, cancellationToken)); }
         finally { await DrainAsync(); foreach (var iterator in iterators) await iterator.DisposeAsync(); }
     }
     private async ValueTask<Value> InvokeAsync(Value callee, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
     {
+        callee = ReadValue(callee);
+        arguments = ValueArguments(arguments);
         switch (callee)
         {
             case FunctionValue { NativeName: not null } native:
@@ -70,10 +69,18 @@ public sealed class Interpreter
         var locals = new Value[function.LocalCount];
         Array.Fill(locals, Value.Null);
         for (var i = 0; i < captures.Count; i++) locals[i] = captures[i];
-        for (var i = 0; i < arguments.Count; i++) locals[function.CaptureCount + i] = arguments[i];
+        for (var i = 0; i < arguments.Count; i++) locals[function.CaptureCount + i] = ReadValue(arguments[i]);
         return RunCodeAsync(functionIndex, locals, 0, cancellationToken);
     }
     private async ValueTask<Value> RunCodeAsync(int functionIndex, Value[] locals, int startInstruction, CancellationToken cancellationToken)
+    {
+        var owner = new WorkOwner();
+        var caller = currentOwner;
+        currentOwner = owner;
+        try { return await RunOwnedCodeAsync(functionIndex, locals, startInstruction, cancellationToken); }
+        finally { try { await JoinOwnerAsync(owner); } finally { currentOwner = caller; } }
+    }
+    private async ValueTask<Value> RunOwnedCodeAsync(int functionIndex, Value[] locals, int startInstruction, CancellationToken cancellationToken)
     {
         var function = module.Functions[functionIndex];
         List<Value> stack = [];
@@ -85,7 +92,6 @@ public sealed class Interpreter
             if (outcome.Returned) return outcome.Value!;
             pc = outcome.Next;
         }
-        await DrainAsync();
         return stack.Count == 0 ? Value.Null : stack[^1];
     }
     private readonly record struct BlockOutcome(int Next, Value? Value = null, bool Returned = false);
@@ -115,20 +121,31 @@ public sealed class Interpreter
                 switch (instruction.Op)
                 {
                     case OpCode.Nop: break;
-                    case OpCode.Constant: stack.Add(Capture(module.Constants[instruction.A])); break;
+                    case OpCode.Constant: stack.Add(CaptureConstant(module.Constants[instruction.A])); break;
                     case OpCode.Null: stack.Add(Value.Null); break;
                     case OpCode.True: stack.Add(Value.True); break;
                     case OpCode.False: stack.Add(Value.False); break;
-                    case OpCode.LoadLocal: stack.Add(locals[instruction.A]); break;
-                    case OpCode.StoreLocal: locals[instruction.A] = Pop(); break;
+                    case OpCode.LoadLocal: stack.Add(ReadLocal(locals, instruction.A)); break;
+                    case OpCode.StoreLocal: WriteLocal(locals, instruction.A, Pop()); break;
+                    case OpCode.InitializeLocal: locals[instruction.A] = Pop(); break;
+                    case OpCode.LoadCell: stack.Add(CaptureLocal(locals, instruction.A)); break;
+                    case OpCode.LoadStorage: stack.Add(locals[instruction.A]); break;
+                    case OpCode.GetCapture:
+                        {
+                            var captures = ((FunctionValue)Pop()).Captures;
+                            stack.Add(captures is not null && instruction.A < captures.Count ? captures[instruction.A] : Value.Null); break;
+                        }
+                    case OpCode.SetMember:
+                        { var value = Pop(); StoreMember(Pop(), instruction.Text!, value); stack.Add(Value.Null); break; }
                     case OpCode.Pop: Pop(); break;
                     case OpCode.Dup: stack.Add(stack[^1]); break;
                     case OpCode.Jump:
-                        await DrainAsync(); pc = instruction.A - 1; break;
+                        if (LegacyScheduling) await DrainAsync();
+                        pc = instruction.A - 1; break;
                     case OpCode.JumpIfFalse:
                     case OpCode.JumpIfTrue:
-                        await DrainAsync();
-                        if (AsBool(Pop()) == (instruction.Op == OpCode.JumpIfTrue)) pc = instruction.A - 1;
+                        if (LegacyScheduling) await DrainAsync();
+                        if (AsBool(await ResolveAsync(Pop())) == (instruction.Op == OpCode.JumpIfTrue)) pc = instruction.A - 1;
                         break;
                     case OpCode.MakeClosure: stack.Add(new FunctionValue(instruction.A, PopMany(instruction.B))); break;
                     case OpCode.SpecializeClosure:
@@ -136,21 +153,29 @@ public sealed class Interpreter
                     case OpCode.Call:
                     case OpCode.ProcessCall:
                         {
-                            await DrainAsync();
-                            var arguments = PopMany(instruction.A); var callee = Pop();
+                            if (LegacyScheduling) await DrainAsync();
+                            var arguments = ValueArguments(PopMany(instruction.A)); var callee = ReadValue(Pop());
                             if (instruction.Op == OpCode.Call && instruction.Text is not null && callee is FunctionValue { NativeName: null } dynamicFunction) callee = Specialize(dynamicFunction, instruction);
                             else if (instruction.Op == OpCode.Call && instruction.B != 0) callee = ((FunctionValue)callee) with { Function = instruction.B - 1 };
-                            stack.Add(await InvokeAsync(callee, arguments, cancellationToken)); break;
+                            stack.Add(await InvokeScheduledAsync(callee, arguments, LegacyScheduling ? 0 : instruction.B, instruction.Span, cancellationToken)); break;
                         }
                     case OpCode.NativeCall:
-                        if (RequiresFrontierJoin(instruction.Text!)) await DrainAsync();
+                        if (LegacyScheduling && RequiresLegacyFrontierJoin(instruction.Text!)) await DrainAsync();
                         stack.Add(await InvokeNativeAsync(instruction.Text!, PopMany(instruction.A), cancellationToken)); break;
-                    case OpCode.Return: await DrainAsync(); return new(pc, stack.Count == 0 ? Value.Null : Pop(), true);
+                    case OpCode.Barrier: await FenceAsync(instruction.A, instruction.B, instruction.Text); break;
+                    case OpCode.Acquire:
+                        if (instruction.A == 0) await JoinAllAsync();
+                        else stack.Add(await AcquireAsync(Pop()));
+                        break;
+                    case OpCode.Return:
+                        if (LegacyScheduling) await DrainAsync();
+                        return new(pc, stack.Count == 0 ? Value.Null : Pop(), true);
                     case OpCode.LoadBuiltin: stack.Add(Builtin(instruction.Text!)); break;
                     case OpCode.Convert:
                         {
                             var value = Pop();
-                            stack.Add(instruction.Text == "Path" ? context.AsPath(value) : instruction.Text == "String" ? new StringValue(Text(value)) : throw new MsyncException($"Unknown conversion {instruction.Text}")); break;
+                            var type = instruction.Text == "Path" ? TypeRef.Path : TypeRef.String;
+                            stack.Add(MapValue(value, type, item => instruction.Text == "Path" ? context.AsPath(item) : instruction.Text == "String" ? new StringValue(Text(item)) : throw new MsyncException($"Unknown conversion {instruction.Text}"), value.Type == TypeRef.String ? "local" : PathEndpoint(value))); break;
                         }
                     case OpCode.MakeRange:
                         {
@@ -168,18 +193,20 @@ public sealed class Interpreter
                     case OpCode.MakeScope:
                         {
                             var values = PopMany(instruction.A); var names = instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
-                            stack.Add(new ScopeValue(names.Select((name, i) => KeyValuePair.Create(name, values[i])).ToDictionary())); break;
+                            stack.Add(new ScopeValue(names.Select((name, i) => KeyValuePair.Create(name, values[i])).ToDictionary()) { AllocationSite = instruction.B }); break;
                         }
                     case OpCode.GetMember: stack.Add(Member(Pop(), instruction.Text!)); break;
                     case OpCode.Qualify:
                         {
                             var item = Pop(); var scope = Pop();
-                            stack.Add(scope is ConnectionValue connection ? Qualify(connection, item) : Member(scope, Text(item))); break;
+                            stack.Add(scope is ConnectionValue connection
+                                ? MapValue(item, TypeRef.Path, value => Qualify(connection, value), connection.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl ? connection.ToString() : "local")
+                                : Member(scope, Text(await ResolveAsync(item)))); break;
                         }
                     case OpCode.PathJoin:
                         {
-                            var right = Pop(); var left = context.AsPath(Pop());
-                            stack.Add(PathSemantics.JoinValue(left, right)); break;
+                            var right = Pop(); var left = Pop();
+                            stack.Add(CombineValues(left, right, TypeRef.Path, (root, item) => PathSemantics.JoinValue(context.AsPath(root), item), PathEndpoint(left))); break;
                         }
                     case OpCode.SelectPath:
                         {
@@ -190,12 +217,14 @@ public sealed class Interpreter
                     case OpCode.LocalTransfer:
                         {
                             var destination = Pop(); var source = Pop();
-                            if (pc + 1 < code.Count && code[pc + 1].Op == OpCode.Pop && source is PathValue or StringValue && destination is PathValue or StringValue)
+                            if (pc + 1 < code.Count && code[pc + 1].Op == OpCode.Pop
+                                && source is PathValue or StringValue or DeferredValue
+                                && destination is PathValue or StringValue or DeferredValue)
                             { QueueTransfer(source, destination, instruction.Span, instruction.Op == OpCode.LocalTransfer, cancellationToken); pc++; }
-                            else { await DrainAsync(); stack.Add(await TransferAsync(source, destination, instruction.Span, instruction.Op == OpCode.LocalTransfer, cancellationToken) ? Value.True : Value.False); }
+                            else { if (LegacyScheduling || source is not (PathValue or StringValue or DeferredValue)) await DrainAsync(); stack.Add(await ScheduleTransfer(source, destination, instruction.Span, instruction.Op == OpCode.LocalTransfer, cancellationToken) ? Value.True : Value.False); }
                             break;
                         }
-                    case OpCode.Not: stack.Add(AsBool(Pop()) ? Value.False : Value.True); break;
+                    case OpCode.Not: stack.Add(MapValue(Pop(), TypeRef.Bool, value => AsBool(value) ? Value.False : Value.True)); break;
                     case OpCode.IsNull: stack.Add(Pop() is NullValue ? Value.True : Value.False); break;
                     case OpCode.IsType:
                         {
@@ -216,9 +245,12 @@ public sealed class Interpreter
                     case OpCode.GreaterEqual:
                         {
                             var right = Pop(); var left = Pop();
-                            var comparison = Compare(left, right);
-                            var result = instruction.Op switch { OpCode.Equal => comparison == 0, OpCode.NotEqual => comparison != 0, OpCode.Less => comparison < 0, OpCode.LessEqual => comparison <= 0, OpCode.Greater => comparison > 0, _ => comparison >= 0 };
-                            stack.Add(result ? Value.True : Value.False); break;
+                            stack.Add(CombineValues(left, right, TypeRef.Bool, (a, b) =>
+                            {
+                                var comparison = Compare(a, b);
+                                var result = instruction.Op switch { OpCode.Equal => comparison == 0, OpCode.NotEqual => comparison != 0, OpCode.Less => comparison < 0, OpCode.LessEqual => comparison <= 0, OpCode.Greater => comparison > 0, _ => comparison >= 0 };
+                                return result ? Value.True : Value.False;
+                            })); break;
                         }
                     case OpCode.GetIterator:
                         {
@@ -227,7 +259,7 @@ public sealed class Interpreter
                         }
                     case OpCode.IteratorNext:
                         {
-                            await DrainAsync();
+                            if (LegacyScheduling) await DrainAsync();
                             var iterator = ((IteratorValue)locals[instruction.A]).Iterator;
                             if (await iterator.MoveNextAsync()) stack.Add(iterator.Current);
                             else { await iterator.DisposeAsync(); iterators.Remove(iterator); pc = instruction.B - 1; }
@@ -239,11 +271,15 @@ public sealed class Interpreter
                     case OpCode.Divide:
                         {
                             var right = Pop(); var left = Pop();
-                            if (instruction.Op == OpCode.Add && left is StringValue a && right is StringValue b) { stack.Add(new StringValue(a.Data + b.Data)); break; }
-                            var l = ((NumberValue)left).Data; var r = ((NumberValue)right).Data;
-                            stack.Add(new NumberValue(instruction.Op switch { OpCode.Add => l + r, OpCode.Subtract => l - r, OpCode.Multiply => l * r, _ => l / r })); break;
+                            var type = left.Type == TypeRef.String ? TypeRef.String : TypeRef.Number;
+                            stack.Add(CombineValues(left, right, type, (a, b) =>
+                            {
+                                if (instruction.Op == OpCode.Add && a is StringValue sa && b is StringValue sb) return new StringValue(sa.Data + sb.Data);
+                                var l = ((NumberValue)a).Data; var r = ((NumberValue)b).Data;
+                                return new NumberValue(instruction.Op switch { OpCode.Add => l + r, OpCode.Subtract => l - r, OpCode.Multiply => l * r, _ => l / r });
+                            })); break;
                         }
-                    case OpCode.Negate: stack.Add(new NumberValue(-((NumberValue)Pop()).Data)); break;
+                    case OpCode.Negate: stack.Add(MapValue(Pop(), TypeRef.Number, value => new NumberValue(-((NumberValue)value).Data))); break;
                     default: throw new MsyncException($"Unsupported bytecode operation {instruction.Op}");
                 }
             }
@@ -298,7 +334,7 @@ public sealed class Interpreter
     private Value Member(Value value, string name) => value switch
     {
         ScopeValue scope when scope.Members.TryGetValue(name, out var member) => member,
-        ProcessValue process => name switch { "stdout" => new StringValue(process.StandardOutput), "stderr" => new StringValue(process.StandardError), "exit_code" => new NumberValue(process.ExitCode), "success" => process.ExitCode == 0 ? Value.True : Value.False, _ => throw new MsyncException($"Process has no member '{name}'") },
+        ProcessValue process => ProcessMember(process, name),
         ConnectionValue connection => Qualify(connection, new PathValue(name)),
         _ => throw new MsyncException($"{value.Type} has no member '{name}'")
     };
@@ -329,32 +365,6 @@ public sealed class Interpreter
             foreach (var extension in extensions)
             { var candidate = Path.Combine(Path.IsPathRooted(directory) ? directory : Path.Combine(context.WorkingDirectory, directory), name + extension); if (File.Exists(candidate)) return candidate; }
         throw new MsyncException($"Executable '{name}' was not found on PATH");
-    }
-    private async ValueTask<Value> RunProcessAsync(PathValue executable, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
-    {
-        if (context.DryRun) { await context.Output.WriteLineAsync($"process {executable}({string.Join(", ", arguments)})"); return new ProcessValue(0, "", ""); }
-        ProcessStartInfo info;
-        if (executable.Connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } remote)
-        {
-            info = TransferEngine.CreateRemoteProcessStartInfo(remote, executable.Raw, arguments.Select(argument => argument is PathValue path ? path.Raw : Text(argument)).ToArray());
-        }
-        else
-        {
-            info = new(executable.LocalPath(context.WorkingDirectory, context.HomeDirectory));
-            foreach (var argument in arguments) info.ArgumentList.Add(argument is PathValue path ? path.LocalPath(context.WorkingDirectory, context.HomeDirectory) : Text(argument));
-        }
-        info.WorkingDirectory = context.WorkingDirectory; info.UseShellExecute = false; info.RedirectStandardOutput = true; info.RedirectStandardError = true;
-        var started = context.Observe is null ? 0 : Stopwatch.GetTimestamp();
-        using var process = Process.Start(info) ?? throw new MsyncException($"Could not start '{executable}'");
-        context.Observe?.Invoke(new("process", "started", executable.ToString(), Detail: $"pid={process.Id}"));
-        using var registration = cancellationToken.Register(() => { if (!process.HasExited) process.Kill(entireProcessTree: true); });
-        var budget = new SpoolBudget(context.SpoolLimit);
-        var stdout = ReadProcessStreamAsync(process.StandardOutput.BaseStream, process, budget, cancellationToken);
-        var stderr = ReadProcessStreamAsync(process.StandardError.BaseStream, process, budget, cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-        var output = await stdout; var error = await stderr;
-        context.Observe?.Invoke(new("process", process.ExitCode == 0 ? "success" : "failure", executable.ToString(), Detail: $"exit={process.ExitCode}", DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(started).TotalMilliseconds * 1_000_000)));
-        return new ProcessValue(process.ExitCode, output, error);
     }
     private async IAsyncEnumerable<Value> LazyItemsAsync(IReadOnlyList<Value> values, string? mask, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
@@ -387,25 +397,43 @@ public sealed class Interpreter
             if (limit is { } maximum && total > maximum) throw new IOException($"Process output exceeded configured spool limit of {maximum} bytes (observed {total})");
         }
     }
-    private static async Task<string> ReadProcessStreamAsync(Stream stream, Process process, SpoolBudget budget, CancellationToken cancellationToken)
+    private static async Task<string> ReadProcessStreamAsync(Stream stream, SpoolBudget budget, CancellationToken cancellationToken)
     {
         using var output = new MemoryStream();
         var buffer = new byte[8192];
-        try
+        Exception? failure = null;
+        int count;
+        while ((count = await stream.ReadAsync(buffer, cancellationToken)) != 0)
         {
-            int count;
-            while ((count = await stream.ReadAsync(buffer, cancellationToken)) != 0)
-            { budget.Account(count); await output.WriteAsync(buffer.AsMemory(0, count), cancellationToken); }
+            if (failure is not null) continue;
+            try { budget.Account(count); await output.WriteAsync(buffer.AsMemory(0, count), cancellationToken); }
+            catch (IOException error) { failure = error; }
         }
-        catch { if (!process.HasExited) process.Kill(entireProcessTree: true); throw; }
+        if (failure is not null) throw failure;
         return Encoding.UTF8.GetString(output.GetBuffer(), 0, checked((int)output.Length));
     }
-    private static bool RequiresFrontierJoin(string nativeName) => !NativeSignatures.TryGet(nativeName, out var signature)
+    private static bool RequiresLegacyFrontierJoin(string nativeName) => !NativeSignatures.TryGet(nativeName, out var signature)
         || signature.Effect != NativeEffect.Pure
         || signature.Parameters.Any(parameter => (parameter.Kind & (TypeKind.Range | TypeKind.Function)) != 0);
     private async ValueTask<Value> InvokeNativeAsync(string name, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
     {
-        try { return await NativeRegistry.InvokeAsync(name, arguments, context, InvokeAsync, cancellationToken); }
+        try
+        {
+            if (!LegacyScheduling && name.StartsWith("process.", StringComparison.Ordinal) && arguments[0] is ProcessValue process)
+                return ProcessMember(process, name[8..]);
+            if (!LegacyScheduling && arguments.Any(value => value is DeferredValue)
+                && (EffectAnalysis.NativeEffects(name) & (InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.Invoke)) == 0
+                && NativeSignatures.TryGet(name, out var signature)
+                && !signature.Parameters.Any(type => (type.Kind & (TypeKind.Range | TypeKind.Function)) != 0))
+            {
+                var inputs = arguments;
+                async Task<Value> Complete() => await NativeRegistry.InvokeAsync(name, await ResolveArgumentsAsync(inputs), context, InvokeAsync, cancellationToken);
+                return new DeferredValue(Complete(), signature.Result, inputs.SelectMany(Processes).Distinct().ToArray());
+            }
+            arguments = await ResolveArgumentsAsync(arguments);
+            await AwaitNativeDependenciesAsync(name, arguments);
+            return await NativeRegistry.InvokeAsync(name, arguments, context, InvokeAsync, cancellationToken);
+        }
         catch (Exception error) when (error is not OperationCanceledException)
         {
             context.Observe?.Invoke(new("native", "failure", Detail: $"{name}: {error}"));
@@ -414,6 +442,7 @@ public sealed class Interpreter
     }
     private async IAsyncEnumerable<Value> SelectAsync(PathValue directory, string pattern, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
+        await AwaitNativeDependenciesAsync("fs.directory_iterator", [directory]);
         var values = await NativeRegistry.InvokeAsync("fs.directory_iterator", [directory], context, InvokeAsync, cancellationToken) as RangeValue ?? throw new MsyncException("Directory iterator did not return a Range");
         var regex = new Regex(pattern, RegexOptions.CultureInvariant);
         await foreach (var item in values.Items.WithCancellation(cancellationToken))
@@ -444,43 +473,6 @@ public sealed class Interpreter
             return false;
         }
     }
-    private void QueueTransfer(Value source, Value destination, SourceSpan? span, bool local, CancellationToken cancellationToken)
-    {
-        var target = context.AsPath(destination);
-        var sourceKey = source is PathValue pathSource ? Key(pathSource) : null;
-        var targetKey = Key(target);
-        var dependencies = transfers.Where(previous => Overlaps(previous.Destination, targetKey) || sourceKey is not null && Overlaps(previous.Destination, sourceKey) || previous.Source is not null && Overlaps(previous.Source, targetKey)).Select(p => p.Task).ToArray();
-        async Task<bool> Run()
-        {
-            await Task.WhenAll(dependencies);
-            await slots.WaitAsync(cancellationToken);
-            try { return await TransferAsync(source, target, span, local, cancellationToken); }
-            finally { slots.Release(); }
-        }
-        transfers.Add(new(Run(), sourceKey, targetKey));
-    }
-    private ResourceKey Key(PathValue path)
-    {
-        if (path.Connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } remote) return new(remote.ToString(), path.Raw);
-        return new("local", ResourcePath.Resolve(path.LocalPath(context.WorkingDirectory, context.HomeDirectory)));
-    }
-    private static bool Overlaps(ResourceKey left, ResourceKey right)
-    {
-        if (left.Endpoint != right.Endpoint) return false;
-        if (left.Endpoint != "local") return true;
-        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        var separator = Path.DirectorySeparatorChar;
-        return string.Equals(left.Path, right.Path, comparison)
-            || left.Path.StartsWith(right.Path.TrimEnd(separator) + separator, comparison)
-            || right.Path.StartsWith(left.Path.TrimEnd(separator) + separator, comparison);
-    }
-    private async ValueTask DrainAsync()
-    {
-        if (transfers.Count == 0) return;
-        var pending = transfers.ToArray(); transfers.Clear();
-        var results = await Task.WhenAll(pending.Select(p => p.Task));
-        if (results.Any(result => !result)) throw new MsyncException("One or more file transfers failed; completed files remain in place and the operation can be retried");
-    }
     private static string SourceLabel(Value value) => value is StringValue text ? $"literal ({Encoding.UTF8.GetByteCount(text.Data)} UTF-8 bytes)" : value.ToString()!;
     private static bool AsBool(Value value) => value is BoolValue boolean ? boolean.Data : throw new MsyncException($"Condition requires Bool, received {value.Type}");
     private static string Text(Value value) => value switch { StringValue s => s.Data, PathValue p => p.NativeText, NumberValue n => n.ToString(), BoolValue b => b.ToString(), _ => throw new MsyncException($"Cannot convert {value.Type} to String") };
@@ -499,13 +491,14 @@ public sealed class ExecutionSession(ExecutionOptions? options = null)
     private sealed record UninitializedValue : Value { public override TypeRef Type => new(TypeKind.Never); }
     private static readonly Value Uninitialized = new UninitializedValue();
     private Value[] locals = [];
-    public bool IsLocalInitialized(int slot) => (uint)slot < (uint)locals.Length && !ReferenceEquals(locals[slot], Uninitialized);
-    public Value? GetLocalValue(int slot) => IsLocalInitialized(slot) ? locals[slot] : null;
+    private Value ReadSessionLocal(int slot) => locals[slot] is CellValue cell ? cell.Data : locals[slot];
+    public bool IsLocalInitialized(int slot) => (uint)slot < (uint)locals.Length && !ReferenceEquals(ReadSessionLocal(slot), Uninitialized);
+    public Value? GetLocalValue(int slot) => IsLocalInitialized(slot) ? ReadSessionLocal(slot) : null;
     public ValueTask<Value> ExecuteAsync(Module module, int startInstruction = 0, CancellationToken cancellationToken = default)
     {
         var count = module.Functions[module.EntryPoint].LocalCount;
         var previousLength = locals.Length; Array.Resize(ref locals, count);
         for (var i = previousLength; i < count; i++) locals[i] = Uninitialized;
-        return new Interpreter(module, options).ExecuteEntryAsync(locals, startInstruction, cancellationToken);
+        return new Interpreter(module with { PreserveLocals = true }, options).ExecuteEntryAsync(locals, startInstruction, cancellationToken);
     }
 }

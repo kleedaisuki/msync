@@ -5,81 +5,47 @@ public static class Optimizer
     public static Module Optimize(Module module, int level = 1)
     {
         if (level is < 0 or > 3) throw new MsyncException($"Optimization level must be 0, 1, 2, or 3; received {level}");
-        var constants = module.Constants.ToList();
-        var functions = module.Functions.Select(f => level == 0 ? f : FoldBranches(FoldConstants(f, constants))).ToArray();
-        return FormBlocks(module with { Constants = constants, Functions = functions, OptimizationLevel = level });
+        if (level == 0) return FormBlocks(module with { OptimizationLevel = level });
+        var current = module with { OptimizationLevel = level, Blocks = null };
+        while (true)
+        {
+            var constants = current.Constants.ToList();
+            var prepared = current with { Constants = constants, Functions = current.Functions.Select((function, index) =>
+            {
+                if (current.PreserveLocals && index == current.EntryPoint) return function;
+                var context = current with { Constants = constants };
+                var predicated = PredicateOptimization.Optimize(context, function, constants);
+                var scalar = ScopeScalarization.Optimize(context, predicated, constants);
+                var tail = TailCallOptimization.Optimize(context, scalar, index);
+                return LoopOptimization.Optimize(context, tail, constants, level);
+            }).ToArray() };
+            var effects = EffectAnalysis.FunctionEffects(prepared);
+            var functions = prepared.Functions.Select((function, index) => prepared.PreserveLocals && index == prepared.EntryPoint
+                ? function : GraphOptimization.Optimize(prepared, function, constants, effects)).ToArray();
+            var reduced = LocalSlotCompaction.Compact(prepared with { Constants = constants, Functions = functions });
+            var inlined = FunctionInlining.Inline(reduced, level);
+            if (inlined.Functions.Select((function, index) => function.Instructions.SequenceEqual(current.Functions[index].Instructions)).All(equal => equal))
+            {
+                var numbered = inlined with { Functions = inlined.Functions.Select((function, index) => inlined.PreserveLocals && index == inlined.EntryPoint
+                    ? function : Number(function)).ToArray() };
+                var numberedConstants = numbered.Constants.ToList();
+                var numberedEffects = EffectAnalysis.FunctionEffects(numbered);
+                var cleaned = numbered with { Functions = numbered.Functions.Select((function, index) => numbered.PreserveLocals && index == numbered.EntryPoint
+                    ? function : GraphOptimization.Optimize(numbered, function, numberedConstants, numberedEffects)).ToArray(), Constants = numberedConstants };
+                return FormBlocks(ModuleOptimization.Compact(LocalSlotCompaction.Compact(cleaned)));
+
+                FunctionCode Number(FunctionCode function)
+                {
+                    var normalized = DirectionalNormalization.Optimize(inlined, function);
+                    var available = level >= 2 ? GlobalRedundancy.Optimize(inlined, normalized, constants) : normalized;
+                    return ValueNumbering.Eliminate(available, constants);
+                }
+            }
+            current = inlined;
+        }
     }
     public static Module FormBlocks(Module module) => module with
     { Blocks = module.Functions.SelectMany((function, index) => Partition(function, index)).ToArray() };
-    private static FunctionCode FoldConstants(FunctionCode function, List<Value> constants)
-    {
-        var code = function.Instructions.ToArray();
-        var targets = code.SelectMany(i => i.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue ? [i.A] : i.Op == OpCode.IteratorNext ? new[] { i.B } : []).ToHashSet();
-        Value? Constant(Instruction instruction) => instruction.Op switch
-        {
-            OpCode.Constant => constants[instruction.A],
-            OpCode.True => Value.True,
-            OpCode.False => Value.False,
-            OpCode.Null => Value.Null,
-            _ => null
-        };
-        Instruction Emit(Value value, SourceSpan? span)
-        {
-            if (value is BoolValue boolean) return new(boolean.Data ? OpCode.True : OpCode.False, Span: span);
-            if (value is NullValue) return new(OpCode.Null, Span: span);
-            var index = constants.IndexOf(value);
-            if (index < 0) { index = constants.Count; constants.Add(value); }
-            return new(OpCode.Constant, index, Span: span);
-        }
-        for (var i = 0; i + 1 < code.Length; i++)
-        {
-            var left = Constant(code[i]);
-            if (left is null || targets.Contains(i + 1)) continue;
-            Value? unary = (code[i + 1].Op, left) switch
-            {
-                (OpCode.Not, BoolValue b) => b.Data ? Value.False : Value.True,
-                (OpCode.IsNull, _) => left is NullValue ? Value.True : Value.False,
-                (OpCode.Negate, NumberValue n) => new NumberValue(-n.Data),
-                _ => null
-            };
-            if (unary is not null)
-            { code[i] = new(OpCode.Nop); code[i + 1] = Emit(unary, code[i + 1].Span); continue; }
-            if (i + 2 >= code.Length || targets.Contains(i + 2)) continue;
-            var right = Constant(code[i + 1]);
-            if (right is null) continue;
-            Value? folded = (code[i + 2].Op, left, right) switch
-            {
-                (OpCode.Add, NumberValue a, NumberValue b) => new NumberValue(a.Data + b.Data),
-                (OpCode.Subtract, NumberValue a, NumberValue b) => new NumberValue(a.Data - b.Data),
-                (OpCode.Multiply, NumberValue a, NumberValue b) => new NumberValue(a.Data * b.Data),
-                (OpCode.Divide, NumberValue a, NumberValue b) => new NumberValue(a.Data / b.Data),
-                (OpCode.Add, StringValue a, StringValue b) => new StringValue(a.Data + b.Data),
-                (OpCode.Equal, BoolValue a, BoolValue b) => a.Data == b.Data ? Value.True : Value.False,
-                (OpCode.NotEqual, BoolValue a, BoolValue b) => a.Data != b.Data ? Value.True : Value.False,
-                (OpCode.Equal, StringValue a, StringValue b) => a.Data == b.Data ? Value.True : Value.False,
-                (OpCode.NotEqual, StringValue a, StringValue b) => a.Data != b.Data ? Value.True : Value.False,
-                (OpCode.IsType, TypeValue a, TypeValue b) => b.Data.Accepts(a.Data) ? Value.True : Value.False,
-                _ => null
-            };
-            if (folded is null) continue;
-            code[i] = new(OpCode.Nop); code[i + 1] = new(OpCode.Nop); code[i + 2] = Emit(folded, code[i + 2].Span);
-        }
-        return function with { Instructions = code };
-    }
-    private static FunctionCode FoldBranches(FunctionCode function)
-    {
-        var code = function.Instructions.ToArray();
-        var targets = code.SelectMany(i => i.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue ? [i.A] : i.Op == OpCode.IteratorNext ? new[] { i.B } : []).ToHashSet();
-        for (var index = 0; index + 1 < code.Length; index++)
-        {
-            var constant = code[index]; var branch = code[index + 1];
-            if (targets.Contains(index + 1) || constant.Op is not (OpCode.True or OpCode.False) || branch.Op is not (OpCode.JumpIfFalse or OpCode.JumpIfTrue)) continue;
-            var taken = constant.Op == OpCode.True == (branch.Op == OpCode.JumpIfTrue);
-            code[index] = new(OpCode.Nop, Span: constant.Span);
-            code[index + 1] = taken ? new(OpCode.Jump, branch.A, Span: branch.Span) : new(OpCode.Nop, Span: branch.Span);
-        }
-        return function with { Instructions = code };
-    }
     private static IEnumerable<BasicBlock> Partition(FunctionCode function, int functionIndex)
     {
         var code = function.Instructions;
@@ -110,7 +76,7 @@ public static class Optimizer
         }
     }
     private static bool IsBoundary(Instruction i) => IsEffect(i) || i.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.IteratorNext or OpCode.Return;
-    private static bool IsEffect(Instruction i) => i.Op is OpCode.Transfer or OpCode.LocalTransfer or OpCode.Call or OpCode.NativeCall or OpCode.ProcessCall or OpCode.GetIterator or OpCode.IteratorNext;
+    private static bool IsEffect(Instruction i) => EffectAnalysis.Effects(i) != InstructionEffect.None;
 }
 
 public static class Binding
@@ -123,10 +89,11 @@ public static class Binding
         {
             PathValue path => path with { WorkingDirectory = path.WorkingDirectory ?? full.WorkingDirectory, HomeDirectory = path.HomeDirectory ?? full.HomeDirectory },
             FunctionValue function => function with { Captures = function.Captures?.Select(BindValue).ToArray() },
-            ScopeValue scope => new ScopeValue(scope.Members.ToDictionary(p => p.Key, p => BindValue(p.Value))),
+            ScopeValue scope => new ScopeValue(scope.Members.ToDictionary(p => p.Key, p => BindValue(p.Value))) { AllocationSite = scope.AllocationSite },
             _ => value
         };
         var bound = module with { Constants = module.Constants.Select(BindValue).ToArray(), Context = full, Stage = ArtifactStage.Executable };
-        return ExecutionLowering.Lower(bound);
+        var optimized = Optimizer.Optimize(ExecutionLowering.Lower(bound), module.OptimizationLevel);
+        return Optimizer.Optimize(ExecutionLowering.Lower(optimized), module.OptimizationLevel);
     }
 }

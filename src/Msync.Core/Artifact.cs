@@ -5,7 +5,7 @@ namespace Msync.Core;
 public static class Artifact
 {
     private static readonly byte[] Magic = "MSYNCBC\0"u8.ToArray();
-    public const ushort FormatVersion = 2;
+    public const ushort FormatVersion = 3;
     public const string LanguageVersion = "0.8.0";
     public static Module Read(string path)
     {
@@ -19,9 +19,11 @@ public static class Artifact
         using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
         if (!reader.ReadBytes(Magic.Length).AsSpan().SequenceEqual(Magic)) throw new MsyncException("Not an msync binary bytecode artifact");
         var version = reader.ReadUInt16();
-        if (version is not (1 or FormatVersion)) throw new MsyncException($"Unsupported msync bytecode format {version}; supported formats are 1 and {FormatVersion}");
+        if (version is not (1 or 2 or FormatVersion)) throw new MsyncException($"Unsupported msync bytecode format {version}; supported formats are 1, 2 and {FormatVersion}");
         var language = reader.ReadString();
         if (language != LanguageVersion) throw new MsyncException($"Unsupported bytecode language semantics {language}; expected {LanguageVersion}");
+        var semantics = version >= 3 ? (ModuleSemantics)reader.ReadByte() : ModuleSemantics.Legacy;
+        if ((semantics & ~ModuleSemantics.Current) != 0) throw new MsyncException($"Unsupported bytecode execution semantics {semantics}");
         var stage = (ArtifactStage)reader.ReadByte();
         if (!Enum.IsDefined(stage)) throw new MsyncException($"Unknown artifact stage {stage}");
         var optimization = reader.ReadInt32();
@@ -38,13 +40,14 @@ public static class Artifact
             {
                 var op = (OpCode)ir.ReadByte();
                 if (!Enum.IsDefined(op)) throw new MsyncException($"Unknown bytecode opcode {(byte)op}");
+                if (version < 3 && op > OpCode.DeferRange) throw new MsyncException($"Opcode {op} requires bytecode format 3");
                 var a = ir.ReadInt32(); var b = ir.ReadInt32(); var text = ReadOptional(ir);
                 SourceSpan? span = ir.ReadBoolean() ? new(ir.ReadString(), ir.ReadInt32(), ir.ReadInt32()) : null;
                 return new Instruction(op, a, b, text, span);
             });
             return new FunctionCode(name, parameters, locals, instructions, result, captures, parameterTypes);
         });
-        var module = new Module(constants, functions, entry, stage, context, optimization);
+        var module = new Module(constants, functions, entry, stage, context, optimization, Semantics: semantics);
         Validate(module);
         return Optimizer.FormBlocks(module);
     }
@@ -63,7 +66,7 @@ public static class Artifact
     {
         Validate(module);
         using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
-        writer.Write(Magic); writer.Write(FormatVersion); writer.Write(LanguageVersion); writer.Write((byte)module.Stage);
+        writer.Write(Magic); writer.Write(FormatVersion); writer.Write(LanguageVersion); writer.Write((byte)module.Semantics); writer.Write((byte)module.Stage);
         writer.Write(module.OptimizationLevel); writer.Write(module.EntryPoint);
         writer.Write(module.Context is not null);
         if (module.Context is { } context) { writer.Write(context.WorkingDirectory); writer.Write(context.HomeDirectory); WriteOptional(writer, context.SourceFile); }
@@ -82,6 +85,7 @@ public static class Artifact
     }
     public static void Validate(Module module)
     {
+        if ((module.Semantics & ~ModuleSemantics.Current) != 0) throw new MsyncException($"Unsupported bytecode execution semantics {module.Semantics}");
         if (module.EntryPoint < 0 || module.EntryPoint >= module.Functions.Count) throw new MsyncException("Bytecode entrypoint does not identify a function");
         if ((module.Stage == ArtifactStage.Executable) != (module.Context is not null)) throw new MsyncException("Bytecode stage and binding context disagree");
         foreach (var constant in module.Constants) ValidateConstant(constant, module);
@@ -93,7 +97,7 @@ public static class Artifact
                 throw new MsyncException($"Parameter type table disagrees with function '{function.Name}'");
             foreach (var instruction in function.Instructions)
             {
-                if (instruction.Op is OpCode.LoadLocal or OpCode.StoreLocal or OpCode.IteratorNext && (instruction.A < 0 || instruction.A >= function.LocalCount))
+                if (instruction.Op is OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.IteratorNext && (instruction.A < 0 || instruction.A >= function.LocalCount))
                     throw new MsyncException($"Invalid local index {instruction.A} in '{function.Name}'", instruction.Span);
                 if (instruction.Op == OpCode.Constant && (instruction.A < 0 || instruction.A >= module.Constants.Count))
                     throw new MsyncException($"Invalid constant index {instruction.A}", instruction.Span);

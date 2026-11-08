@@ -39,6 +39,11 @@ internal sealed partial class Compilation
         Frame clone = new(frame.Source, frame.SourceName, frame.Environment)
         {
             Locals = frame.Locals,
+            Facts = frame.Facts,
+            Declarations = frame.Declarations,
+            ScopeSites = frame.ScopeSites,
+            Allocations = frame.Allocations,
+            FieldOwners = frame.FieldOwners,
             ExpectedReturn = frame.ExpectedReturn,
             ContextOwner = frame.ContextOwner,
             ContextIncludesEnd = frame.ContextIncludesEnd,
@@ -47,6 +52,8 @@ internal sealed partial class Compilation
             EditorReportErrors = frame.EditorReportErrors,
             EditorCallTrace = frame.EditorCallTrace
         };
+        clone.AcquireRegions.AddRange(frame.AcquireRegions);
+        clone.LoopAcquireDepths.AddRange(frame.LoopAcquireDepths);
         foreach (var pair in frame.SelfCaptureSlots) clone.SelfCaptureSlots[pair.Key] = pair.Value;
         return clone;
     }
@@ -54,16 +61,16 @@ internal sealed partial class Compilation
     private void EmitThunk(Frame frame, Frame scratch, Info result, string name)
     {
         int parentLocals = frame.Locals;
-        var captured = scratch.Code.Where(instruction => instruction.Op == OpCode.LoadLocal && instruction.A < parentLocals)
+        var captured = scratch.Code.Where(instruction => instruction.Op is OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage or OpCode.StoreLocal && instruction.A < parentLocals)
             .Select(instruction => instruction.A).Distinct().Order().ToArray();
         var slots = captured.Select((slot, index) => (slot, index)).ToDictionary(pair => pair.slot, pair => pair.index);
         int Remap(int slot) => slot < parentLocals ? slots[slot] : captured.Length + slot - parentLocals;
-        var code = scratch.Code.Select(instruction => instruction.Op is OpCode.LoadLocal or OpCode.StoreLocal or OpCode.IteratorNext
+        var code = scratch.Code.Select(instruction => instruction.Op is OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.IteratorNext
             ? instruction with { A = Remap(instruction.A) } : instruction).ToList();
         code.Add(new(OpCode.Return));
         int id = functions.Count;
         functions.Add(new(name, 0, captured.Length + scratch.Locals - parentLocals, code.ToArray(), result.Type, captured.Length));
-        foreach (int slot in captured) frame.Emit(OpCode.LoadLocal, slot);
+        foreach (int slot in captured) frame.Emit(OpCode.LoadCell, slot);
         frame.Emit(OpCode.MakeClosure, id, captured.Length);
     }
 

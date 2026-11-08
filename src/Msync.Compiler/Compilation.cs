@@ -8,7 +8,7 @@ namespace Msync.Compiler;
 internal sealed partial class Compilation(string source, string sourceName, int optimization, Action<SourceSpan, Info, string?, bool>? observe = null)
 {
     private readonly List<Value> constants = [];
-    private readonly Dictionary<Value, int> constantIndices = [];
+    private readonly Dictionary<Value, int> constantIndices = new(ValueRepresentation.Comparer);
     private readonly List<FunctionCode> functions = [];
     private readonly List<Template> templates = [];
     private ImmutableDictionary<string, Binding> sessionEnvironment = ImmutableDictionary<string, Binding>.Empty;
@@ -25,7 +25,9 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         var document = parsedDocument ?? Parser.Parse(text, sourceName);
         if (document.EditorError is { } syntax) throw syntax;
         PrepareSessionBindings();
+        solvedStorage.Clear();
         Frame frame = new(text, sourceName, sessionEnvironment) { Locals = sessionLocals };
+        SnapshotFacts(frame);
         if (functions.Count == 0) functions.Add(new("<main>", 0, 0, [], TypeRef.Null));
         var previousFunctions = functions.ToArray();
         int previousConstants = constants.Count;
@@ -38,14 +40,17 @@ internal sealed partial class Compilation(string source, string sourceName, int 
             functions[0] = new("<main>", 0, frame.Locals, frame.Code.ToArray(), result.Type);
             sessionEnvironment = frame.Environment;
             sessionLocals = frame.Locals;
-            return Optimizer.Optimize(new(constants.ToArray(), functions.ToArray(), OptimizationLevel: optimization), optimization);
+            return Optimizer.Optimize(new(constants.ToArray(), functions.ToArray(), OptimizationLevel: optimization,
+                PreserveLocals: submittedBindings is not null), optimization);
         }
         catch
         {
+            foreach (var storage in solvedStorage) storage.Type = null;
             functions.Clear(); functions.AddRange(previousFunctions);
             for (int i = previousConstants; i < constants.Count; i++) constantIndices.Remove(constants[i]);
             constants.RemoveRange(previousConstants, constants.Count - previousConstants);
             templates.RemoveRange(previousTemplates, templates.Count - previousTemplates);
+            foreach (var candidates in functionSites.Values) candidates.RemoveAll(template => !templates.Contains(template));
             for (int i = 0; i < templates.Count; i++)
                 foreach (var key in templates[i].Specializations.Keys.Where(key => !previousKeys[i].Contains(key)).ToArray()) templates[i].Specializations.Remove(key);
             throw;
@@ -98,7 +103,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
     private Info Statement(Frame frame, Statement statement) => statement switch
     {
         LetStatement let => Let(frame, let),
-        FunctionDeclaration declaration => Declare(frame, declaration.Name, Function(frame, declaration.Function), declaration.Function.NameSpan),
+        FunctionDeclaration declaration => DeclareFunction(frame, declaration),
         NativeDeclaration native => Declare(frame, native.Name, Native(frame, native, null), native.NameSpan),
         ScopeDeclaration declaration => Declare(frame, declaration.Name, Scope(frame, declaration.Scope, named: true), declaration.NameSpan),
         ExpressionStatement expression => StatementExpression(frame, expression),
@@ -107,6 +112,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
 
     private Info Declare(Frame frame, string name, Info info, SourceSpan? span)
     {
+        RecordSessionValue(info);
         if (span is { } location) Observe(frame, location, info, name);
         Store(frame, name, info, span);
         frame.Emit(OpCode.Null);
@@ -116,7 +122,10 @@ internal sealed partial class Compilation(string source, string sourceName, int 
     private Info Let(Frame frame, LetStatement let)
     {
         Info result = BindingInfo(frame, let, Expression(frame, let.Value));
-        BindPattern(frame, let.Pattern, result);
+        var constraint = let.Type is null ? StorageType(result.Type, let.Nullable) : ResolveType(frame, let.Type);
+        bool nullable = let.Nullable || constraint?.Nullable == true;
+        if (nullable && constraint is not null) constraint = constraint.WithNull;
+        BindPattern(frame, let.Pattern, result, nullable, constraint);
         frame.Emit(OpCode.Null);
         return new(TypeRef.Null);
     }
@@ -175,6 +184,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
             frame.Environment = before;
             result = UnknownInfo;
         }
+        RecordSessionValue(result);
         Observe(frame, expression.Span, result, expression is NameExpr name ? name.Name : null);
         return result;
     }
@@ -192,6 +202,8 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         TypeExpr type => TypeConstant(frame, ResolveType(frame, type.Type), expression.Span),
         UnaryExpr unary => Unary(frame, unary),
         BinaryExpr binary => Binary(frame, binary),
+        AssignmentExpr assignment => Assign(frame, assignment),
+        BarrierExpr barrier => Barrier(frame, barrier),
         BlockExpr block => Block(frame, block),
         IfExpr conditional => Conditional(frame, conditional),
         MatchExpr match => Match(frame, match),

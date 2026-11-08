@@ -5,7 +5,9 @@ internal static class TailCallOptimization
     internal static FunctionCode Optimize(Module module, FunctionCode function, int functionIndex)
     {
         var code = function.Instructions;
-        var targets = FunctionInlining.Targets(function, module.Constants, requireKnownCallee: true);
+        if (!code.Select((instruction, index) => (instruction, index)).Any(pair => pair.instruction.Op == OpCode.Call
+            && (pair.instruction.B == 0 || pair.instruction.B == functionIndex + 1) && Returns(code, pair.index + 1))) return function;
+        var targets = FunctionInlining.Targets(function, module.Constants, requireKnownCallee: !ClosedFunctions(module));
         var tailCalls = targets.Where(pair => pair.Value == functionIndex && Returns(code, pair.Key + 1))
             .Select(pair => pair.Key).ToHashSet();
         if (tailCalls.Count == 0 || OwnsWork(function, targets, functionIndex)) return function;
@@ -58,6 +60,40 @@ internal static class TailCallOptimization
                 : instruction with { A = positions[instruction.A] };
         }
         return function with { Instructions = output, LocalCount = arguments + function.ParameterCount };
+    }
+
+    private static bool ClosedFunctions(Module module)
+    {
+        var entry = module.Functions[module.EntryPoint];
+        if (module.PreserveLocals || entry.ParameterCount != 0 || entry.CaptureCount != 0) return false;
+        var reached = new HashSet<int>();
+        var work = new Queue<int>();
+        void Function(int index) { if (reached.Add(index)) work.Enqueue(index); }
+        bool Closed(Value value)
+        {
+            if (value is FunctionValue function)
+            {
+                if (function.NativeName is not null) return false;
+                Function(function.Function);
+                return function.Captures?.All(Closed) ?? true;
+            }
+            if (value is ScopeValue scope) return scope.Members.Values.All(Closed);
+            return value is not (CellValue or RangeValue);
+        }
+        Function(module.EntryPoint);
+        while (work.TryDequeue(out var index))
+        {
+            foreach (var instruction in module.Functions[index].Instructions)
+            {
+                if (instruction.Op == OpCode.LoadBuiltin && instruction.Text?.TrimStart('$') is "std" or "view" or "views" or "ranges") return false;
+                if (instruction.Op == OpCode.Constant && !Closed(module.Constants[instruction.A])) return false;
+                if (instruction.Op == OpCode.MakeClosure || instruction.Op == OpCode.SpecializeClosure && instruction.Text is null) Function(instruction.A);
+                if (instruction.Op == OpCode.Call && instruction.B > 0) Function(instruction.B - 1);
+                if (instruction.Op is OpCode.Call or OpCode.SpecializeClosure && instruction.Text is not null)
+                    foreach (var pair in FunctionDispatch.Parse(instruction.Text)) { Function(pair.Key); Function(pair.Value); }
+            }
+        }
+        return true;
     }
 
     private static bool OwnsWork(FunctionCode function, IReadOnlyDictionary<int, int> targets, int functionIndex)

@@ -6,19 +6,27 @@ namespace Msync.Compiler;
 
 internal sealed partial class Compilation
 {
-    private void Store(Frame frame, string name, Info value, SourceSpan? nameSpan = null)
+    private void Store(Frame frame, string name, Info value, SourceSpan? nameSpan = null,
+        bool nullable = false, TypeRef? constraint = null)
     {
-        int slot = frame.Allocate(); frame.Emit(OpCode.StoreLocal, slot);
+        int slot = frame.Allocate(); frame.Emit(OpCode.InitializeLocal, slot);
         var origin = DeclarationOrigin(frame, nameSpan);
-        frame.Bind(name, new(slot, value, Origin: origin));
+        Binding binding = new(slot, value, Origin: origin, AdmitsNull: nullable, Constraint: constraint ?? StorageType(value.Type, nullable));
+        if (nameSpan is { } declaration)
+        {
+            var key = (declaration.Start, name);
+            if (frame.Declarations.TryGetValue(key, out var previous)) binding = binding with { Identity = previous.Identity, Storage = previous.Storage };
+            else frame.Declarations.Add(key, binding);
+        }
+        frame.Bind(name, binding);
         if (origin is not null) CaptureDefinition(frame, origin.Span, [origin]);
     }
-    private void BindPattern(Frame frame, Pattern pattern, Info value)
+    private void BindPattern(Frame frame, Pattern pattern, Info value, bool nullable = false, TypeRef? constraint = null)
     {
         switch (pattern)
         {
             case WildcardPattern or NamePattern { Name: "_" }: frame.Emit(OpCode.Pop); break;
-            case NamePattern name: Observe(frame, name.Span, value, name.Name); Store(frame, name.Name, value, name.Span); break;
+            case NamePattern name: Observe(frame, name.Span, value, name.Name); Store(frame, name.Name, value, name.Span, nullable, constraint ?? StorageType(value.Type, nullable)); break;
             case TuplePattern tuple:
                 Require(frame, value.Type, new(TypeKind.Range), pattern.Span);
                 int sourceSlot = frame.Allocate(); frame.Emit(OpCode.StoreLocal, sourceSlot);
@@ -51,7 +59,14 @@ internal sealed partial class Compilation
         {
             var members = left.Scope.Members.Where(member => right.Scope.Members.ContainsKey(member.Key))
                 .ToDictionary(member => member.Key, member => Join(member.Value, right.Scope.Members[member.Key]));
-            scope = new(members, left.Scope.Named && right.Scope.Named, JoinOrigins(left.Scope, right.Scope, members.Keys));
+            scope = new(members, left.Scope.Named && right.Scope.Named, JoinOrigins(left.Scope, right.Scope, members.Keys),
+                left.Scope.NullableMembers, left.Scope.StorageTypes)
+            {
+                Identity = ReferenceEquals(left.Scope.Identity, right.Scope.Identity) ? left.Scope.Identity : new(),
+                FieldBindings = ReferenceEquals(left.Scope.Identity, right.Scope.Identity) ? left.Scope.FieldBindings : new Dictionary<string, Binding>(),
+                Storage = ReferenceEquals(left.Scope.Identity, right.Scope.Identity) ? left.Scope.Storage :
+                    members.ToDictionary(pair => pair.Key, pair => new StorageConstraint(StorageType(pair.Value.Type, pair.Value.Type.Nullable)))
+            };
         }
         IReadOnlyList<Info>? alternatives = null;
         if (left.Type.WithoutNull == TypeRef.Function && right.Type.WithoutNull == TypeRef.Function &&
@@ -131,6 +146,8 @@ internal sealed partial class Compilation
         ScopeMember member => [member.Value],
         UnaryExpr unary => [unary.Operand],
         BinaryExpr binary => [binary.Left, binary.Right],
+        AssignmentExpr assignment => [assignment.Target, assignment.Value],
+        BarrierExpr { Value: not null } barrier => [barrier.Value],
         CallExpr call => new Node[] { call.Callee }.Concat(call.Arguments),
         IfExpr conditional => new Node[] { conditional.Condition, conditional.Then }.Concat(conditional.Else is null ? [] : [conditional.Else]),
         MatchExpr match => new Node[] { match.Value }.Concat(match.Arms.Select(arm => (Node)arm.Value)),

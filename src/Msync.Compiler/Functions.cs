@@ -6,7 +6,28 @@ namespace Msync.Compiler;
 
 internal sealed partial class Compilation
 {
-    private Info Function(Frame frame, FunctionExpr function)
+    private readonly Dictionary<Template, Specialization> activeSpecializations = [];
+    private readonly Dictionary<FunctionExpr, List<Template>> functionSites = new(ReferenceEqualityComparer.Instance);
+    private Info DeclareFunction(Frame frame, FunctionDeclaration declaration)
+    {
+        int slot = frame.Allocate();
+        var origin = DeclarationOrigin(frame, declaration.Function.NameSpan);
+        Binding binding = new(slot, new(TypeRef.Function), Origin: origin, Constraint: TypeRef.Function);
+        var site = (declaration.Function.NameSpan?.Start ?? declaration.Span.Start, declaration.Name);
+        if (frame.Declarations.TryGetValue(site, out var saved)) binding = binding with { Identity = saved.Identity, Storage = saved.Storage };
+        else frame.Declarations.Add(site, binding);
+        frame.Bind(declaration.Name, binding);
+        frame.Emit(OpCode.Null);
+        frame.Emit(OpCode.InitializeLocal, slot);
+        var info = Function(frame, declaration.Function, binding);
+        frame.Emit(OpCode.StoreLocal, slot);
+        Update(frame, binding, info);
+        if (origin is not null) CaptureDefinition(frame, origin.Span, [origin]);
+        frame.Emit(OpCode.Null);
+        return new(TypeRef.Null);
+    }
+
+    private Info Function(Frame frame, FunctionExpr function, Binding? declaration = null)
     {
         var usedNames = Names(function.Body).ToHashSet(StringComparer.Ordinal);
         bool needsStandard = HasStandardReference(function.Body);
@@ -15,12 +36,26 @@ internal sealed partial class Compilation
             Standard(frame, function.Span); frame.Emit(OpCode.Pop);
         }
         if (needsStandard) usedNames.Add("$std");
-        var captures = Captures(frame, usedNames, function.Name);
+        var captures = Captures(frame, usedNames, declaration is null ? function.Name : null);
+        if (functionSites.TryGetValue(function, out var atSite))
+        {
+            var saved = atSite.FirstOrDefault(candidate => candidate.Captures.Count == captures.Length &&
+                candidate.Captures.Zip(captures).All(pair => pair.First.Key == pair.Second.Key && ReferenceEquals(pair.First.Value.Identity, pair.Second.Value.Identity)));
+            if (saved is not null)
+            {
+                if (declaration is not null) Update(frame, declaration, new(TypeRef.Function, saved));
+                EmitClosure(frame, saved);
+                return new(TypeRef.Function, saved);
+            }
+        }
         int id = functions.Count;
         functions.Add(new(function.Name ?? $"<lambda{nextTemplate++}>", function.Parameters.Count, captures.Length + function.Parameters.Count,
             [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, captures.Length));
         Template template = new(id, function, captures, frame.Source, frame.SourceName);
         templates.Add(template);
+        if (atSite is null) functionSites.Add(function, atSite = []);
+        atSite.Add(template);
+        if (declaration is not null) Update(frame, declaration, new(TypeRef.Function, template));
         if (editorDefinitions is not null && IsCurrentSource(frame))
         {
             editorDefinitions[template] = (frame.Environment, frame.Locals);
@@ -42,14 +77,14 @@ internal sealed partial class Compilation
     {
         if (frame.SelfCaptureSlots.TryGetValue(template.Id, out var ownSlots))
         {
-            foreach (int slot in ownSlots) frame.Emit(OpCode.LoadLocal, slot);
+            foreach (int slot in ownSlots) frame.Emit(OpCode.LoadCell, slot);
         }
         else
         {
             foreach (var capture in template.Captures)
             {
                 if (capture.Value.Self is not null) EmitClosure(frame, capture.Value.Self);
-                else frame.Emit(OpCode.LoadLocal, capture.Value.Slot);
+                else frame.Emit(OpCode.LoadCell, capture.Value.Slot);
             }
         }
         frame.Emit(OpCode.MakeClosure, template.Id, template.Captures.Count, span: template.Syntax.Span);
@@ -68,18 +103,22 @@ internal sealed partial class Compilation
             throw error;
         }
         var specializations = template.Specializations;
+        if (activeSpecializations.TryGetValue(template, out var active)
+            && active.ParameterTypes.SequenceEqual(arguments.Select(argument => argument.Type))) return active;
         if (caller.EditorProbe)
         {
             if (!probeSpecializations!.TryGetValue(template, out specializations)) probeSpecializations[template] = specializations = [];
         }
-        string key = string.Join(';', arguments.Select(argument => InfoKey(argument)));
+        var captures = template.Captures.Select(pair => new KeyValuePair<string, Binding>(pair.Key,
+            pair.Value with { Info = CaptureInfo(Current(caller, pair.Value)) })).ToArray();
+        string key = string.Join(';', arguments.Select(argument => InfoKey(argument))) + "|" + string.Join(';', captures.Select(pair => InfoKey(pair.Value.Info)));
         if (specializations.TryGetValue(key, out var existing)) return existing;
         if (activeEditorSpecializations?.Contains(template.Syntax) == true)
         {
             var guarded = template.Syntax.ReturnType is null ? UnknownInfo : new Info(ResolveType(caller, template.Syntax.ReturnType));
             return new(-1, guarded, arguments.Select(argument => argument.Type).ToArray());
         }
-        int id = specializations.Count == 0 && !caller.EditorProbe ? template.Id : functions.Count;
+        int id = specializations.Count == 0 && !caller.EditorProbe && !template.Instance ? template.Id : functions.Count;
         if (id == functions.Count) functions.Add(functions[template.Id]);
         var asserted = template.Syntax.ReturnType is null ? null : ResolveType(caller, template.Syntax.ReturnType);
         Specialization specialization = new(id, new(asserted ?? new TypeRef(TypeKind.Never)), arguments.Select(info => info.Type).ToArray());
@@ -88,6 +127,7 @@ internal sealed partial class Compilation
         Frame frame = new(template.Source, template.SourceName, environment)
         {
             ExpectedReturn = asserted,
+            Facts = caller.Facts,
             ExpectedReturnSpan = template.Syntax.ReturnType?.Span,
             ContextOwner = template.Syntax.Body.Span,
             ContextIncludesEnd = template.Syntax.Body.EditorIncomplete,
@@ -97,7 +137,11 @@ internal sealed partial class Compilation
             EditorCallTrace = caller.EditorRecovery ? new(caller.SourceName, caller.Source, span, template.Syntax.Parameters, specialization.ParameterTypes, caller.EditorCallTrace) : null
         };
         frame.SelfCaptureSlots[template.Id] = Enumerable.Range(0, template.Captures.Count).ToArray();
-        foreach (var capture in template.Captures) frame.Bind(capture.Key, capture.Value with { Slot = frame.Allocate(), Self = null });
+        foreach (var capture in captures)
+        {
+            frame.Bind(capture.Key, capture.Value with { Slot = frame.Allocate(), Self = null });
+            frame.Facts = frame.Facts.SetItem(capture.Value.Identity, capture.Value.Info);
+        }
         for (int index = 0; index < arguments.Count; index++)
         {
             var parameter = template.Syntax.Parameters[index];
@@ -134,15 +178,19 @@ internal sealed partial class Compilation
             }
             Observe(frame, new(parameter.Span.Start, parameter.Name.Length), info, parameter.Name);
             var origin = DeclarationOrigin(frame, new(parameter.Span.Start, parameter.Name.Length));
-            frame.Bind(parameter.Name, new(frame.Allocate(), info, Origin: origin));
+            var parameterConstraint = parameter.Type is null ? StorageType(info.Type, parameter.Nullable) : ResolveType(frame, parameter.Type);
+            if (parameter.Nullable && parameterConstraint is not null) parameterConstraint = parameterConstraint.WithNull;
+            frame.Bind(parameter.Name, new(frame.Allocate(), info, Origin: origin, AdmitsNull: parameter.Nullable || parameterConstraint?.Nullable == true,
+                Constraint: parameterConstraint));
             if (origin is not null) CaptureDefinition(frame, origin.Span, [origin]);
         }
-        if (template.Syntax.Name is not null) frame.Bind(template.Syntax.Name, new(-1, new(TypeRef.Function, template), template,
+        if (template.Syntax.Name is not null && !frame.Environment.ContainsKey(template.Syntax.Name)) frame.Bind(template.Syntax.Name, new(-1, new(TypeRef.Function, template), template,
             DeclarationOrigin(frame, template.Syntax.NameSpan)));
         if (caller.EditorReportErrors) editorCalledTemplates?.Add(template);
         CaptureContext(frame, template.Syntax.Body.Span.Start);
         Info result;
         activeEditorSpecializations?.Add(template.Syntax);
+        activeSpecializations[template] = specialization;
         try
         {
             result = Block(frame, template.Syntax.Body);
@@ -161,9 +209,12 @@ internal sealed partial class Compilation
                     : $"while checking this call with {string.Join(", ", template.Syntax.Parameters.Zip(arguments, (p, a) => $"{p.Name}: {a.Type}"))}"));
             throw;
         }
-        finally { activeEditorSpecializations?.Remove(template.Syntax); }
+        finally { activeEditorSpecializations?.Remove(template.Syntax); activeSpecializations.Remove(template); }
         frame.Emit(OpCode.Return);
+        result = Current(frame, result);
         specialization.Result = result;
+        specialization.Effects = frame.Facts.Where(pair => !caller.Facts.TryGetValue(pair.Key, out var previous) || !ReferenceEquals(previous, pair.Value))
+            .ToDictionary(pair => pair.Key, pair => pair.Value);
         functions[id] = new(template.Syntax.Name ?? $"<lambda{template.Id}>", arguments.Count, frame.Locals, frame.Code.ToArray(), result.Type,
             template.Captures.Count, specialization.ParameterTypes);
         return specialization;
@@ -186,6 +237,7 @@ internal sealed partial class Compilation
                 : instruction.Op == OpCode.IteratorNext ? instruction with { B = instruction.B + offset } : instruction));
             frame.Locals = scratch.Locals;
             frame.Environment = scratch.Environment;
+            frame.Facts = scratch.Facts;
         }
         return result;
     }
@@ -217,7 +269,8 @@ internal sealed partial class Compilation
         {
             var specialization = Specialize(frame, callee.Function, arguments, span, argumentExpressions);
             frame.Emit(OpCode.Call, arguments.Count, specialization.Id + 1, span: span);
-            return specialization.Result;
+            ApplyEffects(frame, specialization);
+            return InstantiateResult(frame, specialization.Result, callee.Function, arguments, span);
         }
         if (callee.NativeName is not null) return InvokeNative(frame, callee.NativeName, arguments, span, argumentExpressions);
         if (callee.Alternatives is not null)
@@ -287,7 +340,7 @@ internal sealed partial class Compilation
         return (result ?? new(new(TypeKind.Never)), string.Join(';', mappings.Distinct()));
     }
     private static IEnumerable<Info> CallableChoices(Info info) => info.Alternatives is null ? [info] : info.Alternatives;
-    // Scope/callable identities already specialize their immutable captures. Scalar
+    // Scope/callable identities specialize storage shapes. Scalar
     // and Range-item literal values do not belong to the type-shared argument frame.
     private static Info? ForgetEndpoint(Info? info)
     {
@@ -296,7 +349,15 @@ internal sealed partial class Compilation
         return info.KnownConnection is null && info.KnownPath is null && info.KnownText is null && ReferenceEquals(info.Element, element) ? info
             : info with { KnownConnection = null, KnownPath = null, KnownText = null, Element = element };
     }
-    private static string InfoKey(Info info) => $"{info.Type}:{info.Function?.Id}:{info.NativeName}:{(info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope))}:{string.Join(',', info.Alternatives?.Select(InfoKey) ?? [])}:{(info.Element is null ? "" : InfoKey(info.Element))}";
+    private static Info CaptureInfo(Info info) => info with
+    {
+        KnownBool = null,
+        KnownConnection = null,
+        KnownPath = null,
+        KnownText = null,
+        Element = ForgetEndpoint(info.Element)
+    };
+    private static string InfoKey(Info info) => $"{info.Type}:{(info.Function is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Function))}:{info.NativeName}:{(info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope))}:{string.Join(',', info.Alternatives?.Select(InfoKey) ?? [])}:{(info.Element is null ? "" : InfoKey(info.Element))}";
 
 
 }

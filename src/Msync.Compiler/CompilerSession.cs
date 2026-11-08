@@ -18,5 +18,8 @@ public sealed class CompilerSession
     public EditorAnalysis AnalyzeEditor(string submission, Func<int, Value?>? resolveAcceptedValue = null) =>
         EditorCompiler.Analyze(submission, compilation, resolveAcceptedValue);
     public void AcceptSubmission() => compilation.AcceptSubmission();
+    public void AcceptSubmission(Func<int, Value?> resolveAcceptedValue) => compilation.AcceptSubmission(resolveAcceptedValue);
     public void ReconcileSubmission(Func<int, bool> initialized) => compilation.ReconcileSubmission(initialized);
+    public void ReconcileSubmission(Func<int, bool> initialized, Func<int, Value?> resolveAcceptedValue) =>
+        compilation.ReconcileSubmission(initialized, resolveAcceptedValue);
 }

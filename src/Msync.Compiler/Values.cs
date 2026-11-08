@@ -6,6 +6,8 @@ namespace Msync.Compiler;
 
 internal sealed partial class Compilation
 {
+    private readonly Dictionary<ScopeExpr, int> scopeAllocationSites = new(ReferenceEqualityComparer.Instance);
+    private int nextScopeAllocation;
     private Info Emit(Frame frame, OpCode op, TypeRef type, SourceSpan span)
     {
         frame.Emit(op, span: span); return new(type, KnownBool: op == OpCode.True ? true : op == OpCode.False ? false : null);
@@ -39,7 +41,7 @@ internal sealed partial class Compilation
             if (binding.Origin is { } origin) CaptureDefinition(frame, span, [origin]);
             if (binding.Self is not null) EmitClosure(frame, binding.Self);
             else frame.Emit(OpCode.LoadLocal, binding.Slot, span: span);
-            return binding.Info;
+            return Current(frame, binding);
         }
         if (reference && name == "std") return Standard(frame, span);
         if (reference && RemovedRangeAlias(name)) throw RangeAliasError(frame, "$" + name, span);
@@ -96,7 +98,7 @@ internal sealed partial class Compilation
         if (binary.Operator == "::") return Select(frame, binary);
         if (binary.Operator == "|") return Pipe(frame, binary);
         if (binary.Operator is "and" or "or") return Logical(frame, binary);
-        var left = Expression(frame, binary.Left);
+        var left = Current(frame, Expression(frame, binary.Left));
         if (binary.Operator == "/")
         {
             int start = binary.OperatorSpan?.End ?? binary.Right.Span.Start;
@@ -165,9 +167,13 @@ internal sealed partial class Compilation
         int skip = frame.Emit(binary.Operator == "and" ? OpCode.JumpIfFalse : OpCode.JumpIfTrue);
         frame.Emit(OpCode.Pop);
         var old = frame.Environment;
+        var before = SnapshotFacts(frame);
         frame.Environment = Refined(frame, binary.Left, binary.Operator == "and");
         var right = Expression(frame, binary.Right); Require(frame, right.Type, TypeRef.Bool, binary.Right.Span);
-        frame.Environment = old;
+        frame.Facts = left.KnownBool is { } known
+            ? known == (binary.Operator == "and") ? frame.Facts : before
+            : JoinFacts(before, frame.Facts);
+        RestoreScope(frame, old);
         frame.Patch(skip, frame.Code.Count);
         return new(TypeRef.Bool);
     }
@@ -194,7 +200,7 @@ internal sealed partial class Compilation
                         : $"Available members: {string.Join(", ", left.Scope.Members.Keys.Order(StringComparer.Ordinal))}.", code: "E0205");
             Observe(frame, binary.Right.Span, info, member);
             if (left.Scope.Origins?.TryGetValue(member, out var origins) == true) CaptureDefinition(frame, binary.Right.Span, origins);
-            frame.Emit(OpCode.GetMember, text: member, span: binary.Span); return info;
+            frame.Emit(OpCode.GetMember, text: member, span: binary.Span); return Current(frame, info);
         }
         if (left.Type == TypeRef.Process && member is not null)
         {
@@ -261,25 +267,59 @@ internal sealed partial class Compilation
         frame.ContextIncludesEnd = scope.EditorIncomplete;
         CaptureContext(frame, scope.Span.Start);
         Dictionary<string, Info> members = [];
+        Dictionary<string, TypeRef?> storageTypes = [];
+        HashSet<string> nullableMembers = new(StringComparer.Ordinal);
         Dictionary<string, IReadOnlyList<EditorLocation>>? origins = editorContexts is null ? null : new(StringComparer.Ordinal);
         List<string> keys = [];
+        List<int> fieldSlots = [];
+        Dictionary<string, Binding> fieldBindings = [];
         foreach (var member in scope.Members)
         {
+            if (members.ContainsKey(member.Name))
+            {
+                var first = scope.Members.First(item => item.Name == member.Name);
+                var error = Error(frame, $"Scope field '{member.Name}' is declared more than once.", member.NameSpan ?? member.Span,
+                    label: "duplicate field declaration", help: "Rename this field, or assign to the existing field instead of declaring it again.", code: "E0212");
+                error.Diagnostic.Related.Add(new(frame.SourceName, frame.Source, first.NameSpan ?? first.Span, "first field declared here"));
+                throw error;
+            }
             CaptureContext(frame, member.Span.Start);
             var info = Expression(frame, member.Value);
+            if (info.Type.Nullable && !member.Nullable && !info.EditorUnknown)
+                throw Error(frame, $"Scope field '{member.Name}' does not admit Null.", member.Value.Span,
+                    label: $"this value may be Null ({info.Type})",
+                    help: $"Declare '{member.Name}?: ...' to allow Null in this field.",
+                    fix: member.NameSpan is { } fieldName ? new("Allow Null in this field", new(fieldName.End, 0), "?") : null,
+                    code: "E0201");
+            if (member.Nullable) nullableMembers.Add(member.Name);
+            storageTypes[member.Name] = StorageType(info.Type, member.Nullable);
             if (member.NameSpan is { } memberName) Observe(frame, memberName, info, member.Name);
-            frame.Emit(OpCode.Dup); Store(frame, member.Name, info, member.NameSpan);
+            Store(frame, member.Name, info, member.NameSpan, member.Nullable);
+            fieldSlots.Add(frame.Environment[member.Name].Slot);
+            fieldBindings[member.Name] = frame.Environment[member.Name];
             if (origins is not null && frame.Environment[member.Name].Origin is { } origin) origins[member.Name] = [origin];
             keys.Add(member.Name); members[member.Name] = info;
             CaptureContext(frame, member.Span.End);
         }
         if (scope.Value is not null) { Expression(frame, scope.Value); frame.Emit(OpCode.Pop); }
-        frame.Emit(OpCode.MakeScope, keys.Count, text: string.Join('\0', keys), span: scope.Span);
+        foreach (int slot in fieldSlots) frame.Emit(OpCode.LoadStorage, slot);
+        if (!scopeAllocationSites.TryGetValue(scope, out int allocation)) scopeAllocationSites.Add(scope, allocation = ++nextScopeAllocation);
+        frame.Emit(OpCode.MakeScope, keys.Count, allocation, text: string.Join('\0', keys), span: scope.Span);
         CaptureContext(frame, scope.Span.End);
-        frame.Environment = old;
+        RestoreScope(frame, old);
         frame.ContextOwner = owner;
         frame.ContextIncludesEnd = includesEnd;
-        return new(TypeRef.Scope, Scope: new(members, named, origins));
+        if (!frame.ScopeSites.TryGetValue(scope, out var identity)) frame.ScopeSites.Add(scope, identity = new());
+        Info result = new(TypeRef.Scope, Scope: new(members, named, origins, nullableMembers, storageTypes)
+        {
+            Identity = identity,
+            AllocationSite = allocation,
+            FieldBindings = fieldBindings,
+            Storage = fieldBindings.ToDictionary(pair => pair.Key, pair => pair.Value.Storage, StringComparer.Ordinal)
+        });
+        frame.Facts = frame.Facts.SetItem(result.Scope!.Identity, result);
+        RegisterScope(frame, result.Scope);
+        return result;
     }
 
 
