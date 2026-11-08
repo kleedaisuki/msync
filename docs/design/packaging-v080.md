@@ -139,7 +139,10 @@ copied beside the executable with their relative layout; debug symbols are not
 part of this payload. This includes SQLitePCLRaw's native SQLite library.
 The installer installs that complete staged `bin/` payload, not just `msync.exe`.
 Product-specific Tomlyn/Microsoft.Data.Sqlite/SQLitePCLRaw attribution accompanies
-the SDK notices under `native-dependencies/`.
+the SDK notices under `native-dependencies/`. The vendored PrettyPrompt editor
+keeps its MPL-2.0 license and complete modified source in the installed
+`native-dependencies/prettyprompt-6.0.5/source/` subtree; its optional ghost hint
+is rendered by the existing prompt rather than a second terminal/input owner.
 The generated invariant Unicode case tables derive from Unicode 17 data;
 `vendor/unicode/LICENSE.txt` is shipped as `native-dependencies/Unicode-LICENSE.txt`
 beside those notices. The runtime does not require the raw Unicode source files.

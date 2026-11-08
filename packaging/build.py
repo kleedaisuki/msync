@@ -112,6 +112,13 @@ def stage_payload(publish: Path, stage: Path, rid: str, package_version: str) ->
                 / "native-dependencies"
                 / license_file.relative_to(ROOT / "packaging/licenses/native"),
             )
+    for relative in tracked_files("vendor/PrettyPrompt"):
+        copy_file(
+            ROOT / relative,
+            docs
+            / "native-dependencies/prettyprompt-6.0.5/source"
+            / relative.relative_to("vendor/PrettyPrompt"),
+        )
     copy_file(
         ROOT / "vendor/unicode/LICENSE.txt",
         docs / "native-dependencies/Unicode-LICENSE.txt",
