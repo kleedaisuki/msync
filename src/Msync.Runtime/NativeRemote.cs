@@ -30,7 +30,8 @@ public static partial class NativeRegistry
     {
         ConnectionValue connection = path.Connection!;
         if (name is "directory_iterator" or "recursive_directory_iterator")
-            return new RangeValue(RemoteDirectory(path, name == "recursive_directory_iterator", token), TypeRef.Path);
+            return new RangeValue(RemoteDirectory(path, name == "recursive_directory_iterator", token), TypeRef.Path,
+                name == "directory_iterator" ? new PathSelection(path, ".*") : null);
         List<string> rawArgs = args.Select(value => value is BoolValue boolean ? boolean.Data ? "true" : "false" : Text(value)).ToList();
         if (name == "set_permissions") rawArgs[1] = Convert.ToString(PermissionMode(rawArgs[1]), 8);
         if (args.Count > 1 && args[1] is PathValue second && second.Connection is not null && second.Connection != connection)

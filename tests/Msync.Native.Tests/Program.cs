@@ -132,7 +132,9 @@ try
             Equal("missing\n", ((PathValue)await Call("fs.read_symlink", remoteCopy)).Raw);
             await Call("fs.set_permissions", remoteFile, S("owner_read owner_write owner_exec"));
             Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute, File.GetUnixFileMode(remoteFile.Raw));
-            Equal(3, (await Collect(await Call("fs.directory_iterator", remoteDirectory))).Count);
+            RangeValue directDirectory = (RangeValue)await Call("fs.directory_iterator", remoteDirectory);
+            Equal(remoteDirectory, directDirectory.Selection?.Directory);
+            Equal(3, (await Collect(directDirectory)).Count);
             Equal(Value.True, await Call("fs.remove_all", remoteDirectory));
             Equal(Value.False, await Call("fs.exists", remoteDirectory));
         }
