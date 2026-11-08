@@ -4,25 +4,71 @@ internal static class BytecodeValidation
 {
     private readonly record struct Item(TypeRef Type, int? Function = null, bool Iterator = false, Value? Constant = null);
     private sealed record State(Item[] Stack, Item?[] Locals);
+
     internal static void Validate(Module module)
     {
-        foreach (var function in module.Functions) ValidateFunction(module, function);
+        foreach (var function in module.Functions) new FunctionValidator(module, function).Validate();
     }
-    private static void ValidateFunction(Module module, FunctionCode function)
+
+    private sealed class FunctionValidator(Module module, FunctionCode function)
     {
-        var code = function.Instructions;
-        if (code.Count == 0) throw new MsyncException($"Function '{function.Name}' has no bytecode body");
-        var initial = new Item?[function.LocalCount];
-        for (var i = 0; i < function.CaptureCount; i++) initial[i] = new(TypeRef.Any);
-        for (var i = 0; i < function.ParameterCount; i++) initial[function.CaptureCount + i] = new(function.ParameterTypes is { } types && i < types.Count ? types[i] : TypeRef.Any);
-        var states = new State?[code.Count + 1];
-        var work = new Queue<int>();
-        states[0] = new([], initial); work.Enqueue(0);
-        while (work.TryDequeue(out var pc))
+        private readonly IReadOnlyList<Instruction> code = function.Instructions;
+        private readonly State?[] states = new State?[function.Instructions.Count + 1];
+        private readonly Queue<int> work = new();
+        private bool[] starts = [];
+
+        internal void Validate()
         {
-            if (pc == code.Count) continue;
-            var instruction = code[pc]; var state = states[pc]!;
-            var stack = state.Stack.ToList(); var locals = state.Locals.ToArray();
+            if (code.Count == 0) throw new MsyncException($"Function '{function.Name}' has no bytecode body");
+            starts = BlockStarts(code);
+            var initial = new Item?[function.LocalCount];
+            for (var i = 0; i < function.CaptureCount; i++) initial[i] = new(TypeRef.Any);
+            for (var i = 0; i < function.ParameterCount; i++) initial[function.CaptureCount + i] = new(function.ParameterTypes is { } types && i < types.Count ? types[i] : TypeRef.Any);
+            states[0] = new([], initial);
+            work.Enqueue(0);
+            while (work.TryDequeue(out var start)) ValidateBlock(start);
+        }
+
+        private void ValidateBlock(int start)
+        {
+            if (start == code.Count) return;
+            var input = states[start]!;
+            var stack = input.Stack.ToList();
+            // Abstract locals are mutable inside one control-flow block. Effects
+            // do not require snapshots; only outgoing CFG edges publish states.
+            var locals = input.Locals.ToArray();
+            for (var pc = start; pc < code.Count; pc++)
+            {
+                if (!Step(pc, stack, locals)) return;
+                if (!starts[pc + 1]) continue;
+                Merge(pc + 1, stack, locals);
+                return;
+            }
+        }
+
+        private static bool[] BlockStarts(IReadOnlyList<Instruction> instructions)
+        {
+            var result = new bool[instructions.Count + 1];
+            result[0] = result[^1] = true;
+            for (var pc = 0; pc < instructions.Count; pc++)
+            {
+                var instruction = instructions[pc];
+                if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue)
+                {
+                    result[instruction.A] = result[pc + 1] = true;
+                }
+                else if (instruction.Op == OpCode.IteratorNext)
+                {
+                    result[instruction.B] = result[pc + 1] = true;
+                }
+                else if (instruction.Op == OpCode.Return) result[pc + 1] = true;
+            }
+            return result;
+        }
+
+        private bool Step(int pc, List<Item> stack, Item?[] locals)
+        {
+            var instruction = code[pc];
             MsyncException Error(string message) => new($"Invalid bytecode in '{function.Name}' at instruction {pc} ({instruction.Op}): {message}", instruction.Span);
             Item Pop()
             {
@@ -40,8 +86,6 @@ internal static class BytecodeValidation
                     throw Error($"expected {new TypeRef(kinds)}, found {(item.Iterator ? "iterator" : item.Type)}");
             }
             void Push(TypeRef type, Value? constant = null) => stack.Add(new(type, Constant: constant));
-            bool terminal = false;
-            List<int> next = [];
             switch (instruction.Op)
             {
                 case OpCode.Nop: break;
@@ -56,19 +100,19 @@ internal static class BytecodeValidation
                 case OpCode.Pop: Pop(); break;
                 case OpCode.Dup:
                     var duplicate = Pop(); stack.Add(duplicate); stack.Add(duplicate); break;
-                case OpCode.Jump: next.Add(instruction.A); terminal = true; break;
+                case OpCode.Jump: Merge(instruction.A, stack, locals); return false;
                 case OpCode.JumpIfFalse:
                 case OpCode.JumpIfTrue:
                     var condition = Pop(); Require(condition, TypeKind.Bool);
                     if (condition.Constant is BoolValue known)
                     {
-                        if (known.Data == (instruction.Op == OpCode.JumpIfTrue)) { next.Add(instruction.A); terminal = true; }
+                        if (known.Data == (instruction.Op == OpCode.JumpIfTrue)) { Merge(instruction.A, stack, locals); return false; }
                     }
-                    else next.Add(instruction.A);
+                    else Merge(instruction.A, stack, locals);
                     break;
                 case OpCode.Return:
                     if (stack.Count > 1) throw Error($"return leaves {stack.Count} values on the operand stack");
-                    terminal = true; break;
+                    return false;
                 case OpCode.MakeClosure:
                     if (instruction.B != module.Functions[instruction.A].CaptureCount) throw Error("closure capture layout disagrees with function");
                     PopMany(instruction.B); stack.Add(new(TypeRef.Function, instruction.A)); break;
@@ -150,10 +194,9 @@ internal static class BytecodeValidation
                     Merge(instruction.B, stack, locals); Push(TypeRef.Any); break;
                 default: throw Error("operation has no executable definition");
             }
-            if (!terminal) next.Add(pc + 1);
-            foreach (var successor in next) Merge(successor, stack, locals);
+            return true;
         }
-        void Merge(int target, List<Item> stack, Item?[] locals)
+        private void Merge(int target, List<Item> stack, Item?[] locals)
         {
             var previous = states[target];
             if (previous is null) { states[target] = new(stack.ToArray(), locals.ToArray()); work.Enqueue(target); return; }

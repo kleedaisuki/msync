@@ -122,3 +122,4 @@ try
 }
 finally { Directory.Delete(root, recursive: true); }
 Console.WriteLine($"Runtime bytecode/user journeys passed {assertions} assertions.");
+ValidationProperties.Run();

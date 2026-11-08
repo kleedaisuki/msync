@@ -250,3 +250,51 @@ The portable CLI harness also accepts `--file-bytes`, `--files`, `--bytes` and
 scaling are not conflated. Native Windows/Linux execution and same-host old-C#
 controls are coordinated by the cross-platform acceptance workflow. No timing
 threshold is a CI quality gate.
+
+### Artifact validation: state belongs to CFG boundaries
+
+The native component probe in `tests/Performance/Components` separates parsing,
+cumulative compilation, optimization, encoding/decoding, binding and no-I/O VM
+execution. Its realistic dense-binding inputs exposed a cost hidden by the
+direct-transfer script, which has no locals: the verifier cloned its full
+abstract locals array at **every instruction**. At 1,024 generic Path bindings,
+one validation allocated 675 MB even though the no-I/O VM took only about 1.6 ms
+for the analogous scoped workload.
+
+The replacement keeps mutable abstract stack/locals within a control-flow basic
+block and snapshots/joins only at outgoing CFG edges. Block boundaries are
+targets, conditional/unconditional fallthrough, iterator branches and returns,
+not the runtime scheduler's effect boundaries. The opcode transfer rules,
+constant branch pruning and structural local/iterator checks remain shared.
+This follows the block transfer/worklist model in
+[Clang's dataflow introduction](https://clang.llvm.org/docs/DataFlowAnalysisIntro.html)
+and the fixed-point treatment in
+[Møller and Schwartzbach's static-analysis notes](https://www.cs.au.dk/~amoeller/spa/).
+No persistent proof cache, trusted hash or reduced validation bypass is added.
+
+Actual native component measurements (seven slow baseline samples, 31 candidate
+samples; allocation measured separately from time) give:
+
+| 1,024-binding validation | Before p50 ms | After p50 ms | Before allocation | After allocation |
+| --- | ---: | ---: | ---: | ---: |
+| Generic Path function | 635.94 | 0.916 | 675.4 MB | 214 KB |
+| Scope-owned Path function | 731.17 | 1.478 | 760.7 MB | 224 KB |
+
+The component report records exact native and assembly identities; these are
+component costs, not whole-process timings. The slow instruction-level verifier
+is retained **only in tests** as a propagation oracle. Generated control-flow
+tests cover 6,000 joins, loops, constants, undefined locals and iterator paths;
+all previously admitted programs remain admitted and structural rejections are
+retained. Ten manually assembled invalid finite-type `Not` unions expose an old
+queue-order-dependent rejection: they may now reach the VM's precise Bool check
+instead of failing import. The source compiler already rejects those programs.
+The importer is not expanded into a second predicate/alias type checker merely
+to preserve that invalid-input traversal quirk.
+
+The changed verifier passes 234 runtime assertions and eight actual source ->
+`.mso` -> `.mexe` journeys covering nullable `?`/`is not`/match narrowing, union
+type match, runtime-selected functions, recursion and native range callbacks.
+Their byte-level result is retained in
+`.temp/performance-v080/current/block-validation-journeys.json`. A normal-path
+artifact load now pays for its actual CFG rather than for a locals snapshot at
+each straight-line instruction.
