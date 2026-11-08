@@ -6,17 +6,18 @@ namespace Msync.Runtime;
 
 internal static partial class WindowsFileCopy
 {
-    private sealed class CopyState(CancellationToken cancellationToken)
+    private sealed class CopyState(CancellationToken cancellationToken, bool flush)
     {
         internal readonly CancellationToken CancellationToken = cancellationToken;
+        internal readonly bool Flush = flush;
         internal nint Destination;
         internal Exception? Failure;
     }
 
-    internal static unsafe void Copy(string source, string stage, CancellationToken cancellationToken)
+    internal static unsafe void Copy(string source, string stage, CancellationToken cancellationToken, bool flush = true)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var state = new CopyState(cancellationToken);
+        var state = new CopyState(cancellationToken, flush);
         var owner = GCHandle.Alloc(state);
         try
         {
@@ -25,7 +26,7 @@ internal static partial class WindowsFileCopy
             if (state.Failure is not null) throw state.Failure;
             cancellationToken.ThrowIfCancellationRequested();
             if (!copied) throw new IOException($"CopyFileExW: {new Win32Exception(error).Message}");
-            if (!FlushFileBuffers(state.Destination)) throw new IOException($"FlushFileBuffers: {new Win32Exception(Marshal.GetLastPInvokeError()).Message}");
+            if (flush && !FlushFileBuffers(state.Destination)) throw new IOException($"FlushFileBuffers: {new Win32Exception(Marshal.GetLastPInvokeError()).Message}");
         }
         finally
         {
@@ -41,7 +42,7 @@ internal static partial class WindowsFileCopy
         var state = (CopyState)GCHandle.FromIntPtr(context).Target!;
         try
         {
-            if (reason == 1 && stream == 1 && state.Destination == 0)
+            if (state.Flush && reason == 1 && stream == 1 && state.Destination == 0)
             {
                 nint process = GetCurrentProcess();
                 if (!DuplicateHandle(process, destination, process, out nint retained, 0, false, 2))

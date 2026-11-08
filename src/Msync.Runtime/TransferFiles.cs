@@ -60,14 +60,26 @@ internal static class TransferFiles
         if (OperatingSystem.IsWindows()) { WindowsFileCopy.Copy(source, stage, cancellationToken); return; }
         using FileStream input = new(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
         using FileStream output = new(stage, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
+        CopyBuffered(input, output, buffer, cancellationToken);
+        metadata.Apply(stage);
+        output.Flush(flushToDisk: true);
+    }
+
+    internal static void CopySnapshotFile(string source, string target, Span<byte> buffer, CancellationToken cancellationToken)
+    {
+        if (OperatingSystem.IsWindows()) { WindowsFileCopy.Copy(source, target, cancellationToken, flush: false); return; }
+        using FileStream input = new(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
+        using FileStream output = new(target, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
+        CopyBuffered(input, output, buffer, cancellationToken);
+    }
+    private static void CopyBuffered(FileStream input, FileStream output, Span<byte> buffer, CancellationToken cancellationToken)
+    {
         int count;
         while ((count = input.Read(buffer)) != 0)
         {
             cancellationToken.ThrowIfCancellationRequested();
             output.Write(buffer[..count]);
         }
-        metadata.Apply(stage);
-        output.Flush(flushToDisk: true);
     }
 
     internal static async Task WriteLiteralAsync(string value, string target, CancellationToken cancellationToken, int bufferSize = 65536)

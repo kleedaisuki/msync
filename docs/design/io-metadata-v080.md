@@ -77,3 +77,27 @@ the reproducible procedure, not a dependency on that disposable directory.
 
 The directory journey uses representable 100ns timestamps and is portable to the
 actual Windows runner, where it discriminates the directory-handle API repair.
+
+## Retained-input cancellation and ownership
+
+Only genuinely overlapping copies retain input before publication. Capture and
+name enumeration run on their live copy worker and check cancellation per node
+and enumerated name. Snapshot file data uses the ordinary bounded Unix read/write
+loop or the same Windows progress-cancellable native primitive, without the final
+file flush. Successful final publications still own their one explicit file flush;
+retaining input does not double that cost. These are live temporary inputs, not
+persistent before-images, commit records or transactional rollback.
+
+Captured readonly directory modes can make a temporary snapshot undeletable.
+Cleanup relaxes permissions only on the known owned snapshot nodes, excludes
+symlink entries, and never scans/deletes old similarly named paths. Source and
+published destination permissions remain unchanged.
+
+`tests/IO/overlap_cancel.py` exercises a real CLI descendant replacement. It waits
+for a nonzero input byte in a 512MiB retained file before SIGINT, requires the old
+published tree and similarly named user data to remain, and records cancellation
+to exit latency. The initial native image took 1119ms to stop its whole-file BCL
+snapshot copy; the bounded implementation's managed functional run returned in
+23ms. That is a causal cancellation repair, not a native-to-native throughput
+claim; final package acceptance reruns the same journey. A small readonly-directory
+overlap also requires source/output mode preservation and live-stage cleanup.

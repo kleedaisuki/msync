@@ -94,19 +94,27 @@ public static partial class TransferEngine
                 await TransferFiles.CopyNodeAsync(source.Source, Path.Combine(target, Basename(source.Path)), cancellationToken, context.BufferSize);
             return;
         }
-        var retained = sources.Select(source => (Name: Basename(source.Path), Nodes: TransferOverlap.CaptureTree(source.Source))).ToArray();
+        var retained = await Task.Run(() => sources.Select(source =>
+            (Name: Basename(source.Path), Nodes: TransferOverlap.CaptureTree(source.Source, cancellationToken))).ToArray(), cancellationToken);
         string parent = Path.GetDirectoryName(target) ?? ".";
         Directory.CreateDirectory(parent);
         string stage = Path.Combine(parent, $".msync-{Guid.NewGuid():N}");
         Directory.CreateDirectory(stage);
         try
         {
-            foreach (var source in retained) TransferOverlap.Materialize(source.Nodes, Path.Combine(stage, source.Name), cancellationToken);
+            await Task.Run(() =>
+            {
+                foreach (var source in retained) TransferOverlap.Materialize(source.Nodes, Path.Combine(stage, source.Name), cancellationToken, context.BufferSize);
+            }, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             TransferFiles.RemoveNode(target);
             await TransferFiles.CopyNodeAsync(stage, target, cancellationToken, context.BufferSize);
         }
-        finally { Directory.Delete(stage, recursive: true); }
+        finally
+        {
+            foreach (var source in retained) TransferOverlap.MakeSnapshotWritable(source.Nodes, Path.Combine(stage, source.Name));
+            Directory.Delete(stage, recursive: true);
+        }
     }
 
     private static async Task<IReadOnlyList<string>> ReadSelectionNamesAsync(Stream stream, string pattern, CancellationToken cancellationToken)

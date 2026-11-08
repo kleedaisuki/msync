@@ -1,3 +1,4 @@
+using System.Buffers;
 using Msync.Core;
 
 namespace Msync.Runtime;
@@ -32,8 +33,7 @@ internal static class TransferOverlap
     internal static async Task CopyAsync(string source, string target, bool replace, CancellationToken cancellationToken, int bufferSize = 65536)
     {
         // Only an actually overlapping tree needs retained bytes before publication.
-        List<Node> nodes = [];
-        Capture(source, "", nodes);
+        IReadOnlyList<Node> nodes = await Task.Run(() => CaptureTree(source, cancellationToken), cancellationToken);
         string parent = Path.GetDirectoryName(target) ?? ".";
         Directory.CreateDirectory(parent);
         string stage = Path.Combine(parent, $".msync-{Guid.NewGuid():N}");
@@ -41,11 +41,11 @@ internal static class TransferOverlap
         string payload = Path.Combine(stage, "payload");
         try
         {
-            Materialize(nodes, payload, cancellationToken);
+            await Task.Run(() => Materialize(nodes, payload, cancellationToken, bufferSize), cancellationToken);
             if (replace) TransferFiles.RemoveNode(target);
             await TransferFiles.CopyNodeAsync(payload, target, cancellationToken, bufferSize);
         }
-        finally { Directory.Delete(stage, recursive: true); }
+        finally { MakeSnapshotWritable(nodes, payload); Directory.Delete(stage, recursive: true); }
     }
 
     internal static bool Related(string source, string target)
@@ -61,14 +61,20 @@ internal static class TransferOverlap
         return source.Equals(target, comparison) || source.StartsWith(target + Path.DirectorySeparatorChar, comparison) || target.StartsWith(source + Path.DirectorySeparatorChar, comparison);
     }
 
-    internal static IReadOnlyList<Node> CaptureTree(string source)
+    internal static IReadOnlyList<Node> CaptureTree(string source, CancellationToken cancellationToken = default)
     {
         List<Node> nodes = [];
-        Capture(source, "", nodes);
+        Capture(source, "", nodes, cancellationToken);
         return nodes;
     }
 
-    internal static void Materialize(IReadOnlyList<Node> nodes, string payload, CancellationToken cancellationToken)
+    internal static void Materialize(IReadOnlyList<Node> nodes, string payload, CancellationToken cancellationToken, int bufferSize = 65536)
+    {
+        byte[]? buffer = OperatingSystem.IsWindows() ? null : ArrayPool<byte>.Shared.Rent(bufferSize);
+        try { Materialize(nodes, payload, buffer is null ? [] : buffer.AsSpan(0, bufferSize), cancellationToken); }
+        finally { if (buffer is not null) ArrayPool<byte>.Shared.Return(buffer); }
+    }
+    private static void Materialize(IReadOnlyList<Node> nodes, string payload, Span<byte> buffer, CancellationToken cancellationToken)
     {
         foreach (Node node in nodes)
         {
@@ -82,7 +88,7 @@ internal static class TransferOverlap
                 node.Modified.Apply(snapshot, link: true);
             }
             else if ((node.Attributes & FileAttributes.Directory) != 0) Directory.CreateDirectory(snapshot);
-            else File.Copy(node.Source, snapshot);
+            else TransferFiles.CopySnapshotFile(node.Source, snapshot, buffer, cancellationToken);
         }
         for (int index = nodes.Count - 1; index >= 0; --index)
         {
@@ -94,16 +100,37 @@ internal static class TransferOverlap
         }
     }
 
-    private static void Capture(string source, string relative, ICollection<Node> nodes)
+    internal static void MakeSnapshotWritable(IReadOnlyList<Node> nodes, string payload)
     {
-        FileAttributes attributes = File.GetAttributes(source);
+        foreach (var node in nodes)
+        {
+            if (node.Link is not null) continue;
+            string path = Path.Combine(payload, node.Relative);
+            if ((node.Attributes & FileAttributes.Directory) != 0)
+            {
+                if (!OperatingSystem.IsWindows() && Directory.Exists(path))
+                    File.SetUnixFileMode(path, node.Mode | UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+            else if (OperatingSystem.IsWindows() && (node.Attributes & FileAttributes.ReadOnly) != 0 && File.Exists(path))
+                File.SetAttributes(path, File.GetAttributes(path) & ~FileAttributes.ReadOnly);
+        }
+    }
+
+    private static void Capture(string source, string relative, ICollection<Node> nodes, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        FileMetadata metadata = NativeFileMetadata.Capture(source);
+        FileAttributes attributes = metadata.Attributes;
         bool directory = (attributes & FileAttributes.Directory) != 0;
         bool link = (attributes & FileAttributes.ReparsePoint) != 0;
         FileSystemInfo info = directory ? new DirectoryInfo(source) : new FileInfo(source);
-        FileMetadata metadata = NativeFileMetadata.Capture(source);
         nodes.Add(new(source, relative, attributes, metadata.Modified, metadata.Mode, link ? info.LinkTarget : null));
         if (!directory || link) return;
-        foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(TextSemantics.Ordinal))
-            Capture(child, Path.Combine(relative, Path.GetFileName(child)), nodes);
+        foreach (string child in Directory.EnumerateFileSystemEntries(source).Select(path =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return path;
+        }).Order(TextSemantics.Ordinal))
+            Capture(child, Path.Combine(relative, Path.GetFileName(child)), nodes, cancellationToken);
     }
 }
