@@ -25,15 +25,6 @@
         "resolved": "10.0.14",
         "contentHash": "YlTamXppEQls6DYWt7RdUuwWDb0lyw/vXCaGeQpLCpsLmfwGuCkOz/vIGgMTV7ECsJcavkCOkxZXv9s8rdAHkQ=="
       },
-      "PrettyPrompt": {
-        "type": "Direct",
-        "requested": "[6.0.5, )",
-        "resolved": "6.0.5",
-        "contentHash": "6stWzqED6v3s21JQIHcJUaPUqjsy4tlb02rte7WbL20B1YTGCLDOnIJfDCyJ1MflrwNXmGskfy00XWqNWkd/jw==",
-        "dependencies": {
-          "TextCopy": "6.2.1"
-        }
-      },
       "Tomlyn": {
         "type": "Direct",
         "requested": "[2.10.1, )",
@@ -101,6 +92,12 @@
         "type": "Project",
         "dependencies": {
           "Msync.Core": "[0.8.0, )"
+        }
+      },
+      "prettyprompt": {
+        "type": "Project",
+        "dependencies": {
+          "TextCopy": "[6.2.1, )"
         }
       }
     },

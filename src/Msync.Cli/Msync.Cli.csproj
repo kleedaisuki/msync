@@ -9,12 +9,12 @@
   <ItemGroup>
     <ProjectReference Include="../Msync.Compiler/Msync.Compiler.csproj" />
     <ProjectReference Include="../Msync.Runtime/Msync.Runtime.csproj" />
+    <ProjectReference Include="../../vendor/PrettyPrompt/PrettyPrompt.csproj" />
     <EmbeddedResource Include="../../stdlib/*.msync" />
     <EmbeddedResource Include="Skills/*.md" LogicalName="Msync.Skills.%(Filename)%(Extension)" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.14" />
-    <PackageReference Include="PrettyPrompt" Version="6.0.5" />
     <PackageReference Include="Tomlyn" Version="2.10.1" />
   </ItemGroup>
 </Project>
