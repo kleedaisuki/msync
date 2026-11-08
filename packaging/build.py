@@ -112,6 +112,10 @@ def stage_payload(publish: Path, stage: Path, rid: str, package_version: str) ->
                 / "native-dependencies"
                 / license_file.relative_to(ROOT / "packaging/licenses/native"),
             )
+    copy_file(
+        ROOT / "vendor/unicode/LICENSE.txt",
+        docs / "native-dependencies/Unicode-LICENSE.txt",
+    )
     for relative in [Path("README.md"), Path("LICENSE"), *tracked_files("docs")]:
         copy_file(ROOT / relative, docs / relative)
     libraries = tracked_files("stdlib/*.msync")
