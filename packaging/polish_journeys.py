@@ -33,6 +33,11 @@ def main() -> int:
             "formatter",
             "skill",
             "completion",
+            "editing-regression",
+            "reference",
+            "navigation",
+            "repl-palette",
+            "terminal-detail",
             "terminal-presentation",
             "hints",
             "authentication",
@@ -73,10 +78,15 @@ def main() -> int:
         ("formatter", "formatter_journey.py"),
         ("skill", "skill_journey.py"),
         ("completion", "completion_journey.py"),
+        ("editing-regression", "editing_regression_journey.py"),
+        ("reference", "reference_journey.py"),
+        ("navigation", "navigation_journey.py"),
+        ("repl-palette", "repl_palette_journey.py"),
     ]
     if sys.platform != "win32":
         journeys.append(("terminal-presentation", "terminal_presentation_journey.py"))
         journeys.append(("hints", "hint_journey.py"))
+        journeys.append(("terminal-detail", "terminal_detail_journey.py"))
         journeys.append(("authentication", "authentication_journey.py"))
     if arguments.phase:
         selected: set[str] = set(arguments.phase)
@@ -85,11 +95,11 @@ def main() -> int:
             parser.error(f"Phases unavailable on this host: {sorted(unavailable)}")
         journeys = [(name, script) for name, script in journeys if name in selected]
     for name, script in journeys:
-        extra = (
-            ["--ssh-fixture"]
-            if name == "completion" and sys.platform == "linux"
-            else []
-        )
+        extra: list[str] = []
+        if name == "completion" and sys.platform == "linux":
+            extra.append("--ssh-fixture")
+        if name == "editing-regression":
+            extra.append("--converter")
         phases.append(
             run_phase(
                 name,

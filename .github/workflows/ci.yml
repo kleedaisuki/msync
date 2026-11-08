@@ -41,7 +41,7 @@ on:
         type: boolean
         default: true
       polish_phases:
-        description: Optional polish groups portable,editor,completion,authentication,presentation_console,hints_console,wsl
+        description: Optional polish groups portable,editor,editing,completion,authentication,presentation_console,hints_console,wsl
         type: string
         default: ''
       polish_only:
@@ -85,7 +85,7 @@ jobs:
           POLISH_PHASES: ${{ inputs.polish_phases }}
         run: |
           import os
-          groups: set[str] = {'portable', 'editor', 'completion', 'authentication', 'presentation_console', 'hints_console', 'wsl'}
+          groups: set[str] = {'portable', 'editor', 'editing', 'completion', 'authentication', 'presentation_console', 'hints_console', 'wsl'}
           requested: str = os.environ['POLISH_PHASES']
           selected: set[str] = {part.strip() for part in requested.split(',')} if requested else groups
           unknown: set[str] = selected - groups
@@ -94,6 +94,16 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               for group in sorted(groups):
                   output.write(f'{group}={str(group in selected).lower()}\n')
+      - uses: actions/setup-node@v6
+        if: inputs.polish_only && (steps.polish.outputs.editing == 'true' || steps.polish.outputs.portable == 'true')
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - name: Install the pinned upstream protocol converter dependencies
+        if: inputs.polish_only && (steps.polish.outputs.editing == 'true' || steps.polish.outputs.portable == 'true')
+        working-directory: editors/vscode
+        run: npm ci --ignore-scripts
       - name: Install native Linux prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev openssh-server
@@ -121,8 +131,12 @@ jobs:
           target: Path = Path('artifacts/publish/win-x64')
           shutil.copytree(source.parent, target, dirs_exist_ok=True)
           assert hashlib.sha256((target / 'msync.exe').read_bytes()).hexdigest() == metadata['binary_sha256']
+      - name: Install the pinned Windows console transport for selected polish fixtures
+        if: ${{ !cancelled() && inputs.polish_only && (steps.polish.outputs.presentation_console == 'true' || steps.polish.outputs.hints_console == 'true' || steps.polish.outputs.editing == 'true' || steps.polish.outputs.portable == 'true') && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
       - name: Exercise changed terminal, compiler insight and formatter user journeys
-        if: inputs.polish_only && (steps.polish.outputs.portable == 'true' || steps.polish.outputs.editor == 'true' || steps.polish.outputs.completion == 'true' || (steps.polish.outputs.authentication == 'true' && runner.os == 'Linux')) && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
+        if: inputs.polish_only && (steps.polish.outputs.portable == 'true' || steps.polish.outputs.editor == 'true' || steps.polish.outputs.editing == 'true' || steps.polish.outputs.completion == 'true' || (steps.polish.outputs.authentication == 'true' && runner.os == 'Linux')) && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
         shell: python
         env:
           PACKAGE_RID: ${{ matrix.rid }}
@@ -130,6 +144,7 @@ jobs:
           POLISH_PORTABLE: ${{ steps.polish.outputs.portable }}
           POLISH_COMPLETION: ${{ steps.polish.outputs.completion }}
           POLISH_EDITOR: ${{ steps.polish.outputs.editor }}
+          POLISH_EDITING: ${{ steps.polish.outputs.editing }}
           POLISH_AUTHENTICATION: ${{ steps.polish.outputs.authentication }}
         run: |
           import os
@@ -141,6 +156,11 @@ jobs:
               if os.environ['POLISH_EDITOR'] == 'true':
                   for phase in ('presentation', 'lsp-analysis', 'lsp-response', 'completion'):
                       arguments.extend(['--phase', phase])
+              if os.environ['POLISH_EDITING'] == 'true':
+                  for phase in ('editing-regression', 'completion', 'reference', 'navigation', 'repl-palette'):
+                      arguments.extend(['--phase', phase])
+                  if os.name != 'nt':
+                      arguments.extend(['--phase', 'terminal-detail'])
               if os.environ['POLISH_COMPLETION'] == 'true':
                   arguments.extend(['--phase', 'completion'])
               if os.environ['POLISH_AUTHENTICATION'] == 'true' and os.name != 'nt':
@@ -148,6 +168,9 @@ jobs:
           if os.environ['REUSED_NATIVE_RUN']:
               arguments.extend(['--native-origin', 'artifacts/reused-native/baseline.json'])
           subprocess.run(arguments, check=True)
+      - name: Verify captured Windows root and incomplete UNC path semantics
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.editing == 'true' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: dotnet run --project tests/PathProjection/Msync.PathProjection.Tests.csproj -c Release --artifacts-path artifacts/editing-roots -p:RestoreLockedMode=true -- --windows-rooted
       - name: Exercise the actual native authentication helper and cancellation
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.authentication == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         shell: python
@@ -165,10 +188,6 @@ jobs:
               payload: Path = Path(name).resolve()
               shutil.copytree(binary.parent, payload, dirs_exist_ok=True)
               subprocess.run(['dotnet', 'run', '--project', 'tests/Msync.Authentication.Tests/Msync.Authentication.Tests.csproj', '-c', 'Release', '--artifacts-path', 'artifacts/auth-contract', '-p:RestoreLockedMode=true', '--', str(payload / binary.name)], check=True)
-      - name: Install the pinned console transport for changed Windows presentation
-        if: ${{ !cancelled() && inputs.polish_only && (steps.polish.outputs.presentation_console == 'true' || steps.polish.outputs.hints_console == 'true') && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
-        run: |
-          python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
       - name: Exercise actual Windows auto-color and diagnostic console output
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.presentation_console == 'true' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: python tests/Msync.EndToEnd/windows_presentation_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-presentation.json
