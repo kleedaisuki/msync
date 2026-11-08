@@ -1,98 +1,54 @@
-name: Rust
+name: Native platform journeys
 
 on:
   push:
+    paths: ['src/**', 'stdlib/**', 'tests/**', 'packaging/**', 'Directory.Build.props', 'global.json', '.github/workflows/ci.yml']
   pull_request:
+    paths: ['src/**', 'stdlib/**', 'tests/**', 'packaging/**', 'Directory.Build.props', 'global.json', '.github/workflows/ci.yml']
   workflow_dispatch:
-    inputs:
-      full:
-        description: Run the complete Rust and documentation acceptance matrix
-        type: boolean
-        default: true
-      baseline:
-        description: Select changed contracts against this git ref when full is false
-        type: string
-        default: ''
-      platform:
-        description: Native platform to verify
-        type: choice
-        options: [both, windows, ubuntu]
-        default: both
+
+permissions:
+  contents: read
 
 concurrency:
-  group: rust-${{ github.event.pull_request.number || github.ref }}
+  group: native-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      rust: ${{ steps.select.outputs.rust }}
-      full: ${{ steps.select.outputs.full }}
-      docs: ${{ steps.select.outputs.docs }}
-      targets: ${{ steps.select.outputs.targets }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - id: select
-        shell: pwsh
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          FORCE_FULL: ${{ github.event_name == 'workflow_dispatch' && inputs.full }}
-          SELECTED_BASELINE: ${{ github.event_name == 'workflow_dispatch' && inputs.baseline || '' }}
-        run: |
-          if ($env:FORCE_FULL -eq 'true') {
-            ./scripts/ci-select.ps1 -ForceFull -GitHubOutput
-          } elseif ($env:SELECTED_BASELINE) {
-            ./scripts/ci-select.ps1 -Base $env:SELECTED_BASELINE -GitHubOutput
-          } else {
-            if (-not $env:BASE -or $env:BASE -match '^0+$') {
-              $env:BASE = git merge-base HEAD origin/main
-            }
-            ./scripts/ci-select.ps1 -Base $env:BASE -GitHubOutput
-          }
-  test:
-    needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.docs == 'true'
-    timeout-minutes: 30
+  native:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name != 'workflow_dispatch' || inputs.platform == 'both') && '["ubuntu-latest","windows-latest"]' || inputs.platform == 'windows' && '["windows-latest"]' || '["ubuntu-latest"]') }}
+        include:
+          - os: ubuntu-22.04
+            rid: linux-x64
+          - os: windows-latest
+            rid: win-x64
     runs-on: ${{ matrix.os }}
-    env:
-      CARGO_BUILD_JOBS: 2
-      CARGO_INCREMENTAL: 0
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - if: needs.changes.outputs.rust == 'true'
-        shell: pwsh
-        env:
-          FULL: ${{ needs.changes.outputs.full }}
-          TARGETS: ${{ needs.changes.outputs.targets }}
-        run: |
-          if ($env:FULL -eq 'true') {
-            cargo test --locked --tests --no-fail-fast
-            exit $LASTEXITCODE
-          }
-          $targets = @($env:TARGETS | ConvertFrom-Json)
-          $testArgs = @('test', '--locked', '--no-fail-fast', '--lib', '--bin', 'msync')
-          foreach ($target in $targets) {
-            $testArgs += @('--test', $target)
-          }
-          & cargo @testArgs
-          exit $LASTEXITCODE
-      - name: Exercise native terminal notification wakeups
-        if: needs.changes.outputs.rust == 'true'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Install native Linux prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
+      - name: Build and exercise the actual Native AOT package
+        run: python packaging/build.py --rid ${{ matrix.rid }} --smoke
+      - name: Exercise per-user installer ownership and upgrade lifecycle
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $env:CARGO_TARGET_DIR = Join-Path $PWD 'target'
-          cargo test --locked --manifest-path vendor/rustyline/Cargo.toml --no-default-features --features custom-bindings,buffer-redux --lib external_printer_
-          exit $LASTEXITCODE
-      - name: Exercise native SSH credential windows
-        if: runner.os == 'Windows' && needs.changes.outputs.rust == 'true'
-        run: cargo test --locked --test windows_askpass -- --ignored --test-threads=1
-      - if: needs.changes.outputs.docs == 'true' || needs.changes.outputs.full == 'true'
-        run: cargo test --locked --doc
+          $version = python packaging/build.py --version
+          ./packaging/windows/test.ps1 -InstallerPath "dist/msync-$version-windows-x86_64-setup.exe"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: native-${{ matrix.rid }}-${{ github.sha }}
+          if-no-files-found: ignore
+          path: |
+            dist/*
+            .temp/windows-installer-*/**/*.log

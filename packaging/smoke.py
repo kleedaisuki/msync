@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Exercise a packaged executable through source and both binary IR stages."""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import tempfile
+from collections.abc import Sequence
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def run(binary: Path, arguments: Sequence[str], cwd: Path) -> str:
+    result = subprocess.run(
+        [str(binary), *arguments],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    return result.stdout
+
+
+def journey(binary: Path, workspace: Path) -> None:
+    payload = "installed artifact payload 可莉\n".encode()
+    (workspace / "source.txt").write_bytes(payload)
+    source = workspace / "sync.msync"
+    source.write_text(
+        "fn copy_one(source: Path, destination: Path) { source -> destination };\ncopy_one(source.txt, output.txt);\n",
+        encoding="utf-8",
+    )
+    run(binary, ["check", "sync.msync"], workspace)
+    run(binary, ["run", "sync.msync", "--dry-run"], workspace)
+    assert not (workspace / "output.txt").exists(), "Dry-run wrote destination"
+    run(binary, ["compile", "sync.msync", "-o", "sync.mso"], workspace)
+    run(binary, ["bind-ir", "sync.mso", "-o", "sync.mexe"], workspace)
+    run(binary, ["plan-ir", "sync.mexe"], workspace)
+    assert not (workspace / "output.txt").exists(), (
+        "Compilation/binding executed a transfer"
+    )
+    run(binary, ["run", "sync.msync"], workspace)
+    assert (workspace / "output.txt").read_bytes() == payload
+    source.unlink()
+    for artifact in ("sync.mso", "sync.mexe"):
+        (workspace / "output.txt").unlink()
+        run(binary, ["run", artifact], workspace)
+        assert (workspace / "output.txt").read_bytes() == payload, artifact
+    (workspace / "output.txt").unlink()
+    run(binary, ["run-ir", "sync.mexe"], workspace)
+    assert (workspace / "output.txt").read_bytes() == payload
+    print("PASS: packaged source, dry-run, source-free .mso/.mexe and bound IR bytes")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--binary", required=True, type=Path)
+    args = parser.parse_args()
+    temporary = ROOT / ".temp"
+    temporary.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="package-smoke-", dir=temporary) as name:
+        journey(args.binary.resolve(), Path(name))
+
+
+if __name__ == "__main__":
+    main()

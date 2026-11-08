@@ -15,9 +15,9 @@ if (-not $PortableZip) {
 }
 $portable = (Resolve-Path -LiteralPath $PortableZip).Path
 $previous = if ($PreviousInstallerPath) { (Resolve-Path -LiteralPath $PreviousInstallerPath).Path } else { $null }
-$versionMatch = [regex]::Match([IO.File]::ReadAllText((Join-Path $root 'Cargo.toml')), '(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*$')
-if (-not $versionMatch.Success) { throw 'Cargo package version not found.' }
-$version = $versionMatch.Groups[1].Value
+[xml]$manifest = [IO.File]::ReadAllText((Join-Path $root 'Directory.Build.props'))
+$version = [string]$manifest.Project.PropertyGroup.Version
+if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Native package version not found.' }
 $uninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{157D15D7-7899-4F94-9D69-3CCF769886E8}_is1'
 $ownerKey = 'Software\msync\Installer'
 $hive = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::CurrentUser, [Microsoft.Win32.RegistryView]::Registry64)
@@ -113,84 +113,8 @@ function Assert-InstalledJourney([string]$Directory) {
             throw "Packaged standard-library source is missing: $module"
         }
     }
-    $journey = Join-Path $work ('journey-' + [guid]::NewGuid().ToString('N'))
-    $null = New-Item -ItemType Directory -Path $journey
-    $utf8 = New-Object Text.UTF8Encoding $false
-    [IO.File]::WriteAllText((Join-Path $journey 'source.txt'), 'installed artifact payload 可莉', $utf8)
-    [IO.File]::WriteAllText((Join-Path $journey 'sync.msync'), "macro copy_one(source, destination):`n    source -> destination`n`ncopy_one(source.txt, output.txt)`n", $utf8)
-    Push-Location $journey
-    try {
-        $null = Invoke-Msync $exe @('check', 'sync.msync')
-        $null = Invoke-Msync $exe @('run', 'sync.msync', '--dry-run')
-        if (Test-Path -LiteralPath 'output.txt') { throw 'Installed dry-run created an output.' }
-        $null = Invoke-Msync $exe @('run', 'sync.msync')
-        if ([IO.File]::ReadAllText((Join-Path $journey 'output.txt')) -cne 'installed artifact payload 可莉') { throw 'Installed copy bytes differ.' }
-        $null = Invoke-Msync $exe @('emit-ir', 'sync.msync', '-o', 'portable.json')
-        $null = Invoke-Msync $exe @('bind-ir', 'portable.json', '-o', 'bound.json')
-        $null = Invoke-Msync $exe @('plan-ir', 'bound.json')
-        $null = Invoke-Msync $exe @('compile', 'sync.msync', '-o', 'macro.mobj')
-        Remove-Item -LiteralPath 'sync.msync'
-        Remove-Item -LiteralPath 'output.txt'
-        $null = Invoke-Msync $exe @('run', 'macro.mobj')
-        if ([IO.File]::ReadAllText((Join-Path $journey 'output.txt')) -cne 'installed artifact payload 可莉') { throw 'Installed macro object replay bytes differ.' }
-        $replInput = "macro copy_one(source, destination):`n    source -> destination`n`ncopy_one(source.txt, repl-output.txt)`n/export-relocatable repl.json`n/quit`n"
-        $replOutput = $replInput | & $exe repl 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "Installed multiline macro REPL failed: $replOutput" }
-        if ([IO.File]::ReadAllText((Join-Path $journey 'repl-output.txt')) -cne 'installed artifact payload 可莉') { throw 'Installed multiline macro REPL bytes differ.' }
-        Remove-Item -LiteralPath 'repl-output.txt'
-        $null = Invoke-Msync $exe @('run-ir', 'repl.json')
-        if ([IO.File]::ReadAllText((Join-Path $journey 'repl-output.txt')) -cne 'installed artifact payload 可莉') { throw 'Installed macro REPL export bytes differ.' }
-
-        Remove-Item -LiteralPath 'output.txt'
-        $null = Invoke-Msync $exe @('run-ir', 'bound.json')
-        if ([IO.File]::ReadAllText((Join-Path $journey 'output.txt')) -cne 'installed artifact payload 可莉') { throw 'Installed IR replay bytes differ.' }
-
-        Copy-Item -LiteralPath (Join-Path $root 'packaging/stdlib-smoke.msync') -Destination 'stdlib.msync'
-        $null = Invoke-Msync $exe @('check', 'stdlib.msync')
-        $null = Invoke-Msync $exe @('run', 'stdlib.msync', '--dry-run')
-        if (Test-Path -LiteralPath 'std-output') { throw 'Standard-library preview performed a native effect.' }
-        $null = Invoke-Msync $exe @('compile', 'stdlib.msync', '-o', 'stdlib.mobj')
-        Remove-Item -LiteralPath 'stdlib.msync'
-        $null = Invoke-Msync $exe @('run', 'stdlib.mobj')
-        if ([IO.File]::ReadAllText((Join-Path $journey 'std-output/renamed')) -cne 'installed standard library' -or
-            [IO.File]::ReadAllText((Join-Path $journey 'std-output/status')) -cne 'ready' -or
-            [IO.File]::ReadAllText((Join-Path $journey 'std-output/argument-first')) -cne 'endpoint argument' -or
-            [IO.File]::ReadAllText((Join-Path $journey 'std-output/argument-second')) -cne 'endpoint argument' -or
-            [IO.File]::ReadAllText((Join-Path $journey 'std-output/copied.prompt')) -cne 'operator payload') {
-            throw 'Installed standard-library/native/namespace/Scope-range journey differs.'
-        }
-        foreach ($pairing in @('string-string', 'string-path', 'path-string', 'path-path')) {
-            if ([IO.File]::ReadAllText((Join-Path $journey "std-output/$pairing")) -cne 'operator payload') {
-                throw "Installed String/Path interoperability failed for $pairing."
-            }
-        }
-        if ([IO.File]::ReadAllText((Join-Path $journey 'std-output/literal-name')) -cne '<literal>') {
-            throw 'Installed native calls reinterpreted a String-generated Path as selector syntax.'
-        }
-        if ([IO.File]::ReadAllText((Join-Path $journey 'std-output/windows-spelling')) -cne 'D:\Code\agents\target\new\runtime\artifacts' -or
-            [IO.File]::ReadAllText((Join-Path $journey 'std-output/quoted-content')) -cne 'say "hello"') {
-            throw 'Installed literal Strings decoded a backslash or lost a doubled quote delimiter.'
-        }
-
-        # Paste native backslashes directly: \target, \new and \runtime are data.
-        $nativeBase = Join-Path $journey 'target\new\runtime'
-        $null = New-Item -ItemType Directory -Path $nativeBase -Force
-        Copy-Item -LiteralPath '.codex/codex.prompt' -Destination (Join-Path $nativeBase 'codex.prompt')
-        $quotedBase = '"' + $nativeBase.Replace('"', '""') + '"'
-        $windowsSource = "$quotedBase/codex.prompt -> std-output/windows.prompt`n" +
-            "fs => `$std::fs`nfs::string($quotedBase) -> std-output/windows-spelling`n"
-        [IO.File]::WriteAllText((Join-Path $journey 'windows-path.msync'), $windowsSource, $utf8)
-        $null = Invoke-Msync $exe @('check', 'windows-path.msync')
-        $null = Invoke-Msync $exe @('compile', 'windows-path.msync', '-o', 'windows-path.mobj')
-        Remove-Item -LiteralPath 'windows-path.msync'
-        $null = Invoke-Msync $exe @('run', 'windows-path.mobj')
-        if ([IO.File]::ReadAllText((Join-Path $journey 'std-output/windows.prompt')) -cne 'operator payload') {
-            throw 'Quoted Windows base joined to a compact relative path copied different bytes.'
-        }
-        if ([IO.File]::ReadAllText((Join-Path $journey 'std-output/windows-spelling')) -cne $nativeBase) {
-            throw 'Native Windows backslashes were decoded or doubled instead of remaining literal.'
-        }
-    } finally { Pop-Location }
+    & python (Join-Path $root 'packaging/smoke.py') --binary $exe
+    if ($LASTEXITCODE -ne 0) { throw 'Installed source/bytecode journey failed.' }
 }
 
 function Remove-OwnedWorkspace([string]$Directory) {
@@ -354,7 +278,7 @@ try {
         if ([IO.File]::ReadAllText($config) -cne 'configuration from the prior public installation' -or
             [IO.File]::ReadAllText($helper) -cne 'prior custom helper sentinel') { throw 'Cross-version uninstall removed user-owned files.' }
         $active = $null
-        Write-Host 'PASS: public 0.4.0 -> current installed macro/IR upgrade, PATH ownership and data retention.'
+        Write-Host 'PASS: public 0.4.0 -> current installed fn/bytecode upgrade, PATH ownership and data retention.'
     }
     $completed = $true
 } finally {
@@ -371,4 +295,4 @@ try {
         else { Write-Warning "Retained installer diagnostics and fixture files at $work" }
     }
 }
-Write-Host 'PASS: portable manifest/macros/CLI/IR, installed macros/CLI/IR, upgrade, PATH ownership/types, declined PATH, user config/data/helper retention.'
+Write-Host 'PASS: portable manifest/fn/CLI/bytecode, installed fn/CLI/bytecode, upgrade, PATH ownership/types, declined PATH, user config/data/helper retention.'
