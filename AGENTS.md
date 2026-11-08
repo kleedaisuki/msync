@@ -7,8 +7,10 @@
   embedded standard sources and fixtures; old syntax and object formats retain
   their semantics through that explicit compatibility boundary.
 - Braces own blocks, `;` discards values, and a block tail is its result.
-  `let` is an immutable lexical binding with shadowing. `Null` is a real value
-  type; nullable bindings require explicit admission and postfix `value?` means
+  Bindings are mutable locations; shadowing creates a new lexical identity.
+  Closures share captured locations and Scope aliases share instance identity.
+  `Null` is a real value type; nullable bindings and Scope fields require explicit
+  admission (`field?: null`) and postfix `value?` means
   **is null**, not is-present. Narrow the binding on actual control-flow edges.
 - `fn` is generic by default. Specialize by callable identity and argument
   types, reserve recursive identities before lowering, and preserve captured
@@ -30,6 +32,9 @@
   in `.temp/`, and NuGet's transitive resolution in version-controlled lock files.
 - See [the architecture contract](docs/design/architecture-v080.md) and focused
   0.8 language/runtime/tooling/validation notes before revisiting these decisions.
+  [Mutable state and effects](docs/design/mutable-state-and-effects-v080.md)
+  supersedes the earlier immutable binding/capture decision and fixes the
+  dataflow, escape, directional barrier and artifact compatibility invariants.
 
 ## Normal-user transfer model (2026-11-01)
 

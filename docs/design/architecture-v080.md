@@ -45,18 +45,22 @@ exist. Loading an artifact does not authorize reusing stale observations.
 * Braces define expression blocks. A trailing expression supplies the value;
   `;` discards a value and an empty/discard-only block evaluates to `null`.
   Whitespace and indentation do not establish syntax structure.
-* `let` introduces an immutable lexical binding; another `let` may shadow it.
-  This deliberately avoids adding an unrequested assignment/lifetime model.
-  `_` discards a value without introducing a nullable binding.
+* `let` introduces a mutable lexical location; another `let` shadows it with a
+  new identity. Assignments update the selected location. Scope aliases share
+  instance identity and field mutations. `_` discards a value without
+  introducing a nullable binding. The November 9 requirement supersedes the
+  earlier immutable model; see [mutable state and effects](mutable-state-and-effects-v080.md).
 * `Null` is a real type and `null` a value, not `false`. Null tests use `is` /
   `is not`; boolean conditions still require Bool. A nullable binding requires
-  written `?`, and `value?` means **is null**, following the user's example.
+  written `?`, including Scope fields such as `filename?: null`, and `value?`
+  means **is null**, following the user's example.
   Tests refine the same binding in the appropriate control-flow branch.
 * `fn` unifies the old macro/symbol/boolean distinction. Specialization is keyed
   by function identity and argument types, not source substitution. A recursive
   specialization reserves its identity before lowering its body: recursion is
-  a normal typed call edge, not an infinite demand for inlining. Closures retain
-  definition-time lexical values; parameter expressions execute once.
+  a normal typed call edge, not an infinite demand for inlining. New closures
+  retain captured lexical locations; parameter expressions execute once.
+  Older binary artifacts retain their encoded snapshot-capture contract.
 * Scope is a lexical member object. Connection identifies a physical endpoint.
   Both use `::`, but member lookup and endpoint path qualification are different
   typed operations. Anonymous functions/scopes use exactly the named forms'

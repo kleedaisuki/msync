@@ -12,8 +12,13 @@ declarations also produce `Null`. A terminating `return` or `break` has internal
 `Never` type, so an unreachable block tail does not widen a function result with
 an artificial Null case.
 
-`let` introduces an immutable lexical binding, and a later declaration may shadow
-it. `_` is a discard pattern, not a nullable variable declaration. Destructuring
+`let` introduces a mutable lexical location, and a later declaration may shadow
+it with a different identity. Assignment updates the existing location. Scope
+aliases share an instance and its mutable field locations. The November 9
+requirement supersedes the original immutable model; the full inference,
+aliasing and optimization contract is in
+[mutable state and effects](mutable-state-and-effects-v080.md).
+`_` is a discard pattern, not a nullable variable declaration. Destructuring
 patterns bind range elements. Binding names use the language's atom spelling,
 not an ASCII identifier subset: `.codex`, `copy-config` and Unicode names are
 legal. Nonliteral atoms consult the lexical environment before becoming an
@@ -30,7 +35,10 @@ read as a file. Both annotated block tails and explicit returns convert values.
 `Bool` and `Null` are separate types. Null does not coerce to Bool or participate
 in ordinary boolean comparisons. `is null`, `is not null`, and postfix `?` test
 null identity. In particular **`value?` means `value is null`**, not its negation.
-A binding must explicitly admit null with `?` or a nullable annotation. Branch
+A binding must explicitly admit null with `?` or a nullable annotation. Scope
+fields likewise require `?`, for example `scope { filename?: null }`. A nullable
+Null initializer does not freeze the inferred payload to Null: later stores
+supply its non-null type evidence. Branch
 refinement removes null from the other branch, and a null arm in `match` removes
 that case from the following catch-all. Conditions remain strictly Bool.
 
@@ -72,8 +80,8 @@ and is not advertised as a completion candidate.
 
 Named/anonymous `fn` is the one callable source construct. Parameters may state
 capability constraints such as `Path | String`; omitted types specialize from
-arguments. A template captures only referenced outer bindings, by value, at its
-definition. Capture ownership is retained as slots, not names: local shadowing
+arguments. A template captures only referenced outer lexical locations, by
+identity, at its definition. Capture ownership is retained as slots, not names: local shadowing
 must not change what a recursive call sees. Specialized recursive calls reuse a
 function-table identity instead of recursively expanding source. Recursive
 inference starts with Never and joins concrete return branches; explicit return
@@ -96,7 +104,7 @@ completion and printed type discovery; `Number` is supported, not an unimplement
 `Int` alias. Type completions are selected from parsed type positions after a
 parameter/binding colon or a function's `->`, not from arbitrary transfer arrows.
 
-First-class closures retain captured values when returned from a function or
+First-class closures retain captured locations when returned from a function or
 registered with a native range callback. Static call sites select a monomorphic
 function-table entry while retaining the closure's capture vector. A function
 selected by runtime control flow retains a finite set of statically checked
