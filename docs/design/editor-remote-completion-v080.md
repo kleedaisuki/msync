@@ -104,6 +104,15 @@ used four native clients and three authentications, including the independent
 normal-failure retry and pre-authentication cancellation cases. Its record is
 `.temp/remote-completion-ssh/s-zlzkcuhv/result.json`.
 
+The encrypted-private-key follow-up invoked the real executable's askpass
+helper and returned null from exactly one credential prompt. The native
+authentication owner was cancelled, without a second dialog or a completed
+authentication. That same run retained the delayed-query drainage assertion
+(the stale consumer returned in 0.386 ms before FIFO release). Its complete
+normal, delayed, pre-authentication cancellation and dismissed-prompt cases used
+five native clients and three authentications; see
+`.temp/remote-completion-ssh/s-kz81d000/result.json`.
+
 The portable editor journeys and the native Windows WSL fixture own integrated
 completion acceptance. Their results should be attached to this protocol
 contract rather than substituted with a local fake transport.
