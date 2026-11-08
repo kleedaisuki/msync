@@ -40,6 +40,10 @@ on:
         description: Exercise the actual Windows console fixture
         type: boolean
         default: true
+      wsl_only:
+        description: Build one new native package and run only changed WSL contracts
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -93,7 +97,7 @@ jobs:
           shutil.copytree(source.parent, target, dirs_exist_ok=True)
           assert hashlib.sha256((target / 'msync.exe').read_bytes()).hexdigest() == metadata['binary_sha256']
       - name: Exercise typed language, process, session and stdio editor journeys
-        if: inputs.reuse_run == ''
+        if: inputs.reuse_run == '' && !inputs.wsl_only
         shell: python
         env:
           PACKAGE_RID: ${{ matrix.rid }}
@@ -104,22 +108,22 @@ jobs:
           binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
           subprocess.run(['python', 'packaging/platform_journeys.py', '--binary', str(binary), '--output', '.temp/platform-results'], check=True)
       - name: Verify actual Windows file attributes, alternate streams and link ownership
-        if: ${{ !cancelled() && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.wsl_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
         run: python tests/IO/windows_file_metadata.py artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-file-metadata.json
       - name: Verify Linux nanosecond metadata through actual local and SSH transfers
-        if: ${{ !cancelled() && runner.os == 'Linux' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.wsl_only && runner.os == 'Linux' && steps.package.outcome == 'success' }}
         run: python tests/IO/nanosecond_metadata.py artifacts/publish/linux-x64/msync --ssh --output .temp/platform-results/nanosecond-metadata.json
       - name: Verify Linux overlapping sources and positive-progress cancellation
-        if: ${{ !cancelled() && runner.os == 'Linux' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.wsl_only && runner.os == 'Linux' && steps.package.outcome == 'success' }}
         run: python tests/IO/overlap_cancel.py artifacts/publish/linux-x64/msync --output .temp/platform-results/overlap-cancellation.json
       - name: Exercise per-user installer ownership and upgrade lifecycle
-        if: ${{ !cancelled() && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.wsl_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
         shell: pwsh
         run: |
           $version = python packaging/build.py --version
           ./packaging/windows/test.ps1 -InstallerPath "dist/msync-$version-windows-x86_64-setup.exe"
       - name: Verify native path projection and historical artifact decoding on this host
-        if: ${{ !cancelled() && steps.package.outcome == 'success' && hashFiles('tests/PathProjection/Msync.PathProjection.Tests.csproj') != '' }}
+        if: ${{ !cancelled() && !inputs.wsl_only && steps.package.outcome == 'success' && hashFiles('tests/PathProjection/Msync.PathProjection.Tests.csproj') != '' }}
         shell: python
         run: |
           import subprocess
