@@ -573,3 +573,33 @@ function/type/variable roles. Control-flow `if`, `else`, `match` and `?` keep
 their independent control role. This rule is shared by semantic tokens,
 TextMate fallback and the terminal/guide scanner; keyword tokens cannot be
 overridden by an enclosing inferred expression.
+
+## Editing-time source preservation (2026-11-09)
+
+Completion edits own the current item, not the containing expression. A selected
+ordinary filename preserves the user's path prefix, endpoint, separators and
+manual quote context. Only syntax-significant names, whitespace or an actual
+binding ambiguity require escaping. Completion never introduces `$local` or
+quotes every normal component. Lookup paths retain their independent captured
+cwd/home/endpoint facts; those facts are not source-rewriting instructions.
+
+`$` is an operator. The shared builtin provider replaces only its operand, so
+`$en` selecting `env` produces `$env`, never `$$env`. Its root catalog contains
+`std`, `local`, `wsl`, `pwd`, `file`, `path` and `env`. Canonical range operations
+are members of `$std::ranges`; former view/range convenience roots are absent
+from new source and public completion. Historical object instructions retain
+private execution compatibility.
+
+Environment and PATH completion query the actual process context. `pwd` and
+`file` combine their real special members with correctly projected physical
+entries; file-relative lookup uses the document's source directory, not a
+convenient fallback cwd. Unknown path values do not become guessed directory
+names. Incomplete Windows UNC authorities are editing prefixes, not directory
+queries; complete native paths retain useful native failure diagnostics.
+
+Legal Atom names such as `.codex` resolve through the same lexical environment
+as other names. Unbound names retain their Path meaning. Parameter and return
+constraints share the canonical type catalog. The return header `-> Type` is
+not the transfer operator context, and the REPL hint reflects that distinction.
+Definitions and outlines use parser declarations and actual binding origins,
+never declarations guessed from text inside comments or strings.
