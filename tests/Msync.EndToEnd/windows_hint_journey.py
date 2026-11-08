@@ -43,8 +43,7 @@ def run(binary: Path, directory: Path, log: Path) -> list[str]:
         start = len(terminal.plain)
         terminal.send("\r")
         typed = directory / "selected_tar"
-        terminal.until(typed.exists, "only the typed destination was published")
-        terminal.prompt(start)
+        terminal.prompt(terminal.line("true", start))
         assert typed.read_bytes() == b"TYPED"
         assert target.read_bytes() == b"original destination"
         phases.append("ghost is not submitted source")
@@ -54,11 +53,8 @@ def run(binary: Path, directory: Path, log: Path) -> list[str]:
         terminal.key("\x1b[C")
         start = len(terminal.plain)
         terminal.send("\r")
-        terminal.until(
-            lambda: target.read_bytes() == b"ACCEPTED",
-            "RightArrow accepted the full binding suffix",
-        )
-        terminal.prompt(start)
+        terminal.prompt(terminal.line("true", start))
+        assert target.read_bytes() == b"ACCEPTED"
         assert not typed.exists()
         phases.append("RightArrow accepts the ghost as source")
         terminal.evaluate(
