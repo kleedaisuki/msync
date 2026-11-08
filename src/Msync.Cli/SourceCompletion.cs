@@ -5,8 +5,9 @@ namespace Msync.Cli;
 
 internal enum SourceCompletionKind { Path, Ssh }
 internal sealed record SourceCompletionContext(int Start, int Length, string Prefix, bool Quoted,
-    string Qualifier, SourceCompletionKind Kind, ConnectionValue? Endpoint = null, bool TransferSource = false,
-    PathValue? LookupBase = null, string? ExpressionBase = null, string LiteralBase = "", string? SourcePrefix = null);
+    string Qualifier, SourceCompletionKind Kind, ConnectionValue? Endpoint = null, PathValue? LookupBase = null,
+    bool InsideString = false, bool CloseQuote = false, bool FollowingSeparator = false, bool PreserveQuote = false,
+    bool LiteralWindowsAtom = false, IReadOnlySet<string>? BoundNames = null);
 internal sealed record SourceCompletionItem(string Label, string Replacement, string Detail, bool IsDirectory = false, string? FilterText = null);
 
 internal static class SourceCompletion
@@ -14,7 +15,7 @@ internal static class SourceCompletion
     private static readonly string[] WordBoundaries = ["and", "or", "is", "not", "in", "else", "if", "fn", "scope", "let", "match", "for", "exists", "return", "break", "loop", "native"];
 
     public static SourceCompletionContext? Find(string text, int caret, bool includeBarePaths = false, Func<string, ConnectionValue?>? resolveEndpoint = null,
-        PathValue? receiverPath = null, bool unknownPathReceiver = false, ConnectionValue? physicalEndpoint = null, bool unknownPhysicalOwner = false)
+        PathValue? receiverPath = null, bool unknownPathReceiver = false, ConnectionValue? physicalEndpoint = null, bool unknownPhysicalOwner = false, IReadOnlySet<string>? boundNames = null, string? sourceFile = null)
     {
         int start = 0;
         bool quoted = false, comment = false, regex = false, escaped = false, characterClass = false, namedAngle = false;
@@ -76,18 +77,19 @@ internal static class SourceCompletion
         string fragment = text[start..caret];
         int end = TokenEnd(text, caret, quoted, fragment.StartsWith("ssh://", StringComparison.Ordinal) || fragment.StartsWith("wsl://", StringComparison.Ordinal));
         if (fragment.StartsWith("ssh://", StringComparison.Ordinal) && LastSelection(fragment) < 0)
-            return new(start, end - start, fragment, false, "", SourceCompletionKind.Ssh, SourcePrefix: fragment);
-        if (unknownPhysicalOwner || physicalEndpoint is not null && !PhysicalDirectory(physicalEndpoint)) return null;
+            return HostEdit(new(start, end - start, fragment, false, "", SourceCompletionKind.Ssh), text, caret);
+        if (unknownPhysicalOwner || physicalEndpoint is not null && !PhysicalDirectory(physicalEndpoint, sourceFile)) return null;
         int pathJoin = LastPathJoin(fragment);
         if (pathJoin >= 0 && receiverPath is not null)
         {
             if (physicalEndpoint is not null) receiverPath = PathSemantics.Qualify(receiverPath, physicalEndpoint);
-            string sourceBase = fragment[..(pathJoin + 1)];
-            bool preserve = receiverPath.Connection is not null || receiverPath.WorkingDirectory is not null || receiverPath.HomeDirectory is not null
-                || receiverPath.Raw != Decode(fragment[..pathJoin]);
-            return new(start, end - start, Decode(fragment[(pathJoin + 1)..]), false, "", SourceCompletionKind.Path,
-                receiverPath.Connection, FollowedByTransfer(text, end), receiverPath,
-                preserve ? sourceBase : null, preserve ? "" : Decode(sourceBase), fragment);
+            if (receiverPath.Connection is { Kind: ConnectionKind.Local, Address: "file" })
+            {
+                if (sourceFile is null) return null;
+                receiverPath = receiverPath with { WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(sourceFile)) };
+            }
+            return PathEdit(new(start, end - start, Decode(fragment[(pathJoin + 1)..]), false, "", SourceCompletionKind.Path,
+                receiverPath.Connection, receiverPath, BoundNames: boundNames), text, caret);
         }
         if (pathJoin >= 0 && unknownPathReceiver) return null;
         int selection = LastSelection(fragment);
@@ -107,7 +109,7 @@ internal static class SourceCompletion
             };
             endpoint ??= writtenEndpoint;
             if (endpoint is null) return null;
-            if (!PhysicalDirectory(endpoint)) return null;
+            if (!PhysicalDirectory(endpoint, sourceFile)) return null;
         }
         string value = fragment[qualifier.Length..];
         bool isString = value.StartsWith('"');
@@ -115,7 +117,10 @@ internal static class SourceCompletion
         bool path = endpoint is not null || raw.Contains('/') || OperatingSystem.IsWindows() && raw.Contains('\\')
             || raw is "~" or "." or "..";
         if (!path && !(includeBarePaths && raw.Length > 0 && !raw.StartsWith('$'))) return null;
-        return new(start, end - start, raw, isString, qualifier, SourceCompletionKind.Path, endpoint, FollowedByTransfer(text, end), SourcePrefix: fragment);
+        PathValue? lookupBase = endpoint is { Kind: ConnectionKind.Local, Address: "file" }
+            ? new PathValue(Path.GetDirectoryName(Path.GetFullPath(sourceFile!))!) : null;
+        return PathEdit(new(start, end - start, raw, isString, qualifier, SourceCompletionKind.Path, endpoint,
+            LookupBase: lookupBase, BoundNames: boundNames), text, caret);
     }
 
     public static IReadOnlyList<SourceCompletionItem> Complete(SourceCompletionContext context, string workingDirectory, string homeDirectory)
@@ -137,6 +142,12 @@ internal static class SourceCompletion
             directory = parent.Length == 0 ? workingDirectory : ExpandHome(parent, homeDirectory);
             if (!Path.IsPathRooted(directory)) directory = Path.Combine(workingDirectory, directory);
         }
+        if (OperatingSystem.IsWindows())
+        {
+            // An incomplete UNC authority has no directory to enumerate yet.
+            if (IncompleteUnc(directory)) return [];
+            if (!Path.IsPathFullyQualified(directory)) directory = Path.GetFullPath(directory, context.LookupBase?.WorkingDirectory ?? workingDirectory);
+        }
         char slash = separator >= 0 ? prefix[separator] : context.LookupBase is not null ? '/' : Path.DirectorySeparatorChar;
         List<SourceCompletionItem> items = [];
         try
@@ -145,15 +156,10 @@ internal static class SourceCompletion
             {
                 if (!entry.Name.StartsWith(leaf, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) continue;
                 bool isDirectory = (entry.Attributes & FileAttributes.Directory) != 0;
-                string raw = context.LiteralBase + parent + entry.Name + (isDirectory ? slash : "");
-                bool stringValue = context.Quoted || !context.TransferSource && raw.Any(char.IsWhiteSpace);
-                string replacement = context.ExpressionBase is { } expression
-                    ? expression + Quote(parent + entry.Name) + (isDirectory ? "/" : "")
-                    : context.Qualifier + (stringValue || context.Qualifier.Length != 0 ? Quote(raw) : PathExpression(raw));
-                string type = context.ExpressionBase is null && stringValue && context.Qualifier.Length == 0 && context.Endpoint is null ? "String" : "Path";
-                string label = context.ExpressionBase is { } sourceBase ? sourceBase + parent + entry.Name + (isDirectory ? "/" : "") : raw;
-                string? filter = context.SourcePrefix is { } sourcePrefix ? sourcePrefix + entry.Name[leaf.Length..] + (isDirectory ? slash : "") : null;
-                items.Add(new(label, replacement, $"{type} · {(isDirectory ? "directory" : "file")}", isDirectory, filter));
+                string replacement = ItemText(context, entry.Name, isDirectory, slash);
+                string type = context.Quoted && context.Qualifier.Length == 0 && context.Endpoint is null ? "String" : "Path";
+                items.Add(new(entry.Name + (isDirectory ? slash : ""), replacement,
+                    $"{type} · {(isDirectory ? "directory" : "file")}", isDirectory, replacement));
             }
         }
         catch (DirectoryNotFoundException) { return []; }
@@ -161,8 +167,8 @@ internal static class SourceCompletion
         return items;
     }
 
-    private static bool PhysicalDirectory(ConnectionValue endpoint) => endpoint.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl
-        || endpoint is { Kind: ConnectionKind.Local, Address: not "file" };
+    private static bool PhysicalDirectory(ConnectionValue endpoint, string? sourceFile) => endpoint.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl
+        || endpoint is { Kind: ConnectionKind.Local, Address: not "file" } || endpoint.Kind == ConnectionKind.Local && sourceFile is not null;
 
     private static IReadOnlyList<SourceCompletionItem> Hosts(SourceCompletionContext context, string homeDirectory)
     {
@@ -173,7 +179,7 @@ internal static class SourceCompletion
         string hostPrefix = authority[(at + 1)..];
         return SshHostCatalog.Read(homeDirectory)
             .Where(host => host.Host.StartsWith(hostPrefix, StringComparison.OrdinalIgnoreCase))
-            .Select(host => new SourceCompletionItem("ssh://" + user + host.Host, "ssh://" + user + host.Host,
+            .Select(host => new SourceCompletionItem(host.Host, host.Host,
                 $"Connection · SSH host ({host.Origin})"))
             .OrderBy(item => item.Label, TextSemantics.Ordinal).ToArray();
     }
@@ -241,18 +247,6 @@ internal static class SourceCompletion
         || "/,;}|)".Contains(text[next], StringComparison.Ordinal)
         || text.AsSpan(next).StartsWith("=>", StringComparison.Ordinal) || text.AsSpan(next).StartsWith("->", StringComparison.Ordinal);
 
-    private static bool FollowedByTransfer(string text, int offset)
-    {
-        while (offset < text.Length)
-        {
-            if (char.IsWhiteSpace(text[offset])) { offset++; continue; }
-            bool comment = text[offset] == '#' || text.AsSpan(offset).StartsWith("//", StringComparison.Ordinal);
-            if (!comment) return text.AsSpan(offset).StartsWith("->", StringComparison.Ordinal);
-            while (offset < text.Length && text[offset] is not ('\r' or '\n')) offset++;
-        }
-        return false;
-    }
-
     private static int TokenEnd(string text, int caret, bool quoted, bool uri)
     {
         int end = caret;
@@ -289,14 +283,107 @@ internal static class SourceCompletion
         return result.ToString();
     }
 
-    internal static string PathExpression(string raw, bool remote = false)
+    internal static string ItemText(SourceCompletionContext context, string name, bool directory, char separator)
     {
-        if (!remote && OperatingSystem.IsWindows()) return "$local::" + Quote(raw);
-        string prefix = raw.StartsWith('/') ? "/" : raw.StartsWith("~/", StringComparison.Ordinal) ? "~/" : "./";
-        string tail = prefix == "~/" ? raw[2..] : raw.TrimStart('/');
-        if (tail.StartsWith("./", StringComparison.Ordinal)) tail = tail[2..];
-        return prefix + string.Join('/', tail.Split('/').Select(part => part.Length == 0 || part is "." or ".." ? part : Quote(part)));
+        string suffix = directory && !context.FollowingSeparator ? separator.ToString() : "";
+        if (context.PreserveQuote) return Quote(name + suffix);
+        if (context.InsideString)
+            return name.Replace("\"", "\"\"", StringComparison.Ordinal) + suffix + (context.CloseQuote ? "\"" : "");
+        bool binding = !context.LiteralWindowsAtom && context.BoundNames?.Contains(name) == true;
+        return (NeedsQuotes(name) || binding ? Quote(name) : name) + suffix;
     }
+
+    private static bool NeedsQuotes(string name) => name.Any(character => char.IsWhiteSpace(character)
+        || "{}()[],;?\"$|<>!=:+*".Contains(character, StringComparison.Ordinal))
+        || name is "true" or "false" or "null" or "fn" or "scope" or "if" or "else" or "match" or "for"
+            or "in" or "is" or "not" or "and" or "or" or "exists" or "decltype" or "return" or "break" or "loop" or "native"
+            or "Bool" or "Range" or "String" or "Function" or "Scope" or "Path" or "Process" or "Connection" or "Null" or "Type" or "Number"
+        || long.TryParse(name, out _);
+
+    private static SourceCompletionContext HostEdit(SourceCompletionContext context, string text, int caret)
+    {
+        int start = context.Start + 6;
+        int at = text.LastIndexOf('@', caret - 1, caret - start);
+        if (at >= start) start = at + 1;
+        int end = start, brackets = 0;
+        while (end < text.Length && !Boundary(text[end]))
+        {
+            if (text[end] == '[') brackets++;
+            if (text[end] == ']') brackets--;
+            if (brackets == 0 && text[end] is ':' or '/') break;
+            end++;
+        }
+        return context with { Start = start, Length = end - start };
+    }
+
+    private static SourceCompletionContext PathEdit(SourceCompletionContext context, string text, int caret)
+    {
+        int start = context.Start;
+        int valueStart = start + context.Qualifier.Length;
+        bool windows = OperatingSystem.IsWindows() && context.Endpoint?.Kind is not (ConnectionKind.Ssh or ConnectionKind.Wsl);
+        bool Separator(char character) => character == '/' || windows && character == '\\';
+        int quote = -1, lastSeparator = valueStart - 1;
+        bool quoted = false;
+        for (int index = valueStart; index < caret; index++)
+        {
+            if (text[index] == '\"')
+            {
+                if (quoted && index + 1 < caret && text[index + 1] == '\"') { index++; continue; }
+                quoted = !quoted;
+                if (quoted) quote = index;
+            }
+            else if (Separator(text[index])) lastSeparator = index;
+        }
+        bool inside = quote >= valueStart && (quoted || caret > quote && text[caret - 1] == '\"');
+        start = Math.Max(lastSeparator + 1, inside ? quote + 1 : valueStart);
+        int end = Math.Max(start, caret);
+        bool close = false;
+        if (inside && !quoted) { end = caret; close = true; }
+        else
+        {
+            while (end < text.Length)
+            {
+                if (Separator(text[end])) break;
+                if (inside && text[end] == '\"')
+                {
+                    if (end + 1 < text.Length && text[end + 1] == '\"') { end += 2; continue; }
+                    end++; close = true; break;
+                }
+                if (!inside && Boundary(text[end])) break;
+                end++;
+            }
+            if (inside && !close && end == text.Length) close = true;
+        }
+        bool following = end < text.Length && Separator(text[end]);
+        bool preserveQuote = inside && close && quote > lastSeparator;
+        if (preserveQuote) start = quote;
+        return context with
+        {
+            Start = start,
+            Length = end - start,
+            InsideString = inside && !preserveQuote,
+            CloseQuote = close,
+            FollowingSeparator = following,
+            PreserveQuote = preserveQuote,
+            LiteralWindowsAtom = text.AsSpan(valueStart, Math.Max(0, caret - valueStart)).StartsWith("\\", StringComparison.Ordinal)
+                || caret - valueStart >= 3 && char.IsLetter(text[valueStart]) && text[valueStart + 1] == ':' && text[valueStart + 2] is '/' or '\\'
+        };
+    }
+
+    private static bool IncompleteUnc(string directory)
+    {
+        if (directory.Length < 2 || directory[0] is not ('/' or '\\') || directory[1] is not ('/' or '\\')) return false;
+        string tail = directory[2..];
+        if (tail.StartsWith("?\\", StringComparison.Ordinal) || tail.StartsWith(".\\", StringComparison.Ordinal))
+        {
+            tail = tail[2..];
+            if (tail.StartsWith("UNC\\", StringComparison.OrdinalIgnoreCase)) tail = tail[4..];
+            else return tail.Length < 3 || tail[1] != ':';
+        }
+        var components = tail.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries);
+        return components.Length < 2;
+    }
+
 }
 
 internal sealed class SourceCompletionService(Func<SshPrompt, CancellationToken, Task<string?>>? prompt = null) : IAsyncDisposable
@@ -322,15 +409,9 @@ internal sealed class SourceCompletionService(Func<SshPrompt, CancellationToken,
         foreach (var entry in entries)
         {
             if (!entry.Name.StartsWith(leaf, StringComparison.Ordinal)) continue;
-            string raw = context.LiteralBase + parent + entry.Name + (entry.IsDirectory ? "/" : "");
-            string insertion = context.Quoted || !context.TransferSource && raw.Any(char.IsWhiteSpace)
-                ? SourceCompletion.Quote(raw) : SourceCompletion.PathExpression(raw, remote: true);
-            string replacement = context.ExpressionBase is { } expression
-                ? expression + SourceCompletion.Quote(parent + entry.Name) + (entry.IsDirectory ? "/" : "") : context.Qualifier + insertion;
-            string label = context.ExpressionBase is { } sourceBase ? sourceBase + parent + entry.Name + (entry.IsDirectory ? "/" : "") : raw;
-            string? filter = context.SourcePrefix is { } sourcePrefix ? sourcePrefix + entry.Name[leaf.Length..] + (entry.IsDirectory ? "/" : "") : null;
-            items.Add(new(label, replacement,
-                $"Path · remote {(entry.IsDirectory ? "directory" : "file")} ({endpoint})", entry.IsDirectory, filter));
+            string replacement = SourceCompletion.ItemText(context, entry.Name, entry.IsDirectory, '/');
+            items.Add(new(entry.Name + (entry.IsDirectory ? "/" : ""), replacement,
+                $"Path · remote {(entry.IsDirectory ? "directory" : "file")} ({endpoint})", entry.IsDirectory, replacement));
         }
         items.Sort((left, right) => TextSemantics.Ordinal.Compare(left.Label, right.Label));
         return items;
