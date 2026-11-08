@@ -10,7 +10,7 @@ public static class Compiler
         new Compilation(source, sourceName ?? "<source>", optimization).Run();
 }
 
-internal sealed record Info(TypeRef Type, Template? Function = null, ScopeInfo? Scope = null, TypeRef? TypeValue = null, string? NativeName = null);
+internal sealed record Info(TypeRef Type, Template? Function = null, ScopeInfo? Scope = null, TypeRef? TypeValue = null, string? NativeName = null, IReadOnlyList<Info>? Alternatives = null, Info? Element = null);
 internal sealed record Binding(int Slot, Info Info, Template? Self = null);
 internal sealed record ScopeInfo(IReadOnlyDictionary<string, Info> Members);
 internal sealed class Template(int id, FunctionExpr syntax, IReadOnlyList<KeyValuePair<string, Binding>> captures, string source, string sourceName)
@@ -211,7 +211,7 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
         if (path.StartsWith("wsl://", StringComparison.Ordinal)) return Constant(frame, new ConnectionValue(ConnectionKind.Wsl, path[6..]), span);
         return Constant(frame, new PathValue(path), span);
     }
-    private Info Name(Frame frame, string name, SourceSpan span)
+    private Info Name(Frame frame, string name, SourceSpan span, bool reference = false)
     {
         if (frame.Environment.TryGetValue(name, out var binding))
         {
@@ -219,9 +219,9 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
             else frame.Emit(OpCode.LoadLocal, binding.Slot, span: span);
             return binding.Info;
         }
-        if (name == "std") return Standard(frame, span);
-        if (name is "view" or "views" or "ranges") return StandardModule(frame, "ranges", span);
-        if (name is "local" or "wsl" or "pwd" or "file" or "env" or "path")
+        if (reference && name == "std") return Standard(frame, span);
+        if (reference && name is "view" or "views" or "ranges") return StandardModule(frame, "ranges", span);
+        if (reference && name is "local" or "wsl" or "pwd" or "file" or "env" or "path")
         {
             frame.Emit(OpCode.LoadBuiltin, text: name, span: span);
             return new(TypeRef.Connection);
@@ -232,7 +232,7 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
     {
         if (unary.Operator == "$")
         {
-            if (unary.Operand is NameExpr name) return Name(frame, name.Name, unary.Span);
+            if (unary.Operand is NameExpr name) return Name(frame, name.Name, unary.Span, true);
             return Expression(frame, unary.Operand);
         }
         var operand = Expression(frame, unary.Operand);
@@ -365,7 +365,8 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
 
     private Info Select(Frame frame, BinaryExpr binary)
     {
-        var left = Expression(frame, binary.Left);
+        var left = binary.Left is NameExpr alias && alias.Name is "view" or "views" or "ranges" && !frame.Environment.ContainsKey(alias.Name)
+            ? StandardModule(frame, "ranges", binary.Left.Span) : Expression(frame, binary.Left);
         var member = binary.Right switch { NameExpr name => name.Name, PathExpr path => path.Path, StringExpr text => text.Value, _ => null };
         if (left.Type == TypeRef.Scope && member is not null)
         {
@@ -385,21 +386,23 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
     private Info Range(Frame frame, RangeExpr range)
     {
         TypeRef item = new(TypeKind.Never);
+        Info? itemInfo = null;
         bool allPure = range.Items.All(PureValue);
         List<char> mask = [];
         foreach (var expression in range.Items)
         {
             if (PureValue(expression))
             {
-                item = TypeRef.Union(item, Expression(frame, expression).Type); mask.Add('0'); continue;
+                var pure = Expression(frame, expression);
+                item = TypeRef.Union(item, pure.Type); itemInfo = itemInfo is null ? pure : Join(itemInfo, pure); mask.Add('0'); continue;
             }
             Frame scratch = CloneFrame(frame);
             var info = Expression(scratch, expression);
-            item = TypeRef.Union(item, info.Type);
+            item = TypeRef.Union(item, info.Type); itemInfo = itemInfo is null ? info : Join(itemInfo, info);
             EmitThunk(frame, scratch, info, "<range-item>"); mask.Add('1');
         }
         frame.Emit(allPure ? OpCode.MakeRange : OpCode.MakeLazyRange, range.Items.Count, text: allPure ? null : new string(mask.ToArray()), span: range.Span);
-        return new(new(TypeKind.Range, item));
+        return new(new(TypeKind.Range, item), Element: itemInfo);
     }
     private static bool PureValue(Expr expression) => expression switch
     {
@@ -451,12 +454,12 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
     private Info Function(Frame frame, FunctionExpr function)
     {
         var usedNames = Names(function.Body).ToHashSet(StringComparer.Ordinal);
-        if (usedNames.Contains("std") && !frame.Environment.ContainsKey("std"))
+        bool needsStandard = HasStandardReference(function.Body);
+        if (needsStandard && !frame.Environment.ContainsKey("std") && !frame.Environment.ContainsKey("$std"))
         {
-            var standard = Standard(frame, function.Span);
-            Store(frame, "std", standard);
+            Standard(frame, function.Span); frame.Emit(OpCode.Pop);
         }
-        var captures = frame.Environment.Where(pair => usedNames.Contains(pair.Key) && pair.Key != function.Name).ToArray();
+        var captures = frame.Environment.Where(pair => (usedNames.Contains(pair.Key) || (pair.Key == "$std" && needsStandard)) && pair.Key != function.Name).ToArray();
         int id = functions.Count;
         functions.Add(new(function.Name ?? $"<lambda{nextTemplate++}>", function.Parameters.Count, captures.Length + function.Parameters.Count,
             [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, captures.Length));
@@ -484,7 +487,7 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
     private Specialization Specialize(Frame caller, Template template, IReadOnlyList<Info> arguments, SourceSpan span)
     {
         if (arguments.Count != template.Syntax.Parameters.Count) throw Error(caller, $"Function expects {template.Syntax.Parameters.Count} arguments, got {arguments.Count}.", span);
-        string key = string.Join(';', arguments.Select(argument => $"{argument.Type}:{argument.Function?.Id}:{(argument.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(argument.Scope))}"));
+        string key = string.Join(';', arguments.Select(argument => InfoKey(argument)));
         if (template.Specializations.TryGetValue(key, out var existing)) return existing;
         int id = template.Specializations.Count == 0 ? template.Id : functions.Count;
         if (id == functions.Count) functions.Add(functions[template.Id]);
@@ -576,6 +579,12 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
             return specialization.Result;
         }
         if (callee.NativeName is not null) return InvokeNative(frame, callee.NativeName, arguments, span);
+        if (callee.Alternatives is not null)
+        {
+            var dispatch = ResolveDispatch(frame, callee, arguments, span);
+            frame.Emit(OpCode.Call, arguments.Count, text: dispatch.Mapping, span: span);
+            return dispatch.Result;
+        }
         throw Error(frame, "Function value has no inferred callable signature.", span);
     }
     private Info InvokeNative(Frame frame, string identity, IReadOnlyList<Info> arguments, SourceSpan span)
@@ -590,26 +599,58 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
         }
         Info? callbackResult = null;
         int callbackIndex = arguments.Count - 1;
-        if (callbackIndex >= 1 && arguments[0].Type.Kind == TypeKind.Range && arguments[callbackIndex].Function is not null)
+        if (callbackIndex >= 1 && arguments[0].Type.Kind == TypeKind.Range && arguments[callbackIndex].Type == TypeRef.Function)
         {
-            var item = new Info(arguments[0].Type.Element ?? TypeRef.Any);
-            var specialization = Specialize(frame, arguments[callbackIndex].Function!, [item], span);
-            callbackResult = specialization.Result;
-            frame.Emit(OpCode.SpecializeClosure, specialization.Id, span: span);
+            var item = arguments[0].Element ?? new Info(arguments[0].Type.Element ?? TypeRef.Any);
+            var callback = ResolveDispatch(frame, arguments[callbackIndex], [item], span);
+            callbackResult = callback.Result;
+            if (callback.Mapping.Length != 0) frame.Emit(OpCode.SpecializeClosure, text: callback.Mapping, span: span);
             if (identity is "ranges.filter" or "ranges.take_while" or "ranges.drop_while" or "ranges.any" or "ranges.any_of" or "ranges.all_of" or "ranges.none" or "ranges.none_of" or "ranges.find_if")
                 Require(frame, callbackResult.Type, TypeRef.Bool, span);
         }
         var result = signature.ResultRule switch
         {
             NativeResultRule.FirstArgument when arguments.Count > 0 => arguments[0],
-            NativeResultRule.RangeOfArguments => new(new(TypeKind.Range, arguments.Aggregate(new TypeRef(TypeKind.Never), (type, argument) => TypeRef.Union(type, argument.Type)))),
-            NativeResultRule.RangeItem when arguments.Count > 0 => new(arguments[0].Type.Element ?? TypeRef.Any),
-            NativeResultRule.Transform when callbackResult is not null => new(new(TypeKind.Range, callbackResult.Type)),
+            NativeResultRule.RangeOfArguments => MakeRangeInfo(arguments),
+            NativeResultRule.RangeItem when arguments.Count > 0 => arguments[0].Element ?? new(arguments[0].Type.Element ?? TypeRef.Any),
+            NativeResultRule.Transform when callbackResult is not null => new(new(TypeKind.Range, callbackResult.Type), Element: callbackResult),
             _ => new Info(signature.Result)
         };
         frame.Emit(OpCode.Call, arguments.Count, span: span);
         return result;
     }
+    private static Info MakeRangeInfo(IReadOnlyList<Info> arguments)
+    {
+        var element = arguments.Count == 0 ? new Info(new(TypeKind.Never)) : arguments.Aggregate(Join);
+        return new(new(TypeKind.Range, element.Type), Element: element);
+    }
+
+    private (Info Result, string Mapping) ResolveDispatch(Frame frame, Info callee, IReadOnlyList<Info> arguments, SourceSpan span)
+    {
+        List<string> mappings = []; Info? result = null;
+        foreach (var candidate in CallableChoices(callee))
+        {
+            Info next;
+            if (candidate.Function is not null)
+            {
+                var specialization = Specialize(frame, candidate.Function, arguments, span);
+                mappings.Add($"{candidate.Function.Id}:{specialization.Id}");
+                next = specialization.Result;
+            }
+            else if (candidate.NativeName is not null)
+            {
+                Frame scratch = CloneFrame(frame);
+                next = InvokeNative(scratch, candidate.NativeName, arguments, span);
+                foreach (var binding in scratch.Code.Where(instruction => instruction.Op == OpCode.SpecializeClosure)) frame.Code.Add(binding);
+            }
+            else throw Error(frame, "Function value has no inferred callable signature.", span);
+            result = result is null ? next : Join(result, next);
+        }
+        return (result ?? new(new(TypeKind.Never)), string.Join(';', mappings.Distinct()));
+    }
+    private static IEnumerable<Info> CallableChoices(Info info) => info.Alternatives is null ? [info] : info.Alternatives;
+    private static string InfoKey(Info info) => $"{info.Type}:{info.Function?.Id}:{info.NativeName}:{(info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope))}:{string.Join(',', info.Alternatives?.Select(InfoKey) ?? [])}:{(info.Element is null ? "" : InfoKey(info.Element))}";
+
     private Info Native(Frame frame, NativeDeclaration native, string? module)
     {
         string identity = module is null ? native.Name : $"{module}.{native.Name}";
@@ -665,7 +706,7 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
         int begin = frame.Code.Count;
         int next = frame.Emit(OpCode.IteratorNext, iterator);
         var old = frame.Environment; frame.Environment = new(old);
-        BindPattern(frame, loop.Pattern, new(sourceInfo.Type.Element ?? TypeRef.Any));
+        BindPattern(frame, loop.Pattern, sourceInfo.Element ?? new(sourceInfo.Type.Element ?? TypeRef.Any));
         Block(frame, loop.Body); frame.Emit(OpCode.Pop);
         frame.Environment = old;
         frame.Emit(OpCode.Jump, begin);
@@ -776,7 +817,7 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
 
     private Info Standard(Frame frame, SourceSpan span)
     {
-        if (frame.Environment.TryGetValue("std", out var existing))
+        if (frame.Environment.TryGetValue("$std", out var existing))
         {
             frame.Emit(OpCode.LoadLocal, existing.Slot); return existing.Info;
         }
@@ -784,7 +825,7 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
         foreach (var module in libraries.Value.Keys.Order(StringComparer.Ordinal)) members[module] = StandardModule(frame, module, span);
         frame.Emit(OpCode.MakeScope, members.Count, text: string.Join('\0', members.Keys));
         var info = new Info(TypeRef.Scope, Scope: new(members));
-        frame.Emit(OpCode.Dup); Store(frame, "std", info);
+        frame.Emit(OpCode.Dup); Store(frame, "$std", info);
         return info;
     }
     private Info StandardModule(Frame frame, string name, SourceSpan span)
@@ -840,7 +881,7 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
                 {
                     frame.Emit(OpCode.LoadLocal, sourceSlot); Constant(frame, new NumberValue(index), tuple.Items[index].Span);
                     frame.Emit(OpCode.NativeCall, 2, text: "ranges.at", span: tuple.Items[index].Span);
-                    BindPattern(frame, tuple.Items[index], new(value.Type.Element ?? TypeRef.Any));
+                    BindPattern(frame, tuple.Items[index], value.Element ?? new(value.Type.Element ?? TypeRef.Any));
                 }
                 break;
             default: throw Error(frame, "let/for requires a binding name, '_' or a destructuring pattern.", pattern.Span);
@@ -871,8 +912,21 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
     {
         if (left.Type.Kind == TypeKind.Never) return right;
         if (right.Type.Kind == TypeKind.Never) return left;
+        ScopeInfo? scope = null;
+        if (left.Scope is not null && right.Scope is not null)
+        {
+            var members = left.Scope.Members.Where(member => right.Scope.Members.ContainsKey(member.Key))
+                .ToDictionary(member => member.Key, member => Join(member.Value, right.Scope.Members[member.Key]));
+            scope = new(members);
+        }
+        IReadOnlyList<Info>? alternatives = null;
+        if (left.Type.WithoutNull == TypeRef.Function && right.Type.WithoutNull == TypeRef.Function &&
+            (left.Function != right.Function || left.NativeName != right.NativeName || left.Alternatives is not null || right.Alternatives is not null))
+            alternatives = CallableChoices(left).Concat(CallableChoices(right)).DistinctBy(InfoKey).ToArray();
         return new(TypeRef.Union(left.Type, right.Type), left.Function == right.Function ? left.Function : null,
-            left.Scope == right.Scope ? left.Scope : null, left.TypeValue == right.TypeValue ? left.TypeValue : null);
+            scope, left.TypeValue == right.TypeValue ? left.TypeValue : null,
+            left.NativeName == right.NativeName ? left.NativeName : null, alternatives,
+            left.Element is null || right.Element is null ? left.Element ?? right.Element : Join(left.Element, right.Element));
     }
     private static void Convert(Frame frame, TypeRef actual, TypeRef expected, SourceSpan span)
     {
@@ -892,6 +946,7 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
         if (!expected.Accepts(actual)) throw Error(frame, $"Expected {expected}, found {actual}.", span);
     }
     private static CompileException Error(Frame frame, string message, SourceSpan span) => new(message, frame.Source, frame.SourceName, span);
+    private static bool HasStandardReference(Node node) => node is UnaryExpr { Operator: "$", Operand: NameExpr { Name: "std" } } || Children(node).Any(HasStandardReference);
     private static IEnumerable<string> Names(Node node)
     {
         if (node is NameExpr name) yield return name.Name;
