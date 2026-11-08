@@ -50,3 +50,8 @@ foreach (string invocation in new[] { "~/bin/tool(\"hello\")", "$std::fs::exists
     if (((ExpressionStatement)Parser.Parse(invocation).Statements[0]).Expression is not CallExpr) throw new Exception("Path/qualified call binds to a component: " + invocation);
 }
 Console.WriteLine("Path and namespace call precedence ok");
+
+var windowsDocument = Parser.Parse("C:/Users/Klee/config.toml -> C:/Users/Klee/backup.toml;");
+var windowsCopy = (BinaryExpr)((ExpressionStatement)windowsDocument.Statements[0]).Expression;
+if (((PathExpr)windowsCopy.Left).Path != "C:/Users/Klee/config.toml") throw new Exception("Windows forward-slash drive split");
+Console.WriteLine("Windows drive paths ok");

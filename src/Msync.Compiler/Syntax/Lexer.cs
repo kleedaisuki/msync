@@ -90,7 +90,7 @@ internal sealed class Lexer(string source, string sourceName)
     private void ReadAtom(int start)
     {
         bool uri = source.AsSpan(start).StartsWith("ssh://", StringComparison.Ordinal) || source.AsSpan(start).StartsWith("wsl://", StringComparison.Ordinal);
-        bool windows = start + 2 < source.Length && char.IsLetter(source[start]) && source[start + 1] == ':' && source[start + 2] == '\\';
+        bool windows = start + 2 < source.Length && char.IsLetter(source[start]) && source[start + 1] == ':' && source[start + 2] is '\\' or '/';
         int brackets = 0;
         while (position < source.Length)
         {
