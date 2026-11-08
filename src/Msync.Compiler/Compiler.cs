@@ -10,7 +10,7 @@ public static class Compiler
         new Compilation(source, sourceName ?? "<source>", optimization).Run();
 }
 
-internal sealed record Info(TypeRef Type, Template? Function = null, ScopeInfo? Scope = null, TypeRef? TypeValue = null, string? NativeName = null, IReadOnlyList<Info>? Alternatives = null, Info? Element = null);
+internal sealed record Info(TypeRef Type, Template? Function = null, ScopeInfo? Scope = null, TypeRef? TypeValue = null, string? NativeName = null, IReadOnlyList<Info>? Alternatives = null, Info? Element = null, bool? KnownBool = null);
 internal sealed record Binding(int Slot, Info Info, Template? Self = null);
 internal sealed record ScopeInfo(IReadOnlyDictionary<string, Info> Members);
 internal sealed class Template(int id, FunctionExpr syntax, IReadOnlyList<KeyValuePair<string, Binding>> captures, string source, string sourceName)
@@ -191,7 +191,7 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
 
     private Info Emit(Frame frame, OpCode op, TypeRef type, SourceSpan span)
     {
-        frame.Emit(op, span: span); return new(type);
+        frame.Emit(op, span: span); return new(type, KnownBool: op == OpCode.True ? true : op == OpCode.False ? false : null);
     }
     private Info Constant(Frame frame, Value value, SourceSpan span)
     {
@@ -238,8 +238,8 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
         var operand = Expression(frame, unary.Operand);
         switch (unary.Operator)
         {
-            case "?": frame.Emit(OpCode.IsNull, span: unary.Span); return new(TypeRef.Bool);
-            case "not": Require(frame, operand.Type, TypeRef.Bool, unary.Operand.Span); frame.Emit(OpCode.Not, span: unary.Span); return new(TypeRef.Bool);
+            case "?": frame.Emit(OpCode.IsNull, span: unary.Span); return new(TypeRef.Bool, KnownBool: operand.Type == TypeRef.Null ? true : !operand.Type.Nullable ? false : null);
+            case "not": Require(frame, operand.Type, TypeRef.Bool, unary.Operand.Span); frame.Emit(OpCode.Not, span: unary.Span); return new(TypeRef.Bool, KnownBool: operand.KnownBool is null ? null : !operand.KnownBool.Value);
             case "exists": Require(frame, operand.Type, PathCompatible, unary.Operand.Span); frame.Emit(OpCode.NativeCall, 1, text: "fs.exists", span: unary.Span); return new(TypeRef.Bool);
             case "-": Require(frame, operand.Type, TypeRef.Number, unary.Operand.Span); frame.Emit(OpCode.Negate, span: unary.Span); return operand;
             default: throw Error(frame, $"Unknown unary operator '{unary.Operator}'.", unary.Span);
@@ -276,7 +276,11 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
                 else if (right.Type == TypeRef.Type) frame.Emit(OpCode.IsType, span: binary.Span);
                 else throw Error(frame, "'is' compares against null or a type.", binary.Right.Span);
                 if (binary.Operator == "is not") frame.Emit(OpCode.Not);
-                return new(TypeRef.Bool);
+                bool? known = right.Type == TypeRef.Null ? left.Type == TypeRef.Null ? true : !left.Type.Nullable ? false : null
+                    : right.TypeValue is null ? null : left.TypeValue is not null ? right.TypeValue.Accepts(left.TypeValue)
+                    : right.TypeValue.Accepts(left.Type) ? true : (right.TypeValue.Kind & left.Type.Kind) == 0 ? false : null;
+                if (binary.Operator == "is not" && known is not null) known = !known.Value;
+                return new(TypeRef.Bool, KnownBool: known);
             case "==":
             case "!=":
             case "<":
@@ -324,6 +328,15 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
     private Info Conditional(Frame frame, IfExpr conditional)
     {
         var test = Expression(frame, conditional.Condition); Require(frame, test.Type, TypeRef.Bool, conditional.Condition.Span);
+        if (test.KnownBool is not null)
+        {
+            frame.Emit(OpCode.Pop);
+            var before = frame.Environment; frame.Environment = Refined(frame, conditional.Condition, test.KnownBool.Value);
+            var selected = test.KnownBool.Value ? Block(frame, conditional.Then)
+                : conditional.Else is null ? Emit(frame, OpCode.Null, TypeRef.Null, conditional.Span) : Expression(frame, conditional.Else);
+            frame.Environment = before;
+            return selected;
+        }
         int otherwise = frame.Emit(OpCode.JumpIfFalse);
         var old = frame.Environment;
         frame.Environment = Refined(frame, conditional.Condition, true);
@@ -500,7 +513,7 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
         for (int index = 0; index < arguments.Count; index++)
         {
             var parameter = template.Syntax.Parameters[index];
-            var info = arguments[index];
+            var info = arguments[index] with { KnownBool = null };
             if (parameter.Type is not null)
             {
                 var type = ResolveType(frame, parameter.Type);
@@ -749,11 +762,20 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
         var value = Expression(frame, match.Value);
         int slot = frame.Allocate(); frame.Emit(OpCode.StoreLocal, slot);
         CheckExhaustive(frame, value, match.Arms, match.Span);
+        var selected = SelectKnownArm(frame, value, match.Arms);
+        if (selected is not null)
+        {
+            var before = frame.Environment; frame.Environment = new(before);
+            RefineMatchBinding(frame, match.Value, selected.Pattern, value, slot, value.Type);
+            var chosen = Expression(frame, selected.Value);
+            frame.Environment = before; return chosen;
+        }
         Info? result = null; List<int> ends = [];
         var old = frame.Environment;
         TypeRef remaining = value.Type;
         foreach (var arm in match.Arms)
         {
+            if (KnownPattern(frame, value, arm.Pattern) == false) continue;
             frame.Environment = new(old);
             frame.Emit(OpCode.LoadLocal, slot);
             EmitPattern(frame, arm.Pattern, value, arm.Pattern.Span);
@@ -773,6 +795,38 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
         foreach (int end in ends) frame.Patch(end, frame.Code.Count);
         return result ?? new(TypeRef.Null);
     }
+    private MatchArm? SelectKnownArm(Frame frame, Info value, IReadOnlyList<MatchArm> arms)
+    {
+        foreach (var arm in arms)
+        {
+            bool? matched = KnownPattern(frame, value, arm.Pattern);
+            if (matched is null) return null;
+            if (matched.Value) return arm;
+        }
+        return null;
+    }
+    private bool? KnownPattern(Frame frame, Info value, Pattern pattern) => pattern switch
+    {
+        WildcardPattern or NamePattern => true,
+        NullPattern => value.Type == TypeRef.Null ? true : !value.Type.Nullable ? false : null,
+        TypePattern type => KnownTypeMatch(value, ResolveType(frame, type.Type)),
+        LiteralPattern { Value: BoolExpr boolean } when value.KnownBool is not null => value.KnownBool.Value == boolean.Value,
+        _ => null
+    };
+    private static bool? KnownTypeMatch(Info value, TypeRef expected)
+    {
+        if (value.TypeValue is not null) return expected.Accepts(value.TypeValue);
+        if (expected.Accepts(value.Type)) return true;
+        return (expected.Kind & value.Type.Kind) == 0 ? false : null;
+    }
+    private void RefineMatchBinding(Frame frame, Expr expression, Pattern pattern, Info value, int slot, TypeRef remaining)
+    {
+        var refined = PatternType(frame, pattern, remaining);
+        if (expression is NameExpr name && frame.Environment.TryGetValue(name.Name, out var binding))
+            frame.Environment[name.Name] = binding with { Info = binding.Info with { Type = value.Type == TypeRef.Type ? TypeRef.Type : refined } };
+        if (pattern is NamePattern { Name: not "_" } capture) frame.Environment[capture.Name] = new(slot, value with { Type = refined });
+    }
+
     private void EmitPattern(Frame frame, Pattern pattern, Info value, SourceSpan span)
     {
         switch (pattern)
@@ -926,7 +980,8 @@ internal sealed class Compilation(string source, string sourceName, int optimiza
         return new(TypeRef.Union(left.Type, right.Type), left.Function == right.Function ? left.Function : null,
             scope, left.TypeValue == right.TypeValue ? left.TypeValue : null,
             left.NativeName == right.NativeName ? left.NativeName : null, alternatives,
-            left.Element is null || right.Element is null ? left.Element ?? right.Element : Join(left.Element, right.Element));
+            left.Element is null || right.Element is null ? left.Element ?? right.Element : Join(left.Element, right.Element),
+            left.KnownBool == right.KnownBool ? left.KnownBool : null);
     }
     private static void Convert(Frame frame, TypeRef actual, TypeRef expected, SourceSpan span)
     {

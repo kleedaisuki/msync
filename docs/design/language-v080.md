@@ -60,6 +60,16 @@ selected by runtime control flow retains a finite set of statically checked
 callable alternatives and a precomputed template-to-specialization dispatch map.
 There is no runtime source parsing or generic type inference.
 
+A type-derived condition such as `if decltype(value) is Path` selects its
+statically possible branch during specialization. `match decltype(value)`
+similarly infers only the selected type arm after checking exhaustive coverage
+of that known type value. An impossible branch cannot reject the current
+specialization for an operator unsupported by that specialization's argument.
+Condition evaluation remains exactly once when it has effects; the decltype
+operand itself remains unevaluated. Ordinary Bool parameters are not value
+specializations: calls with true and false share one type specialization and
+retain their runtime branch.
+
 Scopes are lexical member values; Connections are physical endpoint values.
 `$wsl`, `$local`, native endpoint contexts and `ssh://...` produce Connections.
 Scope `::` selects a member; Connection `::` qualifies an inferred Path/String
