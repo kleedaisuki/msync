@@ -311,7 +311,8 @@ public static partial class TransferEngine
 
     private static void ApplyArchiveMetadata(TarEntry entry, string target)
     {
-        File.SetLastWriteTimeUtc(target, entry.ModificationTime.UtcDateTime);
+        if (entry.EntryType == TarEntryType.Directory) Directory.SetLastWriteTimeUtc(target, entry.ModificationTime.UtcDateTime);
+        else File.SetLastWriteTimeUtc(target, entry.ModificationTime.UtcDateTime);
         if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(target, entry.Mode);
     }
 

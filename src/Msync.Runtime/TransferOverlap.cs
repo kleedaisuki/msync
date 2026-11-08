@@ -88,7 +88,8 @@ internal static class TransferOverlap
             Node node = nodes[index];
             if (node.Link is not null) continue;
             string snapshot = Path.Combine(payload, node.Relative);
-            File.SetLastWriteTimeUtc(snapshot, node.Modified);
+            if ((node.Attributes & FileAttributes.Directory) != 0) Directory.SetLastWriteTimeUtc(snapshot, node.Modified);
+            else File.SetLastWriteTimeUtc(snapshot, node.Modified);
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(snapshot, node.Mode);
         }
     }

@@ -94,7 +94,7 @@ internal static class TransferFiles
             Directory.CreateDirectory(target);
             foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(StringComparer.Ordinal))
                 await CopyNodeOverlappedAsync(child, Path.Combine(target, Path.GetFileName(child)), cancellationToken, bufferSize);
-            ApplyMetadata(source, target);
+            Directory.SetLastWriteTimeUtc(target, Directory.GetLastWriteTimeUtc(source));
             return;
         }
         await using FileStream input = new(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
