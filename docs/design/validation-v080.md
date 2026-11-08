@@ -1,6 +1,38 @@
 # v0.8 independent user acceptance
 
-## Final deployment boundary
+## Current cross-platform product and latency closure
+
+The current product source is `8ca36bc`. Native Windows and Linux execution,
+installation, interactive editing and protocol behavior have been exercised,
+not merely configured in workflows. Accepted checks were reused by their exact
+binary identity; only changed or previously failing platform contracts were
+rerun. The current [four-asset set and complete checksums](packaging-v080.md#current-complete-local-delivery-set)
+supersede the initial Linux-only image identities below.
+
+| Boundary | Actual evidence |
+| --- | --- |
+| Linux Native AOT | [Native platform job](https://github.com/kleedaisuki/msync/actions/runs/42471357057/job/128702629423) passed language/artifacts, namespace/projection, metadata, session/LSP, real encrypted SSH and native performance probes |
+| Windows product contracts | [Changed-contract run](https://github.com/kleedaisuki/msync/actions/runs/42473122470) passed native language/artifacts, configuration, source input, LSP/session, path projection, readonly files, named streams, hard-link ownership and link timestamps |
+| Windows installation | [Native installer job](https://github.com/kleedaisuki/msync/actions/runs/42467144102/job/128689195077) passed repair, uninstall/PATH/user-data ownership and actual public 0.4.0 upgrade |
+| Windows terminal | Ten actual ConPTY phases passed with the accepted editor image; editing, history, completion, foreground child input, logical LF data and cancellation were not inferred from piped stdin tests |
+| Windows to WSL | [Final production acceptance](https://github.com/kleedaisuki/msync/actions/runs/42480251334/job/128730444211) passed source/`.mso`/`.mexe` home/relative paths, bound versus rebound context, small/empty/all-byte payloads and positive-progress interruption/failure preservation |
+| Standalone Linux deployment | Final binary `82c9139427ec7af91cde20c2eb80f99445c299ccce1845e08722aa3e0b47fc5e` passed installed smoke and the pinned Ubuntu 22.04 container without .NET or ICU; report `.temp/deployment-v080/native-ubgh8g6q/results.json` |
+
+The accepted Windows binary is
+`0f62a046456f64034619cb1bba9ce813e0b4ff774fd338d0ae558592d27ec135`.
+The WSL archive receipt fixes a measured producer-exit/relay completion race,
+not a parser or buffer-size policy; [the causal note](wsl-streaming-v080.md)
+retains the rejected small-buffer workaround, exact byte oracles and native
+read traces. An interrupted guest may report an ordinary failed transfer rather
+than the separate host-token exit-130 path; the record does not conflate them.
+
+[Actual per-OS Rust/previous-C#/current-C# measurements](performance-v080.md#actual-native-linux-and-windows-final-same-host-comparisons)
+include p50/p95, hashes and component allocations. Large improvements do not
+erase the remaining fixed startup cost or the Linux small-tree regression.
+Local strict solution compilation and whitespace verification pass. No public
+release or tag was created.
+
+## Initial Linux deployment boundary (historical checkpoint)
 
 The extracted Linux Native AOT executable has SHA-256
 `ca5c2eb2aebe1397f4ec3a745a6e76dcfcf598723ba1046523f183012263f38b`.
@@ -35,7 +67,7 @@ fixture cleanup. Linux package and VSIX identities are recorded in
 Windows Native AOT and installer workflows are configured; these local Linux
 results are not presented as Windows execution evidence.
 
-## Current accepted state
+## Initial 16-journey selection (historical checkpoint)
 
 The final extracted Linux Native AOT package passes **16/16 focused changed-
 contract journeys**, each through source, source-free `.mso`, and bound `.mexe`
