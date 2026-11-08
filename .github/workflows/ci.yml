@@ -16,9 +16,14 @@ on:
         description: Compare optimized Rust and Native AOT on each native runner
         type: boolean
         default: true
+      baseline_run:
+        description: Optional recorded native CI run for same-host previous-C# comparison
+        type: string
+        default: ''
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: native-${{ github.event.pull_request.number || github.ref }}
@@ -80,6 +85,32 @@ jobs:
           common: list[str] = ['python', 'tests/Performance/journeys.py', '--rust', str(rust), '--aot', str(aot), '--samples', '31', '--warmups', '3']
           subprocess.run([*common, '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-cli.json'], check=True)
           subprocess.run([*common, '--case', 'check-batch', '--statements', '1024', '--output', '.temp/platform-results/paired-compiler-1024.json'], check=True)
+      - name: Fetch the recorded previous C# image for this native platform
+        id: previous
+        if: ${{ !cancelled() && steps.package.outcome == 'success' && inputs.benchmark && inputs.baseline_run != '' }}
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
+          PACKAGE_RID: ${{ matrix.rid }}
+        run: |
+          import os
+          import subprocess
+          subprocess.run(['python', 'packaging/performance_baseline.py', '--run', os.environ['BASELINE_RUN'], '--rid', os.environ['PACKAGE_RID'], '--output', 'artifacts/previous-native', '--github-output', os.environ['GITHUB_OUTPUT']], check=True)
+      - name: Measure previous and current C# on this same native runner
+        if: ${{ !cancelled() && steps.previous.outcome == 'success' }}
+        shell: python
+        env:
+          PREVIOUS_NATIVE: ${{ steps.previous.outputs.binary }}
+          PACKAGE_RID: ${{ matrix.rid }}
+        run: |
+          import os
+          import subprocess
+          from pathlib import Path
+          aot: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
+          common: list[str] = ['python', 'tests/Performance/journeys.py', '--previous-aot', os.environ['PREVIOUS_NATIVE'], '--aot', str(aot), '--samples', '31', '--warmups', '3']
+          subprocess.run([*common, '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-aot-before-after.json'], check=True)
+          subprocess.run([*common, '--case', 'check-batch', '--statements', '1024', '--output', '.temp/platform-results/paired-aot-compiler-1024.json'], check=True)
       - name: Publish the bounded native Windows copy mechanism probe
         id: copy-probe
         if: ${{ !cancelled() && runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.benchmark && steps.package.outcome == 'success' && hashFiles('tests/IO/WindowsCopyProbe/WindowsCopyProbe.csproj') != '' }}
@@ -96,4 +127,5 @@ jobs:
           path: |
             dist/*
             .temp/platform-results/**
+            artifacts/previous-native/baseline.json
             .temp/windows-install-test-*/**/*.log
