@@ -65,3 +65,23 @@ received byte counts. `tests/IO/ArchiveReceiptContracts` exercises the linked
 production receipt/forwarding helper with large and empty archives. Actual final
 Windows source/object/executable WSL acceptance validates the product integration;
 these focused probes do not replace it.
+
+## Accepted actual Windows product journey
+
+Run [42480251334](https://github.com/kleedaisuki/msync/actions/runs/42480251334)
+passed the production protocol, not only the phase probe. The Native AOT image
+SHA-256 is
+`0f62a046456f64034619cb1bba9ce813e0b4ff774fd338d0ae558592d27ec135`.
+Source, `.mso` and `.mexe` each preserved home/relative endpoint qualification,
+the full 1,280,123-byte all-byte-value oracle, empty files, captured/relocated cwd
+semantics and unrelated siblings.
+
+Two interruption trials observed 70,144 bytes in the owned Windows stage before
+interruption: real ConPTY Ctrl-C and termination of only the fixture's owned WSL
+distribution. Both preserved the previous published target and removed the live
+stage. The observed Ctrl-C trial reached a guest-interrupted FIFO/short archive
+failure and exit 1; it is interruption-safety evidence, not a claim that this
+specific cross-console route was classified as the interpreter's exit-130
+cancellation. The diagnostics retained declared/received byte counts. Final
+unregistration of the owned distribution succeeded. No additional buffering,
+spooling, native clients, file-size policy or Linux/SSH behavior change was used.
