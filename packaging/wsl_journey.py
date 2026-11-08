@@ -710,6 +710,20 @@ def exercise(binary: Path, output: Path, process_probe: Path | None = None) -> i
         report["journeys"] = transfer_journeys(
             runner, binary, wsl, distro, workspace, process_probe
         )
+        from wsl_control import run_control_journeys
+
+        controls: list[dict[str, object]] = []
+        report["controls"] = controls
+        controls.extend(
+            run_control_journeys(
+                runner,
+                binary,
+                wsl,
+                distro,
+                workspace,
+                local_environment(workspace / "control-home"),
+            )
+        )
         report["outcome"] = "passed"
         return 0
     except (
