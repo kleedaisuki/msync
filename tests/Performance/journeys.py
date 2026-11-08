@@ -12,7 +12,7 @@ import shutil
 import statistics
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -49,6 +49,34 @@ class Measurement:
     maximum_ms: float
 
 
+class InvocationFailure(RuntimeError):
+    def __init__(
+        self,
+        image: Image,
+        args: Sequence[str],
+        cwd: Path,
+        code: int,
+        stderr: str,
+        elapsed: float,
+    ) -> None:
+        message = f"{image.name} {' '.join(args)} exited {code}:\n{stderr}"
+        self.details: dict[str, object] = {
+            "message": message,
+            "command": [image.executable, *args],
+            "working_directory": str(cwd),
+            "exit_code": code,
+            "stderr": stderr,
+            "elapsed_ms": elapsed,
+        }
+        super().__init__(message)
+
+
+class SamplingFailure(RuntimeError):
+    def __init__(self, details: dict[str, object]) -> None:
+        self.details = details
+        super().__init__(str(details["message"]))
+
+
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -74,8 +102,8 @@ def invoke(image: Image, args: Sequence[str], cwd: Path) -> float:
     )
     elapsed = (time.perf_counter_ns() - started) / 1_000_000
     if result.returncode != 0:
-        raise RuntimeError(
-            f"{image.name} {' '.join(args)} exited {result.returncode}:\n{result.stderr}"
+        raise InvocationFailure(
+            image, args, cwd, result.returncode, result.stderr, elapsed
         )
     return elapsed
 
@@ -211,18 +239,17 @@ def measure(
     warmups: int,
     samples: int,
     file_count: int,
+    checkpoint: Callable[[Sequence[Measurement], dict[str, object] | None], None]
+    | None = None,
 ) -> list[Measurement]:
     measurements: list[Measurement] = []
     for case in cases:
-        values: dict[str, list[float]] = {image.name: [] for image in images}
-        for iteration in range(warmups + samples):
-            order = list(images) if iteration % 2 == 0 else list(reversed(images))
-            for image in order:
-                workspace = workspaces[image.name]
-                elapsed = invoke(image, arguments(image, case, workspace), workspace)
-                verify(case, workspace, file_count)
-                if iteration >= warmups:
-                    values[image.name].append(elapsed)
+        try:
+            values = sample_case(images, workspaces, case, warmups, samples, file_count)
+        except SamplingFailure as error:
+            if checkpoint is not None:
+                checkpoint(measurements, error.details)
+            raise
         for image in images:
             timings = values[image.name]
             measurements.append(
@@ -240,7 +267,46 @@ def measure(
                 f"{case:20s} {image.name:6s} p50={statistics.median(timings):9.3f} ms p95={percentile(timings, 0.95):9.3f} ms range={min(timings):.3f}–{max(timings):.3f}",
                 flush=True,
             )
+        if checkpoint is not None:
+            checkpoint(measurements, None)
     return measurements
+
+
+def sample_case(
+    images: Sequence[Image],
+    workspaces: dict[str, Path],
+    case: str,
+    warmups: int,
+    samples: int,
+    file_count: int,
+) -> dict[str, list[float]]:
+    values: dict[str, list[float]] = {image.name: [] for image in images}
+    for iteration in range(warmups + samples):
+        order = list(images) if iteration % 2 == 0 else list(reversed(images))
+        for image in order:
+            workspace = workspaces[image.name]
+            try:
+                elapsed = invoke(image, arguments(image, case, workspace), workspace)
+                verify(case, workspace, file_count)
+            except (InvocationFailure, AssertionError, OSError) as error:
+                details: dict[str, object] = (
+                    error.details.copy()
+                    if isinstance(error, InvocationFailure)
+                    else {"message": str(error), "error_type": type(error).__name__}
+                )
+                details.update(
+                    {
+                        "case": case,
+                        "image": image.name,
+                        "iteration": iteration,
+                        "warmup": iteration < warmups,
+                        "partial_samples_ms": values,
+                    }
+                )
+                raise SamplingFailure(details) from error
+            if iteration >= warmups:
+                values[image.name].append(elapsed)
+    return values
 
 
 def main() -> None:
@@ -287,25 +353,7 @@ def main() -> None:
         )
         for image in images
     }
-    measurements = measure(
-        images,
-        workspaces,
-        options.case or CASES,
-        options.warmups,
-        options.samples,
-        options.files,
-    )
-    for image in images:
-        if digest(Path(image.executable)) != image.sha256:
-            raise RuntimeError(
-                f"Frozen executable changed during measurement: {image.executable}"
-            )
-        for filename, expected_digest in image.payload_sha256.items():
-            if digest(Path(image.executable).parent / filename) != expected_digest:
-                raise RuntimeError(
-                    f"Frozen payload changed during measurement: {filename}"
-                )
-    result = {
+    result: dict[str, object] = {
         "environment": {
             "platform": platform.platform(),
             "processor": platform.processor(),
@@ -343,10 +391,43 @@ def main() -> None:
             for extension in ("mobj" if image.name == "rust" else "mso",)
             for name in ("small", "tree", "batch")
         ],
-        "measurements": [asdict(measurement) for measurement in measurements],
+        "measurements": [],
     }
     options.output.parent.mkdir(parents=True, exist_ok=True)
-    options.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    completed = False
+
+    def checkpoint(
+        done: Sequence[Measurement], failure: dict[str, object] | None
+    ) -> None:
+        result["measurements"] = [asdict(measurement) for measurement in done]
+        result["status"] = (
+            "failed" if failure is not None else "complete" if completed else "running"
+        )
+        result["failure"] = failure
+        options.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+
+    checkpoint([], None)
+    measurements = measure(
+        images,
+        workspaces,
+        options.case or CASES,
+        options.warmups,
+        options.samples,
+        options.files,
+        checkpoint,
+    )
+    for image in images:
+        if digest(Path(image.executable)) != image.sha256:
+            raise RuntimeError(
+                f"Frozen executable changed during measurement: {image.executable}"
+            )
+        for filename, expected_digest in image.payload_sha256.items():
+            if digest(Path(image.executable).parent / filename) != expected_digest:
+                raise RuntimeError(
+                    f"Frozen payload changed during measurement: {filename}"
+                )
+    completed = True
+    checkpoint(measurements, None)
     print(options.output)
 
 

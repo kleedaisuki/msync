@@ -27,6 +27,12 @@ under the repository-root `.temp`; reusable conclusions belong in
 [`docs/design/performance-v080.md`](../../docs/design/performance-v080.md).
 No benchmark thresholds are CI quality gates.
 
+The CLI report is checkpointed after each completed case, outside timing. If a
+later native operation fails, the JSON retains all earlier raw samples plus the
+failed command, cwd, exit status, full stderr and partial samples for that case.
+The report's `status` is `running`, `complete` or `failed`; a failed run does not
+erase accepted observations or turn a partial distribution into a completed one.
+
 The same command runs on native Windows with optimized `msync.exe` images and
 Python 3.11+. Unix modes are checked only on Unix; byte counts, exact payloads and
 native modification timestamps are checked on both. `--files` selects the tree
