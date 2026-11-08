@@ -2,15 +2,13 @@ namespace Msync.Runtime;
 
 internal static class TransferOverlap
 {
-    private sealed record Node(string Source, string Relative, FileAttributes Attributes, DateTime Modified, UnixFileMode Mode, string? Link);
+    internal sealed record Node(string Source, string Relative, FileAttributes Attributes, DateTime Modified, UnixFileMode Mode, string? Link);
 
     internal static bool SameNode(string source, string target)
     {
         if (!Path.Exists(target)) return false;
         FileAttributes attributes = File.GetAttributes(source);
-        if ((attributes & FileAttributes.ReparsePoint) != 0) return false;
-        if (OperatingSystem.IsWindows())
-            return string.Equals(Path.GetFullPath(source), Path.GetFullPath(target), StringComparison.OrdinalIgnoreCase);
+        if ((attributes & FileAttributes.ReparsePoint) != 0 || (File.GetAttributes(target) & FileAttributes.ReparsePoint) != 0) return false;
         return NativeFileIdentity.Equivalent(source, target);
     }
 
@@ -23,18 +21,10 @@ internal static class TransferOverlap
 
     private static bool Within(string root, string path)
     {
-        string normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
-        string normalizedPath = Path.GetFullPath(path);
+        string normalizedRoot = ResourcePath.Resolve(root).TrimEnd(Path.DirectorySeparatorChar);
+        string normalizedPath = ResourcePath.Resolve(path);
         StringComparison comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
-        if (normalizedPath.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, comparison)) return true;
-        if (OperatingSystem.IsWindows() || !Directory.Exists(root)) return false;
-        string? ancestor = Path.GetDirectoryName(path);
-        while (ancestor is not null)
-        {
-            if (Directory.Exists(ancestor) && NativeFileIdentity.Equivalent(root, ancestor)) return true;
-            ancestor = Path.GetDirectoryName(ancestor);
-        }
-        return false;
+        return normalizedPath.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, comparison);
     }
 
     internal static async Task CopyAsync(string source, string target, bool replace, CancellationToken cancellationToken, int bufferSize = 65536)
@@ -49,31 +39,56 @@ internal static class TransferOverlap
         string payload = Path.Combine(stage, "payload");
         try
         {
-            foreach (Node node in nodes)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                string snapshot = Path.Combine(payload, node.Relative);
-                if (node.Link is not null)
-                {
-                    if ((node.Attributes & FileAttributes.Directory) != 0)
-                        Directory.CreateSymbolicLink(snapshot, node.Link);
-                    else File.CreateSymbolicLink(snapshot, node.Link);
-                }
-                else if ((node.Attributes & FileAttributes.Directory) != 0) Directory.CreateDirectory(snapshot);
-                else File.Copy(node.Source, snapshot);
-            }
-            for (int index = nodes.Count - 1; index >= 0; --index)
-            {
-                Node node = nodes[index];
-                if (node.Link is not null) continue;
-                string snapshot = Path.Combine(payload, node.Relative);
-                File.SetLastWriteTimeUtc(snapshot, node.Modified);
-                if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(snapshot, node.Mode);
-            }
+            Materialize(nodes, payload, cancellationToken);
             if (replace) TransferFiles.RemoveNode(target);
             await TransferFiles.CopyNodeAsync(payload, target, cancellationToken, bufferSize);
         }
         finally { Directory.Delete(stage, recursive: true); }
+    }
+
+    internal static bool Related(string source, string target)
+    {
+        return RelatedNames(Path.GetFullPath(source), Path.GetFullPath(target)) || RelatedNames(ResourcePath.Resolve(source), ResourcePath.Resolve(target));
+    }
+
+    private static bool RelatedNames(string source, string target)
+    {
+        StringComparison comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        source = source.TrimEnd(Path.DirectorySeparatorChar);
+        target = target.TrimEnd(Path.DirectorySeparatorChar);
+        return source.Equals(target, comparison) || source.StartsWith(target + Path.DirectorySeparatorChar, comparison) || target.StartsWith(source + Path.DirectorySeparatorChar, comparison);
+    }
+
+    internal static IReadOnlyList<Node> CaptureTree(string source)
+    {
+        List<Node> nodes = [];
+        Capture(source, "", nodes);
+        return nodes;
+    }
+
+    internal static void Materialize(IReadOnlyList<Node> nodes, string payload, CancellationToken cancellationToken)
+    {
+        foreach (Node node in nodes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            string snapshot = Path.Combine(payload, node.Relative);
+            if (node.Link is not null)
+            {
+                if ((node.Attributes & FileAttributes.Directory) != 0)
+                    Directory.CreateSymbolicLink(snapshot, node.Link);
+                else File.CreateSymbolicLink(snapshot, node.Link);
+            }
+            else if ((node.Attributes & FileAttributes.Directory) != 0) Directory.CreateDirectory(snapshot);
+            else File.Copy(node.Source, snapshot);
+        }
+        for (int index = nodes.Count - 1; index >= 0; --index)
+        {
+            Node node = nodes[index];
+            if (node.Link is not null) continue;
+            string snapshot = Path.Combine(payload, node.Relative);
+            File.SetLastWriteTimeUtc(snapshot, node.Modified);
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(snapshot, node.Mode);
+        }
     }
 
     private static void Capture(string source, string relative, ICollection<Node> nodes)

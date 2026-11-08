@@ -44,6 +44,11 @@ public static partial class TransferEngine
                 await RelayAsync(sources, target, context, container, replace, cohort, cancellationToken);
             return true;
         }
+        if (cohort && replace && remoteSources.Length == 0)
+        {
+            await ReplaceLocalCohortAsync(sources, target, context, cancellationToken);
+            return true;
+        }
         if (remoteSources.Length == sources.Count && remoteSources.All(path => path.Connection == remoteSources[0].Connection))
         {
             await DownloadAsync(remoteSources, target, context, container, replace, cancellationToken);

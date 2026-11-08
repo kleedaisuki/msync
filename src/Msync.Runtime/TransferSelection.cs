@@ -84,23 +84,29 @@ public static partial class TransferEngine
     {
         if (items.Count == 0) return;
         string target = TargetPath(destination, items[0], context, container: false);
+        (PathValue Path, string Source)[] sources = items.Cast<PathValue>().Select(path => (path, path.LocalPath(context.WorkingDirectory, context.HomeDirectory))).ToArray();
+        if (!sources.Any(source => TransferOverlap.Related(source.Source, target)))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            TransferFiles.RemoveNode(target);
+            Directory.CreateDirectory(target);
+            foreach (var source in sources)
+                await TransferFiles.CopyNodeAsync(source.Source, Path.Combine(target, Basename(source.Path.Raw)), cancellationToken, context.BufferSize);
+            return;
+        }
+        var retained = sources.Select(source => (Name: Basename(source.Path.Raw), Nodes: TransferOverlap.CaptureTree(source.Source))).ToArray();
         string parent = Path.GetDirectoryName(target) ?? ".";
         Directory.CreateDirectory(parent);
         string stage = Path.Combine(parent, $".msync-{Guid.NewGuid():N}");
         Directory.CreateDirectory(stage);
         try
         {
-            foreach (Value item in items)
-            {
-                PathValue path = (PathValue)item;
-                await TransferFiles.CopyNodeAsync(path.LocalPath(context.WorkingDirectory, context.HomeDirectory),
-                    Path.Combine(stage, Basename(path.Raw)), cancellationToken, context.BufferSize);
-            }
+            foreach (var source in retained) TransferOverlap.Materialize(source.Nodes, Path.Combine(stage, source.Name), cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             TransferFiles.RemoveNode(target);
-            Directory.Move(stage, target);
+            await TransferFiles.CopyNodeAsync(stage, target, cancellationToken, context.BufferSize);
         }
-        finally { if (Directory.Exists(stage)) Directory.Delete(stage, recursive: true); }
+        finally { Directory.Delete(stage, recursive: true); }
     }
 
     private static async Task<IReadOnlyList<string>> ReadSelectionNamesAsync(Stream stream, string pattern, CancellationToken cancellationToken)

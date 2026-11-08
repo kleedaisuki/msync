@@ -156,3 +156,14 @@ path, and collision detection before target creation. Multiple filesystem
 predicate calls remain inside the one selected source session. The C# local
 journey also cancels a real large-file copy after observing its owned stage,
 checks unchanged prior target bytes, and checks cleanup of that live stage.
+
+Local explicit finite-cohort tree replacement uses the same retained-input
+capture as a single overlapping tree, but only when source and target paths
+actually overlap. Disjoint selected sources are copied directly after explicit
+replacement. Overlapping cohorts capture names and metadata before creating
+scratch, so they cannot recursively enumerate their own new stage; transient
+input copies are not flushed, while final ordinary-file publication retains its
+one-flush path. Native canonical resource paths detect overlap through directory
+symlinks. Same-object no-op requires actual filesystem identity, not Windows
+case folding, and does not treat a destination symlink as an ordinary hard-link
+alias: replacing that entry must still replace the link itself.
