@@ -32,12 +32,15 @@ def main() -> int:
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
         ).strip(),
     }
-    for name, script in (
+    journeys = [
         ("presentation", "presentation_journey.py"),
         ("lsp-analysis", "lsp_analysis_journey.py"),
         ("formatter", "formatter_journey.py"),
         ("skill", "skill_journey.py"),
-    ):
+    ]
+    if sys.platform != "win32":
+        journeys.append(("terminal-presentation", "terminal_presentation_journey.py"))
+    for name, script in journeys:
         phases.append(
             run_phase(
                 name,

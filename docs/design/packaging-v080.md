@@ -71,8 +71,10 @@ Scope/function semantic roles, useful hovers, related generic-call locations,
 applicable diagnostic quick fixes, cancellation/latest-snapshot editor races,
 source-deleted artifact runtime diagnostics, width-aware literal-preserving formatting,
 and the progressive built-in `msync skill` reference.
-Windows additionally checks automatic color and NO_COLOR through a real ConPTY
-console, without repeating its accepted editing/foreground-input suite.
+Both hosts additionally check automatic color and NO_COLOR through actual
+terminal descriptors (a POSIX PTY or Windows ConPTY), without repeating the
+accepted editing/foreground-input suite. The POSIX fixture distinguishes stdout
+and stderr terminal ownership independently.
 Each phase retains stdout/stderr and the native image hash under
 `.temp/platform-results`; one failed phase does not suppress another's result.
 
