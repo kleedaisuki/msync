@@ -68,7 +68,8 @@ Windows and Linux Native AOT packages, exercises their installed-layout smoke,
 then invokes `packaging/polish_journeys.py` against those exact executables.
 The selected contracts are CLI color/NO_COLOR and source guidance, inferred
 Scope/function semantic roles, useful hovers, related generic-call locations,
-applicable diagnostic quick fixes, and width-aware literal-preserving formatting.
+applicable diagnostic quick fixes, width-aware literal-preserving formatting,
+and the progressive built-in `msync skill` reference.
 Windows additionally checks automatic color and NO_COLOR through a real ConPTY
 console, without repeating its accepted editing/foreground-input suite.
 Each phase retains stdout/stderr and the native image hash under

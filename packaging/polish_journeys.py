@@ -35,6 +35,7 @@ def main() -> int:
     for name, script in (
         ("presentation", "presentation_journey.py"),
         ("formatter", "formatter_journey.py"),
+        ("skill", "skill_journey.py"),
     ):
         phases.append(
             run_phase(
