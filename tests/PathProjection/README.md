@@ -38,3 +38,8 @@ editor resolves completion facts from actual initialized values, including a
 closure returned from a generic factory, while preserving the original captured
 projection. Subsequent real generic calls prove editor probes do not mutate live
 specialization identities; an earlier analysis retains its frozen signatures.
+
+`--process-members` runs actual native children with exit status 0 and 7 and
+checks compiled `stdout`, `stderr`, `exit_code` and Bool `success` properties
+against the canonical standard-library result. It uses `/bin/sh` on Unix and
+`ComSpec` on Windows; no simulated Process value substitutes for the child.

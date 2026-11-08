@@ -3,6 +3,7 @@ using Msync.Core;
 using Msync.Runtime;
 
 if (args.Contains("--editor-session", StringComparer.Ordinal)) { await EditorSessionChecks.Run(); return; }
+if (args.Contains("--process-members", StringComparer.Ordinal)) { await EditorSessionChecks.RunProcessMembers(); return; }
 
 int assertions = 0;
 void Equal<T>(T expected, T actual, string message)

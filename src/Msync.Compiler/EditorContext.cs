@@ -3,7 +3,9 @@ using Msync.Compiler.Syntax;
 
 namespace Msync.Compiler;
 
-public sealed record EditorContext(IReadOnlyList<SemanticMember> Bindings, SemanticMember? Receiver);
+public enum EditorReceiverKind { Member, PathJoin }
+public sealed record EditorContext(IReadOnlyList<SemanticMember> Bindings, SemanticMember? Receiver,
+    EditorReceiverKind ReceiverKind = EditorReceiverKind.Member);
 
 internal sealed record EditorCallTrace(string SourceName, string Source, SourceSpan Span,
     IReadOnlyList<Parameter> Parameters, IReadOnlyList<Msync.Core.TypeRef> Types, EditorCallTrace? Parent)
@@ -15,12 +17,12 @@ internal sealed record EditorCallTrace(string SourceName, string Source, SourceS
 internal sealed class EditorContextCollector
 {
     private sealed record Snapshot(SourceSpan Owner, bool IncludesEnd, int Point, ImmutableDictionary<string, Binding> Bindings, bool Concrete);
-    private sealed record Selection(SourceSpan Span, Info Receiver, bool Concrete);
+    private sealed record Selection(SourceSpan Span, Info Receiver, bool Concrete, EditorReceiverKind Kind);
     private readonly List<Snapshot> snapshots = [];
     private readonly List<Selection> selections = [];
 
     public void Capture(Frame frame, int point) => snapshots.Add(new(frame.ContextOwner, frame.ContextIncludesEnd, point, frame.Environment, frame.EditorReportErrors));
-    public void Select(Frame frame, SourceSpan span, Info receiver) => selections.Add(new(span, receiver, frame.EditorReportErrors));
+    public void Select(Frame frame, SourceSpan span, Info receiver, EditorReceiverKind kind) => selections.Add(new(span, receiver, frame.EditorReportErrors, kind));
 
     public EditorContext At(int offset)
     {
@@ -42,7 +44,8 @@ internal sealed class EditorContextCollector
             receivers = receivers.Where(item => item.Span.Length == width).ToArray();
             if (receivers.Any(item => item.Concrete)) receivers = receivers.Where(item => item.Concrete).ToArray();
         }
-        return EditorCompiler.DescribeContext(bindings, receivers.Select(item => item.Receiver).ToArray());
+        return EditorCompiler.DescribeContext(bindings, receivers.Select(item => item.Receiver).ToArray(),
+            receivers.Length == 0 ? EditorReceiverKind.Member : receivers[0].Kind);
     }
 }
 
@@ -73,9 +76,9 @@ internal sealed partial class Compilation
     {
         if (editorContexts is not null && IsCurrentSource(frame)) editorContexts.Capture(frame, point);
     }
-    private void CaptureReceiver(Frame frame, SourceSpan span, Info receiver)
+    private void CaptureReceiver(Frame frame, SourceSpan span, Info receiver, EditorReceiverKind kind = EditorReceiverKind.Member)
     {
-        if (editorContexts is not null && IsCurrentSource(frame)) editorContexts.Select(frame, span, receiver);
+        if (editorContexts is not null && IsCurrentSource(frame)) editorContexts.Select(frame, span, receiver, kind);
     }
     private void EditorFailure(Frame frame, CompileException error)
     {

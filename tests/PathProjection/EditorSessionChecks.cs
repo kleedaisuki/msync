@@ -4,6 +4,23 @@ using Msync.Runtime;
 
 internal static class EditorSessionChecks
 {
+    public static async Task RunProcessMembers()
+    {
+        string executable = OperatingSystem.IsWindows() ? Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe" : "/bin/sh";
+        string Quote(string text) => "\"" + text.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+        foreach (int code in new[] { 0, 7 })
+        {
+            string[] arguments = OperatingSystem.IsWindows() ? ["/d", "/c", $"exit /b {code}"] : ["-c", $"exit {code}"];
+            string source = $"let process = {Quote(executable)}({string.Join(", ", arguments.Select(Quote))}); "
+                + $"process::success == {(code == 0 ? "true" : "false")} and process::exit_code == {code} "
+                + "and process::success == $std::process::success(process) "
+                + "and process::stdout == \"\" and process::stderr == \"\"";
+            Module module = Msync.Compiler.Compiler.Compile(source, "process-members.msync");
+            Check(await Interpreter.ExecuteAsync(module) is BoolValue { Data: true }, "Process member results disagree with the native child exit status");
+        }
+        Console.WriteLine("actual native Process fields and success accessor match exit 0/7");
+    }
+
     public static async Task Run()
     {
         string original = Environment.CurrentDirectory;

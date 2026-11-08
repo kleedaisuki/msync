@@ -9,6 +9,7 @@ internal static class ContextChecks
         ScopeInitializers();
         GenericContexts();
         ReturnedScopes();
+        ProcessMembers();
         SessionIsolation();
         Builtins();
         Console.WriteLine("nested lexical editor contexts and isolated session probes ok");
@@ -24,6 +25,11 @@ internal static class ContextChecks
         Check(context.Bindings.Single(item => item.Name == "unknown").Type == "unknown", "an uninstantiated parameter was guessed to be a Path");
         Check(context.Bindings.Any(item => item.Name == "Outer"), "an unused outer lexical name was omitted by runtime capture filtering");
         Check(context.Receiver?.Members?.Single().Name == "item", "local Scope receiver is unavailable in an unfinished function");
+        Check(context.ReceiverKind == EditorReceiverKind.Member, "lexical member selection lost its source-owned receiver kind");
+        const string joined = "fn draft(file: Path) { file/";
+        EditorContext path = EditorCompiler.Analyze(joined, "file:///unknown-path.msync").At(joined.Length);
+        Check(path.ReceiverKind == EditorReceiverKind.PathJoin && path.Receiver?.Type == "Path" && path.Receiver.KnownPath is null,
+            "an unknown Path parameter cannot be distinguished from lexical member selection");
         const string shadow = "let item = scope { outer: true }; fn draft(item: Path) { let value = item; let item = scope { inner: true }; item::";
         EditorContext local = EditorCompiler.Analyze(shadow, "file:///shadow.msync").At(shadow.Length);
         Check(local.Bindings.Single(item => item.Name == "value").Type == "Path", "a future binding leaked into an earlier initializer");
@@ -105,6 +111,22 @@ internal static class ContextChecks
         Module after = session.Compile("identity(\"real text\")");
         Module baseline = control.Compile("identity(\"real text\")");
         Check(SameModule(after, baseline), "a second editor probe mutated an existing live template's specialization cache");
+    }
+
+    private static void ProcessMembers()
+    {
+        const string source = "fn inspect(process: Process) { process::";
+        var context = EditorCompiler.Analyze(source, "file:///process.msync").At(source.Length);
+        Check(context.Receiver?.Members?.Select(item => item.Name).SequenceEqual(new[] { "stdout", "stderr", "exit_code", "success" }) == true,
+            "Process completion differs from the actual runtime's supported members");
+        Check(context.Receiver!.Members!.Single(item => item.Name == "success").Type == "Bool", "Process success capability is not Bool");
+        _ = Msync.Compiler.Compiler.Compile("let process = ./tool(); process::success");
+        try
+        {
+            _ = Msync.Compiler.Compiler.Compile("let process = ./tool(); process::pid");
+            throw new InvalidOperationException("compiler still advertises the nonexistent runtime pid field");
+        }
+        catch (CompileException error) { Check(error.Diagnostic.Code == "E0205", "unsupported Process field lost its member diagnostic"); }
     }
 
     private static void Builtins()

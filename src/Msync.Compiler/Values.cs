@@ -95,7 +95,7 @@ internal sealed partial class Compilation
         if (binary.Operator == "/")
         {
             int start = binary.OperatorSpan?.End ?? binary.Right.Span.Start;
-            CaptureReceiver(frame, new(start, binary.Right.Span.End - start), left);
+            CaptureReceiver(frame, new(start, binary.Right.Span.End - start), left, EditorReceiverKind.PathJoin);
         }
         if (binary.Operator == "/" && binary.Right is PathExpr { Path: var pattern } && pattern.StartsWith('<') && pattern.EndsWith('>'))
         {
@@ -191,14 +191,11 @@ internal sealed partial class Compilation
         }
         if (left.Type == TypeRef.Process && member is not null)
         {
+            if (!ProcessCapabilities.Members.TryGetValue(member, out TypeRef? type))
+                throw Error(frame, $"Process has no member '{member}'.", binary.Right.Span,
+                    help: $"Available Process members: {string.Join(", ", ProcessCapabilities.Members.Keys)}.", code: "E0205");
             frame.Emit(OpCode.GetMember, text: member, span: binary.Span);
-            return member switch
-            {
-                "stdout" or "stderr" => new(TypeRef.String),
-                "exit_code" or "pid" => new(TypeRef.Number),
-                _ => throw Error(frame, $"Process has no member '{member}'.", binary.Right.Span,
-                help: "Available Process members: stdout, stderr, exit_code, pid.", code: "E0205")
-            };
+            return new(type);
         }
         if (left.Type != TypeRef.Connection)
             throw Error(frame, member is null ? $"Cannot use '::' on a {left.Type} value." : $"Cannot select '{member}' from a {left.Type} value.", binary.Left.Span,

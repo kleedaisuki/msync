@@ -318,3 +318,12 @@ Scope capabilities or specialize code on runtime Bool values. The focused
 `tests/PathProjection --editor-session` journey executes accepted declarations,
 changes cwd/home, checks direct/Scope/captured/returned-closure projections, and
 then executes new real generic calls after editor-only probes.
+
+Caret contexts retain the grammar-owned receiver kind: lexical `Member` selection
+versus `PathJoin`. An opaque Path parameter can therefore suppress an unproved
+filesystem query while still offering actual visible bindings, without treating
+an invalid `Path::member` as a filesystem or namespace lookup. Process receivers
+expose the four working runtime capabilities `stdout`, `stderr`, `exit_code` and
+`success`; their types come from the canonical native signatures. The compiler
+no longer advertises `pid`, which the runtime has never exposed, and accepts the
+already-supported Bool `success` property.

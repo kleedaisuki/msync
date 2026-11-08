@@ -21,6 +21,14 @@ public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrence
 public static class EditorCompiler
 {
     private static readonly Lazy<IReadOnlyList<SemanticMember>> builtins = new(CreateBuiltinBindings);
+    private static readonly Lazy<SemanticMember[]> processMembers = new(() => ProcessCapabilities.Members.Select(pair =>
+        new SemanticMember(pair.Key, pair.Value.ToString(), $"{pair.Key}: {pair.Value}", pair.Key switch
+        {
+            "stdout" => "Captured standard output.",
+            "stderr" => "Captured standard error.",
+            "exit_code" => "The process exit status.",
+            _ => "True when the process exit status is zero."
+        })).ToArray());
     public static IReadOnlyList<SemanticMember> BuiltinBindings => builtins.Value;
 
     private static IReadOnlyList<SemanticMember> CreateBuiltinBindings()
@@ -31,13 +39,13 @@ public static class EditorCompiler
     }
 
     internal static EditorContext DescribeContext(IReadOnlyList<System.Collections.Immutable.ImmutableDictionary<string, Binding>> environments,
-        IReadOnlyList<Info> receivers)
+        IReadOnlyList<Info> receivers, EditorReceiverKind kind = EditorReceiverKind.Member)
     {
         Dictionary<ScopeInfo, ScopeDescription> scopes = [];
         SemanticMember[] bindings = environments.Count == 0 ? [] : environments[0].Keys.Where(name => !name.StartsWith('$') && environments.All(environment => environment.ContainsKey(name)))
             .Select(name => DescribeMember(name, environments.Select(environment => environment[name].Info), scopes, members: true)).ToArray();
         SemanticMember? receiver = receivers.Count == 0 ? null : DescribeMember("", receivers, scopes, members: true);
-        return new(bindings, receiver);
+        return new(bindings, receiver, kind);
     }
 
     internal static IReadOnlyList<SemanticMember> DescribeBindings(IReadOnlyDictionary<string, Binding> bindings)
@@ -119,7 +127,7 @@ public static class EditorCompiler
             : type == TypeRef.Type ? "A type value. `decltype(expression)` infers without executing the expression."
             : type.WithoutNull == TypeRef.Bool ? "A boolean value: `true` or `false`. Conditions require Bool; Null is not a boolean."
             : type.WithoutNull == TypeRef.String ? "A text value. Transferring a String writes its bytes; a Path reads a file."
-            : type.WithoutNull == TypeRef.Process ? "A process value. Inspect `stdout`, `stderr`, `exit_code` or `pid` with `::`."
+            : type.WithoutNull == TypeRef.Process ? "A process value. Inspect `stdout`, `stderr`, `exit_code` or `success` with `::`."
             : type == TypeRef.Null ? "The absence of a value. Test with `is null` or `is not null`; postfix `?` means `is null`."
             : $"Inferred type: `{type}`. Inspection does not execute this expression.";
         if (type.Nullable && type != TypeRef.Null)
@@ -127,6 +135,7 @@ public static class EditorCompiler
         var native = choices.Select(value => value.NativeName).FirstOrDefault(value => value is not null);
         if (native is not null) description += $"\n\nNative standard-library function `{native}`.";
         SemanticMember[]? contents = null;
+        if (members && !unknown && type == TypeRef.Process) contents = processMembers.Value;
         if (members && !unknown && choices.Any(value => value.Scope is not null))
         {
             ScopeInfo[] scopes = choices.Where(value => value.Scope is not null).Select(value => value.Scope!).ToArray();
