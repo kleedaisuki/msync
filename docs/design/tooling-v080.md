@@ -282,3 +282,103 @@ ignoring physical wrap line feeds. Exact result and file-byte assertions remain;
 no fixed sleeps, added production branches or relaxed cancellation checks were
 needed. Raw VT logs and completed phases accompany the JSON result. This console
 phase passed independently of the separate WSL-download failure in that job.
+
+## Source-oriented language presentation (0.8.0 polish)
+
+CLI help, the short syntax guide (`msync help syntax` or REPL `/syntax`),
+interactive highlighting, bytecode plans, and diagnostics share a theme-adaptive
+16-color vocabulary: cyan for structure and keywords, green for commands,
+Strings and repairs, magenta for types, blue for source gutters, and bold red
+for primary errors. They use the terminal's own palette rather than a fixed RGB
+background. `auto` tests the stream being rendered: redirected stdout does not
+turn off color on terminal stderr, and terminal stdout does not color piped
+stderr. `always` explicitly emits SGR; `never`, `NO_COLOR`, and automatic
+`TERM=dumb` disable it. Source formatting, binary bytecode, TOML configuration,
+LSP frames, and ordinary program values remain undecorated.
+
+Command help is selected from the ordinary parsed command, not by searching raw
+argument strings: a configuration filename such as `fmt` cannot redirect
+`msync --config fmt run --help` to formatter help. Both help and skill reference
+requests return before configuration discovery and telemetry initialization.
+The REPL lists real editing keys, continuation behavior, persistent bindings,
+and the distinction between a returned block value and semicolon discard.
+The syntax guide explains the otherwise easy-to-confuse points: bare unbound
+names are Paths, Scope member selection is not Connection qualification, and
+postfix `value?` means **is null**, not is-present.
+
+Compiler diagnostics are structured source data, not a location prefix embedded
+in a sentence. Terminal presentation renders primary and related source frames,
+labels, notes, actionable help, and the proposed edited line. Related frames
+explain generic call specialization without hiding the source-owned failure.
+CRLF/LF, tabs, combining characters and emoji use UTF-16 source offsets but
+terminal-cell underlines. The existing PrettyPrompt grapheme-width implementation
+provides cell measurement; no second Unicode width table is introduced. Long
+lines have a viewport around the relevant span; long multiline expressions retain
+their opening and closing highlighted lines. Full native causes remain visible,
+with identical adjacent wrapper messages collapsed. Entire error frames serialize
+only on the failure path, so parallel transfer failures cannot interleave frames.
+
+Runtime transfer reporting uses an optional `ExecutionOptions.ReportError`
+init-only callback. The positional constructor/deconstruction contract and the
+existing writer fallback for library consumers remain unchanged. Transfer errors
+still produce Bool false and increment the same failure count. Direct source
+execution can show its retained source snapshot. Source-free bytecode and runtime
+REPL functions show retained operand source names and offsets instead: bytecode
+format 2 does not contain source text, and an earlier REPL function can share
+`<repl>` with a different submission. Presentation never rereads a coincidentally
+named file from the current directory or invents a source line from an offset.
+
+These choices follow the [Rust diagnostic structure guidance](https://rustc-dev-guide.rust-lang.org/diagnostics/diagnostic-structs.html)
+and [GCC diagnostic guidelines](https://gcc.gnu.org/onlinedocs/gccint/Guidelines-for-Diagnostics.html):
+explain the user's source operation, retain meaningful locations, and offer a
+repair rather than exposing only an internal type-checking failure.
+
+### Inference-backed editor surfaces
+
+The compiler records editor observations only when editor analysis requests them;
+ordinary compilation does not construct semantic descriptions. Descriptions are
+deferred until the completed inference result is available, so a function hover
+can show its actual parameter constraints and selected return types. Aliases and
+Scope members retain their inferred callable/Scope identities. Function-valued
+identifiers use the standard `function` semantic token, and Scope values use
+`type`, including inferred declarations and member references. The extension's
+TextMate roles remain the fallback while analysis is pending.
+
+Analysis remains a versioned asynchronous snapshot cache. A supported client
+receives one semantic-token refresh request after new inference is published;
+the server consumes the response rather than treating it as another request.
+Hover waits only for its own generation, not by blocking the protocol loop.
+Cancellation, a newer version, close/reopen and shutdown retire obsolete pending
+requests. Completion includes useful member lists and type/signature details;
+hover no longer returns a synthetic “typed expression” placeholder. Quick fixes
+intersect the diagnostic span and apply a versioned document edit. Formatting
+invalid/incomplete source returns no edit rather than terminating the server.
+The contracts follow the [VS Code semantic highlighting guide](https://code.visualstudio.com/api/language-extensions/semantic-highlight-guide)
+and [LSP 3.17](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/).
+
+Formatting uses an 80-column target, not a rejection threshold. Calls and
+expressions break at syntactic boundaries; deeper indentation reduces available
+space, but indivisible Strings, regexes and path spellings remain intact. This
+is the same useful distinction between print width and maximum line length made
+by [Prettier's print-width guidance](https://prettier.io/docs/options#print-width).
+
+### Progressive built-in reference
+
+`msync skill` prints a compact root index; `msync skill language functions` and
+other child paths reveal focused pages. `SkillReference` owns the immutable topic
+registry and embedded Markdown, including immediate-child and parent commands.
+Standard-library pages show declarations from the same embedded source bytes
+used by the compiler, rather than another handwritten API inventory. Reference
+requests do not read user files, initialize telemetry, or invoke native transports.
+Automatic pipeline output is plain Markdown; explicit `--color always` adds only
+SGR styling, preserving fences, backticks, text and newline bytes after stripping
+SGR. The language/product version stays 0.8.0.
+
+Focused real-process journeys are `presentation_journey.py` (CLI and LSP),
+`terminal_presentation_journey.py` (nine actual POSIX terminal/pipe cases),
+`windows_presentation_journey.py` (native ConPTY), `formatter_journey.py`, and
+`skill_journey.py` under `tests/Msync.EndToEnd`. The skill journey traverses all
+18 pages, checks 26 executable example blocks, and performs a real documented
+copy. The terminal fixture distinguishes SGR styling from .NET's independent
+terminal application-mode initialization, and compares content across automatic,
+forced, disabled, and `NO_COLOR` modes without assuming one terminal's palette.

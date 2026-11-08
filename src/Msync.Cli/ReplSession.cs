@@ -19,11 +19,12 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
     public async Task<int> RunAsync()
     {
         await using InteractivePrompt? prompt = InteractivePrompt.IsSupported
-            ? new(syntax.IsIncomplete, () => compiler.BindingNames, color: color != "never") : null;
+            ? new(syntax.IsIncomplete, () => compiler.BindingNames, color: TerminalPresentation.Colors(color)) : null;
         editing = prompt is not null;
-        if (!Console.IsInputRedirected) Console.WriteLine(editing
-            ? "msync 0.8.0 — Tab to complete; Shift+Enter for a newline; /help for commands"
-            : "msync 0.8.0 — basic input; /help for commands; /quit to leave");
+        if (!Console.IsInputRedirected)
+            Console.WriteLine(TerminalPresentation.Paint("msync 0.8.0", TerminalPresentation.HeadingColor, TerminalPresentation.Colors(color))
+                + (editing ? " — Tab to complete; Shift+Enter for a newline; /help for commands"
+                    : " — basic input; /help for commands; /quit to leave"));
         if (!editing) Console.CancelKeyPress += Cancel;
         try
         {
@@ -61,13 +62,13 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
         catch (OperationCanceledException)
         {
             compiler.ReconcileSubmission(execution.IsLocalInitialized);
-            Console.Error.WriteLine("msync: operation cancelled; enter another statement or /quit");
+            TerminalPresentation.Cancelled(color, interactive: true);
             pending = "";
         }
         catch (Exception error) when (error is SyntaxException or CompileException or MsyncException or IOException or UnauthorizedAccessException or ArgumentException)
         {
             compiler.ReconcileSubmission(execution.IsLocalInitialized);
-            Console.Error.WriteLine(error.Message);
+            TerminalPresentation.Error(error, color);
             pending = "";
         }
         return false;
@@ -99,18 +100,19 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
     {
         if (pending.Length == 0) return 0;
         try { Parser.Parse(pending, "<repl>"); }
-        catch (SyntaxException error) { Console.Error.WriteLine(error.Message); }
+        catch (SyntaxException error) { TerminalPresentation.Error(error, color); }
         return 1;
     }
 
-    private static bool Command(string source)
+    private bool Command(string source)
     {
         string command = source.Trim();
         if (command is "/help" or "/?")
         {
-            Console.WriteLine("/help  show commands\n/quit  leave the session\n/pwd   print the working directory\n/cd PATH  change the working directory\n/clear clear the view without clearing bindings\nTab completes names and local paths; Shift+Enter inserts a newline; Ctrl+C cancels input or current work.");
+            TerminalHelp.Repl(color);
             return true;
         }
+        if (command == "/syntax") { TerminalHelp.Syntax(TerminalPresentation.Colors(color)); return true; }
         if (command == "/pwd") { Console.WriteLine(Environment.CurrentDirectory); return true; }
         if (command == "/clear") { if (!Console.IsOutputRedirected) Console.Clear(); return true; }
         if (command != "/cd" && !command.StartsWith("/cd ", StringComparison.Ordinal)) return false;

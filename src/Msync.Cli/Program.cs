@@ -10,64 +10,32 @@ namespace Msync.Cli;
 
 internal static class Program
 {
-    private static readonly string[] Commands = ["run", "check", "compile", "emit-ir", "bind-ir", "run-ir", "plan", "plan-ir", "fmt", "repl", "doctor", "config"];
-    private const string Help = """
-        msync 0.8.0 — a typed file synchronization language
-
-        USAGE
-          msync [run] FILE              Execute .msync, .mso, or .mexe ('-' is stdin)
-          msync check FILE              Infer types without running effects
-          msync compile FILE -o FILE    Emit binary relocatable .mso bytecode
-          msync emit-ir FILE -o FILE    Emit relocatable bytecode
-          msync bind-ir FILE -o FILE    Bind bytecode to this context as .mexe
-          msync run-ir FILE             Run .mso or .mexe without source
-          msync plan FILE               Inspect typed functions and basic blocks
-          msync fmt FILE                Format source indentation
-          msync repl                    Start an interactive session
-          msync config                  Print effective TOML settings and origins
-          msync doctor                  Inspect optional native transports
-          msync legacy ...              Run the separately installed Rust baseline
-          msync --language-server       Serve LSP on standard input/output
-
-        OPTIONS
-          -o, --output FILE             Artifact output ('-' is binary stdout)
-          -n, --dry-run                 Show execution without filesystem changes
-          -O0, -O1, -O2                 Machine-independent optimization level
-          --source-file FILE            Explicit source identity for binding
-          --jobs N                      Runtime copy/process concurrency
-          --buffer-size N               Transfer buffer size (for example 64KiB)
-          --memory-limit N              Aggregate payload-buffer budget
-          --spool-limit N               Process output limit, or unlimited
-          --check                       Check formatting without changing it
-          --stdout                      Print formatted source
-          --syntax 0.8                  Select the current grammar
-          --color auto|always|never      Interactive color (NO_COLOR takes precedence)
-          --config FILE                 Read a specific TOML configuration
-          --no-config                   Disable configuration discovery
-          --trace FILE                  Write opt-in JSONL telemetry ('-' is stderr)
-          --telemetry-db FILE           Write opt-in SQLite telemetry
-          --no-telemetry                Disable configured telemetry
-          -h, --help                    Show help
-          -V, --version                 Show version
-
-        Braces delimit expressions; ';' discards a value. A block's last
-        unterminated expression is its result. Old source/artifacts are executed
-        only by the preserved Rust implementation, never reinterpreted as 0.8.
-        """;
+    private static readonly string[] Commands = ["run", "check", "compile", "emit-ir", "bind-ir", "run-ir", "plan", "plan-ir", "fmt", "repl", "doctor", "config", "help", "skill"];
 
     public static async Task<int> Main(string[] args)
     {
         TelemetrySession? telemetry = null;
+        SourceSnapshot? snapshot = null;
+        string color = TerminalPresentation.RequestedColor(args);
         try
         {
             if (args.Length != 0 && args[0] == "legacy") return await Legacy(args[1..]);
             if (args.Contains("--language-server", StringComparer.Ordinal)) return await new LanguageServer(CheckForEditor, source => Formatter.Format(source)).RunAsync();
-            if (args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal)) { Console.WriteLine(Help); return 0; }
+            if (args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal))
+            {
+                Options help = Options.Parse(args.Where(arg => arg is not ("--help" or "-h")).ToArray());
+                string? topic = help.Command == "help" ? help.File : help.ExplicitCommand || help.File is not null ? help.Command : null;
+                TerminalHelp.Show(topic, color);
+                return 0;
+            }
             if (args.Contains("--version", StringComparer.Ordinal) || args.Contains("-V", StringComparer.Ordinal)) { Console.WriteLine("msync 0.8.0"); return 0; }
             Options options = Options.Parse(args);
+            if (options.Command == "help") { TerminalHelp.Show(options.File, color); return 0; }
+            if (options.Command == "skill") { TerminalPresentation.Reference(SkillReference.Render(options.SkillTopics), color); return 0; }
             Configuration configuration = Configuration.Load(options.ConfigPath, options.NoConfig, options.Overrides);
             if (options.Command == "config") { configuration.Dump(Console.Out); return 0; }
             configuration.Validate();
+            color = configuration.Color;
             options = options with
             {
                 Jobs = configuration.Jobs,
@@ -85,6 +53,7 @@ internal static class Program
             if (file.EndsWith(".mobj", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) return Complete(await Legacy(args), telemetry);
             bool binary = IsArtifact(file);
             string? source = binary ? null : await ReadSource(file);
+            if (source is not null) snapshot = new(file, source);
             if (source is not null && IsLegacySource(source)) return Complete(await Legacy(args, file == "-" ? source : null), telemetry);
             long compileStart = Stopwatch.GetTimestamp();
             Module module = binary ? Artifact.Read(file) : SourceCompiler.Compile(source!, file, options.Optimization);
@@ -92,7 +61,7 @@ internal static class Program
             if (options.Command == "check") { Console.WriteLine($"{file}: valid"); return Complete(0, telemetry); }
             if (options.Command is "compile" or "emit-ir")
             {
-                if (options.Output is null) PrintPlan(module);
+                if (options.Output is null) PrintPlan(module, color);
                 else Write(module, options.Output);
                 return Complete(0, telemetry);
             }
@@ -103,24 +72,23 @@ internal static class Program
                 Write(bound, options.Output ?? Path.ChangeExtension(file, ".mexe"));
                 return Complete(0, telemetry);
             }
-            if (options.Command is "plan" or "plan-ir") { PrintPlan(module); return Complete(0, telemetry); }
+            if (options.Command is "plan" or "plan-ir") { PrintPlan(module, color); return Complete(0, telemetry); }
             using CancellationTokenSource cancellation = new();
             ConsoleCancelEventHandler cancel = (_, e) => { e.Cancel = true; cancellation.Cancel(); };
             Console.CancelKeyPress += cancel;
             try
             {
-                Interpreter interpreter = new(module, RuntimeOptions(options, options.SourceFile ?? (binary || file == "-" ? null : Path.GetFullPath(file)), telemetry));
+                Interpreter interpreter = new(module, RuntimeOptions(options, options.SourceFile ?? (binary || file == "-" ? null : Path.GetFullPath(file)), telemetry, color, snapshot));
                 await interpreter.ExecuteAsync(cancellation.Token);
                 return Complete(interpreter.FailedTransfers == 0 ? 0 : 1, telemetry);
             }
             finally { Console.CancelKeyPress -= cancel; }
         }
-        catch (OperationCanceledException error) { telemetry?.Finish("cancelled", error); Console.Error.WriteLine("msync: operation cancelled"); return 130; }
+        catch (OperationCanceledException error) { telemetry?.Finish("cancelled", error); TerminalPresentation.Cancelled(color); return 130; }
         catch (Exception error) when (error is CompileException or SyntaxException or MsyncException or IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or FormatException or OverflowException)
         {
             telemetry?.Finish("error", error);
-            Console.Error.WriteLine($"msync: {error.Message}");
-            for (Exception? cause = error.InnerException; cause is not null; cause = cause.InnerException) Console.Error.WriteLine($"  caused by {cause.Message}");
+            TerminalPresentation.Error(error, color, snapshot);
             return 1;
         }
         finally { telemetry?.Dispose(); }
@@ -132,16 +100,17 @@ internal static class Program
         return code;
     }
 
-    private static ExecutionOptions RuntimeOptions(Options options, string? sourceFile, TelemetrySession? telemetry) =>
+    private static ExecutionOptions RuntimeOptions(Options options, string? sourceFile, TelemetrySession? telemetry,
+        string color, SourceSnapshot? snapshot = null) =>
         new(SourceFile: sourceFile, DryRun: options.DryRun, Jobs: options.Jobs, BufferSize: options.BufferSize,
-            MemoryLimit: options.MemoryLimit, SpoolLimit: options.SpoolLimit, Observe: telemetry is null ? null : telemetry.Observe);
+            MemoryLimit: options.MemoryLimit, SpoolLimit: options.SpoolLimit, Observe: telemetry is null ? null : telemetry.Observe)
+        {
+            ReportError = error => TerminalPresentation.Error(error, color, snapshot,
+                "Check the source, destination and permissions, then retry. Completed transfers are retained.")
+        };
 
-    private static EditorDiagnostic? CheckForEditor(string source, string? name)
-    {
-        try { _ = SourceCompiler.Compile(source, name); return null; }
-        catch (CompileException error) { return new(error.Message, error.Line, error.Column, error.Span.Start, error.Span.Length); }
-        catch (SyntaxException error) { return new(error.Message, error.Line, error.Column, error.Span.Start, error.Span.Length); }
-    }
+    private static EditorAnalysis CheckForEditor(string source, string? name) =>
+        EditorCompiler.Analyze(source, name ?? "<source>");
 
     private static bool IsArtifact(string file) => file.EndsWith(".mso", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".mexe", StringComparison.OrdinalIgnoreCase);
     private static bool IsLegacySource(string source) => source.Split('\n').Take(5).Any(line => line.Trim().StartsWith("# msync: 0.", StringComparison.Ordinal) && !line.Trim().StartsWith("# msync: 0.8", StringComparison.Ordinal));
@@ -154,17 +123,19 @@ internal static class Program
         Artifact.Write(module, stream);
     }
 
-    private static void PrintPlan(Module module)
+    private static void PrintPlan(Module module, string policy)
     {
-        Console.WriteLine($"{module.Stage} bytecode, optimization O{module.OptimizationLevel}, {module.Functions.Count} functions, {module.Constants.Count} constants");
+        bool color = TerminalPresentation.Colors(policy);
+        Console.WriteLine(TerminalPresentation.Paint($"{module.Stage} bytecode, optimization O{module.OptimizationLevel}, {module.Functions.Count} functions, {module.Constants.Count} constants", TerminalPresentation.HeadingColor, color));
         for (int f = 0; f < module.Functions.Count; f++)
         {
             FunctionCode function = module.Functions[f];
-            Console.WriteLine($"fn #{f} {function.Name}({function.ParameterCount} arguments) -> {function.ReturnType}");
+            Console.WriteLine(TerminalPresentation.Syntax($"fn #{f} {function.Name}({function.ParameterCount} arguments) -> {function.ReturnType}", color));
             for (int i = 0; i < function.Instructions.Count; i++)
             {
                 Instruction instruction = function.Instructions[i];
-                Console.WriteLine($"  {i,4}: {instruction.Op,-16} {instruction.A} {instruction.B} {instruction.Text}");
+                string operation = TerminalPresentation.Paint(instruction.Op.ToString().PadRight(16), "36", color);
+                Console.WriteLine($"  {i,4}: {operation} {instruction.A} {instruction.B} {instruction.Text}");
             }
         }
         foreach (BasicBlock block in module.Blocks ?? []) Console.WriteLine($"block fn#{block.Function} [{block.Start},{block.End}) effects={block.HasEffects} successors=[{string.Join(',', block.Successors)}]");
@@ -185,7 +156,7 @@ internal static class Program
     }
 
     private static Task<int> Repl(Options options, TelemetrySession? telemetry, Configuration configuration) =>
-        new ReplSession(RuntimeOptions(options, null, telemetry), options.Optimization, configuration.Color).RunAsync();
+        new ReplSession(RuntimeOptions(options, null, telemetry, configuration.Color), options.Optimization, configuration.Color).RunAsync();
 
     private static int Doctor()
     {
@@ -228,6 +199,8 @@ internal static class Program
         string? ConfigPath, bool NoConfig, IReadOnlyDictionary<string, object> Overrides,
         string? TracePath, string? TelemetryDatabase, bool NoTelemetry)
     {
+        public bool ExplicitCommand { get; init; }
+        public IReadOnlyList<string> SkillTopics { get; init; } = [];
         public int BufferSize { get; init; } = 65536;
         public long MemoryLimit { get; init; } = 67108864;
         public long? SpoolLimit { get; init; }
@@ -237,6 +210,7 @@ internal static class Program
             string command = args.Length == 0 ? "repl" : "run";
             string? file = null, output = null, source = null, syntax = null, configPath = null, tracePath = null, telemetryDatabase = null;
             Dictionary<string, object> overrides = [];
+            List<string> skillTopics = [];
             int optimization = 1, jobs = 4;
             bool dryRun = false, formattingCheck = false, stdout = false, noConfig = false, noTelemetry = false;
             int index = 0;
@@ -270,11 +244,12 @@ internal static class Program
                     default:
                         if (arg.StartsWith('-') && arg != "-") throw new ArgumentException($"Unknown option '{arg}'.");
                         if (!commandSeen && file is null && Commands.Contains(arg, StringComparer.Ordinal)) { command = arg; commandSeen = true; break; }
+                        if (command == "skill") { skillTopics.Add(arg); break; }
                         if (file is not null) throw new ArgumentException($"Unexpected argument '{arg}'.");
                         file = arg; break;
                 }
             }
-            return new(command, file, output, dryRun, optimization, source, jobs, formattingCheck, stdout, syntax, configPath, noConfig, overrides, tracePath, telemetryDatabase, noTelemetry);
+            return new(command, file, output, dryRun, optimization, source, jobs, formattingCheck, stdout, syntax, configPath, noConfig, overrides, tracePath, telemetryDatabase, noTelemetry) { SkillTopics = skillTopics, ExplicitCommand = commandSeen };
         }
     }
 }

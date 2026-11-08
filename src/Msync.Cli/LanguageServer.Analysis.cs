@@ -1,3 +1,4 @@
+using Msync.Compiler;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
@@ -8,19 +9,22 @@ internal sealed partial class LanguageServer
 {
     private sealed record EditorDocument(SourceText Source, int Version, long Generation)
     {
+        public EditorAnalysis? Analysis { get; set; }
         public EditorDocument(string text, int version, long generation) : this(new SourceText(text), version, generation) { }
     }
     private abstract record ServerEvent;
     private sealed record MessageEvent(JsonDocument Message) : ServerEvent;
     private sealed record InputClosed : ServerEvent;
     private sealed record InputError(Exception Error) : ServerEvent;
-    private sealed record AnalysisEvent(string Uri, EditorDocument Document, EditorDiagnostic? Diagnostic) : ServerEvent;
+    private sealed record AnalysisEvent(string Uri, EditorDocument Document, EditorAnalysis Analysis) : ServerEvent;
     private sealed record AnalysisWork(string Uri, EditorDocument Document);
+    private sealed record PendingInsight(string Uri, long Generation, JsonNode Id, string Method, JsonElement Parameters);
 
     private readonly Channel<ServerEvent> events = Channel.CreateUnbounded<ServerEvent>(new() { SingleReader = true });
     private readonly Channel<string> analysisReady = Channel.CreateUnbounded<string>(new() { SingleReader = true, SingleWriter = true });
     private readonly Dictionary<string, AnalysisWork> pendingAnalysis = new(StringComparer.Ordinal);
     private readonly object analysisGate = new();
+    private readonly List<PendingInsight> pendingInsights = [];
     private long generation;
     private bool shuttingDown;
 
@@ -70,6 +74,16 @@ internal sealed partial class LanguageServer
 
     private bool Dispatch(JsonElement root)
     {
+        if (!root.TryGetProperty("method", out _))
+        {
+            if (root.TryGetProperty("id", out var responseId) && responseId.ValueKind == JsonValueKind.String
+                && responseId.GetString() == $"msync-refresh-{serverRequest}")
+            {
+                semanticRefreshPending = false;
+                RefreshSemanticTokens();
+            }
+            return false;
+        }
         string method = root.TryGetProperty("method", out JsonElement name) ? name.GetString() ?? "" : "";
         JsonNode? id = root.TryGetProperty("id", out JsonElement requestId) ? JsonNode.Parse(requestId.GetRawText()) : null;
         JsonElement parameters = root.TryGetProperty("params", out JsonElement value) ? value : default;
@@ -77,6 +91,14 @@ internal sealed partial class LanguageServer
         if (method == "shutdown") StopAnalysis();
         try
         {
+            if (id is not null && (method is "textDocument/hover" or "textDocument/semanticTokens/full")
+                && parameters.TryGetProperty("textDocument", out var descriptor)
+                && documents.TryGetValue(descriptor.GetProperty("uri").GetString()!, out var document)
+                && document.Analysis is null)
+            {
+                pendingInsights.Add(new(descriptor.GetProperty("uri").GetString()!, document.Generation, id, method, parameters.Clone()));
+                return false;
+            }
             if (id is not null) Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = Handle(method, parameters) });
             else if (!shuttingDown) Notify(method, parameters);
         }
@@ -90,11 +112,23 @@ internal sealed partial class LanguageServer
 
     private void Notify(string method, JsonElement parameters)
     {
+        if (method == "$/cancelRequest")
+        {
+            string requested = parameters.GetProperty("id").GetRawText();
+            for (int index = pendingInsights.Count - 1; index >= 0; index--)
+                if (pendingInsights[index].Id.ToJsonString() == requested)
+                {
+                    Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = pendingInsights[index].Id, ["error"] = new JsonObject { ["code"] = -32800, ["message"] = "Editor request cancelled." } });
+                    pendingInsights.RemoveAt(index);
+                }
+            return;
+        }
         if (method is not ("textDocument/didOpen" or "textDocument/didChange" or "textDocument/didClose")) return;
         JsonElement descriptor = parameters.GetProperty("textDocument");
         string uri = descriptor.GetProperty("uri").GetString()!;
         if (method == "textDocument/didClose")
         {
+            CompleteInsights(uri);
             documents.Remove(uri);
             lock (analysisGate) pendingAnalysis.Remove(uri);
             PublishDiagnostics(uri, null, []);
@@ -103,6 +137,7 @@ internal sealed partial class LanguageServer
         int version = descriptor.GetProperty("version").GetInt32();
         EditorDocument? previous = documents.GetValueOrDefault(uri);
         if (method == "textDocument/didChange" && previous is not null && version <= previous.Version) return;
+        CompleteInsights(uri);
         SourceText source = method == "textDocument/didOpen" ? new(descriptor.GetProperty("text").GetString()!) : ApplyChanges(previous?.Source ?? new(""), parameters);
         EditorDocument current = new(source, version, ++generation);
         documents[uri] = current;
@@ -133,23 +168,62 @@ internal sealed partial class LanguageServer
             AnalysisWork? work;
             lock (analysisGate)
                 if (!pendingAnalysis.Remove(uri, out work)) continue;
-            EditorDiagnostic? diagnostic = check(work.Document.Source.Text, uri);
-            events.Writer.TryWrite(new AnalysisEvent(uri, work.Document, diagnostic));
+            EditorAnalysis analysis = check(work.Document.Source.Text, uri);
+            events.Writer.TryWrite(new AnalysisEvent(uri, work.Document, analysis));
         }
     }
 
     private void PublishAnalysis(AnalysisEvent completed)
     {
         if (shuttingDown || !documents.TryGetValue(completed.Uri, out EditorDocument? current) || current.Generation != completed.Document.Generation) return;
+        current.Analysis = completed.Analysis;
+        CompleteInsights(completed.Uri, current);
         JsonArray diagnostics = [];
-        if (completed.Diagnostic is { } diagnostic)
+        if (completed.Analysis.Diagnostic is { } diagnostic)
         {
-            JsonObject range = diagnostic.Offset is { } offset ? current.Source.Range(offset, diagnostic.Length)
-                : new() { ["start"] = Position(Math.Max(0, diagnostic.Line - 1), Math.Max(0, diagnostic.Column - 1)), ["end"] = Position(Math.Max(0, diagnostic.Line - 1), Math.Max(0, diagnostic.Column)) };
-            diagnostics.Add((JsonNode)new JsonObject { ["range"] = range, ["severity"] = 1, ["source"] = "msync", ["message"] = diagnostic.Message });
+            DiagnosticLocation primary = new(diagnostic.SourceName, diagnostic.Source, diagnostic.Span, diagnostic.Label ?? "here");
+            var locations = diagnostic.Related.AsEnumerable();
+            if (diagnostic.SourceName != completed.Uri)
+            {
+                var call = diagnostic.Related.FirstOrDefault(location => location.SourceName == completed.Uri);
+                if (call is not null)
+                {
+                    primary = call;
+                    locations = locations.Where(location => location != call).Prepend(new(diagnostic.SourceName, diagnostic.Source, diagnostic.Span, diagnostic.Message));
+                }
+            }
+            JsonArray related = [];
+            foreach (var location in locations)
+                related.Add((JsonNode)new JsonObject
+                {
+                    ["location"] = new JsonObject { ["uri"] = DocumentUri(location.SourceName), ["range"] = new SourceText(location.Source).Range(location.Span.Start, location.Span.Length) },
+                    ["message"] = location.Message
+                });
+            diagnostics.Add((JsonNode)new JsonObject
+            {
+                ["range"] = current.Source.Range(primary.Span.Start, primary.Span.Length),
+                ["severity"] = 1,
+                ["code"] = diagnostic.Code,
+                ["source"] = "msync",
+                ["message"] = diagnostic.EditorMessage,
+                ["relatedInformation"] = related
+            });
         }
         PublishDiagnostics(completed.Uri, current.Version, diagnostics);
+        semanticRefreshDirty = true;
+        RefreshSemanticTokens();
     }
+
+    private void RefreshSemanticTokens()
+    {
+        if (!semanticRefreshSupported || semanticRefreshPending || !semanticRefreshDirty || shuttingDown) return;
+        semanticRefreshDirty = false;
+        semanticRefreshPending = true;
+        Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = $"msync-refresh-{++serverRequest}", ["method"] = "workspace/semanticTokens/refresh" });
+    }
+
+    private static string DocumentUri(string sourceName) =>
+        Uri.TryCreate(sourceName, UriKind.Absolute, out var uri) ? uri.AbsoluteUri : new Uri(Path.GetFullPath(sourceName)).AbsoluteUri;
 
     private void PublishDiagnostics(string uri, int? version, JsonArray diagnostics) =>
         Write(new JsonObject { ["jsonrpc"] = "2.0", ["method"] = "textDocument/publishDiagnostics", ["params"] = new JsonObject { ["uri"] = uri, ["version"] = version, ["diagnostics"] = diagnostics } });
@@ -157,8 +231,23 @@ internal sealed partial class LanguageServer
     private void StopAnalysis()
     {
         shuttingDown = true;
+        foreach (var request in pendingInsights)
+            Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = null });
+        pendingInsights.Clear();
         lock (analysisGate) pendingAnalysis.Clear();
         analysisReady.Writer.TryComplete();
+    }
+
+    private void CompleteInsights(string uri, EditorDocument? document = null)
+    {
+        for (int index = pendingInsights.Count - 1; index >= 0; index--)
+        {
+            var request = pendingInsights[index];
+            if (request.Uri != uri) continue;
+            JsonNode? result = document?.Generation == request.Generation ? Handle(request.Method, request.Parameters) : null;
+            Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = result });
+            pendingInsights.RemoveAt(index);
+        }
     }
 
     private static int Offset(SourceText source, JsonElement position) =>

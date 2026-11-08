@@ -76,7 +76,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
         internal string? Submission { get; set; }
         private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "Bool", "Range", "String", "Function", "Scope", "Path", "Process", "Connection", "Null", "Number"];
         private static readonly string[] Builtins = ["$std", "$local", "$wsl", "$pwd", "$file"];
-        private static readonly string[] Commands = ["/help", "/quit", "/exit", "/clear", "/pwd", "/cd"];
+        private static readonly string[] Commands = ["/help", "/syntax", "/quit", "/exit", "/clear", "/pwd", "/cd"];
 
         protected override IEnumerable<(KeyPressPattern Pattern, KeyPressCallbackAsync Callback)> GetKeyPressCallbacks()
         {
@@ -171,7 +171,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
             {
                 AnsiColor? color = token.Groups["comment"].Success ? AnsiColor.BrightBlack
                     : token.Groups["string"].Success ? AnsiColor.Green
-                    : Keywords.Contains(token.Value, StringComparer.Ordinal) ? AnsiColor.Cyan : null;
+                    : Keywords.Contains(token.Value, StringComparer.Ordinal) ? char.IsUpper(token.Value[0]) ? AnsiColor.Magenta : AnsiColor.Cyan : null;
                 if (color is { } value) spans.Add(new(token.Index, token.Length, value));
             }
             return Task.FromResult<IReadOnlyCollection<FormatSpan>>(spans);

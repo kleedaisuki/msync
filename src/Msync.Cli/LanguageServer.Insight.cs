@@ -1,0 +1,58 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
+namespace Msync.Cli;
+
+internal sealed partial class LanguageServer
+{
+    private static JsonNode? Hover(EditorDocument document, JsonElement parameters)
+    {
+        int offset = Offset(document.Source, parameters.GetProperty("position"));
+        var occurrence = document.Analysis?.Occurrences
+            .Where(item => item.Span.Start <= offset && offset < item.Span.End)
+            .MinBy(item => item.Span.Length);
+        if (occurrence is not null)
+            return new JsonObject
+            {
+                ["contents"] = new JsonObject { ["kind"] = "markdown", ["value"] = $"```msync\n{occurrence.Signature}\n```\n\n{occurrence.Description}" },
+                ["range"] = document.Source.Range(occurrence.Span.Start, occurrence.Span.Length)
+            };
+        string word = Word(document.Source.Text, offset);
+        string? help = word switch
+        {
+            "scope" => "```msync\nscope Name { member: value }\n```\n\nConstruct a lexical Scope; access members with `Name::member`. A Scope is not a filesystem Connection.",
+            "fn" => "```msync\nfn name(parameter: Type) -> Type { result }\n```\n\nOmit annotations for generic inference. A final expression returns its value; `;` discards it.",
+            "let" => "```msync\nlet name = value;\n```\n\nBind an immutable lexical value. A later binding may shadow it. Use `let name? = value;` to admit Null.",
+            "decltype" => "```msync\ndecltype(expression)\n```\n\nInfer the expression’s type without executing its effects.",
+            "null" => "`Null` is a value type. Use `value is null` to test and refine a nullable binding; postfix `value?` also means **is null**.",
+            _ => null
+        };
+        return help is null ? null : new JsonObject { ["contents"] = new JsonObject { ["kind"] = "markdown", ["value"] = help } };
+    }
+
+    private static JsonArray CodeActions(string uri, EditorDocument document, JsonElement parameters)
+    {
+        JsonArray actions = [];
+        if (document.Analysis?.Diagnostic is not { Fix: { } fix } diagnostic) return actions;
+        if (diagnostic.SourceName != uri) return actions;
+        JsonElement requested = parameters.GetProperty("range");
+        int start = Offset(document.Source, requested.GetProperty("start"));
+        int end = Offset(document.Source, requested.GetProperty("end"));
+        if (end < diagnostic.Span.Start || start > diagnostic.Span.End) return actions;
+        actions.Add((JsonNode)new JsonObject
+        {
+            ["title"] = fix.Title,
+            ["kind"] = "quickfix",
+            ["isPreferred"] = true,
+            ["edit"] = new JsonObject
+            {
+                ["documentChanges"] = new JsonArray(new JsonObject
+                {
+                    ["textDocument"] = new JsonObject { ["uri"] = uri, ["version"] = document.Version },
+                    ["edits"] = new JsonArray(new JsonObject { ["range"] = document.Source.Range(fix.Span.Start, fix.Span.Length), ["newText"] = fix.Replacement })
+                })
+            }
+        });
+        return actions;
+    }
+}
