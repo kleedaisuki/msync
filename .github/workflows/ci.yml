@@ -32,6 +32,10 @@ on:
         description: Exercise an owned WSL1 distro when the Windows host supports it
         type: boolean
         default: true
+      reuse_run:
+        description: Reuse this recorded Windows package for console/WSL diagnostics only
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -46,11 +50,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON((inputs.platform == 'windows' && '[{"os":"windows-latest","rid":"win-x64"}]') || (inputs.platform == 'linux' && '[{"os":"ubuntu-22.04","rid":"linux-x64"}]') || '[{"os":"ubuntu-22.04","rid":"linux-x64"},{"os":"windows-latest","rid":"win-x64"}]') }}
+        include: ${{ fromJSON(((inputs.reuse_run != '' || inputs.platform == 'windows') && '[{"os":"windows-latest","rid":"win-x64"}]') || (inputs.platform == 'linux' && '[{"os":"ubuntu-22.04","rid":"linux-x64"}]') || '[{"os":"ubuntu-22.04","rid":"linux-x64"},{"os":"windows-latest","rid":"win-x64"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@v5
+        if: inputs.reuse_run == ''
         with:
           global-json-file: global.json
       - uses: actions/setup-python@v6
@@ -61,8 +66,30 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev openssh-server
       - name: Build and exercise the actual Native AOT package
         id: package
+        if: inputs.reuse_run == ''
         run: python packaging/build.py --rid ${{ matrix.rid }} --smoke
+      - name: Reuse the exact recorded Windows native payload for endpoint diagnostics
+        id: reused
+        if: inputs.reuse_run != ''
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE_RUN: ${{ inputs.reuse_run }}
+        run: |
+          import hashlib
+          import json
+          import os
+          import shutil
+          import subprocess
+          from pathlib import Path
+          subprocess.run(['python', 'packaging/performance_baseline.py', '--run', os.environ['REUSE_RUN'], '--rid', 'win-x64', '--output', 'artifacts/reused-native'], check=True)
+          metadata: dict[str, object] = json.loads(Path('artifacts/reused-native/baseline.json').read_text(encoding='utf-8'))
+          source: Path = Path(str(metadata['binary']))
+          target: Path = Path('artifacts/publish/win-x64')
+          shutil.copytree(source.parent, target, dirs_exist_ok=True)
+          assert hashlib.sha256((target / 'msync.exe').read_bytes()).hexdigest() == metadata['binary_sha256']
       - name: Exercise typed language, process, session and stdio editor journeys
+        if: inputs.reuse_run == ''
         shell: python
         env:
           PACKAGE_RID: ${{ matrix.rid }}
@@ -98,14 +125,14 @@ jobs:
           subprocess.run(['dotnet', str(contract)], check=True)
       - name: Install the pinned native Windows console fixture dependency
         id: conpty
-        if: ${{ !cancelled() && runner.os == 'Windows' && steps.package.outcome == 'success' && hashFiles('tests/Msync.EndToEnd/windows_terminal_journey.py') != '' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') && hashFiles('tests/Msync.EndToEnd/windows_terminal_journey.py') != '' }}
         run: |
           python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
       - name: Exercise actual Windows console editing and foreground input ownership
         if: ${{ !cancelled() && steps.conpty.outcome == 'success' }}
         run: python tests/Msync.EndToEnd/windows_terminal_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-console.json
       - name: Exercise the actual Windows to WSL home and path projection
-        if: ${{ !cancelled() && runner.os == 'Windows' && steps.package.outcome == 'success' && github.event_name == 'workflow_dispatch' && inputs.wsl && hashFiles('packaging/wsl_journey.py') != '' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') && github.event_name == 'workflow_dispatch' && inputs.wsl && hashFiles('packaging/wsl_journey.py') != '' }}
         run: python packaging/wsl_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/wsl.json
       - name: Build the preserved optimized Rust baseline on this same runner
         id: rust
@@ -202,4 +229,6 @@ jobs:
             dist/*
             .temp/platform-results/**
             artifacts/previous-native/baseline.json
+            artifacts/reused-native/baseline.json
+            .temp/wsl-journey-*/diagnostics/**
             .temp/windows-install-test-*/**/*.log
