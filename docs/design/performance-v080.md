@@ -856,3 +856,54 @@ Scope graph (about 247 KB and 0.374 ms even at size one) and its contextual bind
 (about 140 KB and 0.196 ms). Singleton reaching-definition representation and
 more precise changed-function invalidation are subsequent measured questions,
 not reasons to replace the working graph with a more elaborate unmeasured cache.
+
+### Reaching-definition representation and ordinary transfer scaling
+
+The representation experiment starts from the exact `c75330e` archive and
+overlays only `GraphOptimization.cs` and `DefinitionSet.cs` (subsequently
+committed as `f913c80`). The compiler, runtime and all other optimizations remain
+identical. Both images use the same transfer-probe extension from `14930a9`;
+this is not a comparison against the earlier differently instrumented image.
+
+Reproduction identities under `.temp/optimizer-performance/`:
+
+* Native control: `b123e5654859e81e08a0f6836fec914e17160950fbbade681c07bb82348a6dc8`.
+* Native DefinitionSet variant: `ce19c70c6dce44d80b526640d684353e227c26bd078262aeadebd4f6794c5efa`.
+* Complete control source TAR: `ab96d9ec4a35d8673db0f80a76d68368b98a4c87aa6ac485885d12178f350889`.
+* Complete variant source TAR: `0eac594155ef8ab80fe65024fa73236f9dcf6b43c3abf9e4fb62dd6f079ed9a6`.
+* Overlay patch: `b06c5c3ea706a2f879052e38fef0581335f5abeaa68728c75664580869305ed3`.
+* Graph source: `52013f004c04c5983abdd9a60a4de2999b5f82934b55d00aa1a921dd75666fb2`.
+* DefinitionSet source: `d9f696ad0d53a8f14cb8dea2e920d43d29164ca8d3e2c706fd7a23f70ba0f042`.
+
+Empty and singleton reaching-definition sets now live directly in a value;
+larger joins use immutable sorted arrays. State copying shares immutable set
+contents instead of cloning a heap HashSet for every local/stack item. The
+seven-pair call/Scope comparison and three-pair ordinary transfer comparison,
+all at default O1, produced:
+
+| Workload / phase | Before p50 ms | After p50 ms | Allocated MB/op, before → after |
+| --- | ---: | ---: | ---: |
+| 128 calls: raw optimization | 1.270 | 0.916 | 0.914 → 0.432 |
+| 128 Scopes: raw optimization | 2.082 | 1.113 | 1.349 → 0.754 |
+| 128 transfers: raw optimization | 6.494 | 4.987 | 2.489 → 1.355 |
+| 128 transfers: bind and lower | 12.804 | 11.303 | 2.613 → 1.557 |
+| 1,024 transfers: raw optimization | 268.846 | 231.392 | 20.020 → 10.959 |
+| 1,024 transfers: bind and lower | 794.607 | 734.799 | 20.867 → 12.435 |
+
+The transfer case is ordinary effectful code, not unused function construction:
+`./source_N -> ./destination_N;`. Compiler/bind measurements validate both typed
+artifact roundtrips but do not execute nonexistent fixture files; actual I/O
+remains in the CLI/scheduler journeys. All value-workload execution oracles pass.
+Raw observations are `definition-transfers.json` and `definition-values.json`;
+the complete overlay manifest is `definition-source.json`.
+
+This establishes a worthwhile allocation reduction but also exposes a more
+important ordinary-work defect: eight times as many transfers costs about
+46 times as much raw optimization and 65 times as much binding in the variant.
+The graph emitter reinterns every original Constant via
+`ValueRepresentation.IndexOf`, scanning the complete constant table each time,
+and repeated optimization/binding waves multiply that quadratic work. The next
+repair must retain original constant indices or use a compilation-owned hashed
+interner with the existing bit-exact representation comparer. Faster dead-pure
+examples do not compensate for hundreds of milliseconds spent optimizing an
+ordinary 1,024-transfer script.
