@@ -14,7 +14,7 @@ internal static class SourceCompletion
     private static readonly string[] WordBoundaries = ["and", "or", "is", "not", "in", "else", "if", "fn", "scope", "let", "match", "for", "exists", "return", "break", "loop", "native"];
 
     public static SourceCompletionContext? Find(string text, int caret, bool includeBarePaths = false, Func<string, ConnectionValue?>? resolveEndpoint = null,
-        PathValue? receiverPath = null, bool unknownPathReceiver = false)
+        PathValue? receiverPath = null, bool unknownPathReceiver = false, ConnectionValue? physicalEndpoint = null, bool unknownPhysicalOwner = false)
     {
         int start = 0;
         bool quoted = false, comment = false, regex = false, escaped = false, characterClass = false, namedAngle = false;
@@ -75,9 +75,13 @@ internal static class SourceCompletion
         if (comment || regex) return null;
         string fragment = text[start..caret];
         int end = TokenEnd(text, caret, quoted, fragment.StartsWith("ssh://", StringComparison.Ordinal) || fragment.StartsWith("wsl://", StringComparison.Ordinal));
+        if (fragment.StartsWith("ssh://", StringComparison.Ordinal) && LastSelection(fragment) < 0)
+            return new(start, end - start, fragment, false, "", SourceCompletionKind.Ssh, SourcePrefix: fragment);
+        if (unknownPhysicalOwner || physicalEndpoint is not null && !PhysicalDirectory(physicalEndpoint)) return null;
         int pathJoin = LastPathJoin(fragment);
         if (pathJoin >= 0 && receiverPath is not null)
         {
+            if (physicalEndpoint is not null) receiverPath = PathSemantics.Qualify(receiverPath, physicalEndpoint);
             string sourceBase = fragment[..(pathJoin + 1)];
             bool preserve = receiverPath.Connection is not null || receiverPath.WorkingDirectory is not null || receiverPath.HomeDirectory is not null
                 || receiverPath.Raw != Decode(fragment[..pathJoin]);
@@ -88,28 +92,26 @@ internal static class SourceCompletion
         if (pathJoin >= 0 && unknownPathReceiver) return null;
         int selection = LastSelection(fragment);
         string qualifier = selection < 0 ? "" : fragment[..(selection + 2)];
-        ConnectionValue? endpoint = null;
+        ConnectionValue? endpoint = physicalEndpoint;
         if (selection >= 0)
         {
             string name = fragment[..selection];
-            endpoint = name switch
+            var writtenEndpoint = name switch
             {
-                "$local" => new(ConnectionKind.Local),
-                "$pwd" => new(ConnectionKind.Local, "pwd"),
-                "$wsl" => new(ConnectionKind.Wsl),
-                _ when name.StartsWith("ssh://", StringComparison.Ordinal) => new(ConnectionKind.Ssh, name[6..]),
-                _ when name.StartsWith("wsl://", StringComparison.Ordinal) => new(ConnectionKind.Wsl, name[6..]),
+                "$local" => new ConnectionValue(ConnectionKind.Local),
+                "$pwd" => new ConnectionValue(ConnectionKind.Local, "pwd"),
+                "$wsl" => new ConnectionValue(ConnectionKind.Wsl),
+                _ when name.StartsWith("ssh://", StringComparison.Ordinal) => new ConnectionValue(ConnectionKind.Ssh, name[6..]),
+                _ when name.StartsWith("wsl://", StringComparison.Ordinal) => new ConnectionValue(ConnectionKind.Wsl, name[6..]),
                 _ => resolveEndpoint?.Invoke(name)
             };
+            endpoint ??= writtenEndpoint;
             if (endpoint is null) return null;
-            if (endpoint.Kind is not (ConnectionKind.Local or ConnectionKind.Ssh or ConnectionKind.Wsl)
-                || endpoint is { Kind: ConnectionKind.Local, Address: "file" }) return null;
+            if (!PhysicalDirectory(endpoint)) return null;
         }
         string value = fragment[qualifier.Length..];
         bool isString = value.StartsWith('"');
         string raw = Decode(value);
-        if (selection < 0 && raw.StartsWith("ssh://", StringComparison.Ordinal))
-            return isString ? null : new(start, end - start, raw, false, qualifier, SourceCompletionKind.Ssh, SourcePrefix: fragment);
         bool path = endpoint is not null || raw.Contains('/') || OperatingSystem.IsWindows() && raw.Contains('\\')
             || raw is "~" or "." or "..";
         if (!path && !(includeBarePaths && raw.Length > 0 && !raw.StartsWith('$'))) return null;
@@ -148,7 +150,7 @@ internal static class SourceCompletion
                 string replacement = context.ExpressionBase is { } expression
                     ? expression + Quote(parent + entry.Name) + (isDirectory ? "/" : "")
                     : context.Qualifier + (stringValue || context.Qualifier.Length != 0 ? Quote(raw) : PathExpression(raw));
-                string type = context.ExpressionBase is null && stringValue && context.Qualifier.Length == 0 ? "String" : "Path";
+                string type = context.ExpressionBase is null && stringValue && context.Qualifier.Length == 0 && context.Endpoint is null ? "String" : "Path";
                 string label = context.ExpressionBase is { } sourceBase ? sourceBase + parent + entry.Name + (isDirectory ? "/" : "") : raw;
                 string? filter = context.SourcePrefix is { } sourcePrefix ? sourcePrefix + entry.Name[leaf.Length..] + (isDirectory ? slash : "") : null;
                 items.Add(new(label, replacement, $"{type} · {(isDirectory ? "directory" : "file")}", isDirectory, filter));
@@ -158,6 +160,9 @@ internal static class SourceCompletion
         items.Sort((left, right) => TextSemantics.Ordinal.Compare(left.Label, right.Label));
         return items;
     }
+
+    private static bool PhysicalDirectory(ConnectionValue endpoint) => endpoint.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl
+        || endpoint is { Kind: ConnectionKind.Local, Address: not "file" };
 
     private static IReadOnlyList<SourceCompletionItem> Hosts(SourceCompletionContext context, string homeDirectory)
     {
