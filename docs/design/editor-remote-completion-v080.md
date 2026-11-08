@@ -52,11 +52,23 @@ Local host-name suggestions are a separate catalog operation.
 
 Queries are serial within an endpoint, independent between endpoints. A request
 cancelled while waiting for the gate never retires another request's active
-channel. Once admitted, its cancellation retires only that owned native process,
-its child prompt helper and credential broker. EOF, process-start errors and
-failed directory operations retire the same owner. A subsequent request may
-establish a new native session normally; there is no persistent recovery state
-or stale directory result that must be accepted first.
+channel. Before protocol readiness, cancellation retires that request's pending
+native authentication process, child prompt helper and credential broker.
+Dismissing a native credential prompt has the same effect; it does not invite
+another credential attempt on a dialog the user already closed.
+
+After authentication and protocol readiness, a read-only directory query belongs
+to the session lifetime. A superseded document cancels its consumer immediately,
+but the session drains the complete framed response under its serial gate.
+The next request then reuses the authenticated channel. This distinction matters
+on a WAN: cancelling every keystroke's consumer must not force authentication
+again whenever typing is faster than a round trip. Expected query failures are
+retained as outcomes, so a consumer that already left cannot create an
+unobserved background task exception.
+
+EOF, process-start errors and failed directory operations retire the same owner.
+A subsequent request may establish a new native session normally; there is no
+persistent recovery state or stale directory result that must be accepted first.
 
 Disposing the editor retires every session it owns and waits for stream readers
 and brokers to finish. There are no global native-client kills, SSH control
@@ -81,6 +93,16 @@ The prefix follow-up kept the same ownership checks and added literal `star*`
 and newline prefixes. Seven directory queries still used two authentications;
 the separate blocked-channel cancellation added a third client and no login.
 Its record is `.temp/remote-completion-ssh/s-dkrhkght/result.json`.
+
+The request/session lifetime follow-up inserted an owned, FIFO-controlled shim
+between the actual encrypted SSH session and its real `sh -s`. After protocol
+readiness, the shim admitted a directory query and held its response. Cancelling
+the stale consumer returned in 3.724 ms while that native query was still held.
+A new request queued behind it; releasing the FIFO drained the old frame and
+produced the new result over the same single authentication. The combined probe
+used four native clients and three authentications, including the independent
+normal-failure retry and pre-authentication cancellation cases. Its record is
+`.temp/remote-completion-ssh/s-zlzkcuhv/result.json`.
 
 The portable editor journeys and the native Windows WSL fixture own integrated
 completion acceptance. Their results should be attached to this protocol
