@@ -388,3 +388,52 @@ control also shifts slightly with integrated-image layout/noise, so those totals
 are not treated as a source-read-only decomposition. The independent same-image
 primitive experiment supplies that causal check. Unicode/BOM/CRLF, stdin, legacy
 stdin delegation and actual read-error journeys passed in the final native image.
+
+## Native code-generation preference: retain the blended default
+
+The official [Native AOT optimization settings](https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/optimizing)
+describe a blended default and optional `OptimizationPreference=Size` / `Speed`.
+`tests/Performance/aot_preferences.py` reproduced all three from the **same** Git
+archive `a2ee7ffae0adec096bb7a27105ebddc24dede08d`, SDK 10.0.403, linux-x64,
+pinned source revision and locked dependencies. Only the CLI project was
+published; no global AOT flag, diagnostic stripping or language-semantic change
+was applied. These variants include the accepted source, compiler, verifier,
+editor/session and I/O fixes.
+
+| Native image | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Blended | 8,112,880 | `e76a94a9863f81734c49008d8bb5140c2f4d2ca88012aa2554a934ba66d2ccc7` |
+| Size | 7,830,640 | `c296dbe4d2f478ebc3a7c393aa04398c3726674a229c54f7566af5d717def4b1` |
+| Speed | 8,587,232 | `731ac4c702dfd75df868c48d551b62de59e0166db236d478cedb751ceeabbdce` |
+
+Each variant was paired against the blended image with 31 samples and three
+warmups. Raw build logs, image manifest and full distributions are under
+`.temp/performance-v080/preferences/current-a2ee7ff`.
+
+| Size comparison, p50 / p95 ms | Blended | Size |
+| --- | ---: | ---: |
+| Startup | 8.247 / 9.754 | 8.802 / 10.261 |
+| Small source check | 9.367 / 10.539 | 9.402 / 12.203 |
+| 1,024-transfer check | 16.826 / 20.619 | 18.287 / 20.931 |
+| 4 KiB file source execution | 13.036 / 17.450 | 13.367 / 15.522 |
+
+| Speed comparison, p50 / p95 ms | Blended | Speed |
+| --- | ---: | ---: |
+| Startup | 8.331 / 9.758 | 8.334 / 9.970 |
+| Small source check | 9.419 / 10.829 | 8.889 / 10.207 |
+| 1,024-transfer check | 18.467 / 22.567 | 18.150 / 22.964 |
+| 4 KiB file source execution | 13.613 / 15.614 | 13.034 / 15.440 |
+
+Size reduces executable bytes by 3.5% but does not improve these latency
+controls. Speed increases bytes by 5.8%, leaves startup unchanged, and shows
+about 0.5 ms on the small check/copy medians with mixed p95 results. The blended
+batch control itself moves by about 1.6 ms between the two paired runs, larger
+than those small Speed shifts. There is no consistent, practically compelling
+overall win to justify changing the deployed default. **Retain blended.**
+
+The bounded I/O work has its own native Windows measurements, cancellation/ADS
+checks and rejected Linux copy-offload experiments in
+[performance-io-v080.md](performance-io-v080.md). Its filesystem metadata,
+source-overlap and actual stage-lifetime acceptance is recorded separately in
+[io-metadata-v080.md](io-metadata-v080.md). Those results are not inferred from
+this code-generation preference experiment or from the small-file CLI controls.

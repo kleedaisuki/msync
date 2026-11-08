@@ -88,3 +88,13 @@ work. It does not claim to measure physical cold-disk latency.
 The optional CLI cases `--case check-source-4k --case check-source-64k` then
 measure the full product pipeline with exact-size Unicode-comment sources,
 separately from the same-image primitive probe.
+
+## Native compiler preference experiment
+
+`aot_preferences.py --ref COMMIT --measure` snapshots only the product build
+inputs from an exact Git commit under root `.temp`, pins `SourceRevisionId`,
+publishes the CLI project with default blended / `Size` / `Speed` preferences,
+then runs matched 31-pair startup, small check, 1,024-transfer check and file-copy
+controls. Runtime IDs and NuGet locks remain explicit; diagnostics are not
+stripped, and the source checkout/product settings are never changed.
+This is an optional mechanism study, not a release prerequisite or CI gate.
