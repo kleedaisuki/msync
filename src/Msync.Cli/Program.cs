@@ -59,10 +59,10 @@ internal static class Program
         TelemetrySession? telemetry = null;
         try
         {
+            if (args.Length != 0 && args[0] == "legacy") return await Legacy(args[1..]);
             if (args.Contains("--language-server", StringComparer.Ordinal)) return new LanguageServer(CheckForEditor, source => Formatter.Format(source)).Run();
             if (args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal)) { Console.WriteLine(Help); return 0; }
             if (args.Contains("--version", StringComparer.Ordinal) || args.Contains("-V", StringComparer.Ordinal)) { Console.WriteLine("msync 0.8.0"); return 0; }
-            if (args.Length != 0 && args[0] == "legacy") return await Legacy(args[1..]);
             Options options = Options.Parse(args);
             Configuration configuration = Configuration.Load(options.ConfigPath, options.NoConfig, options.Overrides);
             if (options.Command == "config") { configuration.Dump(Console.Out); return 0; }
