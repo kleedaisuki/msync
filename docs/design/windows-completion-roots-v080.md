@@ -55,3 +55,28 @@ captured base distinct from process cwd. The response must preserve source
 prefixes and avoid synthetic endpoints; completed ordinary paths still expose
 real lookup errors. These are expected contracts, not a claim of native Windows
 execution on a Linux investigation host.
+
+## Actual native Windows editing baseline
+
+[The native editing run](https://github.com/kleedaisuki/msync/actions/runs/42506951530)
+used committed source `2b434542e0bd0cc836df07a73386949de36ef41f` on Windows
+Server 2025. Its executable SHA-256 is
+`f255f77212e6437503b4358e13a73f1b2ff30c88910ae91bd515f08f22925502`.
+All seven unfinished/root input cases returned normally, including one separator,
+two separators, incomplete server/share prefixes, `C:`, `C:\` and `D:/`.
+The captured-volume projection program (`--windows-rooted`) also passed on that
+actual host. The same native run passed the real upstream document-symbol
+converter, minimal leaf edits, builtins, lexical navigation, canonical range
+execution and the narrow ConPTY default-palette journey.
+
+The sole Windows failure was in the identifier/return **fixture**: writing the
+formatter's LF output with Python text mode converted it to CRLF before checking
+canonical formatting. The fixture now writes those exact UTF-8 bytes.
+[The identifier-only follow-up](https://github.com/kleedaisuki/msync/actions/runs/42508511731)
+reused the same executable and native dependencies without another AOT build;
+all nine byte-result programs, three return diagnostics and seven editing cases
+passed. Its report records native source `2b43454` separately from fixture source
+`0c55e60924067af67cbe16ba9259e046ab51d0c5`. The accepted Linux editing image is
+SHA-256 `4a0a861a3656f69320845e25c72407c1c884c6765df670c76eead58900a05fc8`.
+These images are the working editing baseline, not acceptance of the subsequent
+mutable-state/optimizer/scheduler implementation.
