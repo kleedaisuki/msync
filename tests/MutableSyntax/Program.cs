@@ -73,12 +73,26 @@ Require(Instructions("acquire;").All(instruction => instruction.Op != Msync.Core
 Require(Instructions("release ./source -> ./destination;").All(instruction => instruction is not { Op: Msync.Core.OpCode.Barrier, A: 2 }), "release does not open an acquire region");
 var nestedMarkerIds = Instructions("acquire { loop { acquire { break true; }; }; true }")
     .Where(instruction => instruction is { Op: Msync.Core.OpCode.Barrier, A: 2 }).ToArray();
-Require(nestedMarkerIds.Length == 4 && nestedMarkerIds[0].Text is not null
-    && nestedMarkerIds[0].Text == nestedMarkerIds[3].Text
+Require(nestedMarkerIds.Length == 5 && nestedMarkerIds[0].Text is not null
+    && nestedMarkerIds[0].Text == nestedMarkerIds[4].Text
     && nestedMarkerIds[1].Text is not null && nestedMarkerIds[1].Text == nestedMarkerIds[2].Text
+    && nestedMarkerIds[1].Text == nestedMarkerIds[3].Text
     && nestedMarkerIds[0].Text != nestedMarkerIds[1].Text, "nested break acquire markers retain distinct paired identities");
 var callRegions = Instructions("fn identity(value) { value }; identity(acquire true); identity(acquire false);")
     .Where(instruction => instruction is { Op: Msync.Core.OpCode.Barrier, A: 2, B: 1 }).Select(instruction => instruction.Text).ToArray();
 Require(callRegions.Length == 2 && callRegions.Distinct(StringComparer.Ordinal).Count() == 2,
     "scratch call lowering preserves unique acquire region identities");
-Console.WriteLine("Barrier lowering: 14 contracts passed.");
+var breakCode = Instructions("acquire { loop { acquire { break true; }; }; true }").ToArray();
+int breakJump = Array.FindIndex(breakCode, instruction => instruction.Op == Msync.Core.OpCode.Jump);
+Require(breakJump > 0 && breakCode[breakJump - 1] is { Op: Msync.Core.OpCode.Barrier, A: 2, B: 0 }
+    && breakCode[breakJump - 1].Text == nestedMarkerIds[1].Text, "break closes only its exited acquire region before jumping");
+var outerLoop = Instructions("acquire loop { break true; }").ToArray();
+int outerBreak = Array.FindIndex(outerLoop, instruction => instruction.Op == Msync.Core.OpCode.Jump);
+Require(outerBreak >= 0 && outerLoop[outerBreak - 1].Op != Msync.Core.OpCode.Barrier,
+    "break does not close acquire region surrounding whole loop");
+var returnModule = Msync.Compiler.Compiler.Compile("fn finish { acquire { return true; } }; finish();", optimization: 0);
+var returnCode = returnModule.Functions.Single(function => function.Name == "finish").Instructions.ToArray();
+int explicitReturn = Array.FindIndex(returnCode, instruction => instruction.Op == Msync.Core.OpCode.Return);
+Require(explicitReturn > 0 && returnCode[explicitReturn - 1] is { Op: Msync.Core.OpCode.Barrier, A: 2, B: 0 },
+    "return closes active acquire regions before leaving frame");
+Console.WriteLine("Barrier lowering: 17 contracts passed.");

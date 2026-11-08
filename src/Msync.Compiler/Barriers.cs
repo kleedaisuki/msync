@@ -1,6 +1,7 @@
 using System.Globalization;
 using Msync.Compiler.Syntax;
 using Msync.Core;
+using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 
 namespace Msync.Compiler;
 
@@ -20,12 +21,24 @@ internal sealed partial class Compilation
         string? region = barrier.Acquire ? (++nextBarrierRegion).ToString(CultureInfo.InvariantCulture) : null;
         if (barrier.Acquire) frame.Emit(OpCode.Barrier, 2, 1, text: region, span: barrier.Span);
         int start = frame.Code.Count;
-        Info result = Expression(frame, barrier.Value);
+        if (region is not null) frame.AcquireRegions.Add(region);
+        Info result;
+        try { result = Expression(frame, barrier.Value); }
+        finally
+        {
+            if (region is not null) frame.AcquireRegions.RemoveAt(frame.AcquireRegions.Count - 1);
+        }
         if (barrier.Release) ReleaseProcess(frame, barrier.Value, start, barrier.Acquire);
         if (!barrier.Acquire) return result;
         if (result.Type == TypeRef.Process) frame.Emit(OpCode.Acquire, 1, span: barrier.Span);
         frame.Emit(OpCode.Barrier, 2, text: region, span: barrier.Span);
         return result;
+    }
+
+    private static void CloseAcquireRegions(Frame frame, int depth, SourceSpan span)
+    {
+        for (int index = frame.AcquireRegions.Count - 1; index >= depth; index--)
+            frame.Emit(OpCode.Barrier, 2, text: frame.AcquireRegions[index], span: span);
     }
 
     private static void ReleaseProcess(Frame frame, Expr expression, int start, bool acquire)
