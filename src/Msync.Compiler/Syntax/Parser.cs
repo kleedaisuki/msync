@@ -31,7 +31,7 @@ public sealed class Parser
         if (!At(kind)) throw Error(message);
         return Next();
     }
-    private SyntaxException Error(string message) => new(message, source, sourceName, Current.Span);
+    private SyntaxException Error(string message) => new(message, source, sourceName, Current.Span, At(TokenKind.End));
     private IReadOnlyList<Statement> Statements(TokenKind end)
     {
         List<Statement> result = [];

@@ -18,7 +18,7 @@ internal sealed class Lexer(string source, string sourceName)
             int start = position;
             char c = source[position++];
             if (c == '"') { ReadString(start); continue; }
-            if (c == '<' && IsRegexStart() && ReadRegex(start)) continue;
+            if (c == '<' && IsRegexStart()) { ReadRegex(start); continue; }
             if (c == '/' && position < source.Length && source[position] == '/' &&
                 (start == 0 || char.IsWhiteSpace(source[start - 1])))
             { while (position < source.Length && source[position] != '\n') position++; continue; }
@@ -66,26 +66,42 @@ internal sealed class Lexer(string source, string sourceName)
             if (Take('"')) { value.Append('"'); continue; }
             Add(TokenKind.String, value.ToString(), start); return;
         }
-        throw new SyntaxException("Unterminated string.", source, sourceName, new(start, position - start));
+        throw new SyntaxException("Unterminated string.", source, sourceName, new(start, position - start), isIncomplete: true);
     }
     private bool IsRegexStart() => tokens.Count == 0 || tokens[^1].Kind is TokenKind.Slash or TokenKind.LeftBrace or TokenKind.Comma or TokenKind.LeftBracket or TokenKind.FatArrow;
-    private bool ReadRegex(int start)
+    private void ReadRegex(int start)
     {
         int end = position;
-        bool escaped = false, characterClass = false;
+        bool escaped = false, characterClass = false, namedAngle = false;
         for (; end < source.Length; end++)
         {
             char c = source[end];
             if (escaped) { escaped = false; continue; }
-            if (c == '\\') { escaped = true; continue; }
+            if (c == '\\')
+            {
+                if (!characterClass && end + 2 < source.Length && source[end + 1] == 'k' && source[end + 2] == '<')
+                { namedAngle = true; end += 2; continue; }
+                escaped = true;
+                continue;
+            }
             if (c == '[') characterClass = true;
             if (c == ']') characterClass = false;
+            if (c == '(' && !characterClass && end + 3 < source.Length && source[end + 1] == '?' && source[end + 2] == '<'
+                && source[end + 3] is not ('=' or '!')) { namedAngle = true; end += 2; continue; }
             if (c != '>' || characterClass) continue;
-            if (end + 1 < source.Length && !char.IsWhiteSpace(source[end + 1]) && !"/,;}|)".Contains(source[end + 1], StringComparison.Ordinal)) continue;
+            if (namedAngle) { namedAngle = false; continue; }
+            if (!RegexBoundary(end + 1)) continue;
             string pattern = source[position..end];
-            position = end + 1; Add(TokenKind.Regex, pattern, start); return true;
+            position = end + 1; Add(TokenKind.Regex, pattern, start); return;
         }
-        return false;
+        throw new SyntaxException("Unterminated regular expression.", source, sourceName, new(start, source.Length - start), isIncomplete: true);
+    }
+    private bool RegexBoundary(int next)
+    {
+        if (next == source.Length) return true;
+        ReadOnlySpan<char> remainder = source.AsSpan(next);
+        return char.IsWhiteSpace(remainder[0]) || "/,;}|)".Contains(remainder[0], StringComparison.Ordinal)
+            || remainder.StartsWith("=>", StringComparison.Ordinal) || remainder.StartsWith("->", StringComparison.Ordinal);
     }
     private void ReadAtom(int start)
     {

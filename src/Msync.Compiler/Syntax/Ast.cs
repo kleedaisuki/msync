@@ -54,11 +54,16 @@ public sealed class SyntaxException : Exception
     public SourceSpan Span { get; }
     public int Line { get; }
     public int Column { get; }
+    public bool IsIncomplete { get; }
     public SyntaxException(string message, string source, string sourceName, SourceSpan span)
+        : this(message, source, sourceName, span, false) { }
+
+    public SyntaxException(string message, string source, string sourceName, SourceSpan span, bool isIncomplete)
         : base($"{sourceName}:{Locate(source, span.Start).Line}:{Locate(source, span.Start).Column}: {message}")
     {
         SourceName = sourceName;
         Span = span;
+        IsIncomplete = isIncomplete;
         (Line, Column) = Locate(source, span.Start);
     }
     private static (int Line, int Column) Locate(string source, int offset)

@@ -93,6 +93,27 @@ registered suffix, such as `exists` resolving `fs.exists`.
 
 ## Lazy ranges and artifacts
 
+## Submission completeness and regex boundaries
+
+`SyntaxException.IsIncomplete` distinguishes an unfinished submission from a
+complete malformed one. Parser EOF expectations and lexer-owned unterminated
+String/regex states supply the flag; the CLI does not count raw braces or guess
+from error text. Comments, escaped delimiters, character classes and named-group
+headers therefore retain the same meaning in files, piped sessions and the
+interactive editor. The original exception constructor remains available.
+
+Regex delimiters also recognize adjacent `=>` and `->` operators. A named capture
+`(?<name>...)` or named backreference `\k<name>` owns its internal closing angle;
+that angle is not the source regex delimiter. The host regex engine still owns
+regex validity and matching, rather than a second regex parser in the CLI.
+
+`tests/Msync.EndToEnd/regex_boundary_journey.py` checks compact match arms,
+compact selected transfers, empty named captures and backreferences from source
+and source-free `.mso`/`.mexe`. The REPL continuation/recovery journey additionally
+checks comment and regex braces, actual multiline strings and incomplete EOF.
+
+## Lazy ranges and artifacts
+
 Literal ranges keep a pure-value fast path. Effectful items become typed,
 zero-argument closure thunks; the range evaluates only demanded items. Calls
 returning Range defer the entire call and its argument evaluation until demand.
