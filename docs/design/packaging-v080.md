@@ -101,7 +101,11 @@ For the actual platform run, dispatch `ci.yml` with `platform=both`,
 select the changed endpoint/console journeys, not the earlier transfer/editing
 matrices. A final
 source-freeze commit can carry `[skip ci]` to avoid redundant automatic broad
-runs while preserving explicit workflow dispatch.
+runs while preserving explicit workflow dispatch. For fixture-only diagnostics,
+`reuse_run=RUN` with `polish_only=true` reuses that recorded Windows payload
+without publishing another native image. The report distinguishes the fixture
+checkout revision from the original native source revision and image SHA-256;
+the complete downloaded artifact identity is retained alongside it.
 
 ## Dependency graph ownership
 

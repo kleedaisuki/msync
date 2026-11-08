@@ -18,6 +18,11 @@ from platform_journeys import ROOT, Phase, run_phase
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument(
+        "--native-origin",
+        type=Path,
+        help="Recorded artifact identity for a reused native image",
+    )
     parser.add_argument("--output", type=Path, default=ROOT / ".temp/platform-results")
     arguments = parser.parse_args()
     binary = arguments.binary.resolve()
@@ -28,10 +33,23 @@ def main() -> int:
         "platform": platform.platform(),
         "binary": str(binary),
         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-        "source_revision": subprocess.check_output(
+        "fixture_revision": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
         ).strip(),
     }
+    if arguments.native_origin is not None:
+        origin: dict[str, object] = json.loads(
+            arguments.native_origin.read_text(encoding="utf-8")
+        )
+        assert origin["binary_sha256"] == report["binary_sha256"], (
+            "Reused native image does not match its artifact identity"
+        )
+        report["native_origin"] = origin
+        report["native_source_revision"] = str(origin["artifact_name"]).rsplit("-", 1)[
+            -1
+        ]
+    else:
+        report["native_source_revision"] = report["fixture_revision"]
     journeys = [
         ("presentation", "presentation_journey.py"),
         ("lsp-analysis", "lsp_analysis_journey.py"),

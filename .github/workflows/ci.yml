@@ -33,7 +33,7 @@ on:
         type: boolean
         default: true
       reuse_run:
-        description: Reuse this recorded Windows package for console/WSL diagnostics only
+        description: Reuse this recorded Windows package for focused console, endpoint or polish diagnostics
         type: string
         default: ''
       console:
@@ -101,18 +101,22 @@ jobs:
           shutil.copytree(source.parent, target, dirs_exist_ok=True)
           assert hashlib.sha256((target / 'msync.exe').read_bytes()).hexdigest() == metadata['binary_sha256']
       - name: Exercise changed terminal, compiler insight and formatter user journeys
-        if: inputs.polish_only && steps.package.outcome == 'success'
+        if: inputs.polish_only && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
         shell: python
         env:
           PACKAGE_RID: ${{ matrix.rid }}
+          REUSED_NATIVE_RUN: ${{ inputs.reuse_run }}
         run: |
           import os
           import subprocess
           from pathlib import Path
           binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
-          subprocess.run(['python', 'packaging/polish_journeys.py', '--binary', str(binary), '--output', '.temp/platform-results'], check=True)
+          arguments: list[str] = ['python', 'packaging/polish_journeys.py', '--binary', str(binary), '--output', '.temp/platform-results']
+          if os.environ['REUSED_NATIVE_RUN']:
+              arguments.extend(['--native-origin', 'artifacts/reused-native/baseline.json'])
+          subprocess.run(arguments, check=True)
       - name: Exercise the actual native authentication helper and cancellation
-        if: ${{ !cancelled() && inputs.polish_only && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && inputs.polish_only && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         shell: python
         env:
           PACKAGE_RID: ${{ matrix.rid }}
@@ -129,17 +133,17 @@ jobs:
               shutil.copytree(binary.parent, payload, dirs_exist_ok=True)
               subprocess.run(['dotnet', 'run', '--project', 'tests/Msync.Authentication.Tests/Msync.Authentication.Tests.csproj', '-c', 'Release', '--artifacts-path', 'artifacts/auth-contract', '-p:RestoreLockedMode=true', '--', str(payload / binary.name)], check=True)
       - name: Install the pinned console transport for changed Windows presentation
-        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: |
           python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
       - name: Exercise actual Windows auto-color and diagnostic console output
-        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: python tests/Msync.EndToEnd/windows_presentation_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-presentation.json
       - name: Exercise actual Windows ghost rendering and explicit hint acceptance
-        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: python tests/Msync.EndToEnd/windows_hint_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-hints.json
       - name: Exercise changed actual WSL directory completion on one owned endpoint
-        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: python packaging/wsl_journey.py --binary artifacts/publish/win-x64/msync.exe --completion-only --output .temp/platform-results/wsl-completion.json
       - name: Exercise typed language, process, session and stdio editor journeys
         if: inputs.reuse_run == '' && !inputs.wsl_only && !inputs.polish_only
@@ -153,7 +157,7 @@ jobs:
           binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
           subprocess.run(['python', 'packaging/platform_journeys.py', '--binary', str(binary), '--output', '.temp/platform-results'], check=True)
       - name: Verify actual Windows file attributes, alternate streams and link ownership
-        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: python tests/IO/windows_file_metadata.py artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-file-metadata.json
       - name: Verify Linux nanosecond metadata through actual local and SSH transfers
         if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Linux' && steps.package.outcome == 'success' }}
@@ -162,13 +166,13 @@ jobs:
         if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Linux' && steps.package.outcome == 'success' }}
         run: python tests/IO/overlap_cancel.py artifacts/publish/linux-x64/msync --output .temp/platform-results/overlap-cancellation.json
       - name: Exercise per-user installer ownership and upgrade lifecycle
-        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         shell: pwsh
         run: |
           $version = python packaging/build.py --version
           ./packaging/windows/test.ps1 -InstallerPath "dist/msync-$version-windows-x86_64-setup.exe"
       - name: Verify native path projection and historical artifact decoding on this host
-        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && steps.package.outcome == 'success' && hashFiles('tests/PathProjection/Msync.PathProjection.Tests.csproj') != '' }}
+        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') && hashFiles('tests/PathProjection/Msync.PathProjection.Tests.csproj') != '' }}
         shell: python
         run: |
           import subprocess
