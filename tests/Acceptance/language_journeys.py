@@ -507,11 +507,20 @@ def main() -> int:
     temporary_root = ROOT / ".temp/acceptance-v080"
     temporary_root.mkdir(parents=True, exist_ok=True)
     snapshot = Path(tempfile.mkdtemp(prefix="cli-", dir=temporary_root))
-    if binary.suffix == ".dll":
+    managed_host = binary.with_name(f"{binary.stem}.runtimeconfig.json").is_file()
+    if binary.suffix == ".dll" or managed_host:
         shutil.copytree(binary.parent, snapshot, dirs_exist_ok=True)
     else:
         shutil.copy2(binary, snapshot / binary.name)
     frozen_binary = snapshot / binary.name
+    snapshot_files = {
+        str(path.relative_to(snapshot)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(snapshot.rglob("*"))
+        if path.is_file()
+    }
+    snapshot_digest = hashlib.sha256(
+        json.dumps(snapshot_files, sort_keys=True).encode()
+    ).hexdigest()
     cli: list[str] = (
         ["dotnet", str(frozen_binary)]
         if frozen_binary.suffix == ".dll"
@@ -539,6 +548,8 @@ def main() -> int:
                 "binary": str(binary),
                 "frozen_binary": str(frozen_binary),
                 "sha256": hashlib.sha256(frozen_binary.read_bytes()).hexdigest(),
+                "snapshot_sha256": snapshot_digest,
+                "files_sha256": snapshot_files,
                 "artifacts": arguments.artifacts,
                 "passed": passed,
                 "journeys": journeys,

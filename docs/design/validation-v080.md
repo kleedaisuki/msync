@@ -41,6 +41,29 @@ the deliberately new 0.8 syntax.
 
 ## Execution record
 
-Implementation is in progress. The next record will include the frozen CLI
-identity, exact command selection and per-journey observations; a test file's
-presence alone is not a passed acceptance result.
+The first managed CLI snapshot completed **33/34 journeys**, with 149 actual
+CLI subprocess invocations, on Linux. The snapshot retained its managed sibling
+assemblies under `.temp/acceptance-v080/cli-aggkel7d`; the entry apphost hash was
+`10e48f20bebc980b777a13c12fb5f107c54b91d9e0cb47b5354ecc3b8cf2b282`.
+The apphost alone is not a managed implementation identity; current harness
+records additionally hash every frozen sibling file and the sorted manifest.
+
+```sh
+python3 tests/Acceptance/language_journeys.py \
+  src/Msync.Cli/bin/Debug/net10.0/msync --artifacts \
+  --output .temp/acceptance-v080/initial-results.json
+```
+
+Accepted behavior includes nullable control-flow refinement, exhaustive Bool/
+finite-union matching, regex Path matching, actual Path/String conversion,
+callbacks, anonymous scopes, literal bytes, unselected SSH branches, handled
+transfer failure with preserved target/diagnostics, source-free `.mso`/`.mexe`,
+relocated `.mso` cwd versus bound `.mexe` cwd, and fresh file bytes after binding.
+`decltype` of a transfer or nonexistent process performed neither operation.
+
+The sole failure is a real scanner/compiler integration gap: recursive
+`countdown(value - 1)` classified subtraction as a Path, producing `Expected
+Number, found Path` rather than executing recursion. The unchanged successful
+journeys are accepted; correction will be checked by the focused recursion
+selection rather than another full managed sweep. Native AOT execution remains
+a separate target-runtime check.
