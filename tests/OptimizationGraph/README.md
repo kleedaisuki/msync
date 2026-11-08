@@ -23,3 +23,11 @@ Invalid-member and invalid-regex modules intentionally discard the resulting
 value: the selected operation must still produce its diagnostic. Numeric
 zero division follows the runtime's current IEEE-754 result, not a fabricated
 integer division exception.
+
+Value-numbering checks retain runtime-unknown inputs from actual filesystem and
+environment reads. Repeated Bool negation, numeric negation and String concat
+must leave one residual operation; intervening object/captured-cell writes and
+filesystem publication must invalidate stale facts. Raw-cell alias bytecode,
+escaped field storage, legacy empty-stack returns and the distinct signs of
+IEEE-754 zero are compared with explicit level-0 execution and independent
+expected results.

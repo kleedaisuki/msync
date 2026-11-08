@@ -17,6 +17,7 @@ try
     else
     {
         await SemanticChecks();
+        await ValueNumberingChecks();
         if (!args.Contains("--semantic", StringComparer.Ordinal)) await EliminationChecks();
     }
     Console.WriteLine($"Optimization graph: {assertions} contracts passed.");
@@ -123,6 +124,16 @@ async Task SemanticChecks()
     // a discarded value must not erase the operation's runtime diagnostic.
     await Differential("missing-member", Program([], new(OpCode.MakeScope, 0, Text: ""), new(OpCode.GetMember, Text: "missing"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)));
     await Differential("invalid-regex", Program([new StringValue("text")], new(OpCode.Constant, 0), new(OpCode.RegexMatch, Text: "["), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)));
+    await Differential("ieee-signed-zero", Program([new NumberValue(1), new NumberValue(0)],
+        new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Divide),
+        new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Negate), new(OpCode.Divide),
+        new(OpCode.MakeScope, 2, Text: "positive\0negative"), new(OpCode.Return)),
+        expectedValue: "Scope:negative=Number:-Infinity;positive=Number:Infinity");
+    await Differential("raw-cell-alias", new Module([], [new("alias", 0, 2,
+        [new(OpCode.True), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0), new(OpCode.InitializeLocal, 1),
+         new(OpCode.LoadLocal, 0), new(OpCode.JumpIfFalse, 10), new(OpCode.False), new(OpCode.StoreLocal, 1),
+         new(OpCode.LoadLocal, 0), new(OpCode.Return), new(OpCode.False), new(OpCode.Return)], TypeRef.Bool)], OptimizationLevel: 0),
+        expectedValue: "Bool:False");
     await Differential("ieee-division", Program([new NumberValue(1), new NumberValue(0)], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Divide), new(OpCode.Return)));
 
     Module metadata = Compiler.Compile("exists ./late-file", "late-filesystem", 0);
@@ -174,12 +185,14 @@ async Task MutableChecks()
         ("mutable-callee-alias", "fn set(object) { object::filename = ./chosen; }; let object = scope { filename?: null }; set(object); object::filename"),
         ("mutable-closure-write", "let value = 2; let set = fn { value = 9; }; set(); value"),
         ("mutable-scope-escape", "fn make() { let object = scope { field: 1 }; object::field = 7; object }; make()::field"),
+        ("mutable-escaped-field-storage", "let getter = fn { 0 }; let object = scope { value: 1, hook: { getter = fn { value }; true } }; object::value = 2; getter()"),
         ("mutable-loop", "let value = 0; for item in [1, 2, 3] { value = value + item; }; value"),
         ("nullable-constructor", "scope SomeType { remote: ssh://unused, new: fn { scope { filename?: null } } }; let object = SomeType::new(); object::filename = ~/.codex; object::filename")
     }) await Differential(name, Compiler.Compile(source, name, 0), expectedValue: name switch
     {
         "mutable-branch" or "mutable-capture" or "mutable-closure-write" => "Number:9",
         "mutable-loop" => "Number:6",
+        "mutable-escaped-field-storage" => "Number:2",
         "mutable-scope-escape" => "Number:7",
         _ => null
     });
@@ -187,4 +200,50 @@ async Task MutableChecks()
     const string dead = "scope SomeType { remote: ssh://unused, new: fn { scope { filename?: null } } }; let object = SomeType::new(); object::filename = ~/.codex;";
     Module executable = Binding.Bind(Optimizer.Optimize(Compiler.Compile(dead, "dead-object", 0), 3), new(root, root));
     Require(executable.Functions.Count == 1 && executable.Functions[0].Instructions.All(i => i.Op is OpCode.Null or OpCode.Return), "Nonescaping mutated object survives executable optimization: " + string.Join(" | ", executable.Functions.Select(f => f.Name + ": " + string.Join(",", f.Instructions.Select(i => $"{i.Op}({i.A},{i.B},{i.Text})")))));
+}
+
+
+async Task ValueNumberingChecks()
+{
+    const string environmentName = "MSYNC_OPT_GRAPH_INPUT";
+    string? previous = Environment.GetEnvironmentVariable(environmentName);
+    Environment.SetEnvironmentVariable(environmentName, "runtime text");
+    try
+    {
+        foreach ((string name, string source, OpCode operation, string expected) in new[]
+        {
+            ("cse-bool", "let value = exists ./absent; scope { first: not value, second: not value }", OpCode.Not, "Scope:first=Bool:True;second=Bool:True"),
+            ("cse-number", "let value = if exists ./absent { 3 } else { 5 }; scope { first: - value, second: - value }", OpCode.Negate, "Scope:first=Number:-5;second=Number:-5"),
+            ("cse-string", "native fn string.concat(left: String, right: String) -> String; let value: String = $env::MSYNC_OPT_GRAPH_INPUT; scope { first: string.concat(value, \"x\"), second: string.concat(value, \"x\") }", OpCode.NativeCall, "Scope:first=String:runtime textx;second=String:runtime textx")
+        })
+        {
+            Module original = Compiler.Compile(source, name, 0);
+            await Differential(name, original, expectedValue: expected);
+            for (int level = 1; level <= 3; level++)
+            {
+                Module optimized = Optimizer.Optimize(original, level);
+                Require(optimized.Functions.Sum(function => function.Instructions.Count(instruction => instruction.Op == operation)) == 1,
+                    $"{name} O{level}: repeated runtime-unknown operation was not eliminated: " + string.Join(" | ", optimized.Functions.Select(f => f.Name + ": " + string.Join(",", f.Instructions.Select(i => $"{i.Op}({i.Text?.Replace("\0", "|")})")))));
+            }
+        }
+    }
+    finally { Environment.SetEnvironmentVariable(environmentName, previous); }
+
+    await Differential("cse-observation", Compiler.Compile(
+        "let first = exists ./flag; \"bytes\" -> ./flag; let second = exists ./flag; scope { first: first, second: second }", "cse-observation", 0), writes: true,
+        expectedValue: "Scope:first=Bool:False;second=Bool:True");
+
+    await Differential("cse-scope-write", Compiler.Compile(
+        "let object = scope { value: exists ./absent }; let first = not object::value; object::value = true; let second = not object::value; scope { first: first, second: second }", "cse-scope-write", 0),
+        expectedValue: "Scope:first=Bool:True;second=Bool:False");
+    await Differential("cse-capture-write", Compiler.Compile(
+        "let value = exists ./absent; let read = fn { not value }; let first = read(); value = true; let second = read(); scope { first: first, second: second }", "cse-capture-write", 0),
+        expectedValue: "Scope:first=Bool:True;second=Bool:False");
+
+    // Older valid objects allow an empty operand stack at Return. A stack
+    // splice must materialize Null rather than stealing a caller operand.
+    Module emptyReturn = new([new NumberValue(7)],
+    [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.MakeClosure, 1), new(OpCode.Call), new(OpCode.Pop), new(OpCode.Return)], TypeRef.Number),
+     new("empty-return", 0, 0, [new(OpCode.Return)], TypeRef.Null)], Semantics: ModuleSemantics.Legacy);
+    await Differential("legacy-empty-return", emptyReturn, expectedValue: "Number:7");
 }
