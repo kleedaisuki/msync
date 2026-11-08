@@ -136,7 +136,43 @@ failed callback journey to be repeated.
 
 A separate first-class-function probe accepted a returned closure retaining its
 captured argument, including both source-free artifact stages. Choosing between
-two anonymous functions in a runtime `if` still failed with `Function value has
+two anonymous functions in a runtime `if` initially failed with `Function value has
 no inferred callable signature`; the concrete reproduction was sent to the
-compiler owner. That is a missing callable-alternative model, not a reason to
-restrict legal function-valued conditionals.
+compiler owner. The implementation added a callable-alternative dispatch model rather than
+restricting legal function-valued conditionals.
+
+
+## Corrected regressions and verifier/block-driver integration
+
+Anchored tests first demonstrated the Path regex bug against a retained old
+snapshot: `./input.txt` failed `<^[.]/input[.]txt$>`, and SSH-qualified
+`remote::~/input.txt` failed `<^~/input[.]txt$>`. Regex matching had projected
+Paths to absolute local filenames instead of using the same raw/native text
+conversion as explicit Path-to-String conversion. Neither regex test performs
+remote I/O. Both now pass, as do both selections between anonymous functions.
+
+After the bytecode verifier and block-driven runtime changed, the focused
+12-journey selection passed source, source-free `.mso`, and bound `.mexe`:
+
+- nullable present/absent `?`, `is not null`, and residual `match null` narrowing;
+- both runtime anonymous-function alternatives;
+- both anchored raw Path regex cases;
+- Scope member Path/String unions with either runtime branch selected;
+- Range<Scope> source/target member projection;
+- real `file`, `path`, `pwd`, and `std` filenames, with both bare and `./`
+  spellings after `$std::fs` is accessed.
+
+The CLI was built with isolated artifacts (no concurrent canonical obj/bin
+writes), strict diagnostics, and zero warnings/errors:
+
+```sh
+dotnet build src/Msync.Cli/Msync.Cli.csproj \
+  --artifacts-path .temp/acceptance-v080/final-build -m:1 -nr:false
+```
+
+The exact selected test names and subprocess commands are retained in
+`.temp/acceptance-v080/final-validator-scope-journeys.json`.
+Frozen managed file-manifest SHA-256:
+`2ae40f4febfd7751ef3527e1ea4b12d41496c238b85fca2a110cfb3fba891afa`.
+This selection replaces only the affected earlier conclusions; no unchanged
+full managed sweep was repeated.

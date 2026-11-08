@@ -23,7 +23,8 @@ when an unchanged contract has already passed.
 | Type match and `decltype` | Types select arms; inspecting an effectful expression creates no file |
 | Generic functions | Calls specialize Path/String separately; callbacks carry actual functions |
 | Recursive functions | Recursive calls execute with changing arguments, not infinite expansion |
-| Scopes and connections | Lexical lookup is distinct from endpoint qualification |
+| Scopes and connections | Branch/Range scope projections preserve member unions; lexical lookup is distinct from endpoint qualification |
+| Ordinary builtin-named files | Loading `$std` does not hide physical `file`, `path`, `pwd` or `std` files |
 | Literal and Path transfers | String source is exact UTF-8 data; explicit Path source reads a file |
 | Relocatable/executable artifacts | Artifacts execute after deleting the source, without reparsing it |
 

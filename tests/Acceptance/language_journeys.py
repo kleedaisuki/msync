@@ -34,6 +34,68 @@ class Journey:
 
 JOURNEYS: tuple[Journey, ...] = (
     Journey(
+        "scope_branch_member_union",
+        "let chosen = if exists ./input.txt { scope { value: ./input.txt, } } "
+        'else { scope { value: "fallback", } }; chosen::value -> result.txt;',
+        {"result.txt": b"scope bytes"},
+        {"input.txt": b"scope bytes"},
+        artifacts=True,
+    ),
+    Journey(
+        "scope_branch_member_union_absent",
+        "let chosen = if exists ./input.txt { scope { value: ./input.txt, } } "
+        'else { scope { value: "fallback", } }; chosen::value -> result.txt;',
+        {"result.txt": b"fallback"},
+        artifacts=True,
+    ),
+    Journey(
+        "scope_range_member_projection",
+        "let boxes = [scope { source: ./input.txt, target: ./copied.txt, }, "
+        'scope { source: "literal", target: ./literal.txt, }]; '
+        "for box in boxes { box::source -> box::target; };",
+        {"copied.txt": b"scope bytes", "literal.txt": b"literal"},
+        {"input.txt": b"scope bytes"},
+        artifacts=True,
+    ),
+    Journey(
+        "standard_access_preserves_builtin_named_files",
+        "let fs = $std::fs; "
+        "./file -> copied-dot-file; file -> copied-bare-file; "
+        "./path -> copied-dot-path; path -> copied-bare-path; "
+        "./pwd -> copied-dot-pwd; pwd -> copied-bare-pwd; "
+        "./std -> copied-dot-std; std -> copied-bare-std;",
+        {
+            f"copied-{kind}-{name}": name.encode()
+            for name in ("file", "path", "pwd", "std")
+            for kind in ("dot", "bare")
+        },
+        {name: name.encode() for name in ("file", "path", "pwd", "std")},
+        artifacts=True,
+    ),
+    Journey(
+        "regex_relative_path_uses_raw_string",
+        "let file = ./input.txt; let text = match file { "
+        '<^[.]/input[.]txt$> => { "raw path" }, _ => { "wrong" } }; '
+        "text -> result.txt;",
+        {"result.txt": b"raw path"},
+        artifacts=True,
+    ),
+    Journey(
+        "regex_remote_path_keeps_raw_home_without_auth",
+        "let remote = ssh://invalid-acceptance-host; let file = remote::~/input.txt; "
+        'let text = match file { <^~/input[.]txt$> => { "remote raw" }, '
+        '_ => { "wrong" } }; text -> result.txt;',
+        {"result.txt": b"remote raw"},
+        artifacts=True,
+    ),
+    Journey(
+        "runtime_function_alternatives_absent",
+        'let action = if exists ./input.txt { fn() { "present" } } '
+        'else { fn() { "absent" } }; action() -> result.txt;',
+        {"result.txt": b"absent"},
+        artifacts=True,
+    ),
+    Journey(
         "returned_function_captures_argument",
         "fn make(value) { fn() { value } }; "
         'let get = make("captured"); get() -> result.txt;',
