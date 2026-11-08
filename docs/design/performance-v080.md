@@ -597,3 +597,49 @@ The per-stage distributions and allocation records remain in `components.json`;
 cumulative compilation/decode stages are not summed as disjoint costs. Precise
 first-principles before/after memory attribution remains in the local frozen
 component study. No acceptance threshold or publication quality gate was added.
+
+## Presentation and semantic-completion follow-up (2026-11-08)
+
+The final accepted native payload has SHA-256
+`0245361762f477559a7ba1cf97bb1a86b475a940f69f5df55c63739c813c7bdc`
+(source `a4437d625f842f783148735827085e42a63da4d9`). The previous delivery
+image `82c91394...` was preserved before package replacement. On this Linux
+host, 31 randomized alternating fresh-process samples per workload observed:
+
+| Native product image, ms | Previous p50 / p95 | Accepted p50 / p95 |
+| --- | ---: | ---: |
+| `--version` startup | 9.299 / 12.190 | 10.600 / 12.123 |
+| Check one transfer | 10.484 / 12.130 | 10.772 / 13.068 |
+| Check 1,024 transfers | 22.868 / 26.450 | 24.321 / 29.367 |
+
+These are same-host **product-image** observations, not a build-toolchain-
+controlled causal experiment: the old image was published locally and the new
+image on the accepted Ubuntu runner. They must not be combined with the earlier
+per-OS Rust timings as if all runs shared a host. The additional fixed cost is
+small in absolute milliseconds, but this follow-up is not a CLI speedup claim.
+Raw samples, seed, paths and full executable hashes are retained in
+`.temp/product-polish/latency/accepted0245-comparison.json`.
+
+Actual native stdio LSP requests with 128 bindings measured 4.437 ms for an open
+followed by a **typed** hover, 2.161 ms for semantic tokens, and 16.613 ms for
+sixteen edits plus completion. No compiler or filesystem operation runs on each
+REPL highlighting/hint keystroke; explicit Tab uses the isolated semantic query.
+
+The 4,000-binding stress case remains more expensive: typed hover 159.425 ms,
+tokens 57.550 ms, and sixteen edits plus completion 373.132 ms. The old image
+measured 1.415 / 32.049 / 112.088 ms respectively, but its hover was a generic
+placeholder and its completion was a whole-document name scan rather than a
+per-caret lexical/type query. These are different functionality contracts, not
+proof that stronger analysis is free. Full current-snapshot inference and the
+larger typed completion payload explain work absent from the old path. A
+remaining large-document optimization target is reusing unchanged analysis and
+lazily resolving selected completion documentation rather than describing every
+visible binding. The real typed 128-binding journey is the relevant small-script
+latency result; the stress-case cost is recorded rather than hidden.
+
+The latency fixture now requests completion **after** the final declaration's
+semicolon. Its previous cursor inside the new binding name incorrectly expected
+that not-yet-published binding to be visible, contradicting the language's
+lexical declaration boundary. Both native images completed the corrected
+fixture. LSP records are `.temp/product-polish/latency/accepted0245-lsp128.json`,
+`accepted0245-lsp.json`, and `baseline82c-lsp.json`.

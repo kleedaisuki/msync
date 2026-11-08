@@ -1,8 +1,43 @@
 # v0.8 independent user acceptance
 
-## Current cross-platform product and latency closure
+## Product polish and typed completion closure (2026-11-08)
 
-The current product source is `8ca36bc`. Native Windows and Linux execution,
+Version remains **0.8.0**. The accepted product source snapshot is
+`a4437d625f842f783148735827085e42a63da4d9`. Actual final
+[Linux](https://github.com/kleedaisuki/msync/actions/runs/42496053973/job/128778540595)
+and [Windows](https://github.com/kleedaisuki/msync/actions/runs/42496053973/job/128778540290)
+Native AOT jobs passed the changed completion, authentication, terminal-hint and
+WSL contracts. Previously accepted help/presentation, formatting, skill and
+automatic-color phases were retained rather than repeating unrelated work.
+
+| Accepted boundary | Concrete user-visible contract |
+| --- | --- |
+| Terminal presentation | Theme-native help and syntax colors; structured source frames, native causes, call-site context and precise fixes; `NO_COLOR` and stream-specific automatic color |
+| Actual VS Code 1.144 host | 18 role assertions; named Scope/type versus anonymous Scope/identifier; uniform function roles; control-flow plus `?`; Connection/Bool/String/Path member hovers and generic call provenance |
+| Progressive offline reference | 18 embedded `msync skill` pages, 26 checked example blocks and an exact-byte copy example; invalid configuration does not prevent reading the reference |
+| Lexical completion | Incomplete functions/Scopes, parameters, captures, shadows, returned Scope chains, known Path aliases and accepted REPL values preserve actual type and path context |
+| Actual SSH and WSL | Native configuration, host confirmation and encrypted-key prompts; retained authenticated channels; fresh directory contents; cancellation/dismissal; Windows native OpenSSH into an owned WSL fixture |
+| Native terminal input | Inert gray keyword/binding/member/history hints, explicit Right/End acceptance, unchanged Enter submission and foreground child input ownership |
+| Qualified value flow | 15 real endpoint-domain requests distinguish remote contents from a deliberately different local trap; calls, function bodies and conditions do not inherit an unrelated outer endpoint |
+| Invalid editing | A malformed recursive editor probe reports a diagnostic, then accepts a corrected document in the same actual LSP process; no depth quota or recovered artifact publication |
+
+Final native executable identities are:
+
+- Linux: `0245361762f477559a7ba1cf97bb1a86b475a940f69f5df55c63739c813c7bdc`.
+- Windows: `b5e9dfeb60417b5cf324df9d1a75101dc493427c36ebb7304ae6531cbe53230c`.
+
+The final production-bundle VS Code host passed at `.temp/vscode-host-0D2PYd`
+against that exact Linux native executable. Package source/license attribution
+includes the narrowly extended, pinned PrettyPrompt renderer. Artifact and
+fixture revisions are recorded separately when an immutable native payload is
+reused. See the [current delivery set](packaging-v080.md#current-complete-local-delivery-set),
+[endpoint causal record](editor-remote-completion-v080.md), and
+[semantic-context contract](editor-semantic-context-v080.md). No public release
+or tag was created.
+
+## Pre-polish cross-platform product and latency closure
+
+The pre-polish product source is `8ca36bc`. Native Windows and Linux execution,
 installation, interactive editing and protocol behavior have been exercised,
 not merely configured in workflows. Accepted checks were reused by their exact
 binary identity; only changed or previously failing platform contracts were
