@@ -283,6 +283,45 @@ internal static class SemanticChecks
         });
         if (failures.Count > 0) throw new InvalidOperationException("Type specialization checks failed:\n" + string.Join("\n", failures));
     }
+    public static void RunRegexUnions()
+    {
+        List<string> failures = [];
+        void Check(string name, Action action)
+        {
+            try { action(); Console.WriteLine($"regex union ok: {name}"); }
+            catch (Exception error) { failures.Add($"{name}: {error.Message}"); }
+        }
+        Check("nullable Path regex arm narrows to Path", () =>
+        {
+            var module = Accept("let value? = if exists ./condition { ./input } else { null }; match value { <.+> => { value -> ./out }, _ => { false } }");
+            AssertType(module, TypeRef.Bool);
+            Require(module.Functions[0].Instructions.Any(instruction => instruction.Op == OpCode.RegexMatch), "A nullable Path regex must retain a runtime text-domain predicate.");
+            Require(module.Functions[0].Instructions.Any(instruction => instruction.Op is OpCode.Transfer or OpCode.LocalTransfer), "The matching nullable Path arm must lower its narrowed transfer.");
+        });
+        Check("mixed Bool and Path regex arm narrows to Path", () =>
+        {
+            var module = Accept("let value = if exists ./condition { ./input } else { false }; match value { <.+> => { value -> ./out }, _ => { false } }");
+            AssertType(module, TypeRef.Bool);
+            Require(module.Functions[0].Instructions.Any(instruction => instruction.Op == OpCode.RegexMatch), "A Bool|Path match needs a partial text-domain predicate.");
+            Require(module.Functions[0].Instructions.Any(instruction => instruction.Op is OpCode.Transfer or OpCode.LocalTransfer), "A regex match arm must narrow Bool|Path before transfer typing.");
+        });
+        Check("Bool-only regex arm is statically impossible", () =>
+        {
+            var module = Accept("fn inspect(value: Bool) { match value { <.+> => { value -> ./out }, _ => { not value } } }; inspect(true); inspect(false)");
+            AssertType(module, TypeRef.Bool);
+            var function = module.Functions.Single(function => function.Name == "inspect");
+            Require(function.Instructions.All(instruction => instruction.Op is not (OpCode.RegexMatch or OpCode.Transfer or OpCode.LocalTransfer)), "An impossible Bool-only regex arm must be omitted before invalid transfer typing.");
+            Require(function.Instructions.Any(instruction => instruction.Op == OpCode.Not), "The possible fallback arm must remain executable.");
+        });
+        Check("regex exhaustiveness and BCL syntax validation", () =>
+        {
+            Reject("match ./input { <.+> => { true } }");
+            Reject("let value? = if exists ./condition { ./input } else { null }; match value { <.+> => { true } }");
+            Reject("match true { <.+> => { true } }");
+            Reject("match ./input { <a(**> => { true }, _ => { false } }");
+        });
+        if (failures.Count > 0) throw new InvalidOperationException("Regex union checks failed:\n" + string.Join("\n", failures));
+    }
     private static IEnumerable<Dictionary<int, int>> Dispatches(Module module, OpCode opcode)
     {
         foreach (var instruction in module.Functions.SelectMany(function => function.Instructions).Where(instruction => instruction.Op == opcode && !string.IsNullOrEmpty(instruction.Text)))
