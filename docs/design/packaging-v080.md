@@ -202,6 +202,42 @@ The retained report is the job artifact's `.temp/platform-results/wsl.json`;
 the full command list and failure chain survive normal temporary workspace
 cleanup through this summary and the maintained fixture.
 
+### Controlled stream and completion experiments
+
+Subsequent diagnostic-only Windows runs reused the exact corrected-LF product
+image `40d37d193439bde5263bbc6b0e152c0aed89b0efee736e400a41f7fc04bf0e79`
+without rebuilding it. Native stat and byte captures proved that uploads had
+installed both intended files correctly. Python PIPE captures returned valid
+GNU/PAX archives, while the product failed inside the .NET PAX extended-header
+and block-padding reads. Default and `--jobs 1` executions failed alike.
+
+The standalone Native AOT process probe then isolated the relay boundary:
+ordinary C# bulk capture obtained 10,240 bytes for the small files, but live
+512-byte header reads obtained only 512 bytes before EOF despite native exit 0.
+The same native executable replaying the archive through a generic Windows pipe
+did not lose bytes. A 64 KiB `BufferedStream` repaired the small files but still
+truncated a continuous binary source, so buffering alone was rejected as a
+complete remedy.
+
+The [acknowledged-completion experiment, run 42477767279](https://github.com/kleedaisuki/msync/actions/runs/42477767279)
+kept the guest helper alive on its owned input pipe until the receiver had
+consumed logical tar completion. Explicit LF protocol tokens were independent
+of Windows text-line endings. Unbuffered and buffered ACK variants both returned
+the complete 10,240-byte small archives and complete 1,290,240-byte large archive,
+with native exit 0 and successful live/offline parsing. The large member was
+exactly 1,280,123 bytes spanning all byte values, matching host and native SHA-256
+`7a16c6063e0e23004a13995dd6dc3c462a605f53afd2835e5e9b789549c349d2`.
+Generic native-self controls replayed this valid large archive without loss.
+
+This establishes an effective completion/lifetime mechanism, not an upstream
+kernel attribution: requiring receiver completion before helper teardown avoids
+the observed WSL relay truncation without whole-archive spooling or an assumed
+maximum file size. It is a transient flow-control acknowledgement, not recovery,
+rollback, or an added authentication. Product source/`.mso`/`.mexe` acceptance
+must still run after integrating that mechanism; probe success is not relabeled
+as an already passing old product image. Maintained reproduction is
+`tests/IO/WslTarProbe` plus the fixture's failure-only native/raw diagnostics.
+
 ## Native Windows execution and fixture lifetime
 
 The first actual Windows run used Windows Server 2025, runner image
