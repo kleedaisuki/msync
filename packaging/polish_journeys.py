@@ -35,6 +35,7 @@ def main() -> int:
             "completion",
             "editing-regression",
             "reference",
+            "reference-options",
             "identifier-return",
             "mutable-state",
             "scheduling",
@@ -84,6 +85,7 @@ def main() -> int:
         ("completion", "completion_journey.py"),
         ("editing-regression", "editing_regression_journey.py"),
         ("reference", "reference_journey.py"),
+        ("reference-options", "presentation_journey.py"),
         ("identifier-return", "identifier_return_journey.py"),
         ("mutable-state", "mutable_state_journey.py"),
         ("scheduling", "scheduling_journey.py"),
@@ -110,6 +112,8 @@ def main() -> int:
             extra.append("--converter")
         if name == "scheduling":
             extra.append("--executable")
+        if name == "reference-options":
+            extra.append("--reference-only")
         phases.append(
             run_phase(
                 name,
