@@ -8,7 +8,7 @@ internal sealed partial class Compilation
 {
     private void Store(Frame frame, string name, Info value)
     {
-        int slot = frame.Allocate(); frame.Emit(OpCode.StoreLocal, slot); frame.Environment[name] = new(slot, value);
+        int slot = frame.Allocate(); frame.Emit(OpCode.StoreLocal, slot); frame.Bind(name, new(slot, value));
     }
     private void BindPattern(Frame frame, Pattern pattern, Info value)
     {

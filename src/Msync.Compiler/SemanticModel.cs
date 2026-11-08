@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
@@ -21,11 +22,11 @@ internal sealed class Specialization(int id, Info result)
     public int Id { get; } = id;
     public Info Result { get; set; } = result;
 }
-internal sealed class Frame(string source, string sourceName, Dictionary<string, Binding>? environment = null)
+internal sealed class Frame(string source, string sourceName, ImmutableDictionary<string, Binding>? environment = null)
 {
     public string Source { get; } = source;
     public string SourceName { get; } = sourceName;
-    public Dictionary<string, Binding> Environment { get; set; } = environment ?? [];
+    public ImmutableDictionary<string, Binding> Environment { get; set; } = environment ?? ImmutableDictionary<string, Binding>.Empty;
     public List<Instruction> Code { get; } = [];
     public int Locals { get; set; }
     public List<Info> Returns { get; } = [];
@@ -34,6 +35,7 @@ internal sealed class Frame(string source, string sourceName, Dictionary<string,
     public List<List<int>> Breaks { get; } = [];
     public List<List<Info>> BreakValues { get; } = [];
     public int Allocate() => Locals++;
+    public void Bind(string name, Binding binding) => Environment = Environment.SetItem(name, binding);
     public int Emit(OpCode op, int a = 0, int b = 0, string? text = null, SourceSpan? span = null)
     {
         Code.Add(new(op, a, b, text, span is null ? null : new Msync.Core.SourceSpan(SourceName, span.Value.Start, span.Value.Length)));

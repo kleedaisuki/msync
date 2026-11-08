@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
@@ -8,7 +9,7 @@ internal sealed partial class Compilation
 {
     private Info Block(Frame frame, BlockExpr block)
     {
-        var old = frame.Environment; frame.Environment = new(old);
+        var old = frame.Environment;
         var result = Statements(frame, block.Statements);
         frame.Environment = old;
         return result;
@@ -40,9 +41,9 @@ internal sealed partial class Compilation
         frame.Patch(end, frame.Code.Count);
         return Join(yes, no);
     }
-    private Dictionary<string, Binding> Refined(Frame frame, Expr expression, bool positive)
+    private ImmutableDictionary<string, Binding> Refined(Frame frame, Expr expression, bool positive)
     {
-        Dictionary<string, Binding> result = new(frame.Environment);
+        var result = frame.Environment;
         if (expression is UnaryExpr { Operator: "not" } not) return Refined(frame, not.Operand, !positive);
         if (expression is BinaryExpr logical && ((logical.Operator == "and" && positive) || (logical.Operator == "or" && !positive)))
         {
@@ -60,7 +61,7 @@ internal sealed partial class Compilation
         }
         if (name is null || type is null || !result.TryGetValue(name, out var binding)) return result;
         var narrowed = positive ? new TypeRef(binding.Info.Type.Kind & type.Kind, binding.Info.Type.Element) : new TypeRef(binding.Info.Type.Kind & ~type.Kind, binding.Info.Type.Element);
-        result[name] = binding with { Info = binding.Info with { Type = narrowed } };
+        result = result.SetItem(name, binding with { Info = binding.Info with { Type = narrowed } });
         return result;
     }
 
@@ -71,7 +72,7 @@ internal sealed partial class Compilation
         int iterator = frame.Allocate(); frame.Emit(OpCode.StoreLocal, iterator);
         int begin = frame.Code.Count;
         int next = frame.Emit(OpCode.IteratorNext, iterator);
-        var old = frame.Environment; frame.Environment = new(old);
+        var old = frame.Environment;
         BindPattern(frame, loop.Pattern, sourceInfo.Element ?? new(sourceInfo.Type.Element ?? TypeRef.Any));
         Block(frame, loop.Body); frame.Emit(OpCode.Pop);
         frame.Environment = old;
@@ -118,7 +119,7 @@ internal sealed partial class Compilation
         var selected = SelectKnownArm(frame, value, match.Arms);
         if (selected is not null)
         {
-            var before = frame.Environment; frame.Environment = new(before);
+            var before = frame.Environment;
             RefineMatchBinding(frame, match.Value, selected.Pattern, value, slot, value.Type);
             var chosen = Expression(frame, selected.Value);
             frame.Environment = before; return chosen;
@@ -129,15 +130,15 @@ internal sealed partial class Compilation
         foreach (var arm in match.Arms)
         {
             if (KnownPattern(frame, value, arm.Pattern) == false) continue;
-            frame.Environment = new(old);
+            frame.Environment = old;
             frame.Emit(OpCode.LoadLocal, slot);
             EmitPattern(frame, arm.Pattern, value, arm.Pattern.Span);
             int skip = frame.Emit(OpCode.JumpIfFalse);
             var refined = PatternType(frame, arm.Pattern, remaining);
             if (arm.Pattern is NullPattern or TypePattern) remaining = new(remaining.Kind & ~refined.Kind, remaining.Element);
             if (match.Value is NameExpr name && frame.Environment.TryGetValue(name.Name, out var bound))
-                frame.Environment[name.Name] = bound with { Info = bound.Info with { Type = refined } };
-            if (arm.Pattern is NamePattern { Name: not "_" } capture) frame.Environment[capture.Name] = new(slot, value with { Type = refined });
+                frame.Bind(name.Name, bound with { Info = bound.Info with { Type = refined } });
+            if (arm.Pattern is NamePattern { Name: not "_" } capture) frame.Bind(capture.Name, new(slot, value with { Type = refined }));
             var branch = Expression(frame, arm.Value);
             result = result is null ? branch : Join(result, branch);
             ends.Add(frame.Emit(OpCode.Jump));
@@ -177,8 +178,8 @@ internal sealed partial class Compilation
     {
         var refined = PatternType(frame, pattern, remaining);
         if (expression is NameExpr name && frame.Environment.TryGetValue(name.Name, out var binding))
-            frame.Environment[name.Name] = binding with { Info = binding.Info with { Type = value.Type == TypeRef.Type ? TypeRef.Type : refined } };
-        if (pattern is NamePattern { Name: not "_" } capture) frame.Environment[capture.Name] = new(slot, value with { Type = refined });
+            frame.Bind(name.Name, binding with { Info = binding.Info with { Type = value.Type == TypeRef.Type ? TypeRef.Type : refined } });
+        if (pattern is NamePattern { Name: not "_" } capture) frame.Bind(capture.Name, new(slot, value with { Type = refined }));
     }
 
     private void EmitPattern(Frame frame, Pattern pattern, Info value, SourceSpan span)

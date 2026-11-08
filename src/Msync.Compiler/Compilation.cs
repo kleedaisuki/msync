@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
@@ -10,7 +11,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
     private readonly Dictionary<Value, int> constantIndices = [];
     private readonly List<FunctionCode> functions = [];
     private readonly List<Template> templates = [];
-    private Dictionary<string, Binding> sessionEnvironment = [];
+    private ImmutableDictionary<string, Binding> sessionEnvironment = ImmutableDictionary<string, Binding>.Empty;
     private int sessionLocals;
     private static readonly Lazy<IReadOnlyDictionary<string, (string Source, Document Document)>> libraries = new(ReadLibraries);
     private int nextTemplate;
@@ -20,7 +21,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
     public Module Submit(string text)
     {
         var document = Parser.Parse(text, sourceName);
-        Frame frame = new(text, sourceName, new(sessionEnvironment)) { Locals = sessionLocals };
+        Frame frame = new(text, sourceName, sessionEnvironment) { Locals = sessionLocals };
         if (functions.Count == 0) functions.Add(new("<main>", 0, 0, [], TypeRef.Null));
         var previousFunctions = functions.ToArray();
         int previousConstants = constants.Count;

@@ -14,7 +14,8 @@ internal sealed partial class Compilation
         {
             Standard(frame, function.Span); frame.Emit(OpCode.Pop);
         }
-        var captures = frame.Environment.Where(pair => (usedNames.Contains(pair.Key) || (pair.Key == "$std" && needsStandard)) && pair.Key != function.Name).ToArray();
+        if (needsStandard) usedNames.Add("$std");
+        var captures = Captures(frame, usedNames, function.Name);
         int id = functions.Count;
         functions.Add(new(function.Name ?? $"<lambda{nextTemplate++}>", function.Parameters.Count, captures.Length + function.Parameters.Count,
             [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, captures.Length));
@@ -22,6 +23,13 @@ internal sealed partial class Compilation
         templates.Add(template);
         EmitClosure(frame, template);
         return new(TypeRef.Function, template);
+    }
+    private static KeyValuePair<string, Binding>[] Captures(Frame frame, IEnumerable<string> names, string? self)
+    {
+        List<KeyValuePair<string, Binding>> captures = [];
+        foreach (string name in names)
+            if (name != self && frame.Environment.TryGetValue(name, out var binding)) captures.Add(new(name, binding));
+        return captures.OrderBy(pair => pair.Value.Slot).ThenBy(pair => pair.Key, StringComparer.Ordinal).ToArray();
     }
     private void EmitClosure(Frame frame, Template template)
     {
@@ -51,7 +59,7 @@ internal sealed partial class Compilation
         template.Specializations[key] = specialization;
         Frame frame = new(template.Source, template.SourceName) { ExpectedReturn = asserted };
         frame.SelfCaptureSlots[template.Id] = Enumerable.Range(0, template.Captures.Count).ToArray();
-        foreach (var capture in template.Captures) frame.Environment[capture.Key] = new(frame.Allocate(), capture.Value.Info);
+        foreach (var capture in template.Captures) frame.Bind(capture.Key, new(frame.Allocate(), capture.Value.Info));
         for (int index = 0; index < arguments.Count; index++)
         {
             var parameter = template.Syntax.Parameters[index];
@@ -72,9 +80,9 @@ internal sealed partial class Compilation
             }
             else if (info.Type.Nullable && !parameter.Nullable)
                 throw Error(caller, $"Nullable argument requires nullable parameter '{parameter.Name}?'.", span);
-            frame.Environment[parameter.Name] = new(frame.Allocate(), info);
+            frame.Bind(parameter.Name, new(frame.Allocate(), info));
         }
-        if (template.Syntax.Name is not null) frame.Environment[template.Syntax.Name] = new(-1, new(TypeRef.Function, template), template);
+        if (template.Syntax.Name is not null) frame.Bind(template.Syntax.Name, new(-1, new(TypeRef.Function, template), template));
         var result = Block(frame, template.Syntax.Body);
         foreach (var returned in frame.Returns) result = Join(result, returned);
         if (asserted is not null) { CheckConversion(frame, result.Type, asserted, template.Syntax.Body.Span); Convert(frame, result.Type, asserted, template.Syntax.Body.Span); result = result with { Type = asserted }; }

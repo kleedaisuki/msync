@@ -61,6 +61,13 @@ internal static class Program
     public static int Main(string[] args)
     {
         if (args.Contains("--check-interner", StringComparer.Ordinal)) { InternerChecks.Run(); return 0; }
+        if (args.Contains("--check-snapshots", StringComparer.Ordinal)) { SnapshotChecks.Run(); return 0; }
+        if (args.Contains("--emit-capture", StringComparer.Ordinal))
+        {
+            using Stream output = Console.OpenStandardOutput();
+            SnapshotChecks.WriteCapture(output);
+            return 0;
+        }
         Options options = Options.Parse(args);
         Directory.CreateDirectory(Path.GetDirectoryName(options.Output)!);
         string executable = Environment.ProcessPath!;

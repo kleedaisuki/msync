@@ -162,7 +162,7 @@ internal sealed partial class Compilation
 
     private Info Scope(Frame frame, ScopeExpr scope)
     {
-        var old = frame.Environment; frame.Environment = new(old);
+        var old = frame.Environment;
         Dictionary<string, Info> members = [];
         List<string> keys = [];
         foreach (var member in scope.Members)
