@@ -405,6 +405,7 @@ def regex_coloring(binary: Path, cwd: Path) -> dict[str, int]:
         "    _ => { false },\n};\n"
         'let text = "<fn?>"; // <if?>\n'
         "let value? = null;\n"
+        "release; acquire; acqrel true;\n"
     )
     try:
         initialized, _ = client.request("initialize", {"capabilities": {}})
@@ -424,13 +425,19 @@ def regex_coloring(binary: Path, cwd: Path) -> dict[str, int]:
         admitted = position(source, "value?")
         admitted["character"] += 5
         assert tokens[(admitted["line"], admitted["character"])] == "controlKeyword"
+        for keyword in ("release", "acquire", "acqrel"):
+            barrier = position(source, keyword)
+            assert tokens[(barrier["line"], barrier["character"])] == "controlKeyword"
         unfinished = "match ./file { <(?<fn>if"
         notify(client, uri, 2, unfinished)
         assert diagnostics(client, uri, 2)["diagnostics"]
         tokens = semantic_types(client, uri, legend)
         assert tokens[(0, 15)] == "regexp", tokens
         assert all(point[1] <= 15 for point in tokens), tokens
-        return {"complete_and_incomplete_regex_color_regions": 2}
+        return {
+            "complete_and_incomplete_regex_color_regions": 2,
+            "directional_barrier_control_tokens": 3,
+        }
     finally:
         client.close()
 

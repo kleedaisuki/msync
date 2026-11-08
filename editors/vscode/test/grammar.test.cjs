@@ -253,7 +253,7 @@ test('declaration keywords stay keywords while names retain inferred roles', () 
     hasScope('let value: Scope = SomeClass;', 'Scope', 'entity.name.type.msync');
     hasScope('let value = scope { remote: ssh://forge, };', 'scope', 'keyword.declaration.scope.msync');
     hasScope('let value = scope { remote: ssh://forge, };', 'remote', 'variable.other.readwrite.msync');
-    for (const word of ['if', 'else', 'match']) {
+    for (const word of ['if', 'else', 'match', 'release', 'acquire', 'acqrel']) {
         hasScope(`${word} value {}`, word, 'keyword.control.msync');
     }
     hasScope('if value? {} else {}', '?', 'keyword.control.msync');

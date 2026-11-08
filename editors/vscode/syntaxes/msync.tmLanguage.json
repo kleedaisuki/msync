@@ -313,7 +313,7 @@
           "name": "keyword.operator.logical.msync"
         },
         {
-          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:native|let|global|drop|include|execute|decltype|release|acquire|acqrel)(?![\\p{L}\\p{N}_./\\\\-])",
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:native|let|global|drop|include|execute|decltype)(?![\\p{L}\\p{N}_./\\\\-])",
           "name": "keyword.other.msync"
         },
         {
@@ -325,7 +325,7 @@
           "name": "keyword.declaration.scope.msync"
         },
         {
-          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:if|else|match|for|in|loop|break|return)(?![\\p{L}\\p{N}_./\\\\-])",
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:if|else|match|for|in|loop|break|return|release|acquire|acqrel)(?![\\p{L}\\p{N}_./\\\\-])",
           "name": "keyword.control.msync"
         }
       ]

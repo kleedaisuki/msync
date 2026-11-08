@@ -25,7 +25,8 @@ let copied = copy(./input.txt, ./backup.txt);
 ## Semantics to retain
 
 - `{ expression }` returns a value; `;` discards it and yields Null.
-- `let` bindings are immutable; later declarations can shadow them.
+- Assignment changes binding and Scope field values, never their inferred types.
+- Later `let` declarations shadow earlier locations; closures retain locations.
 - A Path reads file content in `->`; a String writes its literal text.
 - `Scope::member` selects a lexical value; `Connection::path` selects an endpoint.
 - Admit Null explicitly, then handle it. `value?` means **is null**.

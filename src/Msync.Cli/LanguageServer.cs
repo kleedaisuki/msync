@@ -20,7 +20,7 @@ internal sealed partial class LanguageServer(
     private bool hierarchicalDocumentSymbols;
     private bool completionResolveDocumentation;
     private long serverRequest;
-    private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "return", "break", "loop", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", .. LanguageTypes.Names];
+    private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "return", "break", "loop", "release", "acquire", "acqrel", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", .. LanguageTypes.Names];
 
     private JsonNode? Handle(string method, JsonElement p)
     {
@@ -263,7 +263,8 @@ internal sealed partial class LanguageServer(
 
     private static bool ControlFlow(ReadOnlySpan<char> token) => token.SequenceEqual("if") || token.SequenceEqual("else")
         || token.SequenceEqual("match") || token.SequenceEqual("for") || token.SequenceEqual("in")
-        || token.SequenceEqual("return") || token.SequenceEqual("break") || token.SequenceEqual("loop");
+        || token.SequenceEqual("return") || token.SequenceEqual("break") || token.SequenceEqual("loop")
+        || token.SequenceEqual("release") || token.SequenceEqual("acquire") || token.SequenceEqual("acqrel");
 
     private static bool IsKeyword(ReadOnlySpan<char> token)
     {

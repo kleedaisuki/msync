@@ -41,8 +41,10 @@ not return the discarded value.
 An explicit `return value;` still returns immediately: the semicolon terminates
 the statement without discarding the value that has already left the function.
 
-Functions capture referenced lexical bindings by value. They can be returned,
-passed to native callbacks, or called recursively.
+Functions capture referenced lexical locations, not snapshots of their values.
+Assignment to a captured location is visible to its closures; a later shadowing
+declaration creates a different location. Functions can be returned, passed to
+native callbacks, or called recursively.
 
 ```msync
 fn countdown(value: Number) -> Bool {

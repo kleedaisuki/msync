@@ -123,8 +123,9 @@ internal static class TerminalHelp
         Code("let source = ~/.codex;", color);
         Code("let selected = if exists source { source } else { ~/backup };", color);
         Console.WriteLine("\nBraces delimit blocks; indentation is not syntax. A final expression returns");
-        Console.WriteLine("its value. A semicolon discards that value. Bindings are immutable; later");
-        Console.WriteLine("declarations may shadow an earlier name. Bare unbound names are Paths.");
+        Console.WriteLine("its value. A semicolon discards that value. Assignment changes values, not");
+        Console.WriteLine("inferred types. Later declarations may shadow names. Unbound names are Paths.");
+        Code("selected = ~/another-backup;", color);
         Code("let .codex = ~/.codex;", color);
         Console.WriteLine(".codex is a legal binding name; a matching binding wins over a bare Path.");
         Console.WriteLine();
@@ -164,6 +165,15 @@ internal static class TerminalHelp
         Console.WriteLine("decltype infers without executing its expression. Types may be matched.");
         Console.WriteLine("Calling a Path starts a native Process. Native declarations describe host");
         Console.WriteLine("capabilities: native fn name(value: String) -> Bool;");
+        Console.WriteLine();
+        Heading("ORDERING AND PROCESS LIFETIMES", color);
+        Code("let process = release ./tool(\"hello\");", color);
+        Code("acquire process;", color);
+        Console.WriteLine("\nrelease orders earlier work before its operand without immediately joining");
+        Console.WriteLine("a launched Process. acquire process waits for that Process, not unrelated");
+        Console.WriteLine("work. acquire expression applies an after fence; acqrel applies both.");
+        Console.WriteLine("Bare acquire joins this invocation's pending work. Bare release is only a");
+        Console.WriteLine("before fence; it does not change how later unmarked operations execute.");
         Console.WriteLine();
         Heading("TYPES", color);
         foreach (string[] names in LanguageTypes.Names.Chunk(6))

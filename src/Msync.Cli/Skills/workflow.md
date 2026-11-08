@@ -33,3 +33,28 @@ default. `msync skill` is available offline without configuration or telemetry.
 
 For source-independent execution and contextual binding, expand
 `msync skill workflow artifacts`.
+
+## Directional ordering and process ownership
+
+Unmarked external calls launch and wait. Use `release` when a Process must stay
+live while subsequent work starts, then join the selected Process explicitly:
+
+```msync
+let process = release ./tool("argument");
+acquire process;
+```
+
+| Form | Ordering and lifetime |
+| --- | --- |
+| `release operation` | Before fence; a launched Process remains live |
+| `acquire operation` | Evaluate, then apply its after fence or Process join |
+| `acqrel operation` | Apply both directional requirements |
+| `release;` | Before fence only; later unmarked calls still launch and wait |
+| `acquire;` | Join pending work owned by the current invocation |
+| `acquire process;` | Join that Process, not unrelated processes |
+
+A before fence keeps earlier work from moving after it; an after fence keeps
+later work from moving before it. Neither is an unconditional global drain.
+Returning from a function joins outstanding programs owned by that invocation.
+A released server can therefore remain live while a later released client
+starts, instead of waiting for the server's output to reach EOF first.

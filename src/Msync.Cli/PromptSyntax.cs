@@ -6,7 +6,7 @@ namespace Msync.Cli;
 
 internal static class PromptSyntax
 {
-    internal static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "return", "break", "loop", .. LanguageTypes.Names];
+    internal static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "return", "break", "loop", "release", "acquire", "acqrel", .. LanguageTypes.Names];
     internal static readonly string[] Builtins = ["$std", "$local", "$wsl", "$pwd", "$file", "$path", "$env"];
     internal static readonly string[] Commands = ["/help", "/?", "/syntax", "/quit", "/exit", "/clear", "/pwd", "/cd"];
 
@@ -78,7 +78,7 @@ internal static class PromptSyntax
             string word = text[start..position];
             string selected = previous == "$" ? "$" + word : previous == "::" && chain.Length != 0 ? chain + "::" + word : word;
             AnsiColor? style = Commands.Contains(word, StringComparer.Ordinal) ? AnsiColor.Cyan
-                : word is "if" or "else" or "match" or "for" or "in" or "loop" or "return" or "break" ? AnsiColor.Magenta
+                : word is "if" or "else" or "match" or "for" or "in" or "loop" or "return" or "break" or "release" or "acquire" or "acqrel" ? AnsiColor.Magenta
                 : Keywords.Contains(word, StringComparer.Ordinal) ? char.IsUpper(word[0]) ? AnsiColor.Magenta : AnsiColor.Cyan
                 : word is "+" or "-" or "*" ? AnsiColor.Cyan
                 : long.TryParse(word, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out _) ? AnsiColor.Magenta
@@ -167,6 +167,9 @@ internal static class PromptSyntax
             : source.EndsWith("fn", StringComparison.Ordinal) ? "fn name(parameters) { result }; omit ';' on the result"
             : source.EndsWith("let", StringComparison.Ordinal) ? "let name = value; add '?' to admit Null"
             : source.EndsWith("scope", StringComparison.Ordinal) ? "scope Name { member: value }; select with Name::member"
+            : source.EndsWith("release", StringComparison.Ordinal) ? "before fence; release Path(args) keeps its Process live"
+            : source.EndsWith("acquire", StringComparison.Ordinal) ? "join this invocation's pending work; acquire process joins only that Process"
+            : source.EndsWith("acqrel", StringComparison.Ordinal) ? "acqrel expression applies before and after ordering fences"
             : source.EndsWith("exists", StringComparison.Ordinal) ? "exists Path | String -> Bool"
             : source.EndsWith("for", StringComparison.Ordinal) ? "for item in Range { body }; iteration binds each item"
             : source.EndsWith("if", StringComparison.Ordinal) ? "if Bool { result } else { fallback }; Null is not Bool"

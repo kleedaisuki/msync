@@ -74,7 +74,11 @@ file beside its destination and atomic replacement, with at most one file sync.
 Directory or finite-cohort failures may leave completed members in place; retry
 is an ordinary new transfer, not a recovery or rollback transaction.
 
-`let` infers a type, or accepts an annotation such as `let value: Path = ...`.
+`let` declares a mutable location with a fixed inferred or annotated type, such
+as `let value: Path = ...`. Assignment changes its value, never its storage type.
+Scope aliases share mutable fields; nullable fields require `?`, for example
+`scope { filename?: null }`. Stores solve its non-null payload type at compile
+time, not by widening types during execution.
 Function arguments are generic by default; annotations constrain admitted
 specializations. Functions are values, can capture lexical bindings, call
 recursively, and be passed to callback-taking functions.
@@ -101,6 +105,12 @@ Type names include `Bool`, `String`, `Path`, `Range`, `Function`, `Scope`,
 `Process`, `Connection`, `Null`, and `Type`. `Range<T>` specifies an item type, `|`
 specifies a union, and `?` explicitly permits null. Numeric literals and `Number`
 support range counts and arithmetic. `Any` admits the full value-type union.
+
+Unmarked process calls launch and wait. `let process = release ./tool();`
+keeps that Process live; `acquire process;` joins only it. `release` is a before
+ordering fence, `acquire` is an after fence, and `acqrel` applies both. Bare
+`release;` is not sticky; bare `acquire;` joins the current invocation's pending
+work. See `msync skill workflow` for process lifetime and ordering details.
 
 ## Nullability and exhaustive matching
 
