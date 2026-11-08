@@ -67,10 +67,15 @@ all **3,037 nonidentity cases** matched, with mapping output SHA-256
 Another **2,018 deterministic string contexts** matched exactly, including final
 sigma before/after combining marks, U+0345, punctuation and ZWJ, dotted/dotless I,
 ligature expansions, Armenian, astral Deseret and uncased text.
-The isolated runtime build passed with zero warnings/errors; generator and
-comparison scripts passed Ruff and strict mypy.
+The Native AOT comparison passed the same complete scalar and contextual sets
+with the identical mapping digest under invariant globalization. Both isolated
+builds passed with zero warnings/errors; generator and comparison scripts passed
+Ruff and strict mypy.
 
-Retained results are `.temp/unicode-v080/build/managed-results.json` and adjacent
-mapping/context output. The actual language/CLI suite separately exercises exact
-UTF-8 casing, Unicode regex and native filenames through source, `.mso` and
-`.mexe`; the focused scalar oracle does not replace that end-to-end journey.
+Retained results are `.temp/unicode-v080/build/managed-results.json`,
+`native-results.json` and adjacent mapping/context output. The actual language/CLI
+suite separately passed exact UTF-8 casing, Unicode regex and native filenames
+through source, `.mso` and `.mexe` in
+`.temp/acceptance-v080/unicode-full-casing-corrected.json`; the focused scalar
+oracle does not replace that end-to-end journey. The pending final package audit
+uses the same language case against the installed Native AOT payload.

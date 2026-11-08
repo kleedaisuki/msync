@@ -1,4 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>Exe</OutputType><InvariantGlobalization>true</InvariantGlobalization></PropertyGroup>
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <PublishAot Condition="'$(NativeOracleAot)' == 'true'">true</PublishAot>
+  </PropertyGroup>
   <ItemGroup><ProjectReference Include="../../src/Msync.Runtime/Msync.Runtime.csproj" /></ItemGroup>
 </Project>

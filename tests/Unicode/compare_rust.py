@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import platform
 import random
 import subprocess
 from collections.abc import Sequence
@@ -13,6 +14,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS = ROOT / ".temp/unicode-v080/build"
+
+
+def host_rid() -> str:
+    system = {"Linux": "linux", "Windows": "win", "Darwin": "osx"}[platform.system()]
+    machine = platform.machine().lower()
+    architecture = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64"}.get(
+        machine, machine
+    )
+    return f"{system}-{architecture}"
 
 
 def invoke(arguments: Sequence[str], source: str | None = None) -> str:
@@ -105,7 +115,8 @@ def main() -> None:
                     project,
                     "-c",
                     "Release",
-                    "-p:PublishAot=true",
+                    "-p:NativeOracleAot=true",
+                    f"-p:RuntimeIdentifier={host_rid()}",
                     "--artifacts-path",
                     str(ARTIFACTS / "aot"),
                     "-o",

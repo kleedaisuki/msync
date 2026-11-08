@@ -21,6 +21,7 @@ public static class UnicodeCasing
                 result.Append('\u03C2');
             else
                 Append(result, value.AsSpan(start, offset - start), scalar, upper);
+            // Final_Sigma context skips ignorable characters even when they are also Cased.
             if (!upper && !Contains(UnicodeCasingData.CaseIgnorable, scalar))
                 precededByCased = Contains(UnicodeCasingData.Cased, scalar);
         }
