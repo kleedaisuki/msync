@@ -57,3 +57,14 @@ correctness, but its timings are not production-performance evidence.
 `msync-components --check-interner` runs the focused constant-index contract
 without timing: first-insertion order, duplicate identity, rollback of a failed
 submission, source-free artifact execution, and retained runtime values.
+
+`--check-snapshots` exercises closure capture, lexical shadowing, recursion,
+Scopes, deferred Range arguments and null refinement after `.mso`/`.mexe`
+serialization. `--emit-capture` writes one deterministic relocatable capture
+artifact to binary stdout. The driver checks both contracts and exact artifact
+bytes from two independent native processes:
+
+```sh
+python3 tests/Performance/Components/verify.py \
+  .temp/performance-v080/current/components/native/msync-components
+```

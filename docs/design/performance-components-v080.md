@@ -131,9 +131,60 @@ allocate 21,860,024 bytes. The index removes lookup CPU cost but does not remove
 the independent frame-cloning mechanism: every call clones the entire growing
 lexical dictionary in `CloneFrame`, even when it returns an ordinary scalar.
 
-The next bounded candidate is persistent immutable lexical-map roots. Branches,
-blocks and lazy-call frames share a snapshot, while binding updates create a new
-root. This avoids a growing overlay chain and removes defensive whole-map copies
-from the ordinary call path. It must preserve deterministic captures, slot-based
-recursion, null refinement and failed-submission behavior; small-script controls
-remain necessary because persistent maps trade O(1) hash lookup for tree lookup.
+## Persistent lexical roots
+
+The accepted second compiler change uses BCL `ImmutableDictionary<string,
+Binding>` roots. Branches, blocks and lazy-call frames retain the current root;
+`Frame.Bind` produces a new root for an actual binding update. No overlay chain
+is searched and no full dictionary is copied for an ordinary call. The
+[upstream immutable collection design](https://devblogs.microsoft.com/premier-developer/read-only-frozen-and-immutable-collections/)
+shares unchanged storage between versions; the
+[actual dictionary implementation](https://github.com/dotnet/runtime/blob/main/src/libraries/System.Collections.Immutable/src/System/Collections/Immutable/ImmutableDictionary_2.cs)
+uses hash buckets over a persistent tree. This is not a promise of O(1) lookup:
+the measured trade is tree lookup/update versus repeated full-map copying.
+
+Function capture discovery now looks up the names actually referenced by the
+body, rather than scanning every binding in the surrounding environment. Only
+the selected captures are sorted by stable slot, with a name tiebreaker. Hash-map
+enumeration order therefore cannot leak into serialized closure layouts; lexical
+Scope members retain their explicit source-owned key list.
+
+Frozen immutable-root native image:
+`650f765def37704aa45570ec51ebd513f932987f5cfecb4c511da5a742136a6a`.
+The compiler/Core/runtime build metadata reports `85a10f4`; the report separately
+records checkout `81bc7f8` at execution. Both observations compare frozen native
+executables, not whichever image a shared build directory currently contains.
+`after-immutable.json` retains 31 samples after three warmup batches.
+
+| Compile O1 | Indexed mutable-map p50/p95 | Persistent-root p50/p95 | Allocation before → after |
+| --- | ---: | ---: | ---: |
+| 1 plain transfer | 8.973 / 13.602 µs | 8.424 / 11.463 µs | 7,408 → 7,296 B |
+| 1 generic binding | 24.141 / 41.689 µs | 21.857 / 29.770 µs | 17,312 → 17,072 B |
+| 256 generic bindings | 2.764 / 7.890 ms | 2.429 / 7.317 ms | 2.375 → 1.380 MB |
+| 1024 generic bindings | 33.523 / 43.245 ms | 18.624 / 38.728 ms | 21.580 → 5.636 MB |
+| 1024 Scope bindings | 35.684 / 47.131 ms | 22.646 / 33.416 ms | 21.860 → 5.914 MB |
+
+The generic 1024 case removes 74% of allocation traffic and 44% of median compile
+latency relative to the indexed mutable-map version. The small controls improve,
+rather than paying an observed normal-path penalty for larger-script support.
+Combined with constant indexing, the original current C# generic case improves
+from 46.182 to 18.624 ms p50; the 1024-transfer case improves from 63.043 to
+10.475 ms. These are warmed in-process compiler costs, not process-startup or
+file-copy speedups.
+
+The actual native checker validates captured definition values despite caller
+shadowing, two returned closures with distinct arguments, recursive captured
+slots, lexical Scope members, deferred Range arguments, and both null branches.
+Every case executes after relocatable and executable serialization/import.
+The accompanying fully typed Python driver runs two fresh native processes on
+the same capture source and compares the complete `.mso` bytes, not merely the
+returned value. Both emitted the identical 1,040-byte artifact with SHA-256
+`798457e0bf546624d90d79e56a9daf4dd67cd4e75eb54bc7c247173ef5df2f4e`.
+Native checks are recorded in `immutable-snapshots.json`; the persisted source
+and procedure are under `tests/Performance/Components`.
+
+The persistent-map representation is independent of the REPL's runtime-failure
+visibility contract. The product session owner reconciles actually initialized
+bindings in source order; changing a lexical root does not undo filesystem work
+or revoke a value whose store already executed. Batch compilation does not
+allocate that session-only declaration journal.
