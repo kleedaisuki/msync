@@ -118,6 +118,17 @@ keeps its cells alive; returning a Scope keeps its identity and field locations
 alive. Across REPL submissions, live slots and accepted storage contracts are
 authoritative; invalidate assumptions when a later submission updates them.
 
+An inferred callable return contract must not freeze a transient read fact.
+For example, after a nullable String field is set to Null, `fn { field }` still
+has the admitted String? getter contract; its immediate call can separately be
+known to produce Null. Pure accessor summaries reuse compiler inference in an
+isolated frame with captured storage types, including `if`/`match` branches.
+Explicit return annotations remain authoritative. This distinction prevents a
+later compatible String store from causing a spurious E0213 return-type error.
+`repl_state_journey.py` exercises direct, guarded and scalar getters across
+actual prefix failures and subsequent stores; it also accepts repeatable
+`--case` selection for focused platform validation.
+
 REPL reconciliation follows the executed prefix, not the last statically visited
 assignment. A compile rejection publishes no new declarations. A runtime failure
 retains initialized declarations and mutations already performed; it refreshes
