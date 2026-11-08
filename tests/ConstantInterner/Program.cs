@@ -54,4 +54,13 @@ Require(indices.GetValue(pool) is null, "Original literal transfer script unnece
 Require(result.Instructions.Where(instruction => instruction.Op == OpCode.Constant).Select(instruction => instruction.A)
     .SequenceEqual(Enumerable.Range(0, 2048)), "Original literal operands were re-interned");
 Require(result.Instructions.Count(instruction => instruction.Op == OpCode.Transfer) == 1024, "Transfer effects changed");
+var empty = new Module([], [new("empty", 0, 0, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)]);
+Require(empty.OptimizationLevel == 2, "New modules do not use the product O2 default");
+Require(Optimizer.Optimize(empty with { OptimizationLevel = 0 }).OptimizationLevel == 2, "Optimizer API does not use O2 by default");
+foreach (int level in new[] { 0, 1, 2, 3 })
+{
+    using MemoryStream stream = new();
+    Artifact.Write(empty with { OptimizationLevel = level }, stream); stream.Position = 0;
+    Require(Artifact.Read(stream).OptimizationLevel == level, "Artifact changed its explicitly stored optimization level");
+}
 Console.WriteLine($"Constant interning: {assertions} contracts passed.");

@@ -2,7 +2,7 @@ namespace Msync.Core;
 
 public static class Optimizer
 {
-    public static Module Optimize(Module module, int level = 1)
+    public static Module Optimize(Module module, int level = 2)
     {
         if (level is < 0 or > 3) throw new MsyncException($"Optimization level must be 0, 1, 2, or 3; received {level}");
         if (level == 0) return FormBlocks(module with { OptimizationLevel = level });
