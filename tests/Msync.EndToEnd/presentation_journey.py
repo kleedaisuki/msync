@@ -232,6 +232,19 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
                 and "\x1b" not in text
             ), hover
 
+        for spelling, fragments in [
+            ("let", ["mutable value", "fixed", "shadows"]),
+            ("scope", ["Field values are mutable", "types stay fixed", "?"]),
+            ("fn", ["callable value", "specialized"]),
+        ]:
+            hover, _ = client.request(
+                "textDocument/hover",
+                {"textDocument": {"uri": uri}, "position": position(source, spelling)},
+            )
+            text = hover["contents"]["value"]
+            assert all(fragment in text for fragment in fragments), hover
+            assert "immutable lexical value" not in text, hover
+
         completions, _ = client.request(
             "textDocument/completion",
             {
@@ -316,6 +329,7 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
         return {
             "inferred_token_sites": len(checks),
             "typed_hovers": 3,
+            "keyword_guidance": 3,
             "quickfix_roundtrips": 1,
             "inferred_completion_items": 4,
             "local_definition": 1,

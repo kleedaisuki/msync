@@ -44,9 +44,9 @@ internal sealed partial class LanguageServer
         string word = Word(document.Source.Text, offset);
         string? help = word switch
         {
-            "scope" => "```msync\nscope Name { member: value }\n```\n\nConstruct a lexical Scope; access members with `Name::member`. A Scope is not a filesystem Connection.",
-            "fn" => "```msync\nfn name(parameter: Type) -> Type { result }\n```\n\nOmit annotations for generic inference. A final expression returns its value; `;` discards it.",
-            "let" => "```msync\nlet name = value;\n```\n\nBind an immutable lexical value. A later binding may shadow it. Use `let name? = value;` to admit Null.",
+            "scope" => "```msync\nscope Name { member: value, optional?: null }\n```\n\nConstruct a lexical Scope; access or assign fields with `Name::member`. Field values are mutable; their inferred types stay fixed. Add `?` to admit Null. A Scope is not a filesystem Connection.",
+            "fn" => "```msync\nfn name(parameter: Type) -> Type { result }\n```\n\nOmit annotations for generic inference. A final expression returns its value; `;` discards it. Closures share captured binding locations, so later assignments are visible.",
+            "let" => "```msync\nlet name = value;\nname = replacement;\n```\n\nBind a mutable value with a fixed inferred or declared type. A new `let` shadows rather than updates the previous binding. Use `let name? = value;` to admit Null.",
             "decltype" => "```msync\ndecltype(expression)\n```\n\nInfer the expression’s type without executing its effects.",
             "null" => "`Null` is a value type. Use `value is null` to test and refine a nullable binding; postfix `value?` also means **is null**.",
             _ => null
