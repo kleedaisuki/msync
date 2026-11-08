@@ -94,6 +94,16 @@ try
          new(OpCode.LoadLocal, 1), new(OpCode.Constant, 1), new(OpCode.SetMember, Text: "item"), new(OpCode.Pop),
          new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Number)], OptimizationLevel: 0);
     Require(await Execute(Scalarize(fieldAliases)) == "Number:2", "scalar field store lost shared captured location");
+    Module captureAliases = new([new NumberValue(10), new NumberValue(20)],
+        [new("capture-alias", 0, 4,
+            [new(OpCode.Constant, 0), new(OpCode.MakeScope, 1, Text: "value"), new(OpCode.InitializeLocal, 0),
+             new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 1, 1), new(OpCode.InitializeLocal, 1),
+             new(OpCode.LoadLocal, 1), new(OpCode.GetCapture, 0), new(OpCode.InitializeLocal, 2),
+             new(OpCode.LoadStorage, 2), new(OpCode.MakeScope, 1, Text: "item"), new(OpCode.InitializeLocal, 3),
+             new(OpCode.LoadLocal, 3), new(OpCode.Constant, 1), new(OpCode.MakeScope, 1, Text: "value"),
+             new(OpCode.SetMember, Text: "item"), new(OpCode.Pop), new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "value"), new(OpCode.Return)], TypeRef.Number),
+         new("captured", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Scope, CaptureCount: 1)], OptimizationLevel: 0);
+    Require(await Execute(Scalarize(captureAliases)) == "Number:20", "GetCapture field alias lost original mutable location");
     Module invalid = new([], [new("missing", 0, 0,
         [new(OpCode.MakeScope), new(OpCode.GetMember, Text: "missing"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)], OptimizationLevel: 0);
     Require(await Execute(Scalarize(invalid)) == await Execute(invalid), "missing member diagnostic was removed");

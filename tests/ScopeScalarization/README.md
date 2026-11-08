@@ -13,6 +13,9 @@ The current scalar replacement region is one basic block. CFG live-out binding
 analysis retains instances that cross region boundaries. Within the region,
 fields retain independent scalar slots; writes through an alias update the same
 field slot, and raw captured cells keep their original shared identity.
+The raw-cell discriminators include `GetCapture` extraction, aliasing through
+another local, and using a captured location as a Scope field. These execute at
+optimization level zero so automatic executable binding cannot mask pass bugs.
 
 `--performance` additionally measures 100/500/2000 independent mutable
 instances after three warm-ups, reporting medians of nine Release executions.
