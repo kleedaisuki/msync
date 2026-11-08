@@ -246,11 +246,14 @@ public static partial class TransferEngine
     private static async Task DownloadAsync(IReadOnlyList<PathValue> sources, PathValue target, RuntimeContext context, bool container, bool replace, CancellationToken cancellationToken)
     {
         ConnectionValue connection = Remote(sources[0])!;
-        using Process process = Start(connection, DownloadScript(sources.Count), sources.Select(path => path.Raw).ToArray(), redirectInput: false);
+        bool receipt = RequiresArchiveReceipt(connection);
+        string program = DownloadScript(sources.Count);
+        using Process process = Start(connection, receipt ? WithArchiveReceipt(program) : program, sources.Select(path => path.Raw).ToArray(), redirectInput: receipt);
         using CancellationTokenRegistration registration = cancellationToken.Register(() => Kill(process));
         try
         {
             await ReadArchiveAsync(process.StandardOutput.BaseStream, target, context, container, replace, cancellationToken);
+            if (receipt) await AcknowledgeArchiveAsync(process, cancellationToken);
             await process.StandardOutput.BaseStream.CopyToAsync(Stream.Null, cancellationToken);
             await FinishAsync(process, connection, cancellationToken);
         }
@@ -303,7 +306,7 @@ public static partial class TransferEngine
                 case TarEntryType.RegularFile:
                 case TarEntryType.V7RegularFile:
                 case TarEntryType.ContiguousFile:
-                    await TransferFiles.WriteFileAsync(entry.DataStream ?? Stream.Null, installed, null, cancellationToken, stage => ApplyArchiveMetadata(entry, stage), context.BufferSize);
+                    await TransferFiles.WriteFileAsync(entry.DataStream ?? Stream.Null, installed, null, cancellationToken, stage => ApplyArchiveMetadata(entry, stage), context.BufferSize, expectedLength: entry.Length);
                     break;
                 case TarEntryType.SymbolicLink:
                     CreateArchiveLink(installed, entry.LinkName, entry);
@@ -359,14 +362,16 @@ public static partial class TransferEngine
             throw new MsyncException("A cross-endpoint finite transfer requires sources on one endpoint.");
         ConnectionValue sourceConnection = Remote(paths[0])!;
         ConnectionValue destinationConnection = Remote(target)!;
-        using Process download = Start(sourceConnection, DownloadScript(paths.Length), paths.Select(path => path.Raw).ToArray(), redirectInput: false);
+        bool receipt = RequiresArchiveReceipt(sourceConnection);
+        string program = DownloadScript(paths.Length);
+        using Process download = Start(sourceConnection, receipt ? WithArchiveReceipt(program) : program, paths.Select(path => path.Raw).ToArray(), redirectInput: receipt);
         string name = Basename(paths[0]);
         string[] args = [target.Raw, Mode(container, replace), name, cohort ? "cohort" : "single", "filesystem"];
         using Process upload = Start(destinationConnection, RelayScript, args, redirectInput: true);
         using CancellationTokenRegistration registration = cancellationToken.Register(() => { Kill(download); Kill(upload); });
         try
         {
-            await download.StandardOutput.BaseStream.CopyToAsync(upload.StandardInput.BaseStream, context.BufferSize, cancellationToken);
+            await PumpArchiveAsync(download, upload.StandardInput.BaseStream, receipt, context.BufferSize, cancellationToken);
             upload.StandardInput.Close();
             string result = await upload.StandardOutput.ReadToEndAsync(cancellationToken);
             await FinishAsync(download, sourceConnection, cancellationToken);

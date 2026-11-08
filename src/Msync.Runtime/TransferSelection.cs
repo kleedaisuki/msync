@@ -13,7 +13,9 @@ public static partial class TransferEngine
         ConnectionValue? targetConnection = Remote(destination);
         bool sameEndpoint = sourceConnection == targetConnection;
         bool replace = IsReplacement(destination);
-        string script = SelectionPrelude + SelectionQueryScript + SelectionDecode + (sameEndpoint ? "\nset -- \"$destination_raw\" \"$selection_mode\" \"$@\"\n" + CohortInstallScript : SelectionArchive);
+        bool receipt = !sameEndpoint && RequiresArchiveReceipt(sourceConnection);
+        string archive = receipt ? WithArchiveReceipt(SelectionArchive) : SelectionArchive;
+        string script = SelectionPrelude + SelectionQueryScript + SelectionDecode + (sameEndpoint ? "\nset -- \"$destination_raw\" \"$selection_mode\" \"$@\"\n" + CohortInstallScript : archive);
         using Process source = Start(sourceConnection, script, [selection.Directory.Raw, destination.Raw, Mode(container: true, replace), selection.Recursive ? "recursive" : "flat"], redirectInput: true);
         using CancellationTokenRegistration registration = cancellationToken.Register(() => Kill(source));
         try
@@ -24,10 +26,10 @@ public static partial class TransferEngine
             if (originalEndpoint) ValidateNames(selected, container: true);
             IReadOnlyList<string> paths = originalEndpoint ? selected.Cast<PathValue>().Select(path => path.Raw).ToArray() : [];
             await WriteSelectionNamesAsync(source.StandardInput.BaseStream, paths, cancellationToken);
-            source.StandardInput.Close();
+            if (!receipt) source.StandardInput.Close();
             if (!originalEndpoint)
             {
-                await source.StandardOutput.BaseStream.CopyToAsync(Stream.Null, cancellationToken);
+                await PumpArchiveAsync(source, Stream.Null, receipt, context.BufferSize, cancellationToken);
                 await FinishAsync(source, sourceConnection, cancellationToken);
                 return await CopyAsync(new RangeValue(selected, selected.Aggregate(new TypeRef(TypeKind.Never), (type, value) => TypeRef.Union(type, value.Type))), destination, context, cancellationToken);
             }
@@ -41,13 +43,14 @@ public static partial class TransferEngine
             if (targetConnection is null)
             {
                 await ReadArchiveAsync(source.StandardOutput.BaseStream, destination, context, container: true, replace, cancellationToken);
+                if (receipt) await AcknowledgeArchiveAsync(source, cancellationToken);
                 await source.StandardOutput.BaseStream.CopyToAsync(Stream.Null, cancellationToken);
                 await FinishAsync(source, sourceConnection, cancellationToken);
                 return true;
             }
             if (paths.Count == 0)
             {
-                await source.StandardOutput.BaseStream.CopyToAsync(Stream.Null, cancellationToken);
+                await PumpArchiveAsync(source, Stream.Null, receipt, context.BufferSize, cancellationToken);
                 await FinishAsync(source, sourceConnection, cancellationToken);
                 return true;
             }
@@ -56,7 +59,7 @@ public static partial class TransferEngine
             using CancellationTokenRegistration targetRegistration = cancellationToken.Register(() => Kill(target));
             try
             {
-                await source.StandardOutput.BaseStream.CopyToAsync(target.StandardInput.BaseStream, context.BufferSize, cancellationToken);
+                await PumpArchiveAsync(source, target.StandardInput.BaseStream, receipt, context.BufferSize, cancellationToken);
                 target.StandardInput.Close();
                 string result = await target.StandardOutput.ReadToEndAsync(cancellationToken);
                 await FinishAsync(source, sourceConnection, cancellationToken);

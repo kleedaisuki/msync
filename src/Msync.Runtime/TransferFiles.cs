@@ -88,7 +88,7 @@ internal static class TransferFiles
         await WriteFileAsync(input, target, null, cancellationToken, bufferSize: bufferSize);
     }
 
-    internal static async Task WriteFileAsync(Stream input, string target, string? metadataSource, CancellationToken cancellationToken, Action<string>? applyMetadata = null, int bufferSize = 65536)
+    internal static async Task WriteFileAsync(Stream input, string target, string? metadataSource, CancellationToken cancellationToken, Action<string>? applyMetadata = null, int bufferSize = 65536, long? expectedLength = null)
     {
         string parent = Path.GetDirectoryName(target) ?? ".";
         Directory.CreateDirectory(parent);
@@ -99,6 +99,8 @@ internal static class TransferFiles
                 1, FileOptions.Asynchronous | FileOptions.SequentialScan))
             {
                 await input.CopyToAsync(output, bufferSize, cancellationToken);
+                if (expectedLength is { } declared && output.Position != declared)
+                    throw new EndOfStreamException($"Archive member '{target}' declared {declared} bytes, received {output.Position}");
                 if (applyMetadata is not null)
                     applyMetadata(stage);
                 else if (metadataSource is not null)
