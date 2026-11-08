@@ -287,19 +287,32 @@ phase passed independently of the separate WSL-download failure in that job.
 
 CLI help, the short syntax guide (`msync help syntax` or REPL `/syntax`),
 interactive highlighting, bytecode plans, and diagnostics share a theme-adaptive
-16-color vocabulary: cyan for structure and keywords, green for commands,
-Strings and repairs, magenta for types, blue for source gutters, and bold red
-for primary errors. The `fn` and `scope` tokens remain keywords in every
-declaration form. Known callable identifiers retain the bright-yellow function
-role; control flow (including `?`) uses magenta. Named Scope declaration names
-and their aliases retain the type role, whereas anonymous Scope values and
-instances use the ordinary variable role. They use the terminal's own palette
-rather than a fixed RGB
-background. `auto` tests the stream being rendered: redirected stdout does not
+16-color vocabulary. Ordinary identifiers, parameters, anonymous Scope values,
+unbound path text, endpoint authorities and structural punctuation inherit the
+terminal's default foreground. Cyan marks keywords, protocols and operators;
+green marks Strings; magenta marks types, control flow (including `?`), numeric
+literals and regex patterns. Known callable identifiers use yellow, and named
+Scope declaration names and their aliases retain the type role. Comments and
+inert hints are gray. The `fn` and `scope` tokens remain keywords in every
+declaration form. Source gutters use blue, repairs use green, and actual primary
+errors use bold red. Colors come from the terminal's own palette rather than a
+fixed RGB background. `auto` tests the stream being rendered: redirected stdout
+does not
 turn off color on terminal stderr, and terminal stdout does not color piped
 stderr. `always` explicitly emits SGR; `never`, `NO_COLOR`, and automatic
 `TERM=dumb` disable it. Source formatting, binary bytecode, TOML configuration,
 LSP frames, and ordinary program values remain undecorated.
+
+This separation follows the token-role design used by
+[fish](https://fishshell.com/docs/current/interactive.html#syntax-highlighting)
+and [PSReadLine](https://learn.microsoft.com/en-us/powershell/module/psreadline/set-psreadlineoption#-colors),
+not a copied RGB theme. The earlier scanner colored every unmatched atom blue,
+every known variable bright blue, and nearly every delimiter yellow. That made
+ordinary input dominate the accents and treated identifiers as if they were all
+filesystem literals. Leaving normal text unstyled also lets light and dark
+terminal themes choose their intended foreground. Highlight spans never alter
+source bytes or cursor geometry; the existing PrettyPrompt renderer still owns
+painting, selection, wrapping and ghost-text placement.
 
 Command help is selected from the ordinary parsed command, not by searching raw
 argument strings: a configuration filename such as `fmt` cannot redirect

@@ -161,7 +161,9 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         styled = bytes(terminal.raw[raw_start:])
         assert re.search(rb"\x1b\[[0-9;]*36mlet", styled), styled
         assert re.search(rb"\x1b\[[0-9;]*35mPath", styled), styled
-        assert re.search(rb"\x1b\[[0-9;]*34m~", styled), styled
+        assert b"~" in styled and not re.search(rb"\x1b\[[0-9;]*(?:34|94)m~", styled), (
+            styled
+        )
         cancelled = len(terminal.plain)
         terminal.key(b"\x03")
         terminal.prompt(cancelled)

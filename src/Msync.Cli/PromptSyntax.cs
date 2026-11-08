@@ -35,7 +35,14 @@ internal static class PromptSyntax
                     if (position < text.Length && text[position] == '"') { position++; continue; }
                     break;
                 }
-                Add(AnsiColor.Green); previous = "value"; continue;
+                AnsiColor? quotedStyle = AnsiColor.Green;
+                if (previous == "::" && position > start + 1 && text[position - 1] == '"')
+                {
+                    chain += "::" + text[(start + 1)..(position - 1)].Replace("\"\"", "\"", StringComparison.Ordinal);
+                    if (bindings is not null && bindings.TryGetValue(chain, out var member)) quotedStyle = ValueColor(member.SemanticRole);
+                }
+                if (quotedStyle is { } quotedAccent) Add(quotedAccent);
+                previous = "value"; continue;
             }
             if (character == '<' && (previous is "" or "/" or "{" or "[" or "," or "=>" || previous.EndsWith('/')))
             {
@@ -46,12 +53,9 @@ internal static class PromptSyntax
                 : text.AsSpan(position).StartsWith("wsl://", StringComparison.Ordinal) ? 3 : 0;
             if (protocol > 0)
             {
-                spans.Add(new(start, protocol, AnsiColor.BrightCyan));
-                spans.Add(new(start + protocol, 3, AnsiColor.Yellow));
+                spans.Add(new(start, protocol + 3, AnsiColor.Cyan));
                 position += protocol + 3;
-                int host = position;
                 while (position < text.Length && !Boundary(text[position]) && !text.AsSpan(position).StartsWith("::", StringComparison.Ordinal)) position++;
-                if (position > host) spans.Add(new(host, position - host, AnsiColor.Blue));
                 previous = "value"; continue;
             }
             if ("{}()[],;?:=$|<>!".Contains(character, StringComparison.Ordinal) || text.AsSpan(position).StartsWith("->", StringComparison.Ordinal))
@@ -59,28 +63,31 @@ internal static class PromptSyntax
                 position++;
                 if (position < text.Length && (character == ':' && text[position] == ':' || character is '=' or '!' or '<' or '>' && text[position] == '='
                     || character is '-' or '=' && text[position] == '>')) position++;
-                Add(character == '?' ? AnsiColor.Magenta : AnsiColor.Yellow);
                 string operation = text[start..position];
+                if (character == '?') Add(AnsiColor.Magenta);
+                else if (operation is "::" or "->" or "=>" or "=" or "==" or "!=" or "<" or "<=" or ">" or ">=" or "$" or "|") Add(AnsiColor.Cyan);
                 chain = operation == "::" ? chain.Length == 0 ? previous : chain : "";
                 previous = operation;
                 continue;
             }
             if (character == '/' && (position + 1 == text.Length || text[position + 1] == '<'))
-            { position++; Add(AnsiColor.Blue); previous = "/"; continue; }
+            { position++; previous = "/"; continue; }
             while (position < text.Length && !Boundary(text[position]) && text[position] is not ('"' or '<' or ':' or '$')
                 && !text.AsSpan(position).StartsWith("->", StringComparison.Ordinal)) position++;
             if (position == start) position++;
             string word = text[start..position];
             string selected = previous == "$" ? "$" + word : previous == "::" && chain.Length != 0 ? chain + "::" + word : word;
-            AnsiColor style = Commands.Contains(word, StringComparer.Ordinal) ? AnsiColor.BrightCyan
+            AnsiColor? style = Commands.Contains(word, StringComparer.Ordinal) ? AnsiColor.Cyan
                 : word is "if" or "else" or "match" or "for" or "in" or "loop" or "return" or "break" ? AnsiColor.Magenta
                 : Keywords.Contains(word, StringComparer.Ordinal) ? char.IsUpper(word[0]) ? AnsiColor.Magenta : AnsiColor.Cyan
-                : previous == "$" ? AnsiColor.Magenta
-                : previous == "fn" ? AnsiColor.BrightYellow
+                : word is "+" or "-" or "*" ? AnsiColor.Cyan
+                : long.TryParse(word, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out _) ? AnsiColor.Magenta
+                : previous == "fn" ? AnsiColor.Yellow
                 : previous == "scope" ? AnsiColor.Magenta
                 : bindings is not null && bindings.TryGetValue(selected, out var value) ? ValueColor(value.SemanticRole)
-                : DeclaredColor(text, position) ?? AnsiColor.Blue;
-            Add(style); previous = word; chain = selected;
+                : DeclaredColor(text, position);
+            if (style is { } accent) Add(accent);
+            previous = word; chain = selected;
         }
         return spans;
 
@@ -96,15 +103,14 @@ internal static class PromptSyntax
         offset++;
         while (offset < text.Length && char.IsWhiteSpace(text[offset])) offset++;
         ReadOnlySpan<char> tail = text.AsSpan(offset);
-        return Word(tail, "fn") || Word(tail, "Function") ? AnsiColor.BrightYellow
-            : Word(tail, "scope") || Word(tail, "Scope") ? AnsiColor.BrightBlue : null;
+        return Word(tail, "fn") || Word(tail, "Function") ? AnsiColor.Yellow : null;
 
         static bool Word(ReadOnlySpan<char> source, string word) => source.StartsWith(word, StringComparison.Ordinal)
             && (source.Length == word.Length || !char.IsLetterOrDigit(source[word.Length]) && source[word.Length] != '_');
     }
 
-    private static AnsiColor ValueColor(string role) => role == "function" ? AnsiColor.BrightYellow
-        : role == "type" ? AnsiColor.Magenta : AnsiColor.BrightBlue;
+    private static AnsiColor? ValueColor(string role) => role == "function" ? AnsiColor.Yellow
+        : role == "type" ? AnsiColor.Magenta : null;
 
     private static bool Boundary(char character) => char.IsWhiteSpace(character) || "{}()[],;?=$|<>!".Contains(character, StringComparison.Ordinal);
 
