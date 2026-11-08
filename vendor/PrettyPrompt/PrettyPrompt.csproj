@@ -4,6 +4,7 @@
     <Version>6.0.5</Version>
 
     <PackageId>PrettyPrompt</PackageId>
+    <Product>PrettyPrompt</Product>
     <PackageTags>repl readline console cli</PackageTags>
     <PackageProjectUrl>https://github.com/waf/PrettyPrompt</PackageProjectUrl>
     <PackageLicenseExpression>MPL-2.0</PackageLicenseExpression>
