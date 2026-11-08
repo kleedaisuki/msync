@@ -29,7 +29,10 @@ archives live under `dist/`. Disposable journey workspaces live under `.temp/`.
 
 `packaging/smoke.py` exercises the executable as a user: compile a typed function,
 check/dry-run without writes, run the source, remove the source, then execute the
-`.mso` and `.mexe` artifacts and compare exact UTF-8 payload bytes. The Windows
+`.mso` and `.mexe` artifacts and compare exact UTF-8 payload bytes. A telemetry-enabled
+artifact execution then verifies the normalized SQLite application/schema identity,
+completed session and root/transfer records, exercising the packaged native library
+rather than merely assuming file presence establishes loadability. The Windows
 installer lifecycle uses this same journey after installation and repair. Its
 existing Inno Setup AppId, per-user destination, PATH ownership and uninstall
 preservation rules are unchanged.
@@ -38,7 +41,8 @@ preservation rules are unchanged.
 
 Only version-controlled documentation and standard-library sources are packaged;
 untracked user notes and research artifacts are not selected by walking `docs/`.
-The five standard-library modules are required. The installed SDK's actual
+The six standard-library modules (`fs`, `path`, `bool`, `string`, `ranges`,
+and `process`) are required. The installed SDK's actual
 `LICENSE.txt` and `ThirdPartyNotices.txt` are copied alongside product notices;
 Rust attribution is not represented as if Rust were linked into the new product.
 The bundled .NET notices may cover more SDK components than the native payload.
@@ -69,3 +73,15 @@ bytes and checksum coverage. Existing publisher tests cover complete publication
 immutable tags/assets, draft resumption and failed uploads. Executable acceptance
 must use the real Native AOT binary through `packaging/smoke.py`; container tests
 are not a substitute for the user journey.
+
+## Verified native package journey (2026-11-08)
+
+`python packaging/build.py --rid linux-x64 --smoke` published the integrated
+compiler/runtime/CLI with Native AOT without warnings and passed source, dry-run,
+source-free relocatable/contextual bytecode execution and native SQLite telemetry
+acceptance. The staged payload includes `libe_sqlite3.so` beside `msync`; the
+archive is `dist/msync-0.8.0-linux-x86_64.tar.gz`. Extracting that archive and
+verifying every manifest digest, all six standard-library modules and the same
+real-process user journey also passed. This establishes Linux native
+execution and distribution contents, not Windows installer acceptance; the
+Windows native job remains the platform-specific verification path.

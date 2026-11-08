@@ -115,7 +115,7 @@ def stage_payload(publish: Path, stage: Path, rid: str, package_version: str) ->
     for relative in [Path("README.md"), Path("LICENSE"), *tracked_files("docs")]:
         copy_file(ROOT / relative, docs / relative)
     libraries = tracked_files("stdlib/*.msync")
-    missing = {"fs", "path", "bool", "string", "ranges"} - {
+    missing = {"fs", "path", "bool", "string", "ranges", "process"} - {
         path.stem for path in libraries
     }
     if missing:

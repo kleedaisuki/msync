@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import subprocess
 import tempfile
 from collections.abc import Sequence
@@ -14,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def run(binary: Path, arguments: Sequence[str], cwd: Path) -> str:
     result = subprocess.run(
-        [str(binary), *arguments],
+        [str(binary), *arguments, "--no-config"],
         cwd=cwd,
         check=True,
         capture_output=True,
@@ -51,7 +52,19 @@ def journey(binary: Path, workspace: Path) -> None:
     (workspace / "output.txt").unlink()
     run(binary, ["run-ir", "sync.mexe"], workspace)
     assert (workspace / "output.txt").read_bytes() == payload
-    print("PASS: packaged source, dry-run, source-free .mso/.mexe and bound IR bytes")
+    database = workspace / "telemetry.sqlite"
+    run(binary, ["run", "sync.mso", "--telemetry-db", str(database)], workspace)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA application_id").fetchone() == (0x4D53594E,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (1,)
+        assert connection.execute("SELECT status FROM sessions").fetchall() == [
+            ("complete",)
+        ]
+        names = {row[0] for row in connection.execute("SELECT name FROM records")}
+        assert "run" in names and names & {"copy", "transfer"}, names
+    print(
+        "PASS: packaged source, dry-run, source-free .mso/.mexe, bound IR bytes and native SQLite telemetry"
+    )
 
 
 def main() -> None:

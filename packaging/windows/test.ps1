@@ -108,7 +108,7 @@ function Assert-InstalledJourney([string]$Directory) {
     $exe = Join-Path $Directory 'bin/msync.exe'
     $reported = Invoke-Msync $exe @('--version')
     if ("$reported".Trim() -ne "msync $version") { throw "Installed version mismatch: $reported" }
-    foreach ($module in @('fs', 'ranges', 'path', 'bool', 'string')) {
+    foreach ($module in @('fs', 'ranges', 'path', 'bool', 'string', 'process')) {
         if (-not (Test-Path -LiteralPath (Join-Path $Directory "share/msync/std/$module.msync") -PathType Leaf)) {
             throw "Packaged standard-library source is missing: $module"
         }
