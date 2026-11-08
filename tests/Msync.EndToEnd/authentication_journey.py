@@ -125,7 +125,18 @@ def exercise(
     password: str,
 ) -> dict[str, Any]:
     write_remote("native.txt", "remote only")
-    source: str = f"let remote = ssh://Perf_Fixture;\nremote::{remote}/"
+    literal: str = '"' + (remote + "/").replace('"', '""') + '"'
+    source: str = f"let remote = ssh://Perf_Fixture;\nremote::{literal}"
+    checked: subprocess.CompletedProcess[bytes] = subprocess.run(
+        [str(binary), "--no-config", "--no-telemetry", "check", "-"],
+        input=source.encode("utf-8"),
+        capture_output=True,
+        env=environment,
+        cwd=directory,
+        timeout=30,
+        check=False,
+    )
+    assert checked.returncode == 0, checked.stderr.decode(errors="replace")
     uri: str = (directory / "native-auth.msync").as_uri()
     before: int = len(lines(log))
     client: Client = Client(binary, cwd=directory, environment=environment)

@@ -83,6 +83,19 @@ are unchanged. The surrounding WSL fixture owns final unregistration. Native
 server failures are retained in the reported guest SSH log, rather than reduced
 to a generic completion timeout.
 
+### Native fixture provenance
+
+The Linux native image from platform run `42491769332`, SHA256
+`605d540a12d91f1a882133b8876f37747872a32a0ba6b1cd702e4da63c47621d`,
+passes the encrypted-key journey with actual confirmation and passphrase
+questions, one retained authenticated session, query cancellation and dismissal
+without a second question. The initial two-platform fixture failed before any
+authentication: its bare directory component `remote` resolved to the lexical
+`remote: Connection` binding, making the generated program ill-typed. The fixture
+now quotes the physical pathname and checks that exact source before completion.
+It still sends the first completion immediately after `didOpen`; no analysis
+sleep or diagnostic wait hides admission behavior.
+
 The VS Code client's focused tests exercise masked and unmasked input, exact
 host-key confirmation, queued cancellation, active cancellation, restart cleanup
 and nonblocking notices. Real SSH directory-completion journeys separately own
