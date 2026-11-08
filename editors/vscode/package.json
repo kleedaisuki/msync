@@ -1,8 +1,8 @@
 {
   "name": "msync-language",
   "displayName": "msync Language",
-  "description": "msync 0.7 syntax highlighting and language-server support",
-  "version": "0.7.3",
+  "description": "msync 0.8 syntax highlighting and language-server support",
+  "version": "0.8.0",
   "publisher": "msync",
   "license": "GPL-3.0-only",
   "engines": {
@@ -51,7 +51,7 @@
           "type": "string",
           "default": "msync",
           "scope": "machine",
-          "description": "Path to the msync executable (0.6+; 0.7.2+ for operator-aware editing and filesystem completion). Launched directly with --language-server; shell arguments are not accepted. Changes restart the server automatically."
+          "description": "Path to the msync 0.8 executable. Launched directly with --language-server; shell arguments are not accepted. Changes restart the server automatically."
         }
       }
     },

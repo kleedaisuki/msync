@@ -34,6 +34,9 @@
       "include": "#bindings"
     },
     {
+      "include": "#types"
+    },
+    {
       "include": "#keywords"
     },
     {
@@ -54,8 +57,16 @@
   ],
   "repository": {
     "comments": {
-      "match": "(?<!\\S)#.*$",
-      "name": "comment.line.number-sign.msync"
+      "patterns": [
+        {
+          "match": "(?<!\\S)#.*$",
+          "name": "comment.line.number-sign.msync"
+        },
+        {
+          "match": "(?<!\\S)//.*$",
+          "name": "comment.line.double-slash.msync"
+        }
+      ]
     },
     "strings": {
       "begin": "\"",
@@ -80,38 +91,95 @@
       "applyEndPatternLast": true
     },
     "declarations": {
-      "begin": "^(\\s*)(macro|symbol|boolean|native)(\\s+)([\\p{L}\\p{N}_.-]+)(\\s*\\()",
-      "end": "\\)|(?=$)",
-      "name": "meta.function.msync",
-      "beginCaptures": {
-        "2": {
-          "name": "storage.type.function.msync"
-        },
-        "4": {
-          "name": "entity.name.function.msync"
-        },
-        "5": {
-          "name": "punctuation.definition.parameters.begin.msync"
-        }
-      },
-      "endCaptures": {
-        "0": {
-          "name": "punctuation.definition.parameters.end.msync"
-        }
-      },
       "patterns": [
         {
-          "match": "[\\p{L}\\p{N}_.-]+",
-          "name": "variable.parameter.msync"
+          "begin": "(?<![\\p{L}\\p{N}_./\\\\:-])(fn)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(\\s*\\()",
+          "end": "\\)|(?=$)",
+          "name": "meta.function.msync",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.function.msync"
+            },
+            "3": {
+              "name": "entity.name.function.msync"
+            },
+            "4": {
+              "name": "punctuation.definition.parameters.begin.msync"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.parameters.end.msync"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#types"
+            },
+            {
+              "match": "[\\p{L}_][\\p{L}\\p{N}_]*",
+              "name": "variable.parameter.msync"
+            },
+            {
+              "match": "[?:|]",
+              "name": "keyword.operator.msync"
+            },
+            {
+              "match": ",",
+              "name": "punctuation.separator.parameters.msync"
+            }
+          ]
         },
         {
-          "match": ",",
-          "name": "punctuation.separator.parameters.msync"
+          "begin": "(?<![\\p{L}\\p{N}_./\\\\:-])(fn)(\\s*\\()",
+          "end": "\\)|(?=$)",
+          "name": "meta.function.msync",
+          "beginCaptures": {
+            "1": {
+              "name": "storage.type.function.msync"
+            },
+            "2": {
+              "name": "punctuation.definition.parameters.begin.msync"
+            }
+          },
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.parameters.end.msync"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#types"
+            },
+            {
+              "match": "[\\p{L}_][\\p{L}\\p{N}_]*",
+              "name": "variable.parameter.msync"
+            },
+            {
+              "match": "[?:|]",
+              "name": "keyword.operator.msync"
+            },
+            {
+              "match": ",",
+              "name": "punctuation.separator.parameters.msync"
+            }
+          ]
+        },
+        {
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(fn)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(?=\\s*\\{)",
+          "captures": {
+            "1": {
+              "name": "storage.type.function.msync"
+            },
+            "3": {
+              "name": "entity.name.function.msync"
+            }
+          }
         }
       ]
     },
     "endpoints": {
-      "match": "([A-Za-z][A-Za-z0-9+.-]*)(://)((?:\\[[^\\]\\s\"()]*\\]?|[^\\s(),\"\\[\\]])*)",
+      "match": "([A-Za-z][A-Za-z0-9+.-]*)(://)((?:\\[[^\\]\\s\"(){};]*\\]?|[^\\s(),\"\\[\\]{};])*)",
       "captures": {
         "1": {
           "name": "support.type.protocol.msync"
@@ -126,7 +194,7 @@
     },
     "selectors": {
       "begin": "(?<![\\p{L}\\p{N}_.)\"\\]>])<(?![=\\s\"])",
-      "end": ">(?=$|[\\s/\\\\,)\\|]|\\]|:|->|=>|:=)|(?=$)",
+      "end": ">(?=$|[\\s/\\\\,)\\|};]|\\]|:|->|=>)|(?=$)",
       "name": "string.regexp.msync",
       "beginCaptures": {
         "0": {
@@ -200,8 +268,18 @@
       ]
     },
     "bindings": {
-      "match": "[\\p{L}\\p{N}_.-]+(?=\\s*(?::=|=>|=(?!=)))",
-      "name": "variable.other.readwrite.msync"
+      "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(let)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(\\?)?",
+      "captures": {
+        "1": {
+          "name": "storage.type.variable.msync"
+        },
+        "3": {
+          "name": "variable.other.readwrite.msync"
+        },
+        "4": {
+          "name": "keyword.operator.nullable.msync"
+        }
+      }
     },
     "keywords": {
       "patterns": [
@@ -210,11 +288,15 @@
           "name": "constant.language.boolean.msync"
         },
         {
-          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:and|or|not|exists)(?![\\p{L}\\p{N}_./\\\\-])",
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])null(?![\\p{L}\\p{N}_./\\\\-])",
+          "name": "constant.language.null.msync"
+        },
+        {
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:and|or|not|exists|is)(?![\\p{L}\\p{N}_./\\\\-])",
           "name": "keyword.operator.logical.msync"
         },
         {
-          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:scope|native|macro|symbol|boolean|return|global|drop|delete|include|execute|if|else|for|in|loop|break|release|acquire|acqrel|async|await)(?![\\p{L}\\p{N}_./\\\\-])",
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:scope|native|fn|let|return|global|drop|include|execute|if|else|for|in|loop|break|match|decltype|release|acquire|acqrel)(?![\\p{L}\\p{N}_./\\\\-])",
           "name": "keyword.control.msync"
         }
       ]
@@ -228,7 +310,7 @@
       "name": "constant.numeric.count.msync"
     },
     "operators": {
-      "match": "::|->|=>|:=|==|!=|<=|>=|[=<>|/$]",
+      "match": "::|->|=>|==|!=|<=|>=|[=<>|/$?]",
       "name": "keyword.operator.msync"
     },
     "punctuation": {
@@ -242,26 +324,31 @@
           "name": "punctuation.section.brackets.end.msync"
         },
         {
-          "match": "[(),:]",
+          "match": "[(),:;]",
           "name": "punctuation.separator.msync"
+        },
+        {
+          "match": "\\{",
+          "name": "punctuation.section.block.begin.msync"
+        },
+        {
+          "match": "\\}",
+          "name": "punctuation.section.block.end.msync"
         }
       ]
     },
     "paths": {
-      "match": "[^\\s\"(),\\[\\]<>|=/:$]+",
+      "match": "[^\\s\"(),\\[\\]{};?<>|=/:$]+",
       "name": "variable.other.readwrite.msync"
     },
     "scope-declarations": {
-      "match": "^(\\s*)(scope)(\\s+)([\\p{L}\\p{N}_.-]+)(\\s*:)",
+      "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(scope)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(?=\\s*\\{)",
       "captures": {
-        "2": {
+        "1": {
           "name": "storage.type.namespace.msync"
         },
-        "4": {
+        "3": {
           "name": "entity.name.namespace.msync"
-        },
-        "5": {
-          "name": "punctuation.separator.msync"
         }
       }
     },
@@ -275,6 +362,10 @@
           "name": "entity.name.namespace.msync"
         }
       }
+    },
+    "types": {
+      "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:Range|String|Function|Scope|Path|Process|Connection|Null|Bool|Type|Number)(?![\\p{L}\\p{N}_./\\\\-])",
+      "name": "support.type.msync"
     }
   }
 }
