@@ -4,19 +4,29 @@
 
 `Msync.Core` owns the type/value algebra and stack bytecode contract. A module
 contains typed function signatures, a constant pool, source spans, and numeric
-local/function references. Functions are specialized by the compiler; closures
-capture values and carry a function-table identity. Calls never send source or
+local/function references. Functions are specialized by the compiler; new
+closures capture lexical locations and carry a function-table identity. Mutable
+values retain fixed inferred/declared storage types. Calls never send source or
 syntax trees to the interpreter. Recursion uses specialized forward references.
 The `Null` value is distinct from Bool. Iterator state, live processes, handles,
 transport sessions and lazy enumerators cannot be embedded as constants.
 
-The binary container has independent format version **2** and language-semantics
-version **0.8.0**. The reader also accepts format 1; its original path constants
-have no additional local spelling. It is not JSON or serialized source. The decoder validates table
+The binary container has independent format version **3** and language-semantics
+version **0.8.0**. Its explicit module semantics distinguish mutable locations and
+directional scheduling from the earlier snapshot-capture execution contract.
+The reader also accepts formats 1 and 2 with their legacy semantics; format 1's
+original path constants have no additional local spelling. Rewriting an older
+artifact in the new container preserves its semantic flags. It is not JSON or
+serialized source. The decoder validates table
 references, layouts and reachable stack/control-flow shape before execution.
 Bytecode dataflow rejects stack underflow, mismatched join heights, uninitialized
 locals, invalid iterator ownership, invalid closure layouts and impossible
 operand-kind combinations. No arbitrary instruction or filename quotas exist.
+
+The full state identity, nullable-field, optimization and directional barrier
+contract is in [mutable state and effects](mutable-state-and-effects-v080.md).
+Live cells and process completion owners are runtime state, never constants
+serialized as portable execution proofs.
 
 `Artifact`, `Optimizer`, `Binding` and `Interpreter` are separate APIs:
 

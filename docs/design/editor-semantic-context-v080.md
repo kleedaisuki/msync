@@ -115,8 +115,11 @@ Implicit Path/String conversions update both the inferred type and the literal
 fact. A branch join or a polymorphic source occurrence retains a value only when
 all alternatives agree. Type-shared generic parameters forget scalar and Range
 item literal facts, so the first invocation cannot choose a later invocation's
-completion directory. Exact immutable Scope identities retain their member
-facts under the existing specialization contract.
+completion directory. Scope identities retain their declared member types, but
+mutable member values require reaching-write facts: an alias store or relevant
+callee write invalidates old literal/path facts. A persistent lexical snapshot
+must not acquire later mutations by sharing a mutable Info payload. See
+[mutable state and effects](mutable-state-and-effects-v080.md).
 
 Materializing derived Path values is editor-only; ordinary compilation does not
 allocate extra joined path strings for presentation. Facts are not serialized
