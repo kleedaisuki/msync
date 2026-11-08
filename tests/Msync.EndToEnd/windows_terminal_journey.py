@@ -46,7 +46,7 @@ class PtyFactory(Protocol):
         cwd: str,
         env: dict[str, str],
         dimensions: tuple[int, int],
-        backend: int,
+        backend: int | str,
     ) -> PtyProcess: ...
 
 
@@ -69,7 +69,8 @@ class Terminal:
             cwd=str(directory),
             env=environment,
             dimensions=(30, 120),
-            backend=0,
+            # The upstream selector treats integer zero as unset before int().
+            backend="0",
         )
         self.selector = selectors.DefaultSelector()
         self.selector.register(self.process.fileobj, selectors.EVENT_READ)
