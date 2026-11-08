@@ -32,6 +32,9 @@ class Journey:
     relocation: bool = False
 
 
+NATIVE_RELATIVE_PATH_PATTERN: str = (
+    r"^[.]\\input[.]txt$" if os.name == "nt" else r"^[.]/input[.]txt$"
+)
 UNICODE_CASE_SAMPLE: str = "ΑΣ Σςσ İıIißẞ Éé 𐐀𐐨 ﬃ և"
 UNICODE_SIGMA_SOURCE: str = "ΟΣ ΟΣΑ ΟΣ́ ΟΣ́Α Σ ΟΣ’ ΟΣ’Α ΟΣ\u200d ΟΣ\u200dΑ"
 
@@ -177,7 +180,7 @@ JOURNEYS: tuple[Journey, ...] = (
     Journey(
         "regex_relative_path_uses_raw_string",
         "let file = ./input.txt; let text = match file { "
-        '<^[.]/input[.]txt$> => { "raw path" }, _ => { "wrong" } }; '
+        f'<{NATIVE_RELATIVE_PATH_PATTERN}> => {{ "raw path" }}, _ => {{ "wrong" }} }}; '
         "text -> result.txt;",
         {"result.txt": b"raw path"},
         artifacts=True,

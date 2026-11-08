@@ -33,3 +33,8 @@ when an unchanged contract has already passed.
 The integration team's broader suite owns packaging, SSH/WSL transport, generic
 CLI option acceptance and editor protocol. This suite targets language behavior
 with file bytes as the observable user result.
+
+The anchored local-relative regex fixture uses the host's native separator:
+`./input.txt` on Unix and `.\\input.txt` on Windows (the regex escapes the
+backslash). It still rejects absolute projections. The separate SSH-qualified
+`~/input.txt` fixture keeps POSIX source spelling independently of the host.
