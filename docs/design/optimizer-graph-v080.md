@@ -45,7 +45,11 @@ A local slot captured by `LoadCell` is not a constant even if its original
 initializer is known. Live captures demand the slot's stores. Entry captures
 and inlined `GetCapture` aliases refer to another frame's storage: their writes
 are observable without a local read, and stores retain the prior storage
-reference as well as the assigned value. `InitializeLocal` creates fresh
+reference as well as the assigned value. Raw `LoadCell`/`LoadStorage` transfers
+can put one cell into multiple local slots; a storage-identity union propagates
+constant invalidation, external ownership and write demand across those aliases.
+Each observed cell group visits its indexed definitions only once, rather than
+rescanning the function for every read. `InitializeLocal` creates fresh
 storage, while `StoreLocal` updates an existing cell when present.
 
 Scope alias analysis follows reaching allocation identities, never dictionary

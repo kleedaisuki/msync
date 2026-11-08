@@ -94,16 +94,59 @@ effect boundaries; successors and effect flags are inspectable in `plan`.
 Machine binding specializes provably local transfers to a dedicated local fast
 path and resolves static connection roots. Other operands remain late-bound.
 
-Discarded scalar transfers may run concurrently. Each admitted transfer records
-its source-read and destination-write resources; overlapping read/write or
-write/write work retains program order. Local resource identity resolves existing
-filesystem aliases. Remote work on the same endpoint is serialized unless its
-independence is established, without remote preflight/authentication. Opaque calls, demanding callback/range calls, filesystem observations, branches,
-loops and return drain the admitted frontier. Immediate pure native capabilities
-without Range/Function parameters do not globally join unrelated work.
-`Jobs` bounds work; the configured payload budget additionally bounds copy slots.
-This permits the dominant independent-copy workload without guessing that an
-opaque process or native mutation has no effects.
+Discarded scalar transfers run as dependency-owned asynchronous work. Admission
+captures scalar operand values; the VM alone executes mutable stores and closure
+bodies. A per-endpoint path-prefix index records source reads and destination
+writes. RAW, WAR and WAW dependencies retain source order, including directory
+subtree overlap; independent siblings do not conflict merely because publication
+changes their parent mtime. Finding predecessors visits path ancestors and actual
+overlapping descendants, rather than scanning every previously queued copy.
+Local identity resolves existing filesystem aliases. Unknown remote projections
+conflict only within their selected endpoint: discovering independence must not
+authenticate an endpoint merely mentioned by an unselected branch.
+
+Current-semantic branches, loop edges and ordinary lexical calls no longer drain
+unrelated copies. Native filesystem observations wait only for conflicting path
+writes; native mutations wait for conflicting reads and writes. Opaque native
+operations retain an observation boundary. Range transfers keep their finite
+operation/preflight semantics instead of becoming an implicit source loop.
+`Jobs` and the configured payload budget bound finite-copy admission; a deferred
+process-output dependency does not occupy a copy slot while waiting for exit.
+Format-1/2 legacy modules retain the original broader control-flow draining.
+
+`release`, `acquire` and `acqrel` preserve the Rust baseline's directional
+ordering, not CPU atomic-memory synchronization. Before/release constrains earlier
+finite work; After/acquire constrains later finite work. Internal paired region
+markers retain the acquired statement's own process-dependent flows without
+joining unrelated background captures. Standalone release is
+not a sticky background mode. An unmarked external call starts and waits;
+`release executable(...)` returns a live Process, `acquire process` joins only
+that process and its connected flows, and bare acquire joins the interpreter
+session's pending frontier (including inherited caller work). A lexical function
+joins its own admitted work on return, never the caller's unrelated released processes. Optimizer inlining must
+preserve that boundary; job-owning callees cannot be flattened as pure values.
+
+Process stdout/stderr retain the 0.8 `String`-at-completion API; they are not the
+legacy live spool/stream-port capability, and stdin streaming is not implied by
+these scheduling changes. Their values and pure derived calculations remain
+deferred until demanded. For example, reading stdout and transferring it before
+an independent gate-file write must not block that gate behind the child waiting for it. Ordinary process
+launch fences exclude live process-connected flows, so a released server may be
+completed by a later client. Completion tasks retain natural process lifetime;
+cooperative cancellation of an observer does not kill an admitted child. Optional
+output-spool errors stop retaining bytes but continue draining native pipes,
+preserving the error rather than turning quota enforcement into process death.
+The gate-driven CLI acceptance is `tests/Msync.EndToEnd/scheduling_journey.py`;
+it exercises source and bound binary artifacts with the exact test interpreter
+reported by the harness, never as a product dependency.
+
+The scheduler reuses [.NET Task.WhenAll](https://learn.microsoft.com/en-us/dotnet/api/system.threading.tasks.task.whenall?view=net-10.0)
+for owned completion and platform async I/O rather than allocating a custom
+worker executor. Resource ordering is distinct from speculation permission, as
+in [MLIR's effect model](https://mlir.llvm.org/docs/Rationale/SideEffectsAndSpeculation/):
+no dependency proof authorizes authenticating or executing an unselected branch.
+The directional analogy follows [LLVM's motion rules](https://llvm.org/docs/Atomics.html)
+without adding CPU atomic pairing or importing a memory model into file copying.
 
 A consumed `->` yields Bool. Operational I/O/permission/native-process failures
 yield false, preserve source/destination/cause diagnostics, and increment failed

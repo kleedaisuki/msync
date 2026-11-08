@@ -118,6 +118,18 @@ keeps its cells alive; returning a Scope keeps its identity and field locations
 alive. Across REPL submissions, live slots and accepted storage contracts are
 authoritative; invalidate assumptions when a later submission updates them.
 
+REPL reconciliation follows the executed prefix, not the last statically visited
+assignment. A compile rejection publishes no new declarations. A runtime failure
+retains initialized declarations and mutations already performed; it refreshes
+flow facts from the accepted runtime values without replaying effects. Storage
+constraints and lexical identities remain unchanged. Scope allocation-site IDs
+retain the source-owned nullable field contract when a newly assigned instance
+has the same member names as a previous instance. Previously accepted runtime
+instance identities take precedence over a later submission's speculative shape.
+Function captures are refreshed from their shared cells rather than root-slot
+numbers from another invocation. This metadata refresh does not clone Scope
+values or roll back successful prefix effects.
+
 ## One optimization model across stages
 
 Keep the portable stack bytecode as the serialized execution contract. Build an
