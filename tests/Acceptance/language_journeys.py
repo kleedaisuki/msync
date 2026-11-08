@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,19 @@ class Journey:
 
 
 JOURNEYS: tuple[Journey, ...] = (
+    Journey(
+        "path_call_returns_real_process",
+        "__VERSION_PROCESS__ child::stdout -> result.txt;",
+        {"result.txt": f"msync 0.8.0{os.linesep}".encode()},
+        artifacts=True,
+    ),
+    Journey(
+        "removed_keywords_are_ordinary_names",
+        'let async = "ordinary names"; let await = async; '
+        "fn delete(value) { value }; delete(await) -> result.txt;",
+        {"result.txt": b"ordinary names"},
+        artifacts=True,
+    ),
     Journey(
         "inferred_recursive_function",
         'fn settle(value) { if value { "done" } else { settle(true) } }; '
@@ -423,6 +437,10 @@ def check_relocation(cli: Sequence[str], directory: Path) -> list[dict[str, obje
     return commands
 
 
+def quote_string(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
 def run_journey(
     journey: Journey, cli: Sequence[str], directory: Path, artifacts: bool
 ) -> dict[str, object]:
@@ -437,7 +455,15 @@ def run_journey(
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(content)
     source = directory / "main.msync"
-    source.write_text(journey.source, encoding="utf-8")
+    command = shutil.which(cli[0]) or cli[0]
+    process_arguments = [*cli[1:], "--version"]
+    process = (
+        f"let program: Path = {quote_string(command)}; "
+        f"let child = program({', '.join(quote_string(value) for value in process_arguments)});"
+    )
+    source.write_text(
+        journey.source.replace("__VERSION_PROCESS__", process), encoding="utf-8"
+    )
     try:
         checked = execute([*cli, "check", str(source)], directory)
         commands.append(describe(checked))

@@ -84,3 +84,20 @@ python3 tests/Acceptance/language_journeys.py \
 
 The frozen managed file-manifest SHA-256 for this incremental run is
 `4111ddc2914333ebf32f7428b64cc31c46b71cd981e0d4c2d0a68858ba467726`.
+
+
+A further two-journey incremental run accepted a real Path call returning a
+Process (the child prints `msync --version`, and its stdout is copied exactly)
+and the removed `async`, `await`, and `delete` spellings as ordinary lexical
+names. Both passed source and both source-free artifact stages. The child uses
+the same frozen CLI snapshot; no system-specific shell is required.
+
+```sh
+python3 tests/Acceptance/language_journeys.py \
+  src/Msync.Cli/bin/Debug/net10.0/msync --artifacts \
+  --case path_call_returns_real_process --case removed_keywords_are_ordinary_names \
+  --output .temp/acceptance-v080/incremental-process-keywords.json
+```
+
+Frozen managed file-manifest SHA-256:
+`4111ddc2914333ebf32f7428b64cc31c46b71cd981e0d4c2d0a68858ba467726`.
