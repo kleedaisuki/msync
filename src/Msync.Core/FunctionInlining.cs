@@ -142,6 +142,7 @@ internal static class FunctionInlining
     internal static Dictionary<int, int> Targets(FunctionCode function, IReadOnlyList<Value> constants, bool requireKnownCallee = false)
     {
         var targets = new Dictionary<int, int>();
+        if (!function.Instructions.Any(instruction => instruction.Op == OpCode.Call)) return targets;
         var incoming = new HashSet<int>();
         foreach (var instruction in function.Instructions)
         {
@@ -167,7 +168,10 @@ internal static class FunctionInlining
                 case OpCode.Pop: Pop(); break;
                 case OpCode.Dup: var item = Pop(); stack.Add(item); stack.Add(item); break;
                 case OpCode.MakeClosure: PopMany(instruction.B); stack.Add(new(instruction.A)); break;
-                case OpCode.SpecializeClosure: Pop(); stack.Add(instruction.Text is null ? new(instruction.A) : null); break;
+                case OpCode.SpecializeClosure:
+                    var specialized = Pop();
+                    stack.Add(instruction.Text is null ? new(instruction.A) : specialized?.Function is { } original
+                        && FunctionDispatch.Parse(instruction.Text).TryGetValue(original, out var mapped) ? new(mapped) : null); break;
                 case OpCode.MakeScope:
                     var values = PopMany(instruction.A); var names = instruction.Text?.Split('\0', StringSplitOptions.RemoveEmptyEntries) ?? [];
                     stack.Add(new(Members: names.Select((name, i) => KeyValuePair.Create(name, values[i])).ToDictionary())); break;
@@ -176,13 +180,21 @@ internal static class FunctionInlining
                 case OpCode.Call:
                     PopMany(instruction.A); var closure = Pop(); var target = instruction.B > 0 && (!requireKnownCallee || closure?.Function is not null)
                         ? instruction.B - 1 : instruction.Text is null ? closure?.Function : null;
+                    if (instruction.Text is not null && closure?.Function is { } identity
+                        && FunctionDispatch.Parse(instruction.Text).TryGetValue(identity, out var dispatched)) target = dispatched;
                     if (target is { } known) targets[pc] = known;
                     stack.Add(null); Array.Clear(locals); break;
                 case OpCode.NativeCall: PopMany(instruction.A); stack.Add(null); Array.Clear(locals); break;
                 case OpCode.ProcessCall: PopMany(instruction.A + 1); stack.Add(null); Array.Clear(locals); break;
                 case OpCode.MakeRange: case OpCode.MakeLazyRange: PopMany(instruction.A); stack.Add(null); break;
-                case OpCode.Not: case OpCode.IsNull: case OpCode.Negate: case OpCode.Convert: case OpCode.SelectPath:
-                case OpCode.GetIterator: case OpCode.GetCapture: case OpCode.DeferRange: Pop(); stack.Add(null); break;
+                case OpCode.Not:
+                case OpCode.IsNull:
+                case OpCode.Negate:
+                case OpCode.Convert:
+                case OpCode.SelectPath:
+                case OpCode.GetIterator:
+                case OpCode.GetCapture:
+                case OpCode.DeferRange: Pop(); stack.Add(null); break;
                 case OpCode.RegexMatch: PopMany(instruction.Text is null ? 2 : 1); stack.Add(null); break;
                 case OpCode.Barrier: break;
                 case OpCode.Acquire: if (instruction.A != 0) Pop(); break;
