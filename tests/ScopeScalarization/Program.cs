@@ -74,6 +74,7 @@ try
             else File.Delete(flag);
             string expected = await Execute(original);
             Require(await Execute(transformed) == expected, name + ": scalarized result differs");
+            Require(await Execute(Optimizer.Optimize(original, 3)) == expected, name + ": integrated optimizer result differs");
             foreach (Module candidate in new[] { transformed, Binding.Bind(transformed, new(root, root)) })
             {
                 Artifact.Validate(candidate);
@@ -107,6 +108,9 @@ try
     Module invalid = new([], [new("missing", 0, 0,
         [new(OpCode.MakeScope), new(OpCode.GetMember, Text: "missing"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)], OptimizationLevel: 0);
     Require(await Execute(Scalarize(invalid)) == await Execute(invalid), "missing member diagnostic was removed");
+    Module duplicate = new([new NumberValue(1), new NumberValue(2)], [new("duplicate", 0, 0,
+        [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.MakeScope, 2, Text: "item\0item"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)], OptimizationLevel: 0);
+    Require(await Execute(Scalarize(duplicate)) == await Execute(duplicate), "duplicate field construction diagnostic was removed");
     Random random = new(80119);
     for (int sample = 0; sample < 24; sample++)
     {
@@ -130,6 +134,7 @@ try
         source.Append("observed + left::item + right::item");
         Module transformed = Scalarize(Compiler.Compile(source.ToString(), "alias-property", 0));
         Require(await Execute(transformed) == "Number:" + (observed + values[0] + values[1]), "generated alias memory versions differ from independent scalar model");
+        Require(await Execute(Optimizer.Optimize(transformed, 3)) == "Number:" + (observed + values[0] + values[1]), "integrated alias memory versions differ from independent scalar model");
         Require(transformed.Functions[0].Instructions.All(instruction => instruction.Op is not (OpCode.MakeScope or OpCode.GetMember or OpCode.SetMember)), "generated private objects were not fully scalarized");
     }
     if (args.Contains("--performance", StringComparer.Ordinal))

@@ -56,7 +56,8 @@ for (int i = 0; i < 100; i++)
 var arithmetic = Program([new NumberValue(12), new NumberValue(3)], new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Multiply), new(OpCode.Return));
 var optimized = Optimizer.Optimize(arithmetic);
 Check(await Run(optimized) is NumberValue { Data: 36 }, "Constant-folded arithmetic changed value");
-Check(optimized.Functions[0].Instructions.Count(i => i.Op == OpCode.Nop) == 2, "Pure arithmetic did not fold");
+Check(optimized.Functions[0].Instructions.All(instruction => instruction.Op is not (OpCode.Multiply or OpCode.Nop)), "Folded arithmetic retained computation or dead placeholders");
+Check(optimized.Functions[0].Instructions.Count == 2, "Folded scalar result retained unnecessary executable instructions");
 var branches = Program([new StringValue("yes"), new StringValue("no")], new(OpCode.True), new(OpCode.JumpIfFalse, 5), new(OpCode.Constant, 0), new(OpCode.Return), new(OpCode.Nop), new(OpCode.Constant, 1), new(OpCode.Return));
 var boundBranches = Binding.Bind(Optimizer.Optimize(branches), new(Environment.CurrentDirectory, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)));
 Check(await Run(boundBranches) is StringValue { Data: "yes" }, "Executable jump relocation changed selected branch");
@@ -140,7 +141,7 @@ try
         await Run(deferred, new(WorkingDirectory: root));
         Check(await File.ReadAllTextAsync(Path.Combine(root, "deferred-calls")) == "x", "Deferred range call reevaluated arguments/body across demands");
         try { await Run(process, new(SpoolLimit: 3)); Check(false, "Configured spool limit had no effect"); }
-        catch (MsyncException error) { Check(error.Message.Contains("spool limit", StringComparison.Ordinal), "Spool failure lost diagnostic"); }
+        catch (MsyncException error) { Check(error.ToString().Contains("spool limit", StringComparison.Ordinal), "Spool failure lost its native cause"); }
     }
 }
 finally { Directory.Delete(root, recursive: true); }

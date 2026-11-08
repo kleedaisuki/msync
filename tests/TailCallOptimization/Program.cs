@@ -23,7 +23,8 @@ foreach ((string name, string source, Value expected) in new (string, string, Va
 {
     ("sum", "fn sum(n, acc) { if n == 0 { acc } else { sum(n - 1, acc + n) } }; sum(80, 0)", new NumberValue(3240)),
     ("parallel-arguments", "fn swap(n, left, right) { if n == 0 { left } else { swap(n - 1, right, left) } }; swap(11, \"left\", \"right\")", new StringValue("right")),
-    ("capture-write", "let count = 0; fn walk(n) { count = count + 1; if n == 0 { count } else { walk(n - 1) } }; walk(20)", new NumberValue(21))
+    ("capture-write", "let count = 0; fn walk(n) { count = count + 1; if n == 0 { count } else { walk(n - 1) } }; walk(20)", new NumberValue(21)),
+    ("fresh-escaped-location", "let first = fn { 0 }; fn walk(n) { let snapshot = n; if n == 3 { first = fn { snapshot }; }; if n == 0 { null } else { walk(n - 1) } }; walk(3); first()", new NumberValue(3))
 })
 {
     Console.WriteLine("Tail case: " + name);
@@ -37,10 +38,18 @@ foreach ((string name, string source, Value expected) in new (string, string, Va
     using MemoryStream stream = new();
     Artifact.Write(optimized, stream); stream.Position = 0;
     Require(await Run(Artifact.Read(stream)) == expected, name + ": serialized result");
+    for (var level = 1; level <= 3; level++)
+    {
+        Module integrated = Optimizer.Optimize(original, level);
+        Artifact.Validate(integrated);
+        Require(await Run(integrated) == expected, name + $": integrated O{level} result");
+    }
 }
 
-Module deep = Transform(Compiler.Compile("fn sum(n, acc) { if n == 0 { acc } else { sum(n - 1, acc + n) } }; sum(100000, 0)", "deep-tail", 0));
+Module deepOriginal = Compiler.Compile("fn sum(n, acc) { if n == 0 { acc } else { sum(n - 1, acc + n) } }; sum(100000, 0)", "deep-tail", 0);
+Module deep = Transform(deepOriginal);
 Require(await Run(deep) == new NumberValue(5_000_050_000), "100000-step frame reuse result");
+Require(await Run(Optimizer.Optimize(deepOriginal, 3)) == new NumberValue(5_000_050_000), "100000-step integrated optimization result");
 
 Module escaped = new([new NumberValue(3), new NumberValue(0), new NumberValue(1)],
 [
@@ -55,7 +64,7 @@ Module escaped = new([new NumberValue(3), new NumberValue(0), new NumberValue(1)
      new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Null, 1, [TypeRef.Number]),
     new("unset", 0, 0, [new(OpCode.Constant, 1), new(OpCode.Return)], TypeRef.Number),
     new("snapshot", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.Number, 1)
-]);
+], OptimizationLevel: 0);
 Artifact.Validate(escaped);
 Require(await Run(escaped) == new NumberValue(3), "Escaped original frame location");
 Module escapedOptimized = Transform(escaped);
@@ -70,7 +79,7 @@ Module nativeOverride = new([new FunctionValue(-1, NativeName: "bool.identity")]
 [
     new("main", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.True), new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Bool),
     new("native-override", 1, 1, [new(OpCode.Constant, 0), new(OpCode.LoadLocal, 0), new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Bool, ParameterTypes: [TypeRef.Bool])
-]);
+], OptimizationLevel: 0);
 Module nativeRetained = Transform(nativeOverride);
 Require(ReferenceEquals(nativeRetained.Functions[1], nativeOverride.Functions[1]), "Call specialization erased a native identity");
 Require(await Run(nativeRetained) == Value.True, "Native identity override result");
@@ -82,15 +91,10 @@ Module changingCapture = new([new NumberValue(10), new NumberValue(20), new Numb
     [new(OpCode.LoadLocal, 1), new(OpCode.Constant, 3), new(OpCode.Equal), new(OpCode.JumpIfFalse, 6), new(OpCode.LoadLocal, 0), new(OpCode.Return),
      new(OpCode.Constant, 1), new(OpCode.MakeClosure, 1, 1), new(OpCode.LoadLocal, 1), new(OpCode.Constant, 2), new(OpCode.Subtract),
      new(OpCode.Call, 1, 2), new(OpCode.Return)], TypeRef.Number, 1, [TypeRef.Number])
-]);
+], OptimizationLevel: 0);
 Require(await Run(changingCapture) == new NumberValue(20), "Changing callee capture baseline");
 Module captureChanged = Transform(changingCapture);
 Artifact.Validate(captureChanged);
 Require(!ReferenceEquals(captureChanged.Functions[1], changingCapture.Functions[1]), "Changing closure was not transformed");
 Require(await Run(captureChanged) == new NumberValue(20), "Tail jump retained the caller's capture instead of the callee's");
-if (args.Contains("--recursive-capture-source", StringComparer.Ordinal))
-{
-    Module recursiveCapture = Compiler.Compile("let first = fn { 0 }; fn walk(n) { let snapshot = n; if n == 3 { first = fn { snapshot }; }; if n == 0 { null } else { walk(n - 1) } }; walk(3); first()", "fresh-escaped-location", 0);
-    Require(await Run(Transform(recursiveCapture)) == new NumberValue(3), "Recursive mutable callable source frame location");
-}
 Console.WriteLine($"Tail call optimization: {assertions} contracts passed.");
