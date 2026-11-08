@@ -173,6 +173,11 @@ ordinary real-directory destination checks remain distinct. The focused
 source/object/executable journeys in `tests/SchedulingGraph/PathNamespaceChecks.cs`
 (`--namespace-only`) cover retransmission, retargeting, obstruction/retry, future
 alias ordering, and Unicode/spaced native paths without skipping symlinks.
+The closing [native Windows run 42516326981](https://github.com/kleedaisuki/msync/actions/runs/42516326981)
+(source `f0099d3`, including `0bfb6d0`) passed that complete lifecycle through
+source, relocatable and executable artifacts, including the original second-copy
+failure and future-alias WAR case. The accepted Linux namespace journey remains
+unchanged; no unrelated optimizer matrix was repeated for this platform fix.
 
 A consumed `->` yields Bool. Operational I/O/permission/native-process failures
 yield false, preserve source/destination/cause diagnostics, and increment failed
