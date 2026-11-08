@@ -41,7 +41,7 @@ internal static class Program
           --check                       Check formatting without changing it
           --stdout                      Print formatted source
           --syntax 0.8                  Select the current grammar
-          --color auto|always|never      Select interactive color policy
+          --color auto|always|never      Interactive color (NO_COLOR takes precedence)
           --config FILE                 Read a specific TOML configuration
           --no-config                   Disable configuration discovery
           --trace FILE                  Write opt-in JSONL telemetry ('-' is stderr)
