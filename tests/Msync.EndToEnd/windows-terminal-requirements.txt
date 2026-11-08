@@ -1,0 +1,3 @@
+# Official CPython 3.14 Windows x86-64 wheel; the test explicitly selects ConPTY.
+pywinpty==3.1.2 ; sys_platform == "win32" \
+    --hash=sha256:980af688956fe78c87882682732e6eea45aa0b8d10a9628812e95878264d5204
