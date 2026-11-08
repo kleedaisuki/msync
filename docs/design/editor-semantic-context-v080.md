@@ -95,3 +95,16 @@ initializer, or closing delimiter. Tests apply the resulting source edits and
 check ordinary compilation where the completed program is valid. Diagnostics,
 hover, member completion, and endpoint selection must agree on the same source
 generation and lexical context.
+
+## Research connection
+
+[Pelsmaeker et al., Language-parametric static semantic code completion
+(OOPSLA 2022)](https://doi.org/10.1145/3527329) derives completion proposals
+from syntax and static semantics, including scope-graph name resolution. Its
+relevant engineering principle here is to reuse the language's binding and
+typing rules instead of maintaining a second name-guessing implementation.
+msync uses its existing persistent environments and compiler operations rather
+than adopting the paper's general Statix/SDF3 framework. The paper's formal
+soundness and completeness results do not automatically transfer to this
+implementation; the concrete contracts above and real editing journeys are
+the acceptance criteria.
