@@ -144,6 +144,39 @@ The corresponding maintained procedures are
 `tests/Msync.Transfer.Tests/cli_ssh_journeys.py`,
 `tests/Acceptance/language_journeys.py`, and `tests/Msync.EndToEnd/*.py`.
 
+## Optional native WSL1 endpoint journey
+
+`packaging/wsl_journey.py --binary NATIVE_EXE --output REPORT.json` owns one
+randomly named imported distribution and its install directory below `.temp/`.
+It follows Microsoft's [custom tar import interface](https://learn.microsoft.com/windows/wsl/use-custom-distro)
+with an explicit `--version 1`; it never changes the host's default WSL version,
+optional Windows features, or existing distributions. Cleanup unregisters only
+the name assigned by that live fixture, including failed import attempts.
+
+The fixture uses the official Alpine 3.22.2 x86-64 minirootfs with pinned SHA-256
+`412454ed98025ad9cd910d13f3d448b184e81502baa83180e89f98d0f13674be`.
+The [upstream checksum](https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64/alpine-minirootfs-3.22.2-x86_64.tar.gz.sha256)
+identifies the immutable versioned download, rather than an unversioned latest
+rootfs. The owned distro installs actual GNU tar, findutils and coreutils; the
+transport's `mv -T`, `chmod --reference`, `find -printf`, and related GNU options
+are not assumed to work through BusyBox substitutes. Exact installed tool
+versions and command diagnostics are retained in the report.
+
+The native executable checks, compiles and binds while the owned distro is
+terminated, requiring it to remain absent from the running-distribution list
+and leaving the remote payload absent. Real selected executions then upload and
+download through that named WSL endpoint using source, `.mso` and `.mexe`.
+Windows local home and Linux remote home differ. Captured `~/.codex/config.toml`
+and relative paths are qualified before/after joins, compared byte-for-byte,
+and checked for preserved sibling data. The `.mso` runs from a second cwd;
+the `.mexe` retains the first local cwd/home while the native WSL client is
+launched from the second cwd. No fake WSL launcher is involved.
+
+A host unable to import or start WSL1 produces an explicit `unavailable` report
+with its native diagnostics, not a passing endpoint result. Setup failures and
+product failures are separate outcomes. Linux can validate the script and source
+fixture, but actual WSL behavior is established only by the native Windows run.
+
 ## Native Windows execution and fixture lifetime
 
 The first actual Windows run used Windows Server 2025, runner image
