@@ -1,22 +1,38 @@
 namespace Msync.Compiler.Syntax;
 
+public sealed record EditorParseResult(Document Document, SyntaxException? Error);
+
 public sealed class Parser
 {
     private readonly string source;
     private readonly string sourceName;
     private readonly IReadOnlyList<Token> tokens;
     private int position;
-    private Parser(string source, string sourceName)
+    private Parser(string source, string sourceName) : this(source, sourceName, new Lexer(source, sourceName).Lex()) { }
+    private Parser(string source, string sourceName, IReadOnlyList<Token> tokens)
     {
         this.source = source;
         this.sourceName = sourceName;
-        tokens = new Lexer(source, sourceName).Lex();
+        this.tokens = tokens;
     }
     public static Document Parse(string source, string sourceName = "<source>")
     {
         Parser parser = new(source, sourceName);
         var statements = parser.Statements(TokenKind.End);
         return new(statements, new(0, source.Length));
+    }
+
+    public static EditorParseResult ParseForEditor(string source, string sourceName = "<source>")
+    {
+        var tokens = new Lexer(source, sourceName).LexForEditor(out SyntaxException? error);
+        Parser parser = new(source, sourceName, tokens);
+        List<Statement> statements = [];
+        try { _ = parser.Statements(TokenKind.End, statements); }
+        catch (SyntaxException syntax)
+        {
+            if (error is null || syntax.Span.Start < error.Span.Start) error = syntax;
+        }
+        return new(new(statements, new(0, source.Length)), error);
     }
     private Token Current => tokens[position];
     private Token Previous => tokens[Math.Max(0, position - 1)];
@@ -73,9 +89,9 @@ public sealed class Parser
         }
         return open.TryPeek(out Token opening) ? opening : null;
     }
-    private IReadOnlyList<Statement> Statements(TokenKind end)
+    private IReadOnlyList<Statement> Statements(TokenKind end, List<Statement>? completed = null)
     {
-        List<Statement> result = [];
+        List<Statement> result = completed ?? [];
         while (!At(end) && !At(TokenKind.End))
         {
             if (Take(TokenKind.Semicolon)) continue;

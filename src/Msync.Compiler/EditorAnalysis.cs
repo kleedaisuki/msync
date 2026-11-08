@@ -4,10 +4,12 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 
 namespace Msync.Compiler;
 
-public sealed record SemanticMember(string Name, string Type, string Signature, string Description);
+public sealed record SemanticMember(string Name, string Type, string Signature, string Description,
+    IReadOnlyList<SemanticMember>? Members = null);
 public sealed record SemanticOccurrence(SourceSpan Span, string Type, string Signature, string Description,
     IReadOnlyList<SemanticMember>? Members = null);
-public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrences, SourceDiagnostic? Diagnostic);
+public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrences, SourceDiagnostic? Diagnostic,
+    IReadOnlyList<SemanticMember>? RecoveryBindings = null, int? RecoveryStart = null);
 
 public static class EditorCompiler
 {
@@ -16,9 +18,13 @@ public static class EditorCompiler
         Dictionary<SourceSpan, SemanticOccurrence> syntax = [];
         Dictionary<SourceSpan, Observation> inferred = [];
         SourceDiagnostic? diagnostic = null;
+        IReadOnlyDictionary<string, Binding>? recovery = null;
+        int? recoveryStart = null;
         try
         {
-            Document document = Parser.Parse(source, sourceName);
+            EditorParseResult parsed = Parser.ParseForEditor(source, sourceName);
+            Document document = parsed.Document;
+            diagnostic = parsed.Error?.Diagnostic;
             Seed(document.Statements, source, syntax);
             Compilation compilation = new(source, sourceName, 0, (span, info, name) =>
             {
@@ -26,13 +32,19 @@ public static class EditorCompiler
                 observation.Values[(info.Type, info.Function?.Id, info.NativeName, info.Scope, info.TypeValue)] = info;
             });
             _ = compilation.Submit(source, document);
+            if (parsed.Error is not null)
+            {
+                recovery = compilation.EditorBindings;
+                recoveryStart = document.Statements.Count == 0 ? 0 : document.Statements[^1].Span.End;
+            }
         }
-        catch (CompileException error) { diagnostic = error.Diagnostic; }
-        catch (SyntaxException error) { diagnostic = error.Diagnostic; }
+        catch (CompileException error) { diagnostic ??= error.Diagnostic; }
+        catch (SyntaxException error) { diagnostic ??= error.Diagnostic; }
         Dictionary<ScopeInfo, ScopeDescription> scopeDescriptions = [];
         foreach (var (span, observation) in inferred)
             syntax[span] = Describe(span, observation.Name, observation.Values.Values, scopeDescriptions);
-        return new(syntax.Values.OrderBy(item => item.Span.Start).ThenBy(item => item.Span.Length).ToArray(), diagnostic);
+        var bindings = recovery?.Select(pair => DescribeMember(pair.Key, [pair.Value.Info], scopeDescriptions, members: true)).ToArray();
+        return new(syntax.Values.OrderBy(item => item.Span.Start).ThenBy(item => item.Span.Length).ToArray(), diagnostic, bindings, recoveryStart);
     }
 
     private sealed class Observation(string? name)
@@ -88,10 +100,10 @@ public static class EditorCompiler
         return new(span, type.ToString(), signature, description, contents);
     }
 
-    private static SemanticMember DescribeMember(string name, IEnumerable<Info> choices, Dictionary<ScopeInfo, ScopeDescription> scopeDescriptions)
+    private static SemanticMember DescribeMember(string name, IEnumerable<Info> choices, Dictionary<ScopeInfo, ScopeDescription> scopeDescriptions, bool members = false)
     {
-        var item = Describe(default, name, choices, scopeDescriptions, members: false);
-        return new(name, item.Type, item.Signature, item.Description);
+        var item = Describe(default, name, choices, scopeDescriptions, members);
+        return new(name, item.Type, item.Signature, item.Description, item.Members);
     }
 
     private static string MemberList(IEnumerable<SemanticMember> items) =>

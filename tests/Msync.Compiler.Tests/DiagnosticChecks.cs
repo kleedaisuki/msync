@@ -11,6 +11,7 @@ internal static class DiagnosticChecks
         GenericContext();
         EditorTypes();
         UncalledDefinitions();
+        IncompleteEditorTail();
         Console.WriteLine("structured diagnostics and inferred editor insight ok");
     }
 
@@ -118,6 +119,36 @@ internal static class DiagnosticChecks
         Check(analysis.Occurrences.Single(item => item.Span.Start == 3).Signature.Contains("inferred at call", StringComparison.Ordinal), "uncalled generic result was fabricated");
         EditorAnalysis keywords = EditorCompiler.Analyze("scope scope { fn: fn() { true } };", "file:///names.msync");
         Check(keywords.Occurrences.Any(item => item.Span.Start == 6 && item.Span.Length == 5 && item.Type == "Scope"), "declaration name span accidentally targets its keyword");
+    }
+
+    private static void IncompleteEditorTail()
+    {
+        const string prefix = "scope MyClass { new: fn() { scope { x: ~/.codex } }, get: fn(value) { value::x } };\n";
+        foreach (string tail in new[] { "MyClass::", "let value = true", "let text = \"unfinished", "let path = match ~/.codex { <unfinished" })
+        {
+            string source = prefix + tail;
+            EditorParseResult parsed = Parser.ParseForEditor(source, "file:///editing.msync");
+            Check(parsed.Error is not null && parsed.Document.Statements.Count == 1, "partial parse lost complete statements or included the malformed tail");
+            Check(parsed.Document.Statements[0].Span.End == prefix.TrimEnd().Length, "partial parse changed original source coordinates");
+            EditorAnalysis analysis = EditorCompiler.Analyze(source, "file:///editing.msync");
+            Check(analysis.Diagnostic?.Code == parsed.Error!.Diagnostic.Code, "prefix inference replaced the original syntax diagnostic");
+            Check(analysis.Occurrences.Any(item => item.Span.Start == 6 && item.Type == "Scope" && item.Members?.Count == 2), "incomplete tail erased a complete Scope's typed hover");
+            Check(analysis.Occurrences.Any(item => source[item.Span.Start..item.Span.End] == "get" && item.Type == "Function"), "incomplete tail erased a complete function member's type");
+            Check(analysis.RecoveryStart == prefix.TrimEnd().Length && analysis.RecoveryBindings!.Single().Name == "MyClass", "recovery did not retain the actual top-level binding environment");
+            if (tail.Contains("unfinished", StringComparison.Ordinal)) Check(analysis.Diagnostic!.Code == "E0104", "lexer recovery replaced the original unclosed-literal diagnostic");
+            try { _ = Parser.Parse(source); throw new InvalidOperationException("ordinary parser accepted an incomplete editing snapshot"); }
+            catch (SyntaxException) { }
+        }
+        EditorAnalysis shadow = EditorCompiler.Analyze(prefix + "let MyClass = scope { replacement: true }; MyClass::", "file:///shadow.msync");
+        SemanticMember rebound = shadow.RecoveryBindings!.Single();
+        Check(rebound.Members!.Single().Name == "replacement", "recovery guessed from an earlier name instead of the final lexical shadow");
+        EditorAnalysis nested = EditorCompiler.Analyze(prefix + "fn draft() { let Local = scope {}; Local::", "file:///nested.msync");
+        Check(nested.RecoveryBindings!.All(item => item.Name != "Local"), "incomplete function leaked a nested binding into the top-level environment");
+        EditorAnalysis invalidPrefix = EditorCompiler.Analyze(prefix + "let bad = null; MyClass::", "file:///invalid-prefix.msync");
+        Check(invalidPrefix.RecoveryBindings is null && invalidPrefix.RecoveryStart is null,
+            "a failed prefix exposed an uncommitted lexical recovery environment");
+        var earlierError = Parser.ParseForEditor("let value = true let text = \"unfinished", "file:///first.msync");
+        Check(earlierError.Error!.Diagnostic.Code == "E0102", "late lexical failure concealed an earlier grammar error");
     }
 
     private static SourceDiagnostic Reject(string source)

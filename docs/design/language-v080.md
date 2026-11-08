@@ -228,3 +228,19 @@ Null/Bool/match explanations, the supplied Scope constructor/call example,
 polymorphic hover aggregation, exact semantic identifier spans and uncalled
 nested declarations. Actual CLI/LSP and extension-host journeys exercise the
 same structures through the installed user interfaces.
+
+Editor snapshots may end halfway through a statement. `Parser.ParseForEditor`
+retains only fully parsed top-level statements before the first grammar error;
+it returns that partial Document together with the original SyntaxException.
+An unclosed String or regex retains the lexer's earlier complete tokens and its
+original literal diagnostic. No delimiter is invented and no semicolon/string
+scan synthesizes source. The normal `Parse` entrypoint remains strict.
+
+Editor analysis infers the retained prefix against the original complete source
+and source offsets. It preserves the syntax diagnostic while keeping prior
+Scope/function hovers and member types. Successful prefix inference exposes
+`RecoveryBindings` from the actual final lexical environment and `RecoveryStart`
+at the last completed statement boundary. Consumers can resolve a simple
+incomplete top-level qualifier using those bindings without guessing from an
+older same-name occurrence. Incomplete nested statements contribute no local
+bindings; prefix semantic failure exposes no recovery environment.

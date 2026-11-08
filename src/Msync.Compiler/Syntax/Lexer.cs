@@ -8,6 +8,17 @@ internal sealed class Lexer(string source, string sourceName)
 {
     private int position;
     private readonly List<Token> tokens = [];
+    public IReadOnlyList<Token> LexForEditor(out SyntaxException? error)
+    {
+        try { error = null; return Lex(); }
+        catch (SyntaxException incomplete)
+        {
+            error = incomplete;
+            tokens.Add(new(TokenKind.End, "", new(incomplete.Span.Start, 0)));
+            return tokens;
+        }
+    }
+
     public IReadOnlyList<Token> Lex()
     {
         while (position < source.Length)

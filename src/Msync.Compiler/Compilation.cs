@@ -18,6 +18,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
 
     public Module Run() => Submit(source);
     public IReadOnlyCollection<string> BindingNames => sessionEnvironment.Keys.ToArray();
+    internal IReadOnlyDictionary<string, Binding> EditorBindings => sessionEnvironment;
 
     public Module Submit(string text, Document? parsedDocument = null)
     {
