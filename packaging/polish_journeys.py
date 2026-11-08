@@ -36,6 +36,9 @@ def main() -> int:
             "editing-regression",
             "reference",
             "identifier-return",
+            "mutable-state",
+            "scheduling",
+            "repl-state",
             "navigation",
             "repl-palette",
             "terminal-detail",
@@ -82,6 +85,9 @@ def main() -> int:
         ("editing-regression", "editing_regression_journey.py"),
         ("reference", "reference_journey.py"),
         ("identifier-return", "identifier_return_journey.py"),
+        ("mutable-state", "mutable_state_journey.py"),
+        ("scheduling", "scheduling_journey.py"),
+        ("repl-state", "repl_state_journey.py"),
         ("navigation", "navigation_journey.py"),
         ("repl-palette", "repl_palette_journey.py"),
     ]
@@ -102,6 +108,8 @@ def main() -> int:
             extra.append("--ssh-fixture")
         if name == "editing-regression":
             extra.append("--converter")
+        if name == "scheduling":
+            extra.append("--executable")
         phases.append(
             run_phase(
                 name,
