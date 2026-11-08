@@ -194,13 +194,16 @@ public sealed class Parser
                 right = new NameExpr(member.Text, member.Span);
                 if (WindowsPathBeforeString(member)) right = WindowsPathWithString(member);
             }
-            else right = Expression(precedence + 1);
-            left = new BinaryExpr(op, left, right, SourceSpan.Cover(left.Span, right.Span)) { OperatorSpan = operation.Span };
+            else right = Expression(precedence + (op == "=" ? 0 : 1));
+            left = op == "="
+                ? new AssignmentExpr(left, right, SourceSpan.Cover(left.Span, right.Span)) { OperatorSpan = operation.Span }
+                : new BinaryExpr(op, left, right, SourceSpan.Cover(left.Span, right.Span)) { OperatorSpan = operation.Span };
         }
         return left;
     }
     private string? Operator() => Current.Kind switch
     {
+        TokenKind.Equal => "=",
         TokenKind.Arrow => "->",
         TokenKind.Pipe => "|",
         TokenKind.EqualEqual => "==",
@@ -216,6 +219,7 @@ public sealed class Parser
     };
     private static int Precedence(string? op) => op switch
     {
+        "=" => 0,
         "->" => 1,
         "or" => 2,
         "and" => 3,
@@ -367,10 +371,15 @@ public sealed class Parser
         Expr? value = null;
         while (!At(TokenKind.RightBrace) && !At(TokenKind.End))
         {
-            if ((At(TokenKind.Atom) || At(TokenKind.String)) && Peek().Kind == TokenKind.Colon)
+            if ((At(TokenKind.Atom) || At(TokenKind.String)) &&
+                (Peek().Kind == TokenKind.Colon || Peek().Kind == TokenKind.Question && Peek(2).Kind == TokenKind.Colon))
             {
-                var name = Next(); Next(); var member = Expression();
-                members.Add(new(name.Text, member, SourceSpan.Cover(name.Span, member.Span)) { NameSpan = name.Span });
+                var name = Next();
+                bool nullable = Take(TokenKind.Question);
+                Require(TokenKind.Colon, "Expected ':' after the scope member name.");
+                var member = Expression();
+                members.Add(new(name.Text, member, SourceSpan.Cover(name.Span, member.Span))
+                { NameSpan = name.Span, Nullable = nullable });
                 if (!Take(TokenKind.Comma) && !At(TokenKind.RightBrace)) Fail("Expected ',' after a scope member.");
                 continue;
             }

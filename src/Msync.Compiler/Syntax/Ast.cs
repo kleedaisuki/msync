@@ -36,6 +36,10 @@ public sealed record BinaryExpr(string Operator, Expr Left, Expr Right, SourceSp
 {
     public SourceSpan? OperatorSpan { get; init; }
 }
+public sealed record AssignmentExpr(Expr Target, Expr Value, SourceSpan Span) : Expr(Span)
+{
+    public SourceSpan? OperatorSpan { get; init; }
+}
 public sealed record CallExpr(Expr Callee, IReadOnlyList<Expr> Arguments, SourceSpan Span) : Expr(Span);
 public sealed record BlockExpr(IReadOnlyList<Statement> Statements, SourceSpan Span) : Expr(Span)
 {
@@ -60,6 +64,7 @@ public sealed record BreakExpr(Expr? Value, SourceSpan Span) : Expr(Span);
 public sealed record Parameter(string Name, TypeSyntax? Type, bool Nullable, SourceSpan Span) : Node(Span);
 public sealed record ScopeMember(string Name, Expr Value, SourceSpan Span) : Node(Span)
 {
+    public bool Nullable { get; init; }
     public SourceSpan? NameSpan { get; init; }
 }
 public sealed record MatchArm(Pattern Pattern, Expr Value, SourceSpan Span) : Node(Span);

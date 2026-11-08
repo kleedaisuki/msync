@@ -140,7 +140,7 @@ internal sealed class Lexer(string source, string sourceName)
             if (char.IsWhiteSpace(c) || delimiters.Contains(c, StringComparison.Ordinal)) break;
             if (uri && brackets == 0 && c == ':' && position + 1 < source.Length && source[position + 1] == ':') break;
             if (!uri && !windows && (c == '/' || c == ':')) break;
-            if (c == '=' && (position + 1 < source.Length && source[position + 1] is '=' or '>' || tokens.Count > 0 && tokens[^1].Text == "let")) break;
+            if (c == '=' && !uri) break;
             if (c == '-' && position + 1 < source.Length && source[position + 1] == '>') break;
             position++;
         }
