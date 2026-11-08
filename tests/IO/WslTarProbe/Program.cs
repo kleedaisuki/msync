@@ -21,59 +21,81 @@ const string Script = """
     exec tar --format=pax -cpf - -C "$p0" "./$n0"
     """;
 
+if (args is ["--emit", var archive])
+{
+    using var input = File.OpenRead(archive);
+    using var stdout = Console.OpenStandardOutput();
+    await input.CopyToAsync(stdout);
+    return;
+}
+
 string distribution = Option("--distribution")!;
 string source = Option("--source")!;
 string directory = Path.GetFullPath(Option("--work-directory") ?? Environment.CurrentDirectory);
 string output = Path.GetFullPath(Option("--output-dir")!);
 Directory.CreateDirectory(output);
 List<Result> results = [];
-foreach (string mode in new[] { "capture", "live" })
-{
-    var reads = new List<ReadResult>();
-    var entries = new List<EntryResult>();
-    string rawPath = Path.Combine(output, mode + ".tar");
-    var info = new ProcessStartInfo("wsl.exe")
+foreach (string producer in new[] { "wsl", "native-self" })
+    foreach (string mode in new[] { "capture", "live", "buffered" })
     {
-        WorkingDirectory = directory,
-        UseShellExecute = false,
-        RedirectStandardInput = true,
-        RedirectStandardOutput = true
-    };
-    foreach (string argument in new[] { "--distribution", distribution, "--exec", "sh", "-c", Script.Replace("\r\n", "\n", StringComparison.Ordinal), "sh", source }) info.ArgumentList.Add(argument);
-    using var process = Process.Start(info)!;
-    process.StandardInput.Close();
-    string? error = null;
-    using (var raw = new FileStream(rawPath, FileMode.Create, FileAccess.Write, FileShare.Read, 1, FileOptions.Asynchronous))
-    using (var stream = new CaptureStream(process.StandardOutput.BaseStream, raw, reads))
-    {
-        try
+        var reads = new List<ReadResult>();
+        var entries = new List<EntryResult>();
+        string label = producer + "-" + mode;
+        string rawPath = Path.Combine(output, label + ".tar");
+        var info = new ProcessStartInfo(producer == "wsl" ? "wsl.exe" : Environment.ProcessPath!)
         {
-            if (mode == "capture") await stream.CopyToAsync(Stream.Null);
-            else
+            WorkingDirectory = directory,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true
+        };
+        if (producer == "wsl")
+            foreach (string argument in new[] { "--distribution", distribution, "--exec", "sh", "-c", Script.Replace("\r\n", "\n", StringComparison.Ordinal), "sh", source }) info.ArgumentList.Add(argument);
+        else
+        {
+            if (Path.GetFileNameWithoutExtension(Environment.ProcessPath) == "dotnet") info.ArgumentList.Add(Environment.GetCommandLineArgs()[0]);
+            info.ArgumentList.Add("--emit"); info.ArgumentList.Add(Path.Combine(output, "wsl-capture.tar"));
+        }
+        using var process = Process.Start(info)!;
+        process.StandardInput.Close();
+        string? error = null;
+        using (var raw = new FileStream(rawPath, FileMode.Create, FileAccess.Write, FileShare.Read, 1, FileOptions.Asynchronous))
+        using (var stream = new CaptureStream(process.StandardOutput.BaseStream, raw, reads))
+        {
+            try
             {
-                await Parse(stream, Path.Combine(output, mode), entries);
+                if (mode == "capture") await stream.CopyToAsync(Stream.Null);
+                else if (mode == "buffered")
+                {
+                    using var buffered = new BufferedStream(stream, 65536);
+                    await Parse(buffered, Path.Combine(output, label), entries);
+                    await buffered.CopyToAsync(Stream.Null);
+                }
+                else
+                {
+                    await Parse(stream, Path.Combine(output, label), entries);
+                    await stream.CopyToAsync(Stream.Null);
+                }
+            }
+            catch (Exception failure)
+            {
+                error = failure.ToString();
                 await stream.CopyToAsync(Stream.Null);
             }
         }
-        catch (Exception failure)
+        await process.WaitForExitAsync();
+        string? offline = null;
+        var offlineEntries = new List<EntryResult>();
+        try
         {
-            error = failure.ToString();
-            await stream.CopyToAsync(Stream.Null);
+            using var file = File.OpenRead(rawPath);
+            using var nonSeekable = new CaptureStream(file, Stream.Null, []);
+            await Parse(nonSeekable, Path.Combine(output, label + "-offline"), offlineEntries);
         }
+        catch (Exception failure) { offline = failure.ToString(); }
+        using var data = File.OpenRead(rawPath);
+        results.Add(new(label, process.StandardOutput.BaseStream.GetType().FullName!, process.StandardOutput.BaseStream is FileStream nativeFile && nativeFile.IsAsync, process.ExitCode, data.Length, Convert.ToHexString(SHA256.HashData(data)), error, entries, reads, offline, offlineEntries));
     }
-    await process.WaitForExitAsync();
-    string? offline = null;
-    var offlineEntries = new List<EntryResult>();
-    try
-    {
-        using var file = File.OpenRead(rawPath);
-        using var nonSeekable = new CaptureStream(file, Stream.Null, []);
-        await Parse(nonSeekable, Path.Combine(output, mode + "-offline"), offlineEntries);
-    }
-    catch (Exception failure) { offline = failure.ToString(); }
-    using var data = File.OpenRead(rawPath);
-    results.Add(new(mode, process.ExitCode, data.Length, Convert.ToHexString(SHA256.HashData(data)), error, entries, reads, offline, offlineEntries));
-}
 File.WriteAllText(Path.Combine(output, "probe.json"), JsonSerializer.Serialize(new Report(Environment.OSVersion.VersionString, source, directory, results), ProbeJson.Default.Report));
 Console.WriteLine(Path.Combine(output, "probe.json"));
 
@@ -100,7 +122,7 @@ static async Task Parse(Stream stream, string output, List<EntryResult> results)
 
 internal sealed record ReadResult(int Requested, int Returned, long Offset);
 internal sealed record EntryResult(string Name, string Type, string Format, long DeclaredBytes, long CopiedBytes, string Sha256);
-internal sealed record Result(string Mode, int ExitCode, long Bytes, string Sha256, string? Error, List<EntryResult> Entries, List<ReadResult> Reads, string? OfflineError, List<EntryResult> OfflineEntries);
+internal sealed record Result(string Mode, string StreamType, bool IsAsync, int ExitCode, long Bytes, string Sha256, string? Error, List<EntryResult> Entries, List<ReadResult> Reads, string? OfflineError, List<EntryResult> OfflineEntries);
 internal sealed record Report(string Platform, string Source, string Directory, List<Result> Results);
 [JsonSerializable(typeof(Report))]
 internal sealed partial class ProbeJson : JsonSerializerContext;

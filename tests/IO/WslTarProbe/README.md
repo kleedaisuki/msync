@@ -18,6 +18,10 @@ through a nonseekable wrapper. `live` feeds that pipe directly to TarReader,
 copies each entry to the same asynchronous FileStream shape as the product,
 flushes, requests subsequent entries, and drains the remaining archive records.
 A tee saves all actual bytes and requested/returned read sizes with offsets.
+`buffered` inserts the BCL BufferedStream with a 64KiB read-ahead buffer above
+that tee, keeping actual native reads observable. The same three modes also run
+a generic native self-producer that emits the captured archive byte-for-byte,
+separating WSL relay behavior from general Windows Process/stream behavior.
 The JSON records native exit, archive length/SHA, entry length/SHA, exceptions
 with full stacks, and offline replay outcome. Native stderr remains inherited
 like the product; the fixture owner captures the probe's stderr.
