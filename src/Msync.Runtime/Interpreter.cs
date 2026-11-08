@@ -490,6 +490,7 @@ public sealed class ExecutionSession(ExecutionOptions? options = null)
     private static readonly Value Uninitialized = new UninitializedValue();
     private Value[] locals = [];
     public bool IsLocalInitialized(int slot) => (uint)slot < (uint)locals.Length && !ReferenceEquals(locals[slot], Uninitialized);
+    public Value? GetLocalValue(int slot) => IsLocalInitialized(slot) ? locals[slot] : null;
     public ValueTask<Value> ExecuteAsync(Module module, int startInstruction = 0, CancellationToken cancellationToken = default)
     {
         var count = module.Functions[module.EntryPoint].LocalCount;
