@@ -180,7 +180,8 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
             bool unknown = receiver is not null && path is null
                 && (receiver.Type.Contains("Path", StringComparison.Ordinal) || receiver.Type.Contains("String", StringComparison.Ordinal) || receiver.Type == "Unknown");
             return SourceCompletion.Find(text, caret, includeBarePaths: true, resolveEndpoint: ResolveEndpoint,
-                receiverPath: path, unknownPathReceiver: unknown);
+                receiverPath: path, unknownPathReceiver: unknown, physicalEndpoint: insight?.PhysicalEndpoint,
+                unknownPhysicalOwner: insight?.HasPhysicalOwner == true && insight.PhysicalEndpoint is null);
         }
 
         protected override async Task<IReadOnlyList<CompletionItem>> GetCompletionItemsAsync(string text, int caret, TextSpan spanToBeReplaced, CancellationToken cancellationToken)
