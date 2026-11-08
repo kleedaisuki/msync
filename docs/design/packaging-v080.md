@@ -177,6 +177,31 @@ with its native diagnostics, not a passing endpoint result. Setup failures and
 product failures are separate outcomes. Linux can validate the script and source
 fixture, but actual WSL behavior is established only by the native Windows run.
 
+### First actual WSL1 execution
+
+The [native Windows job in run 42471357057](https://github.com/kleedaisuki/msync/actions/runs/42471357057/job/128702629674)
+executed the fixture on source `3a1275d`. Native binary SHA-256 was
+`2cb89065e098c87465d6c8fc23086a1610122b2398492249859ba06b2961938a`.
+Import and boot succeeded as WSL1 with Linux HOME `/root`. The distro installed
+GNU tar 1.35, findutils 4.10.0 and coreutils 9.7. Check, compilation and binding
+completed successfully while the owned distro remained stopped; the remote
+payload remained absent before selected execution. The fixture's own native
+`sh -c` setup and inspection commands succeeded.
+
+The first actual product transfer failed with `sh: set: line 0: illegal option -`
+followed by a carriage return. Uploads exited 2 and download readers then reached
+EOF. This is a transport shell-code failure, not a missing WSL/GNU prerequisite:
+Windows checkout CRLF survives inside C# raw multiline shell literals, so POSIX
+`set -eu` received a trailing CR. The product's shell-code construction boundary
+must canonicalize its own program text to LF without changing pathname, payload
+or process-argument data. WSL transfer success is not claimed for this image.
+
+Owned distribution unregistration succeeded with exit 0. The host default WSL
+version remained 2, and no unrelated distro or Windows feature was modified.
+The retained report is the job artifact's `.temp/platform-results/wsl.json`;
+the full command list and failure chain survive normal temporary workspace
+cleanup through this summary and the maintained fixture.
+
 ## Native Windows execution and fixture lifetime
 
 The first actual Windows run used Windows Server 2025, runner image
