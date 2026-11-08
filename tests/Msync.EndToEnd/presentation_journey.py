@@ -19,7 +19,12 @@ ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def invoke(
-    binary: Path, cwd: Path, arguments: list[str], *, no_color: bool = False
+    binary: Path,
+    cwd: Path,
+    arguments: list[str],
+    *,
+    no_color: bool = False,
+    input_source: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     environment = dict(os.environ)
     environment.pop("NO_COLOR", None)
@@ -30,6 +35,7 @@ def invoke(
         cwd=cwd,
         env=environment,
         capture_output=True,
+        input=input_source,
         text=True,
         encoding="utf-8",
         check=False,
@@ -37,12 +43,13 @@ def invoke(
     )
 
 
-def terminal(binary: Path, cwd: Path) -> dict[str, int]:
+def terminal_guidance(binary: Path, cwd: Path) -> dict[str, int]:
     topics = [
-        (["--help"], ["check", "fmt", "--color"]),
-        (["-h"], ["check", "fmt", "--color"]),
+        (["--help"], ["check", "fmt", "--color", "-O3", "default: O2"]),
+        (["-h"], ["check", "fmt", "--color", "-O3", "default: O2"]),
         (["help", "syntax"], ["fn", "scope", "null", "match"]),
-        (["check", "--help"], ["check", "FILE"]),
+        (["check", "--help"], ["check", "FILE", "-O3"]),
+        (["compile", "--help"], ["compile", "FILE", "-O3"]),
     ]
     for arguments, snippets in topics:
         plain = invoke(binary, cwd, ["--color", "never", *arguments])
@@ -62,6 +69,11 @@ def terminal(binary: Path, cwd: Path) -> dict[str, int]:
         for snippet in snippets:
             assert snippet in plain.stdout, (arguments, snippet, plain.stdout)
 
+    return {"help_color_modes": len(topics) * 4}
+
+
+def terminal(binary: Path, cwd: Path) -> dict[str, int]:
+    guidance = terminal_guidance(binary, cwd)
     cases = {
         "nullable": ("let value = null;\n", ["Null", "?", "help:"]),
         "annotation": ("let value: Bool = ./;\n", ["Bool", "Path", "help:"]),
@@ -87,7 +99,83 @@ def terminal(binary: Path, cwd: Path) -> dict[str, int]:
             assert fragment in plain.stderr, (name, fragment, plain.stderr)
         if name == "generic":
             assert "some::x" in plain.stderr and "get(./)" in plain.stderr, plain.stderr
-    return {"help_color_modes": len(topics) * 4, "source_diagnostics": len(cases)}
+    return {**guidance, "source_diagnostics": len(cases)}
+
+
+def optimization_reference(binary: Path, cwd: Path) -> dict[str, int]:
+    plain = invoke(binary, cwd, ["--color", "never", "skill", "workflow", "artifacts"])
+    assert plain.returncode == 0 and "\x1b" not in plain.stdout, plain
+    for level in range(4):
+        assert f"`-O{level}`" in plain.stdout, plain.stdout
+    assert "| `-O2` | Default:" in plain.stdout and "`.mexe`" in plain.stdout
+    colored = invoke(
+        binary, cwd, ["--color", "always", "skill", "workflow", "artifacts"]
+    )
+    disabled = invoke(
+        binary,
+        cwd,
+        ["--color", "always", "skill", "workflow", "artifacts"],
+        no_color=True,
+    )
+    assert colored.returncode == disabled.returncode == 0
+    assert ANSI.search(colored.stdout) and ANSI.sub("", colored.stdout) == plain.stdout
+    assert disabled.stdout == plain.stdout
+    source = cwd / "optimization.msync"
+    source.write_text(
+        "fn label(value: String) -> String { value };\n"
+        'label("optimized") -> ./optimized.txt;\n',
+        encoding="utf-8",
+    )
+    checked = invoke(binary, cwd, ["check", "-O3", str(source)])
+    assert checked.returncode == 0, checked.stderr
+    for option, filename, level in (
+        ([], "default.mso", 2),
+        (["-O1"], "explicit.mso", 1),
+        (["-O3"], "optimized.mso", 3),
+    ):
+        compiled = invoke(
+            binary, cwd, ["compile", *option, str(source), "-o", filename]
+        )
+        assert compiled.returncode == 0, compiled.stderr
+        plan = invoke(binary, cwd, ["plan", filename])
+        assert plan.returncode == 0 and f"optimization O{level}" in plan.stdout, plan
+    output = cwd / "optimized.txt"
+    assert not output.exists()
+    default_bound = invoke(
+        binary, cwd, ["bind-ir", "default.mso", "-o", "default.mexe"]
+    )
+    assert default_bound.returncode == 0, default_bound.stderr
+    default_plan = invoke(binary, cwd, ["plan", "default.mexe"])
+    assert default_plan.returncode == 0 and "optimization O2" in default_plan.stdout
+    for arguments in (
+        ["run", str(source)],
+        ["run-ir", "default.mso"],
+        ["run-ir", "default.mexe"],
+    ):
+        executed = invoke(binary, cwd, arguments)
+        assert executed.returncode == 0, executed.stderr
+        assert output.read_bytes() == b"optimized"
+        output.unlink()
+    repl = invoke(
+        binary,
+        cwd,
+        ["repl"],
+        input_source='let label = "REPL_DEFAULT";\nlabel\n/quit\n',
+    )
+    assert repl.returncode == 0 and "REPL_DEFAULT" in repl.stdout, repl
+    bound = invoke(binary, cwd, ["bind-ir", "optimized.mso", "-o", "optimized.mexe"])
+    assert bound.returncode == 0, bound.stderr
+    plan = invoke(binary, cwd, ["plan", "optimized.mexe"])
+    assert plan.returncode == 0 and "optimization O3" in plan.stdout, plan
+    source.unlink()
+    executed = invoke(binary, cwd, ["run-ir", "optimized.mexe"])
+    assert executed.returncode == 0, executed.stderr
+    assert output.read_bytes() == b"optimized"
+    return {
+        "artifact_skill_color_modes": 3,
+        "optimization_artifact_workflows": 3,
+        "default_O2_execution_stages": 4,
+    }
 
 
 def runtime_diagnostics(binary: Path, cwd: Path) -> dict[str, int]:
@@ -459,19 +547,35 @@ def regex_coloring(binary: Path, cwd: Path) -> dict[str, int]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument(
+        "--reference-only",
+        action="store_true",
+        help="Only help/color and optimization artifact workflows",
+    )
     arguments = parser.parse_args()
     parent = ROOT / ".temp/presentation-v080"
     parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="journey-", dir=parent) as directory:
         cwd = Path(directory)
-        result = {
-            **terminal(arguments.binary.resolve(), cwd),
-            **runtime_diagnostics(arguments.binary.resolve(), cwd),
-            **editor(arguments.binary.resolve(), cwd),
-            **editing_recovery(arguments.binary.resolve(), cwd),
-            **regex_coloring(arguments.binary.resolve(), cwd),
-        }
+        if arguments.reference_only:
+            result = {
+                **terminal_guidance(arguments.binary.resolve(), cwd),
+                **optimization_reference(arguments.binary.resolve(), cwd),
+            }
+        else:
+            result = complete_presentation(arguments.binary.resolve(), cwd)
     print(json.dumps(result, indent=2))
+
+
+def complete_presentation(binary: Path, cwd: Path) -> dict[str, int]:
+    return {
+        **terminal(binary, cwd),
+        **optimization_reference(binary, cwd),
+        **runtime_diagnostics(binary, cwd),
+        **editor(binary, cwd),
+        **editing_recovery(binary, cwd),
+        **regex_coloring(binary, cwd),
+    }
 
 
 if __name__ == "__main__":

@@ -212,7 +212,7 @@ internal static class Program
             string? file = null, output = null, source = null, syntax = null, configPath = null, tracePath = null, telemetryDatabase = null;
             Dictionary<string, object> overrides = [];
             List<string> skillTopics = [];
-            int optimization = 1, jobs = 4;
+            int optimization = 2, jobs = 4;
             bool dryRun = false, formattingCheck = false, stdout = false, noConfig = false, noTelemetry = false;
             int index = 0;
             bool commandSeen = false;
@@ -237,6 +237,7 @@ internal static class Program
                     case "-O0": optimization = 0; break;
                     case "-O1": optimization = 1; break;
                     case "-O2": optimization = 2; break;
+                    case "-O3": optimization = 3; break;
                     case "--config": configPath = Next(); break;
                     case "--no-config": noConfig = true; break;
                     case "--trace": tracePath = Next(); break;

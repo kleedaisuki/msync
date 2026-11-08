@@ -230,12 +230,17 @@ shell command or an unrestricted dynamic library loader. The registry owns
 arity, types, dependent range results, and effect classification. Checking and
 compilation do not execute filesystem or process effects.
 
+Optimization defaults to `-O2`. Select `-O1` for lower compilation latency or
+`-O3` for larger inlining and finite-range expansion budgets; `-O0` retains
+unoptimized typed bytecode. See `msync skill workflow artifacts` for the staged
+optimization policy.
+
 ## Binary compilation pipeline
 
 ```text
 .msync -> parse/type/narrow -> generic specialization -> typed bytecode
                                                        |
-                          machine-independent O0/O1/O2 optimization
+                          machine-independent O0/O1/O2/O3 optimization
                                                        |
                                                relocatable .mso
                                                        |

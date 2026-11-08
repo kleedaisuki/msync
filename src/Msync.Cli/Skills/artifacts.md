@@ -16,9 +16,19 @@ working-directory, home and optional source-file context during `bind-ir`;
 its paths do not silently rebase when the launch directory later changes.
 Use `--source-file PATH` when an explicit source-relative context is needed.
 
-`-O0`, `-O1` and `-O2` select machine-independent optimization. Native AOT
-compiles the host executable, while the language runtime interprets typed
-binary instructions and scheduled blocks; it does not replay debug source.
+Select optimization according to compilation latency and expected reuse:
+
+| Level | Policy |
+| --- | --- |
+| `-O0` | Keep unoptimized typed bytecode; useful for comparing behavior. |
+| `-O1` | Low-latency dataflow cleanup, local redundancy and inlining. |
+| `-O2` | Default: global redundancy, finite pure evaluation, call specialization. |
+| `-O3` | Allow larger profitable inline and finite-range expansion budgets. |
+
+Machine-independent transformations run on `.mso`. Binding adds context-dependent
+lowering and runs the selected optimization level again on `.mexe`. Native AOT
+compiles the host executable; the language runtime executes typed binary
+instructions and scheduled blocks, never embedded debug source.
 
 `-o -` writes binary output to stdout without help or status text. Redirect
 that stream as bytes using your shell's byte-preserving facilities; do not
