@@ -161,5 +161,32 @@ requires explicit close or `contextlib.closing` for this use. `45e20fe` closes
 the inspection before its owned directory is deleted. The fix adds no retries,
 does not ignore failed cleanup, and changes no product I/O semantics. The same
 revision's Ubuntu 22.04 native package job passed. The corrected Windows job
-continues with the actual portable and installer lifecycle rather than treating
-the initial product-only success as completed installation acceptance.
+then reached the portable and installer lifecycle recorded below.
+
+### Corrected native Windows installation and public upgrade
+
+At `51689bc`, [the actual package workflow](https://github.com/kleedaisuki/msync/actions/runs/42467144102)
+passed both native platform package jobs and the installed-editor job. The
+[Windows job](https://github.com/kleedaisuki/msync/actions/runs/42467144102/job/128689195077)
+used `windows-2025-vs2026` image `20261103.298.1` and passed:
+
+- Native AOT publication, portable manifest digests, all six embedded/source
+  standard modules, source/dry-run/source-free bytecode and native SQLite.
+- Per-user installation, Start Menu target/arguments, and actual command
+  resolution after refreshing the terminal PATH from Machine/User settings.
+- Repair/upgrade without duplicate PATH entries; missing PATH and existing
+  `REG_SZ`/`REG_EXPAND_SZ` ownership; declined PATH task and preexisting user-owned
+  equivalent entries.
+- Uninstallation restoring the exact unrelated PATH text/type while retaining
+  user configuration, data, and a user-added helper in `bin/`.
+- A real upgrade from the immutable public 0.4.0 installer to current 0.8.0,
+  including installed `fn`/bytecode operation and subsequent uninstall retention.
+
+The public baseline retained SHA-256
+`ed22547657e0981cb282180d72342f3e6cf95ea3ceada33993b8dec9e5e03498`.
+The earlier direct asset URL returned an HTTP 504 before installation; using
+`gh release download` resolved that external fetch while retaining the digest
+check. No published asset or tag was modified. The Ubuntu 22.04 package job
+passed independently, and the editor job exercised the downloaded installed
+Linux archive rather than a separately rebuilt server. Publication was skipped
+on the development branch.
