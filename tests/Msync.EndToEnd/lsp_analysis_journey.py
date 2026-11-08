@@ -97,6 +97,8 @@ def pending_hover_lifecycle(binary: Path) -> dict[str, float]:
 
         opened(busy, 1, document(4000))
         opened(uri, 1, "let first = true;\nfirst\n")
+        send("textDocument/semanticTokens/full", {"textDocument": {"uri": uri}}, 10106)
+        send("$/cancelRequest", {"id": 10106})
         hovered(10101)
         send("$/cancelRequest", {"id": 10101})
         changed(2, "let second = true;\nsecond\n")
@@ -117,14 +119,15 @@ def pending_hover_lifecycle(binary: Path) -> dict[str, float]:
         client.input.write(b"".join(frames))
         client.input.flush()
         replies: dict[int, dict[str, Any]] = {}
-        while len(replies) < 5:
+        while len(replies) < 6:
             reply = client.responses.get(timeout=10)
             if isinstance(reply, Exception):
                 raise reply
-            if isinstance(reply.get("id"), int) and reply["id"] in range(10101, 10106):
+            if isinstance(reply.get("id"), int) and reply["id"] in range(10101, 10107):
                 assert reply["id"] not in replies, reply
                 replies[reply["id"]] = reply
         assert replies[10101]["error"]["code"] == -32800, replies
+        assert replies[10106]["error"]["code"] == -32800, replies
         for identifier in range(10102, 10106):
             assert replies[identifier].get("result", "missing") is None, replies
         shutdown_ms = (time.perf_counter_ns() - started) / 1_000_000

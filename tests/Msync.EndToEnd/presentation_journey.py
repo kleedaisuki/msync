@@ -321,6 +321,78 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
         client.close()
 
 
+def editing_recovery(binary: Path, cwd: Path) -> dict[str, int]:
+    client = Client(binary)
+    uri = (cwd / "editing.msync").as_uri()
+    declaration = "scope Box { get: fn(x) { x }, value: true };\n"
+    try:
+        initialized, _ = client.request("initialize", {"capabilities": {}})
+        legend = initialized["capabilities"]["semanticTokensProvider"]["legend"][
+            "tokenTypes"
+        ]
+        valid = declaration + "Box::get(true);\n"
+        notify(client, uri, 1, valid, opening=True)
+        first_tokens = semantic_types(client, uri, legend)
+        declared = position(valid, "Box")
+        assert first_tokens[(declared["line"], declared["character"])] == "type", (
+            first_tokens
+        )
+        assert diagnostics(client, uri, 1)["diagnostics"] == []
+
+        unfinished = declaration + "Box::"
+        notify(client, uri, 2, unfinished)
+        assert diagnostics(client, uri, 2)["diagnostics"]
+        hover, _ = client.request(
+            "textDocument/hover",
+            {
+                "textDocument": {"uri": uri},
+                "position": position(unfinished, "Box"),
+            },
+        )
+        assert "Box: Scope" in hover["contents"]["value"], hover
+        members, _ = client.request(
+            "textDocument/completion",
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": 1, "character": 5},
+            },
+        )
+        suggestions = {item["label"]: item for item in members}
+        assert set(suggestions) == {"get", "value"}, suggestions
+        assert (
+            suggestions["get"]["kind"] == 3 and "fn get" in suggestions["get"]["detail"]
+        ), suggestions
+        assert "Bool" in suggestions["value"]["detail"], suggestions
+
+        shadowed = declaration + "let Box = ./;\nBox::"
+        notify(client, uri, 3, shadowed)
+        assert diagnostics(client, uri, 3)["diagnostics"]
+        members, _ = client.request(
+            "textDocument/completion",
+            {
+                "textDocument": {"uri": uri},
+                "position": {"line": 2, "character": 5},
+            },
+        )
+        labels = {item["label"] for item in members}
+        assert not labels.intersection({"get", "value"}), members
+        shadow, _ = client.request(
+            "textDocument/hover",
+            {
+                "textDocument": {"uri": uri},
+                "position": position(shadowed, "Box", 1),
+            },
+        )
+        assert "Box: Path" in shadow["contents"]["value"], shadow
+        return {
+            "unfinished_scope_member_completions": 2,
+            "shadowed_scope_recovery": 1,
+            "first_inferred_tokens_without_refresh": 1,
+        }
+    finally:
+        client.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
@@ -333,6 +405,7 @@ def main() -> None:
             **terminal(arguments.binary.resolve(), cwd),
             **runtime_diagnostics(arguments.binary.resolve(), cwd),
             **editor(arguments.binary.resolve(), cwd),
+            **editing_recovery(arguments.binary.resolve(), cwd),
         }
     print(json.dumps(result, indent=2))
 
