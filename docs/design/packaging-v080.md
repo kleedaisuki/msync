@@ -143,3 +143,23 @@ iteration. These are incremental final-image checks, not a repeated full matrix.
 The corresponding maintained procedures are
 `tests/Msync.Transfer.Tests/cli_ssh_journeys.py`,
 `tests/Acceptance/language_journeys.py`, and `tests/Msync.EndToEnd/*.py`.
+
+## Native Windows execution and fixture lifetime
+
+The first actual Windows run used Windows Server 2025, runner image
+`windows-2025-vs2026` version `20261103.298.1`, SDK 10.0.403 and Python 3.14.10.
+At source revision `364de75`, [the native job](https://github.com/kleedaisuki/msync/actions/runs/42465854974/job/128685099644)
+successfully compiled Native AOT and completed source, dry-run, source-free
+`.mso`/`.mexe` byte comparisons, SQLite telemetry and baseline delegation.
+The subsequent fixture cleanup failed with Win32 sharing violation 32 on
+`telemetry.sqlite`, before installer construction or lifecycle execution.
+
+The owning Python inspection used `with sqlite3.connect(...)`; that context
+manages transactions, not the connection lifetime. The standard
+[SQLite context-manager contract](https://docs.python.org/3/library/sqlite3.html#how-to-use-the-connection-context-manager)
+requires explicit close or `contextlib.closing` for this use. `45e20fe` closes
+the inspection before its owned directory is deleted. The fix adds no retries,
+does not ignore failed cleanup, and changes no product I/O semantics. The same
+revision's Ubuntu 22.04 native package job passed. The corrected Windows job
+continues with the actual portable and installer lifecycle rather than treating
+the initial product-only success as completed installation acceptance.
