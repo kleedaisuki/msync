@@ -17,6 +17,9 @@ the deliberately new 0.8 syntax.
 
 ## Expected semantic distinctions
 
+- An operational transfer failure yields false and a source-owned diagnostic;
+  a handled false may run later work while the CLI reports a failed attempt.
+  Cancellation and compiler/bytecode faults are not ordinary false outcomes.
 - `;` discards an expression value; a block with no tail value has type Null.
 - `let value?` admits Null; unmarked bindings do not. `_` discards rather than
   retaining a nullable binding. `value?` is an is-null test, not a truthiness or

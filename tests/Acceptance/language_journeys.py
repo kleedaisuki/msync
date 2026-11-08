@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,9 +26,21 @@ class Journey:
     inputs: dict[str, bytes] | None = None
     accepted: bool = True
     artifacts: bool = False
+    run_exit: int = 0
+    diagnostic: str | None = None
 
 
 JOURNEYS: tuple[Journey, ...] = (
+    Journey(
+        "transfer_false_runs_else_and_keeps_target",
+        "let copied = ./missing.txt -> ./target.txt; "
+        'if copied { "wrong" -> result.txt; } else { "failed" -> result.txt; };',
+        {"result.txt": b"failed"},
+        {"target.txt": b"old target"},
+        artifacts=True,
+        run_exit=1,
+        diagnostic="missing.txt",
+    ),
     Journey(
         "block_tail_and_discard",
         'let tail = { "discarded"; "tail" }; '
@@ -258,6 +271,23 @@ def assert_files(journey: Journey, directory: Path) -> None:
             raise AssertionError(f"{name}: expected {expected!r}; observed {actual!r}")
     if (directory / "forbidden.txt").exists():
         raise AssertionError("decltype evaluated its operand and created forbidden.txt")
+    for name, expected in (journey.inputs or {}).items():
+        if (directory / name).read_bytes() != expected:
+            raise AssertionError(
+                f"Read-only input or failed-copy target {name} changed"
+            )
+
+
+def assert_run(journey: Journey, result: CommandResult) -> None:
+    if result.returncode != journey.run_exit:
+        raise AssertionError(
+            f"expected exit {journey.run_exit}, observed {result.returncode}: "
+            f"{result.stdout}{result.stderr}"
+        )
+    if journey.diagnostic is not None and journey.diagnostic not in result.stderr:
+        raise AssertionError(
+            f"failure diagnostic lost {journey.diagnostic!r}: {result.stderr}"
+        )
 
 
 def clear_outputs(journey: Journey, directory: Path) -> None:
@@ -300,7 +330,7 @@ def run_journey(
             return report
         ran = execute([*cli, "run", str(source)], directory)
         commands.append(describe(ran))
-        require_success(ran)
+        assert_run(journey, ran)
         assert_files(journey, directory)
         if artifacts and journey.artifacts:
             clear_outputs(journey, directory)
@@ -324,7 +354,7 @@ def run_journey(
             for artifact in (relocatable, executable):
                 ran_artifact = execute([*cli, "run-ir", str(artifact)], directory)
                 commands.append(describe(ran_artifact))
-                require_success(ran_artifact)
+                assert_run(journey, ran_artifact)
                 assert_files(journey, directory)
                 clear_outputs(journey, directory)
         report["passed"] = True
@@ -360,11 +390,19 @@ def main() -> int:
     binary = arguments.binary.resolve()
     if not binary.is_file():
         raise SystemExit(f"CLI does not exist: {binary}")
-    cli: list[str] = (
-        ["dotnet", str(binary)] if binary.suffix == ".dll" else [str(binary)]
-    )
     temporary_root = ROOT / ".temp/acceptance-v080"
     temporary_root.mkdir(parents=True, exist_ok=True)
+    snapshot = Path(tempfile.mkdtemp(prefix="cli-", dir=temporary_root))
+    if binary.suffix == ".dll":
+        shutil.copytree(binary.parent, snapshot, dirs_exist_ok=True)
+    else:
+        shutil.copy2(binary, snapshot / binary.name)
+    frozen_binary = snapshot / binary.name
+    cli: list[str] = (
+        ["dotnet", str(frozen_binary)]
+        if frozen_binary.suffix == ".dll"
+        else [str(frozen_binary)]
+    )
     selected: set[str] = set(arguments.case)
     journeys: list[dict[str, object]] = []
     for journey in JOURNEYS:
@@ -385,7 +423,8 @@ def main() -> int:
         json.dumps(
             {
                 "binary": str(binary),
-                "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+                "frozen_binary": str(frozen_binary),
+                "sha256": hashlib.sha256(frozen_binary.read_bytes()).hexdigest(),
                 "artifacts": arguments.artifacts,
                 "passed": passed,
                 "journeys": journeys,

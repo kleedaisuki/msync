@@ -8,12 +8,13 @@ from compiler-internal nodes. It uses only the Python standard library.
 python3 tests/Acceptance/language_journeys.py /absolute/path/to/msync
 ```
 
-Use `--case NAME` to select the changed contract. Fixtures and JSON results are
-retained under `.temp` for diagnosis. Do not run the full selection repeatedly
+Use `--case NAME` to select the changed contract. A private frozen copy of the executable (and sibling managed assemblies when
+needed), fixtures and JSON results are retained under `.temp` for diagnosis. Do not run the full selection repeatedly
 when an unchanged contract has already passed.
 
 | Contract | Distinguishing observation |
 | --- | --- |
+| Transfer failure result | A missing source yields false, executes the else branch, preserves the target and reports the actual cause |
 | Brace blocks and semicolons | Tail returns a value; a trailing semicolon yields Null |
 | Nullable declarations | Unmarked nullable binding is rejected; `?` tests is-null |
 | Flow refinement | Both `if` branches and `match null` permit only admitted operations |
