@@ -238,6 +238,43 @@ must still run after integrating that mechanism; probe success is not relabeled
 as an already passing old product image. Maintained reproduction is
 `tests/IO/WslTarProbe` plus the fixture's failure-only native/raw diagnostics.
 
+### Production WSL acceptance after completion ownership
+
+The [actual Windows production job 42480251334](https://github.com/kleedaisuki/msync/actions/runs/42480251334/job/128730444211)
+passed with source `2d35e42`, incorporating the production acknowledgement and
+declared-member-length guard from `8ca36bc`. The newly published Native AOT
+executable SHA-256 is
+`0f62a046456f64034619cb1bba9ce813e0b4ff774fd338d0ae558592d27ec135`.
+This was a new product build, not the old failing image reused by the causal labs.
+
+| Execution | Process cwd | Captured local cwd/home | Result |
+| --- | --- | --- | --- |
+| Source | First fixture context | First | Exact round trips |
+| Relocatable `.mso` | Second fixture context | Second | Exact round trips |
+| Bound `.mexe` | Second fixture context | First | Exact round trips |
+
+Every stage transferred the ordinary home/relative files in both directions,
+verified qualification before/after binding and joins, transferred the full
+1,280,123-byte all-byte binary oracle and an empty file, and retained unrelated
+sibling bytes. Windows local home and the imported Linux HOME `/root` remained
+distinct. Static check/compile/bind kept the owned distro stopped and did not
+publish the remote payloads.
+
+Two deterministic interruption controls also passed. GNU tar's eighth-record
+checkpoint and owned FIFO rendezvous stopped the producer while the Windows
+receiver had already written **70,144 staged bytes**. Actual ConPTY Ctrl-C and a
+separate termination of only the owned WSL distro both preserved the previous
+ordinary target and retired the live file stage. The Ctrl-C case surfaced as a
+guest interruption and short-body transfer failure (CLI exit 1), not an asserted
+managed-token exit-130 path. Both failures retained their actual declared and
+received byte counts instead of publishing an incomplete member.
+
+Owned distribution unregistration returned 0. The job completed successfully in
+1 minute 24 seconds. Its retained `.temp/platform-results/wsl.json`, per-stage
+traces and `diagnostics/controls` results distinguish this production acceptance
+from the earlier failed images and mechanism-only probes. No further full
+platform/performance matrix was required for this focused completion change.
+
 ## Native Windows execution and fixture lifetime
 
 The first actual Windows run used Windows Server 2025, runner image
