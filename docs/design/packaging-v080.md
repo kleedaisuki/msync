@@ -78,7 +78,9 @@ accepted file-transfer and interruption cases.
 Both hosts additionally check automatic color and NO_COLOR through actual
 terminal descriptors (a POSIX PTY or Windows ConPTY), without repeating the
 accepted editing/foreground-input suite. The POSIX fixture distinguishes stdout
-and stderr terminal ownership independently.
+and stderr terminal ownership independently. Windows additionally proves a
+bright-black binding ghost suffix does not enter submitted source until the
+user accepts it with RightArrow, using exact destination bytes as the oracle.
 Each phase retains stdout/stderr and the native image hash under
 `.temp/platform-results`; one failed phase does not suppress another's result.
 

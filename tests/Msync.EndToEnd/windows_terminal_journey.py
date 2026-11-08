@@ -51,7 +51,7 @@ class PtyFactory(Protocol):
 
 
 class Terminal:
-    def __init__(self, binary: Path, directory: Path) -> None:
+    def __init__(self, binary: Path, directory: Path, *, color: bool = False) -> None:
         factory = cast(PtyFactory, importlib.import_module("winpty").PtyProcess)
         home = directory / "home"
         home.mkdir(exist_ok=True)
@@ -64,6 +64,8 @@ class Terminal:
             TERM="xterm-256color",
             NO_COLOR="1",
         )
+        if color:
+            environment.pop("NO_COLOR", None)
         self.process = factory.spawn(
             [str(binary), "--no-config", "repl"],
             cwd=str(directory),

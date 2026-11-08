@@ -118,6 +118,9 @@ jobs:
       - name: Exercise actual Windows auto-color and diagnostic console output
         if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
         run: python tests/Msync.EndToEnd/windows_presentation_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-presentation.json
+      - name: Exercise actual Windows ghost rendering and explicit hint acceptance
+        if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        run: python tests/Msync.EndToEnd/windows_hint_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-hints.json
       - name: Exercise changed actual WSL directory completion on one owned endpoint
         if: ${{ !cancelled() && inputs.polish_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
         run: python packaging/wsl_journey.py --binary artifacts/publish/win-x64/msync.exe --completion-only --output .temp/platform-results/wsl-completion.json
