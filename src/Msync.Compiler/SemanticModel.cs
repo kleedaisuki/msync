@@ -17,10 +17,11 @@ internal sealed class Template(int id, FunctionExpr syntax, IReadOnlyList<KeyVal
     public string SourceName { get; } = sourceName;
     public Dictionary<string, Specialization> Specializations { get; } = [];
 }
-internal sealed class Specialization(int id, Info result)
+internal sealed class Specialization(int id, Info result, IReadOnlyList<TypeRef> parameterTypes)
 {
     public int Id { get; } = id;
     public Info Result { get; set; } = result;
+    public IReadOnlyList<TypeRef> ParameterTypes { get; } = parameterTypes;
 }
 internal sealed class Frame(string source, string sourceName, ImmutableDictionary<string, Binding>? environment = null)
 {

@@ -5,7 +5,7 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 
 namespace Msync.Compiler;
 
-internal sealed partial class Compilation(string source, string sourceName, int optimization)
+internal sealed partial class Compilation(string source, string sourceName, int optimization, Action<SourceSpan, Info, string?>? observe = null)
 {
     private readonly List<Value> constants = [];
     private readonly Dictionary<Value, int> constantIndices = [];
@@ -82,7 +82,11 @@ internal sealed partial class Compilation(string source, string sourceName, int 
                         var asserted = let.Type is null ? null : ResolveType(frame, let.Type);
                         bool nullable = let.Nullable || asserted?.Nullable == true;
                         if (result.Type.Nullable && !nullable)
-                            throw Error(frame, "A possibly null value requires an explicit '?' binding or a null-refining branch.", let.Value.Span);
+                            throw Error(frame, "A possibly null value requires an explicit '?' binding or a null-refining branch.", let.Value.Span,
+                                label: $"this value may be Null ({result.Type})",
+                                help: "Add '?' after the binding name to admit Null, or use 'if value is not null' before binding.",
+                                fix: let.Pattern is NamePattern bound ? new("Allow Null in this binding", new(bound.Span.End, 0), "?") : null,
+                                code: "E0201");
                         if (asserted is not null)
                         {
                             if (let.Nullable) asserted = asserted.WithNull;
@@ -99,16 +103,19 @@ internal sealed partial class Compilation(string source, string sourceName, int 
                     break;
                 case FunctionDeclaration declaration:
                     result = Function(frame, declaration.Function);
+                    if (declaration.Function.NameSpan is { } functionName) Observe(frame, functionName, result, declaration.Name);
                     Store(frame, declaration.Name, result);
                     frame.Emit(OpCode.Null); result = new(TypeRef.Null); hasValue = true;
                     break;
                 case NativeDeclaration native:
                     result = Native(frame, native, null);
+                    if (native.NameSpan is { } nativeName) Observe(frame, nativeName, result, native.Name);
                     Store(frame, native.Name, result);
                     frame.Emit(OpCode.Null); result = new(TypeRef.Null); hasValue = true;
                     break;
                 case ScopeDeclaration declaration:
                     result = Scope(frame, declaration.Scope);
+                    if (declaration.NameSpan is { } scopeName) Observe(frame, scopeName, result, declaration.Name);
                     Store(frame, declaration.Name, result);
                     frame.Emit(OpCode.Null); result = new(TypeRef.Null); hasValue = true;
                     break;
@@ -126,7 +133,14 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         return terminated ? new(new(TypeKind.Never)) : result;
     }
 
-    private Info Expression(Frame frame, Expr expression) => expression switch
+    private Info Expression(Frame frame, Expr expression)
+    {
+        Info result = InferExpression(frame, expression);
+        Observe(frame, expression.Span, result, expression is NameExpr name ? name.Name : null);
+        return result;
+    }
+
+    private Info InferExpression(Frame frame, Expr expression) => expression switch
     {
         BoolExpr value => Emit(frame, value.Value ? OpCode.True : OpCode.False, TypeRef.Bool, expression.Span),
         NullExpr => Emit(frame, OpCode.Null, TypeRef.Null, expression.Span),

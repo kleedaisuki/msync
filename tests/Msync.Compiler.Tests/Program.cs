@@ -1,4 +1,5 @@
 using Msync.Compiler.Syntax;
+if (args.Contains("--diagnostics", StringComparer.Ordinal)) { DiagnosticChecks.Run(); return; }
 if (args.Contains("--semantic", StringComparer.Ordinal)) { SemanticChecks.Run(); return; }
 if (args.Contains("--regex-unions", StringComparer.Ordinal)) { SemanticChecks.RunRegexUnions(); return; }
 if (args.Contains("--type-specialization", StringComparer.Ordinal)) { SemanticChecks.RunTypeSpecialization(); return; }

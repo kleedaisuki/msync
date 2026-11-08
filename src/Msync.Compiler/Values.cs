@@ -109,11 +109,15 @@ internal sealed partial class Compilation
             case "<=":
             case ">":
             case ">=":
-                if (left.Type.Nullable || right.Type.Nullable) throw Error(frame, "Null has no boolean comparison; use 'is null' or 'is not null'.", binary.Span);
+                if (left.Type.Nullable || right.Type.Nullable) throw Error(frame, "Null has no boolean comparison; use 'is null' or 'is not null'.", binary.Span,
+                    label: "this comparison includes a possibly Null value",
+                    help: "Use 'value is null' or 'value is not null' for a Null test. Handle Null before comparing other values.", code: "E0201");
                 var comparable = new TypeRef(TypeKind.Bool | TypeKind.String | TypeKind.Path | TypeKind.Number | TypeKind.Type | TypeKind.Connection);
                 Require(frame, left.Type, comparable, binary.Left.Span); Require(frame, right.Type, comparable, binary.Right.Span);
                 if (left.Type != right.Type && !(PathCompatible.Accepts(left.Type) && PathCompatible.Accepts(right.Type)))
-                    throw Error(frame, $"Cannot compare {left.Type} and {right.Type}.", binary.Span);
+                    throw Error(frame, $"Cannot compare {left.Type} and {right.Type}.", binary.Span,
+                        label: $"left: {left.Type}; right: {right.Type}",
+                        help: "Compare compatible values. Path and String can be compared implicitly; other types must agree.", code: "E0203");
                 frame.Emit(binary.Operator switch { "==" => OpCode.Equal, "!=" => OpCode.NotEqual, "<" => OpCode.Less, "<=" => OpCode.LessEqual, ">" => OpCode.Greater, _ => OpCode.GreaterEqual }, span: binary.Span);
                 return new(TypeRef.Bool);
             case "+":
@@ -145,17 +149,38 @@ internal sealed partial class Compilation
         var left = binary.Left is NameExpr alias && alias.Name is "view" or "views" or "ranges" && !frame.Environment.ContainsKey(alias.Name)
             ? StandardModule(frame, "ranges", binary.Left.Span) : Expression(frame, binary.Left);
         var member = binary.Right switch { NameExpr name => name.Name, PathExpr path => path.Path, StringExpr text => text.Value, _ => null };
+        if ((left.Type == TypeRef.Scope || left.Type == TypeRef.Process) && member is null)
+            throw Error(frame, $"A {left.Type} member must be selected by name.", binary.Right.Span,
+                label: "a computed expression is not a member name",
+                help: "Write 'value::member' or use a literal String member name.", code: "E0205");
         if (left.Type == TypeRef.Scope && member is not null)
         {
-            if (left.Scope is null || !left.Scope.Members.TryGetValue(member, out var info)) throw Error(frame, $"Scope has no member '{member}'.", binary.Right.Span);
+            if (left.Scope is null || !left.Scope.Members.TryGetValue(member, out var info))
+                throw Error(frame, $"Scope has no member '{member}'.", binary.Right.Span,
+                    label: "no member with this name",
+                    help: left.Scope is null ? "Select a declared member with scope::member."
+                        : $"Available members: {string.Join(", ", left.Scope.Members.Keys.Order(StringComparer.Ordinal))}.", code: "E0205");
+            Observe(frame, binary.Right.Span, info, member);
             frame.Emit(OpCode.GetMember, text: member, span: binary.Span); return info;
         }
         if (left.Type == TypeRef.Process && member is not null)
         {
             frame.Emit(OpCode.GetMember, text: member, span: binary.Span);
-            return member switch { "stdout" or "stderr" => new(TypeRef.String), "exit_code" or "pid" => new(TypeRef.Number), _ => throw Error(frame, $"Process has no member '{member}'.", binary.Right.Span) };
+            return member switch
+            {
+                "stdout" or "stderr" => new(TypeRef.String),
+                "exit_code" or "pid" => new(TypeRef.Number),
+                _ => throw Error(frame, $"Process has no member '{member}'.", binary.Right.Span,
+                help: "Available Process members: stdout, stderr, exit_code, pid.", code: "E0205")
+            };
         }
-        Require(frame, left.Type, TypeRef.Connection, binary.Left.Span);
+        if (left.Type != TypeRef.Connection)
+            throw Error(frame, member is null ? $"Cannot use '::' on a {left.Type} value." : $"Cannot select '{member}' from a {left.Type} value.", binary.Left.Span,
+                label: $"this is {left.Type}, not a Scope or Connection",
+                note: "'::' selects a member of a lexical Scope, or qualifies a path with a Connection.",
+                help: left.Type == TypeRef.Path
+                    ? "Pass the Scope itself, not one of its Path members. An unbound bare name is a Path; use $local, $wsl or an SSH connection for endpoint qualification."
+                    : "Use a Scope value for member access, or a Connection value for endpoint qualification.", code: "E0206");
         var right = Expression(frame, binary.Right); Require(frame, right.Type, PathCompatible, binary.Right.Span);
         frame.Emit(OpCode.Qualify, span: binary.Span); return new(TypeRef.Path);
     }
@@ -168,6 +193,7 @@ internal sealed partial class Compilation
         foreach (var member in scope.Members)
         {
             var info = Expression(frame, member.Value);
+            if (member.NameSpan is { } memberName) Observe(frame, memberName, info, member.Name);
             frame.Emit(OpCode.Dup); Store(frame, member.Name, info);
             keys.Add(member.Name); members[member.Name] = info;
         }

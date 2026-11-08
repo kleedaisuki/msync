@@ -11,8 +11,14 @@ public abstract record Node(SourceSpan Span);
 public abstract record Statement(SourceSpan Span) : Node(Span);
 public sealed record LetStatement(Pattern Pattern, bool Nullable, TypeSyntax? Type, Expr Value, SourceSpan Span) : Statement(Span);
 public sealed record FunctionDeclaration(string Name, FunctionExpr Function, SourceSpan Span) : Statement(Span);
-public sealed record NativeDeclaration(string Name, IReadOnlyList<Parameter> Parameters, TypeSyntax ReturnType, SourceSpan Span) : Statement(Span);
-public sealed record ScopeDeclaration(string Name, ScopeExpr Scope, SourceSpan Span) : Statement(Span);
+public sealed record NativeDeclaration(string Name, IReadOnlyList<Parameter> Parameters, TypeSyntax ReturnType, SourceSpan Span) : Statement(Span)
+{
+    public SourceSpan? NameSpan { get; init; }
+}
+public sealed record ScopeDeclaration(string Name, ScopeExpr Scope, SourceSpan Span) : Statement(Span)
+{
+    public SourceSpan? NameSpan { get; init; }
+}
 public sealed record ExpressionStatement(Expr Expression, bool Discarded, SourceSpan Span) : Statement(Span);
 public abstract record Expr(SourceSpan Span) : Node(Span);
 public sealed record NameExpr(string Name, SourceSpan Span) : Expr(Span);
@@ -28,7 +34,10 @@ public sealed record BlockExpr(IReadOnlyList<Statement> Statements, SourceSpan S
 public sealed record IfExpr(Expr Condition, BlockExpr Then, Expr? Else, SourceSpan Span) : Expr(Span);
 public sealed record MatchExpr(Expr Value, IReadOnlyList<MatchArm> Arms, SourceSpan Span) : Expr(Span);
 public sealed record ForExpr(Pattern Pattern, Expr Source, BlockExpr Body, SourceSpan Span) : Expr(Span);
-public sealed record FunctionExpr(string? Name, IReadOnlyList<Parameter> Parameters, TypeSyntax? ReturnType, BlockExpr Body, SourceSpan Span) : Expr(Span);
+public sealed record FunctionExpr(string? Name, IReadOnlyList<Parameter> Parameters, TypeSyntax? ReturnType, BlockExpr Body, SourceSpan Span) : Expr(Span)
+{
+    public SourceSpan? NameSpan { get; init; }
+}
 public sealed record ScopeExpr(IReadOnlyList<ScopeMember> Members, Expr? Value, SourceSpan Span) : Expr(Span);
 public sealed record RangeExpr(IReadOnlyList<Expr> Items, SourceSpan Span) : Expr(Span);
 public sealed record TypeExpr(TypeSyntax Type, SourceSpan Span) : Expr(Span);
@@ -36,7 +45,10 @@ public sealed record LoopExpr(BlockExpr Body, SourceSpan Span) : Expr(Span);
 public sealed record ReturnExpr(Expr? Value, SourceSpan Span) : Expr(Span);
 public sealed record BreakExpr(Expr? Value, SourceSpan Span) : Expr(Span);
 public sealed record Parameter(string Name, TypeSyntax? Type, bool Nullable, SourceSpan Span) : Node(Span);
-public sealed record ScopeMember(string Name, Expr Value, SourceSpan Span) : Node(Span);
+public sealed record ScopeMember(string Name, Expr Value, SourceSpan Span) : Node(Span)
+{
+    public SourceSpan? NameSpan { get; init; }
+}
 public sealed record MatchArm(Pattern Pattern, Expr Value, SourceSpan Span) : Node(Span);
 public abstract record Pattern(SourceSpan Span) : Node(Span);
 public sealed record NamePattern(string Name, SourceSpan Span) : Pattern(Span);
@@ -50,6 +62,7 @@ public sealed record TypeSyntax(string Name, IReadOnlyList<TypeSyntax> Arguments
 
 public sealed class SyntaxException : Exception
 {
+    public SourceDiagnostic Diagnostic { get; internal set; }
     public string SourceName { get; }
     public SourceSpan Span { get; }
     public int Line { get; }
@@ -59,21 +72,13 @@ public sealed class SyntaxException : Exception
         : this(message, source, sourceName, span, false) { }
 
     public SyntaxException(string message, string source, string sourceName, SourceSpan span, bool isIncomplete)
-        : base($"{sourceName}:{Locate(source, span.Start).Line}:{Locate(source, span.Start).Column}: {message}")
+        : base($"{sourceName}:{SourceDiagnostic.Locate(source, span.Start).Line}:{SourceDiagnostic.Locate(source, span.Start).Column}: {message}")
     {
+        Diagnostic = new("E0100", message, source, sourceName, span,
+            isIncomplete ? "input ends here" : "unexpected token", Help: null);
         SourceName = sourceName;
         Span = span;
         IsIncomplete = isIncomplete;
-        (Line, Column) = Locate(source, span.Start);
-    }
-    private static (int Line, int Column) Locate(string source, int offset)
-    {
-        int line = 1, column = 1;
-        for (int i = 0; i < Math.Min(offset, source.Length); i++)
-        {
-            if (source[i] == '\n') { line++; column = 1; }
-            else column++;
-        }
-        return (line, column);
+        (Line, Column) = Diagnostic.Position;
     }
 }

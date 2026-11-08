@@ -14,14 +14,14 @@ internal sealed class Lexer(string source, string sourceName)
         {
             if (char.IsWhiteSpace(source[position])) { position++; continue; }
             if (source[position] == '#' && (position == 0 || char.IsWhiteSpace(source[position - 1])))
-            { while (position < source.Length && source[position] != '\n') position++; continue; }
+            { while (position < source.Length && source[position] is not ('\r' or '\n')) position++; continue; }
             int start = position;
             char c = source[position++];
             if (c == '"') { ReadString(start); continue; }
             if (c == '<' && IsRegexStart()) { ReadRegex(start); continue; }
             if (c == '/' && position < source.Length && source[position] == '/' &&
                 (start == 0 || char.IsWhiteSpace(source[start - 1])))
-            { while (position < source.Length && source[position] != '\n') position++; continue; }
+            { while (position < source.Length && source[position] is not ('\r' or '\n')) position++; continue; }
             TokenKind? kind = c switch
             {
                 '{' => TokenKind.LeftBrace,
@@ -66,7 +66,8 @@ internal sealed class Lexer(string source, string sourceName)
             if (Take('"')) { value.Append('"'); continue; }
             Add(TokenKind.String, value.ToString(), start); return;
         }
-        throw new SyntaxException("Unterminated string.", source, sourceName, new(start, position - start), isIncomplete: true);
+        throw Unterminated("Unterminated string.", start,
+            "Close the String with '\"'. Inside a String, write a literal quote as two consecutive quotes (\"\").");
     }
     private bool IsRegexStart() => tokens.Count == 0 || tokens[^1].Kind is TokenKind.Slash or TokenKind.LeftBrace or TokenKind.Comma or TokenKind.LeftBracket or TokenKind.FatArrow;
     private void ReadRegex(int start)
@@ -94,7 +95,14 @@ internal sealed class Lexer(string source, string sourceName)
             string pattern = source[position..end];
             position = end + 1; Add(TokenKind.Regex, pattern, start); return;
         }
-        throw new SyntaxException("Unterminated regular expression.", source, sourceName, new(start, source.Length - start), isIncomplete: true);
+        throw Unterminated("Unterminated regular expression.", start,
+            "Close the regular expression with '>'. Escape a literal closing angle as '\\>' when it could end the pattern.");
+    }
+    private SyntaxException Unterminated(string message, int start, string help)
+    {
+        SyntaxException error = new(message, source, sourceName, new(start, source.Length - start), isIncomplete: true);
+        error.Diagnostic = error.Diagnostic with { Code = "E0104", Label = "literal starts here but never closes", Help = help };
+        return error;
     }
     private bool RegexBoundary(int next)
     {

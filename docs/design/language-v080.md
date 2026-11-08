@@ -174,3 +174,57 @@ source compilation allocates no binding journal, and execution adds no per-load
 or per-store validation. Reconciliation scans declarations only after failure.
 The real-process submission journey covers prefix values, repeated shadows,
 legitimate Null values, multiline recovery and captured paths across /cd.
+
+## Source-owned diagnostics and editor inference
+
+Compiler and parser errors carry one structured `SourceDiagnostic`: a stable
+category code, unprefixed message, primary source/range/label, explanatory help,
+optional source edit, and related source locations. CLI rendering and LSP share
+that data; neither extracts coordinates from exception text. The original
+exception message still includes `source:line:column` for existing callers.
+Coordinates handle LF, CRLF and lone CR consistently. Lexer comments terminate
+at either newline form instead of swallowing the remainder of a CR-only file.
+
+Common failures identify the operation the user must change: Null admission or
+comparison (`E0201`), unknown types (`E0202`), incompatible values (`E0203`),
+call arity/signatures (`E0204`), missing members (`E0205`), invalid `::` receivers
+(`E0206`), loop context (`E0207`), regex syntax (`E0208`) and incomplete match
+coverage (`E0209`). Parser categories distinguish missing separators (`E0102`),
+open delimiters (`E0103`) and unclosed literals (`E0104`). Missing punctuation
+and nullable bindings supply exact edits; delimiter errors retain the opening
+location, rather than only pointing at end-of-file.
+
+Specialization failures retain the function-body primary range and add the
+actual call with parameter/argument types as a related location. An incompatible
+annotated argument highlights that argument, with the parameter declaration as
+a related location. In particular, passing `Constructor()::path` to a generic
+function expecting lexical member access explains that the Path member is not
+the Scope itself; it does not misdescribe every `::` as Connection qualification.
+The representation follows the source-language/actionable guidance in
+[GCC's diagnostic guidelines](https://gcc.gnu.org/onlinedocs/gccint/Guidelines-for-Diagnostics.html)
+and the primary/related labels, help and source-edit separation used by
+[Rust's diagnostic system](https://rustc-dev-guide.rust-lang.org/diagnostics/diagnostic-structs.html).
+
+`EditorCompiler.Analyze` parses once and runs the same pure static compiler with
+an optional observation callback. Ordinary source compilation supplies no
+observer and does not allocate editor signatures or member lists. Analysis
+retains semantic Info identities first, then renders signatures after all calls
+have specialized: an earlier function declaration or alias therefore reports
+its later-inferred parameter/result types. Multiple call types aggregate rather
+than making a shared source occurrence depend on the last call checked.
+
+Parser-owned identifier spans distinguish declaration names from keywords and
+quoted member spellings. Scope-member occurrences, constructor-returned Scopes
+and Function/Scope aliases retain their semantic roles. Syntactic declaration
+roles are seeded inside uncalled generic bodies without inventing argument
+types or executing/specializing those bodies. Scope member presentation is
+cached by semantic Scope identity only within the current analysis, so repeated
+standard-library references share their member descriptors without retaining
+a previous document's lexical context.
+
+Focused executable checks are `tests/Msync.Compiler.Tests --diagnostics`:
+source-edit recompilation, delimiter provenance, all newline coordinates,
+Null/Bool/match explanations, the supplied Scope constructor/call example,
+polymorphic hover aggregation, exact semantic identifier spans and uncalled
+nested declarations. Actual CLI/LSP and extension-host journeys exercise the
+same structures through the installed user interfaces.

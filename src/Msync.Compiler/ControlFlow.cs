@@ -105,7 +105,8 @@ internal sealed partial class Compilation
     }
     private Info Break(Frame frame, BreakExpr broken)
     {
-        if (frame.Breaks.Count == 0) throw Error(frame, "break requires an enclosing loop.", broken.Span);
+        if (frame.Breaks.Count == 0) throw Error(frame, "break requires an enclosing loop.", broken.Span,
+            label: "no loop to break out of", help: "Place break inside 'loop { ... }'. Use 'return value' to finish a function.", code: "E0207");
         var result = broken.Value is null ? Emit(frame, OpCode.Null, TypeRef.Null, broken.Span) : Expression(frame, broken.Value);
         frame.BreakValues[^1].Add(result); frame.Breaks[^1].Add(frame.Emit(OpCode.Jump)); frame.Emit(OpCode.Null);
         return new(new(TypeKind.Never));
@@ -200,7 +201,11 @@ internal sealed partial class Compilation
     private static void ValidateRegex(Frame frame, string pattern, SourceSpan span)
     {
         try { _ = new System.Text.RegularExpressions.Regex(pattern, System.Text.RegularExpressions.RegexOptions.CultureInvariant); }
-        catch (ArgumentException error) { throw Error(frame, $"Invalid regular expression: {error.Message}", span); }
+        catch (ArgumentException error)
+        {
+            throw Error(frame, $"Invalid regular expression: {error.Message}", span,
+            label: "invalid pattern", help: "Check the pattern's character classes, escapes and grouping. Regex patterns use the .NET regular-expression syntax.", code: "E0208");
+        }
     }
     private TypeRef PatternType(Frame frame, Pattern pattern, TypeRef original) => pattern switch
     {
@@ -226,7 +231,14 @@ internal sealed partial class Compilation
             if (arm.Pattern is LiteralPattern { Value: BoolExpr boolean }) { hasTrue |= boolean.Value; hasFalse |= !boolean.Value; }
         }
         if (hasTrue && hasFalse) covered |= TypeKind.Bool;
-        if ((value.Type.Kind & ~covered) != 0) throw Error(frame, $"Non-exhaustive match for {value.Type}; add the missing cases or '_'.", span);
+        if ((value.Type.Kind & ~covered) != 0)
+        {
+            var missing = new TypeRef(value.Type.Kind & ~covered, value.Type.Element);
+            string cases = missing.Kind == TypeKind.Bool ? hasTrue ? "false" : hasFalse ? "true" : "true and false" : missing.ToString();
+            throw Error(frame, $"Non-exhaustive match for {value.Type}; add the missing cases or '_'.", span,
+                label: $"not covered: {cases}",
+                help: $"Add arms covering {cases}, or a final '_ => {{ ... }}' arm. Regex and literal patterns do not cover every Path or String.", code: "E0209");
+        }
     }
 
 

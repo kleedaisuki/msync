@@ -31,7 +31,48 @@ public sealed class Parser
         if (!At(kind)) throw Error(message);
         return Next();
     }
-    private SyntaxException Error(string message) => new(message, source, sourceName, Current.Span, At(TokenKind.End));
+    private SyntaxException Error(string message)
+    {
+        string found = At(TokenKind.End) ? "end of input" : $"'{Current.Text}'";
+        SyntaxException error = new($"{message} Found {found}.", source, sourceName, Current.Span, At(TokenKind.End));
+        if (message.StartsWith("Expected ';'", StringComparison.Ordinal) || message.StartsWith("Expected ','", StringComparison.Ordinal))
+        {
+            string separator = message.Contains("';'", StringComparison.Ordinal) ? ";" : ",";
+            error.Diagnostic = error.Diagnostic with
+            {
+                Code = "E0102",
+                Help = separator == ";" ? "End this declaration with ';'. In a block, only the final expression may omit it to return a value."
+                    : "Separate adjacent members or arguments with ','.",
+                Fix = new($"Insert '{separator}'", new(Previous.Span.End, 0), separator)
+            };
+        }
+        else if (UnclosedDelimiter() is { } opening && (At(TokenKind.End) || message.StartsWith("Expected ')'", StringComparison.Ordinal)
+            || message.StartsWith("Expected ']'", StringComparison.Ordinal) || message.StartsWith("Expected '}'", StringComparison.Ordinal)))
+        {
+            string close = opening.Kind switch { TokenKind.LeftBrace => "}", TokenKind.LeftBracket => "]", _ => ")" };
+            error.Diagnostic = error.Diagnostic with
+            {
+                Code = "E0103",
+                Help = $"Close the '{opening.Text}' delimiter with '{close}' before continuing."
+            };
+            error.Diagnostic.Related.Add(new(sourceName, source, opening.Span, $"this '{opening.Text}' is still open"));
+        }
+        else if (At(TokenKind.End)) error.Diagnostic = error.Diagnostic with { Help = "Complete the expression before submitting it." };
+        return error;
+    }
+
+    private Token? UnclosedDelimiter()
+    {
+        Stack<Token> open = [];
+        for (int index = 0; index < position; index++)
+        {
+            Token token = tokens[index];
+            if (token.Kind is TokenKind.LeftBrace or TokenKind.LeftBracket or TokenKind.LeftParen) open.Push(token);
+            else if (open.TryPeek(out Token previous) && (previous.Kind, token.Kind) is
+                (TokenKind.LeftBrace, TokenKind.RightBrace) or (TokenKind.LeftBracket, TokenKind.RightBracket) or (TokenKind.LeftParen, TokenKind.RightParen)) open.Pop();
+        }
+        return open.TryPeek(out Token opening) ? opening : null;
+    }
     private IReadOnlyList<Statement> Statements(TokenKind end)
     {
         List<Statement> result = [];
@@ -65,10 +106,10 @@ public sealed class Parser
         }
         if (Word("scope") && Peek().Kind == TokenKind.Atom)
         {
-            Next(); string name = Next().Text;
+            Next(); Token name = Next();
             var scope = Scope(start);
             Take(TokenKind.Semicolon);
-            return new ScopeDeclaration(name, scope, SourceSpan.Cover(start, Previous.Span));
+            return new ScopeDeclaration(name.Text, scope, SourceSpan.Cover(start, Previous.Span)) { NameSpan = name.Span };
         }
         var expression = Expression();
         bool discarded = Take(TokenKind.Semicolon);
@@ -79,12 +120,12 @@ public sealed class Parser
     {
         var start = Next().Span;
         if (!TakeWord("fn")) throw Error("Expected 'fn' after 'native'.");
-        string name = Require(TokenKind.Atom, "Expected a native function name.").Text;
+        Token name = Require(TokenKind.Atom, "Expected a native function name.");
         var parameters = Parameters();
         Require(TokenKind.Arrow, "Expected '->' and the native result type.");
         var type = ParseType();
         Require(TokenKind.Semicolon, "Expected ';' after the native declaration.");
-        return new(name, parameters, type, SourceSpan.Cover(start, Previous.Span));
+        return new(name.Text, parameters, type, SourceSpan.Cover(start, Previous.Span)) { NameSpan = name.Span };
     }
     private Expr Expression(int minimum = 0)
     {
@@ -237,11 +278,11 @@ public sealed class Parser
     private FunctionExpr Function()
     {
         var start = Next().Span;
-        string? name = At(TokenKind.Atom) ? Next().Text : null;
+        Token? name = At(TokenKind.Atom) ? Next() : null;
         var parameters = At(TokenKind.LeftParen) ? Parameters() : [];
         TypeSyntax? result = Take(TokenKind.Arrow) ? ParseType() : null;
         var body = Block();
-        return new(name, parameters, result, body, SourceSpan.Cover(start, body.Span));
+        return new(name?.Text, parameters, result, body, SourceSpan.Cover(start, body.Span)) { NameSpan = name?.Span };
     }
     private IReadOnlyList<Parameter> Parameters()
     {
@@ -267,7 +308,7 @@ public sealed class Parser
             if ((At(TokenKind.Atom) || At(TokenKind.String)) && Peek().Kind == TokenKind.Colon)
             {
                 var name = Next(); Next(); var member = Expression();
-                members.Add(new(name.Text, member, SourceSpan.Cover(name.Span, member.Span)));
+                members.Add(new(name.Text, member, SourceSpan.Cover(name.Span, member.Span)) { NameSpan = name.Span });
                 if (!Take(TokenKind.Comma) && !At(TokenKind.RightBrace)) throw Error("Expected ',' after a scope member.");
                 continue;
             }

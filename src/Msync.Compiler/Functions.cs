@@ -22,7 +22,9 @@ internal sealed partial class Compilation
         Template template = new(id, function, captures, frame.Source, frame.SourceName);
         templates.Add(template);
         EmitClosure(frame, template);
-        return new(TypeRef.Function, template);
+        Info info = new(TypeRef.Function, template);
+        if (function.NameSpan is { } name) Observe(frame, name, info, function.Name);
+        return info;
     }
     private static KeyValuePair<string, Binding>[] Captures(Frame frame, IEnumerable<string> names, string? self)
     {
@@ -47,15 +49,25 @@ internal sealed partial class Compilation
         }
         frame.Emit(OpCode.MakeClosure, template.Id, template.Captures.Count, span: template.Syntax.Span);
     }
-    private Specialization Specialize(Frame caller, Template template, IReadOnlyList<Info> arguments, SourceSpan span)
+    private Specialization Specialize(Frame caller, Template template, IReadOnlyList<Info> arguments, SourceSpan span,
+        IReadOnlyList<Expr>? argumentExpressions = null)
     {
-        if (arguments.Count != template.Syntax.Parameters.Count) throw Error(caller, $"Function expects {template.Syntax.Parameters.Count} arguments, got {arguments.Count}.", span);
+        if (arguments.Count != template.Syntax.Parameters.Count)
+        {
+            var error = Error(caller, $"Function expects {template.Syntax.Parameters.Count} arguments, got {arguments.Count}.", span,
+                label: $"{arguments.Count} arguments supplied",
+                help: template.Syntax.Parameters.Count == 0 ? "Call this function with empty parentheses and no arguments."
+                    : $"Supply arguments for: {string.Join(", ", template.Syntax.Parameters.Select(parameter => parameter.Name))}.", code: "E0204");
+            error.Diagnostic.Related.Add(new(template.SourceName, template.Source, template.Syntax.NameSpan ?? template.Syntax.Span,
+                "function declared here"));
+            throw error;
+        }
         string key = string.Join(';', arguments.Select(argument => InfoKey(argument)));
         if (template.Specializations.TryGetValue(key, out var existing)) return existing;
         int id = template.Specializations.Count == 0 ? template.Id : functions.Count;
         if (id == functions.Count) functions.Add(functions[template.Id]);
         var asserted = template.Syntax.ReturnType is null ? null : ResolveType(caller, template.Syntax.ReturnType);
-        Specialization specialization = new(id, new(asserted ?? new TypeRef(TypeKind.Never)));
+        Specialization specialization = new(id, new(asserted ?? new TypeRef(TypeKind.Never)), arguments.Select(info => info.Type).ToArray());
         template.Specializations[key] = specialization;
         Frame frame = new(template.Source, template.SourceName) { ExpectedReturn = asserted };
         frame.SelfCaptureSlots[template.Id] = Enumerable.Range(0, template.Captures.Count).ToArray();
@@ -68,7 +80,13 @@ internal sealed partial class Compilation
             {
                 var type = ResolveType(frame, parameter.Type);
                 if (parameter.Nullable) type = type.WithNull;
-                CheckConversion(caller, info.Type, type, span);
+                try { CheckConversion(caller, info.Type, type, argumentExpressions?[index].Span ?? span); }
+                catch (CompileException error)
+                {
+                    error.Diagnostic.Related.Add(new(template.SourceName, template.Source, parameter.Span,
+                        $"parameter '{parameter.Name}' requires {type}"));
+                    throw;
+                }
                 if (!type.Accepts(info.Type))
                 {
                     int parameterSlot = frame.Locals;
@@ -79,17 +97,41 @@ internal sealed partial class Compilation
                 }
             }
             else if (info.Type.Nullable && !parameter.Nullable)
-                throw Error(caller, $"Nullable argument requires nullable parameter '{parameter.Name}?'.", span);
+            {
+                var error = Error(caller, $"Nullable argument requires nullable parameter '{parameter.Name}?'.", argumentExpressions?[index].Span ?? span,
+                    label: $"this argument may be Null ({info.Type})",
+                    help: "Handle Null before the call, or add '?' after the parameter name if the function handles Null.", code: "E0201");
+                error.Diagnostic.Related.Add(new(template.SourceName, template.Source, parameter.Span,
+                    $"parameter '{parameter.Name}' does not admit Null"));
+                throw error;
+            }
+            Observe(frame, new(parameter.Span.Start, parameter.Name.Length), info, parameter.Name);
             frame.Bind(parameter.Name, new(frame.Allocate(), info));
         }
         if (template.Syntax.Name is not null) frame.Bind(template.Syntax.Name, new(-1, new(TypeRef.Function, template), template));
-        var result = Block(frame, template.Syntax.Body);
-        foreach (var returned in frame.Returns) result = Join(result, returned);
-        if (asserted is not null) { CheckConversion(frame, result.Type, asserted, template.Syntax.Body.Span); Convert(frame, result.Type, asserted, template.Syntax.Body.Span); result = result with { Type = asserted }; }
+        Info result;
+        try
+        {
+            result = Block(frame, template.Syntax.Body);
+            foreach (var returned in frame.Returns) result = Join(result, returned);
+            if (asserted is not null)
+            {
+                CheckConversion(frame, result.Type, asserted, template.Syntax.Body.Span);
+                Convert(frame, result.Type, asserted, template.Syntax.Body.Span);
+                result = result with { Type = asserted };
+            }
+        }
+        catch (CompileException error)
+        {
+            error.Diagnostic.Related.Add(new(caller.SourceName, caller.Source, span,
+                arguments.Count == 0 ? "while checking this call"
+                    : $"while checking this call with {string.Join(", ", template.Syntax.Parameters.Zip(arguments, (p, a) => $"{p.Name}: {a.Type}"))}"));
+            throw;
+        }
         frame.Emit(OpCode.Return);
         specialization.Result = result;
         functions[id] = new(template.Syntax.Name ?? $"<lambda{template.Id}>", arguments.Count, frame.Locals, frame.Code.ToArray(), result.Type,
-            template.Captures.Count, arguments.Select(info => info.Type).ToArray());
+            template.Captures.Count, specialization.ParameterTypes);
         return specialization;
     }
 
@@ -125,40 +167,45 @@ internal sealed partial class Compilation
         }
         var callee = Expression(frame, call.Callee);
         var arguments = call.Arguments.Select(argument => Expression(frame, argument)).ToArray();
-        return Invoke(frame, callee, arguments, call.Span);
+        return Invoke(frame, callee, arguments, call.Span, call.Arguments);
     }
-    private Info Invoke(Frame frame, Info callee, IReadOnlyList<Info> arguments, SourceSpan span)
+    private Info Invoke(Frame frame, Info callee, IReadOnlyList<Info> arguments, SourceSpan span,
+        IReadOnlyList<Expr>? argumentExpressions = null)
     {
         if (callee.Type == TypeRef.Path || callee.Type == TypeRef.String)
         {
-            foreach (var argument in arguments) Require(frame, argument.Type, new(TypeKind.String | TypeKind.Path | TypeKind.Number | TypeKind.Bool), span);
+            for (int index = 0; index < arguments.Count; index++)
+                Require(frame, arguments[index].Type, new(TypeKind.String | TypeKind.Path | TypeKind.Number | TypeKind.Bool), argumentExpressions?[index].Span ?? span);
             frame.Emit(OpCode.ProcessCall, arguments.Count, span: span); return new(TypeRef.Process);
         }
         Require(frame, callee.Type, TypeRef.Function, span);
         if (callee.Function is not null)
         {
-            var specialization = Specialize(frame, callee.Function, arguments, span);
+            var specialization = Specialize(frame, callee.Function, arguments, span, argumentExpressions);
             frame.Emit(OpCode.Call, arguments.Count, specialization.Id + 1, span: span);
             return specialization.Result;
         }
-        if (callee.NativeName is not null) return InvokeNative(frame, callee.NativeName, arguments, span);
+        if (callee.NativeName is not null) return InvokeNative(frame, callee.NativeName, arguments, span, argumentExpressions);
         if (callee.Alternatives is not null)
         {
             var dispatch = ResolveDispatch(frame, callee, arguments, span);
             frame.Emit(OpCode.Call, arguments.Count, text: dispatch.Mapping, span: span);
             return dispatch.Result;
         }
-        throw Error(frame, "Function value has no inferred callable signature.", span);
+        throw Error(frame, "Function value has no inferred callable signature.", span,
+            help: "Use a concrete fn value or preserve its signature through a generic binding.", code: "E0204");
     }
-    private Info InvokeNative(Frame frame, string identity, IReadOnlyList<Info> arguments, SourceSpan span)
+    private Info InvokeNative(Frame frame, string identity, IReadOnlyList<Info> arguments, SourceSpan span,
+        IReadOnlyList<Expr>? argumentExpressions = null)
     {
         var signature = NativeSignatures.Get(identity);
         if ((!signature.Variadic && arguments.Count != signature.Parameters.Count) || (signature.Variadic && arguments.Count < signature.Parameters.Count))
-            throw Error(frame, $"Native '{identity}' expects {(signature.Variadic ? "at least " : "")}{signature.Parameters.Count} arguments, got {arguments.Count}.", span);
+            throw Error(frame, $"Native '{identity}' expects {(signature.Variadic ? "at least " : "")}{signature.Parameters.Count} arguments, got {arguments.Count}.", span,
+                help: $"Expected argument types: ({string.Join(", ", signature.Parameters)}).", code: "E0204");
         for (int index = 0; index < arguments.Count; index++)
         {
             var accepted = signature.Parameters.Count == 0 ? TypeRef.Any : signature.Parameters[Math.Min(index, signature.Parameters.Count - 1)];
-            CheckConversion(frame, arguments[index].Type, accepted, span);
+            CheckConversion(frame, arguments[index].Type, accepted, argumentExpressions?[index].Span ?? span);
         }
         Info? callbackResult = null;
         int callbackIndex = arguments.Count - 1;

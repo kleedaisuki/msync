@@ -15,7 +15,7 @@ internal sealed partial class Compilation
         switch (pattern)
         {
             case WildcardPattern or NamePattern { Name: "_" }: frame.Emit(OpCode.Pop); break;
-            case NamePattern name: Store(frame, name.Name, value); break;
+            case NamePattern name: Observe(frame, name.Span, value, name.Name); Store(frame, name.Name, value); break;
             case TuplePattern tuple:
                 Require(frame, value.Type, new(TypeKind.Range), pattern.Span);
                 int sourceSlot = frame.Allocate(); frame.Emit(OpCode.StoreLocal, sourceSlot);
@@ -45,7 +45,9 @@ internal sealed partial class Compilation
             "Type" => TypeRef.Type,
             "Range" => new(TypeKind.Range, syntax.Arguments.Count == 0 ? null : ResolveType(frame, syntax.Arguments[0])),
             "Any" => TypeRef.Any,
-            _ => throw Error(frame, $"Unknown type '{syntax.Name}'.", syntax.Span)
+            _ => throw Error(frame, $"Unknown type '{syntax.Name}'.", syntax.Span,
+                label: "not a built-in type",
+                help: "Use Bool, String, Path, Function, Scope, Connection, Process, Null, Number, Type or Range<T>.", code: "E0202")
         };
         foreach (var alternative in syntax.Alternatives) type = TypeRef.Union(type, ResolveType(frame, alternative));
         return syntax.Nullable ? type.WithNull : type;
@@ -82,20 +84,38 @@ internal sealed partial class Compilation
         if (expected.Accepts(actual)) return;
         var converted = actual.Kind & ~(TypeKind.Path | TypeKind.String);
         if ((expected.Kind & (TypeKind.Path | TypeKind.String)) != 0 && (expected.Kind & converted) == converted) return;
-        throw Error(frame, $"Expected {expected}, found {actual}.", span);
+        throw TypeError(frame, actual, expected, span);
     }
     private static void Require(Frame frame, TypeRef actual, TypeRef expected, SourceSpan span)
     {
-        if (!expected.Accepts(actual)) throw Error(frame, $"Expected {expected}, found {actual}.", span);
+        if (!expected.Accepts(actual)) throw TypeError(frame, actual, expected, span);
     }
-    private static CompileException Error(Frame frame, string message, SourceSpan span) => new(message, frame.Source, frame.SourceName, span);
+    private static CompileException TypeError(Frame frame, TypeRef actual, TypeRef expected, SourceSpan span)
+    {
+        string help = actual.Nullable && !expected.Nullable
+            ? "Handle the Null case first: use 'if value is not null { ... }' or match both null and the remaining cases."
+            : expected == TypeRef.Bool
+                ? "Conditions and boolean operators require Bool. Use 'exists path' for a filesystem test, or 'value is null' for a Null test."
+                : expected == TypeRef.Function
+                    ? "Call an fn value. A Scope groups members; select its function with 'scope::operation(...)'."
+                    : expected.Kind == TypeKind.Range
+                        ? "Iterate a Range, such as '[first, second]' or 'directory/<pattern>'. A single Path is not a collection."
+                        : PathCompatible.Accepts(expected)
+                            ? "Use a Path or String value. A Connection selects an endpoint; qualify a path with 'connection::path'."
+                            : $"Supply a {expected} value here. Type annotations constrain values; they do not add new capabilities.";
+        return Error(frame, $"Expected {expected}, found {actual}.", span,
+            label: $"this expression has type {actual}", help: help, code: "E0203");
+    }
+    private static CompileException Error(Frame frame, string message, SourceSpan span,
+        string? label = null, string? help = null, string? note = null, DiagnosticFix? fix = null, string code = "E0200") =>
+        new(message, frame.Source, frame.SourceName, span, label, help, note, fix, code);
     private static bool HasStandardReference(Node node) => node is UnaryExpr { Operator: "$", Operand: NameExpr { Name: "std" } } || Children(node).Any(HasStandardReference);
     private static IEnumerable<string> Names(Node node)
     {
         if (node is NameExpr name) yield return name.Name;
         foreach (var child in Children(node)) foreach (var nested in Names(child)) yield return nested;
     }
-    private static IEnumerable<Node> Children(Node node) => node switch
+    internal static IEnumerable<Node> Children(Node node) => node switch
     {
         BlockExpr block => block.Statements,
         LetStatement let => [let.Value],
@@ -103,7 +123,8 @@ internal sealed partial class Compilation
         FunctionDeclaration declaration => [declaration.Function],
         ScopeDeclaration declaration => [declaration.Scope],
         FunctionExpr function => [function.Body],
-        ScopeExpr scope => scope.Members.Select(member => (Node)member.Value).Concat(scope.Value is null ? [] : [scope.Value]),
+        ScopeExpr scope => scope.Members.Cast<Node>().Concat(scope.Value is null ? [] : [scope.Value]),
+        ScopeMember member => [member.Value],
         UnaryExpr unary => [unary.Operand],
         BinaryExpr binary => [binary.Left, binary.Right],
         CallExpr call => new Node[] { call.Callee }.Concat(call.Arguments),
