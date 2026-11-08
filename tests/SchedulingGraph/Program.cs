@@ -6,6 +6,11 @@ string scratch = Path.Combine(Directory.GetCurrentDirectory(), ".temp", "schedul
 Directory.CreateDirectory(scratch);
 try
 {
+    if (args.Contains("--namespace-only", StringComparer.Ordinal))
+    {
+        await PathNamespaceChecks.RunAsync(scratch);
+        return;
+    }
     SchedulingStatistics single = await IndependentCopies(1);
     SchedulingStatistics small = await IndependentCopies(100);
     SchedulingStatistics large = await IndependentCopies(1000);
