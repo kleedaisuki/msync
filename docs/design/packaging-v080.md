@@ -113,3 +113,33 @@ verifying every manifest digest, all six standard-library modules and the same
 real-process user journey also passed. This establishes Linux native
 execution and distribution contents, not Windows installer acceptance; the
 Windows native job remains the platform-specific verification path.
+
+### Final frozen delivery image
+
+The final locked Native AOT publication uses SDK 10.0.403 and invariant
+globalization with the source-owned Unicode 17 case/order contract. The extracted
+installed payload passed its complete manifest, six standard modules, native
+SQLite load, Unicode attribution, source/dry-run/source-free artifact journey,
+and exact baseline help/version delegation. Actual native stdio LSP navigation
+into direct and aliased embedded standard definitions and persistent non-replaying
+REPL/formatting/binary-stdout journeys also passed.
+
+| Artifact | Bytes | SHA-256 |
+| --- | ---: | --- |
+| Linux Native AOT executable | 7,214,320 | `ca5c2eb2aebe1397f4ec3a745a6e76dcfcf598723ba1046523f183012263f38b` |
+| Linux archive | 4,819,517 | `d7bd061f4b3440df2bdac5ce9ba7d345857b123008c799138646aa39f1842a0b` |
+| VSIX 0.8.0 | 122,831 | `fdf2f987a7582a9c0b2b6f5b4fe8ed6f63fdf0dc43575af57c2c24ad51bfd182` |
+
+The VSIX contains ten entries. Its manifest, bundled client, notices, grammar,
+snippets, configuration and README were compared byte-for-byte with the accepted
+production editor assets.
+
+Six final actual OpenSSH source/`.mso`/`.mexe` pipeline journeys each observed
+one native client, one authentication, one exec session and no scp. Compilation
+and binding observed no clients. The changed-contract native language selection
+passed all sixteen cases, including callback arity, nullable/structural function
+flows, raw regex paths, generic type dispatch, complete Unicode and scalar-order
+iteration. These are incremental final-image checks, not a repeated full matrix.
+The corresponding maintained procedures are
+`tests/Msync.Transfer.Tests/cli_ssh_journeys.py`,
+`tests/Acceptance/language_journeys.py`, and `tests/Msync.EndToEnd/*.py`.
