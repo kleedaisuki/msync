@@ -14,7 +14,7 @@ internal sealed partial class LanguageServer(
     private readonly Dictionary<string, string> documents = new(StringComparer.Ordinal);
     private readonly Stream input = Console.OpenStandardInput();
     private readonly Stream output = Console.OpenStandardOutput();
-    private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "Bool", "Range", "String", "Function", "Scope", "Path", "Process", "Connection", "Null"];
+    private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "Bool", "Range", "String", "Function", "Scope", "Path", "Process", "Connection", "Null", "Number"];
 
     public int Run()
     {
