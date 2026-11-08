@@ -226,7 +226,7 @@ public static partial class TransferEngine
         }
         await writer.WriteEntryAsync(entry, cancellationToken);
         if (!directory || link) return;
-        foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(StringComparer.Ordinal))
+        foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(TextSemantics.Ordinal))
             await WriteArchiveNodeAsync(writer, child, name + "/" + Path.GetFileName(child), cancellationToken);
     }
 

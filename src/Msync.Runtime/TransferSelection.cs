@@ -125,7 +125,7 @@ public static partial class TransferEngine
                 if (current != 0) { name.WriteByte(current); continue; }
                 if (name.Length == 0)
                 {
-                    selected.Sort(StringComparer.Ordinal);
+                    selected.Sort(TextSemantics.Ordinal);
                     return selected;
                 }
                 string text = Encoding.UTF8.GetString(name.GetBuffer().AsSpan(0, checked((int)name.Length)));

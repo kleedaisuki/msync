@@ -1,3 +1,5 @@
+using Msync.Core;
+
 namespace Msync.Runtime;
 
 internal static class TransferOverlap
@@ -100,7 +102,7 @@ internal static class TransferOverlap
         UnixFileMode mode = OperatingSystem.IsWindows() || link ? default : File.GetUnixFileMode(source);
         nodes.Add(new(source, relative, attributes, info.LastWriteTimeUtc, mode, link ? info.LinkTarget : null));
         if (!directory || link) return;
-        foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(StringComparer.Ordinal))
+        foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(TextSemantics.Ordinal))
             Capture(child, Path.Combine(relative, Path.GetFileName(child)), nodes);
     }
 }
