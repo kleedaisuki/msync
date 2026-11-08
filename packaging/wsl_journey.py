@@ -270,6 +270,7 @@ def diagnose_download(
     environment: dict[str, str],
     expected: tuple[bytes, bytes],
     stage: str,
+    process_probe: Path | None,
 ) -> dict[str, object]:
     diagnostics = runner.directory / "diagnostics"
     diagnostics.mkdir(exist_ok=True)
@@ -351,6 +352,43 @@ def diagnose_download(
                     "message": str(error),
                 }
         reports[label] = item
+    if process_probe is not None:
+        process_reports: dict[str, object] = {}
+        for label, raw in (
+            ("home", "~/.codex/config.toml"),
+            ("relative", "./dir/file"),
+        ):
+            destination = diagnostics / f"native-process-{stage}-{label}"
+            probe = runner.run(
+                [
+                    str(process_probe),
+                    "--distribution",
+                    distro,
+                    "--source",
+                    raw,
+                    "--work-directory",
+                    str(directory),
+                    "--output-dir",
+                    str(destination),
+                ],
+                directory=directory,
+                environment=environment,
+                check=False,
+            )
+            result: dict[str, object] = {
+                "command": asdict(probe),
+                "directory": str(destination),
+            }
+            report_path = destination / "probe.json"
+            if report_path.is_file():
+                try:
+                    result["report"] = json.loads(
+                        report_path.read_text(encoding="utf-8")
+                    )
+                except json.JSONDecodeError as error:
+                    result["parse_error"] = str(error)
+            process_reports[label] = result
+        reports["native_process_probe"] = process_reports
     return reports
 
 
@@ -377,6 +415,7 @@ def transfer_journeys(
     wsl: str,
     distro: str,
     workspace: Path,
+    process_probe: Path | None,
 ) -> list[dict[str, object]]:
     first, second = workspace / "first", workspace / "second"
     first.mkdir()
@@ -442,6 +481,7 @@ def transfer_journeys(
                     environments[cwd],
                     expected,
                     stage,
+                    process_probe,
                 )
             except OSError as diagnostic_error:
                 error.diagnostics = {
@@ -485,7 +525,7 @@ def transfer_journeys(
     return reports
 
 
-def exercise(binary: Path, output: Path) -> int:
+def exercise(binary: Path, output: Path, process_probe: Path | None = None) -> int:
     temporary = ROOT / ".temp"
     temporary.mkdir(exist_ok=True)
     workspace = Path(tempfile.mkdtemp(prefix="wsl-journey-", dir=temporary))
@@ -575,7 +615,9 @@ def exercise(binary: Path, output: Path) -> int:
             timeout=180,
         )
         report["outcome"] = "failed"
-        report["journeys"] = transfer_journeys(runner, binary, wsl, distro, workspace)
+        report["journeys"] = transfer_journeys(
+            runner, binary, wsl, distro, workspace, process_probe
+        )
         report["outcome"] = "passed"
         return 0
     except (
@@ -614,11 +656,15 @@ def exercise(binary: Path, output: Path) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
+    parser.add_argument("--process-probe", type=Path)
     parser.add_argument(
         "--output", type=Path, default=ROOT / ".temp/platform-results/wsl.json"
     )
     args = parser.parse_args()
-    code = exercise(args.binary.resolve(), args.output.resolve())
+    process_probe = (
+        args.process_probe.resolve() if args.process_probe is not None else None
+    )
+    code = exercise(args.binary.resolve(), args.output.resolve(), process_probe)
     report = json.loads(args.output.read_text(encoding="utf-8"))
     raise SystemExit(1 if report["outcome"] == "cleanup_failed" else code)
 
