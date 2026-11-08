@@ -59,6 +59,14 @@ image's position and both order directions. The default two-image AB/BA behavior
 is unchanged. Source/object preparation still uses each image's real syntax and
 artifact format; exact-byte and metadata checks run independently for all three.
 
+For actual CLI optimization-level decisions, use the same native binary for all
+three roles with `--previous-aot-level 1 --control-aot-level 2 --aot-level 3`.
+The driver passes each recorded level directly to the native product during
+source/object preparation and timed commands; there is no script-wrapper launch
+inside the measured interval. Existing calls without these options retain the
+product's default. Component phase and residual-IR comparisons remain separate
+from these whole-process source/object/bound timings.
+
 ## Persistent interactive requests
 
 ```sh

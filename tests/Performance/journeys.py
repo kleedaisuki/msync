@@ -43,6 +43,7 @@ class Image:
     sha256: str
     bytes: int
     payload_sha256: dict[str, str]
+    optimization_level: int | None = None
 
 
 @dataclass(frozen=True)
@@ -97,9 +98,12 @@ def percentile(values: Sequence[float], quantile: float) -> float:
 
 
 def invoke(image: Image, args: Sequence[str], cwd: Path) -> float:
+    arguments = [*args]
+    if image.optimization_level is not None:
+        arguments.append(f"-O{image.optimization_level}")
     started = time.perf_counter_ns()
     result = subprocess.run(
-        [image.executable, *args],
+        [image.executable, *arguments],
         cwd=cwd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
@@ -110,12 +114,14 @@ def invoke(image: Image, args: Sequence[str], cwd: Path) -> float:
     elapsed = (time.perf_counter_ns() - started) / 1_000_000
     if result.returncode != 0:
         raise InvocationFailure(
-            image, args, cwd, result.returncode, result.stderr, elapsed
+            image, arguments, cwd, result.returncode, result.stderr, elapsed
         )
     return elapsed
 
 
-def freeze(path: Path, name: str, root: Path) -> Image:
+def freeze(
+    path: Path, name: str, root: Path, optimization_level: int | None = None
+) -> Image:
     destination = root / "images" / name / path.name
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(path, destination)
@@ -142,6 +148,7 @@ def freeze(path: Path, name: str, root: Path) -> Image:
             for item in sorted(destination.parent.iterdir())
             if item.is_file()
         },
+        optimization_level,
     )
 
 
@@ -424,6 +431,9 @@ def main() -> None:
         type=Path,
         help="Additional frozen C# product baseline for a three-image comparison",
     )
+    parser.add_argument("--aot-level", type=int, choices=range(4))
+    parser.add_argument("--control-aot-level", type=int, choices=range(4))
+    parser.add_argument("--previous-aot-level", type=int, choices=range(4))
     parser.add_argument(
         "--case", choices=(*CASES, *VALUE_CASES, *SOURCE_CASES), action="append"
     )
@@ -446,12 +456,21 @@ def main() -> None:
     previous_image = (
         freeze(options.rust.resolve(), "rust", root)
         if options.rust
-        else freeze(options.previous_aot.resolve(), "before", root)
+        else freeze(
+            options.previous_aot.resolve(), "before", root, options.previous_aot_level
+        )
     )
     images = [previous_image]
     if options.control_aot is not None:
-        images.append(freeze(options.control_aot.resolve(), "control", root))
-    images.append(freeze(options.aot.resolve(), "aot", root))
+        images.append(
+            freeze(
+                options.control_aot.resolve(),
+                "control",
+                root,
+                options.control_aot_level,
+            )
+        )
+    images.append(freeze(options.aot.resolve(), "aot", root, options.aot_level))
     workspaces = {
         image.name: prepare(
             image,
