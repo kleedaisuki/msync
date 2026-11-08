@@ -714,3 +714,79 @@ Not every tail improved: first 4,000-binding token p95 is slightly worse, and a
 observations rather than a universal tail guarantee or a CI timing threshold.
 The simpler allocation/caching changes deliver the measured improvement without
 an incremental type checker, arbitrary cancellation budget, or weaker inference.
+
+## Staged optimizer cost before self-optimization (2026-11-09)
+
+The graph optimizer must earn its compilation cost on interactive scripts, not
+only produce short executable bytecode. This investigation uses the same
+measurement-only `Components` probe from `3830291` against two exact archived
+product sources, published on this host with SDK 10.0.403, locked dependencies,
+Release Native AOT and runtime 10.0.14:
+
+| Component image | Product source | SHA-256 |
+| --- | --- | --- |
+| Previous C# product | `2b434542e0bd0cc836df07a73386949de36ef41f` | `5e1dd3125df7a4ba56cc8da6a932defa61de9711ca141956e7862f8c7850466f` |
+| New basic graph pipeline | `e7be48a7bcaf4bd6d7bc813fd9fbfa8aebb20ec3` | `4162ae53eccc90e581bfa2ac9992264e34f6b951e659e18084464f9ae9dcf6c3` |
+
+These are component images, not packaged CLI hashes. The second source also
+introduces mutable locations and directional scheduling. The shared workloads
+are valid under both language contracts, but this is a product-cost comparison,
+not attribution to a single optimizer change. The second image is the frozen
+**before** for subsequent optimizer-self improvements.
+
+`tests/Performance/optimizer_pipeline.py` alternates AB/BA fresh processes and
+warms each production API three times inside each process. Source compilation,
+optimization of an O0 module, contextual binding, relocatable execution and
+executable execution are measured separately. They overlap in responsibility;
+relocatable execution includes automatic binding and must not be added to its
+cost. Before timing, both artifact stages and their codec roundtrips execute an
+independent Path oracle. All checks passed. The run phases have no user I/O.
+
+For one generic Path-returning call or one Scope factory/captured-method call,
+15 paired observations at O1 give the following native p50 / p95 milliseconds:
+
+| Workload / phase | Previous C# | Basic graph pipeline |
+| --- | ---: | ---: |
+| Call: complete source compilation | 0.023 / 0.031 | 0.305 / 0.750 |
+| Call: graph optimization alone | 0.006 / 0.009 | 0.262 / 0.328 |
+| Call: bind and lower | 0.008 / 0.010 | 0.114 / 0.151 |
+| Call: prepared executable run | 0.0030 / 0.0044 | 0.0014 / 0.0018 |
+| Scope: complete source compilation | 0.046 / 0.072 | 0.742 / 1.246 |
+| Scope: graph optimization alone | 0.009 / 0.022 | 0.537 / 0.817 |
+| Scope: bind and lower | 0.011 / 0.015 | 0.333 / 0.460 |
+| Scope: prepared executable run | 0.0047 / 0.0074 | 0.0032 / 0.0052 |
+
+Allocation traffic is a clearer first attribution than the noisier pilot tail:
+one O1 graph optimization allocates 192,864 bytes for the call workload and
+425,664 bytes for the Scope workload, versus 3,832 and 5,432 previously.
+Binding the already-optimized module allocates another 81,648 / 258,672 bytes.
+Those costs motivate pass-applicability filtering, stopping on established
+normal forms, and reducing repeated graph construction before broader caching.
+
+An initial three-pair O1 scaling probe at 1 / 32 / 128 instances isolates the
+next question. At 128, raw optimization costs 8.23 ms / 4.20 MB for calls and
+10.94 ms / 5.61 MB for Scopes. The resulting relocatable programs have 520 / 524
+instructions, principally context-dependent Path joins, while binding reduces
+them to 2 / 14 instructions. Prepared executable runs cost 0.0018 / 0.0030 ms
+versus 0.2094 / 0.2189 ms previously. This is a real interpreter-work reduction,
+but does not make one-shot source execution faster. The residual Scope module
+still has three functions and five local slots; it is not advertised as fully
+eliminated.
+
+Raw reports are `.temp/optimizer-performance/basic-vs-old-{pilot,tiny,branches-loops}.json`.
+The additional branch/literal-loop probe covers O0–O3 at the same three sizes;
+its three-sample p95 is descriptive, not a tail guarantee or CI threshold.
+No builds or other team benchmarks ran during the coordinated measurement
+window. Source archives and full build logs remain beside the reports.
+
+The engineering direction matches upstream practice: LLVM's
+[analysis manager](https://llvm.org/docs/NewPassManager.html#using-analyses)
+caches analyses with explicit validity and warns that inner passes recomputing
+outer/module analyses cause quadratic compile time. Its per-function pass
+grouping also improves locality. GCC's
+[pass manager](https://gcc.gnu.org/onlinedocs/gccint/Pass-manager.html)
+owns ordering and common bookkeeping; merely collecting more pass names does
+not supply efficient invalidation. For msync, first measure the simpler feature
+gates and normal-form paths against this frozen basic image, retaining identical
+residual programs and actual execution results, before introducing persistent
+analysis-cache machinery.
