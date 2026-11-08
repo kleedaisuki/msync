@@ -10,9 +10,10 @@ python3 tests/Performance/journeys.py \
   --rust target/release/msync --aot .temp/performance-v080/aot/msync
 ```
 
-The harness freezes both binaries, records versions and SHA-256, and generates
-equivalent old/new syntax. The default is two warmups and nine measurements per
-image per case, alternating AB/BA order. Cases cover process startup, small and
+The harness freezes both binaries and their adjacent native dependencies, records
+versions and SHA-256, and generates equivalent old/new syntax. The default is
+three warmups and 31 measurements per image per case, alternating AB/BA order.
+It reports p50, linearly interpolated p95, all raw samples and min/max. Cases cover process startup, small and
 128-operation checks, ordinary 4 KiB file replacement, and a 256-file tree of
 4 KiB files. Transfers are measured both from source and source-free compiled
 objects (`.mobj` versus `.mso`). Compilation of those objects is outside timing.
@@ -25,6 +26,13 @@ or running another benchmark while collecting measurements. Retain raw results
 under the repository-root `.temp`; reusable conclusions belong in
 [`docs/design/performance-v080.md`](../../docs/design/performance-v080.md).
 No benchmark thresholds are CI quality gates.
+
+The same command runs on native Windows with optimized `msync.exe` images and
+Python 3.11+. Unix modes are checked only on Unix; byte counts, exact payloads and
+native modification timestamps are checked on both. `--files` selects the tree
+size and `--bytes` its member size. `--file-bytes` independently selects the single
+file size; `--statements` selects the batch-check source size. Use `--case` to
+avoid repeating unaffected work when changing one component.
 
 For a controlled optimization within 0.8, replace `--rust OLD` with
 `--previous-aot BEFORE` and keep `--aot AFTER`. Both images then use the same

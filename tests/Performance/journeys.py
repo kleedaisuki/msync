@@ -35,6 +35,7 @@ class Image:
     version: str
     sha256: str
     bytes: int
+    payload_sha256: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -43,12 +44,21 @@ class Measurement:
     case: str
     milliseconds: list[float]
     median_ms: float
+    p95_ms: float
     minimum_ms: float
     maximum_ms: float
 
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def percentile(values: Sequence[float], quantile: float) -> float:
+    ordered = sorted(values)
+    position = (len(ordered) - 1) * quantile
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
 
 def invoke(image: Image, args: Sequence[str], cwd: Path) -> float:
@@ -74,6 +84,12 @@ def freeze(path: Path, name: str, root: Path) -> Image:
     destination = root / "images" / name / path.name
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(path, destination)
+    for dependency in path.parent.iterdir():
+        if dependency.is_file() and (
+            dependency.suffix.lower() in {".so", ".dll", ".dylib"}
+            or ".so." in dependency.name
+        ):
+            shutil.copy2(dependency, destination.parent / dependency.name)
     version = subprocess.check_output(
         [str(destination), "--version"], text=True, encoding="utf-8"
     ).strip()
@@ -81,7 +97,16 @@ def freeze(path: Path, name: str, root: Path) -> Image:
     if version != expected:
         raise ValueError(f"Expected {expected}, found {version} at {path}")
     return Image(
-        name, str(destination), version, digest(destination), destination.stat().st_size
+        name,
+        str(destination),
+        version,
+        digest(destination),
+        destination.stat().st_size,
+        {
+            item.name: digest(item)
+            for item in sorted(destination.parent.iterdir())
+            if item.is_file()
+        },
     )
 
 
@@ -90,11 +115,21 @@ def source(image: Image, text: str) -> str:
     return "\n".join(line + suffix for line in text.splitlines()) + "\n"
 
 
-def prepare(image: Image, root: Path, file_count: int, file_bytes: int) -> Path:
+def prepare(
+    image: Image,
+    root: Path,
+    file_count: int,
+    file_bytes: int,
+    ordinary_bytes: int | None = None,
+    statements: int = 128,
+) -> Path:
     workspace = root / image.name
     workspace.mkdir(parents=True, exist_ok=True)
     payload = bytes(range(256)) * (file_bytes // 256) + bytes(range(file_bytes % 256))
-    (workspace / "input.bin").write_bytes(payload)
+    ordinary = file_bytes if ordinary_bytes is None else ordinary_bytes
+    (workspace / "input.bin").write_bytes(
+        bytes(range(256)) * (ordinary // 256) + bytes(range(ordinary % 256))
+    )
     tree = workspace / "input-tree"
     tree.mkdir(exist_ok=True)
     for index in range(file_count):
@@ -107,7 +142,7 @@ def prepare(image: Image, root: Path, file_count: int, file_bytes: int) -> Path:
         "small": "input.bin -> output.bin",
         "tree": "input-tree -> output-tree/",
         "batch": "\n".join(
-            f"source-{i}.bin -> destination-{i}.bin" for i in range(128)
+            f"source-{i}.bin -> destination-{i}.bin" for i in range(statements)
         ),
     }
     extension = "mobj" if image.name == "rust" else "mso"
@@ -196,12 +231,14 @@ def measure(
                     case,
                     timings,
                     statistics.median(timings),
+                    percentile(timings, 0.95),
                     min(timings),
                     max(timings),
                 )
             )
             print(
-                f"{case:20s} {image.name:5s} median={statistics.median(timings):9.3f} ms range={min(timings):.3f}–{max(timings):.3f}"
+                f"{case:20s} {image.name:6s} p50={statistics.median(timings):9.3f} ms p95={percentile(timings, 0.95):9.3f} ms range={min(timings):.3f}–{max(timings):.3f}",
+                flush=True,
             )
     return measurements
 
@@ -217,10 +254,16 @@ def main() -> None:
         "--aot", type=Path, required=True, help="Native AOT 0.8.0 executable"
     )
     parser.add_argument("--case", choices=CASES, action="append")
-    parser.add_argument("--samples", type=int, default=9)
-    parser.add_argument("--warmups", type=int, default=2)
+    parser.add_argument("--samples", type=int, default=31)
+    parser.add_argument("--warmups", type=int, default=3)
     parser.add_argument("--files", type=int, default=256)
     parser.add_argument("--bytes", type=int, default=4096)
+    parser.add_argument(
+        "--file-bytes",
+        type=int,
+        help="Override ordinary-file size independently of tree member size",
+    )
+    parser.add_argument("--statements", type=int, default=128)
     parser.add_argument(
         "--output", type=Path, default=ROOT / ".temp/performance-v080/comparison.json"
     )
@@ -234,7 +277,14 @@ def main() -> None:
     )
     images = [previous_image, freeze(options.aot.resolve(), "aot", root)]
     workspaces = {
-        image.name: prepare(image, root, options.files, options.bytes)
+        image.name: prepare(
+            image,
+            root,
+            options.files,
+            options.bytes,
+            options.file_bytes,
+            options.statements,
+        )
         for image in images
     }
     measurements = measure(
@@ -250,10 +300,20 @@ def main() -> None:
             raise RuntimeError(
                 f"Frozen executable changed during measurement: {image.executable}"
             )
+        for filename, expected_digest in image.payload_sha256.items():
+            if digest(Path(image.executable).parent / filename) != expected_digest:
+                raise RuntimeError(
+                    f"Frozen payload changed during measurement: {filename}"
+                )
     result = {
         "environment": {
             "platform": platform.platform(),
             "processor": platform.processor(),
+            "machine": platform.machine(),
+            "logical_cpus": os.cpu_count(),
+            "affinity": sorted(os.sched_getaffinity(0))
+            if hasattr(os, "sched_getaffinity")
+            else None,
             "python": platform.python_version(),
         },
         "method": {
@@ -261,6 +321,11 @@ def main() -> None:
             "samples": options.samples,
             "tree_files": options.files,
             "file_bytes": options.bytes,
+            "ordinary_file_bytes": options.file_bytes
+            if options.file_bytes is not None
+            else options.bytes,
+            "batch_statements": options.statements,
+            "percentiles": "p50 median; p95 linearly interpolated empirical quantile",
             "cache": "warm, no page-cache eviction",
             "order": "alternating AB/BA per sample",
             "verification": "outside timed interval; exact file bytes, tree count, native modes and ns mtime",
