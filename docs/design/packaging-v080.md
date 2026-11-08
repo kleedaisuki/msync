@@ -106,10 +106,13 @@ runs while preserving explicit workflow dispatch. For fixture-only diagnostics,
 without publishing another native image. The report distinguishes the fixture
 checkout revision from the original native source revision and image SHA-256;
 the complete downloaded artifact identity is retained alongside it.
-`polish_phases` can select only `portable`, `authentication`,
+`polish_phases` can select only `portable`, `completion`, `authentication`,
 `presentation_console`, `hints_console`, or `wsl` (comma-separated); an empty
 selection runs all groups. One validated group map controls admission so a
 fixture-only retry can run only the failed console/endpoint contracts. The
+portable runner also accepts repeated `--phase NAME` selections; a `completion`
+group plus `authentication` reruns only contextual completion and real encrypted
+authentication, not already accepted formatting/guide/color scenarios. The
 current [workflow-dispatch contract](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onworkflow_dispatchinputs)
 allows 25 inputs; this workflow uses 11.
 

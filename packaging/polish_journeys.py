@@ -23,6 +23,21 @@ def main() -> int:
         type=Path,
         help="Recorded artifact identity for a reused native image",
     )
+    parser.add_argument(
+        "--phase",
+        action="append",
+        choices=[
+            "presentation",
+            "lsp-analysis",
+            "formatter",
+            "skill",
+            "completion",
+            "terminal-presentation",
+            "hints",
+            "authentication",
+        ],
+        help="Run only the named changed contract; may be repeated",
+    )
     parser.add_argument("--output", type=Path, default=ROOT / ".temp/platform-results")
     arguments = parser.parse_args()
     binary = arguments.binary.resolve()
@@ -61,6 +76,12 @@ def main() -> int:
         journeys.append(("terminal-presentation", "terminal_presentation_journey.py"))
         journeys.append(("hints", "hint_journey.py"))
         journeys.append(("authentication", "authentication_journey.py"))
+    if arguments.phase:
+        selected: set[str] = set(arguments.phase)
+        unavailable = selected - {name for name, _ in journeys}
+        if unavailable:
+            parser.error(f"Phases unavailable on this host: {sorted(unavailable)}")
+        journeys = [(name, script) for name, script in journeys if name in selected]
     for name, script in journeys:
         extra = (
             ["--ssh-fixture"]
