@@ -396,6 +396,45 @@ def editing_recovery(binary: Path, cwd: Path) -> dict[str, int]:
         client.close()
 
 
+def regex_coloring(binary: Path, cwd: Path) -> dict[str, int]:
+    client = Client(binary)
+    uri = (cwd / "regex-colors.msync").as_uri()
+    source = (
+        "let label = match ./file {\n"
+        "    <(?<fn>if|else|match)?> => { true },\n"
+        "    _ => { false },\n};\n"
+        'let text = "<fn?>"; // <if?>\n'
+        "let value? = null;\n"
+    )
+    try:
+        initialized, _ = client.request("initialize", {"capabilities": {}})
+        legend = initialized["capabilities"]["semanticTokensProvider"]["legend"][
+            "tokenTypes"
+        ]
+        notify(client, uri, 1, source, opening=True)
+        assert diagnostics(client, uri, 1)["diagnostics"] == []
+        tokens = semantic_types(client, uri, legend)
+        assert tokens[(1, 4)] == "regexp", tokens
+        assert [point for point in tokens if point[0] == 1 and point[1] < 27] == [
+            (1, 4)
+        ], tokens
+        assert tokens[(0, 12)] == "controlKeyword", tokens
+        question = position(source, "?")
+        assert (question["line"], question["character"]) not in tokens
+        admitted = position(source, "value?")
+        admitted["character"] += 5
+        assert tokens[(admitted["line"], admitted["character"])] == "controlKeyword"
+        unfinished = "match ./file { <(?<fn>if"
+        notify(client, uri, 2, unfinished)
+        assert diagnostics(client, uri, 2)["diagnostics"]
+        tokens = semantic_types(client, uri, legend)
+        assert tokens[(0, 15)] == "regexp", tokens
+        assert all(point[1] <= 15 for point in tokens), tokens
+        return {"complete_and_incomplete_regex_color_regions": 2}
+    finally:
+        client.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
@@ -409,6 +448,7 @@ def main() -> None:
             **runtime_diagnostics(arguments.binary.resolve(), cwd),
             **editor(arguments.binary.resolve(), cwd),
             **editing_recovery(arguments.binary.resolve(), cwd),
+            **regex_coloring(arguments.binary.resolve(), cwd),
         }
     print(json.dumps(result, indent=2))
 

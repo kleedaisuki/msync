@@ -30,7 +30,7 @@ internal sealed partial class LanguageServer(
                 && workspace.TryGetProperty("semanticTokens", out var tokens)
                 && tokens.TryGetProperty("refreshSupport", out var refresh) && refresh.ValueKind == JsonValueKind.True;
             return JsonNode.Parse("""
-            {"capabilities":{"positionEncoding":"utf-16","textDocumentSync":{"openClose":true,"change":2},"documentFormattingProvider":true,"codeActionProvider":true,"completionProvider":{"triggerCharacters":[":","$","/","\\"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["keyword","function","variable","type","string","comment","protocol","endpoint","operator","namespace","controlKeyword"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"msync","version":"0.8.0"}}
+            {"capabilities":{"positionEncoding":"utf-16","textDocumentSync":{"openClose":true,"change":2},"documentFormattingProvider":true,"codeActionProvider":true,"completionProvider":{"triggerCharacters":[":","$","/","\\"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["keyword","function","variable","type","string","comment","protocol","endpoint","operator","namespace","controlKeyword","regexp"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"msync","version":"0.8.0"}}
             """);
         }
         if (method == "shutdown") return null;
@@ -164,8 +164,17 @@ internal sealed partial class LanguageServer(
             match => match.Groups[1].Value == "fn" ? 1 : match.Groups[1].Value == "scope" ? 3 : 2);
         List<int> data = [];
         int previousLine = 0, previousColumn = 0;
+        var patterns = document.Analysis?.RegexSpans ?? [];
+        int patternIndex = 0, patternEnd = -1;
         foreach (ValueMatch match in LexicalTokens().EnumerateMatches(text))
         {
+            while (patternIndex < patterns.Count && patterns[patternIndex].Start <= match.Index)
+            {
+                var pattern = patterns[patternIndex++];
+                AddToken(pattern.Start, pattern.Length, 11);
+                patternEnd = pattern.End;
+            }
+            if (match.Index < patternEnd) continue;
             ReadOnlySpan<char> token = text.AsSpan(match.Index, match.Length);
             bool comment = token[0] == '#' || token.StartsWith("//", StringComparison.Ordinal);
             bool quoted = token[0] == '"';
@@ -190,6 +199,11 @@ internal sealed partial class LanguageServer(
                 type = semantic.SemanticRole switch { "function" => 1, "type" => 3, _ => 2 };
             else if (declarations.TryGetValue(match.Index, out int declared)) type = declared;
             AddToken(match.Index, match.Length, type);
+        }
+        while (patternIndex < patterns.Count)
+        {
+            var pattern = patterns[patternIndex++];
+            AddToken(pattern.Start, pattern.Length, 11);
         }
         JsonNode? encoded = JsonSerializer.SerializeToNode(data.ToArray(), LanguageServerJson.Default.Int32Array);
         return new JsonObject { ["data"] = encoded };
