@@ -440,3 +440,160 @@ checks and rejected Linux copy-offload experiments in
 source-overlap and actual stage-lifetime acceptance is recorded separately in
 [io-metadata-v080.md](io-metadata-v080.md). Those results are not inferred from
 this code-generation preference experiment or from the small-file CLI controls.
+
+
+## Actual native Linux and Windows: final same-host comparisons
+
+[Native platform run 42471357057](https://github.com/kleedaisuki/msync/actions/runs/42471357057)
+executes source commit `3a1275da6d2ca4cb589ea61c3e4af49ab25d8541` on **actual**
+Ubuntu 22 / Linux x64 and Windows Server 2025 x64 runners. Every comparison pairs
+both images on the same OS instance; Linux and Windows absolute times are not
+compared as if their CPUs/storage were identical. The pre-optimization C# control
+comes from the hosted `622e920` artifact, whose product implementation corresponds
+to the final `ca5c2e...` local baseline; native hashes naturally differ by build
+host and target. Both old and new C# artifacts are downloaded onto the current
+runner before its paired measurements, not compared across separate CI VMs.
+
+The raw JSON, source fixtures, output bytes, per-case checkpoints, image hashes,
+platform capabilities and logs are retained under:
+
+```text
+artifacts/ci/42471357057/{linux,windows}/native-<rid>-3a1275.../.temp/platform-results/
+```
+
+| Role | Linux executable SHA-256 | Windows executable SHA-256 |
+| --- | --- | --- |
+| Rust 0.7.3 | `f15bea4ad9818613ea6389abbae7a82160b70cf3b245df9f5d5b085f862d800c` | `ccdfa5ef1dc3655147241ea55ad3cfd1197c1bc2e1463ac4e49434666aa83c05` |
+| C# pre-optimization | `f6509f5f51e32abd41bf1d4975e985d259bdf19748ef3862595af64d37a93dcc` | `5c96713b8076bdea6e72835978c9196af55f3f86ac2ebd7b25119e1c826ddf21` |
+| Current C# Native AOT | `00036104a817b718b921ba088f0a6cf348aaf8da8df14284cb3aebe8035b3b51` | `2cb89065e098c87465d6c8fc23086a1610122b2398492249859ba06b2961938a` |
+
+The Linux runner is image `ubuntu22/20261101.347.1`, kernel 6.8.0-1070-azure,
+glibc 2.35. Windows is image `win25-vs2026/20261103.298.1`, build 26100,
+AMD64 Family 26 Model 2. Both use Python 3.14.10. Benchmark phases completed on
+both platforms with all exact-byte/metadata checks intact. Windows WSL-shell
+newline repair and fixture follow-ups are tracked separately in the platform
+correctness workstream; the benchmark phases and those acceptance phases have
+distinct recorded outcomes.
+
+### Rust versus the current C# product
+
+Values are **p50 / p95 milliseconds**. The standard CLI, 1,024-transfer check and
+interactive comparisons use 31 samples and three warmups. Each row uses its own
+actual paired phase; a favorable current-image median from another phase is not
+substituted into the table.
+
+| Journey | Linux Rust | Linux current C# | Windows Rust | Windows current C# |
+| --- | ---: | ---: | ---: | ---: |
+| Startup | 1.717 / 2.127 | 4.846 / 6.005 | 4.204 / 4.301 | 6.737 / 6.890 |
+| Check one transfer | 1.986 / 2.178 | 4.485 / 5.143 | 4.721 / 5.018 | 7.451 / 9.889 |
+| Check 128 transfers | 9.236 / 9.917 | 5.171 / 5.813 | 9.439 / 10.000 | 7.503 / 8.004 |
+| Check 1,024 transfers | 406.426 / 410.158 | 8.802 / 10.438 | 195.327 / 202.362 | 10.139 / 11.150 |
+| 4 KiB file, source | 4.041 / 4.341 | 6.751 / 8.054 | 7.013 / 7.173 | 8.973 / 9.266 |
+| 4 KiB file, object | 4.323 / 9.705 | 6.675 / 7.862 | 7.161 / 7.669 | 8.965 / 9.342 |
+| 256 × 4 KiB tree, source | 126.646 / 160.414 | 135.231 / 162.236 | 126.541 / 139.105 | 97.831 / 110.248 |
+| 256 × 4 KiB tree, object | 129.769 / 180.783 | 135.399 / 175.981 | 125.926 / 147.170 | 98.345 / 114.116 |
+| REPL literal copy | 0.781 / 0.840 | 0.552 / 0.621 | 0.916 / 0.981 | 0.498 / 0.525 |
+| LSP initialize including startup | 1.811 / 2.665 | 5.101 / 6.085 | 3.801 / 3.993 | 6.590 / 6.790 |
+| LSP hover, 128 bindings | 0.149 / 0.185 | 0.077 / 0.160 | 0.094 / 0.118 | 0.063 / 0.070 |
+| LSP tokens, 128 bindings | 0.279 / 0.327 | 0.609 / 0.670 | 0.228 / 0.253 | 0.429 / 0.445 |
+
+The 0.8-only scalar REPL response is 0.052 / 0.077 ms on Linux and
+0.039 / 0.053 ms on Windows; 0.7 has no equivalent standalone expression result,
+so no fabricated Rust ratio is reported.
+
+The direct-transfer compiler scales substantially better (1,024-transfer checks:
+406.4 -> 8.8 ms Linux and 195.3 -> 10.1 ms Windows). Persistent copy and hover are
+also lower in these pairs. Startup remains about 2.5–3.1 ms slower than Rust;
+one-shot small copies remain about 1.8–2.7 ms slower. Windows tree copying improves
+from 126.5 to 97.8 ms, whereas Linux's 126.6 -> 135.2 ms source-tree median remains
+slower. Small-document semantic-token responses improve over old C# but are still
+slower than Rust. The results support workload-specific gains rather than a
+uniform reduction across all execution paths.
+
+### Pre-optimization C# versus current C#, on the same machine
+
+These are separate explicit old/new C# pairs, not ratios of unrelated hosted runs.
+The old Windows C# tree implementation failed native directory metadata handling;
+no valid before-image tree time exists, so that phase deliberately excludes old
+Windows tree comparisons. The current Windows tree is measured above against
+Rust and its metadata acceptance is independently checked.
+
+| Journey | Linux C# before | Linux C# current | Windows C# before | Windows C# current |
+| --- | ---: | ---: | ---: | ---: |
+| Startup | 4.093 / 6.235 | 4.447 / 6.623 | 6.597 / 7.088 | 6.618 / 7.120 |
+| Check one transfer | 4.751 / 5.900 | 4.584 / 5.610 | 9.645 / 9.857 | 7.119 / 7.432 |
+| Check 128 transfers | 5.772 / 7.179 | 4.998 / 6.217 | 10.188 / 11.828 | 7.457 / 8.079 |
+| Check 1,024 transfers | 34.926 / 39.792 | 8.766 / 11.086 | 28.543 / 29.320 | 9.492 / 10.465 |
+| 4 KiB file, source | 6.354 / 8.407 | 6.824 / 11.635 | 11.060 / 11.494 | 9.040 / 10.482 |
+| 4 KiB file, object | 6.143 / 7.765 | 6.320 / 8.569 | 10.866 / 11.528 | 9.026 / 9.408 |
+| 256-file tree, source | 139.104 / 197.655 | 136.483 / 179.805 | — | — |
+| 256-file tree, object | 126.710 / 196.270 | 132.404 / 167.314 | — | — |
+| LSP tokens, 128 bindings | 2.031 / 3.087 | 0.651 / 0.841 | 1.076 / 1.224 | 0.429 / 0.459 |
+
+The Linux small-file and some startup tails do not improve in this phase; they
+remain recorded rather than being replaced by the more favorable local-host
+run. Windows source checks/copies improve by about 2 ms, and the large compiler
+and verifier gains reproduce on both actual operating systems. The large-document
+LSP edit-burst/token measurements belong to the product-latency note: the generic
+128-binding token pair here is not substituted for that scaling test.
+
+### Retained function bindings: representation matters
+
+These cases use nine pairs because old C# artifact validation is expensive. All
+programs publish the same final String bytes after 1,024 identity-function
+bindings. They do not execute equivalent backend instruction counts: inspecting
+the actual Rust contextual artifact shows **one literal transfer** of
+`payload_1023`, whereas the new first-class-function IR retains runtime bindings
+and calls. This explains why the optimized C# representation is dramatically
+better than its own previous validator yet can still cost more than Rust's
+constant-expanded representation.
+
+| Journey | Linux Rust | Linux current C# | Windows Rust | Windows current C# |
+| --- | ---: | ---: | ---: | ---: |
+| Check 1,024 bindings | 8.088 / 9.901 | 12.118 / 14.709 | 10.011 / 11.186 | 11.333 / 11.566 |
+| Object execution | 7.582 / 8.259 | 11.182 / 11.680 | 9.320 / 9.564 | 11.158 / 11.252 |
+| Bound IR execution | 3.967 / 4.165 | 10.106 / 12.684 | 6.490 / 6.692 | 10.162 / 10.261 |
+
+| Journey | Linux C# before | Linux C# current | Windows C# before | Windows C# current |
+| --- | ---: | ---: | ---: | ---: |
+| Check 1,024 bindings | 33.186 / 35.143 | 12.490 / 15.476 | 25.523 / 25.747 | 11.912 / 12.556 |
+| Object execution | 321.684 / 326.476 | 12.008 / 15.033 | 184.829 / 216.483 | 12.255 / 13.567 |
+| Bound IR execution | 317.996 / 324.021 | 11.844 / 16.910 | 179.610 / 191.368 | 11.102 / 12.747 |
+
+The before/current C# object-load medians improve 321.7 -> 12.0 ms on Linux and
+184.8 -> 12.3 ms on Windows. This is a measured normal typed-program repair,
+not a claim that the new function model already residualizes every pure function
+as aggressively as the old symbol model. Further partial evaluation/inlining is
+a separate compiler question, not a reason to insert a benchmark-specific
+identity-function exception into the product.
+
+### Actual platform first-read and component results
+
+The same native probe/image is used within each OS for the first-read modes;
+31 fresh-process pairs verify the complete Unicode text and exact source hashes.
+
+| Source size | Linux sync p50 / p95 | Linux async p50 / p95 | Windows sync p50 / p95 | Windows async p50 / p95 |
+| --- | ---: | ---: | ---: | ---: |
+| 4 KiB | 3.849 / 4.435 | 4.370 / 5.751 | 7.619 / 9.065 | 8.183 / 9.326 |
+| 64 KiB | 3.905 / 4.766 | 4.756 / 6.776 | 6.923 / 7.645 | 7.675 / 8.430 |
+
+
+Both OSes confirm the direction of the synchronous finite-file read change;
+absolute savings differ from the local host. Stdin and asynchronous native
+copy/process transport retain their distinct lifetime requirements.
+The actual current component probe (nine samples, no mock evaluator) reports:
+
+| Generic 1,024-binding stage | Linux p50 / p95 ms | Windows p50 / p95 ms |
+| --- | ---: | ---: |
+| Parse | 1.097 / 3.676 | 1.240 / 4.109 |
+| Cumulative compile O1 | 4.117 / 11.592 | 4.617 / 9.158 |
+| Validate bytecode | 0.463 / 0.467 | 0.284 / 0.297 |
+| Decode/validate object | 1.419 / 3.697 | 1.074 / 1.936 |
+| Bind and runtime lower | 1.143 / 1.410 | 0.806 / 1.005 |
+| No-I/O VM | 0.717 / 0.817 | 0.621 / 0.688 |
+
+
+The per-stage distributions and allocation records remain in `components.json`;
+cumulative compilation/decode stages are not summed as disjoint costs. Precise
+first-principles before/after memory attribution remains in the local frozen
+component study. No acceptance threshold or publication quality gate was added.
