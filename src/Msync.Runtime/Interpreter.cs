@@ -250,7 +250,16 @@ public sealed class Interpreter
             catch (MsyncException error) when (error.Span is null)
             { throw new MsyncException(error.Message, instruction.Span, error); }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception)
-            { throw new MsyncException($"{instruction.Op} in '{function.Name}': {error.Message}", instruction.Span, error); }
+            {
+                string action = instruction.Op switch
+                {
+                    OpCode.ProcessCall => "Cannot run the requested process.",
+                    OpCode.NativeCall => $"Native operation '{instruction.Text}' failed.",
+                    OpCode.Call => "The function call failed.",
+                    _ => "The operation failed."
+                };
+                throw new MsyncException(action, instruction.Span, error);
+            }
             if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue or OpCode.IteratorNext)
                 return new(pc + 1);
         }
