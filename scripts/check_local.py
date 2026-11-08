@@ -74,7 +74,6 @@ def main() -> None:
         "language": [
             sys.executable,
             "tests/Acceptance/language_journeys.py",
-            "--binary",
             binary,
         ],
         "configuration": [
