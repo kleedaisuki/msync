@@ -6,20 +6,14 @@ namespace Msync.Runtime;
 internal static class TransferFiles
 {
     internal static Task CopyNodeAsync(string source, string target, CancellationToken cancellationToken, int bufferSize = 65536)
-    {
-        if (OperatingSystem.IsWindows())
-            return CopyNodeOverlappedAsync(source, target, cancellationToken, bufferSize);
-        // Unix async file I/O schedules each read/write on a worker; own one worker
-        // for the tree instead. Windows retains native overlapped file I/O.
-        return Task.Run(() => CopyTree(source, target, cancellationToken, bufferSize), cancellationToken);
-    }
+        => Task.Run(() => CopyTree(source, target, cancellationToken, bufferSize), cancellationToken);
 
     private static void CopyTree(string source, string target, CancellationToken cancellationToken, int bufferSize)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(target) ?? ".");
-        byte[] buffer = ArrayPool<byte>.Shared.Rent(bufferSize);
-        try { CopyNode(source, target, buffer.AsSpan(0, bufferSize), cancellationToken); }
-        finally { ArrayPool<byte>.Shared.Return(buffer); }
+        byte[]? buffer = OperatingSystem.IsWindows() ? null : ArrayPool<byte>.Shared.Rent(bufferSize);
+        try { CopyNode(source, target, buffer is null ? [] : buffer.AsSpan(0, bufferSize), cancellationToken); }
+        finally { if (buffer is not null) ArrayPool<byte>.Shared.Return(buffer); }
     }
 
     private static void CopyNode(string source, string target, Span<byte> buffer, CancellationToken cancellationToken)
@@ -54,6 +48,8 @@ internal static class TransferFiles
         }
         catch
         {
+            if (OperatingSystem.IsWindows() && File.Exists(stage))
+                File.SetAttributes(stage, File.GetAttributes(stage) & ~FileAttributes.ReadOnly);
             File.Delete(stage);
             throw;
         }
@@ -61,6 +57,7 @@ internal static class TransferFiles
 
     private static void WriteFileContents(string source, string stage, FileMetadata metadata, Span<byte> buffer, CancellationToken cancellationToken)
     {
+        if (OperatingSystem.IsWindows()) { WindowsFileCopy.Copy(source, stage, cancellationToken); return; }
         using FileStream input = new(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
         using FileStream output = new(stage, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
         int count;
@@ -71,28 +68,6 @@ internal static class TransferFiles
         }
         metadata.Apply(stage);
         output.Flush(flushToDisk: true);
-    }
-
-    private static async Task CopyNodeOverlappedAsync(string source, string target, CancellationToken cancellationToken, int bufferSize)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        FileAttributes attributes = File.GetAttributes(source);
-        if ((attributes & FileAttributes.ReparsePoint) != 0)
-        {
-            CopyLink(source, target, (attributes & FileAttributes.Directory) != 0);
-            return;
-        }
-        if ((attributes & FileAttributes.Directory) != 0)
-        {
-            Directory.CreateDirectory(target);
-            foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(StringComparer.Ordinal))
-                await CopyNodeOverlappedAsync(child, Path.Combine(target, Path.GetFileName(child)), cancellationToken, bufferSize);
-            Directory.SetLastWriteTimeUtc(target, Directory.GetLastWriteTimeUtc(source));
-            return;
-        }
-        await using FileStream input = new(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete,
-            1, FileOptions.Asynchronous | FileOptions.SequentialScan);
-        await WriteFileAsync(input, target, source, cancellationToken, bufferSize: bufferSize);
     }
 
     internal static async Task WriteLiteralAsync(string value, string target, CancellationToken cancellationToken, int bufferSize = 65536)
