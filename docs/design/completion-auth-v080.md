@@ -74,6 +74,15 @@ retires an admitted secret question on cancellation. This exposed and fixed both
 the missing native host-key askpass hint and an ordering race between a canceled
 task continuation and its UI-cancellation notification.
 
+The same runner accepts `--wsl-distro NAME` on Windows. Its caller must own the
+disposable imported distribution and install OpenSSH in it. The fixture uses the
+native Windows OpenSSH client, an encrypted native private key and a copied
+product payload under a path containing spaces. Only an owned throwaway guest
+account and loopback daemon are created; other distributions and host accounts
+are unchanged. The surrounding WSL fixture owns final unregistration. Native
+server failures are retained in the reported guest SSH log, rather than reduced
+to a generic completion timeout.
+
 The VS Code client's focused tests exercise masked and unmasked input, exact
 host-key confirmation, queued cancellation, active cancellation, restart cleanup
 and nonblocking notices. Real SSH directory-completion journeys separately own
