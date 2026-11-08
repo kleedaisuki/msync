@@ -86,7 +86,14 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         "let selected? = locate(./input.bin);\n"
         "if selected is not null { selected -> ./nullable-result };\n"
         'fn as_path() -> Path { "./input.bin" };\n'
-        "as_path() -> ./converted-result;\n",
+        "as_path() -> ./converted-result;\n"
+        "let values = $std::ranges::filter(\n"
+        "    [true, false, true], fn(value) { value }\n"
+        ");\n"
+        "let first? = $std::ranges::front($std::ranges::take(values, 1));\n"
+        "if first is not null {\n"
+        '    if first { "CANONICAL_RANGE" -> ./range-result }\n'
+        "};\n",
         encoding="utf-8",
     )
     result = invoke(binary, directory, "check", str(program))
@@ -101,6 +108,7 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
     assert (directory / "anonymous-result").read_bytes() == b"anonymous"
     assert (directory / "nullable-result").read_bytes() == payload
     assert (directory / "converted-result").read_bytes() == payload
+    assert (directory / "range-result").read_bytes() == b"CANONICAL_RANGE"
 
     invalid_program = directory / "mismatched-return.msync"
     invalid_program.write_text(
@@ -109,7 +117,12 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
     mismatch = invoke(binary, directory, "check", str(invalid_program))
     assert mismatch.returncode != 0 and "E0203" in mismatch.stderr, mismatch
     assert "Bool" in mismatch.stderr and "String" in mismatch.stderr
-    return {"reference_surfaces": 2, "color_policy_cases": 6, "return_contracts": 5}
+    return {
+        "reference_surfaces": 2,
+        "color_policy_cases": 6,
+        "return_contracts": 5,
+        "canonical_range_pipelines": 1,
+    }
 
 
 def main() -> None:
