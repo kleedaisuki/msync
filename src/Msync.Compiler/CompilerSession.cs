@@ -6,7 +6,7 @@ namespace Msync.Compiler;
 public sealed class CompilerSession
 {
     private readonly Compilation compilation;
-    public CompilerSession(string sourceName = "<repl>", int optimization = 1)
+    public CompilerSession(string sourceName = "<repl>", int optimization = 2)
     {
         compilation = new("", sourceName, optimization);
         compilation.EnableSessionBindings();

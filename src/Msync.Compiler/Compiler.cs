@@ -6,6 +6,6 @@ namespace Msync.Compiler;
 
 public static class Compiler
 {
-    public static Module Compile(string source, string? sourceName = null, int optimization = 1) =>
+    public static Module Compile(string source, string? sourceName = null, int optimization = 2) =>
         new Compilation(source, sourceName ?? "<source>", optimization).Run();
 }
