@@ -697,6 +697,11 @@ def exercise(
             return 0
         report["remote_home"] = boot.stdout
         report["outcome"] = "setup_failed"
+        prerequisites = (
+            "coreutils findutils tar openssh"
+            if completion_only
+            else "coreutils findutils tar"
+        )
         runner.run(
             [
                 wsl,
@@ -706,7 +711,7 @@ def exercise(
                 "sh",
                 "-c",
                 (
-                    "apk add --no-cache coreutils findutils tar && "
+                    f"apk add --no-cache {prerequisites} && "
                     "tar --version && find --version && stat --version && "
                     "apk info -v coreutils findutils tar && "
                     'mkdir -p "$HOME/.codex" && printf \'keep remote sibling\' > "$HOME/.codex/sibling"'
@@ -728,6 +733,18 @@ def exercise(
                 timeout=180,
             )
             report["completion"] = result.stdout
+            authentication = runner.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tests/Msync.EndToEnd/authentication_journey.py"),
+                    "--binary",
+                    str(binary),
+                    "--wsl-distro",
+                    distro,
+                ],
+                timeout=180,
+            )
+            report["authentication"] = authentication.stdout
         else:
             report["journeys"] = transfer_journeys(
                 runner, binary, wsl, distro, workspace, process_probe

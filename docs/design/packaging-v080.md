@@ -73,7 +73,9 @@ source-deleted artifact runtime diagnostics, width-aware literal-preserving form
 the progressive built-in `msync skill` reference, and contextual path/host
 completion. Linux completion uses a real encrypted loopback SSH endpoint.
 Windows completion imports one owned pinned WSL1 distro for directory queries
-and unregisters it afterwards; `--completion-only` excludes all previously
+and a controlled guest SSH server. Native Windows OpenSSH then exercises the
+real host-key/private-key prompt lifecycle from a spaced product/key path.
+The distro is unregistered afterwards; `--completion-only` excludes all previously
 accepted file-transfer and interruption cases.
 Both hosts additionally check automatic color and NO_COLOR through actual
 terminal descriptors (a POSIX PTY or Windows ConPTY), without repeating the
