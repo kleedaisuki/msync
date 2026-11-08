@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+using Msync.Compiler;
 using Msync.Core;
 using PrettyPrompt;
 using PrettyPrompt.Completion;
@@ -15,27 +15,48 @@ internal readonly record struct TerminalInput(TerminalInputKind Kind, string Tex
 internal sealed partial class InteractivePrompt : IAsyncDisposable
 {
     private readonly Prompt prompt;
+    private readonly SourceCompletionService completion;
     private readonly Callbacks callbacks;
     private readonly TextWriter error;
+    private readonly string errorColor;
+    private readonly Func<IReadOnlyList<SemanticMember>>? describe;
 
     public static bool IsSupported => !Console.IsInputRedirected && !Console.IsOutputRedirected
         && Environment.GetEnvironmentVariable("TERM") != "dumb";
 
     public InteractivePrompt(Func<string, bool> incomplete, Func<IReadOnlyCollection<string>> names,
-        string? historyDirectory = null, TextWriter? error = null, bool color = true)
+        string? historyDirectory = null, TextWriter? error = null, bool color = true,
+        Func<IReadOnlyList<SemanticMember>>? describe = null, Func<string, EditorAnalysis>? analyze = null, string? colorPolicy = null)
     {
         this.error = error ?? Console.Error;
+        errorColor = colorPolicy ?? (color ? "auto" : "never");
+        this.describe = describe;
         string? history = HistoryPath(historyDirectory, this.error);
         KeyBindings keys = new();
-        callbacks = new(incomplete, names, color, keys);
+        completion = new(AuthenticateAsync);
+        callbacks = new(incomplete, names, color, keys, completion, ReportAsync, analyze);
         prompt = new(history, callbacks, configuration: new PromptConfiguration(
             prompt: "> ", keyBindings: keys, completionBoxBorderFormat: color ? null : ConsoleFormat.None,
-            selectedCompletionItemMarkSymbol: color ? null : new FormattedString(">")));
+            selectedCompletionItemMarkSymbol: color ? null : new FormattedString(">"))
+        { EnableHints = color });
+    }
+
+    private Task<string?> AuthenticateAsync(SshPrompt request, CancellationToken cancellationToken) =>
+        prompt.RunExternalInteractionAsync(() => SshTerminalPrompt.ReadAsync(request, cancellationToken));
+
+    private async Task ReportAsync(Exception error)
+    {
+        await prompt.RunExternalInteractionAsync(() =>
+        {
+            TerminalPresentation.Error(error, errorColor);
+            return Task.FromResult(0);
+        });
     }
 
     public async ValueTask<TerminalInput> ReadAsync()
     {
         callbacks.Submission = null;
+        callbacks.RefreshBindings(describe?.Invoke() ?? []);
         PromptResult result = await prompt.ReadLineAsync();
         TerminalInputKind kind = result is EndOfInputResult ? TerminalInputKind.EndOfInput
             : result.IsSuccess ? TerminalInputKind.Text : TerminalInputKind.Cancelled;
@@ -46,6 +67,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        await completion.DisposeAsync();
         try { await prompt.DisposeAsync(); }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         { error.WriteLine($"msync: cannot save terminal history: {exception.Message}"); }
@@ -71,12 +93,35 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
 
     private sealed class EndOfInputResult() : KeyPressCallbackResult("", null);
 
-    private sealed partial class Callbacks(Func<string, bool> incomplete, Func<IReadOnlyCollection<string>> names, bool color, KeyBindings keys) : PromptCallbacks
+    private sealed partial class Callbacks(Func<string, bool> incomplete, Func<IReadOnlyCollection<string>> names, bool color, KeyBindings keys, SourceCompletionService completion, Func<Exception, Task> report, Func<string, EditorAnalysis>? analyze) : PromptCallbacks
     {
         internal string? Submission { get; set; }
-        private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "Bool", "Range", "String", "Function", "Scope", "Path", "Process", "Connection", "Null", "Number"];
-        private static readonly string[] Builtins = ["$std", "$local", "$wsl", "$pwd", "$file"];
-        private static readonly string[] Commands = ["/help", "/syntax", "/quit", "/exit", "/clear", "/pwd", "/cd"];
+        private string? notice;
+        private IReadOnlyDictionary<string, SemanticMember> bindings = new Dictionary<string, SemanticMember>(StringComparer.Ordinal);
+        private IReadOnlyDictionary<string, SemanticMember>? completionBindings;
+        private EditorContext? insight;
+
+        internal void RefreshBindings(IReadOnlyList<SemanticMember> values)
+        {
+            bindings = Flatten(values);
+            completionBindings = null;
+            insight = null;
+        }
+
+        private static IReadOnlyDictionary<string, SemanticMember> Flatten(IReadOnlyList<SemanticMember> values)
+        {
+            Dictionary<string, SemanticMember> current = new(StringComparer.Ordinal);
+            foreach (var value in EditorCompiler.BuiltinBindings) Add(value.Name, value);
+            foreach (var value in values) Add(value.Name, value);
+            return current;
+
+            void Add(string name, SemanticMember value)
+            {
+                current[name] = value;
+                if (value.Members is null) return;
+                foreach (var member in value.Members) Add(name + "::" + member.Name, member);
+            }
+        }
 
         protected override IEnumerable<(KeyPressPattern Pattern, KeyPressCallbackAsync Callback)> GetKeyPressCallbacks()
         {
@@ -89,6 +134,14 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
 
         protected override Task<KeyPress> TransformKeyPressAsync(string text, int caret, KeyPress key, CancellationToken cancellationToken)
         {
+            if (key.ConsoleKeyInfo.Key is not (ConsoleKey.Tab or ConsoleKey.Spacebar)) notice = null;
+            bool completionKey = key.ConsoleKeyInfo is { Key: ConsoleKey.Tab, Modifiers: 0 }
+                or { Key: ConsoleKey.Spacebar, Modifiers: ConsoleModifiers.Control };
+            if (completionKey && analyze is not null)
+            {
+                insight = analyze(text).At(caret);
+                completionBindings = Flatten(insight.Bindings);
+            }
             if (key.ConsoleKeyInfo.Key == ConsoleKey.Enter && key.ConsoleKeyInfo.Modifiers == 0 && incomplete(text))
                 key = new(new ConsoleKeyInfo('\n', ConsoleKey.Enter, shift: true, alt: false, control: false));
             else if (keys.SubmitPrompt.Matches(key.ConsoleKeyInfo))
@@ -103,81 +156,64 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
 
         protected override Task<TextSpan> GetSpanToReplaceByCompletionAsync(string text, int caret, CancellationToken cancellationToken)
         {
+            if (SourceCompletion.Find(text, caret, includeBarePaths: true, resolveEndpoint: ResolveEndpoint) is { } context)
+                return Task.FromResult(new TextSpan(context.Start, context.Length));
             int start = caret, end = caret;
+            if (insight?.Receiver?.Members is not null)
+            {
+                while (start > 0 && (char.IsLetterOrDigit(text[start - 1]) || text[start - 1] == '_')) start--;
+                while (end < text.Length && (char.IsLetterOrDigit(text[end]) || text[end] == '_')) end++;
+                return Task.FromResult(TextSpan.FromBounds(start, end));
+            }
             while (start > 0 && !IsDelimiter(text[start - 1])) start--;
             while (end < text.Length && !IsDelimiter(text[end])) end++;
             return Task.FromResult(TextSpan.FromBounds(start, end));
         }
 
-        protected override Task<IReadOnlyList<CompletionItem>> GetCompletionItemsAsync(string text, int caret, TextSpan spanToBeReplaced, CancellationToken cancellationToken)
+        private ConnectionValue? ResolveEndpoint(string name) =>
+            (completionBindings ?? bindings).TryGetValue(name, out var value) ? value.Endpoint : insight?.Receiver?.Endpoint;
+
+        protected override async Task<IReadOnlyList<CompletionItem>> GetCompletionItemsAsync(string text, int caret, TextSpan spanToBeReplaced, CancellationToken cancellationToken)
         {
             string prefix = text[spanToBeReplaced.Start..caret];
-            if (spanToBeReplaced.Start > 0 && text[spanToBeReplaced.Start - 1] == '"')
-                return Task.FromResult<IReadOnlyList<CompletionItem>>([]);
-            IEnumerable<string> words = prefix.StartsWith('$') ? Builtins : Keywords.Concat(names());
-            if (spanToBeReplaced.Start == 0 && prefix.StartsWith('/')) words = Commands;
+            IReadOnlyDictionary<string, SemanticMember> symbols = completionBindings ?? bindings;
+            IReadOnlyList<SemanticMember>? members = insight?.Receiver?.Members;
+            if (members is not null) symbols = members.ToDictionary(member => member.Name, StringComparer.Ordinal);
+            IEnumerable<string> words = members is not null ? symbols.Keys
+                : prefix.StartsWith('$') ? PromptSyntax.Builtins.Concat(symbols.Keys) : PromptSyntax.Keywords.Concat(names()).Concat(symbols.Keys);
+            if (spanToBeReplaced.Start == 0 && prefix.StartsWith('/')) words = PromptSyntax.Commands;
             List<CompletionItem> items = words.Where(word => word.StartsWith(prefix, StringComparison.Ordinal))
-                .Distinct(StringComparer.Ordinal).Order(TextSemantics.Ordinal).Select(word => new CompletionItem(word)).ToList();
-            string qualifier = prefix.StartsWith("$local::", StringComparison.Ordinal) ? "$local::"
-                : prefix.StartsWith("$pwd::", StringComparison.Ordinal) ? "$pwd::" : "";
-            if (qualifier.Length > 0) AddPaths(prefix[qualifier.Length..], items, qualifier);
-            else if (!prefix.Contains("::", StringComparison.Ordinal) && !prefix.StartsWith('$')) AddPaths(prefix, items, "");
-            return Task.FromResult<IReadOnlyList<CompletionItem>>(items);
+                .Distinct(StringComparer.Ordinal).Order(TextSemantics.Ordinal).Select(word => new CompletionItem(word,
+                    getExtendedDescription: _ => Task.FromResult<FormattedString>(symbols.TryGetValue(word, out var binding) ? binding.Signature : word))).ToList();
+            if (members is not null) return items;
+            if (SourceCompletion.Find(text, caret, includeBarePaths: true, resolveEndpoint: ResolveEndpoint) is { } context)
+                foreach (var candidate in await CompleteSourceAsync(context, cancellationToken))
+                    items.Add(new CompletionItem(candidate.Replacement, displayText: candidate.Label,
+                        filterText: prefix + candidate.Label[context.Prefix.Length..].Replace("\"", "\"\"", StringComparison.Ordinal),
+                        getExtendedDescription: _ => Task.FromResult<FormattedString>(candidate.Detail)));
+            return items;
+        }
+
+        private async Task<IReadOnlyList<SourceCompletionItem>> CompleteSourceAsync(SourceCompletionContext context, CancellationToken cancellationToken)
+        {
+            using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            ConsoleCancelEventHandler cancel = (_, args) => { args.Cancel = true; cancellation.Cancel(); };
+            bool captured = Console.TreatControlCAsInput;
+            Console.CancelKeyPress += cancel;
+            Console.TreatControlCAsInput = false;
+            try { return await completion.CompleteAsync(context, Environment.CurrentDirectory, HostContext.HomeDirectory, cancellation.Token); }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { notice = "completion cancelled"; return []; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or MsyncException)
+            { notice = error.Message; await report(error); return []; }
+            finally { Console.TreatControlCAsInput = captured; Console.CancelKeyPress -= cancel; }
         }
 
         private static bool IsDelimiter(char character) => char.IsWhiteSpace(character) || "{}()[],;=|<>?\"".Contains(character, StringComparison.Ordinal);
 
-        private static void AddPaths(string prefix, ICollection<CompletionItem> items, string qualifier)
-        {
-            int separator = prefix.LastIndexOfAny([Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar]);
-            string parent = separator < 0 ? "" : prefix[..(separator + 1)];
-            string leaf = prefix[(separator + 1)..];
-            string directory = parent.Length == 0 ? Environment.CurrentDirectory : ExpandHome(parent);
-            try
-            {
-                foreach (string entry in Directory.EnumerateFileSystemEntries(directory).Order(TextSemantics.Ordinal))
-                {
-                    string name = Path.GetFileName(entry);
-                    if (!name.StartsWith(leaf, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)) continue;
-                    bool childDirectory = Directory.Exists(entry);
-                    string raw = parent + name + (childDirectory ? Path.DirectorySeparatorChar : "");
-                    string replacement = qualifier.Length == 0 ? PathExpression(raw) : qualifier + Quote(raw);
-                    items.Add(new CompletionItem(replacement, displayText: raw, filterText: qualifier + prefix));
-                }
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { }
-        }
+        protected override Task<PromptHint?> GetHintAsync(string text, int caret, CancellationToken cancellationToken) =>
+            Task.FromResult(!color ? null : notice is not null ? new PromptHint("  [" + notice + "]", Insertable: false) : PromptSyntax.Hint(text, caret, bindings));
 
-        private static string ExpandHome(string path) => path == "~" ? HostContext.HomeDirectory
-            : path.StartsWith("~/", StringComparison.Ordinal) || path.StartsWith("~\\", StringComparison.Ordinal)
-                ? Path.Combine(HostContext.HomeDirectory, path[2..]) : path;
-
-        private static string Quote(string text) => "\"" + text.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
-
-        private static string PathExpression(string raw)
-        {
-            if (OperatingSystem.IsWindows()) return "$local::" + Quote(Path.GetFullPath(ExpandHome(raw)));
-            string prefix = raw.StartsWith('/') ? "/" : raw.StartsWith("~/", StringComparison.Ordinal) ? "~/" : "./";
-            string tail = prefix == "~/" ? raw[2..] : raw.TrimStart('/');
-            if (tail.StartsWith("./", StringComparison.Ordinal)) tail = tail[2..];
-            return prefix + string.Join('/', tail.Split('/').Select(part => part.Length == 0 || part is "." or ".." ? part : "\"" + part.Replace("\"", "\"\"", StringComparison.Ordinal) + "\""));
-        }
-
-        protected override Task<IReadOnlyCollection<FormatSpan>> HighlightCallbackAsync(string text, CancellationToken cancellationToken)
-        {
-            if (!color) return Task.FromResult<IReadOnlyCollection<FormatSpan>>([]);
-            List<FormatSpan> spans = [];
-            foreach (Match token in Tokens().Matches(text))
-            {
-                AnsiColor? color = token.Groups["comment"].Success ? AnsiColor.BrightBlack
-                    : token.Groups["string"].Success ? AnsiColor.Green
-                    : Keywords.Contains(token.Value, StringComparer.Ordinal) ? char.IsUpper(token.Value[0]) ? AnsiColor.Magenta : AnsiColor.Cyan : null;
-                if (color is { } value) spans.Add(new(token.Index, token.Length, value));
-            }
-            return Task.FromResult<IReadOnlyCollection<FormatSpan>>(spans);
-        }
-
-        [GeneratedRegex("""(?<comment>(?<!\S)(?:\#|//)[^\r\n]*)|(?<string>"(?:[^"]|"")*(?:"|$))|[\p{L}_][\p{L}\p{N}_]*""", RegexOptions.CultureInvariant)]
-        private static partial Regex Tokens();
+        protected override Task<IReadOnlyCollection<FormatSpan>> HighlightCallbackAsync(string text, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyCollection<FormatSpan>>(color ? PromptSyntax.Highlight(text, bindings) : []);
     }
 }

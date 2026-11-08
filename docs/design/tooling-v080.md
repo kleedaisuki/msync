@@ -289,7 +289,10 @@ CLI help, the short syntax guide (`msync help syntax` or REPL `/syntax`),
 interactive highlighting, bytecode plans, and diagnostics share a theme-adaptive
 16-color vocabulary: cyan for structure and keywords, green for commands,
 Strings and repairs, magenta for types, blue for source gutters, and bold red
-for primary errors. They use the terminal's own palette rather than a fixed RGB
+for primary errors. The later role refinement gives `fn` and all known callable
+identifiers the same bright-yellow function color; control flow (including `?`)
+uses magenta. Named Scope declarations and their aliases retain the type role,
+whereas anonymous Scope keywords/instances use the ordinary variable role. They use the terminal's own palette rather than a fixed RGB
 background. `auto` tests the stream being rendered: redirected stdout does not
 turn off color on terminal stderr, and terminal stdout does not color piped
 stderr. `always` explicitly emits SGR; `never`, `NO_COLOR`, and automatic
@@ -382,3 +385,103 @@ Focused real-process journeys are `presentation_journey.py` (CLI and LSP),
 copy. The terminal fixture distinguishes SGR styling from .NET's independent
 terminal application-mode initialization, and compares content across automatic,
 forced, disabled, and `NO_COLOR` modes without assuming one terminal's palette.
+
+### Contextual filesystem and endpoint completion
+
+`SourceCompletion` owns the lexical replacement region and literal encoding used
+by both LSP and the REPL. Local candidates come from the selected directory's
+native enumeration, using the editor/session's captured working directory and
+home, not the source file's parent directory. A candidate without whitespace is
+a Path expression with literal components; quoting those components prevents a
+same-named variable from silently changing which file is selected. A candidate
+containing whitespace is a String literal, with msync's doubled-quote escaping,
+except when it is the source operand before `->`: filesystem completion there
+retains Path so it copies the selected file rather than its filename text.
+Already quoted input remains a String, preserving explicit literal intent. A physical Connection qualification
+retains its source spelling and yields Path even when its right operand is a
+String. Completion replaces the complete token, including an existing closing
+quote or a stale suffix after the cursor; UTF-16 LSP ranges do not split astral
+characters. Descriptions distinguish Path from String and explain that a String
+on the left of `->` writes literal text; a Path annotation selects file contents.
+
+The SSH host catalog reads concrete Host aliases, recursive Include files and
+remembered known_hosts names. It honors the runtime's explicit
+`MSYNC_SSH_CONFIG` override, and preserves the origin of each suggestion.
+Wildcard and negated Host patterns are not invented as concrete hosts. Include
+paths use [OpenSSH's documented user/system roots and lexical glob order](https://man.openbsd.org/ssh_config#Include),
+not the parent of an arbitrarily nested included file. Catalog discovery does
+not run Match commands or authenticate.
+
+Selecting a qualified SSH or WSL path is different: its completion performs an
+actual directory query on that endpoint. `SourceCompletionService` owns retained
+native channels through `RemoteDirectoryCompletion`; each explicit query sees a
+fresh directory listing, while subsequent queries reuse the same authenticated
+channel. Remote HOME, PWD, slash rules and directory flags come from the selected
+endpoint, never from a local projection. The [retained channel contract](editor-remote-completion-v080.md)
+describes NUL framing, filenames, cancellation ownership and native diagnostics.
+Opening or type-checking a document still creates no connection. Authentication
+belongs to the admitted completion request and is cancelled with that owner.
+
+### Native prompt lexical roles and inline hints
+
+The 0.8 prompt now covers the display roles previously present in the Rust
+editor: Paths, protocol/address segments, operators, pattern selectors, comments,
+Strings and type names, plus known Function and named/anonymous Scope roles. A tolerant
+linear display scanner handles incomplete edits, doubled String quotes, escaped
+regexes, character classes and named groups. It does not accept a program or
+replace the execution parser. Hint context skips Strings, comments and regex
+bodies rather than proposing language keywords inside data.
+
+`CompilerSession.DescribeBindings()` describes the accepted/reconciled semantic
+environment once before a new prompt. Canonical builtins come from the compiler's
+lazy cached descriptors of the same embedded standard source, including source
+wrappers rather than only native IDs. Keystroke highlighting and static hints
+use that snapshot; neither compiles the input nor enumerates files or endpoints.
+An explicit Tab request may inspect the current submission with
+`CompilerSession.AnalyzeEditor(...).At(caret)`: its isolated compiler view retains
+lexical blocks, parameters, shadowing and computed receivers without executing
+or mutating the accepted session. Completion menus reuse that request snapshot
+while the user narrows a prefix, instead of recompiling on subsequent keys.
+Unique keyword/binding/member suffixes precede the existing native history-prefix
+suggestion. Otherwise noninsertable bracketed context explains an expected value,
+transfer destination, null check, Scope member list, or function signature and
+current argument. RightArrow or End at the document end accepts an insertable
+suffix. Enter always submits only the typed/accepted document; a displayed hint
+is not clipboard text, history, a binding or executed source. `NO_COLOR` and
+`--color never` disable inline hint presentation, matching the legacy policy.
+
+PrettyPrompt 6.0.5 has no public inline-hint callback. Its exact pinned source is
+therefore retained in `vendor/PrettyPrompt`, with the narrowly documented local
+extension in [the origin note](../../vendor/PrettyPrompt/ORIGIN.md). Hints use its
+existing pooled screen cells, grapheme widths and incremental screen diff, not
+another terminal renderer. The original constructor and default behavior remain
+valid; hinting is opt-in. Native packages include the modified MPL-2.0 source.
+
+Tab completion uses the shared asynchronous source-context provider. During a
+selected remote directory query, Ctrl+C cancels that query without ending the
+session. Native SSH authentication temporarily borrows the terminal only while
+the editor's completion callback is awaited, so the editor is not concurrently
+reading keys. The native renderer suspends, then reanchors/repaints the original
+buffer after the owned askpass interaction. Password text never enters source or
+history. Completion failures use complete source-independent diagnostics even
+when color is disabled, rather than disappearing with gray hints.
+
+The focused actual-PTY journey `tests/Msync.EndToEnd/hint_journey.py` verifies
+keyword/history/binding acceptance, nonaccepting Enter, source/result byte
+consequences, lexical colors, no-color behavior and native child stdin ownership.
+The distinct native ConPTY fixture is
+`tests/Msync.EndToEnd/windows_hint_journey.py`; it uses the same known-binding
+contract without inferring Windows behavior from POSIX tests. Neither fixture
+requires per-keystroke filesystem probes or repeats the earlier full editor matrix.
+
+Semantic completion uses `EditorAnalysis.At(offset)`, not declarations found by
+whole-file regular expressions. The compiler retains immutable lexical snapshots
+for blocks, function definitions, specializations and incomplete expressions;
+the context selects the innermost visible bindings and the actual receiver before
+`::`. Parameters, captured bindings, local shadows, anonymous functions, nested
+Scopes and Scopes returned by calls therefore share normal type inference.
+An unknown generic parameter remains explicitly unknown; multiple concrete
+specializations expose only common safe members. An editor probe can retain
+useful types through missing delimiters without admitting that incomplete program
+as executable input. REPL completion uses the same editor analysis fork seeded
+from accepted session bindings, rather than replaying earlier effects.

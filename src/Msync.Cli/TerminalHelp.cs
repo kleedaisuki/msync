@@ -103,9 +103,12 @@ internal static class TerminalHelp
         Row("Tab", "Complete bindings and local paths", color);
         Row("Shift+Enter", "Insert a newline", color);
         Row("Up / Down", "Recall earlier submissions", color);
+        Row("Right / End", "Accept an insertable gray hint", color);
         Row("Ctrl+C", "Cancel input or running work", color);
         Row("Ctrl+D / Ctrl+Z", "Leave when the input is empty", color);
-        Console.WriteLine("\nBindings persist; previous transfers are not replayed.");
+        Console.WriteLine("\nEnter submits only typed source, not the gray hint.");
+        Console.WriteLine("Bracketed context hints are explanatory and are never inserted.");
+        Console.WriteLine("Bindings persist; previous transfers are not replayed.");
         Console.WriteLine("An unfinished expression continues on the next line.");
         Console.WriteLine("End a statement with ';' to discard its value; omit it to inspect the result.");
     }

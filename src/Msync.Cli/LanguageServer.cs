@@ -18,18 +18,19 @@ internal sealed partial class LanguageServer(
     private bool semanticRefreshPending;
     private bool semanticRefreshDirty;
     private long serverRequest;
-    private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "Bool", "Range", "String", "Function", "Scope", "Path", "Process", "Connection", "Null", "Number"];
+    private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "return", "break", "loop", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "Bool", "Range", "String", "Function", "Scope", "Path", "Process", "Connection", "Null", "Number"];
 
     private JsonNode? Handle(string method, JsonElement p)
     {
         if (method == "initialize")
         {
+            InitializeAuthentication(p);
             semanticRefreshSupported = p.TryGetProperty("capabilities", out var capabilities)
                 && capabilities.TryGetProperty("workspace", out var workspace)
                 && workspace.TryGetProperty("semanticTokens", out var tokens)
                 && tokens.TryGetProperty("refreshSupport", out var refresh) && refresh.ValueKind == JsonValueKind.True;
             return JsonNode.Parse("""
-            {"capabilities":{"positionEncoding":"utf-16","textDocumentSync":{"openClose":true,"change":2},"documentFormattingProvider":true,"codeActionProvider":true,"completionProvider":{"triggerCharacters":[":","$"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["keyword","function","variable","type","string","comment","protocol","endpoint","operator","namespace"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"msync","version":"0.8.0"}}
+            {"capabilities":{"positionEncoding":"utf-16","textDocumentSync":{"openClose":true,"change":2},"documentFormattingProvider":true,"codeActionProvider":true,"completionProvider":{"triggerCharacters":[":","$","/","\\"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["keyword","function","variable","type","string","comment","protocol","endpoint","operator","namespace","controlKeyword"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"msync","version":"0.8.0"}}
             """);
         }
         if (method == "shutdown") return null;
@@ -55,75 +56,55 @@ internal sealed partial class LanguageServer(
         return null;
     }
 
-    private static JsonArray Completions(EditorDocument document, JsonElement p)
+    private static JsonArray Completions(EditorDocument document, JsonElement parameters)
     {
-        SourceText source = document.Source;
-        string text = source.Text;
-        int offset = Offset(source, p.GetProperty("position"));
-        string prefix = text[..offset];
-        int select = prefix.LastIndexOf("::", StringComparison.Ordinal);
-        if (select >= 0 && IdentifierSuffix(prefix.AsSpan(select + 2)))
-        {
-            int qualifierEnd = select;
-            while (qualifierEnd > 0 && char.IsWhiteSpace(text[qualifierEnd - 1])) qualifierEnd--;
-            var qualifier = document.Analysis?.Occurrences.Where(item => item.Span.End == qualifierEnd && item.Members is not null)
-                .MinBy(item => item.Span.Length);
-            IReadOnlyList<SemanticMember>? members = qualifier?.Members;
-            if (members is null && document.Analysis is { RecoveryBindings: { } bindings, RecoveryStart: { } start } && start <= select)
-            {
-                string name = text.AsSpan(start, select - start).Trim().ToString();
-                if (IdentifierSuffix(name)) members = bindings.FirstOrDefault(binding => binding.Name == name)?.Members;
-            }
-            if (members is not null)
-            {
-                JsonArray selected = [];
-                foreach (var member in members)
-                    selected.Add((JsonNode)Completion(member.Name, member.Type, member.Signature, member.Description));
-                return selected;
-            }
-        }
-        IEnumerable<string> words = Keywords.Concat(Declaration().Matches(text).Select(m => m.Groups[2].Value));
-        Match standard = StandardMember().Match(prefix);
-        if (standard.Success && standard.Groups[1].Length == 0)
-        {
-            words = ["fs", "path", "string", "bool", "ranges", "process"];
-        }
-        else if (StandardModule(prefix) is { } module)
-        {
-            words = Declaration().Matches(StandardSource($"msync-stdlib:///0.8.0/{module}.msync")).Select(m => m.Groups[2].Value);
-        }
-        JsonArray items = [];
-        Dictionary<string, SemanticOccurrence> names = new(StringComparer.Ordinal);
-        var inferred = (document.Analysis?.Occurrences ?? []).GroupBy(item => item.Span.Start)
-            .ToDictionary(group => group.Key, group => group.MinBy(item => item.Span.Length)!);
-        foreach (Match declaration in Declaration().Matches(text))
-        {
-            if (declaration.Groups[2].Index <= offset && inferred.TryGetValue(declaration.Groups[2].Index, out var occurrence))
-                names[declaration.Groups[2].Value] = occurrence;
-        }
-        foreach (string word in words.Distinct(StringComparer.Ordinal))
-        {
-            names.TryGetValue(word, out var occurrence);
-            items.Add((JsonNode)Completion(word, occurrence?.Type, occurrence?.Signature, occurrence?.Description,
-                keyword: Keywords.Contains(word, StringComparer.Ordinal)));
-        }
+        int offset = Offset(document.Source, parameters.GetProperty("position"));
+        EditorContext? context = document.Analysis?.At(offset);
+        if (context?.Receiver is { } receiver) return MemberCompletions(receiver.Members ?? []);
+        var bindings = (context?.Bindings ?? []).Concat(EditorCompiler.BuiltinBindings)
+            .DistinctBy(binding => binding.Name, StringComparer.Ordinal).ToArray();
+        JsonArray items = MemberCompletions(bindings);
+        foreach (string keyword in Keywords)
+            items.Add((JsonNode)Completion(keyword, null, null, null, keyword: true));
         return items;
     }
 
-    private static bool IdentifierSuffix(ReadOnlySpan<char> text)
+    private static JsonArray MemberCompletions(IEnumerable<SemanticMember> members)
     {
-        foreach (char character in text)
-            if (!char.IsLetterOrDigit(character) && character != '_') return false;
-        return true;
+        JsonArray items = [];
+        foreach (var member in members)
+            items.Add((JsonNode)Completion(member.Name, member.Type, member.Signature, member.Description, semanticRole: member.SemanticRole));
+        return items;
     }
 
-    private static JsonObject Completion(string name, string? type, string? signature, string? description, bool keyword = false) => new()
+    private static JsonObject Completion(string name, string? type, string? signature, string? description, bool keyword = false, string? semanticRole = null) => new()
     {
         ["label"] = name,
-        ["kind"] = keyword ? 14 : type switch { "Function" or "Function?" => 3, "Scope" or "Scope?" => 7, _ => 6 },
+        ["kind"] = keyword ? 14 : semanticRole switch { "function" => 3, "type" => 7, _ => type is "Function" or "Function?" ? 3 : 6 },
         ["detail"] = signature,
         ["documentation"] = description is null ? null : new JsonObject { ["kind"] = "markdown", ["value"] = description }
     };
+
+    private static JsonArray SourceItems(SourceText source, SourceCompletionContext context, IReadOnlyList<SourceCompletionItem> candidates)
+    {
+        JsonArray items = [];
+        foreach (var item in candidates)
+            items.Add((JsonNode)new JsonObject
+            {
+                ["label"] = item.Label,
+                ["kind"] = context.Kind == SourceCompletionKind.Ssh ? 18 : item.IsDirectory ? 19 : 17,
+                ["detail"] = item.Detail,
+                ["filterText"] = context.Qualifier + (context.Quoted ? "\"" : "") + item.Label,
+                ["documentation"] = item.Detail.StartsWith("String", StringComparison.Ordinal)
+                    ? new JsonObject
+                    {
+                        ["kind"] = "markdown",
+                        ["value"] = "A String preserves whitespace exactly. On the left of `->`, a String writes literal text. To read this file, bind it as a Path:\n\n```msync\nlet file: Path = " + item.Replacement + ";\n```"
+                    } : null,
+                ["textEdit"] = new JsonObject { ["range"] = source.Range(context.Start, context.Length), ["newText"] = item.Replacement }
+            });
+        return items;
+    }
 
     private static JsonNode? Definition(string uri, SourceText sourceText, JsonElement p)
     {
@@ -167,7 +148,7 @@ internal sealed partial class LanguageServer(
         {
             JsonObject range = source.Range(match.Groups[2].Index, match.Groups[2].Length);
             inferred.TryGetValue(match.Groups[2].Index, out var occurrence);
-            int kind = occurrence?.Type switch { "Function" or "Function?" => 12, "Scope" or "Scope?" => 5, _ => match.Groups[1].Value switch { "fn" => 12, "scope" => 5, _ => 13 } };
+            int kind = occurrence?.SemanticRole switch { "function" => 12, "type" => 5, _ => match.Groups[1].Value switch { "fn" => 12, "scope" => 5, _ => 13 } };
             symbols.Add((JsonNode)new JsonObject { ["name"] = match.Groups[2].Value, ["detail"] = occurrence?.Signature, ["kind"] = kind, ["range"] = range, ["selectionRange"] = range.DeepClone() });
         }
         return symbols;
@@ -177,7 +158,7 @@ internal sealed partial class LanguageServer(
     {
         SourceText source = document.Source;
         string text = source.Text;
-        var inferred = (document.Analysis?.Occurrences ?? []).Where(item => item.Type is "Function" or "Scope" or "Function?" or "Scope?")
+        var inferred = (document.Analysis?.Occurrences ?? []).Where(item => item.SemanticRole is "function" or "type" || item.Type is "Scope" or "Scope?")
             .GroupBy(item => item.Span.Start).ToDictionary(group => group.Key, group => group.MinBy(item => item.Span.Length)!);
         var declarations = Declaration().Matches(text).ToDictionary(match => match.Groups[2].Index,
             match => match.Groups[1].Value == "fn" ? 1 : match.Groups[1].Value == "scope" ? 3 : 2);
@@ -199,8 +180,14 @@ internal sealed partial class LanguageServer(
             int type = comment ? 5 : quoted ? 4 : "?:-=!/$|".AsSpan().Contains(token[0]) ? 8 :
                 IsKeyword(token) ? char.IsUpper(token[0]) ? 3 : 0 :
                 match.Index > 0 && text[match.Index - 1] == '$' ? 9 : 2;
+            if (!comment && !quoted)
+            {
+                if (token.SequenceEqual("fn")) type = 1;
+                else if (token.SequenceEqual("scope")) type = AnonymousScope(text, match.Index + match.Length) ? 2 : 3;
+                else if (token.SequenceEqual("?") || ControlFlow(token)) type = 10;
+            }
             if (inferred.TryGetValue(match.Index, out var semantic) && semantic.Span.Length == match.Length)
-                type = semantic.Type.StartsWith("Function", StringComparison.Ordinal) ? 1 : 3;
+                type = semantic.SemanticRole switch { "function" => 1, "type" => 3, _ => 2 };
             else if (declarations.TryGetValue(match.Index, out int declared)) type = declared;
             AddToken(match.Index, match.Length, type);
         }
@@ -225,6 +212,21 @@ internal sealed partial class LanguageServer(
                 offset = newline < 0 ? end : newline + (text[newline] == '\r' && newline + 1 < end && text[newline + 1] == '\n' ? 2 : 1);
             }
         }
+    }
+
+    private static bool ControlFlow(ReadOnlySpan<char> token) => token.SequenceEqual("if") || token.SequenceEqual("else")
+        || token.SequenceEqual("match") || token.SequenceEqual("for") || token.SequenceEqual("in")
+        || token.SequenceEqual("return") || token.SequenceEqual("break") || token.SequenceEqual("loop");
+
+    private static bool AnonymousScope(string text, int offset)
+    {
+        while (offset < text.Length)
+        {
+            if (char.IsWhiteSpace(text[offset])) { offset++; continue; }
+            if (text[offset] != '#' && !text.AsSpan(offset).StartsWith("//", StringComparison.Ordinal)) return text[offset] == '{';
+            while (offset < text.Length && text[offset] is not ('\r' or '\n')) offset++;
+        }
+        return false;
     }
 
     private static bool IsKeyword(ReadOnlySpan<char> token)
@@ -298,8 +300,6 @@ internal sealed partial class LanguageServer(
 
     [GeneratedRegex(@"\b(fn|let|scope)\s+([\p{L}_][\p{L}\p{N}_]*)", RegexOptions.CultureInvariant)]
     private static partial Regex Declaration();
-    [GeneratedRegex(@"\$std::(?:(\w+)::)?[\w]*$", RegexOptions.CultureInvariant)]
-    private static partial Regex StandardMember();
     [GeneratedRegex(@"(?:\$std::(?<module>\w+)|(?<alias>\w+))::\w*$", RegexOptions.CultureInvariant)]
     private static partial Regex StandardQualifier();
     [GeneratedRegex(@"\blet\s+(\w+)\s*=\s*\$std::(\w+)\s*;", RegexOptions.CultureInvariant)]

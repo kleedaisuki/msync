@@ -1,0 +1,262 @@
+using Msync.Compiler;
+using PrettyPrompt;
+using PrettyPrompt.Highlighting;
+
+namespace Msync.Cli;
+
+internal static class PromptSyntax
+{
+    internal static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "return", "break", "loop", "Bool", "Range", "String", "Function", "Scope", "Path", "Process", "Connection", "Null", "Type", "Number", "Int"];
+    internal static readonly string[] Builtins = ["$std", "$local", "$wsl", "$pwd", "$file", "$path", "$env"];
+    internal static readonly string[] Commands = ["/help", "/?", "/syntax", "/quit", "/exit", "/clear", "/pwd", "/cd"];
+
+    public static List<FormatSpan> Highlight(string text, IReadOnlyDictionary<string, SemanticMember>? bindings = null)
+    {
+        List<FormatSpan> spans = [];
+        int position = 0, start = 0;
+        string previous = "", chain = "";
+        while (position < text.Length)
+        {
+            if (char.IsWhiteSpace(text[position])) { position++; continue; }
+            start = position;
+            char character = text[position];
+            if ((character == '#' || text.AsSpan(position).StartsWith("//", StringComparison.Ordinal))
+                && (position == 0 || char.IsWhiteSpace(text[position - 1])))
+            {
+                while (position < text.Length && text[position] is not ('\r' or '\n')) position++;
+                Add(AnsiColor.BrightBlack); continue;
+            }
+            if (character == '"')
+            {
+                position++;
+                while (position < text.Length)
+                {
+                    if (text[position++] != '"') continue;
+                    if (position < text.Length && text[position] == '"') { position++; continue; }
+                    break;
+                }
+                Add(AnsiColor.Green); previous = "value"; continue;
+            }
+            if (character == '<' && (previous is "" or "/" or "{" or "[" or "," or "=>" || previous.EndsWith('/')))
+            {
+                position = PatternEnd(text, position + 1);
+                Add(AnsiColor.Magenta); previous = "value"; continue;
+            }
+            int protocol = text.AsSpan(position).StartsWith("ssh://", StringComparison.Ordinal) ? 3
+                : text.AsSpan(position).StartsWith("wsl://", StringComparison.Ordinal) ? 3 : 0;
+            if (protocol > 0)
+            {
+                spans.Add(new(start, protocol, AnsiColor.BrightCyan));
+                spans.Add(new(start + protocol, 3, AnsiColor.Yellow));
+                position += protocol + 3;
+                int host = position;
+                while (position < text.Length && !Boundary(text[position]) && !text.AsSpan(position).StartsWith("::", StringComparison.Ordinal)) position++;
+                if (position > host) spans.Add(new(host, position - host, AnsiColor.Blue));
+                previous = "value"; continue;
+            }
+            if ("{}()[],;?:=$|<>!".Contains(character, StringComparison.Ordinal) || text.AsSpan(position).StartsWith("->", StringComparison.Ordinal))
+            {
+                position++;
+                if (position < text.Length && (character == ':' && text[position] == ':' || character is '=' or '!' or '<' or '>' && text[position] == '='
+                    || character is '-' or '=' && text[position] == '>')) position++;
+                Add(character == '?' ? AnsiColor.Magenta : AnsiColor.Yellow);
+                string operation = text[start..position];
+                chain = operation == "::" ? chain.Length == 0 ? previous : chain : "";
+                previous = operation;
+                continue;
+            }
+            if (character == '/' && (position + 1 == text.Length || text[position + 1] == '<'))
+            { position++; Add(AnsiColor.Blue); previous = "/"; continue; }
+            while (position < text.Length && !Boundary(text[position]) && text[position] is not ('"' or '<' or ':' or '$')
+                && !text.AsSpan(position).StartsWith("->", StringComparison.Ordinal)) position++;
+            if (position == start) position++;
+            string word = text[start..position];
+            string selected = previous == "$" ? "$" + word : previous == "::" && chain.Length != 0 ? chain + "::" + word : word;
+            AnsiColor style = Commands.Contains(word, StringComparer.Ordinal) ? AnsiColor.BrightCyan
+                : word == "fn" ? AnsiColor.BrightYellow
+                : word == "scope" ? AnonymousScope(text, position) ? AnsiColor.BrightBlue : AnsiColor.Magenta
+                : word is "if" or "else" or "match" or "for" or "in" or "loop" or "return" or "break" ? AnsiColor.Magenta
+                : Keywords.Contains(word, StringComparer.Ordinal) ? char.IsUpper(word[0]) ? AnsiColor.Magenta : AnsiColor.Cyan
+                : previous == "$" ? AnsiColor.Magenta
+                : previous == "fn" ? AnsiColor.BrightYellow
+                : previous == "scope" ? AnsiColor.Magenta
+                : bindings is not null && bindings.TryGetValue(selected, out var value) ? ValueColor(value.SemanticRole)
+                : DeclaredColor(text, position) ?? AnsiColor.Blue;
+            Add(style); previous = word; chain = selected;
+        }
+        return spans;
+
+        void Add(AnsiColor style) => spans.Add(new(start, position - start, style));
+    }
+
+    private static bool AnonymousScope(string text, int offset)
+    {
+        while (offset < text.Length && char.IsWhiteSpace(text[offset])) offset++;
+        return offset == text.Length || text[offset] == '{';
+    }
+
+    private static AnsiColor? DeclaredColor(string text, int offset)
+    {
+        while (offset < text.Length && char.IsWhiteSpace(text[offset])) offset++;
+        if (offset < text.Length && text[offset] == '?') offset++;
+        while (offset < text.Length && char.IsWhiteSpace(text[offset])) offset++;
+        if (offset == text.Length || text[offset] is not (':' or '=')) return null;
+        offset++;
+        while (offset < text.Length && char.IsWhiteSpace(text[offset])) offset++;
+        ReadOnlySpan<char> tail = text.AsSpan(offset);
+        return Word(tail, "fn") || Word(tail, "Function") ? AnsiColor.BrightYellow
+            : Word(tail, "scope") || Word(tail, "Scope") ? AnsiColor.BrightBlue : null;
+
+        static bool Word(ReadOnlySpan<char> source, string word) => source.StartsWith(word, StringComparison.Ordinal)
+            && (source.Length == word.Length || !char.IsLetterOrDigit(source[word.Length]) && source[word.Length] != '_');
+    }
+
+    private static AnsiColor ValueColor(string role) => role == "function" ? AnsiColor.BrightYellow
+        : role == "type" ? AnsiColor.Magenta : AnsiColor.BrightBlue;
+
+    private static bool Boundary(char character) => char.IsWhiteSpace(character) || "{}()[],;?=$|<>!".Contains(character, StringComparison.Ordinal);
+
+    private static int PatternEnd(string text, int position)
+    {
+        bool escaped = false, characterClass = false, namedAngle = false;
+        for (; position < text.Length; position++)
+        {
+            char character = text[position];
+            if (escaped) { escaped = false; continue; }
+            if (character == '\\')
+            {
+                if (!characterClass && position + 2 < text.Length && text[position + 1] == 'k' && text[position + 2] == '<')
+                { namedAngle = true; position += 2; continue; }
+                escaped = true; continue;
+            }
+            if (character == '[') characterClass = true;
+            if (character == ']') characterClass = false;
+            if (character == '(' && !characterClass && position + 3 < text.Length && text[position + 1] == '?' && text[position + 2] == '<'
+                && text[position + 3] is not ('=' or '!')) { namedAngle = true; position += 2; continue; }
+            if (character != '>' || characterClass) continue;
+            if (namedAngle) { namedAngle = false; continue; }
+            int next = position + 1;
+            if (next == text.Length || char.IsWhiteSpace(text[next]) || "/,;}|)".Contains(text[next], StringComparison.Ordinal)
+                || text.AsSpan(next).StartsWith("=>", StringComparison.Ordinal) || text.AsSpan(next).StartsWith("->", StringComparison.Ordinal))
+                return next;
+        }
+        return position;
+    }
+
+    public static PromptHint? Hint(string text, int caret, IReadOnlyDictionary<string, SemanticMember> bindings)
+    {
+        if (caret == 0 || caret != text.Length) return null;
+        int start = caret;
+        while (start > 0 && (char.IsLetterOrDigit(text[start - 1]) || text[start - 1] is '_' or '$' or ':' or '/')) start--;
+        string prefix = text[start..caret];
+        if (prefix.Length > 0 && !InsideLiteral(text, start))
+        {
+            string? single = null;
+            foreach (string candidate in Keywords.Concat(Builtins).Concat(Commands).Concat(bindings.Keys))
+            {
+                if (!candidate.StartsWith(prefix, StringComparison.Ordinal) || candidate == prefix) continue;
+                if (single is not null && single != candidate) { single = null; break; }
+                single = candidate;
+            }
+            if (single is not null) return new(single[prefix.Length..]);
+        }
+        string source = text.TrimEnd();
+        string? message = source.EndsWith("->", StringComparison.Ordinal) ? "destination: Path or String; '->' returns Bool"
+            : source.EndsWith("=", StringComparison.Ordinal) && !source.EndsWith("==", StringComparison.Ordinal) ? "provide a value; use fn (...) { ... } for a function"
+            : source.EndsWith("is", StringComparison.Ordinal) ? "null | not null | Type; '?' also means is null"
+            : source.EndsWith("fn", StringComparison.Ordinal) ? "fn name(parameters) { result }; omit ';' on the result"
+            : source.EndsWith("let", StringComparison.Ordinal) ? "let name = value; add '?' to admit Null"
+            : source.EndsWith("scope", StringComparison.Ordinal) ? "scope Name { member: value }; select with Name::member"
+            : source.EndsWith("exists", StringComparison.Ordinal) ? "exists Path | String -> Bool"
+            : source.EndsWith("for", StringComparison.Ordinal) ? "for item in Range { body }; iteration binds each item"
+            : source.EndsWith("if", StringComparison.Ordinal) ? "if Bool { result } else { fallback }; Null is not Bool"
+            : source.EndsWith("match", StringComparison.Ordinal) ? "match value { pattern => { result }, _ => { fallback } }"
+            : source.EndsWith("::", StringComparison.Ordinal) ? MemberHint(source[..^2], bindings)
+            : null;
+        message ??= CallHint(text, caret, bindings);
+        return message is null || InsideLiteral(text, caret) ? null : new("  [" + message + "]", Insertable: false);
+    }
+
+    private static string? CallHint(string text, int caret, IReadOnlyDictionary<string, SemanticMember> bindings)
+    {
+        Stack<(char Delimiter, int Offset, int Argument)> opens = [];
+        bool quoted = false;
+        for (int position = 0; position < caret; position++)
+        {
+            char character = text[position];
+            if (character == '"')
+            {
+                if (quoted && position + 1 < caret && text[position + 1] == '"') position++;
+                else quoted = !quoted;
+                continue;
+            }
+            if (quoted) continue;
+            if (character == '<' && RegexStart(text, position)) { position = PatternEnd(text, position + 1) - 1; continue; }
+            if ((character == '#' || text.AsSpan(position).StartsWith("//", StringComparison.Ordinal))
+                && (position == 0 || char.IsWhiteSpace(text[position - 1])))
+            {
+                while (position < caret && text[position] is not ('\r' or '\n')) position++;
+                continue;
+            }
+            if (character is '(' or '[' or '{') opens.Push((character, position, 0));
+            else if (character is ')' or ']' or '}') { if (opens.Count > 0) opens.Pop(); }
+            else if (character == ',' && opens.Count > 0)
+            {
+                var top = opens.Pop();
+                opens.Push((top.Delimiter, top.Offset, top.Argument + 1));
+            }
+        }
+        foreach (var opening in opens)
+        {
+            if (opening.Delimiter != '(') continue;
+            int end = opening.Offset, begin = end;
+            while (begin > 0 && (char.IsLetterOrDigit(text[begin - 1]) || text[begin - 1] is '_' or ':' or '$')) begin--;
+            string name = text[begin..end];
+            if (bindings.TryGetValue(name, out var called)) return called.Signature + $" — argument {opening.Argument + 1}";
+            if (name == "decltype") return "infer expression type without executing its effects";
+        }
+        return null;
+    }
+
+    private static string MemberHint(string qualifier, IReadOnlyDictionary<string, SemanticMember> bindings)
+    {
+        int begin = qualifier.Length;
+        while (begin > 0 && (char.IsLetterOrDigit(qualifier[begin - 1]) || qualifier[begin - 1] is '_' or ':' or '$')) begin--;
+        return bindings.TryGetValue(qualifier[begin..], out var value) && value.Members is { Count: > 0 } members
+            ? string.Join(", ", members.Select(member => $"{member.Name}: {member.Type}"))
+            : "Scope::member selects a member; Connection::path qualifies a path";
+    }
+
+    private static bool RegexStart(string text, int offset)
+    {
+        int previous = offset - 1;
+        while (previous >= 0 && char.IsWhiteSpace(text[previous])) previous--;
+        return previous < 0 || "/{[,".Contains(text[previous], StringComparison.Ordinal)
+            || previous > 0 && text[previous] == '>' && text[previous - 1] == '=';
+    }
+
+    private static bool InsideLiteral(string text, int offset)
+    {
+        bool quoted = false;
+        for (int position = 0; position < offset; position++)
+        {
+            if (!quoted && (text[position] == '#' || text.AsSpan(position).StartsWith("//", StringComparison.Ordinal))
+                && (position == 0 || char.IsWhiteSpace(text[position - 1])))
+            {
+                while (position < offset && text[position] is not ('\r' or '\n')) position++;
+                if (position == offset) return true;
+            }
+            if (!quoted && text[position] == '<' && RegexStart(text, position))
+            {
+                int end = PatternEnd(text, position + 1);
+                if (end > offset || end == offset && text[end - 1] != '>') return true;
+                position = end - 1;
+                continue;
+            }
+            if (text[position] != '"') continue;
+            if (quoted && position + 1 < offset && text[position + 1] == '"') position++;
+            else quoted = !quoted;
+        }
+        return quoted;
+    }
+}

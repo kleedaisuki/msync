@@ -93,7 +93,7 @@ def run(binary: Path, cwd: Path) -> dict[str, int]:
     assert "USAGE" in help_output.terminal and help_output.pipe == "", help_output
 
     guide = invoke(binary, ["help", "syntax"], cwd, environment)
-    assert guide.code == 0 and "\x1b[1;36mlet\x1b[0m" in guide.terminal, guide
+    assert guide.code == 0 and "\x1b[36mlet\x1b[0m" in guide.terminal, guide
     assert "FUNCTIONS AND SCOPES" in guide.terminal and guide.pipe == "", guide
 
     for arguments, updates in (

@@ -41,6 +41,8 @@ internal sealed partial class LanguageServer
                     case InputClosed: return 0;
                     case InputError failure: Console.Error.WriteLine($"LSP input: {failure.Error.Message}"); return 1;
                     case AnalysisEvent completed: PublishAnalysis(completed); break;
+                    case CompletionEvent completed: PublishCompletion(completed); break;
+                    case AuthEvent authentication: HandleAuthentication(authentication); break;
                     case MessageEvent incoming:
                         using (incoming.Message)
                             if (Dispatch(incoming.Message.RootElement)) return 0;
@@ -52,9 +54,11 @@ internal sealed partial class LanguageServer
         finally
         {
             StopAnalysis();
+            if (completionService is not null) await completionService.DisposeAsync();
             events.Writer.TryComplete();
             while (events.Reader.TryRead(out ServerEvent? item))
                 if (item is MessageEvent incoming) incoming.Message.Dispose();
+                else if (item is CompletionEvent completed) completed.Work.Cancellation.Dispose();
         }
     }
 
@@ -76,6 +80,7 @@ internal sealed partial class LanguageServer
     {
         if (!root.TryGetProperty("method", out _))
         {
+            if (HandleAuthenticationResponse(root)) return false;
             if (root.TryGetProperty("id", out var responseId) && responseId.ValueKind == JsonValueKind.String
                 && responseId.GetString() == $"msync-refresh-{serverRequest}")
             {
@@ -91,12 +96,18 @@ internal sealed partial class LanguageServer
         if (method == "shutdown") StopAnalysis();
         try
         {
-            if (id is not null && (method is "textDocument/hover" or "textDocument/semanticTokens/full")
+            if (id is not null && (method is "textDocument/hover" or "textDocument/semanticTokens/full" or "textDocument/completion")
                 && parameters.TryGetProperty("textDocument", out var descriptor)
                 && documents.TryGetValue(descriptor.GetProperty("uri").GetString()!, out var document)
                 && document.Analysis is null)
             {
                 pendingInsights.Add(new(descriptor.GetProperty("uri").GetString()!, document.Generation, id, method, parameters.Clone()));
+                return false;
+            }
+            if (id is not null && method == "textDocument/completion"
+                && documents.TryGetValue(parameters.GetProperty("textDocument").GetProperty("uri").GetString()!, out var completionDocument))
+            {
+                BeginCompletion(id, parameters, completionDocument);
                 return false;
             }
             if (id is not null) Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = Handle(method, parameters) });
@@ -115,6 +126,7 @@ internal sealed partial class LanguageServer
         if (method == "$/cancelRequest")
         {
             string requested = parameters.GetProperty("id").GetRawText();
+            CancelCompletions(id: requested);
             for (int index = pendingInsights.Count - 1; index >= 0; index--)
                 if (pendingInsights[index].Id.ToJsonString() == requested)
                 {
@@ -128,6 +140,7 @@ internal sealed partial class LanguageServer
         string uri = descriptor.GetProperty("uri").GetString()!;
         if (method == "textDocument/didClose")
         {
+            CancelCompletions(uri);
             CompleteInsights(uri);
             documents.Remove(uri);
             lock (analysisGate) pendingAnalysis.Remove(uri);
@@ -137,6 +150,7 @@ internal sealed partial class LanguageServer
         int version = descriptor.GetProperty("version").GetInt32();
         EditorDocument? previous = documents.GetValueOrDefault(uri);
         if (method == "textDocument/didChange" && previous is not null && version <= previous.Version) return;
+        CancelCompletions(uri);
         CompleteInsights(uri);
         SourceText source = method == "textDocument/didOpen" ? new(descriptor.GetProperty("text").GetString()!) : ApplyChanges(previous?.Source ?? new(""), parameters);
         EditorDocument current = new(source, version, ++generation);
@@ -231,6 +245,8 @@ internal sealed partial class LanguageServer
     private void StopAnalysis()
     {
         shuttingDown = true;
+        CancelCompletions();
+        StopAuthentication();
         foreach (var request in pendingInsights)
             Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = null });
         pendingInsights.Clear();
@@ -244,9 +260,14 @@ internal sealed partial class LanguageServer
         {
             var request = pendingInsights[index];
             if (request.Uri != uri) continue;
+            pendingInsights.RemoveAt(index);
+            if (document?.Generation == request.Generation && request.Method == "textDocument/completion")
+            {
+                BeginCompletion(request.Id, request.Parameters, document);
+                continue;
+            }
             JsonNode? result = document?.Generation == request.Generation ? Handle(request.Method, request.Parameters) : null;
             Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = result });
-            pendingInsights.RemoveAt(index);
         }
     }
 

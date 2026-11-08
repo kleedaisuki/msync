@@ -35,14 +35,16 @@ internal static partial class TerminalPresentation
     internal static string Syntax(string source, bool color)
     {
         if (!color) return source;
-        return SyntaxTerm().Replace(source, match =>
+        StringBuilder result = new();
+        int position = 0;
+        foreach (var token in PromptSyntax.Highlight(source))
         {
-            string style = match.Groups["comment"].Success ? "90"
-                : match.Groups["string"].Success ? "32"
-                : match.Groups["keyword"].Success ? "1;36"
-                : match.Groups["type"].Success ? "35" : "36";
-            return Paint(match.Value, style, color);
-        });
+            result.Append(source.AsSpan(position, token.Start - position));
+            result.Append(Paint(source[token.Start..token.End], token.Formatting.ForegroundCode!, color));
+            position = token.End;
+        }
+        result.Append(source.AsSpan(position));
+        return result.ToString();
     }
 
     public static void Cancelled(string policy, bool interactive = false)
@@ -248,7 +250,4 @@ internal static partial class TerminalPresentation
     [GeneratedRegex("`([^`]+)`", RegexOptions.CultureInvariant)]
     private static partial Regex InlineCode();
 
-
-    [GeneratedRegex("""(?<comment>(?<!\S)(?:\#|//)[^\r\n]*)|(?<string>"(?:[^"]|"")*(?:"|$))|\b(?<keyword>let|fn|scope|native|if|else|for|in|match|null|true|false|is|not|and|or|exists|decltype|return)\b|\b(?<type>Bool|Range|String|Function|Scope|Path|Process|Connection|Null|Number)\b|::|->|=>|[?=$|]""", RegexOptions.CultureInvariant)]
-    private static partial Regex SyntaxTerm();
 }

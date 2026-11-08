@@ -19,7 +19,7 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
     public async Task<int> RunAsync()
     {
         await using InteractivePrompt? prompt = InteractivePrompt.IsSupported
-            ? new(syntax.IsIncomplete, () => compiler.BindingNames, color: TerminalPresentation.Colors(color)) : null;
+            ? new(syntax.IsIncomplete, () => compiler.BindingNames, color: TerminalPresentation.Colors(color), describe: compiler.DescribeBindings, analyze: compiler.AnalyzeEditor, colorPolicy: color) : null;
         editing = prompt is not null;
         if (!Console.IsInputRedirected)
             Console.WriteLine(TerminalPresentation.Paint("msync 0.8.0", TerminalPresentation.HeadingColor, TerminalPresentation.Colors(color))
