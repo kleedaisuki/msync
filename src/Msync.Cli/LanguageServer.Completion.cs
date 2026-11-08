@@ -31,8 +31,14 @@ internal sealed partial class LanguageServer
             work.Cancellation.Token.ThrowIfCancellationRequested();
             EditorDocument document = work.Document;
             int offset = Offset(document.Source, request.GetProperty("position"));
-            var context = SourceCompletion.Find(document.Source.Text, offset, resolveEndpoint: name => CompletionEndpoint(document, name, offset));
-            result = context is null ? Completions(document, request)
+            var editorContext = document.Analysis?.At(offset);
+            var receiver = editorContext?.Receiver;
+            var knownPath = receiver?.KnownPath ?? (receiver?.KnownText is { } text ? new PathValue(text) : null);
+            var context = SourceCompletion.Find(document.Source.Text, offset,
+                resolveEndpoint: name => CompletionEndpoint(editorContext, name),
+                receiverPath: knownPath,
+                unknownPathReceiver: (receiver?.Type is "Path" or "Path?" or "String" or "String?" or "unknown") && knownPath is null);
+            result = context is null ? Completions(document, request, editorContext)
                 : SourceItems(document.Source, context,
                     await service.CompleteAsync(context, Environment.CurrentDirectory, HostContext.HomeDirectory, work.Cancellation.Token));
         }
@@ -42,9 +48,8 @@ internal sealed partial class LanguageServer
         if (!events.Writer.TryWrite(new CompletionEvent(work, result, error))) work.Cancellation.Dispose();
     }
 
-    private static ConnectionValue? CompletionEndpoint(EditorDocument document, string name, int offset)
+    private static ConnectionValue? CompletionEndpoint(EditorContext? context, string name)
     {
-        var context = document.Analysis?.At(offset);
         if (context?.Receiver?.Endpoint is { } endpoint) return endpoint;
         IReadOnlyList<SemanticMember>? members = context?.Bindings;
         SemanticMember? selected = null;
