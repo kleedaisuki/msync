@@ -188,3 +188,14 @@ Filesystem and selected-path traversal order uses the shared
 `TextSemantics.Ordinal` Unicode scalar comparer, matching the Rust baseline
 rather than UTF-16 code-unit order. This affects enumeration/admission order,
 not dictionary key equality, native filesystem identity, or Windows case rules.
+
+The final extracted Linux Native AOT package passed the identical six real SSH
+CLI/artifact journeys with empty stderr, one client/authentication/exec session
+per execution, zero scp, and zero compile/bind clients. The accepted executable's
+SHA-256 is
+`ca5c2eb2aebe1397f4ec3a745a6e76dcfcf598723ba1046523f183012263f38b`.
+This confirms the packaged interpreter, embedded standard library, binary
+artifacts, native metadata query session, and transfer channel work together
+without a .NET runtime installation. The test owner records individual journey
+counts and actual bytes/context assertions in its `.temp` report; the maintained
+runner preserves the verification procedure after those fixtures are cleaned.
