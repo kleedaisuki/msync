@@ -227,7 +227,7 @@ internal static class Program
                     case "-n": case "--dry-run": dryRun = true; break;
                     case "--source-file": source = Next(); break;
                     case "--syntax": syntax = Next(); overrides["language.syntax"] = syntax; break;
-                    case "--color": overrides["ui.color"] = Next(); break;
+                    case "--color": overrides["ui.color"] = ColorPolicy(Next()); break;
                     case "--jobs": jobs = int.Parse(Next(), CultureInfo.InvariantCulture); if (jobs < 1) throw new ArgumentException("--jobs must be positive."); overrides["execution.jobs"] = jobs; break;
                     case "--buffer-size": overrides["execution.buffer_size"] = Next(); break;
                     case "--memory-limit": overrides["execution.memory_limit"] = Next(); break;
@@ -252,5 +252,8 @@ internal static class Program
             }
             return new(command, file, output, dryRun, optimization, source, jobs, formattingCheck, stdout, syntax, configPath, noConfig, overrides, tracePath, telemetryDatabase, noTelemetry) { SkillTopics = skillTopics, ExplicitCommand = commandSeen };
         }
+
+        private static string ColorPolicy(string value) => value is "auto" or "always" or "never" ? value
+            : throw new ArgumentException($"Unknown color policy '{value}'. Use auto, always, or never.");
     }
 }
