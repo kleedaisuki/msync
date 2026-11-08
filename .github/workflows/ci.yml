@@ -185,6 +185,9 @@ jobs:
       - name: Record native Windows O1 optimizer cost and executable shape
         if: ${{ !cancelled() && steps.state-components.outcome == 'success' }}
         run: artifacts/state-components/msync-components.exe --optimizer-pipeline --cases calls,scope_calls --sizes 1,32,128 --levels 1 --samples 7 --warmups 3 --output .temp/platform-results/optimizer-components.json
+      - name: Record native Windows ordinary-transfer compilation cost
+        if: ${{ !cancelled() && steps.state-components.outcome == 'success' }}
+        run: artifacts/state-components/msync-components.exe --optimizer-pipeline --cases transfers --sizes 128,1024 --levels 1 --samples 7 --warmups 3 --output .temp/platform-results/optimizer-transfer-components.json
       - name: Compare selected Windows Rust, editing-control and current native journeys
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.state == 'true' && runner.os == 'Windows' && steps.package.outcome == 'success' }}
         env:
