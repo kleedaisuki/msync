@@ -73,6 +73,7 @@ internal sealed partial class Compilation
         if (binary.Operator == "/" && binary.Right is PathExpr { Path: var pattern } && pattern.StartsWith('<') && pattern.EndsWith('>'))
         {
             Require(frame, left.Type, PathCompatible, binary.Left.Span);
+            ValidateRegex(frame, pattern[1..^1], binary.Right.Span);
             frame.Emit(OpCode.SelectPath, text: pattern[1..^1], span: binary.Span);
             return new(new(TypeKind.Range, TypeRef.Path));
         }

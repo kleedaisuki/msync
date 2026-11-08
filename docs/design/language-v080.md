@@ -38,7 +38,12 @@ optional range item type, rather than allocating a vector for ordinary scalars.
 `match` requires exhaustive coverage. True/false cover Bool, null covers Null,
 and type patterns cover their finite type domains. A regex or an individual
 String literal cannot exhaust the String/Path domain; a type arm or `_` is needed.
-Regex matching projects Path values into native strings. `decltype(expr)` checks
+Regex arms are partial predicates over Path/String: Null, Bool and other
+nontext values fall through rather than being stringified. A matched binding
+narrows to its text domain, so nullable or heterogeneous subjects remain useful
+with a fallback arm. Literal patterns are validated by the host regex engine
+during compilation. Regex matching projects Path values into native strings.
+`decltype(expr)` checks
 and infers the expression in a nonexecuted compilation frame and emits a Type
 constant; the operand's effects never enter the caller's instruction stream.
 

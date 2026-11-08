@@ -164,6 +164,7 @@ internal sealed partial class Compilation
         NullPattern => value.Type == TypeRef.Null ? true : !value.Type.Nullable ? false : null,
         TypePattern type => KnownTypeMatch(value, ResolveType(frame, type.Type)),
         LiteralPattern { Value: BoolExpr boolean } when value.KnownBool is not null => value.KnownBool.Value == boolean.Value,
+        RegexPattern when (value.Type.Kind & (TypeKind.Path | TypeKind.String)) == 0 => false,
         _ => null
     };
     private static bool? KnownTypeMatch(Info value, TypeRef expected)
@@ -190,10 +191,15 @@ internal sealed partial class Compilation
             case TypePattern type:
                 TypeConstant(frame, ResolveType(frame, type.Type), span); frame.Emit(OpCode.IsType, span: span); break;
             case RegexPattern regex:
-                Require(frame, value.Type, PathCompatible, span);
+                ValidateRegex(frame, regex.Pattern, span);
                 frame.Emit(OpCode.RegexMatch, text: regex.Pattern, span: span); break;
             default: throw Error(frame, "This pattern is not supported in a match arm.", span);
         }
+    }
+    private static void ValidateRegex(Frame frame, string pattern, SourceSpan span)
+    {
+        try { _ = new System.Text.RegularExpressions.Regex(pattern, System.Text.RegularExpressions.RegexOptions.CultureInvariant); }
+        catch (ArgumentException error) { throw Error(frame, $"Invalid regular expression: {error.Message}", span); }
     }
     private TypeRef PatternType(Frame frame, Pattern pattern, TypeRef original) => pattern switch
     {
