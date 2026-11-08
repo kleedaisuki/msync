@@ -37,3 +37,20 @@ avoid repeating unaffected work when changing one component.
 For a controlled optimization within 0.8, replace `--rust OLD` with
 `--previous-aot BEFORE` and keep `--aot AFTER`. Both images then use the same
 0.8 source and `.mso` format; only the changed runtime contract needs measuring.
+
+## Persistent interactive requests
+
+```sh
+python3 tests/Performance/interactive.py \
+  --rust /absolute/path/to/legacy-release/msync \
+  --aot /absolute/path/to/native/msync --samples 31 --warmups 3
+```
+
+This portable harness measures native stdio LSP initialization, steady hover and
+semantic-token requests over 128 real bindings, plus persistent REPL literal
+overwrites with exact output bytes checked after each response. Both language
+versions use their actual syntax and protocol responses. The 0.8-only scalar REPL
+response is measured separately, not represented as a capability of 0.7.
+Only LSP initialization includes process creation; other requests use live
+sessions. Native stdout is parsed as the real protocol, never a timing stub.
+Use `--case`, `--bindings` and `--previous-aot` for affected-contract comparisons.

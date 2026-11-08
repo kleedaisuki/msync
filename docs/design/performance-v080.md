@@ -181,3 +181,72 @@ This is an incremental native result for ordinary warm-cache Linux trees, not a
 native Windows, WSL, WAN or release-wide throughput claim. The initial broad
 comparison and targeted mechanism probes remain distinct from a final package
 acceptance snapshot.
+
+## Current product baseline: frozen final package, not the initial rewrite
+
+The follow-up performance work starts from source `364de751a36145baa463e3fb95c1e22d4c52d94c`
+and the actual final packaged AOT executable
+`ca5c2eb2aebe1397f4ec3a745a6e76dcfcf598723ba1046523f183012263f38b`.
+That image includes full Unicode 17 string casing, scalar ordering, source-free
+artifact fixes, normal transfer scheduling and the first Unix worker optimization.
+It is frozen under `.temp/performance-v080/current/before`; the older
+`.temp/native-v080/msync` is an initial rewrite image and is not this baseline.
+The optimized Rust control remains SHA-256
+`dc9a283064556fe517682afa5077d0228bb29e4f6c2150f1dbdbdc519634ad44`.
+The frozen AOT payload includes its native SQLite sidecar and per-file hashes.
+
+Each result below uses three warmups and **31 alternating paired samples** on
+the same Linux host. p50 is the median; p95 is the linearly interpolated empirical
+quantile. File bytes, native modes and modification timestamps are checked
+outside timing. There is no comparison between different hosted CI machines.
+Raw results: `.temp/performance-v080/current/baseline-cli.json`.
+
+| Current CLI journey | Rust p50 / p95 ms | Current AOT p50 / p95 ms |
+| --- | ---: | ---: |
+| Startup (`--version`) | 3.500 / 3.940 | 8.942 / 9.952 |
+| Check one transfer | 4.345 / 5.237 | 10.256 / 11.981 |
+| Check 128 transfers | 24.564 / 31.334 | 13.220 / 14.446 |
+| 4 KiB file replacement, source | 8.669 / 9.851 | 13.226 / 15.853 |
+| 4 KiB file replacement, object | 9.070 / 13.374 | 12.486 / 14.610 |
+| 256 × 4 KiB tree, source | 322.977 / 368.746 | 347.307 / 385.992 |
+| 256 × 4 KiB tree, object | 296.820 / 321.752 | 313.360 / 350.765 |
+
+The current product therefore still has approximately 4–6 ms of additional fixed
+cost on startup/small one-shot operations. Batch checking is faster, while small
+tree copying remains slower than Rust in this paired run. Earlier improvement
+against the first C# implementation is not a claim that current C# already beats
+the Rust baseline.
+
+### Persistent REPL and editor round trips
+
+[`tests/Performance/interactive.py`](../../tests/Performance/interactive.py)
+uses actual native REPL/LSP processes on Windows or Linux. Requests are
+serialized and replies are parsed through real stdio. LSP initialization
+includes process creation; steady requests exclude startup. REPL copy samples
+overwrite the same file using each version's source syntax, await its actual
+completion response, then compare exact bytes outside timing. A separate scalar
+expression response is a new 0.8 capability, not an invented old-language oracle.
+
+The same 31-pair method gives:
+
+| Persistent operation | Rust p50 / p95 ms | Current AOT p50 / p95 ms |
+| --- | ---: | ---: |
+| REPL literal replacement and completion | 2.455 / 2.965 | 1.737 / 2.240 |
+| REPL scalar expression response (0.8 only) | — | 0.092 / 0.139 |
+| LSP initialize, including process creation | 3.810 / 4.790 | 9.000 / 10.343 |
+| LSP hover over a bound Path | 0.361 / 0.483 | 0.194 / 0.337 |
+| LSP semantic tokens, 128 bindings | 0.951 / 1.131 | 5.058 / 7.294 |
+
+Raw results: `.temp/performance-v080/current/baseline-interactive.json`.
+These small-document requests distinguish healthy persistent execution from
+one-shot startup cost. They do not hide editor scaling: the product-latency
+workstream separately measures large-document tokens and edit bursts, which
+expose synchronous diagnostics and quadratic coordinate conversion. Its focused
+before/after evidence must be reported alongside this baseline, not replaced by
+the favorable small hover measurement.
+
+The portable CLI harness also accepts `--file-bytes`, `--files`, `--bytes` and
+`--statements` independently, so large-file I/O, small-file count and compiler
+scaling are not conflated. Native Windows/Linux execution and same-host old-C#
+controls are coordinated by the cross-platform acceptance workflow. No timing
+threshold is a CI quality gate.
