@@ -10,7 +10,7 @@ internal static class TailCallOptimization
         var targets = FunctionInlining.Targets(function, module.Constants, requireKnownCallee: !ClosedFunctions(module));
         var tailCalls = targets.Where(pair => pair.Value == functionIndex && Returns(code, pair.Key + 1))
             .Select(pair => pair.Key).ToHashSet();
-        if (tailCalls.Count == 0 || OwnsWork(function, targets, functionIndex)) return function;
+        if (tailCalls.Count == 0 || OwnsWork(function, targets, functionIndex) || ExcessCaptures(module, function.LocalCount)) return function;
 
         var closure = function.LocalCount;
         var arguments = closure + 1;
@@ -60,6 +60,21 @@ internal static class TailCallOptimization
                 : instruction with { A = positions[instruction.A] };
         }
         return function with { Instructions = output, LocalCount = arguments + function.ParameterCount };
+    }
+
+    private static bool ExcessCaptures(Module module, int localCount)
+    {
+        // Direct specialization retains the actual closure's captures. A call
+        // whose captures overflow the target frame traps before entering it.
+        if (module.Functions.Any(function => function.Instructions.Any(instruction =>
+            instruction.Op == OpCode.MakeClosure && instruction.B > localCount))) return true;
+        bool Excess(Value value) => value switch
+        {
+            FunctionValue function => (function.Captures?.Count ?? 0) > localCount || (function.Captures?.Any(Excess) ?? false),
+            ScopeValue scope => scope.Members.Values.Any(Excess),
+            _ => false
+        };
+        return module.Constants.Any(Excess);
     }
 
     private static bool ClosedFunctions(Module module)

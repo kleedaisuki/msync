@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text;
 using Msync.Compiler;
 using Msync.Core;
 using Msync.Runtime;
@@ -97,4 +98,60 @@ Module captureChanged = Transform(changingCapture);
 Artifact.Validate(captureChanged);
 Require(!ReferenceEquals(captureChanged.Functions[1], changingCapture.Functions[1]), "Changing closure was not transformed");
 Require(await Run(captureChanged) == new NumberValue(20), "Tail jump retained the caller's capture instead of the callee's");
+
+Module excessCaptures = new([new NumberValue(7), new NumberValue(8)],
+[
+    new("main", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.Call, 0, 2), new(OpCode.Return)], TypeRef.Null),
+    new("small-frame", 0, 0,
+    [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.MakeClosure, 2, 2), new(OpCode.Call, 0, 2), new(OpCode.Return)], TypeRef.Null),
+    new("large-capture", 0, 2, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, 2)
+], OptimizationLevel: 0);
+Artifact.Validate(excessCaptures);
+async Task<string> Failure(Module module)
+{
+    try { await Run(module); return "no failure"; }
+    catch (Exception error) { return error.GetType().FullName + ":" + error.Message; }
+}
+string excessError = await Failure(excessCaptures);
+Require(excessError.StartsWith(typeof(IndexOutOfRangeException).FullName!, StringComparison.Ordinal), "Excess capture O0 did not retain the frame-overflow trap");
+Module excessRetained = Transform(excessCaptures);
+Require(ReferenceEquals(excessRetained.Functions[1], excessCaptures.Functions[1]), "Tail transformation erased an excess-capture trap");
+Require(await Failure(excessRetained) == excessError, "Tail-pass excess-capture failure changed");
+Module excessIntegrated = Optimizer.Optimize(excessCaptures, 3);
+Artifact.Validate(excessIntegrated);
+Require(await Failure(excessIntegrated) == excessError, "Integrated O3 erased an excess-capture trap");
+using MemoryStream legacyBytes = VersionTwoExcessCaptures();
+Module legacyExcess = Artifact.Read(legacyBytes);
+Require(legacyExcess.Semantics == ModuleSemantics.Legacy, "Version 2 fixture lost its execution semantics");
+Require(await Failure(legacyExcess) == excessError, "Version 2 baseline frame-copy failure changed");
+Require(await Failure(Optimizer.Optimize(legacyExcess, 3)) == excessError, "Version 2 O3 frame-copy failure changed");
 Console.WriteLine($"Tail call optimization: {assertions} contracts passed.");
+
+static MemoryStream VersionTwoExcessCaptures()
+{
+    MemoryStream stream = new();
+    using (BinaryWriter writer = new(stream, Encoding.UTF8, leaveOpen: true))
+    {
+        writer.Write("MSYNCBC\0"u8); writer.Write((ushort)2); writer.Write("0.8.0");
+        writer.Write((byte)0); writer.Write(0); writer.Write(0); writer.Write(false);
+        writer.Write(2); writer.Write((byte)3); writer.Write(7d); writer.Write((byte)3); writer.Write(8d);
+        writer.Write(3);
+        Function(writer, "main", 0, 0, [(13, 1, 0), (11, 0, 2), (12, 0, 0)]);
+        Function(writer, "small-frame", 0, 0, [(0, 0, 0), (0, 1, 0), (13, 2, 2), (11, 0, 2), (12, 0, 0)]);
+        Function(writer, "large-capture", 2, 2, [(1, 0, 0), (12, 0, 0)]);
+    }
+    stream.Position = 0;
+    return stream;
+
+    static void Function(BinaryWriter writer, string name, int locals, int captures,
+        IReadOnlyList<(byte Op, int A, int B)> instructions)
+    {
+        writer.Write(name); writer.Write(0); writer.Write(locals); writer.Write(captures);
+        writer.Write((ushort)1); writer.Write(false); writer.Write(false);
+        writer.Write(instructions.Count);
+        foreach (var (op, a, b) in instructions)
+        {
+            writer.Write(op); writer.Write(a); writer.Write(b); writer.Write(false); writer.Write(false);
+        }
+    }
+}
