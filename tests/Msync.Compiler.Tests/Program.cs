@@ -1,4 +1,5 @@
 using Msync.Compiler.Syntax;
+if (args.Contains("--type-specialization", StringComparer.Ordinal)) { SemanticChecks.RunTypeSpecialization(); return; }
 if (args.Contains("--branch-joins", StringComparer.Ordinal)) { SemanticChecks.RunBranches(); return; }
 string[] examples = [
 "fn copy() { ~/.codex -> $wsl::~/.codex }; let replace = fn (file, des) { file -> des };",
@@ -65,3 +66,4 @@ if (arithmeticCall is not BinaryExpr { Operator: "-" }) throw new Exception("Ari
 Console.WriteLine("Arithmetic recursion syntax ok");
 SemanticChecks.Run();
 SemanticChecks.RunBranches();
+SemanticChecks.RunTypeSpecialization();

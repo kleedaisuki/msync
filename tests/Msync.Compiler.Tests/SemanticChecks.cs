@@ -33,7 +33,7 @@ internal static class SemanticChecks
             AssertType(Accept("let value? = if true { ~/input } else { null }; if value? { false } else { value -> ~/output }"), TypeRef.Bool);
             AssertType(Accept("let value? = if true { ~/input } else { null }; if value is not null { value -> ~/output } else { false }"), TypeRef.Bool);
             Reject("let value? = if true { ~/input } else { null }; if value? { value -> ~/output } else { false }");
-            AssertType(Accept("if true { true } else {}"), TypeRef.Bool.WithNull);
+            AssertType(Accept("if exists ./condition { true } else {}"), TypeRef.Bool.WithNull);
         });
         Check("match exhaustiveness and null refinement", () =>
         {
@@ -131,30 +131,30 @@ internal static class SemanticChecks
         }
         Check("structural Scope if joins", () =>
         {
-            const string definitions = "let selected = if true { scope { item: ~/left, flag: true, nested: scope { value: \"left\", }, leftOnly: true, } } else { scope { item: ~/right, flag: false, nested: scope { value: \"right\", }, rightOnly: false, } }; ";
+            const string definitions = "let selected = if exists ./condition { scope { item: ~/left, flag: true, nested: scope { value: \"left\", }, leftOnly: true, } } else { scope { item: ~/right, flag: false, nested: scope { value: \"right\", }, rightOnly: false, } }; ";
             AssertType(Accept(definitions + "selected::nested::value"), TypeRef.String);
             AssertType(Accept(definitions + "selected::item"), TypeRef.Path);
             AssertType(Accept(definitions + "selected::flag"), TypeRef.Bool);
             Reject(definitions + "selected::leftOnly");
             Reject(definitions + "selected::rightOnly");
-            AssertType(Accept("let selected = if true { scope { item: ~/left, } } else { scope { item: \"right\", } }; selected::item"), TypeRef.Union(TypeRef.Path, TypeRef.String));
+            AssertType(Accept("let selected = if exists ./condition { scope { item: ~/left, } } else { scope { item: \"right\", } }; selected::item"), TypeRef.Union(TypeRef.Path, TypeRef.String));
         });
         Check("structural Scope match joins", () =>
         {
-            const string definitions = "let selected = match true { true => { scope { item: ~/left, leftOnly: true, } }, false => { scope { item: ~/right, rightOnly: false, } } }; ";
+            const string definitions = "let selected = match exists ./condition { true => { scope { item: ~/left, leftOnly: true, } }, false => { scope { item: ~/right, rightOnly: false, } } }; ";
             AssertType(Accept(definitions + "selected::item"), TypeRef.Path);
             Reject(definitions + "selected::leftOnly");
             Reject(definitions + "selected::rightOnly");
         });
         Check("same source function alias survives joins", () =>
         {
-            var module = Accept("fn identity(value) { value }; let action = if true { identity } else { identity }; action(\"text\"); action(~/document)");
+            var module = Accept("fn identity(value) { value }; let action = if exists ./condition { identity } else { identity }; action(\"text\"); action(~/document)");
             AssertType(module, TypeRef.Path);
             Require(module.Functions.Count(function => function.Name == "identity") == 2, "Same callable joined alias must retain generic specialization.");
         });
         Check("multiple generic callable branch alternatives", () =>
         {
-            var module = Accept("let action = if true { fn(value) { value } } else { fn(value) { value } }; action(\"text\"); action(~/document)");
+            var module = Accept("let action = if exists ./condition { fn(value) { value } } else { fn(value) { value } }; action(\"text\"); action(~/document)");
             AssertType(module, TypeRef.Path);
             var mappings = Dispatches(module, OpCode.Call).ToArray();
             Require(mappings.Length == 2, "Both generic calls need their own dispatch mapping.");
@@ -163,60 +163,125 @@ internal static class SemanticChecks
             Require(mappings[0].Values.All(target => module.Functions[target].ReturnType == TypeRef.String), "String call dispatched to a wrong specialization.");
             Require(mappings[1].Values.All(target => module.Functions[target].ReturnType == TypeRef.Path), "Path call dispatched to a wrong specialization.");
             Require(!mappings[0].Values.Intersect(mappings[1].Values).Any(), "Different argument types must not reuse the wrong specialization targets.");
-            var repeated = Accept("let action = if true { fn(value) { value } } else { fn(value) { value } }; action(\"first\"); action(\"second\")");
+            var repeated = Accept("let action = if exists ./condition { fn(value) { value } } else { fn(value) { value } }; action(\"first\"); action(\"second\")");
             AssertType(repeated, TypeRef.String);
             var repeatedMappings = Dispatches(repeated, OpCode.Call).ToArray();
             Require(repeatedMappings.Length == 2 && repeatedMappings[0].OrderBy(pair => pair.Key).SequenceEqual(repeatedMappings[1].OrderBy(pair => pair.Key)), "Repeated same-type calls should reuse their specialization dispatch.");
         });
         Check("match callable alternatives retain result union", () =>
         {
-            var module = Accept("let action = match true { true => { fn() { \"text\" } }, false => { fn() { ~/document } } }; action()");
+            var module = Accept("let action = match exists ./condition { true => { fn() { \"text\" } }, false => { fn() { ~/document } } }; action()");
             AssertType(module, TypeRef.Union(TypeRef.Path, TypeRef.String));
             Require(Dispatches(module, OpCode.Call).Single().Count == 2, "Match function alternatives need typed dispatch.");
-            Reject("let action = if true { fn(value) { value } } else { fn() { true } }; action(true)");
+            Reject("let action = if exists ./condition { fn(value) { value } } else { fn() { true } }; action(true)");
         });
         Check("Scope function members retain callable alternatives", () =>
         {
-            var module = Accept("let selected = if true { scope { action: fn(value) { value }, } } else { scope { action: fn(value) { value }, } }; selected::action(\"text\"); selected::action(~/document)");
+            var module = Accept("let selected = if exists ./condition { scope { action: fn(value) { value }, } } else { scope { action: fn(value) { value }, } }; selected::action(\"text\"); selected::action(~/document)");
             AssertType(module, TypeRef.Path);
             Require(Dispatches(module, OpCode.Call).Count() == 2, "Structural Scope function members lost their callable dispatch.");
         });
         Check("generic source function receives action alternatives", () =>
         {
-            var module = Accept("fn apply(action, value) { action(value) }; let action = if true { fn(value) { value } } else { fn(value) { value } }; apply(action, \"text\"); apply(action, ~/document)");
+            var module = Accept("fn apply(action, value) { action(value) }; let action = if exists ./condition { fn(value) { value } } else { fn(value) { value } }; apply(action, \"text\"); apply(action, ~/document)");
             AssertType(module, TypeRef.Path);
             var applications = module.Functions.Where(function => function.Name == "apply").ToArray();
             Require(applications.Length == 2, "Generic apply must specialize for the two value argument types.");
             Require(applications.Any(function => function.ReturnType == TypeRef.String) && applications.Any(function => function.ReturnType == TypeRef.Path), "Generic source calls lost branch return types.");
             Require(applications.All(function => function.Instructions.Any(instruction => instruction.Op == OpCode.Call && !string.IsNullOrEmpty(instruction.Text))), "Action alternatives lost dispatch inside generic source functions.");
-            AssertType(Accept("fn apply(action, value) { action(value) }; let action = if true { $std::string::to_lowercase } else { $std::string::to_uppercase }; apply(action, \"Text\")"), TypeRef.String);
+            AssertType(Accept("fn apply(action, value) { action(value) }; let action = if exists ./condition { $std::string::to_lowercase } else { $std::string::to_uppercase }; apply(action, \"Text\")"), TypeRef.String);
         });
         Check("callback alternatives across item types", () =>
         {
-            var module = Accept("let action = if true { fn(value) { value / child } } else { fn(value) { value / other } }; let texts = $std::ranges::transform([\"one\"], action); $std::ranges::transform([~/one], action)");
+            var module = Accept("let action = if exists ./condition { fn(value) { value / child } } else { fn(value) { value / other } }; let texts = $std::ranges::transform([\"one\"], action); $std::ranges::transform([~/one], action)");
             AssertType(module, new(TypeKind.Range, TypeRef.Path));
             var mappings = Dispatches(module, OpCode.SpecializeClosure).ToArray();
             Require(mappings.Length == 2 && mappings.All(mapping => mapping.Count == 2), "Callback branch alternatives need two complete specialization maps.");
             Require(mappings.SelectMany(mapping => mapping.Values).Any(target => module.Functions[target].ParameterTypes?.Single() == TypeRef.String), "String callback specialization missing.");
             Require(mappings.SelectMany(mapping => mapping.Values).Any(target => module.Functions[target].ParameterTypes?.Single() == TypeRef.Path), "Path callback specialization missing.");
-            Reject("let predicate = if true { fn(value) { true } } else { fn(value) { value } }; $std::ranges::filter([~/one], predicate)");
+            Reject("let predicate = if exists ./condition { fn(value) { true } } else { fn(value) { value } }; $std::ranges::filter([~/one], predicate)");
         });
         Check("native Function aliases survive joins", () =>
         {
-            var same = Accept("let lower = $std::string::to_lowercase; let action = if true { lower } else { lower }; action(\"TEXT\")");
+            var same = Accept("let lower = $std::string::to_lowercase; let action = if exists ./condition { lower } else { lower }; action(\"TEXT\")");
             AssertType(same, TypeRef.String);
-            var different = Accept("let action = if true { $std::string::to_lowercase } else { $std::string::to_uppercase }; action(\"Text\")");
+            var different = Accept("let action = if exists ./condition { $std::string::to_lowercase } else { $std::string::to_uppercase }; action(\"Text\")");
             AssertType(different, TypeRef.String);
             Require(different.Constants.OfType<FunctionValue>().Any(value => value.NativeName == "string.to_lowercase") && different.Constants.OfType<FunctionValue>().Any(value => value.NativeName == "string.to_uppercase"), "Native branch identities missing from the binary value table.");
             Require(different.Functions.SelectMany(function => function.Instructions).All(instruction => instruction.Op != OpCode.ProcessCall), "A native function alias became a callable Path.");
-            AssertType(Accept("let selected = if true { scope { action: $std::string::to_lowercase, } } else { scope { action: $std::string::to_uppercase, } }; selected::action(\"Text\")"), TypeRef.String);
-            AssertType(Accept("let action = match true { true => { $std::string::to_lowercase }, false => { $std::string::to_uppercase } }; action(\"Text\")"), TypeRef.String);
-            AssertType(Accept("let action = if true { $std::string::to_lowercase } else { $std::string::to_uppercase }; $std::ranges::transform([\"Text\"], action)"), new(TypeKind.Range, TypeRef.String));
-            var mixed = Accept("let action = if true { fn(value) { value } } else { $std::string::to_uppercase }; action(\"Text\")");
+            AssertType(Accept("let selected = if exists ./condition { scope { action: $std::string::to_lowercase, } } else { scope { action: $std::string::to_uppercase, } }; selected::action(\"Text\")"), TypeRef.String);
+            AssertType(Accept("let action = match exists ./condition { true => { $std::string::to_lowercase }, false => { $std::string::to_uppercase } }; action(\"Text\")"), TypeRef.String);
+            AssertType(Accept("let action = if exists ./condition { $std::string::to_lowercase } else { $std::string::to_uppercase }; $std::ranges::transform([\"Text\"], action)"), new(TypeKind.Range, TypeRef.String));
+            var mixed = Accept("let action = if exists ./condition { fn(value) { value } } else { $std::string::to_uppercase }; action(\"Text\")");
             AssertType(mixed, TypeRef.String);
             Require(Dispatches(mixed, OpCode.Call).Single().Count == 1, "Mixed source/native calls must map the source closure while preserving native identity.");
         });
         if (failures.Count > 0) throw new InvalidOperationException("Branch semantic checks failed:\n" + string.Join("\n", failures));
+    }
+    public static void RunTypeSpecialization()
+    {
+        List<string> failures = [];
+        void Check(string name, Action action)
+        {
+            try { action(); Console.WriteLine($"type specialization ok: {name}"); }
+            catch (Exception error) { failures.Add($"{name}: {error.Message}"); }
+        }
+        Check("generic decltype conditional dispatch", () =>
+        {
+            var module = Accept("fn convert(value) { if decltype(value) is Path { value -> ./out } else { false } }; convert(true); convert(./input)");
+            AssertType(module, TypeRef.Bool);
+            var instances = module.Functions.Where(function => function.Name == "convert").ToArray();
+            Require(instances.Length == 2, "Type-directed conversion must specialize Bool and Path arguments separately.");
+            var boolean = instances.Single(function => function.ParameterTypes?.Single() == TypeRef.Bool);
+            var path = instances.Single(function => function.ParameterTypes?.Single() == TypeRef.Path);
+            Require(boolean.ReturnType == TypeRef.Bool && boolean.Instructions.All(instruction => instruction.Op is not (OpCode.Transfer or OpCode.LocalTransfer)), "The Bool specialization must not lower the invalid Path-transfer branch.");
+            Require(path.ReturnType == TypeRef.Bool && path.Instructions.Any(instruction => instruction.Op is OpCode.Transfer or OpCode.LocalTransfer), "The Path specialization must lower its selected transfer.");
+        });
+        Check("generic decltype match dispatch", () =>
+        {
+            var module = Accept("fn viaMatch(value) { match decltype(value) { Path => { value -> ./out }, Bool => { not value }, _ => { false } } }; viaMatch(true); viaMatch(./input)");
+            AssertType(module, TypeRef.Bool);
+            var instances = module.Functions.Where(function => function.Name == "viaMatch").ToArray();
+            Require(instances.Length == 2, "Type match must specialize both admitted argument types.");
+            var boolean = instances.Single(function => function.ParameterTypes?.Single() == TypeRef.Bool);
+            var path = instances.Single(function => function.ParameterTypes?.Single() == TypeRef.Path);
+            Require(boolean.Instructions.Any(instruction => instruction.Op == OpCode.Not) && boolean.Instructions.All(instruction => instruction.Op is not (OpCode.Transfer or OpCode.LocalTransfer)), "The Bool type-match specialization must lower only boolean negation.");
+            Require(path.Instructions.Any(instruction => instruction.Op is OpCode.Transfer or OpCode.LocalTransfer) && path.Instructions.All(instruction => instruction.Op != OpCode.Not), "The Path type-match specialization must not validate or lower boolean negation.");
+        });
+        Check("compile-time type conditions exclude invalid branches", () =>
+        {
+            AssertType(Accept("if decltype(./input) is Path { true } else { not ./input }"), TypeRef.Bool);
+            AssertType(Accept("if decltype(true) is Path { true -> ./out } else { false }"), TypeRef.Bool);
+            AssertType(Accept("match decltype(./input) { Bool => { not ./input }, Path => { true } }"), TypeRef.Bool);
+        });
+        Check("Bool argument values do not contaminate type specialization", () =>
+        {
+            var module = Accept("fn runtimeFlag(flag) { if flag { true } else { false } }; runtimeFlag(true); runtimeFlag(false)");
+            var instances = module.Functions.Where(function => function.Name == "runtimeFlag").ToArray();
+            Require(instances.Length == 1, "Both Bool values must reuse one type specialization.");
+            var instructions = instances[0].Instructions;
+            Require(instructions.Any(instruction => instruction.Op == OpCode.JumpIfFalse), "A Bool parameter was incorrectly folded using its first caller's value.");
+            Require(instructions.Any(instruction => instruction.Op == OpCode.True) && instructions.Any(instruction => instruction.Op == OpCode.False), "A reused specialization must retain both runtime result branches.");
+            var match = Accept("fn runtimeMatch(flag) { match flag { true => { ./truth }, false => { \"false\" } } }; runtimeMatch(true); runtimeMatch(false)");
+            var matcher = match.Functions.Single(function => function.Name == "runtimeMatch");
+            Require(matcher.ReturnType == TypeRef.Union(TypeRef.Path, TypeRef.String), "Bool pattern matching must retain both possible result types.");
+            Require(matcher.Instructions.Any(instruction => instruction.Op == OpCode.JumpIfFalse), "A Bool match parameter was incorrectly folded using its first caller's value.");
+        });
+        Check("decltype calls and process operands remain unevaluated", () =>
+        {
+            var module = Accept("fn transfer(value) { value -> ./out }; let transferType = decltype(transfer(./input)); let processType = decltype(./bin/tool()); transferType is Bool and processType is Process");
+            var main = module.Functions[module.EntryPoint].Instructions;
+            Require(main.All(instruction => instruction.Op is not (OpCode.Transfer or OpCode.LocalTransfer or OpCode.ProcessCall or OpCode.Call)), "An unevaluated operand emitted a runtime call or effect in main.");
+            Require(module.Constants.OfType<TypeValue>().Any(value => value.Data == TypeRef.Bool) && module.Constants.OfType<TypeValue>().Any(value => value.Data == TypeRef.Process), "Unevaluated effect operands lost their inferred types.");
+        });
+        Check("static type-match exhaustiveness", () =>
+        {
+            Reject("match decltype(true) { Path => { true } }");
+            Reject("fn missing(value) { match decltype(value) { Path => { true } } }; missing(true)");
+            AssertType(Accept("match decltype(./input) { Path => { true } }"), TypeRef.Bool);
+            AssertType(Accept("match decltype(true) { Bool => { true } }"), TypeRef.Bool);
+        });
+        if (failures.Count > 0) throw new InvalidOperationException("Type specialization checks failed:\n" + string.Join("\n", failures));
     }
     private static IEnumerable<Dictionary<int, int>> Dispatches(Module module, OpCode opcode)
     {
