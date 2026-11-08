@@ -153,3 +153,40 @@ conditions and anonymous-function bodies local. The pre-fix Native AOT image
 and the corrected managed process use the same native encrypted SSH fixture;
 final native platform acceptance must run these integrated cases again on the
 new package rather than reuse the pre-fix result.
+
+## Minimal completion source edits (2026-11-09)
+
+Filesystem lookup and source insertion are separate. The selected endpoint and
+captured Path context determine the query directory; they do not authorize the
+editor to rewrite the user's expression. Completion now replaces only the
+current pathname item, including its stale suffix to the right of the caret.
+Existing `./`, `~/`, drive spelling, separators, aliases, parentheses and endpoint
+qualification remain unchanged. A following separator is retained instead of
+being inserted twice.
+
+Ordinary item names are inserted verbatim. Whitespace, language operators,
+reserved literals and an actually bound ambiguous name require the language's
+quoted-item spelling. This is necessary escaping, not a default wrapper:
+`./pl` becomes `./plain.txt`, while `./two w` becomes `./"two words.txt"`.
+Already quoted String content remains String content. No completion synthesizes
+`$local`, changes an endpoint, quotes every component, or expands a relative
+source spelling to an absolute path.
+
+A Windows drive/backslash atom already owns its trailing separator. The parser
+and formatter therefore recognize a following quoted item as a Path join, e.g.
+`D:/"Program Files (x86)"`, without introducing an endpoint wrapper. Root-relative
+Windows lookup is qualified against the captured drive; incomplete UNC parents
+have no directory to enumerate until a server and share have been specified.
+Complete UNC and device roots retain normal native enumeration and diagnostics.
+See [Windows lookup roots](windows-completion-roots-v080.md).
+
+REPL matching uses the text before the caret to rank candidates while retaining
+the full replacement span. The pinned prompt's public `CompletionItem` priority
+hook supplies this behavior; completion in `plZZ` before `ZZ` can select
+`plain.txt` and remove the stale suffix without altering the input renderer.
+
+`$pwd` and `$file` retain known contextual endpoint identity even when their
+actual path projection is deferred. File-relative directory lookup uses the
+actual document's source directory, not the language-server cwd. Opaque Path
+parameters and source-relative values requalified before their projection stay
+unknown rather than being guessed as a remote relative directory.

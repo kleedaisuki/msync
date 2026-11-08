@@ -84,19 +84,61 @@ def quote(text: str) -> str:
 
 
 def path_expression(raw: str) -> str:
-    """Expected binding-independent Path spelling, distinct from a String."""
-    if os.name == "nt":
-        return "$local::" + quote(raw)
-    if raw.startswith("~/"):
-        return "~/" + "/".join(
-            quote(part) if part not in {"", ".", ".."} else part
-            for part in raw[2:].split("/")
+    """Preserve the user's path spelling; escape only syntax-sensitive items."""
+    separators = {"/", "\\"} if os.name == "nt" else {"/"}
+    keywords = {
+        "true",
+        "false",
+        "null",
+        "fn",
+        "scope",
+        "if",
+        "else",
+        "match",
+        "for",
+        "in",
+        "is",
+        "not",
+        "and",
+        "or",
+        "exists",
+        "decltype",
+        "return",
+        "break",
+        "loop",
+        "native",
+        "Bool",
+        "Range",
+        "String",
+        "Function",
+        "Scope",
+        "Path",
+        "Process",
+        "Connection",
+        "Null",
+        "Type",
+        "Number",
+    }
+    parts: list[str] = []
+    start = 0
+    for index in range(len(raw) + 1):
+        if index != len(raw) and raw[index] not in separators:
+            continue
+        part = raw[start:index]
+        drive = start == 0 and len(part) == 2 and part[0].isalpha() and part[1] == ":"
+        special = not drive and (
+            part in keywords
+            or part.isdigit()
+            or any(
+                character.isspace() or character in '{}()[],;?"$|<>!=:+*'
+                for character in part
+            )
         )
-    absolute = raw.startswith("/")
-    parts = raw[1:].split("/") if absolute else raw.removeprefix("./").split("/")
-    return ("/" if absolute else "./") + "/".join(
-        quote(part) if part not in {"", ".", ".."} else part for part in parts
-    )
+        parts.append(quote(part) if special else part)
+        if index != len(raw):
+            parts.append(raw[index])
+        start = index + 1
+    return "".join(parts)
 
 
 def run(binary: Path, directory: Path) -> dict[str, int]:
@@ -125,6 +167,7 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         (workspace / "colon:name").write_text("colon", encoding="utf-8")
         (workspace / "report::20").write_text("colons", encoding="utf-8")
     (workspace / "nested").mkdir()
+    (workspace / "nested/child.txt").write_text("child", encoding="utf-8")
     (directory / "parent-file.txt").write_text("parent", encoding="utf-8")
     (home / "home-file.txt").write_text("home", encoding="utf-8")
     (home / ".ssh/config").write_text(
@@ -167,7 +210,8 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         candidates = [
             item
             for item in items
-            if item.get("textEdit", {}).get("newText") == expected_expression
+            if apply_edit(text, item.get("textEdit", {}))
+            == f"let selected = {expected_expression};\ndecltype(selected)\n"
         ]
         assert len(candidates) == 1, (fragment, expected_expression, items)
         candidate = candidates[0]
@@ -184,7 +228,7 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         )
         cases = [
             ("./pl" + CARET, "./plain.txt", "Path"),
-            ("./spa" + CARET, "./space name.txt", "String"),
+            ("./spa" + CARET, "./space name.txt", "Path"),
             ("./semi" + CARET, "./semi;colon", "Path"),
             ("./可" + CARET, "./可莉.txt", "Path"),
             ("./😀" + CARET, "./😀file.txt", "Path"),
@@ -195,9 +239,11 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
             ("../pa" + CARET, "../parent-file.txt", "Path"),
             ("~/ho" + CARET, "~/home-file.txt", "Path"),
             ("./nest" + CARET, "./nested/", "Path"),
+            ("./nest" + CARET + "/child.txt", "./nested/child.txt", "Path"),
+            ('"./nest' + CARET + '/child.txt"', "./nested/child.txt", "String"),
             ('"./pl' + CARET + '"', "./plain.txt", "String"),
             ("./pl" + CARET + "NOT_A_SUFFIX", "./plain.txt", "Path"),
-            ("./two w" + CARET, "./two words.txt", "String"),
+            ("./two w" + CARET, "./two words.txt", "Path"),
         ]
         if os.name != "nt":
             cases.append(("./quo" + CARET, './quote"name', "Path"))
@@ -212,6 +258,19 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         for fragment, raw, expected in cases:
             expression = quote(raw) if expected == "String" else path_expression(raw)
             selected(fragment, expression, expected)
+        windows_partial_roots = 0
+        if os.name == "nt":
+            _, rooted = complete("let selected = \\" + CARET + ";\n")
+            assert any("textEdit" in item for item in rooted), rooted
+            windows_partial_roots += 1
+            for prefix in (
+                "\\\\",
+                "\\\\msync-incomplete-host",
+                "\\\\msync-incomplete-host\\",
+            ):
+                _, partial = complete("let selected = " + prefix + CARET + ";\n")
+                assert partial == [], (prefix, partial)
+                windows_partial_roots += 1
 
         (workspace / "two words.txt").write_bytes(b"SOURCE_BYTES_NOT_FILENAME")
         (workspace / "alpha").write_bytes(b"SELECTED_ALPHA")
@@ -271,9 +330,9 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
         _, hosts = complete("let selected = ssh://" + CARET + ";\n")
         replacements = {item.get("textEdit", {}).get("newText", "") for item in hosts}
         assert {
-            "ssh://forge",
-            "ssh://forge-backup",
-            "ssh://lab-alias",
+            "forge",
+            "forge-backup",
+            "lab-alias",
         } <= replacements, hosts
         assert not any(
             "*" in replacement or "!excluded" in replacement
@@ -286,7 +345,7 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
             matches = [
                 item
                 for item in items
-                if item.get("textEdit", {}).get("newText") == "ssh://" + alias
+                if item.get("textEdit", {}).get("newText") == alias
             ]
             assert len(matches) == 1 and "Connection" in matches[0].get("detail", ""), (
                 alias,
@@ -308,6 +367,7 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
             assert not any("textEdit" in item for item in items), (marked, items)
         return {
             "applied_path_completions": len(cases),
+            "windows_partial_roots": windows_partial_roots,
             "ssh_alias_sources": 2,
             "noncode_contexts": 3,
             "completion_actual_io_oracles": 3,
@@ -419,7 +479,7 @@ def alias_path_queries(binary: Path, directory: Path) -> dict[str, int]:
                 response,
             )
             edited = apply_edit(text, matches[0]["textEdit"])
-            assert retained + '"file.txt"' in edited, edited
+            assert retained + "file.txt" in edited, edited
             source = directory / "alias-run.msync"
             source.write_text(edited, encoding="utf-8")
             result = subprocess.run(
@@ -473,9 +533,9 @@ def compressed_scope_queries(binary: Path, directory: Path) -> dict[str, int]:
         ),
         (
             "scope C {root:./spa" + CARET + "};",
-            '"./space compact.txt"',
+            './"space compact.txt"',
             "root",
-            "String",
+            "Path",
         ),
     ]
     try:
@@ -498,7 +558,8 @@ def compressed_scope_queries(binary: Path, directory: Path) -> dict[str, int]:
             matches = [
                 item
                 for item in response
-                if item.get("textEdit", {}).get("newText") == replacement
+                if apply_edit(text, item.get("textEdit", {}))
+                == "scope C {" + member + ":" + replacement + "};"
             ]
             assert len(matches) == 1, (marked, replacement, response)
             edited = apply_edit(text, matches[0]["textEdit"])
@@ -596,7 +657,7 @@ def remote_queries(
         change("touch " + shlex.quote(remote + "/plain-new-after-query.txt"))
         chosen("pl", "plain-new-after-query.txt")
         stored = chosen("pl", "plain.txt", stored=True)
-        assert 'folder/"plain.txt"' in stored, stored
+        assert "folder/plain.txt" in stored, stored
         if before_transfer is not None:
             before_transfer()
         script = stored.replace(
