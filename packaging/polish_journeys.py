@@ -42,6 +42,7 @@ def main() -> int:
     if sys.platform != "win32":
         journeys.append(("terminal-presentation", "terminal_presentation_journey.py"))
         journeys.append(("hints", "hint_journey.py"))
+        journeys.append(("authentication", "authentication_journey.py"))
     for name, script in journeys:
         extra = (
             ["--ssh-fixture"]
