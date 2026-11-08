@@ -1,5 +1,42 @@
 # Barrier-delimited interpretation (language 0.5)
 
+## Reading the Rust baseline for the 0.8 restoration
+
+This is a historical implementation note. The current `AGENTS.md` normal-copy
+and retry contract supersedes its recovery, compensation and registry passages;
+restoring scheduling does not restore transactions or persistent recovery work.
+The current spelling is `release`, `acquire` and `acqrel`. The legacy parser also
+accepted `async` and `await` aliases, which are not new 0.8 source keywords.
+
+The semantic source map is:
+
+- `legacy/src/language/parser.rs::scheduled_statement` and `scheduling_flags`:
+  standalone `release` is one `Before` marker, **not a sticky background mode**.
+  Standalone `acquire` is a real join-all; `acquire Program` is a targeted join.
+- `legacy/src/compiler/structured.rs::Lower::scheduled`: a generic prefixed
+  statement gets `Before` for release and `After` for acquire. An `After` marker
+  does not itself join every retained program or flow. A native program binding
+  always gets its launch boundary and, unless released without acquire, a
+  targeted join. Thus a bare program call has the behavior of `acqrel`.
+- `Lower::expand_macro` records the inherited pending process identities and
+  joins only newly introduced, still-pending children on successful return.
+  Nested calls discharge their own obligations without joining caller work.
+- `legacy/src/hir/rewrite.rs::normalize_fences` uses original directional
+  intervals. Actual launch and join remain temporal observation anchors even
+  when their resource footprint is empty; future filesystem observations cannot
+  move through them merely because no ordinary file conflict was discovered.
+- `legacy/src/execution/live.rs::await_process` closes selected unused stdin,
+  waits for natural exit and output drain, and joins flows connected to the
+  selected program identities. Untargeted acquire additionally joins all flows.
+
+The real-process regressions in `legacy/tests/barrier_runtime_v5.rs` distinguish
+admission from completion: deferred exit-code capture must leave an independent
+marker producer admissible, and launching a second released process must not
+join an open output capture belonging to the first. The frontend tests in
+`legacy/tests/frontend_barriers_v5.rs` preserve default-call equivalence,
+launch/output/join boundaries and nested call ownership. These are semantic
+references, not claims that a restored C# implementation has passed those cases.
+
 ## Scope and current status
 
 The 0.5 language removes named transactions, isolation modes, checkpoints and
