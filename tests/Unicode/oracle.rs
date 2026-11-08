@@ -8,6 +8,12 @@ fn hex(value: &str) -> String {
         .join(" ")
 }
 
+fn parse(line: &str) -> String {
+    line.split_whitespace()
+        .map(|part| char::from_u32(u32::from_str_radix(part, 16).unwrap()).unwrap())
+        .collect()
+}
+
 fn main() -> io::Result<()> {
     assert_eq!(char::UNICODE_VERSION, (17, 0, 0));
     let stdout = io::stdout();
@@ -26,11 +32,20 @@ fn main() -> io::Result<()> {
         }
         return Ok(());
     }
+    let order = std::env::args().nth(1).as_deref() == Some("--order");
     for line in io::stdin().lock().lines() {
-        let value = line?
-            .split_whitespace()
-            .map(|part| char::from_u32(u32::from_str_radix(part, 16).unwrap()).unwrap())
-            .collect::<String>();
+        let line = line?;
+        if order {
+            let (left, right) = line.split_once(';').unwrap();
+            let result = match parse(left).cmp(&parse(right)) {
+                std::cmp::Ordering::Less => -1,
+                std::cmp::Ordering::Equal => 0,
+                std::cmp::Ordering::Greater => 1,
+            };
+            writeln!(output, "{result}")?;
+            continue;
+        }
+        let value = parse(&line);
         writeln!(
             output,
             "{};{}",

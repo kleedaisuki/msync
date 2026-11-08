@@ -93,12 +93,97 @@ def hex_source(values: Sequence[str]) -> str:
     )
 
 
+def order_pairs() -> list[tuple[str, str]]:
+    pairs = [
+        ("𐀀", "\ue000"),
+        ("\ue000", "𐀀"),
+        ("", ""),
+        ("a", "aa"),
+        ("a" * 128 + "𐀀", "a" * 128 + "\ue000"),
+        ("𐀀", "𐀁"),
+        ("\U0010ffff", "\uffff"),
+        ("same", "same"),
+    ]
+    generator = random.Random(170081)
+    alphabet = [
+        "a",
+        "z",
+        "/",
+        ".",
+        "\0",
+        "ß",
+        "可",
+        "\ue000",
+        "\uffff",
+        "𐀀",
+        "𐀁",
+        "𐐀",
+        "😀",
+        "\U0010ffff",
+    ]
+    for _ in range(10000):
+        prefix = "a" * generator.randrange(0, 65)
+        left = "".join(generator.choices(alphabet, k=generator.randrange(0, 30)))
+        right = "".join(generator.choices(alphabet, k=generator.randrange(0, 30)))
+        pairs.append((prefix + left, prefix + right))
+    return pairs
+
+
+def compare_order(rust: Path, csharp: Sequence[str]) -> dict[str, str | int]:
+    pairs = order_pairs()
+    source = "".join(
+        hex_source([left]).strip() + ";" + hex_source([right]).strip() + "\n"
+        for left, right in pairs
+    )
+    expected = invoke([str(rust), "--order"], source)
+    observed = invoke([*csharp, "--order"], source)
+    (ARTIFACTS / "rust-order.txt").write_text(expected, encoding="utf-8")
+    (ARTIFACTS / "csharp-order.txt").write_text(observed, encoding="utf-8")
+    assert observed == expected, (
+        "Scalar ordering differs; see .temp/unicode-v080/build/{rust,csharp}-order.txt"
+    )
+    return {
+        "ordered_pairs": len(pairs),
+        "ordering_sha256": hashlib.sha256(observed.encode()).hexdigest(),
+    }
+
+
+def compare_casing(rust: Path, csharp: Sequence[str]) -> dict[str, str | int]:
+    expected = invoke([str(rust), "--scalars"])
+    observed = invoke([*csharp, "--scalars"])
+    (ARTIFACTS / "rust-scalars.txt").write_text(expected, encoding="utf-8")
+    (ARTIFACTS / "csharp-scalars.txt").write_text(observed, encoding="utf-8")
+    assert observed == expected, (
+        "Scalar maps differ; see .temp/unicode-v080/build/{rust,csharp}-scalars.txt"
+    )
+    contexts = sample_contexts()
+    source = hex_source(contexts)
+    expected_contexts = invoke([str(rust)], source)
+    observed_contexts = invoke(csharp, source)
+    (ARTIFACTS / "rust-contexts.txt").write_text(expected_contexts, encoding="utf-8")
+    (ARTIFACTS / "csharp-contexts.txt").write_text(observed_contexts, encoding="utf-8")
+    assert observed_contexts == expected_contexts, (
+        "Contextual maps differ; see .temp/unicode-v080/build/{rust,csharp}-contexts.txt"
+    )
+    return {
+        "scalars_examined": 0x110000 - 0x800,
+        "changed_scalars": len(expected.splitlines()),
+        "contexts": len(contexts),
+        "mapping_sha256": hashlib.sha256(observed.encode()).hexdigest(),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--native",
         action="store_true",
         help="Publish the focused C# oracle using Native AOT",
+    )
+    parser.add_argument(
+        "--order-only",
+        action="store_true",
+        help="Check only changed ordinal ordering, not already accepted casing",
     )
     args = parser.parse_args()
     ARTIFACTS.mkdir(parents=True, exist_ok=True)
@@ -147,34 +232,18 @@ def main() -> None:
             "dotnet",
             str(ARTIFACTS / "bin/Msync.Unicode.Tests/debug/Msync.Unicode.Tests.dll"),
         ]
-    expected = invoke([str(rust), "--scalars"])
-    observed = invoke([*csharp, "--scalars"])
-    (ARTIFACTS / "rust-scalars.txt").write_text(expected, encoding="utf-8")
-    (ARTIFACTS / "csharp-scalars.txt").write_text(observed, encoding="utf-8")
-    assert observed == expected, (
-        "Scalar maps differ; see .temp/unicode-v080/build/{rust,csharp}-scalars.txt"
-    )
-    contexts = sample_contexts()
-    source = hex_source(contexts)
-    expected_contexts = invoke([str(rust)], source)
-    observed_contexts = invoke(csharp, source)
-    (ARTIFACTS / "rust-contexts.txt").write_text(expected_contexts, encoding="utf-8")
-    (ARTIFACTS / "csharp-contexts.txt").write_text(observed_contexts, encoding="utf-8")
-    assert observed_contexts == expected_contexts, (
-        "Contextual maps differ; see .temp/unicode-v080/build/{rust,csharp}-contexts.txt"
-    )
-    result = {
+    result: dict[str, str | int | bool] = {
         "unicode_version": "17.0.0",
         "rustc": invoke(["rustc", "--version"]).strip(),
         "native_aot": args.native,
-        "scalars_examined": 0x110000 - 0x800,
-        "changed_scalars": len(expected.splitlines()),
-        "contexts": len(contexts),
-        "mapping_sha256": hashlib.sha256(observed.encode()).hexdigest(),
     }
+    if not args.order_only:
+        result.update(compare_casing(rust, csharp))
+    result.update(compare_order(rust, csharp))
     report = json.dumps(result, indent=2) + "\n"
     (
-        ARTIFACTS / ("native-results.json" if args.native else "managed-results.json")
+        ARTIFACTS
+        / ("native-order-results.json" if args.native else "managed-order-results.json")
     ).write_text(report, encoding="utf-8")
     print(report, end="")
 

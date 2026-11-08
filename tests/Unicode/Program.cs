@@ -1,11 +1,20 @@
 using System.Globalization;
 using System.Text;
 using Msync.Runtime;
+using Msync.Core;
 
 static string Hex(string value) => string.Join(' ', value.EnumerateRunes().Select(rune => rune.Value.ToString("X", CultureInfo.InvariantCulture)));
 static void Write(string value)
 {
     Console.WriteLine($"{Hex(UnicodeCasing.ToLower(value))};{Hex(UnicodeCasing.ToUpper(value))}");
+}
+
+static string Parse(string line)
+{
+    StringBuilder input = new();
+    foreach (string scalar in line.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        input.Append(char.ConvertFromUtf32(int.Parse(scalar, NumberStyles.HexNumber, CultureInfo.InvariantCulture)));
+    return input.ToString();
 }
 
 if (args is ["--scalars"])
@@ -24,8 +33,10 @@ if (args is ["--scalars"])
 string? line;
 while ((line = Console.ReadLine()) is not null)
 {
-    StringBuilder input = new();
-    foreach (string scalar in line.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-        input.Append(char.ConvertFromUtf32(int.Parse(scalar, NumberStyles.HexNumber, CultureInfo.InvariantCulture)));
-    Write(input.ToString());
+    if (args is ["--order"])
+    {
+        string[] pair = line.Split(';');
+        Console.WriteLine(Math.Sign(TextSemantics.CompareOrdinal(Parse(pair[0]), Parse(pair[1]))));
+    }
+    else Write(Parse(line));
 }

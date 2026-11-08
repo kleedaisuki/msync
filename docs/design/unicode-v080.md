@@ -1,5 +1,29 @@
 # Full Unicode string casing in the Native AOT runtime
 
+## Scalar ordinal ordering
+
+Rust's valid UTF-8 lexical ordering follows Unicode scalar order; .NET's ordinal
+comparison orders UTF-16 code units. These disagree when a supplementary scalar
+such as U+10000 is compared with a BMP private-use character such as U+E000.
+The String/Path comparison operators and actual filename iteration must retain
+the former ordering. Identifier dictionaries, exact equality/hashing and
+Windows case-insensitive filesystem identity do not need a new policy.
+
+`Msync.Core.TextSemantics.CompareOrdinal` uses the BCL vectorized common-prefix
+operation, then compares the first differing scalar. ASCII/BMP disagreements do
+not need scalar decoding or heap allocation. If the common prefix ends after a
+shared high surrogate, comparing the differing low surrogates already preserves
+scalar order. `TextSemantics.Ordinal` exposes the same ordering as a shared
+StringComparer for actual path/name iteration, with ordinal equality and hashing.
+
+The independent Rust oracle passed **10,008 deterministic pairs**, including
+empty/equal strings, long ASCII prefixes, the BMP/supplementary inversion,
+different low surrogates after a shared high surrogate, native path fragments
+and randomized mixed text. Run only this changed contract with
+`python3 tests/Unicode/compare_rust.py --order-only`; add `--native` to test the
+published focused oracle. Managed evidence is retained in
+`.temp/unicode-v080/build/managed-order-results.json`.
+
 ## Preserved language contract
 
 The Rust standard library implements `string.to_lowercase` and

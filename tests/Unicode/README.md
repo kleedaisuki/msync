@@ -6,6 +6,9 @@ the focused oracle with Native AOT and invariant globalization before comparison
 The oracle checks all valid Unicode scalar inputs and 2,018 deterministic string
 contexts; it does not repeat unrelated compiler, filesystem or transport tests.
 
+Use `--order-only` to check only scalar ordinal comparison against Rust across
+10,008 deterministic pairs, without repeating accepted full casing measurements.
+
 The Rust oracle deliberately names its Unicode version: a future Unicode upgrade
 must choose updated language behavior explicitly rather than silently inheriting
 whatever casing tables a newer host runtime installs.
