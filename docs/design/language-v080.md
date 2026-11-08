@@ -331,9 +331,12 @@ A generic parameter therefore forgets its scalar endpoint identity, including
 identities nested in Range item metadata, before body inference. Otherwise a
 type-shared `identity(firstHost)` specialization could incorrectly advertise the
 first host for `identity(secondHost)`, or carry it into a returned closure.
-Immutable Scope/callable captures remain safe because their identities already
-participate in the established specialization key. A function that statically
-returns a literal Connection can retain that literal result normally.
+Captured location identities participate in specialization, but a mutable
+location's current Scope payload, callable or endpoint is not a permanent
+constant. Reuse its current-value facts only while the reaching write and
+alias/effect dependencies remain valid; see
+[mutable state and effects](mutable-state-and-effects-v080.md). A function that
+statically returns a literal Connection can retain that literal result normally.
 
 `CompilerSession.DescribeBindings()` renders the current accepted/reconciled
 lexical environment into an independent semantic snapshot: names, types,
