@@ -3,3 +3,8 @@
 /.temp/
 /dist/
 __pycache__/
+**/bin/
+**/obj/
+/legacy/target/
+/legacy/.temp/
+/legacy/.cache/

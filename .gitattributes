@@ -1,4 +1,4 @@
 *.sh text eol=lf
 packaging/licenses/** -text
 # Preserve the upstream license bytes, including its final blank line.
-vendor/rustyline/LICENSE -text whitespace=-blank-at-eof
+legacy/vendor/rustyline/LICENSE -text whitespace=-blank-at-eof
