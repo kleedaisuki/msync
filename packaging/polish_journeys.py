@@ -38,6 +38,7 @@ def main() -> int:
             "reference-options",
             "identifier-return",
             "mutable-state",
+            "mutable-getters",
             "scheduling",
             "repl-state",
             "navigation",
@@ -88,6 +89,7 @@ def main() -> int:
         ("reference-options", "presentation_journey.py"),
         ("identifier-return", "identifier_return_journey.py"),
         ("mutable-state", "mutable_state_journey.py"),
+        ("mutable-getters", "mutable_state_journey.py"),
         ("scheduling", "scheduling_journey.py"),
         ("repl-state", "repl_state_journey.py"),
         ("navigation", "navigation_journey.py"),
@@ -114,6 +116,14 @@ def main() -> int:
             extra.append("--executable")
         if name == "reference-options":
             extra.append("--reference-only")
+        if name == "mutable-getters":
+            for case in (
+                "constructor-captured-holes",
+                "constraint-conversion",
+                "deferred-null-captures",
+            ):
+                extra.extend(["--case", case])
+            extra.extend(["--properties", "0"])
         phases.append(
             run_phase(
                 name,

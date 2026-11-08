@@ -168,7 +168,7 @@ jobs:
                   for phase in ('mutable-state', 'scheduling', 'repl-state', 'presentation', 'navigation'):
                       arguments.extend(['--phase', phase])
               if os.environ['POLISH_CLOSING'] == 'true':
-                  for phase in ('repl-state', 'reference-options'):
+                  for phase in ('repl-state', 'mutable-getters', 'reference-options'):
                       arguments.extend(['--phase', phase])
               if os.environ['POLISH_IDENTIFIERS'] == 'true':
                   arguments.extend(['--phase', 'identifier-return'])
