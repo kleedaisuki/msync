@@ -100,7 +100,8 @@ MSYNC_TEST_SERVER_PATH=/absolute/path/to/msync xvfb-run -a npm run test:integrat
 
 Omit `xvfb-run -a` on an existing X11 desktop. The runner isolates HOME,
 configuration, temporary files, editor profiles and the test workspace under the
-repository `.temp`. It records server SHA-256, VS Code version, logs and phases.
+repository `.temp`. It records executable and adjacent managed-assembly SHA-256 values, VS Code
+version, logs and phases.
 `MSYNC_TEST_VSCODE_EXECUTABLE` reuses an installed test editor;
 `MSYNC_TEST_VSCODE_VERSION` selects a download version. The journey exercises a
 nullable diagnostic and a correcting edit, brace formatting, generic-function
@@ -108,9 +109,17 @@ navigation, completion, hover, symbols, UTF-16 semantic ranges and server restar
 A transfer fixture must remain unexecuted throughout. `MSYNC_TEST_PROTOCOL_ONLY=1`
 selects the narrower semantic URI journey, including incomplete edits.
 
-The prior 0.7 native-host evidence remains historical; it does not certify the
-rewritten 0.8 compiler. Current 0.8 verification is recorded with the integration
-work rather than inheriting a previous server's results.
+The 0.8 native-host journey passed on 2026-11-08 using VS Code **1.144.0**, the
+production esbuild extension bundle and the C# development apphost. It reported
+the nullable diagnostic, cleared it after an incremental correction, applied
+**11 formatting edits**, navigated the generic function, exercised completion,
+hover and symbols, validated **34 UTF-16 semantic tokens**, and restarted the
+server. The transfer output remained absent throughout. The focused protocol
+journey also passed for **10 URI forms** and **74 semantic tokens**, including
+incomplete/complete IPv6, Unicode addresses, empty addresses and quoted URLs.
+These automated Xvfb runs exercise the actual Extension Development Host; they
+are not a human visual review. The historical 0.7 evidence is not used as
+acceptance of the rewritten compiler.
 
 References:
 [VS Code syntax highlighting](https://code.visualstudio.com/api/language-extensions/syntax-highlight-guide),

@@ -58,8 +58,14 @@ async function main() {
     }, null, 2));
     await fs.writeFile(path.join(directories.workspace, 'preserved.txt'), 'keep me\n');
     const serverSha256 = createHash('sha256').update(await fs.readFile(serverPath)).digest('hex');
+    const managedAssemblies = {};
+    for (const entry of await fs.readdir(path.dirname(serverPath), { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.dll')) continue;
+        const bytes = await fs.readFile(path.join(path.dirname(serverPath), entry.name));
+        managedAssemblies[entry.name] = createHash('sha256').update(bytes).digest('hex');
+    }
     const protocolOnly = process.env.MSYNC_TEST_PROTOCOL_ONLY === '1';
-    const metadata = { serverPath, serverSha256, runRoot, suite: protocolOnly ? 'protocol' : 'full', startedAt: new Date().toISOString() };
+    const metadata = { serverPath, serverSha256, managedAssemblies, runRoot, suite: protocolOnly ? 'protocol' : 'full', startedAt: new Date().toISOString() };
     await fs.writeFile(path.join(runRoot, 'run.json'), JSON.stringify(metadata, null, 2));
     const log = createWriteStream(path.join(runRoot, 'host.log'));
     const tee = target => new Writable({ write(chunk, encoding, callback) {
