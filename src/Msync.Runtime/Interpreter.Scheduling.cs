@@ -27,6 +27,7 @@ public sealed partial class Interpreter
     private readonly List<PendingWork> pending = [];
     private readonly HashSet<ProcessValue> sessionProcesses = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<Task, IReadOnlyList<ProcessValue>> processDependencies = [];
+    private readonly Dictionary<Task, ResourceKey> namespaceProducers = [];
     private WorkOwner currentOwner = new();
     private bool LegacyScheduling => (module.Semantics & ModuleSemantics.DirectionalScheduling) == 0;
     private Task ordering = Task.CompletedTask;
@@ -83,10 +84,7 @@ public sealed partial class Interpreter
         }
         return resolved ?? arguments;
     }
-    private void QueueTransfer(Value source, Value destination, SourceSpan? span, bool local, CancellationToken cancellationToken)
-        => _ = ScheduleTransfer(source, destination, span, local, cancellationToken, discarded: true);
-
-    private Task<bool> ScheduleTransfer(Value source, Value destination, SourceSpan? span, bool local, CancellationToken cancellationToken, bool discarded = false)
+    private async ValueTask<Task<bool>> ScheduleTransferAsync(Value source, Value destination, SourceSpan? span, bool local, CancellationToken cancellationToken, bool discarded = false)
     {
         // Resolve dependencies before starting I/O; the VM never runs mutable scalar bytecode in workers.
         var target = destination is DeferredValue ? null : context.AsPath(destination);
@@ -94,6 +92,21 @@ public sealed partial class Interpreter
             : source is DeferredValue && (source.Type.Kind & TypeKind.Path) != 0 ? [new ResourceKey(PathEndpoint(source) ?? "*", "")] : [];
         var writes = new[] { target is null ? new ResourceKey((destination.Type.Kind & TypeKind.Path) != 0 ? PathEndpoint(destination) ?? "*" : "local", "") : Key(target) };
         var dependencies = resources.Dependencies(reads, writes);
+        List<Task>? namespaceDependencies = null;
+        foreach (var dependency in dependencies)
+        {
+            if (!namespaceProducers.TryGetValue(dependency, out var produced) || produced.Endpoint != "local") continue;
+            if (reads.Length != 0 && DescendsFrom(reads[0], produced) || DescendsFrom(writes[0], produced))
+                (namespaceDependencies ??= []).Add(dependency);
+        }
+        if (namespaceDependencies is not null)
+        {
+            // A prior directory/link publication can change physical aliases beneath its destination.
+            await Task.WhenAll(namespaceDependencies);
+            if (source is PathValue resolvedSource) reads = [Key(resolvedSource)];
+            if (target is not null) writes = [Key(target)];
+            dependencies = resources.Dependencies(reads, writes);
+        }
         admittedTransfers++;
         dependencyEdges += dependencies.Count;
         var predecessor = ordering;
@@ -116,10 +129,20 @@ public sealed partial class Interpreter
         var work = new PendingWork(completion, processes, discarded);
         if (processes.Count != 0) processDependencies.Add(completion, processes);
         resources.Add(completion, reads, writes);
+        if (source is PathValue || source is DeferredValue && (source.Type.Kind & TypeKind.Path) != 0)
+            namespaceProducers.Add(completion, writes[0]);
         pending.Add(work);
         (currentOwner.Tasks ??= []).Add(completion);
         if (discarded) (currentOwner.UnobservedTransfers ??= []).Add(completion);
         return completion;
+    }
+    private static bool DescendsFrom(ResourceKey child, ResourceKey parent)
+    {
+        if (child.Endpoint != parent.Endpoint || child.Path.Length == 0) return false;
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var prefix = parent.Path.AsSpan().TrimEnd(Path.DirectorySeparatorChar);
+        return child.Path.Length > prefix.Length && child.Path.AsSpan().StartsWith(prefix, comparison)
+            && child.Path[prefix.Length] == Path.DirectorySeparatorChar;
     }
     private async ValueTask AwaitNativeDependenciesAsync(string name, IReadOnlyList<Value> arguments)
     {

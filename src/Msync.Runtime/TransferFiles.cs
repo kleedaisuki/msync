@@ -137,11 +137,11 @@ internal static class TransferFiles
             else
                 File.CreateSymbolicLink(stage, link);
             modified?.Apply(stage, link: true);
-            File.Move(stage, target, overwrite: true);
+            NativeFileIdentity.MoveLink(stage, target);
         }
         finally
         {
-            File.Delete(stage);
+            NativeFileIdentity.DeleteLink(stage, directory);
         }
     }
 

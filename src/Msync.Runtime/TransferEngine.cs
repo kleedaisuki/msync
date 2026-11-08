@@ -145,7 +145,7 @@ public static partial class TransferEngine
     {
         if (replace && !Directory.Exists(source))
             throw new IOException($"Tree replacement requires a directory source: '{source}'.");
-        if (!container && !replace && Directory.Exists(target))
+        if (!container && !replace && Directory.Exists(target) && (File.GetAttributes(target) & FileAttributes.ReparsePoint) == 0)
             throw new IOException($"Exact destination '{target}' is an existing directory; append '/' for container insertion or '/.' for replacement.");
     }
 

@@ -6,6 +6,25 @@ namespace Msync.Runtime;
 
 internal static class NativeFileIdentity
 {
+    internal static void MoveLink(string source, string target)
+    {
+        // File.Move checks File.Exists, which follows directory links instead of moving their entries.
+        bool success = OperatingSystem.IsWindows() ? MoveFile(NativeFileMetadata.WindowsPath(source), NativeFileMetadata.WindowsPath(target), 1) : Rename(source, target) == 0;
+        if (!success)
+        {
+            var cause = new Win32Exception(Marshal.GetLastPInvokeError());
+            throw new IOException($"Cannot publish symbolic link '{target}': {cause.Message}", cause);
+        }
+    }
+
+    internal static void DeleteLink(string path, bool directory)
+    {
+        if (!OperatingSystem.IsWindows() || !directory) { File.Delete(path); return; }
+        if (RemoveDirectory(NativeFileMetadata.WindowsPath(path))) return;
+        int error = Marshal.GetLastPInvokeError();
+        if (error is not (2 or 3)) throw new IOException($"Cannot remove owned symbolic-link stage '{path}'.", new Win32Exception(error));
+    }
+
     internal static void CreateHardLink(string link, string target)
     {
         bool success = OperatingSystem.IsWindows() ? CreateHardLinkWindows(link, target, IntPtr.Zero) : Link(target, link) == 0;
@@ -64,6 +83,14 @@ internal static class NativeFileIdentity
         throw new IOException($"Cannot inspect '{path}': {new Win32Exception(Marshal.GetLastPInvokeError()).Message}");
     }
 
+    [DllImport("libc", EntryPoint = "rename", SetLastError = true)]
+    private static extern int Rename([MarshalAs(UnmanagedType.LPUTF8Str)] string source, [MarshalAs(UnmanagedType.LPUTF8Str)] string target);
+    [DllImport("kernel32.dll", EntryPoint = "MoveFileExW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool MoveFile(string source, string target, uint flags);
+    [DllImport("kernel32.dll", EntryPoint = "RemoveDirectoryW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool RemoveDirectory(string path);
     [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
     [DllImport("libc", EntryPoint = "link", SetLastError = true)]

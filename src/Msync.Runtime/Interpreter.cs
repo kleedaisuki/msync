@@ -217,11 +217,13 @@ public sealed partial class Interpreter
                     case OpCode.LocalTransfer:
                         {
                             var destination = Pop(); var source = Pop();
-                            if (pc + 1 < code.Count && code[pc + 1].Op == OpCode.Pop
+                            bool discarded = pc + 1 < code.Count && code[pc + 1].Op == OpCode.Pop
                                 && source is PathValue or StringValue or DeferredValue
-                                && destination is PathValue or StringValue or DeferredValue)
-                            { QueueTransfer(source, destination, instruction.Span, instruction.Op == OpCode.LocalTransfer, cancellationToken); pc++; }
-                            else { if (LegacyScheduling || source is not (PathValue or StringValue or DeferredValue)) await DrainAsync(); stack.Add(await ScheduleTransfer(source, destination, instruction.Span, instruction.Op == OpCode.LocalTransfer, cancellationToken) ? Value.True : Value.False); }
+                                && destination is PathValue or StringValue or DeferredValue;
+                            if (!discarded && (LegacyScheduling || source is not (PathValue or StringValue or DeferredValue))) await DrainAsync();
+                            var completion = await ScheduleTransferAsync(source, destination, instruction.Span, instruction.Op == OpCode.LocalTransfer, cancellationToken, discarded);
+                            if (discarded) pc++;
+                            else stack.Add(await completion ? Value.True : Value.False);
                             break;
                         }
                     case OpCode.Not: stack.Add(MapValue(Pop(), TypeRef.Bool, value => AsBool(value) ? Value.False : Value.True)); break;
