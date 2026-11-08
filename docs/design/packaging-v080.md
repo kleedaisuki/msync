@@ -2,37 +2,54 @@
 
 ## Current complete local delivery set
 
-The final product source is `8ca36bc`, including the bounded WSL archive-receipt
-protocol and the prepublication member-length check. The earlier image identities
-below retain their historical checkpoints; this is the current four-asset set
-under `dist/`. No public release, tag or pull request was created.
+The presentation/completion product source is `a4437d6`, still version 0.8.0.
+[The final native Windows/Linux run](https://github.com/kleedaisuki/msync/actions/runs/42496053973)
+passed both target operating systems. The four accepted assets are collated under
+`dist/`; no public release, tag or pull request was created.
 
 | Asset | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `msync-0.8.0-linux-x86_64.tar.gz` | 5,244,319 | `56e01f75474e78bd29b9e9196d824fed296689e301eca9162860710fcdc0f98d` |
-| `msync-0.8.0-windows-x86_64-setup.exe` | 6,000,331 | `ea998935d715888d42049eb4ad89e13ad7d65e0314ce9bce269cacce5caeaa6d` |
-| `msync-0.8.0-windows-x86_64.zip` | 5,572,664 | `390f13a1cd0117b28fafa494513ab85a53795d9de43b5ccfe8bd8d74f8002753` |
-| `msync-language-0.8.0.vsix` | 122,831 | `fdf2f987a7582a9c0b2b6f5b4fe8ed6f63fdf0dc43575af57c2c24ad51bfd182` |
+| `msync-0.8.0-linux-x86_64.tar.gz` | 5,713,409 | `d1a3a8f65f114e32abbf3be8aac86ceb13a41f0f378e28a03223101eb864ece1` |
+| `msync-0.8.0-windows-x86_64-setup.exe` | 6,381,728 | `5904ecdd13c6926a5346672b95a685c88d9862fd7326799cc9f64b35b01aa79e` |
+| `msync-0.8.0-windows-x86_64.zip` | 6,177,198 | `cfb427397c4f7e4bafffc9ab58e1d9822f82422f32a6f19f1653fc9d47619f3f` |
+| `msync-language-0.8.0.vsix` | 125,157 | `b4d2b91bdd31c34b2e7ecf0ccdc60e4e9f2b6a6c0c5ada8c1887286b11a7de7a` |
 
-`dist/SHA256SUMS` covers all four. Both portable-package manifests were verified
-completely after collation. The Linux executable is SHA-256
-`82c9139427ec7af91cde20c2eb80f99445c299ccce1845e08722aa3e0b47fc5e`;
-its final installed smoke and Ubuntu 22 container without .NET/ICU passed.
-The Windows executable is SHA-256
-`0f62a046456f64034619cb1bba9ce813e0b4ff774fd338d0ae558592d27ec135`,
-copied unchanged from [the accepted native Windows WSL run](https://github.com/kleedaisuki/msync/actions/runs/42480251334).
-Source/`.mso`/`.mexe` round trips cover small, empty and 1,280,123-byte all-byte
-payloads, home/relative path qualification, context rebinding and sibling data.
-Positive-progress interruption and endpoint failure preserve the previous target
-and retire the owned stage; owned distro cleanup succeeded.
+`dist/SHA256SUMS` covers exactly these four. Both portable manifests were verified
+completely after extraction: 219 entries each, including all 59 tracked files of
+the modified MPL-2.0 prompt source. Packaged C# source bytes match the repository.
+The accepted Linux executable is SHA-256
+`0245361762f477559a7ba1cf97bb1a86b475a940f69f5df55c63739c813c7bdc`;
+the accepted Windows executable is SHA-256
+`b5e9dfeb60417b5cf324df9d1a75101dc493427c36ebb7304ae6531cbe53230c`.
 
-The actual Windows installer lifecycle/public 0.4 upgrade and ten-phase ConPTY
-editor acceptance were verified separately before the final WSL-only runtime
-repair; their installer/editor implementations are unchanged. The VSIX bytes
-remain those compared against the accepted production client assets. This set
-reuses accepted native payloads rather than rebuilding them for documentation
-updates. Actual same-host Rust/current/previous-C# measurements and component
-results are retained in [the performance note](performance-v080.md).
+The final selected native contracts cover local and nested lexical completion,
+captured Path aliases and actual remote directory observations. Linux uses a
+real encrypted loopback SSH server. Windows uses native OpenSSH with encrypted
+keys and product/key paths containing spaces, against one owned WSL1 guest SSH
+server. Both exercised host confirmation, passphrase entry, one retained
+session, refreshed directory contents, cancellation and dismissal without
+reprompting. Actual WSL directory queries and stored-Path reads passed, and the
+owned distribution was unregistered successfully. Windows ConPTY separately
+proved inert ghost text, explicit RightArrow acceptance, Scope/function member
+completion and standard-library function hints.
+
+The broader native presentation, diagnostics, 80-column formatter, skill guide,
+POSIX PTY and finite Windows color policies were accepted at source `7ec8bc0` in
+[the preceding focused run](https://github.com/kleedaisuki/msync/actions/runs/42491769332).
+The subsequent qualification repair targeted endpoint completion, so those
+accepted scenarios were retained rather than repeated as a blanket regression.
+The final VS Code 1.144.0 host ran against the exact accepted Linux native image
+at `.temp/vscode-host-0D2PYd`: all 18 semantic roles, four Scope field types,
+meaningful hovers, contextual diagnostics, UTF-16 ranges and formatting passed.
+The VSIX contains the same tested client, grammar, snippets and documentation.
+Raw collation metadata is `.temp/final-polish-delivery-v080.json`.
+
+Earlier installer/upgrade, transfer metadata, bulk WSL and foreground-input
+acceptance remain recorded in the sections below and the associated design
+notes. Same-host Rust/current/previous-C# measurements are retained in
+[the performance note](performance-v080.md). Native payloads are copied unchanged
+from accepted platform artifacts; documentation updates do not trigger native
+republication.
 
 The product is published from `src/Msync.Cli/Msync.Cli.csproj` using .NET 10
 Native AOT. The independent Rust implementation in `legacy/` remains a semantic
