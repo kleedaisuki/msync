@@ -26,6 +26,7 @@ def child_call(
     *,
     gated: bool = False,
     peer: str | None = None,
+    required_file: str | None = None,
 ) -> str:
     arguments = [
         str(SCRIPT),
@@ -39,10 +40,14 @@ def child_call(
         arguments.append("--gated")
     if peer is not None:
         arguments.extend(["--peer", peer])
+    if required_file is not None:
+        arguments.extend(["--required-file", required_file])
     return f"python({', '.join(literal(argument) for argument in arguments)})"
 
 
-def child(directory: Path, name: str, gated: bool, peer: str | None) -> int:
+def child(
+    directory: Path, name: str, gated: bool, peer: str | None, required_file: str | None
+) -> int:
     (directory / f"{name}.started").write_text("started", encoding="utf-8")
     deadline = time.monotonic() + 15
     required = []
@@ -55,6 +60,12 @@ def child(directory: Path, name: str, gated: bool, peer: str | None) -> int:
             print(f"child {name}: unsatisfied gates {required}", file=sys.stderr)
             return 124
         time.sleep(0.005)
+    if required_file is not None and not (directory / required_file).is_file():
+        print(
+            f"child {name}: required publication {required_file} is missing",
+            file=sys.stderr,
+        )
+        return 125
     (directory / f"{name}.finished").write_text(name, encoding="utf-8")
     print(name, end="", flush=True)
     return 0
@@ -83,6 +94,7 @@ def run_case(
     *,
     absent: Sequence[str] = (),
     executable: bool = False,
+    after_region: bool = False,
 ) -> None:
     directory.mkdir()
     source = directory / "schedule.msync"
@@ -92,6 +104,24 @@ def run_case(
     )
     checked = invoke(binary, directory, ["check", str(source)])
     assert checked.returncode == 0, (name, checked.stdout, checked.stderr)
+    if after_region:
+        planned = invoke(binary, directory, ["plan", str(source)])
+        assert planned.returncode == 0, (name, planned.stderr)
+        markers = [
+            line.split()[2:4]
+            for line in planned.stdout.splitlines()
+            if "Barrier" in line
+        ]
+        assert markers.count(["2", "1"]) == 1, (
+            name,
+            "missing After region start",
+            markers,
+        )
+        assert markers.count(["2", "0"]) == 1, (
+            name,
+            "missing After region end",
+            markers,
+        )
     arguments = ["run", str(source)]
     if executable:
         obj = directory / "schedule.mso"
@@ -132,6 +162,7 @@ def journeys(
         expected: dict[str, str],
         *,
         absent: Sequence[str] = (),
+        after_region: bool = False,
     ) -> None:
         nonlocal count
         if selected_cases and name not in selected_cases:
@@ -144,6 +175,7 @@ def journeys(
             expected,
             absent=absent,
             executable=executable,
+            after_region=after_region,
         )
         count += 1
 
@@ -216,6 +248,23 @@ def journeys(
         '"open" -> ./owned.gate;\n};\nwork(); ./owned.finished -> ./observed;',
         {"observed": "owned"},
     )
+    inherited = directory / "inherited-acquire"
+    case(
+        "inherited-acquire",
+        f"let background = release {child_call(inherited, 'background', gated=True)};\n"
+        'fn join-parent() { "open" -> ./background.gate; acquire; ./background.finished -> ./observed };\n'
+        "join-parent();",
+        {"observed": "background"},
+    )
+    after = directory / "after-region"
+    case(
+        "after-region",
+        f"let background = release {child_call(after, 'background', gated=True)};\n"
+        '"open" -> ./background.gate; acquire background::stdout -> ./stdout;\n'
+        f"let verifier = {child_call(after, 'verifier', required_file='stdout')}; verifier::stdout -> ./verified;",
+        {"stdout": "background", "verified": "verifier"},
+        after_region=True,
+    )
     branch = directory / "unselected"
     case(
         "unselected",
@@ -241,12 +290,15 @@ def main() -> int:
     parser.add_argument("--name")
     parser.add_argument("--gated", action="store_true")
     parser.add_argument("--peer")
+    parser.add_argument("--required-file")
     parser.add_argument("--executable", action="store_true")
     parser.add_argument("--case", action="append", default=[])
     args = parser.parse_args()
     if args.child:
         assert args.directory is not None and args.name is not None
-        return child(args.directory, args.name, args.gated, args.peer)
+        return child(
+            args.directory, args.name, args.gated, args.peer, args.required_file
+        )
     assert args.binary is not None, "--binary is required for the CLI journey"
     scratch = ROOT / ".temp"
     scratch.mkdir(exist_ok=True)
