@@ -29,6 +29,7 @@ def main() -> int:
         choices=[
             "presentation",
             "lsp-analysis",
+            "lsp-response",
             "formatter",
             "skill",
             "completion",
@@ -68,6 +69,7 @@ def main() -> int:
     journeys = [
         ("presentation", "presentation_journey.py"),
         ("lsp-analysis", "lsp_analysis_journey.py"),
+        ("lsp-response", "lsp_response_journey.py"),
         ("formatter", "formatter_journey.py"),
         ("skill", "skill_journey.py"),
         ("completion", "completion_journey.py"),
