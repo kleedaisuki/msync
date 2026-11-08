@@ -60,7 +60,8 @@ internal sealed partial class LanguageServer(
     {
         int offset = Offset(document.Source, parameters.GetProperty("position"));
         context ??= document.Analysis?.At(offset);
-        if (context?.Receiver is { } receiver) return MemberCompletions(receiver.Members ?? []);
+        if (context?.Receiver is { } receiver && context.ReceiverKind == EditorReceiverKind.Member)
+            return MemberCompletions(receiver.Members ?? []);
         var bindings = (context?.Bindings ?? []).Concat(EditorCompiler.BuiltinBindings)
             .DistinctBy(binding => binding.Name, StringComparer.Ordinal).ToArray();
         JsonArray items = MemberCompletions(bindings);

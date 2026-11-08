@@ -66,6 +66,10 @@ internal static class SourceCompletion
             }
             bool uri = text.AsSpan(start, index - start).StartsWith("ssh://", StringComparison.Ordinal)
                 || text.AsSpan(start, index - start).StartsWith("wsl://", StringComparison.Ordinal);
+            if (character == ':' && !uri && !text.AsSpan(index).StartsWith("://", StringComparison.Ordinal)
+                && (index == 0 || text[index - 1] != ':') && (index + 1 == text.Length || text[index + 1] != ':')
+                && !(index == start + 1 && char.IsLetter(text[start]) && index + 1 < text.Length && text[index + 1] is '/' or '\\'))
+            { start = index + 1; continue; }
             if (Boundary(character) && !(uri && character is '[' or ']')) start = index + 1;
         }
         if (comment || regex) return null;
