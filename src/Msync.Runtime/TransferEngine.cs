@@ -391,7 +391,7 @@ public static partial class TransferEngine
             shift
             exec "$executable" "$@"
             """;
-        return CreateShellProcessStartInfo(connection, launch, [executable, .. arguments], redirectInput: false);
+        return CreateShellProcessStartInfo(connection, ShellProgram.Source(launch), [executable, .. arguments], redirectInput: false);
     }
 
     private static Process Start(ConnectionValue connection, string script, IReadOnlyList<string> args, bool redirectInput)
@@ -476,7 +476,7 @@ public static partial class TransferEngine
         )
         """;
 
-    private const string UploadScript = ShellLibrary + "\n" + """
+    private static string UploadScript => field ??= ShellProgram.Source(ShellLibrary + "\n" + """
         destination=$(expand "$1"; printf .); destination=${destination%.}
         mode=$2
         basename=$3
@@ -505,11 +505,11 @@ public static partial class TransferEngine
         if [ "$source_kind" = literal ] && [ -e "$target" ]; then chmod --reference="$target" -- "$payload"; fi
         install "$payload" "$target"
         printf 'MSYNC-DONE\n'
-        """;
+        """);
 
     private static string DownloadScript(int count)
     {
-        StringBuilder script = new(ShellLibrary + "\n");
+        StringBuilder script = new(ShellProgram.Source(ShellLibrary) + "\n");
         for (int index = 0; index < count; ++index)
         {
             script.Append(System.Globalization.CultureInfo.InvariantCulture, $"s{index}=$(expand \"${{{index + 1}}}\"; printf .); s{index}=${{s{index}%.}}\n");
@@ -523,7 +523,7 @@ public static partial class TransferEngine
         return script.ToString();
     }
 
-    private const string CopyScript = ShellLibrary + "\n" + """
+    private static string CopyScript => field ??= ShellProgram.Source(ShellLibrary + "\n" + """
         destination=$(expand "$1"; printf .); destination=${destination%.}
         mode=$2
         shape=$3
@@ -562,9 +562,9 @@ public static partial class TransferEngine
             trap - EXIT HUP INT TERM
         done
         printf 'MSYNC-DONE\n'
-        """;
+        """);
 
-    private const string RelayScript = ShellLibrary + "\n" + """
+    private static string RelayScript => field ??= ShellProgram.Source(ShellLibrary + "\n" + """
         destination=$(expand "$1"; printf .); destination=${destination%.}
         mode=$2
         basename=$3
@@ -592,5 +592,5 @@ public static partial class TransferEngine
         fi
         install "$payload" "$target"
         printf 'MSYNC-DONE\n'
-        """;
+        """);
 }

@@ -161,3 +161,24 @@ authentication or native Windows acceptance.
   type/function specialization is static, contextual path/endpoint lowering is
   binding-time, and filesystem facts remain selected runtime inputs. This is a
   concrete staging boundary, not permission to evaluate effects during `check`.
+
+## POSIX program source versus endpoint data
+
+A Windows checkout can compile C# raw multiline literals with CRLF bytes. POSIX
+`sh` then reads `set -eu\r` as an invalid option, even though the native WSL/SSH
+endpoint itself starts successfully. `ShellProgram.Source` canonicalizes only
+source-owned control-program literals to LF. Transfer, selector, query and native
+filesystem fragments normalize before composition with runtime values; process
+launch source and the generated download preamble follow the same boundary.
+Escaped protocol newlines are already host-independent. Normalized immutable
+fragments are cached on demand, so ordinary local transfers do not initialize
+unused remote programs.
+
+The generic command/transport boundary must **not** normalize its assembled
+string: quoted filenames, arguments and payloads may legitimately contain CRLF.
+The repository's `*.cs` LF rule is a source convention, not the correctness
+mechanism. `tests/IO/shell_source_newlines.py` builds a disposable copy with every
+C# source forcibly converted to CRLF, then checks real authenticated transfers
+and native process calls with actual CRLF filenames, payloads and arguments. It
+also runs the six source/object/executable selected-query journeys on that image;
+each actual selected transfer keeps its one SSH client/authentication/exec session.

@@ -5,7 +5,7 @@ namespace Msync.Runtime;
 
 public static partial class NativeRegistry
 {
-    private const string RemotePrelude = """
+    private static string RemotePrelude => field ??= ShellProgram.Source("""
         set -eu
         expand() { case "$1" in '~') printf '%s' "$HOME";; '~/'*) printf '%s/%s' "$HOME" "${1#??}";; *) printf '%s' "$1";; esac; }
         p=$(expand "$1"; printf .); p=${p%.}
@@ -23,7 +23,7 @@ public static partial class NativeRegistry
                 esac
             fi
         }
-        """;
+        """);
 
     private static async ValueTask<Value> RemoteFileSystemAsync(string name, IReadOnlyList<Value> args, PathValue path,
         RuntimeContext context, CancellationToken token)

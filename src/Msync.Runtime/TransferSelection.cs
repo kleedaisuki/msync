@@ -150,16 +150,16 @@ public static partial class TransferEngine
         await stream.FlushAsync(cancellationToken);
     }
 
-    private const string SelectionPrelude = ShellLibrary + "\n" + """
+    private static string SelectionPrelude => field ??= ShellProgram.Source(ShellLibrary + "\n" + """
         directory=$(expand "$1"; printf .); directory=${directory%.}
         destination_raw=$2
         selection_mode=$3
         if [ ! -d "$directory" ]; then printf 'Selector source is not a directory: %s\n' "$directory" >&2; exit 1; fi
         if [ "$4" = recursive ]; then find "$directory" -mindepth 1 -printf '%P\0'; else find "$directory" -mindepth 1 -maxdepth 1 -printf '%P\0'; fi
         printf '\0'
-        """;
+        """);
 
-    private const string SelectionDecode = "\n" + """
+    private static string SelectionDecode => field ??= ShellProgram.Source("\n" + """
         set --
         while IFS= read -r encoded; do
             [ "$encoded" = MSYNC-END ] && break
@@ -167,9 +167,9 @@ public static partial class TransferEngine
             source=$(printf '%b.' "$encoded"); source=${source%.}
             set -- "$@" "$source"
         done
-        """;
+        """);
 
-    private const string SelectionArchive = "\n" + """
+    private static string SelectionArchive => field ??= ShellProgram.Source("\n" + """
         if [ "$#" -eq 0 ]; then exec tar --format=pax -cpf - --files-from /dev/null; fi
         for raw in "$@"; do
             source=$(expand "$raw"; printf .); source=${source%.}
@@ -180,8 +180,8 @@ public static partial class TransferEngine
             set -- "$@" -C "$parent" "./$name"
         done
         exec tar --format=pax -cpf - "$@"
-        """;
-    private const string CohortInstallScript = ShellLibrary + "\n" + """
+        """);
+    private static string CohortInstallScript => field ??= ShellProgram.Source(ShellLibrary + "\n" + """
         destination=$(expand "$1"; printf .); destination=${destination%.}
         mode=$2
         shift 2
@@ -211,6 +211,6 @@ public static partial class TransferEngine
         if [ "$mode" = replace ]; then rm -rf -- "$target"; fi
         install "$stage/payload" "$target"
         printf 'MSYNC-DONE\n'
-        """;
+        """);
 }
 

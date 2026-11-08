@@ -81,7 +81,7 @@ public static partial class TransferEngine
         return results;
     }
 
-    private const string SelectionQueryScript = "\n" + """
+    private static string SelectionQueryScript => field ??= ShellProgram.Source("\n" + """
         query() (
             IFS= read -r encoded_script
             query_script=$(printf '%b.' "$encoded_script"); query_script=${query_script%.}
@@ -100,5 +100,5 @@ public static partial class TransferEngine
             printf 'MSYNC-QUERY %s %s\n' "$status" "$bytes"
             cat -- "$output"
         )
-        """;
+        """);
 }
