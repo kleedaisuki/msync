@@ -19,9 +19,9 @@ internal static class GraphOptimization
     {
         internal readonly Instruction Instruction = instruction;
         internal readonly int Index = index;
-        internal HashSet<int>[] Inputs = [];
+        internal DefinitionSet[] Inputs = [];
         internal int StackInputs;
-        internal HashSet<int>? TargetDefinitions;
+        internal DefinitionSet TargetDefinitions;
         internal bool Reachable;
         internal Value? Constant;
         internal bool ConstantVisited;
@@ -32,9 +32,9 @@ internal static class GraphOptimization
         internal int LiveOutputs;
     }
 
-    private sealed record State(List<HashSet<int>> Stack, HashSet<int>[] Locals)
+    private sealed record State(List<DefinitionSet> Stack, DefinitionSet[] Locals)
     {
-        internal State Copy() => new(Stack.Select(set => new HashSet<int>(set)).ToList(), Locals.Select(set => new HashSet<int>(set)).ToArray());
+        internal State Copy() => new([.. Stack], (DefinitionSet[])Locals.Clone());
     }
 
     private sealed class Graph(Module module, FunctionCode function, List<Value> constants, IReadOnlyList<InstructionEffect>? summaries)
@@ -97,8 +97,8 @@ internal static class GraphOptimization
 
         private void Discover()
         {
-            var locals = Enumerable.Range(0, function.LocalCount).Select(_ => new HashSet<int>()).ToArray();
-            for (var slot = 0; slot < function.ParameterCount + function.CaptureCount; slot++) locals[slot].Add(-slot - 1);
+            var locals = new DefinitionSet[function.LocalCount];
+            for (var slot = 0; slot < function.ParameterCount + function.CaptureCount; slot++) locals[slot] = new(-slot - 1);
             var starts = new bool[nodes.Length + 1];
             starts[0] = starts[^1] = true;
             for (var index = 0; index < nodes.Length; index++)
@@ -121,8 +121,8 @@ internal static class GraphOptimization
                     var node = nodes[pc];
                     node.Reachable = true;
                     var instruction = node.Instruction;
-                    var operands = new List<HashSet<int>>();
-                    HashSet<int> Pop()
+                    var operands = new List<DefinitionSet>();
+                    DefinitionSet Pop()
                     {
                         var value = state.Stack[^1]; state.Stack.RemoveAt(state.Stack.Count - 1); return value;
                     }
@@ -130,7 +130,7 @@ internal static class GraphOptimization
                     {
                         for (var index = 0; index < count; index++) operands.Insert(0, Pop());
                     }
-                    void Push(int output = 0) => state.Stack.Add([pc * 2 + output]);
+                    void Push(int output = 0) => state.Stack.Add(new(pc * 2 + output));
                     switch (instruction.Op)
                     {
                         case OpCode.Nop: break;
@@ -141,7 +141,7 @@ internal static class GraphOptimization
                             operands.Add(state.Locals[instruction.A]); Push(); break;
                         case OpCode.StoreLocal:
                         case OpCode.InitializeLocal:
-                            Consume(1); (node.TargetDefinitions ??= []).UnionWith(state.Locals[instruction.A]); state.Locals[instruction.A] = [pc * 2]; break;
+                            Consume(1); node.TargetDefinitions = node.TargetDefinitions.Union(state.Locals[instruction.A]); state.Locals[instruction.A] = new(pc * 2); break;
                         case OpCode.Dup: Consume(1); Push(); Push(1); break;
                         case OpCode.Pop: Consume(1); break;
                         case OpCode.Jump: break;
@@ -189,27 +189,32 @@ internal static class GraphOptimization
             pending.Enqueue(pc);
         }
 
-        private static void MergeInputs(Node node, List<HashSet<int>> operands)
+        private static void MergeInputs(Node node, List<DefinitionSet> operands)
         {
-            if (node.Inputs.Length == 0) { node.Inputs = operands.Select(set => new HashSet<int>(set)).ToArray(); return; }
-            for (var index = 0; index < operands.Count; index++) node.Inputs[index].UnionWith(operands[index]);
+            if (node.Inputs.Length == 0) { node.Inputs = operands.ToArray(); return; }
+            for (var index = 0; index < operands.Count; index++) node.Inputs[index] = node.Inputs[index].Union(operands[index]);
         }
 
         private void Merge(int pc, State incoming)
         {
             if (states[pc] is not { } previous) { states[pc] = incoming.Copy(); Enqueue(pc); return; }
             var changed = false;
-            for (var index = 0; index < incoming.Stack.Count; index++) changed |= Union(previous.Stack[index], incoming.Stack[index]);
-            for (var index = 0; index < incoming.Locals.Length; index++) changed |= Union(previous.Locals[index], incoming.Locals[index]);
+            for (var index = 0; index < incoming.Stack.Count; index++)
+            {
+                var merged = previous.Stack[index].Union(incoming.Stack[index]);
+                changed |= merged.Count != previous.Stack[index].Count;
+                previous.Stack[index] = merged;
+            }
+            for (var index = 0; index < incoming.Locals.Length; index++)
+            {
+                var merged = previous.Locals[index].Union(incoming.Locals[index]);
+                changed |= merged.Count != previous.Locals[index].Count;
+                previous.Locals[index] = merged;
+            }
             if (changed) Enqueue(pc);
         }
 
-        private static bool Union(HashSet<int> target, HashSet<int> source)
-        {
-            var count = target.Count; target.UnionWith(source); return count != target.Count;
-        }
-
-        private Value? Resolve(HashSet<int> tokens)
+        private Value? Resolve(DefinitionSet tokens)
         {
             Value? result = null;
             foreach (var token in tokens)
@@ -375,7 +380,7 @@ internal static class GraphOptimization
             // Raw capture and storage instructions can put the same cell into
             // several slots. Demand and invalidation follow storage identity.
             bool external = false;
-            void Origins(HashSet<int> tokens, HashSet<int> seen, HashSet<int> slots)
+            void Origins(DefinitionSet tokens, HashSet<int> seen, HashSet<int> slots)
             {
                 foreach (var token in tokens)
                 {
@@ -477,7 +482,7 @@ internal static class GraphOptimization
             }
         }
 
-        private HashSet<int>? AllocationOrigins(HashSet<int> tokens, HashSet<int> seen)
+        private HashSet<int>? AllocationOrigins(DefinitionSet tokens, HashSet<int> seen)
         {
             var allocations = new HashSet<int>();
             foreach (var token in tokens)
@@ -537,7 +542,7 @@ internal static class GraphOptimization
             if (node.Kept) return;
             node.Kept = true;
             if (node.Instruction.Op == OpCode.StoreLocal && mutableSlots.Contains(node.Instruction.A))
-                foreach (var token in node.TargetDefinitions!) Demand(token);
+                foreach (var token in node.TargetDefinitions) Demand(token);
             if (node.Constant is not null && HasOutput(node.Instruction)) return;
             if (node.Instruction.Op is OpCode.JumpIfTrue or OpCode.JumpIfFalse && Resolve(node.Inputs[0]) is BoolValue) return;
             foreach (var operand in node.Inputs.Skip(node.NativeName is null ? 0 : 1)) foreach (var token in operand) Demand(token);
@@ -558,7 +563,7 @@ internal static class GraphOptimization
                     || instruction.Op is OpCode.JumpIfTrue or OpCode.JumpIfFalse && Resolve(node.Inputs[0]) is BoolValue;
                 if (DroppedInputs())
                     for (var input = node.StackInputs - 1; input >= 0; input--)
-                        if (node.Inputs[input].Any(demanded.Contains)) emitted.Add(new(OpCode.Pop, Span: instruction.Span));
+                        if (node.Inputs[input].Overlaps(demanded)) emitted.Add(new(OpCode.Pop, Span: instruction.Span));
                 if (!node.Kept) continue;
                 if (instruction.Op == OpCode.Dup)
                 {
@@ -578,7 +583,7 @@ internal static class GraphOptimization
                 if (node.Constant is { } value && HasOutput(instruction)) emitted.Add(Literal(value, instruction.Span));
                 else emitted.Add(node.NativeName is null ? instruction : new(OpCode.NativeCall, instruction.A, Text: node.NativeName, Span: instruction.Span));
                 if (HasOutput(instruction) && node.LiveOutputs == 0) emitted.Add(new(OpCode.Pop, Span: instruction.Span));
-                if (node.NativeName is not null && node.Constant is null && node.Inputs[0].Any(demanded.Contains))
+                if (node.NativeName is not null && node.Constant is null && node.Inputs[0].Overlaps(demanded))
                 {
                     if (node.LiveOutputs != 0)
                     {
