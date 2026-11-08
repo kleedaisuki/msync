@@ -3,6 +3,16 @@
 Types are inferred. Optional annotations express requirements: Bool, String,
 Path, Function, Scope, Connection, Process, Null, Number, Type and Range<T>.
 Use `Path | String` for a union and `?` to admit Null explicitly.
+`Any` admits any supported value type, including Null; use a narrower
+constraint when an operation needs specific capabilities.
+
+Parameters use `name: Type`; functions use `-> Type` for their result. Omitting
+either constraint leaves that part inferred. For instance:
+
+```msync
+fn select_path(file: Path) -> Path { file };
+let selected_path = select_path(~/.codex);
+```
 
 ```msync
 let input: Path = ~/.codex;

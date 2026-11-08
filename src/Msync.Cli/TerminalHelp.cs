@@ -1,3 +1,5 @@
+using Msync.Compiler;
+
 namespace Msync.Cli;
 
 internal static class TerminalHelp
@@ -100,7 +102,7 @@ internal static class TerminalHelp
         Row("/clear", "Clear the view, retaining bindings", color);
         Console.WriteLine();
         Heading("EDITING", color);
-        Row("Tab", "Complete bindings and local paths", color);
+        Row("Tab", "Complete names, members and selected paths", color);
         Row("Shift+Enter", "Insert a newline", color);
         Row("Up / Down", "Recall earlier submissions", color);
         Row("Right / End", "Accept an insertable gray hint", color);
@@ -123,6 +125,8 @@ internal static class TerminalHelp
         Console.WriteLine("\nBraces delimit blocks; indentation is not syntax. A final expression returns");
         Console.WriteLine("its value. A semicolon discards that value. Bindings are immutable; later");
         Console.WriteLine("declarations may shadow an earlier name. Bare unbound names are Paths.");
+        Code("let .codex = ~/.codex;", color);
+        Console.WriteLine(".codex is a legal binding name; a matching binding wins over a bare Path.");
         Console.WriteLine();
         Heading("TRANSFERS AND CONNECTIONS", color);
         Code("source -> ~/backup;", color);
@@ -132,12 +136,17 @@ internal static class TerminalHelp
         Console.WriteLine("or directory. $local, $wsl, and SSH URLs are physical Connections.");
         Console.WriteLine();
         Heading("FUNCTIONS AND SCOPES", color);
-        Code("fn copy(source: Path | String, destination) { source -> destination };", color);
+        Code("fn copy(source: Path | String, destination) -> Bool {", color);
+        Code("    source -> destination", color);
+        Code("};", color);
+        Code("let identity = fn(file: Path) -> Path { file };", color);
         Code("scope Settings { home: ~/.codex, copy: fn(a, b) { a -> b } };", color);
         Code("Settings::copy(Settings::home, ~/backup);", color);
         Console.WriteLine("\nUnannotated parameters are generic and inferred at each call. Functions and");
         Console.WriteLine("Scopes are values and may be anonymous. Scope::member selects a lexical");
         Console.WriteLine("member; Connection::path qualifies a physical path. These are distinct types.");
+        Console.WriteLine("Write '-> Type' after the parameter list to constrain the return value.");
+        Console.WriteLine("It checks block tails and explicit returns; '-> Path?' also admits Null.");
         Console.WriteLine();
         Heading("NULL AND MATCHING", color);
         Code("let source? = if exists ~/.codex { ~/.codex } else { null };", color);
@@ -157,7 +166,8 @@ internal static class TerminalHelp
         Console.WriteLine("capabilities: native fn name(value: String) -> Bool;");
         Console.WriteLine();
         Heading("TYPES", color);
-        Code("Bool  Number  Range  String  Function  Scope  Path  Process  Connection  Null", color);
+        foreach (string[] names in LanguageTypes.Names.Chunk(6))
+            Code(string.Join("  ", names.Select(name => name == "Range" ? "Range<T>" : name)), color);
         Console.WriteLine("\nFor an explicit constraint: let file: Path = ~;");
         Console.WriteLine("Path and String convert implicitly; an annotation cannot turn a Path into");
         Console.WriteLine("a lexical Scope or physical Connection. String quotes escape by doubling:");

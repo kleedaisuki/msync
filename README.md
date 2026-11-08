@@ -78,9 +78,13 @@ is an ordinary new transfer, not a recovery or rollback transaction.
 Function arguments are generic by default; annotations constrain admitted
 specializations. Functions are values, can capture lexical bindings, call
 recursively, and be passed to callback-taking functions.
+Return constraints use `-> Type` after the parameter list for named and
+anonymous functions. A nullable result is written `-> Path?`, for example.
+The constraint checks reachable block tails and explicit `return` expressions;
+Path/String conversion changes the runtime result as well as its inferred type.
 
 ```rust
-let replace = fn(file: Path | String, destination) {
+let replace = fn(file: Path | String, destination) -> Bool {
     file -> destination
 };
 let selected = [input.txt, settings.toml];
@@ -89,10 +93,14 @@ for file in selected {
 };
 ```
 
+Names such as `.codex` are legal lexical bindings. A matching binding is used
+before bare-name Path fallback; completing that variable does not turn it into a
+directory name or append a separator.
+
 Type names include `Bool`, `String`, `Path`, `Range`, `Function`, `Scope`,
-`Process`, `Connection`, and `Null`. `Range<T>` specifies an item type, `|`
+`Process`, `Connection`, `Null`, and `Type`. `Range<T>` specifies an item type, `|`
 specifies a union, and `?` explicitly permits null. Numeric literals and `Number`
-support range counts and arithmetic.
+support range counts and arithmetic. `Any` admits the full value-type union.
 
 ## Nullability and exhaustive matching
 

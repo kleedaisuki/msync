@@ -23,6 +23,17 @@ Unbound bare names are Paths. Quoting them makes literal text instead. Names
 with spaces can be bare filesystem spelling, but a String-to-Path annotation
 or parameter makes intent explicit when source is ambiguous.
 
+Path completion preserves the prefix and endpoint already entered. Ordinary
+names are inserted directly. A component containing spaces or operators is
+quoted without replacing the surrounding Path expression:
+
+```msync
+let spaced_file = ./"Program Files (x86)"/tool;
+```
+
+An already quoted String stays a String. Completion does not add `$local` or
+change an existing lexical binding into a filesystem name.
+
 A finite Range transfer is one selected operation; an explicit `for` loop
 performs separate iterations. Local ordinary files use owned same-directory
 staging and atomic replacement. A failed cohort can leave completed members;

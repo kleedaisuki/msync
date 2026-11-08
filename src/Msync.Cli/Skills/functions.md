@@ -3,13 +3,18 @@
 `fn` is the callable construct. Omit parameter annotations for inference from
 each call; add a type or union when a function requires specific capabilities.
 The final expression is the result. Do not append `;` to a value you need back.
+Write `-> Type` after the parameter list to constrain the returned value. This
+works for both named and anonymous functions; it is separate from the `:` used
+on a parameter.
 
 ```msync
 fn identity(value) { value };
-fn copy(source: Path | String, destination: Path) {
+fn copy(source: Path | String, destination: Path) -> Bool {
     source -> destination
 };
-let replace = fn(file: Path, destination: Path) { file -> destination };
+let replace = fn(file: Path, destination: Path) -> Bool {
+    file -> destination
+};
 let same_path = identity(~/.codex);
 let same_bool = identity(true);
 ```
@@ -17,6 +22,24 @@ let same_bool = identity(true);
 String and Path have implicit conversion where a parameter or annotation asks
 for it. This affects execution: a String converted to Path is read as a file.
 An unconstrained String passed to `->` writes literal content instead.
+
+Return constraints apply to both block tails and explicit `return` expressions.
+Path/String conversion follows the declared result type, while unrelated types
+are rejected when the function is specialized. Use a nullable result type to
+admit Null deliberately:
+
+```msync
+fn locate(file: Path) -> Path? {
+    if exists file { file } else { null }
+};
+let location? = locate(~/.codex);
+```
+
+For example, `fn bad() -> Bool { "text" }; bad();` is a type error. Adding a
+semicolon after a non-Null block tail also changes the result to Null; it does
+not return the discarded value.
+An explicit `return value;` still returns immediately: the semicolon terminates
+the statement without discarding the value that has already left the function.
 
 Functions capture referenced lexical bindings by value. They can be returned,
 passed to native callbacks, or called recursively.
