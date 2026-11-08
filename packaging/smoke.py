@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sqlite3
 import subprocess
+import sys
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path
@@ -23,6 +25,30 @@ def run(binary: Path, arguments: Sequence[str], cwd: Path) -> str:
         encoding="utf-8",
     )
     return result.stdout
+
+
+def legacy_dispatch(binary: Path, workspace: Path) -> None:
+    environment = dict(os.environ)
+    environment["MSYNC_LEGACY"] = sys.executable
+    for option in ("--version", "--help"):
+        expected = subprocess.run(
+            [sys.executable, option],
+            cwd=workspace,
+            env=environment,
+            capture_output=True,
+            check=True,
+        )
+        delegated = subprocess.run(
+            [str(binary), "legacy", option],
+            cwd=workspace,
+            env=environment,
+            capture_output=True,
+            check=True,
+        )
+        assert (delegated.stdout, delegated.stderr) == (
+            expected.stdout,
+            expected.stderr,
+        ), ("Parent help/version intercepted the delegated baseline flags", option)
 
 
 def journey(binary: Path, workspace: Path) -> None:
@@ -62,6 +88,7 @@ def journey(binary: Path, workspace: Path) -> None:
         ]
         names = {row[0] for row in connection.execute("SELECT name FROM records")}
         assert "run" in names and names & {"copy", "transfer"}, names
+    legacy_dispatch(binary, workspace)
     print(
         "PASS: packaged source, dry-run, source-free .mso/.mexe, bound IR bytes and native SQLite telemetry"
     )
