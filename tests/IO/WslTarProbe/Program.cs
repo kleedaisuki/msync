@@ -35,29 +35,46 @@ string directory = Path.GetFullPath(Option("--work-directory") ?? Environment.Cu
 string output = Path.GetFullPath(Option("--output-dir")!);
 Directory.CreateDirectory(output);
 List<Result> results = [];
-foreach (string producer in new[] { "wsl", "native-self" })
+foreach (string producer in new[] { "wsl", "wsl-ack", "native-self" })
     foreach (string mode in new[] { "capture", "live", "buffered" })
     {
+        if (producer == "wsl-ack" && mode == "capture") continue;
+        bool barrier = producer == "wsl-ack";
         var reads = new List<ReadResult>();
         var entries = new List<EntryResult>();
         string label = producer + "-" + mode;
         string rawPath = Path.Combine(output, label + ".tar");
-        var info = new ProcessStartInfo(producer == "wsl" ? "wsl.exe" : Environment.ProcessPath!)
+        var info = new ProcessStartInfo(producer != "native-self" ? "wsl.exe" : Environment.ProcessPath!)
         {
             WorkingDirectory = directory,
             UseShellExecute = false,
             RedirectStandardInput = true,
             RedirectStandardOutput = true
         };
-        if (producer == "wsl")
-            foreach (string argument in new[] { "--distribution", distribution, "--exec", "sh", "-c", Script.Replace("\r\n", "\n", StringComparison.Ordinal), "sh", source }) info.ArgumentList.Add(argument);
+        if (producer != "native-self")
+        {
+            string program = Script.Replace("\r\n", "\n", StringComparison.Ordinal);
+            if (barrier) program = program.Replace("exec tar", "tar", StringComparison.Ordinal) + "\nIFS= read -r received\n[ \"$received\" = MSYNC-ARCHIVE-RECEIVED ]\n";
+            foreach (string argument in new[] { "--distribution", distribution, "--exec", "sh", "-c", program, "sh", source }) info.ArgumentList.Add(argument);
+        }
         else
         {
             if (Path.GetFileNameWithoutExtension(Environment.ProcessPath) == "dotnet") info.ArgumentList.Add(Environment.GetCommandLineArgs()[0]);
-            info.ArgumentList.Add("--emit"); info.ArgumentList.Add(Path.Combine(output, "wsl-capture.tar"));
+            info.ArgumentList.Add("--emit");
+            string acknowledgedArchive = Path.Combine(output, "wsl-ack-live.tar");
+            info.ArgumentList.Add(File.Exists(acknowledgedArchive) ? acknowledgedArchive : Path.Combine(output, "wsl-capture.tar"));
         }
         using var process = Process.Start(info)!;
-        process.StandardInput.Close();
+        if (!barrier) process.StandardInput.Close();
+        bool acknowledged = false;
+        async Task Acknowledge(bool success)
+        {
+            if (!barrier || acknowledged) return;
+            acknowledged = true;
+            await process.StandardInput.WriteLineAsync(success ? "MSYNC-ARCHIVE-RECEIVED" : "MSYNC-ARCHIVE-REJECTED");
+            await process.StandardInput.FlushAsync();
+            process.StandardInput.Close();
+        }
         string? error = null;
         using (var raw = new FileStream(rawPath, FileMode.Create, FileAccess.Write, FileShare.Read, 1, FileOptions.Asynchronous))
         using (var stream = new CaptureStream(process.StandardOutput.BaseStream, raw, reads))
@@ -69,17 +86,20 @@ foreach (string producer in new[] { "wsl", "native-self" })
                 {
                     using var buffered = new BufferedStream(stream, 65536);
                     await Parse(buffered, Path.Combine(output, label), entries);
+                    await Acknowledge(true);
                     await buffered.CopyToAsync(Stream.Null);
                 }
                 else
                 {
                     await Parse(stream, Path.Combine(output, label), entries);
+                    await Acknowledge(true);
                     await stream.CopyToAsync(Stream.Null);
                 }
             }
             catch (Exception failure)
             {
                 error = failure.ToString();
+                await Acknowledge(false);
                 await stream.CopyToAsync(Stream.Null);
             }
         }

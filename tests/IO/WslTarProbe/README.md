@@ -30,3 +30,12 @@ The owned control-program literal is normalized to LF before argv data is bound.
 The probe does not normalize filenames, payloads or assembled commands. A Linux
 shell-backed launcher smoke establishes only the probe's phase/logging logic;
 only execution against actual Windows WSL establishes the boundary in question.
+
+`wsl-ack-live` and `wsl-ack-buffered` test producer lifetime independently of read
+buffer size. The guest runs tar without exec and waits on its owned stdin for a
+receiver receipt. After TarReader sees the archive end records the receiver sends
+ACK, closes stdin, drains remaining archive padding and waits for native exit.
+Failure sends REJECT, retaining the original parser exception. No sleep, file
+size quota, persistent state or additional native channel is used. The generic
+self-producer uses this acknowledged archive when available, so a truncated
+unacknowledged WSL capture does not invalidate its large-file control input.
