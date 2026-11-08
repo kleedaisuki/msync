@@ -41,7 +41,7 @@ on:
         type: boolean
         default: true
       polish_phases:
-        description: Optional polish groups portable,editor,editing,identifiers,state,closing,completion,authentication,presentation_console,hints_console,wsl
+        description: Optional polish groups portable,editor,editing,identifiers,state,closing,linear,completion,authentication,presentation_console,hints_console,wsl
         type: string
         default: ''
       polish_only:
@@ -85,7 +85,7 @@ jobs:
           POLISH_PHASES: ${{ inputs.polish_phases }}
         run: |
           import os
-          groups: set[str] = {'portable', 'editor', 'editing', 'identifiers', 'state', 'closing', 'completion', 'authentication', 'presentation_console', 'hints_console', 'wsl'}
+          groups: set[str] = {'portable', 'editor', 'editing', 'identifiers', 'state', 'closing', 'linear', 'completion', 'authentication', 'presentation_console', 'hints_console', 'wsl'}
           requested: str = os.environ['POLISH_PHASES']
           selected: set[str] = {part.strip() for part in requested.split(',')} if requested else groups
           unknown: set[str] = selected - groups
@@ -136,7 +136,7 @@ jobs:
         run: |
           python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
       - name: Exercise changed terminal, compiler insight and formatter user journeys
-        if: inputs.polish_only && (steps.polish.outputs.portable == 'true' || steps.polish.outputs.editor == 'true' || steps.polish.outputs.editing == 'true' || steps.polish.outputs.identifiers == 'true' || steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true' || steps.polish.outputs.completion == 'true' || (steps.polish.outputs.authentication == 'true' && runner.os == 'Linux')) && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
+        if: inputs.polish_only && (steps.polish.outputs.portable == 'true' || steps.polish.outputs.editor == 'true' || steps.polish.outputs.editing == 'true' || steps.polish.outputs.identifiers == 'true' || steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true' || steps.polish.outputs.linear == 'true' || steps.polish.outputs.completion == 'true' || (steps.polish.outputs.authentication == 'true' && runner.os == 'Linux')) && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
         shell: python
         env:
           PACKAGE_RID: ${{ matrix.rid }}
@@ -148,6 +148,7 @@ jobs:
           POLISH_IDENTIFIERS: ${{ steps.polish.outputs.identifiers }}
           POLISH_STATE: ${{ steps.polish.outputs.state }}
           POLISH_CLOSING: ${{ steps.polish.outputs.closing }}
+          POLISH_LINEAR: ${{ steps.polish.outputs.linear }}
           POLISH_AUTHENTICATION: ${{ steps.polish.outputs.authentication }}
         run: |
           import os
@@ -170,6 +171,8 @@ jobs:
               if os.environ['POLISH_CLOSING'] == 'true':
                   for phase in ('repl-state', 'mutable-getters', 'reference-options'):
                       arguments.extend(['--phase', phase])
+              if os.environ['POLISH_LINEAR'] == 'true':
+                  arguments.extend(['--phase', 'linear-effect'])
               if os.environ['POLISH_IDENTIFIERS'] == 'true':
                   arguments.extend(['--phase', 'identifier-return'])
               if os.environ['POLISH_COMPLETION'] == 'true':
@@ -192,6 +195,9 @@ jobs:
           if os.name == 'nt':
               arguments.extend(['--contract', 'path-namespace'])
           subprocess.run(arguments, check=True)
+      - name: Verify only changed linear normalization and constant interning
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.linear == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: python packaging/state_contracts.py --output .temp/platform-results/state-contracts --contract constant-interner
       - name: Publish the native Windows optimizer component observation image
         id: state-components
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.state == 'true' && runner.os == 'Windows' && steps.package.outcome == 'success' }}
@@ -203,7 +209,7 @@ jobs:
         if: ${{ !cancelled() && steps.state-components.outcome == 'success' }}
         run: artifacts/state-components/msync-components.exe --optimizer-pipeline --cases transfers --sizes 128,1024 --levels 1 --samples 7 --warmups 3 --output .temp/platform-results/optimizer-transfer-components.json
       - name: Compare selected Windows Rust, editing-control and current native journeys
-        if: ${{ !cancelled() && inputs.polish_only && (steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true') && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && inputs.polish_only && (steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true' || steps.polish.outputs.linear == 'true') && runner.os == 'Windows' && steps.package.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: python packaging/windows_threeway.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/final-threeway.json

@@ -41,6 +41,7 @@ def main() -> int:
             "mutable-getters",
             "scheduling",
             "repl-state",
+            "linear-effect",
             "navigation",
             "repl-palette",
             "terminal-detail",
@@ -92,6 +93,7 @@ def main() -> int:
         ("mutable-getters", "mutable_state_journey.py"),
         ("scheduling", "scheduling_journey.py"),
         ("repl-state", "repl_state_journey.py"),
+        ("linear-effect", "linear_effect_journey.py"),
         ("navigation", "navigation_journey.py"),
         ("repl-palette", "repl_palette_journey.py"),
     ]
