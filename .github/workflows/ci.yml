@@ -41,7 +41,7 @@ on:
         type: boolean
         default: true
       polish_phases:
-        description: Optional polish groups portable,editor,editing,completion,authentication,presentation_console,hints_console,wsl
+        description: Optional polish groups portable,editor,editing,identifiers,completion,authentication,presentation_console,hints_console,wsl
         type: string
         default: ''
       polish_only:
@@ -85,7 +85,7 @@ jobs:
           POLISH_PHASES: ${{ inputs.polish_phases }}
         run: |
           import os
-          groups: set[str] = {'portable', 'editor', 'editing', 'completion', 'authentication', 'presentation_console', 'hints_console', 'wsl'}
+          groups: set[str] = {'portable', 'editor', 'editing', 'identifiers', 'completion', 'authentication', 'presentation_console', 'hints_console', 'wsl'}
           requested: str = os.environ['POLISH_PHASES']
           selected: set[str] = {part.strip() for part in requested.split(',')} if requested else groups
           unknown: set[str] = selected - groups
@@ -136,7 +136,7 @@ jobs:
         run: |
           python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
       - name: Exercise changed terminal, compiler insight and formatter user journeys
-        if: inputs.polish_only && (steps.polish.outputs.portable == 'true' || steps.polish.outputs.editor == 'true' || steps.polish.outputs.editing == 'true' || steps.polish.outputs.completion == 'true' || (steps.polish.outputs.authentication == 'true' && runner.os == 'Linux')) && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
+        if: inputs.polish_only && (steps.polish.outputs.portable == 'true' || steps.polish.outputs.editor == 'true' || steps.polish.outputs.editing == 'true' || steps.polish.outputs.identifiers == 'true' || steps.polish.outputs.completion == 'true' || (steps.polish.outputs.authentication == 'true' && runner.os == 'Linux')) && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
         shell: python
         env:
           PACKAGE_RID: ${{ matrix.rid }}
@@ -145,6 +145,7 @@ jobs:
           POLISH_COMPLETION: ${{ steps.polish.outputs.completion }}
           POLISH_EDITOR: ${{ steps.polish.outputs.editor }}
           POLISH_EDITING: ${{ steps.polish.outputs.editing }}
+          POLISH_IDENTIFIERS: ${{ steps.polish.outputs.identifiers }}
           POLISH_AUTHENTICATION: ${{ steps.polish.outputs.authentication }}
         run: |
           import os
@@ -161,6 +162,8 @@ jobs:
                       arguments.extend(['--phase', phase])
                   if os.name != 'nt':
                       arguments.extend(['--phase', 'terminal-detail'])
+              if os.environ['POLISH_IDENTIFIERS'] == 'true':
+                  arguments.extend(['--phase', 'identifier-return'])
               if os.environ['POLISH_COMPLETION'] == 'true':
                   arguments.extend(['--phase', 'completion'])
               if os.environ['POLISH_AUTHENTICATION'] == 'true' and os.name != 'nt':
