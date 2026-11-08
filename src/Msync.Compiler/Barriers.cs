@@ -6,6 +6,7 @@ namespace Msync.Compiler;
 
 internal sealed partial class Compilation
 {
+    private int nextBarrierRegion;
     private Info Barrier(Frame frame, BarrierExpr barrier)
     {
         if (barrier.Release) frame.Emit(OpCode.Barrier, 1, span: barrier.Span);
@@ -16,7 +17,7 @@ internal sealed partial class Compilation
             return new(TypeRef.Null);
         }
 
-        string? region = barrier.Acquire ? frame.Code.Count.ToString(CultureInfo.InvariantCulture) : null;
+        string? region = barrier.Acquire ? (++nextBarrierRegion).ToString(CultureInfo.InvariantCulture) : null;
         if (barrier.Acquire) frame.Emit(OpCode.Barrier, 2, 1, text: region, span: barrier.Span);
         int start = frame.Code.Count;
         Info result = Expression(frame, barrier.Value);

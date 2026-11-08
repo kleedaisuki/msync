@@ -77,4 +77,8 @@ Require(nestedMarkerIds.Length == 4 && nestedMarkerIds[0].Text is not null
     && nestedMarkerIds[0].Text == nestedMarkerIds[3].Text
     && nestedMarkerIds[1].Text is not null && nestedMarkerIds[1].Text == nestedMarkerIds[2].Text
     && nestedMarkerIds[0].Text != nestedMarkerIds[1].Text, "nested break acquire markers retain distinct paired identities");
-Console.WriteLine("Barrier lowering: 13 contracts passed.");
+var callRegions = Instructions("fn identity(value) { value }; identity(acquire true); identity(acquire false);")
+    .Where(instruction => instruction is { Op: Msync.Core.OpCode.Barrier, A: 2, B: 1 }).Select(instruction => instruction.Text).ToArray();
+Require(callRegions.Length == 2 && callRegions.Distinct(StringComparer.Ordinal).Count() == 2,
+    "scratch call lowering preserves unique acquire region identities");
+Console.WriteLine("Barrier lowering: 14 contracts passed.");
