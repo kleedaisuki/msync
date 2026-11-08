@@ -790,3 +790,69 @@ not supply efficient invalidation. For msync, first measure the simpler feature
 gates and normal-form paths against this frozen basic image, retaining identical
 residual programs and actual execution results, before introducing persistent
 analysis-cache machinery.
+
+### Optimizer-self follow-up: applicability and normal forms
+
+The next exact source is `c75330e3fa4b77b6cd998aa6628c280f69124cb7`, component
+SHA-256 `363c68d8c77a5dd7b5164ef7a847a6152ff6c9c49d5e79b4ca8c3d37eb24a4bb`.
+It is archived and published independently with the same probe and toolchain.
+Compile-time function evaluation and new IPA transformations were not wired into
+this frozen pipeline. A concurrent compiler callable-metadata correction could
+otherwise confound attribution: the two archived assembly sets were therefore
+used to emit all four workloads at sizes 1 / 32 / 128. Their source fingerprints,
+typed instruction fingerprints **and complete O0 `.mso` bytes are identical in
+all 12 comparisons** (`.temp/optimizer-performance/o0-fingerprints.json`). The
+raw-optimizer comparison below has genuinely identical inputs; a full source
+compilation timing remains a whole-pipeline observation.
+
+The implementation groups work by function, filters analyses using one opcode
+feature summary, recognizes already-normal literal-return functions, and reuses
+preparation by function identity. Graph results are reused only within a valid
+effect epoch, not across arbitrary mutation. Dead Path joins/conversions whose
+constant operand kinds prove them total can be discarded without evaluating
+host-specific path separators. This removes work before contextual lowering
+rather than hiding it in a later stage.
+
+Fifteen AB/BA pairs at size one, default O1, measured p50 / p95 milliseconds:
+
+| Phase | Basic graph pipeline | Feature/normal-form pipeline | Allocated bytes/op, before → after |
+| --- | ---: | ---: | ---: |
+| Call: raw optimization | 0.325 / 0.422 | 0.146 / 0.195 | 192,864 → 101,736 |
+| Call: bind and lower | 0.120 / 0.148 | 0.040 / 0.062 | 81,648 → 30,232 |
+| Scope: raw optimization | 0.623 / 0.881 | 0.374 / 0.468 | 425,664 → 246,752 |
+| Scope: bind and lower | 0.350 / 0.748 | 0.196 / 0.585 | 258,672 → 139,520 |
+
+The three-pair O1 scaling probe at 128 instances gives absolute costs:
+
+| Workload / phase | Before p50 ms | After p50 ms | Allocated MB/op, before → after |
+| --- | ---: | ---: | ---: |
+| Calls: raw optimization | 7.462 | 1.184 | 4.203 → 0.914 |
+| Calls: bind and lower | 0.790 | 0.036 | 0.614 → 0.030 |
+| Scopes: raw optimization | 10.875 | 2.917 | 5.611 → 1.349 |
+| Scopes: bind and lower | 1.183 | 0.374 | 0.791 → 0.140 |
+| Branch reuse: raw optimization | 8.965 | 2.285 | 4.910 → 1.176 |
+| Finite loop: raw optimization | 7.073 | 2.816 | 3.966 → 1.649 |
+
+MB is decimal allocation traffic, not retained heap or process RSS. Relocatable
+call instructions drop from 520 to 12 and encoded bytes from 25,221 to 566;
+Scope instructions drop from 524 to 16 and bytes from 28,387 to 684. Executable
+instruction counts remain 2 / 14. Thus the improvement is less optimizer and
+binding work for equivalent execution, plus earlier elimination of private
+unused computations, not an invented further VM speedup. Complete 128-instance
+source compilation measured 10.741 → 3.773 ms for calls and 25.998 → 11.905 ms
+for Scopes in the same pilot; these include frontend work and are not labeled
+isolated pass costs.
+
+Prepared VM allocation rises by 88 bytes per execution in the later runtime,
+which evolved independently between these exact source snapshots. The tiny
+Scope execution p95 also rises from 0.0051 to 0.0114 ms in this run. No prepared
+VM improvement is claimed for this follow-up. Real final CLI/file/tree timings
+must use the final native source and remain distinct from component measurements.
+
+Raw records are `.temp/optimizer-performance/feature-vs-basic-{scaling,tiny,branches-loops}.json`.
+All source/artifact oracles passed at O0–O3; team builds and CPU probes were paused
+for the coordinated window. Remaining ordinary-work costs are the captured-method
+Scope graph (about 247 KB and 0.374 ms even at size one) and its contextual bind
+(about 140 KB and 0.196 ms). Singleton reaching-definition representation and
+more precise changed-function invalidation are subsequent measured questions,
+not reasons to replace the working graph with a more elaborate unmeasured cache.
