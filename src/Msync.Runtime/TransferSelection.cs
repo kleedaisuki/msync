@@ -162,7 +162,7 @@ public static partial class TransferEngine
         """;
 
     private const string SelectionArchive = "\n" + """
-        if [ "$#" -eq 0 ]; then exec tar -cpf - --files-from /dev/null; fi
+        if [ "$#" -eq 0 ]; then exec tar --format=pax -cpf - --files-from /dev/null; fi
         for raw in "$@"; do
             source=$(expand "$raw"; printf .); source=${source%.}
             while [ "${source%/}" != "$source" ] && [ "$source" != / ]; do source=${source%/}; done
@@ -171,7 +171,7 @@ public static partial class TransferEngine
             shift
             set -- "$@" -C "$parent" "./$name"
         done
-        exec tar -cpf - "$@"
+        exec tar --format=pax -cpf - "$@"
         """;
     private const string CohortInstallScript = ShellLibrary + "\n" + """
         destination=$(expand "$1"; printf .); destination=${destination%.}

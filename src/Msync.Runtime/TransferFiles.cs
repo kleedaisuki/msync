@@ -25,11 +25,11 @@ internal static class TransferFiles
     private static void CopyNode(string source, string target, Span<byte> buffer, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        FileSystemInfo info = new FileInfo(source);
+        FileMetadata info = NativeFileMetadata.Capture(source);
         FileAttributes attributes = info.Attributes;
         if ((attributes & FileAttributes.ReparsePoint) != 0)
         {
-            CopyLink(source, target, (attributes & FileAttributes.Directory) != 0);
+            CopyLink(source, target, (attributes & FileAttributes.Directory) != 0, info.Modified);
             return;
         }
         if ((attributes & FileAttributes.Directory) != 0)
@@ -37,13 +37,13 @@ internal static class TransferFiles
             Directory.CreateDirectory(target);
             foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(StringComparer.Ordinal))
                 CopyNode(child, Path.Combine(target, Path.GetFileName(child)), buffer, cancellationToken);
-            ApplyMetadata(info, target);
+            info.Apply(target);
             return;
         }
         CopyFile(source, target, info, buffer, cancellationToken);
     }
 
-    private static void CopyFile(string source, string target, FileSystemInfo metadata, Span<byte> buffer, CancellationToken cancellationToken)
+    private static void CopyFile(string source, string target, FileMetadata metadata, Span<byte> buffer, CancellationToken cancellationToken)
     {
         string stage = Path.Combine(Path.GetDirectoryName(target) ?? ".", $".msync-{Guid.NewGuid():N}");
         try
@@ -59,7 +59,7 @@ internal static class TransferFiles
         }
     }
 
-    private static void WriteFileContents(string source, string stage, FileSystemInfo metadata, Span<byte> buffer, CancellationToken cancellationToken)
+    private static void WriteFileContents(string source, string stage, FileMetadata metadata, Span<byte> buffer, CancellationToken cancellationToken)
     {
         using FileStream input = new(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
         using FileStream output = new(stage, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.SequentialScan);
@@ -69,15 +69,8 @@ internal static class TransferFiles
             cancellationToken.ThrowIfCancellationRequested();
             output.Write(buffer[..count]);
         }
-        ApplyMetadata(metadata, stage);
+        metadata.Apply(stage);
         output.Flush(flushToDisk: true);
-    }
-
-    private static void ApplyMetadata(FileSystemInfo source, string target)
-    {
-        File.SetLastWriteTimeUtc(target, source.LastWriteTimeUtc);
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(target, source.UnixFileMode);
     }
 
     private static async Task CopyNodeOverlappedAsync(string source, string target, CancellationToken cancellationToken, int bufferSize)
@@ -138,12 +131,10 @@ internal static class TransferFiles
 
     internal static void ApplyMetadata(string source, string target)
     {
-        File.SetLastWriteTimeUtc(target, File.GetLastWriteTimeUtc(source));
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(target, File.GetUnixFileMode(source));
+        NativeFileMetadata.Capture(source).Apply(target);
     }
 
-    internal static void CopyLink(string source, string target, bool directory)
+    internal static void CopyLink(string source, string target, bool directory, NativeTimestamp? modified = null)
     {
         FileSystemInfo info = directory ? new DirectoryInfo(source) : new FileInfo(source);
         string link = info.LinkTarget ?? throw new IOException($"Cannot read symbolic link '{source}'.");
@@ -156,6 +147,7 @@ internal static class TransferFiles
                 Directory.CreateSymbolicLink(stage, link);
             else
                 File.CreateSymbolicLink(stage, link);
+            modified?.Apply(stage, link: true);
             File.Move(stage, target, overwrite: true);
         }
         finally

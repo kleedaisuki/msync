@@ -4,7 +4,7 @@ namespace Msync.Runtime;
 
 internal static class TransferOverlap
 {
-    internal sealed record Node(string Source, string Relative, FileAttributes Attributes, DateTime Modified, UnixFileMode Mode, string? Link);
+    internal sealed record Node(string Source, string Relative, FileAttributes Attributes, NativeTimestamp Modified, UnixFileMode Mode, string? Link);
 
     internal static bool SameNode(string source, string target)
     {
@@ -79,6 +79,7 @@ internal static class TransferOverlap
                 if ((node.Attributes & FileAttributes.Directory) != 0)
                     Directory.CreateSymbolicLink(snapshot, node.Link);
                 else File.CreateSymbolicLink(snapshot, node.Link);
+                node.Modified.Apply(snapshot, link: true);
             }
             else if ((node.Attributes & FileAttributes.Directory) != 0) Directory.CreateDirectory(snapshot);
             else File.Copy(node.Source, snapshot);
@@ -88,8 +89,7 @@ internal static class TransferOverlap
             Node node = nodes[index];
             if (node.Link is not null) continue;
             string snapshot = Path.Combine(payload, node.Relative);
-            if ((node.Attributes & FileAttributes.Directory) != 0) Directory.SetLastWriteTimeUtc(snapshot, node.Modified);
-            else File.SetLastWriteTimeUtc(snapshot, node.Modified);
+            node.Modified.Apply(snapshot, (node.Attributes & FileAttributes.Directory) != 0);
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(snapshot, node.Mode);
         }
     }
@@ -100,8 +100,8 @@ internal static class TransferOverlap
         bool directory = (attributes & FileAttributes.Directory) != 0;
         bool link = (attributes & FileAttributes.ReparsePoint) != 0;
         FileSystemInfo info = directory ? new DirectoryInfo(source) : new FileInfo(source);
-        UnixFileMode mode = OperatingSystem.IsWindows() || link ? default : File.GetUnixFileMode(source);
-        nodes.Add(new(source, relative, attributes, info.LastWriteTimeUtc, mode, link ? info.LinkTarget : null));
+        FileMetadata metadata = NativeFileMetadata.Capture(source);
+        nodes.Add(new(source, relative, attributes, metadata.Modified, metadata.Mode, link ? info.LinkTarget : null));
         if (!directory || link) return;
         foreach (string child in Directory.EnumerateFileSystemEntries(source).Order(TextSemantics.Ordinal))
             Capture(child, Path.Combine(relative, Path.GetFileName(child)), nodes);

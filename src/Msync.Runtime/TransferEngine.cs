@@ -206,12 +206,15 @@ public static partial class TransferEngine
 
     private static async Task WriteArchiveNodeAsync(TarWriter writer, string source, string name, CancellationToken cancellationToken)
     {
-        FileAttributes attributes = File.GetAttributes(source);
-        bool directory = (attributes & FileAttributes.Directory) != 0;
-        bool link = (attributes & FileAttributes.ReparsePoint) != 0;
+        FileMetadata metadata = NativeFileMetadata.Capture(source);
+        bool directory = metadata.IsDirectory;
+        bool link = metadata.IsLink;
         TarEntryType type = link ? TarEntryType.SymbolicLink : directory ? TarEntryType.Directory : TarEntryType.RegularFile;
-        PaxTarEntry entry = new(type, name) { ModificationTime = File.GetLastWriteTimeUtc(source) };
-        if (!OperatingSystem.IsWindows() && !link) entry.Mode = File.GetUnixFileMode(source);
+        await writer.WriteEntryAsync(new PaxGlobalExtendedAttributesTarEntry([KeyValuePair.Create("mtime", metadata.Modified.Pax)]), cancellationToken);
+        // .NET 10 rewrites local PAX mtime through 100ns DateTimeOffset. A standard
+        // global PAX timestamp plus a GNU member retains the native decimal value.
+        GnuTarEntry entry = new(type, name) { ModificationTime = DateTimeOffset.UnixEpoch };
+        if (!OperatingSystem.IsWindows() && !link) entry.Mode = metadata.Mode;
         if (link)
         {
             FileSystemInfo info = directory ? new DirectoryInfo(source) : new FileInfo(source);
@@ -220,8 +223,18 @@ public static partial class TransferEngine
         if (type == TarEntryType.RegularFile)
         {
             await using FileStream bytes = new(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 65536, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            entry.DataStream = bytes;
-            await writer.WriteEntryAsync(entry, cancellationToken);
+            if (metadata.Length == 0)
+            {
+                using MemoryStream contents = new();
+                await bytes.CopyToAsync(contents, cancellationToken);
+                contents.Position = 0; entry.DataStream = contents;
+                await writer.WriteEntryAsync(entry, cancellationToken);
+            }
+            else
+            {
+                entry.DataStream = bytes;
+                await writer.WriteEntryAsync(entry, cancellationToken);
+            }
             return;
         }
         await writer.WriteEntryAsync(entry, cancellationToken);
@@ -293,7 +306,7 @@ public static partial class TransferEngine
                     await TransferFiles.WriteFileAsync(entry.DataStream ?? Stream.Null, installed, null, cancellationToken, stage => ApplyArchiveMetadata(entry, stage), context.BufferSize);
                     break;
                 case TarEntryType.SymbolicLink:
-                    CreateArchiveLink(installed, entry.LinkName);
+                    CreateArchiveLink(installed, entry.LinkName, entry);
                     break;
                 case TarEntryType.HardLink:
                     string linkedName = entry.LinkName;
@@ -311,12 +324,13 @@ public static partial class TransferEngine
 
     private static void ApplyArchiveMetadata(TarEntry entry, string target)
     {
-        if (entry.EntryType == TarEntryType.Directory) Directory.SetLastWriteTimeUtc(target, entry.ModificationTime.UtcDateTime);
-        else File.SetLastWriteTimeUtc(target, entry.ModificationTime.UtcDateTime);
-        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(target, entry.Mode);
+        NativeTimestamp timestamp = entry is PaxTarEntry pax && pax.ExtendedAttributes.TryGetValue("mtime", out string? raw)
+            ? NativeTimestamp.FromPax(raw) : NativeTimestamp.FromDateTime(entry.ModificationTime.UtcDateTime);
+        timestamp.Apply(target, entry.EntryType == TarEntryType.Directory, entry.EntryType == TarEntryType.SymbolicLink);
+        if (!OperatingSystem.IsWindows() && entry.EntryType != TarEntryType.SymbolicLink) File.SetUnixFileMode(target, entry.Mode);
     }
 
-    private static void CreateArchiveLink(string target, string linkName)
+    private static void CreateArchiveLink(string target, string linkName, TarEntry entry)
     {
         string parent = Path.GetDirectoryName(target) ?? ".";
         Directory.CreateDirectory(parent);
@@ -324,6 +338,7 @@ public static partial class TransferEngine
         try
         {
             File.CreateSymbolicLink(stage, linkName);
+            ApplyArchiveMetadata(entry, stage);
             File.Move(stage, target, overwrite: true);
         }
         finally { File.Delete(stage); }
@@ -446,13 +461,14 @@ public static partial class TransferEngine
             source=$1
             target=$2
             if [ -d "$source" ] && [ ! -L "$source" ]; then
+                modified=$(stat -c '%y' -- "$source")
                 mkdir -p -- "$target"
                 for child in "$source"/* "$source"/.[!.]* "$source"/..?*; do
                     [ -e "$child" ] || [ -L "$child" ] || continue
                     install "$child" "$target/${child##*/}"
                 done
                 chmod --reference="$source" -- "$target"
-                touch -r "$source" -- "$target"
+                touch -d "$modified" -- "$target"
             else
                 mkdir -p -- "${target%/*}"
                 mv -fT -- "$source" "$target"
@@ -501,7 +517,7 @@ public static partial class TransferEngine
             script.Append(System.Globalization.CultureInfo.InvariantCulture, $"while [ \"${{s{index}%/}}\" != \"$s{index}\" ] && [ \"$s{index}\" != / ]; do s{index}=${{s{index}%/}}; done\n");
             script.Append(System.Globalization.CultureInfo.InvariantCulture, $"p{index}=${{s{index}%/*}}; n{index}=${{s{index}##*/}}\n");
         }
-        script.Append("exec tar -cpf -");
+        script.Append("exec tar --format=pax -cpf -");
         for (int index = 0; index < count; ++index)
             script.Append(System.Globalization.CultureInfo.InvariantCulture, $" -C \"$p{index}\" \"./$n{index}\"");
         return script.ToString();
