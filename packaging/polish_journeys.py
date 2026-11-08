@@ -37,10 +37,16 @@ def main() -> int:
         ("lsp-analysis", "lsp_analysis_journey.py"),
         ("formatter", "formatter_journey.py"),
         ("skill", "skill_journey.py"),
+        ("completion", "completion_journey.py"),
     ]
     if sys.platform != "win32":
         journeys.append(("terminal-presentation", "terminal_presentation_journey.py"))
     for name, script in journeys:
+        extra = (
+            ["--ssh-fixture"]
+            if name == "completion" and sys.platform == "linux"
+            else []
+        )
         phases.append(
             run_phase(
                 name,
@@ -49,6 +55,7 @@ def main() -> int:
                     str(ROOT / "tests/Msync.EndToEnd" / script),
                     "--binary",
                     str(binary),
+                    *extra,
                 ],
                 output,
             )

@@ -70,7 +70,11 @@ The selected contracts are CLI color/NO_COLOR and source guidance, inferred
 Scope/function semantic roles, useful hovers, related generic-call locations,
 applicable diagnostic quick fixes, cancellation/latest-snapshot editor races,
 source-deleted artifact runtime diagnostics, width-aware literal-preserving formatting,
-and the progressive built-in `msync skill` reference.
+the progressive built-in `msync skill` reference, and contextual path/host
+completion. Linux completion uses a real encrypted loopback SSH endpoint.
+Windows completion imports one owned pinned WSL1 distro for directory queries
+and unregisters it afterwards; `--completion-only` excludes all previously
+accepted file-transfer and interruption cases.
 Both hosts additionally check automatic color and NO_COLOR through actual
 terminal descriptors (a POSIX PTY or Windows ConPTY), without repeating the
 accepted editing/foreground-input suite. The POSIX fixture distinguishes stdout
@@ -79,7 +83,7 @@ Each phase retains stdout/stderr and the native image hash under
 `.temp/platform-results`; one failed phase does not suppress another's result.
 
 This selection deliberately excludes previously accepted transfer metadata,
-WSL, installer upgrades and performance measurements. The existing editor host
+WSL copy/interrupt cases, installer upgrades and performance measurements. The existing editor host
 journey exercises the changed client with an actual VS Code host; the final VSIX
 is packaged from the same tested source. Native package and VSIX version remain
 0.8.0, with no public release/tag implied by local candidate assembly.

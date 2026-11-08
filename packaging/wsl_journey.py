@@ -11,6 +11,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -617,7 +618,13 @@ def transfer_journeys(
     return reports
 
 
-def exercise(binary: Path, output: Path, process_probe: Path | None = None) -> int:
+def exercise(
+    binary: Path,
+    output: Path,
+    process_probe: Path | None = None,
+    *,
+    completion_only: bool = False,
+) -> int:
     temporary = ROOT / ".temp"
     temporary.mkdir(exist_ok=True)
     workspace = Path(tempfile.mkdtemp(prefix="wsl-journey-", dir=temporary))
@@ -632,6 +639,7 @@ def exercise(binary: Path, output: Path, process_probe: Path | None = None) -> i
         "workspace": str(workspace),
         "distro": distro,
         "wsl_version": 1,
+        "mode": "completion" if completion_only else "transfer",
         "rootfs": {
             "version": ALPINE_VERSION,
             "url": ROOTFS_URL,
@@ -707,23 +715,37 @@ def exercise(binary: Path, output: Path, process_probe: Path | None = None) -> i
             timeout=180,
         )
         report["outcome"] = "failed"
-        report["journeys"] = transfer_journeys(
-            runner, binary, wsl, distro, workspace, process_probe
-        )
-        from wsl_control import run_control_journeys
-
-        controls: list[dict[str, object]] = []
-        report["controls"] = controls
-        controls.extend(
-            run_control_journeys(
-                runner,
-                binary,
-                wsl,
-                distro,
-                workspace,
-                local_environment(workspace / "control-home"),
+        if completion_only:
+            result = runner.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tests/Msync.EndToEnd/completion_journey.py"),
+                    "--binary",
+                    str(binary),
+                    "--wsl-distro",
+                    distro,
+                ],
+                timeout=180,
             )
-        )
+            report["completion"] = result.stdout
+        else:
+            report["journeys"] = transfer_journeys(
+                runner, binary, wsl, distro, workspace, process_probe
+            )
+            from wsl_control import run_control_journeys
+
+            controls: list[dict[str, object]] = []
+            report["controls"] = controls
+            controls.extend(
+                run_control_journeys(
+                    runner,
+                    binary,
+                    wsl,
+                    distro,
+                    workspace,
+                    local_environment(workspace / "control-home"),
+                )
+            )
         report["outcome"] = "passed"
         return 0
     except (
@@ -764,13 +786,23 @@ def main() -> None:
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--process-probe", type=Path)
     parser.add_argument(
+        "--completion-only",
+        action="store_true",
+        help="Exercise remote completion without repeating transfer contracts",
+    )
+    parser.add_argument(
         "--output", type=Path, default=ROOT / ".temp/platform-results/wsl.json"
     )
     args = parser.parse_args()
     process_probe = (
         args.process_probe.resolve() if args.process_probe is not None else None
     )
-    code = exercise(args.binary.resolve(), args.output.resolve(), process_probe)
+    code = exercise(
+        args.binary.resolve(),
+        args.output.resolve(),
+        process_probe,
+        completion_only=args.completion_only,
+    )
     report = json.loads(args.output.read_text(encoding="utf-8"))
     raise SystemExit(1 if report["outcome"] == "cleanup_failed" else code)
 
