@@ -247,6 +247,8 @@ def capture_binary(
 
 def diagnose_download(
     runner: Runner,
+    binary: Path,
+    artifact: Path,
     wsl: str,
     distro: str,
     directory: Path,
@@ -256,6 +258,22 @@ def diagnose_download(
 ) -> dict[str, object]:
     diagnostics = runner.directory / "diagnostics"
     diagnostics.mkdir(exist_ok=True)
+    trace_path = diagnostics / f"native-{stage}.jsonl"
+    traced = runner.run(
+        [str(binary), "--no-config", "run", str(artifact), "--trace", str(trace_path)],
+        directory=directory,
+        environment=environment,
+        check=False,
+    )
+    trace: dict[str, object] = {"command": asdict(traced), "path": str(trace_path)}
+    if trace_path.is_file():
+        try:
+            trace["records"] = [
+                json.loads(line)
+                for line in trace_path.read_text(encoding="utf-8").splitlines()
+            ]
+        except json.JSONDecodeError as error:
+            trace["parse_error"] = str(error)
     prefix = [wsl, "--distribution", distro, "--exec", "sh", "-c"]
     state = runner.run(
         [
@@ -273,7 +291,11 @@ def diagnose_download(
         environment=environment,
         check=False,
     )
-    reports: dict[str, object] = {"stage": stage, "state": asdict(state)}
+    reports: dict[str, object] = {
+        "stage": stage,
+        "state": asdict(state),
+        "traced_reexecution": trace,
+    }
     for label, path, parent, name, raw, payload in (
         (
             "home",
@@ -395,7 +417,15 @@ def transfer_journeys(
         except CommandFailed as error:
             try:
                 error.diagnostics = diagnose_download(
-                    runner, wsl, distro, cwd, environments[cwd], expected, stage
+                    runner,
+                    binary,
+                    artifact,
+                    wsl,
+                    distro,
+                    cwd,
+                    environments[cwd],
+                    expected,
+                    stage,
                 )
             except OSError as diagnostic_error:
                 error.diagnostics = {
