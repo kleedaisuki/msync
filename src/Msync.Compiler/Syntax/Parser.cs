@@ -236,6 +236,7 @@ public sealed class Parser
     private Expr Prefix()
     {
         Token token = Current;
+        if (Word("release") || Word("acquire") || Word("acqrel")) return Barrier();
         if (TakeWord("if")) return If(token.Span);
         if (TakeWord("match")) return Match(token.Span);
         if (TakeWord("for")) return For(token.Span);
@@ -310,6 +311,24 @@ public sealed class Parser
             _ => new NameExpr(token.Text, token.Span)
         };
     }
+    private BarrierExpr Barrier()
+    {
+        SourceSpan start = Current.Span;
+        bool release = false, acquire = false;
+        while (Word("release") || Word("acquire") || Word("acqrel"))
+        {
+            bool before = Current.Text is "release" or "acqrel";
+            bool after = Current.Text is "acquire" or "acqrel";
+            if (before && release || after && acquire)
+                Fail("Duplicate scheduling prefix. Use release and acquire once, or acqrel to combine them.");
+            release |= before;
+            acquire |= after;
+            Next();
+        }
+        Expr? value = IsExpressionEnd() ? null : Expression();
+        return new(release, acquire, value, SourceSpan.Cover(start, value?.Span ?? Previous.Span));
+    }
+
     private bool WindowsPathBeforeString(Token token) => WindowsPathPrefix(token.Text) && At(TokenKind.String);
 
     internal static bool WindowsPathPrefix(string text) => text.Length > 0 && text[^1] is '/' or '\\'
@@ -455,5 +474,5 @@ public sealed class Parser
             new(name.Span.Start, Math.Max(name.Span.End, Previous.Span.End) - name.Span.Start));
     }
     private bool ContinuesBarePath() => source[Previous.Span.End..Current.Span.Start].All(c => c is ' ' or '\t');
-    private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "loop" or "native") && !LanguageTypes.Contains(text);
+    private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "loop" or "native" or "release" or "acquire" or "acqrel") && !LanguageTypes.Contains(text);
 }

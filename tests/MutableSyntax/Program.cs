@@ -30,3 +30,35 @@ Require(formatted.Contains("filename?: null", StringComparison.Ordinal), "format
 var incomplete = Parser.ParseForEditor("scope SomeType { field?: null, new: fn { scope { filename?:");
 Require(incomplete.Error is not null && incomplete.Document.Statements.Count == 1, "incomplete nullable scope recovery");
 Console.WriteLine("Mutable assignment and nullable field syntax: 15 contracts passed.");
+
+Require(ParseExpression("release") is BarrierExpr { Release: true, Acquire: false, Value: null }, "standalone release");
+Require(ParseExpression("acquire;") is BarrierExpr { Release: false, Acquire: true, Value: null }, "standalone acquire");
+Require(ParseExpression("release acquire ./tool()") is BarrierExpr { Release: true, Acquire: true, Value: CallExpr }, "combined scheduling modifiers");
+Require(ParseExpression("acqrel source -> target") is BarrierExpr { Release: true, Acquire: true, Value: BinaryExpr { Operator: "->" } }, "whole transfer scheduling");
+Require(ParseExpression("acquire process") is BarrierExpr { Acquire: true, Value: NameExpr { Name: "process" } }, "selected process acquire");
+Require(ParseExpression("release process = ./tool()") is BarrierExpr { Value: AssignmentExpr { Value: CallExpr } }, "released process assignment");
+Require(ParseExpression("[release, acquire]") is RangeExpr { Items.Count: 2 }, "standalone barrier delimiter boundaries");
+Require(ParseExpression("async") is NameExpr { Name: "async" }, "removed async keyword remains ordinary name");
+foreach (string duplicate in new[] { "release release;", "acqrel acquire;", "acquire acqrel;" })
+{
+    try { Parser.Parse(duplicate); throw new InvalidOperationException("Accepted duplicate prefix: " + duplicate); }
+    catch (SyntaxException syntax) { Require(syntax.Diagnostic.Message.Contains("Duplicate scheduling prefix", StringComparison.Ordinal), "duplicate prefix diagnostic"); }
+}
+string barriers = Formatter.Format("release; let p = release ./tool(); acquire p; acqrel source -> target;");
+Require(Formatter.Format(barriers) == barriers, "barrier formatting idempotence");
+Console.WriteLine("Barrier syntax: 12 contracts passed.");
+
+static IReadOnlyList<Msync.Core.Instruction> Instructions(string source) =>
+    Msync.Compiler.Compiler.Compile(source, optimization: 0).Functions[0].Instructions;
+Require(Instructions("release;").Any(instruction => instruction.Op == Msync.Core.OpCode.Barrier && instruction.A == 1), "standalone Before lowering");
+Require(Instructions("acquire;").Any(instruction => instruction.Op == Msync.Core.OpCode.Acquire && instruction.A == 0), "standalone join-all lowering");
+Require(Instructions("release ./tool();").Single(instruction => instruction.Op == Msync.Core.OpCode.ProcessCall).B == 1, "released process lowering");
+Require(Instructions("acqrel ./tool();").Single(instruction => instruction.Op == Msync.Core.OpCode.ProcessCall).B == 3, "acqrel process lowering");
+Require(Instructions("./tool();").Single(instruction => instruction.Op == Msync.Core.OpCode.ProcessCall).B == 0, "ordinary process waits");
+Require(Instructions("let process = release ./tool(); acquire process;").Any(instruction => instruction.Op == Msync.Core.OpCode.Acquire && instruction.A == 1), "selected process join lowering");
+var generic = Instructions("acquire ./source -> ./destination;");
+Require(generic.Any(instruction => instruction.Op == Msync.Core.OpCode.Barrier && instruction.A == 2)
+    && generic.All(instruction => instruction.Op != Msync.Core.OpCode.Acquire), "after fence is not join-all");
+var later = Instructions("release; ./tool();");
+Require(later.Single(instruction => instruction.Op == Msync.Core.OpCode.ProcessCall).B == 0, "release is not a sticky process mode");
+Console.WriteLine("Barrier lowering: 8 contracts passed.");

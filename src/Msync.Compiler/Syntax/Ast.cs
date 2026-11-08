@@ -40,6 +40,7 @@ public sealed record AssignmentExpr(Expr Target, Expr Value, SourceSpan Span) : 
 {
     public SourceSpan? OperatorSpan { get; init; }
 }
+public sealed record BarrierExpr(bool Release, bool Acquire, Expr? Value, SourceSpan Span) : Expr(Span);
 public sealed record CallExpr(Expr Callee, IReadOnlyList<Expr> Arguments, SourceSpan Span) : Expr(Span);
 public sealed record BlockExpr(IReadOnlyList<Statement> Statements, SourceSpan Span) : Expr(Span)
 {
