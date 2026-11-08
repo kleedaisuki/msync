@@ -61,6 +61,29 @@ and includes the exact executable rather than a framework-dependent build.
 Published binaries and staged payloads live under `artifacts/`; distributable
 archives live under `dist/`. Disposable journey workspaces live under `.temp/`.
 
+## Focused presentation and editor acceptance
+
+The manual native workflow accepts `polish_only=true`. It builds the current
+Windows and Linux Native AOT packages, exercises their installed-layout smoke,
+then invokes `packaging/polish_journeys.py` against those exact executables.
+The selected contracts are CLI color/NO_COLOR and source guidance, inferred
+Scope/function semantic roles, useful hovers, related generic-call locations,
+applicable diagnostic quick fixes, and width-aware literal-preserving formatting.
+Each phase retains stdout/stderr and the native image hash under
+`.temp/platform-results`; one failed phase does not suppress another's result.
+
+This selection deliberately excludes previously accepted transfer metadata,
+WSL, installer upgrades and performance measurements. The existing editor host
+journey exercises the changed client with an actual VS Code host; the final VSIX
+is packaged from the same tested source. Native package and VSIX version remain
+0.8.0, with no public release/tag implied by local candidate assembly.
+
+For local targeted work use `python scripts/check_local.py --journey polish`.
+For the actual platform run, dispatch `ci.yml` with `platform=both`,
+`polish_only=true`, `benchmark=false`, `wsl=false`, `console=false`. A final
+source-freeze commit can carry `[skip ci]` to avoid redundant automatic broad
+runs while preserving explicit workflow dispatch.
+
 ## Dependency graph ownership
 
 `global.json` pins SDK 10.0.403, including its ILCompiler/ILLink 10.0.14 tool

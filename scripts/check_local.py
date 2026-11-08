@@ -39,7 +39,16 @@ def main() -> None:
     parser.add_argument(
         "--journey",
         action="append",
-        choices=["package", "language", "configuration", "telemetry", "cli", "lsp", "editor"],
+        choices=[
+            "package",
+            "language",
+            "configuration",
+            "telemetry",
+            "cli",
+            "lsp",
+            "polish",
+            "editor",
+        ],
         default=[],
         help="Run an explicitly selected real-process journey, not a full regression",
     )
@@ -87,7 +96,13 @@ def main() -> None:
             binary,
         ],
         "cli": [sys.executable, "tests/Msync.EndToEnd/journeys.py", "--binary", binary],
-        "lsp": [sys.executable, "tests/Msync.EndToEnd/lsp_journey.py", "--binary", binary],
+        "lsp": [
+            sys.executable,
+            "tests/Msync.EndToEnd/lsp_journey.py",
+            "--binary",
+            binary,
+        ],
+        "polish": [sys.executable, "packaging/polish_journeys.py", "--binary", binary],
         "editor": ["npm", "--prefix", "editors/vscode", "test"],
     }
     for journey in dict.fromkeys(args.journey):

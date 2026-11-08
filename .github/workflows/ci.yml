@@ -40,6 +40,10 @@ on:
         description: Exercise the actual Windows console fixture
         type: boolean
         default: true
+      polish_only:
+        description: Build native packages and exercise changed diagnostics, insight and formatter contracts only
+        type: boolean
+        default: false
       wsl_only:
         description: Build one new native package and run only changed WSL contracts
         type: boolean
@@ -96,8 +100,19 @@ jobs:
           target: Path = Path('artifacts/publish/win-x64')
           shutil.copytree(source.parent, target, dirs_exist_ok=True)
           assert hashlib.sha256((target / 'msync.exe').read_bytes()).hexdigest() == metadata['binary_sha256']
+      - name: Exercise changed terminal, compiler insight and formatter user journeys
+        if: inputs.polish_only && steps.package.outcome == 'success'
+        shell: python
+        env:
+          PACKAGE_RID: ${{ matrix.rid }}
+        run: |
+          import os
+          import subprocess
+          from pathlib import Path
+          binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
+          subprocess.run(['python', 'packaging/polish_journeys.py', '--binary', str(binary), '--output', '.temp/platform-results'], check=True)
       - name: Exercise typed language, process, session and stdio editor journeys
-        if: inputs.reuse_run == '' && !inputs.wsl_only
+        if: inputs.reuse_run == '' && !inputs.wsl_only && !inputs.polish_only
         shell: python
         env:
           PACKAGE_RID: ${{ matrix.rid }}
@@ -108,22 +123,22 @@ jobs:
           binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
           subprocess.run(['python', 'packaging/platform_journeys.py', '--binary', str(binary), '--output', '.temp/platform-results'], check=True)
       - name: Verify actual Windows file attributes, alternate streams and link ownership
-        if: ${{ !cancelled() && !inputs.wsl_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
         run: python tests/IO/windows_file_metadata.py artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-file-metadata.json
       - name: Verify Linux nanosecond metadata through actual local and SSH transfers
-        if: ${{ !cancelled() && !inputs.wsl_only && runner.os == 'Linux' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Linux' && steps.package.outcome == 'success' }}
         run: python tests/IO/nanosecond_metadata.py artifacts/publish/linux-x64/msync --ssh --output .temp/platform-results/nanosecond-metadata.json
       - name: Verify Linux overlapping sources and positive-progress cancellation
-        if: ${{ !cancelled() && !inputs.wsl_only && runner.os == 'Linux' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Linux' && steps.package.outcome == 'success' }}
         run: python tests/IO/overlap_cancel.py artifacts/publish/linux-x64/msync --output .temp/platform-results/overlap-cancellation.json
       - name: Exercise per-user installer ownership and upgrade lifecycle
-        if: ${{ !cancelled() && !inputs.wsl_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Windows' && steps.package.outcome == 'success' }}
         shell: pwsh
         run: |
           $version = python packaging/build.py --version
           ./packaging/windows/test.ps1 -InstallerPath "dist/msync-$version-windows-x86_64-setup.exe"
       - name: Verify native path projection and historical artifact decoding on this host
-        if: ${{ !cancelled() && !inputs.wsl_only && steps.package.outcome == 'success' && hashFiles('tests/PathProjection/Msync.PathProjection.Tests.csproj') != '' }}
+        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && steps.package.outcome == 'success' && hashFiles('tests/PathProjection/Msync.PathProjection.Tests.csproj') != '' }}
         shell: python
         run: |
           import subprocess
@@ -133,7 +148,7 @@ jobs:
           subprocess.run(['dotnet', str(contract)], check=True)
       - name: Install the pinned Windows console transport for requested fixtures
         id: conpty
-        if: ${{ !cancelled() && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') && (github.event_name != 'workflow_dispatch' || inputs.console || (inputs.wsl_only && inputs.wsl)) && hashFiles('tests/Msync.EndToEnd/windows_terminal_journey.py') != '' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') && !inputs.polish_only && (github.event_name != 'workflow_dispatch' || inputs.console || (inputs.wsl_only && inputs.wsl)) && hashFiles('tests/Msync.EndToEnd/windows_terminal_journey.py') != '' }}
         run: |
           python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
       - name: Exercise actual Windows console editing and foreground input ownership
@@ -141,10 +156,10 @@ jobs:
         run: python tests/Msync.EndToEnd/windows_terminal_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-console.json
       - name: Build the isolated native WSL process and archive phase probe
         id: wslprobe
-        if: ${{ !cancelled() && runner.os == 'Windows' && steps.reused.outcome == 'success' && inputs.wsl && hashFiles('tests/IO/WslTarProbe/WslTarProbe.csproj') != '' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.reused.outcome == 'success' && !inputs.polish_only && inputs.wsl && hashFiles('tests/IO/WslTarProbe/WslTarProbe.csproj') != '' }}
         run: dotnet publish tests/IO/WslTarProbe/WslTarProbe.csproj -c Release -r win-x64 --artifacts-path artifacts/wsl-probe-build -o artifacts/wsl-tar-probe -p:RestoreLockedMode=true
       - name: Exercise the actual Windows to WSL home and path projection
-        if: ${{ !cancelled() && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') && github.event_name == 'workflow_dispatch' && inputs.wsl && hashFiles('packaging/wsl_journey.py') != '' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') && github.event_name == 'workflow_dispatch' && !inputs.polish_only && inputs.wsl && hashFiles('packaging/wsl_journey.py') != '' }}
         shell: python
         env:
           PROCESS_PROBE: ${{ steps.wslprobe.outcome == 'success' && 'artifacts/wsl-tar-probe/WslTarProbe.exe' || '' }}
@@ -157,7 +172,7 @@ jobs:
           subprocess.run(arguments, check=True)
       - name: Build the preserved optimized Rust baseline on this same runner
         id: rust
-        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.benchmark && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && !inputs.polish_only && inputs.benchmark && steps.package.outcome == 'success' }}
         run: cargo build --release --locked --manifest-path legacy/Cargo.toml --bin msync --target-dir artifacts/legacy-target
       - name: Measure paired native product journeys without a timing quality gate
         if: ${{ !cancelled() && steps.rust.outcome == 'success' }}
@@ -178,7 +193,7 @@ jobs:
           subprocess.run(['python', 'tests/Performance/interactive.py', '--rust', str(rust), '--aot', str(aot), '--samples', '31', '--warmups', '3', '--bindings', '128', '--output', '.temp/platform-results/paired-interactive.json'], check=True)
       - name: Fetch the recorded previous C# image for this native platform
         id: previous
-        if: ${{ !cancelled() && steps.package.outcome == 'success' && inputs.benchmark && inputs.baseline_run != '' }}
+        if: ${{ !cancelled() && steps.package.outcome == 'success' && !inputs.polish_only && inputs.benchmark && inputs.baseline_run != '' }}
         shell: python
         env:
           GH_TOKEN: ${{ github.token }}
@@ -213,14 +228,14 @@ jobs:
           subprocess.run(['python', 'tests/Performance/interactive.py', '--previous-aot', os.environ['PREVIOUS_NATIVE'], '--aot', str(aot), '--samples', '31', '--warmups', '3', '--bindings', '128', '--output', '.temp/platform-results/paired-aot-interactive.json'], check=True)
       - name: Publish the bounded native Windows copy mechanism probe
         id: copy-probe
-        if: ${{ !cancelled() && runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.benchmark && steps.package.outcome == 'success' && hashFiles('tests/IO/WindowsCopyProbe/WindowsCopyProbe.csproj') != '' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && !inputs.polish_only && inputs.benchmark && steps.package.outcome == 'success' && hashFiles('tests/IO/WindowsCopyProbe/WindowsCopyProbe.csproj') != '' }}
         run: dotnet publish tests/IO/WindowsCopyProbe/WindowsCopyProbe.csproj -c Release -r win-x64 --artifacts-path artifacts/io-probe -o artifacts/windows-copy-probe -p:RestoreLockedMode=true
       - name: Compare Windows copy mechanisms and cancellation outside product timings
         if: ${{ !cancelled() && steps.copy-probe.outcome == 'success' }}
         run: artifacts/windows-copy-probe/WindowsCopyProbe.exe --output .temp/platform-results/windows-copy-probe.json
       - name: Publish native compiler, VM and source-reader component probes once
         id: components
-        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.benchmark && steps.package.outcome == 'success' }}
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && !inputs.polish_only && inputs.benchmark && steps.package.outcome == 'success' }}
         run: dotnet publish tests/Performance/Components/Msync.Components.csproj -c Release -r ${{ matrix.rid }} --artifacts-path artifacts/component-build -o artifacts/components -p:RestoreLockedMode=true
       - name: Measure typed compilation, artifact loading, binding and interpreter components
         if: ${{ !cancelled() && steps.components.outcome == 'success' }}
