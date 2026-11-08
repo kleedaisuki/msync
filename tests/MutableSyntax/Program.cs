@@ -61,4 +61,14 @@ Require(generic.Any(instruction => instruction.Op == Msync.Core.OpCode.Barrier &
     && generic.All(instruction => instruction.Op != Msync.Core.OpCode.Acquire), "after fence is not join-all");
 var later = Instructions("release; ./tool();");
 Require(later.Single(instruction => instruction.Op == Msync.Core.OpCode.ProcessCall).B == 0, "release is not a sticky process mode");
-Console.WriteLine("Barrier lowering: 8 contracts passed.");
+var acquireRegion = Instructions("acquire ./source -> ./destination;").ToArray();
+int regionStart = Array.FindIndex(acquireRegion, instruction => instruction is { Op: Msync.Core.OpCode.Barrier, A: 2, B: 1 });
+int transfer = Array.FindIndex(acquireRegion, instruction => instruction.Op == Msync.Core.OpCode.Transfer);
+int regionEnd = Array.FindIndex(acquireRegion, instruction => instruction is { Op: Msync.Core.OpCode.Barrier, A: 2, B: 0 });
+Require(regionStart >= 0 && regionStart < transfer && transfer < regionEnd, "acquire region brackets exactly its transfer");
+var nestedRegions = Instructions("acquire { acquire ./first -> ./second; ./third -> ./fourth }")
+    .Where(instruction => instruction is { Op: Msync.Core.OpCode.Barrier, A: 2 }).Select(instruction => instruction.B);
+Require(nestedRegions.SequenceEqual([1, 1, 0, 0]), "nested acquire regions retain lexical ownership");
+Require(Instructions("acquire;").All(instruction => instruction.Op != Msync.Core.OpCode.Barrier), "standalone acquire does not open a region");
+Require(Instructions("release ./source -> ./destination;").All(instruction => instruction is not { Op: Msync.Core.OpCode.Barrier, A: 2 }), "release does not open an acquire region");
+Console.WriteLine("Barrier lowering: 12 contracts passed.");

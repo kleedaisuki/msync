@@ -15,6 +15,7 @@ internal sealed partial class Compilation
             return new(TypeRef.Null);
         }
 
+        if (barrier.Acquire) frame.Emit(OpCode.Barrier, 2, 1, span: barrier.Span);
         int start = frame.Code.Count;
         Info result = Expression(frame, barrier.Value);
         if (barrier.Release) ReleaseProcess(frame, barrier.Value, start, barrier.Acquire);
