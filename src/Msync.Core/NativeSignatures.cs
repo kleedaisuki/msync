@@ -71,7 +71,7 @@ public static class NativeSignatures
         Range("empty", TypeRef.Bool, NativeResultRule.Fixed, range);
         Range("any any_of all_of none none_of", TypeRef.Bool, NativeResultRule.Fixed, range, TypeRef.Function);
         Range("single", range, NativeResultRule.RangeOfArguments, any);
-        result.Add("ranges.of", new("ranges.of", [any], range, Variadic: true, ResultRule: NativeResultRule.RangeOfArguments));
+        result.Add("ranges.of", new("ranges.of", [], range, Variadic: true, ResultRule: NativeResultRule.RangeOfArguments));
         Add("process", "stdout stderr", TypeRef.String, NativeEffect.Pure, TypeRef.Process);
         Add("process", "success", TypeRef.Bool, NativeEffect.Pure, TypeRef.Process);
         Add("process", "exit_code", TypeRef.Number, NativeEffect.Pure, TypeRef.Process);

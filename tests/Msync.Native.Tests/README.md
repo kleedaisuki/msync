@@ -33,6 +33,8 @@ all hosts and retain endpoint identity without invoking transport.
   model in `legacy/src/execution/native_fs_path.rs` rather than `GetFullPath`,
   which would resolve lexical operations against the host working directory.
 
-The initial integration passes 78 assertions. Native Windows filesystem API
+The initial integration passes 86 assertions. It also checks the legacy status
+labels (`regular`, `block`, `character`, `unknown`), octal/aggregate permission
+flags, String-as-filename native copy arguments and zero-argument `ranges.of()`. Native Windows filesystem API
 bindings compile with the same project; actual Windows execution is a separate
 platform acceptance responsibility.

@@ -35,14 +35,14 @@ internal static class NativeFileIdentity
             RuntimeInformation.ProcessArchitecture == Architecture.X64 ? 24 : 16);
         return (mode & 0xf000) switch
         {
-            0x8000 => "regular_file",
+            0x8000 => "regular",
             0x4000 => "directory",
             0xa000 => "symlink",
-            0x6000 => "block_file",
-            0x2000 => "character_file",
+            0x6000 => "block",
+            0x2000 => "character",
             0x1000 => "fifo",
             0xc000 => "socket",
-            _ => "other"
+            _ => "unknown"
         };
     }
 

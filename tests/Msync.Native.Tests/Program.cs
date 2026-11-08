@@ -34,11 +34,13 @@ try
     await File.WriteAllTextAsync(Path.Combine(root, "input", "sub", "β file\n.txt"), "native bytes");
     Equal(Value.True, await Call("fs.exists", P("input/sub/β file\n.txt")));
     Equal(Value.False, await Call("fs.exists", P("missing")));
-    Equal(S("regular_file"), await Call("fs.status", P("input/sub/β file\n.txt")));
+    Equal(S("regular"), await Call("fs.status", P("input/sub/β file\n.txt")));
     Equal(Value.True, await Call("fs.is_regular_file", P("input/sub/β file\n.txt")));
     Equal(Value.False, await Call("fs.is_empty", P("input/sub/β file\n.txt")));
     Equal(Value.True, await Call("fs.copy_file", P("input/sub/β file\n.txt"), P("copy")));
     Equal("native bytes", await File.ReadAllTextAsync(Path.Combine(root, "copy")));
+    Equal(Value.True, await Call("fs.copy_file", S("copy"), S("copy-string")));
+    Equal("native bytes", await File.ReadAllTextAsync(Path.Combine(root, "copy-string")));
     await Call("fs.create_hard_link", P("copy"), P("hardlink"));
     Equal(Value.True, await Call("fs.equivalent", P("copy"), P("hardlink")));
     Equal(Value.False, await Call("fs.equivalent", P("copy"), P("input/sub/β file\n.txt")));
@@ -64,6 +66,15 @@ try
         Equal(0, fifo.ExitCode);
         Equal(S("fifo"), await Call("fs.status", P("pipe")));
         Equal(Value.True, await Call("fs.is_fifo", P("pipe")));
+        Equal(Value.True, await Call("fs.is_other", P("pipe")));
+        await Call("fs.set_permissions", P("copy"), S("0o640"));
+        Equal((UnixFileMode)0x1a0, File.GetUnixFileMode(Path.Combine(root, "copy")));
+        await Call("fs.set_permissions", P("copy"), S("owner_all group_all others_all"));
+        Equal((UnixFileMode)0x1ff, File.GetUnixFileMode(Path.Combine(root, "copy")));
+        await Call("fs.set_readonly", P("copy"), Value.True);
+        Equal(Value.True, await Call("fs.is_readonly", P("copy")));
+        await Call("fs.set_readonly", P("copy"), Value.False);
+        Equal(Value.False, await Call("fs.is_readonly", P("copy")));
         await Call("fs.remove", P("pipe"));
     }
     var entries = await Collect(await Call("fs.recursive_directory_iterator", P("input")));
@@ -106,7 +117,7 @@ try
             await File.WriteAllTextAsync(remoteFile.Raw, "remote metadata");
             Equal(Value.True, await Call("fs.exists", remoteFile));
             Equal(Value.True, await Call("fs.is_regular_file", remoteFile));
-            Equal(S("regular_file"), await Call("fs.status", remoteFile));
+            Equal(S("regular"), await Call("fs.status", remoteFile));
             Equal(remoteFile.Raw, ((PathValue)await Call("fs.absolute", remoteFile)).Raw);
             Equal(remoteFile.Raw, ((PathValue)await Call("fs.canonical", remoteFile)).Raw);
             PathValue remoteLink = remoteFile with { Raw = remoteDirectory.Raw + "/link\n" };
@@ -132,6 +143,7 @@ try
     Equal(Value.True, await Call("bool.implies", Value.False, Value.False));
 
     // Zero demand never opens a directory or calls an effectful predicate.
+    Equal(0, (await Collect(await Call("ranges.of"))).Count);
     Value missingRange = await Call("fs.directory_iterator", P("missing-directory"));
     Equal(0, (await Collect(await Call("ranges.take", missingRange, new NumberValue(0)))).Count);
     Value source = await Call("ranges.of", S("keep"), S("skip"), S("last"));

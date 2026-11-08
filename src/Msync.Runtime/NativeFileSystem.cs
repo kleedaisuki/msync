@@ -13,7 +13,7 @@ public static partial class NativeRegistry
         PathValue path = context.AsPath(args[0]);
         Value? lexical = LexicalOperation(operation, args, path, context);
         if (lexical is not null) return lexical;
-        if (operation is "copy" or "copy_file") return Bool(await TransferEngine.CopyAsync(args[0], args[1], context, token));
+        if (operation is "copy" or "copy_file") return Bool(await TransferEngine.CopyAsync(operation == "copy_file" ? context.AsPath(args[0]) : args[0], context.AsPath(args[1]), context, token));
         if (path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl)
             return await RemoteFileSystemAsync(operation, args, path, context, token);
         string local = context.LocalPath(path);
@@ -78,9 +78,9 @@ public static partial class NativeRegistry
     {
         if (name == "exists") return Bool(Status(local, false) != "not_found");
         if (name is "status" or "symlink_status") return new StringValue(Status(local, name == "symlink_status"));
-        if (name == "is_other") return Bool(Status(local, false) is not ("regular_file" or "directory" or "symlink" or "not_found"));
+        if (name == "is_other") return Bool(Status(local, false) is not ("regular" or "directory" or "symlink" or "not_found"));
         if (name.StartsWith("is_", StringComparison.Ordinal) && name is not ("is_empty" or "is_readonly"))
-            return Bool(Status(local, name == "is_symlink") == name[3..]);
+            return Bool(Status(local, name == "is_symlink") == (name switch { "is_regular_file" => "regular", "is_block_file" => "block", "is_character_file" => "character", _ => name[3..] }));
         if (name == "absolute") return path with { Raw = local, WorkingDirectory = context.WorkingDirectory };
         if (name is "canonical" or "weakly_canonical")
             return path with { Raw = Canonical(local, name == "canonical"), WorkingDirectory = context.WorkingDirectory };
@@ -90,13 +90,32 @@ public static partial class NativeRegistry
             return path with { Raw = Path.GetRelativePath(second, first) };
         }
         if (name == "read_symlink") return path with { Raw = new FileInfo(local).LinkTarget ?? new DirectoryInfo(local).LinkTarget ?? throw new IOException($"'{local}' is not a symbolic link") };
-        if (name == "is_empty") return Bool(Directory.Exists(local) ? !Directory.EnumerateFileSystemEntries(local).Any() : new FileInfo(local).Length == 0);
+        if (name == "is_empty")
+        {
+            string kind = Status(local, false);
+            return kind switch
+            {
+                "directory" => Bool(!Directory.EnumerateFileSystemEntries(local).Any()),
+                "regular" => Bool(new FileInfo(local).Length == 0),
+                _ => throw new IOException($"fs.is_empty requires an existing regular file or directory: '{local}' ({kind})")
+            };
+        }
         if (name == "permissions") return new RangeValue(Permissions(local).Select(permission => (Value)new StringValue(permission)), TypeRef.String);
-        if (name == "is_readonly") return Bool((File.GetAttributes(local) & FileAttributes.ReadOnly) != 0);
+        if (name == "is_readonly") return Bool(OperatingSystem.IsWindows() ? (File.GetAttributes(local) & FileAttributes.ReadOnly) != 0 : (File.GetUnixFileMode(local) & (UnixFileMode.UserWrite | UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) == 0);
         if (name == "set_readonly")
         {
-            FileAttributes attributes = File.GetAttributes(local);
-            File.SetAttributes(local, Boolean(args[1]) ? attributes | FileAttributes.ReadOnly : attributes & ~FileAttributes.ReadOnly);
+            bool readOnly = Boolean(args[1]);
+            if (OperatingSystem.IsWindows())
+            {
+                FileAttributes attributes = File.GetAttributes(local);
+                File.SetAttributes(local, readOnly ? attributes | FileAttributes.ReadOnly : attributes & ~FileAttributes.ReadOnly);
+            }
+            else
+            {
+                UnixFileMode mode = File.GetUnixFileMode(local);
+                UnixFileMode writes = UnixFileMode.UserWrite | UnixFileMode.GroupWrite | UnixFileMode.OtherWrite;
+                File.SetUnixFileMode(local, readOnly ? mode & ~writes : mode | writes);
+            }
             return Value.Null;
         }
         if (name == "set_permissions") { SetPermissions(local, Text(args[1])); return Value.Null; }
@@ -115,7 +134,7 @@ public static partial class NativeRegistry
             if (attributes is null) return name == "delete" ? Value.Null : Value.False;
             bool directory = (attributes.Value & FileAttributes.Directory) != 0 && (attributes.Value & FileAttributes.ReparsePoint) == 0;
             if (name == "delete" && directory) throw new IOException($"fs.delete does not recursively remove directory '{local}'; use fs.remove_all");
-            if (directory) Directory.Delete(local, name == "remove_all"); else File.Delete(local);
+            if ((attributes.Value & FileAttributes.Directory) != 0) Directory.Delete(local, name == "remove_all" && directory); else File.Delete(local);
             return name == "delete" ? Value.Null : Value.True;
         }
         string destination = args.Count > 1 ? context.LocalPath(args[1]) : "";
@@ -150,7 +169,7 @@ public static partial class NativeRegistry
         if (noFollow && (attributes.Value & FileAttributes.ReparsePoint) != 0) return "symlink";
         if (!noFollow && (attributes.Value & FileAttributes.ReparsePoint) != 0 && File.ResolveLinkTarget(path, true)?.Exists == false) return "not_found";
         if ((attributes.Value & FileAttributes.Directory) != 0) return "directory";
-        return "regular_file";
+        return "regular";
     }
 
     private static string Canonical(string local, bool required)
@@ -196,7 +215,7 @@ public static partial class NativeRegistry
     {
         if (OperatingSystem.IsWindows())
         {
-            bool write = flags.Split([' ', '|', ','], StringSplitOptions.RemoveEmptyEntries).Contains("owner_write", StringComparer.Ordinal);
+            bool write = (PermissionMode(flags) & 0x92) != 0;
             FileAttributes attributes = File.GetAttributes(local);
             File.SetAttributes(local, write ? attributes & ~FileAttributes.ReadOnly : attributes | FileAttributes.ReadOnly);
             return;
@@ -206,9 +225,23 @@ public static partial class NativeRegistry
 
     private static int PermissionMode(string flags)
     {
+        string octal = flags.StartsWith("0o", StringComparison.Ordinal) ? flags[2..] : flags;
+        if (octal.Length > 0 && octal.All(character => character is >= '0' and <= '7'))
+        {
+            int parsed = Convert.ToInt32(octal, 8);
+            return parsed <= 0xfff ? parsed : throw new MsyncException($"Permission mode outside filesystem flag range: '{flags}'");
+        }
         int mode = 0;
         foreach (string flag in flags.Split([' ', '|', ','], StringSplitOptions.RemoveEmptyEntries))
-            mode |= PermissionBits.TryGetValue(flag, out UnixFileMode bit) ? (int)bit : throw new MsyncException($"Unknown permission flag '{flag}'");
+            mode |= flag switch
+            {
+                "none" => 0,
+                "owner_all" => 0x1c0,
+                "group_all" => 0x38,
+                "others_all" => 7,
+                "all" => 0x1ff,
+                _ => PermissionBits.TryGetValue(flag, out UnixFileMode bit) ? (int)bit : throw new MsyncException($"Unknown permission flag '{flag}'")
+            };
         return mode;
     }
 

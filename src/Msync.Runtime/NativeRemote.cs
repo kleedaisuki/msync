@@ -12,9 +12,9 @@ public static partial class NativeRegistry
         kind() {
             if value=$(LC_ALL=C stat "$@" -c %F -- "$p" 2>&1); then
                 case "$value" in
-                    regular*) printf regular_file;; directory) printf directory;; 'symbolic link') printf symlink;;
-                    'block special file') printf block_file;; 'character special file') printf character_file;;
-                    fifo) printf fifo;; socket) printf socket;; *) printf other;;
+                    regular*) printf regular;; directory) printf directory;; 'symbolic link') printf symlink;;
+                    'block special file') printf block;; 'character special file') printf character;;
+                    fifo) printf fifo;; socket) printf socket;; *) printf unknown;;
                 esac
             else
                 case "$value" in
@@ -50,14 +50,14 @@ public static partial class NativeRegistry
     private static string RemoteScript(string name) => name switch
     {
         "exists" => "value=$(kind -L); if [ \"$value\" = not_found ]; then printf false; else printf true; fi",
-        "is_regular_file" => Predicate("regular_file"),
+        "is_regular_file" => Predicate("regular"),
         "is_directory" => Predicate("directory"),
         "is_symlink" => Predicate("symlink"),
-        "is_block_file" => Predicate("block_file"),
-        "is_character_file" => Predicate("character_file"),
+        "is_block_file" => Predicate("block"),
+        "is_character_file" => Predicate("character"),
         "is_fifo" => Predicate("fifo"),
         "is_socket" => Predicate("socket"),
-        "is_other" => "value=$(kind -L); case \"$value\" in block_file|character_file|fifo|socket|other) printf true;; *) printf false;; esac",
+        "is_other" => "value=$(kind -L); case \"$value\" in block|character|fifo|socket|unknown) printf true;; *) printf false;; esac",
         "is_readonly" => "mode=$(stat -L -c %a -- \"$p\"); if [ $((0$mode & 0222)) -eq 0 ]; then printf true; else printf false; fi",
         "status" => RemoteStatus(false),
         "symlink_status" => RemoteStatus(true),
@@ -69,7 +69,7 @@ public static partial class NativeRegistry
         "read_symlink" => "readlink -- \"$p\"",
         "permissions" => "stat -L -c %a -- \"$p\"",
         "set_permissions" => "chmod -- \"$2\" \"$p\"",
-        "set_readonly" => "if [ \"$2\" = true ]; then chmod a-w -- \"$p\"; else chmod u+w -- \"$p\"; fi",
+        "set_readonly" => "if [ \"$2\" = true ]; then chmod a-w -- \"$p\"; else chmod a+w -- \"$p\"; fi",
         "equivalent" => "q=$(expand \"$2\"; printf .); q=${q%.}; a=$(stat -L -c '%d:%i' -- \"$p\"); b=$(stat -L -c '%d:%i' -- \"$q\"); [ \"$a\" = \"$b\" ] && printf true || printf false",
         "create_directory" => "if [ -d \"$p\" ]; then printf false; else mkdir -- \"$p\"; printf true; fi",
         "create_directories" => "if [ -d \"$p\" ]; then printf false; else mkdir -p -- \"$p\"; printf true; fi",
