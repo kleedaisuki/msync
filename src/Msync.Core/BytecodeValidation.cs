@@ -133,6 +133,8 @@ internal static class BytecodeValidation
                     {
                         PopMany(instruction.A); var callee = Pop(); Require(callee, TypeKind.Function | TypeKind.Path | TypeKind.String);
                         var target = instruction.Op == OpCode.ProcessCall ? null : instruction.B == 0 ? callee.Function : instruction.B - 1;
+                        if (instruction.Op == OpCode.Call && instruction.Text is { } dispatch)
+                            target = callee.Function is { } identity && FunctionDispatch.Parse(dispatch).TryGetValue(identity, out int selected) ? selected : null;
                         if (target is { } index)
                         {
                             if (index < 0 || index >= module.Functions.Count) throw Error($"callee {index} does not identify a function");

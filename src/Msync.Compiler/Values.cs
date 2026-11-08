@@ -41,7 +41,8 @@ internal sealed partial class Compilation
             if (binding.Origin is { } origin) CaptureDefinition(frame, span, [origin]);
             if (binding.Self is not null) EmitClosure(frame, binding.Self);
             else frame.Emit(OpCode.LoadLocal, binding.Slot, span: span);
-            return Current(frame, binding);
+            var current = Current(frame, binding);
+            return current.Type.WithoutNull == TypeRef.Function ? current with { Storage = binding.Storage } : current;
         }
         if (reference && name == "std") return Standard(frame, span);
         if (reference && RemovedRangeAlias(name)) throw RangeAliasError(frame, "$" + name, span);
@@ -200,7 +201,9 @@ internal sealed partial class Compilation
                         : $"Available members: {string.Join(", ", left.Scope.Members.Keys.Order(StringComparer.Ordinal))}.", code: "E0205");
             Observe(frame, binary.Right.Span, info, member);
             if (left.Scope.Origins?.TryGetValue(member, out var origins) == true) CaptureDefinition(frame, binary.Right.Span, origins);
-            frame.Emit(OpCode.GetMember, text: member, span: binary.Span); return Current(frame, info);
+            frame.Emit(OpCode.GetMember, text: member, span: binary.Span);
+            info = Current(frame, info);
+            return info.Type.WithoutNull == TypeRef.Function ? info with { Storage = left.Scope.Storage[member] } : info;
         }
         if (left.Type == TypeRef.Process && member is not null)
         {

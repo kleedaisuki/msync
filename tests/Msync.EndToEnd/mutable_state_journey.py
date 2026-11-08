@@ -207,6 +207,16 @@ EXAMPLES: tuple[Example, ...] = (
         b"after",
     ),
     Example(
+        "deferred-callable-argument",
+        'fn build(operation) { $std::ranges::transform([1], fn(item) { operation() }) }; let operation = fn { "before" }; let deferred = build(operation); operation = fn { "after" }; for item in deferred { item -> ./result; };',
+        b"after",
+    ),
+    Example(
+        "deferred-null-captures",
+        'let value? = "before"; let object = scope { field?: "before" }; let deferred = $std::ranges::transform([1], fn(item) { if value is null { if object::field is null { "after" } else { "wrong-field" } } else { "wrong-slot" } }); value = null; object::field = null; for item in deferred { item -> ./result; };',
+        b"after",
+    ),
+    Example(
         "ordered-direct-callable",
         'let operation = fn { "before" }; operation() -> ./first-call; operation = fn { "after" }; operation() -> ./result;',
         b"after",

@@ -26,6 +26,8 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         if (document.EditorError is { } syntax) throw syntax;
         PrepareSessionBindings();
         solvedStorage.Clear();
+        changedCallableStorage.Clear();
+        newMutableCalls.Clear();
         Frame frame = new(text, sourceName, sessionEnvironment) { Locals = sessionLocals };
         SnapshotFacts(frame);
         if (functions.Count == 0) functions.Add(new("<main>", 0, 0, [], TypeRef.Null));
@@ -38,14 +40,26 @@ internal sealed partial class Compilation(string source, string sourceName, int 
             var result = Statements(frame, document.Statements, submittedBindings is not null);
             frame.Emit(OpCode.Return);
             functions[0] = new("<main>", 0, frame.Locals, frame.Code.ToArray(), result.Type);
+            var code = FinalizeMutableCalls();
+            var module = Optimizer.Optimize(new(constants.ToArray(), code, OptimizationLevel: optimization,
+                PreserveLocals: submittedBindings is not null), optimization);
             sessionEnvironment = frame.Environment;
             sessionLocals = frame.Locals;
-            return Optimizer.Optimize(new(constants.ToArray(), functions.ToArray(), OptimizationLevel: optimization,
-                PreserveLocals: submittedBindings is not null), optimization);
+            PruneMutableCalls();
+            return module;
         }
         catch
         {
             foreach (var storage in solvedStorage) storage.Type = null;
+            foreach (var (storage, previous) in changedCallableStorage)
+            {
+                storage.Callables = previous.Domain;
+                storage.Revision = previous.Revision;
+                storage.Sources = previous.Sources;
+                storage.Contracts = previous.Contracts;
+            }
+            foreach (int call in newMutableCalls) mutableCalls[call] = null;
+            RebuildFreeMutableCalls();
             functions.Clear(); functions.AddRange(previousFunctions);
             for (int i = previousConstants; i < constants.Count; i++) constantIndices.Remove(constants[i]);
             constants.RemoveRange(previousConstants, constants.Count - previousConstants);

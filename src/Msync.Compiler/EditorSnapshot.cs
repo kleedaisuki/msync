@@ -1,4 +1,5 @@
 using Msync.Core;
+using System.Collections.Immutable;
 using System.Runtime.CompilerServices;
 
 namespace Msync.Compiler;
@@ -10,7 +11,14 @@ internal sealed class EditorSnapshot
     private readonly Dictionary<StorageConstraint, StorageConstraint> storage = [];
     private StorageConstraint Storage(StorageConstraint constraint)
     {
-        if (!storage.TryGetValue(constraint, out var result)) storage.Add(constraint, result = new(constraint.Type));
+        if (!storage.TryGetValue(constraint, out var result))
+        {
+            storage.Add(constraint, result = new(constraint.Type) { Revision = constraint.Revision });
+            result.Callables = constraint.Callables is { } domain ? Info(domain, null, unprovenCapture: true) : null;
+            result.Sources = System.Collections.Immutable.ImmutableHashSet.CreateRange(constraint.Sources.Select(Storage));
+            result.Contracts = constraint.Contracts.ToImmutableDictionary(pair => pair.Key,
+                pair => pair.Value with { Result = Info(pair.Value.Result, null, unprovenCapture: true) });
+        }
         return result;
     }
 
@@ -57,6 +65,7 @@ internal sealed class EditorSnapshot
             Scope = scope,
             Alternatives = info.Alternatives?.Select(item => Info(item, value, unprovenCapture)).ToArray(),
             Element = info.Element is null ? null : Info(info.Element, null, unprovenCapture),
+            Storage = info.Storage is null ? null : Storage(info.Storage),
             KnownConnection = value is ConnectionValue connection ? connection : info.KnownConnection,
             KnownPath = value is PathValue path ? path : unprovenCapture ? null : info.KnownPath,
             KnownText = value is StringValue text ? text.Data : info.KnownText

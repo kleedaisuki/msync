@@ -209,8 +209,11 @@ internal sealed partial class Compilation
         if (functions.Count == 0) functions.Add(new("<main>", 0, 0, [], Msync.Core.TypeRef.Null));
         SnapshotFacts(frame);
         CaptureContext(frame, 0);
-        _ = Statements(frame, document.Statements);
+        var result = Statements(frame, document.Statements);
         CaptureContext(frame, source.Length);
+        functions[0] = new("<main>", 0, frame.Locals, frame.Code.ToArray(), result.Type);
+        try { _ = FinalizeMutableCalls(); }
+        catch (CompileException error) { EditorFailure(frame, error); }
         sessionEnvironment = frame.Environment;
         sessionLocals = frame.Locals;
         ProbeUncalledFunctions();
@@ -267,7 +270,7 @@ internal sealed partial class Compilation
         Compilation fork = new(text, sourceName, 0, observer) { editorIsolated = true, sessionEnvironment = environment, sessionLocals = sessionLocals };
         fork.constants.AddRange(constants);
         foreach (var pair in constantIndices) fork.constantIndices.Add(pair.Key, pair.Value);
-        fork.functions.AddRange(functions);
+        fork.functions.AddRange(functions.Select(RenderMutableFunction));
         fork.templates.AddRange(templates);
         return fork;
     }

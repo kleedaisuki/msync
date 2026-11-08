@@ -134,6 +134,16 @@ internal sealed partial class Compilation
         if (node is NameExpr name) yield return name.Name;
         foreach (var child in Children(node)) foreach (var nested in Names(child)) yield return nested;
     }
+    private static IEnumerable<string> ReadNames(Node node)
+    {
+        if (node is AssignmentExpr { Target: NameExpr } assignment)
+        {
+            foreach (var name in ReadNames(assignment.Value)) yield return name;
+            yield break;
+        }
+        if (node is NameExpr nameExpression) yield return nameExpression.Name;
+        foreach (var child in Children(node)) foreach (var nested in ReadNames(child)) yield return nested;
+    }
     internal static IEnumerable<Node> Children(Node node) => node switch
     {
         BlockExpr block => block.Statements,

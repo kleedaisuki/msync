@@ -110,8 +110,13 @@ internal sealed partial class Compilation
             if (!probeSpecializations!.TryGetValue(template, out specializations)) probeSpecializations[template] = specializations = [];
         }
         var captures = template.Captures.Select(pair => new KeyValuePair<string, Binding>(pair.Key,
-            pair.Value with { Info = CaptureInfo(Current(caller, pair.Value)) })).ToArray();
-        string key = string.Join(';', arguments.Select(argument => InfoKey(argument))) + "|" + string.Join(';', captures.Select(pair => InfoKey(pair.Value.Info)));
+            pair.Value with { Info = caller.DeferredCaptures ? DeferredCapture(caller, pair.Value) : CaptureInfo(Current(caller, pair.Value), caller.EditorRecovery, caller.EditorProbe) })).ToArray();
+        var reads = ReadNames(template.Syntax.Body).ToHashSet(StringComparer.Ordinal);
+        // A write-only capture's old callable identity cannot affect this body.
+        // Including it would create unbounded specializations for recursive stores.
+        string CaptureKey(Info info) => info.Type + ":" + (info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope.Identity));
+        string key = (caller.DeferredCaptures ? "deferred|" : "") + string.Join(';', arguments.Select(argument => InfoKey(argument))) + "|" + string.Join(';', captures
+            .Select(pair => !reads.Contains(pair.Key) ? pair.Value.Info.Type.ToString() : caller.DeferredCaptures ? CaptureKey(pair.Value.Info) : InfoKey(pair.Value.Info)));
         if (specializations.TryGetValue(key, out var existing)) return existing;
         if (activeEditorSpecializations?.Contains(template.Syntax) == true)
         {
@@ -134,6 +139,7 @@ internal sealed partial class Compilation
             EditorRecovery = caller.EditorRecovery,
             EditorProbe = caller.EditorProbe,
             EditorReportErrors = caller.EditorReportErrors,
+            DeferredCaptures = caller.DeferredCaptures,
             EditorCallTrace = caller.EditorRecovery ? new(caller.SourceName, caller.Source, span, template.Syntax.Parameters, specialization.ParameterTypes, caller.EditorCallTrace) : null
         };
         frame.SelfCaptureSlots[template.Id] = Enumerable.Range(0, template.Captures.Count).ToArray();
@@ -141,6 +147,7 @@ internal sealed partial class Compilation
         {
             frame.Bind(capture.Key, capture.Value with { Slot = frame.Allocate(), Self = null });
             frame.Facts = frame.Facts.SetItem(capture.Value.Identity, capture.Value.Info);
+            if (caller.DeferredCaptures) InstallCaptureFacts(frame, capture.Value.Info);
         }
         for (int index = 0; index < arguments.Count; index++)
         {
@@ -226,6 +233,12 @@ internal sealed partial class Compilation
         var result = CallEager(scratch, call);
         if (result.Type.Kind == TypeKind.Range)
         {
+            if (!scratch.DeferredCaptures)
+            {
+                scratch = CloneFrame(frame);
+                scratch.DeferredCaptures = true;
+                result = CallEager(scratch, call);
+            }
             EmitThunk(frame, scratch, result, "<range-call>");
             frame.Emit(OpCode.DeferRange, text: result.Type.Element?.ToString(), span: call.Span);
         }
@@ -270,14 +283,19 @@ internal sealed partial class Compilation
             var specialization = Specialize(frame, callee.Function, arguments, span, argumentExpressions);
             frame.Emit(OpCode.Call, arguments.Count, specialization.Id + 1, span: span);
             ApplyEffects(frame, specialization);
-            return InstantiateResult(frame, specialization.Result, callee.Function, arguments, span);
+            var result = InstantiateResult(frame, specialization.Result, callee.Function, arguments, span);
+            return RecordMutableCall(frame, callee, arguments, span, argumentExpressions, result);
         }
-        if (callee.NativeName is not null) return InvokeNative(frame, callee.NativeName, arguments, span, argumentExpressions);
+        if (callee.NativeName is not null)
+        {
+            var result = InvokeNative(frame, callee.NativeName, arguments, span, argumentExpressions);
+            return RecordMutableCall(frame, callee, arguments, span, argumentExpressions, result);
+        }
         if (callee.Alternatives is not null)
         {
             var dispatch = ResolveDispatch(frame, callee, arguments, span);
             frame.Emit(OpCode.Call, arguments.Count, text: dispatch.Mapping, span: span);
-            return dispatch.Result;
+            return RecordMutableCall(frame, callee, arguments, span, argumentExpressions, dispatch.Result);
         }
         throw Error(frame, "Function value has no inferred callable signature.", span,
             help: "Use a concrete fn value or preserve its signature through a generic binding.", code: "E0204");
@@ -299,7 +317,10 @@ internal sealed partial class Compilation
         if (callbackIndex >= 1 && arguments[0].Type.Kind == TypeKind.Range && arguments[callbackIndex].Type == TypeRef.Function)
         {
             var item = arguments[0].Element ?? new Info(arguments[0].Type.Element ?? TypeRef.Any);
+            bool deferred = frame.DeferredCaptures;
+            frame.DeferredCaptures |= signature.Result.Kind == TypeKind.Range;
             var callback = ResolveDispatch(frame, arguments[callbackIndex], [item], span);
+            frame.DeferredCaptures = deferred;
             callbackResult = callback.Result;
             if (callback.Mapping.Length != 0) frame.Emit(OpCode.SpecializeClosure, text: callback.Mapping, span: span);
             if (identity is "ranges.filter" or "ranges.take_while" or "ranges.drop_while" or "ranges.any" or "ranges.any_of" or "ranges.all_of" or "ranges.none" or "ranges.none_of" or "ranges.find_if")
@@ -349,13 +370,14 @@ internal sealed partial class Compilation
         return info.KnownConnection is null && info.KnownPath is null && info.KnownText is null && ReferenceEquals(info.Element, element) ? info
             : info with { KnownConnection = null, KnownPath = null, KnownText = null, Element = element };
     }
-    private static Info CaptureInfo(Info info) => info with
+    private static Info CaptureInfo(Info info, bool projection = false, bool acceptedOnly = false) => info with
     {
         KnownBool = null,
-        KnownConnection = null,
-        KnownPath = null,
-        KnownText = null,
-        Element = ForgetEndpoint(info.Element)
+        KnownConnection = projection ? info.KnownConnection : null,
+        KnownPath = projection && (!acceptedOnly || info.KnownPath is { WorkingDirectory: not null }
+            or { Connection.Kind: not ConnectionKind.Local } || info.KnownPath is { } path && System.IO.Path.IsPathFullyQualified(path.NativeText)) ? info.KnownPath : null,
+        KnownText = projection ? info.KnownText : null,
+        Element = projection ? info.Element : ForgetEndpoint(info.Element)
     };
     private static string InfoKey(Info info) => $"{info.Type}:{(info.Function is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Function))}:{info.NativeName}:{(info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope))}:{string.Join(',', info.Alternatives?.Select(InfoKey) ?? [])}:{(info.Element is null ? "" : InfoKey(info.Element))}";
 

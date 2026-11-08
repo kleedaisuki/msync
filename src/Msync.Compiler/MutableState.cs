@@ -37,15 +37,16 @@ internal sealed partial class Compilation
 
     private void Update(Frame frame, Binding binding, Info info)
     {
+        ObserveCallableStore(binding.Storage, info);
         frame.Facts = frame.Facts.SetItem(binding.Identity, info);
         if (frame.FieldOwners.TryGetValue(binding.Identity, out var owners))
-        foreach (var (identity, field) in owners)
-        {
-            if (!frame.Facts.TryGetValue(identity, out var value) || value.Scope is not { } scope) continue;
-            var members = scope.Members.ToDictionary();
-            members[field] = info;
-            frame.Facts = frame.Facts.SetItem(identity, value with { Scope = scope with { Members = members } });
-        }
+            foreach (var (identity, field) in owners)
+            {
+                if (!frame.Facts.TryGetValue(identity, out var value) || value.Scope is not { } scope) continue;
+                var members = scope.Members.ToDictionary();
+                members[field] = info;
+                frame.Facts = frame.Facts.SetItem(identity, value with { Scope = scope with { Members = members } });
+            }
         Refresh(frame);
     }
 
@@ -106,6 +107,7 @@ internal sealed partial class Compilation
             var storage = scope.Storage[field];
             var constraint = storage.Type;
             value = StoreInfo(frame, value, constraint, nullable, assignment.Value.Span, field);
+            ObserveCallableStore(storage, value);
             if (constraint is null && StorageType(value.Type, nullable) is { } solved) Solve(storage, solved);
             var members = scope.Members.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
             var types = scope.StorageTypes?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)
@@ -253,6 +255,7 @@ internal sealed partial class Compilation
             var fresh = binding with { Identity = new(), Storage = new(binding.Storage.Type) };
             bindings.Add(binding.Identity, fresh);
             fresh = fresh with { Info = Fresh(Current(frame, binding)) };
+            ObserveCallableStore(fresh.Storage, fresh.Info);
             bindings[binding.Identity] = fresh;
             frame.Facts = frame.Facts.SetItem(fresh.Identity, fresh.Info);
             return fresh;

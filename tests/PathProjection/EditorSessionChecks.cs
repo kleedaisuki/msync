@@ -88,6 +88,16 @@ internal static class EditorSessionChecks
             Check(await Submit("identity(42)") is NumberValue { Data: 42 }, "a later real specialization reused an editor function-table identity");
             Check(await Submit("captured()") is PathValue result && Path.GetFullPath(result.LocalPath(after)) == Path.Combine(before, "folder"),
                 "editor capture metadata changed the actual closure's retained path");
+            Check(await Submit("let operation = fn { \"before\" }; fn invoke() { operation() }; invoke()") is StringValue { Data: "before" },
+                "mutable callable setup failed");
+            const string incompatible = "operation = fn { true }; invoke()";
+            var rejected = compiler.AnalyzeEditor(incompatible, execution.GetLocalValue);
+            Check(rejected.Diagnostic is { Code: "E0213" } && rejected.Diagnostic.Span.Start == incompatible.IndexOf("fn", StringComparison.Ordinal),
+                "editor did not diagnose the replacement function against its established return contract");
+            Check(compiler.AnalyzeEditor("operation = fn { \"preview\" }; invoke()", execution.GetLocalValue).Diagnostic is null,
+                "editor rejected a compatible callable preview");
+            Check(await Submit("invoke()") is StringValue { Data: "before" },
+                "editor-only callable domains or identities escaped into the accepted session");
             Console.WriteLine("actual REPL editor snapshots preserve cwd/home/captures and live specialization identities");
         }
         finally
