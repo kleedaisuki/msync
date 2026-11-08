@@ -54,6 +54,19 @@ Require(indices.GetValue(pool) is null, "Original literal transfer script unnece
 Require(result.Instructions.Where(instruction => instruction.Op == OpCode.Constant).Select(instruction => instruction.A)
     .SequenceEqual(Enumerable.Range(0, 2048)), "Original literal operands were re-interned");
 Require(result.Instructions.Count(instruction => instruction.Op == OpCode.Transfer) == 1024, "Transfer effects changed");
+Module linear = Optimizer.Optimize(module, 2);
+Require(ReferenceEquals(linear.Functions[0], function), "Canonical literal effects rebuilt their instruction stream");
+Require(linear.Functions[0].Instructions.SequenceEqual(code), "Literal effect order or discarded-result convention changed");
+var transfer = new Instruction(OpCode.Transfer, Span: new("linear.msync", 20, 8));
+var discard = new Instruction(OpCode.Pop, Span: new("linear.msync", 28, 1));
+var redundant = new Module([new NumberValue(42), new StringValue("bytes"), new PathValue("./target")],
+    [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.Constant, 2), transfer, discard,
+        new(OpCode.Pop), new(OpCode.True), new(OpCode.Return)], TypeRef.Bool)], OptimizationLevel: 0);
+Module normalized = Optimizer.Optimize(redundant, 2);
+Require(normalized.Constants.Count == 2, "Discarded literal remained in the constant table");
+Require(normalized.Functions[0].Instructions.Count == 6, "Linear stack normalization retained a dead literal/pop pair");
+Require(ReferenceEquals(normalized.Functions[0].Instructions[2], transfer) && ReferenceEquals(normalized.Functions[0].Instructions[3], discard),
+    "Linear normalization changed effect/discard metadata");
 var empty = new Module([], [new("empty", 0, 0, [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)]);
 Require(empty.OptimizationLevel == 2, "New modules do not use the product O2 default");
 Require(Optimizer.Optimize(empty with { OptimizationLevel = 0 }).OptimizationLevel == 2, "Optimizer API does not use O2 by default");

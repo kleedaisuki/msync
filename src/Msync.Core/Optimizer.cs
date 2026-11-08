@@ -6,6 +6,7 @@ public static class Optimizer
     {
         if (level is < 0 or > 3) throw new MsyncException($"Optimization level must be 0, 1, 2, or 3; received {level}");
         if (level == 0) return FormBlocks(module with { OptimizationLevel = level });
+        if (LinearEffectOptimization.TryOptimize(module, level, out var linear)) return linear;
         if (module.Functions.All(FunctionAnalysis.LiteralBody))
             return FormBlocks(ModuleOptimization.Compact(LocalSlotCompaction.Compact(module with { OptimizationLevel = level })));
         var preparation = module.Functions.Select(_ => new Dictionary<FunctionCode, FunctionCode>(ReferenceEqualityComparer.Instance)).ToList();

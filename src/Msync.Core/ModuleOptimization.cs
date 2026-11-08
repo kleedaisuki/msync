@@ -32,6 +32,7 @@ internal static class ModuleOptimization
                     foreach (var pair in FunctionDispatch.Parse(instruction.Text)) { Function(pair.Key); Function(pair.Value); }
             }
         }
+        if (functions.Count == module.Functions.Count && constants.Count == module.Constants.Count) return module;
         var functionIds = functions.Order().Select((old, index) => (old, index)).ToDictionary(pair => pair.old, pair => pair.index);
         var constantIds = constants.Order().Select((old, index) => (old, index)).ToDictionary(pair => pair.old, pair => pair.index);
         Value RewriteValue(Value value) => value switch
