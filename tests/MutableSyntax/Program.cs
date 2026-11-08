@@ -71,4 +71,10 @@ var nestedRegions = Instructions("acquire { acquire ./first -> ./second; ./third
 Require(nestedRegions.SequenceEqual([1, 1, 0, 0]), "nested acquire regions retain lexical ownership");
 Require(Instructions("acquire;").All(instruction => instruction.Op != Msync.Core.OpCode.Barrier), "standalone acquire does not open a region");
 Require(Instructions("release ./source -> ./destination;").All(instruction => instruction is not { Op: Msync.Core.OpCode.Barrier, A: 2 }), "release does not open an acquire region");
-Console.WriteLine("Barrier lowering: 12 contracts passed.");
+var nestedMarkerIds = Instructions("acquire { loop { acquire { break true; }; }; true }")
+    .Where(instruction => instruction is { Op: Msync.Core.OpCode.Barrier, A: 2 }).ToArray();
+Require(nestedMarkerIds.Length == 4 && nestedMarkerIds[0].Text is not null
+    && nestedMarkerIds[0].Text == nestedMarkerIds[3].Text
+    && nestedMarkerIds[1].Text is not null && nestedMarkerIds[1].Text == nestedMarkerIds[2].Text
+    && nestedMarkerIds[0].Text != nestedMarkerIds[1].Text, "nested break acquire markers retain distinct paired identities");
+Console.WriteLine("Barrier lowering: 13 contracts passed.");

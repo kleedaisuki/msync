@@ -1,3 +1,4 @@
+using System.Globalization;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 
@@ -15,13 +16,14 @@ internal sealed partial class Compilation
             return new(TypeRef.Null);
         }
 
-        if (barrier.Acquire) frame.Emit(OpCode.Barrier, 2, 1, span: barrier.Span);
+        string? region = barrier.Acquire ? frame.Code.Count.ToString(CultureInfo.InvariantCulture) : null;
+        if (barrier.Acquire) frame.Emit(OpCode.Barrier, 2, 1, text: region, span: barrier.Span);
         int start = frame.Code.Count;
         Info result = Expression(frame, barrier.Value);
         if (barrier.Release) ReleaseProcess(frame, barrier.Value, start, barrier.Acquire);
         if (!barrier.Acquire) return result;
         if (result.Type == TypeRef.Process) frame.Emit(OpCode.Acquire, 1, span: barrier.Span);
-        frame.Emit(OpCode.Barrier, 2, span: barrier.Span);
+        frame.Emit(OpCode.Barrier, 2, text: region, span: barrier.Span);
         return result;
     }
 
