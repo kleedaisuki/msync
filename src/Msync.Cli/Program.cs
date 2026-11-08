@@ -145,7 +145,8 @@ internal static class Program
 
     private static bool IsArtifact(string file) => file.EndsWith(".mso", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".mexe", StringComparison.OrdinalIgnoreCase);
     private static bool IsLegacySource(string source) => source.Split('\n').Take(5).Any(line => line.Trim().StartsWith("# msync: 0.", StringComparison.Ordinal) && !line.Trim().StartsWith("# msync: 0.8", StringComparison.Ordinal));
-    private static Task<string> ReadSource(string file) => file == "-" ? Console.In.ReadToEndAsync() : File.ReadAllTextAsync(file);
+    private static ValueTask<string> ReadSource(string file) => file == "-"
+        ? new(Console.In.ReadToEndAsync()) : ValueTask.FromResult(File.ReadAllText(file));
     private static void Write(Module module, string output)
     {
         if (output != "-") { Artifact.Write(module, output); return; }

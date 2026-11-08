@@ -103,6 +103,31 @@ journey observed 1.496 ms for hover following superseded analysis and 2.180 ms
 for shutdown while analysis was pending, and verified versions, source spans,
 close/reopen identity and multiple-document progress.
 
+## Finite source ingestion
+
+Ordinary source files use synchronous File.ReadAllText before parsing, because
+there is no independent work to overlap with that first read. The private helper
+returns the completed String in a ValueTask without allocating a fake Task;
+streamed stdin retains ReadToEndAsync. Existing decode/BOM/newline semantics and
+actionable native read errors are unchanged, including already-consumed legacy
+stdin forwarded to the Rust implementation.
+
+The same Native AOT component image, alternating 31 fresh processes per mode on
+Linux, measured 4 KiB sync/async p50 7.864/9.512 ms and p95 9.088/10.710 ms;
+64 KiB p50 was 8.362/10.461 ms. This isolates first-file asynchronous machinery,
+not a comparison of managed versus native code or different guest compilers.
+The actual source-input journey verifies a UTF-8 BOM, long Unicode data, literal
+CRLF, streamed stdin, missing/directory inputs and real legacy stdin. Its native
+candidate identity is `b89d9da5687c8ef526e7659f1c99e53cb21beb03f16305d776e94f07dbc39794`.
+
+```sh
+python3 tests/Msync.EndToEnd/source_input_journey.py --binary /path/to/msync --legacy /path/to/legacy-msync
+```
+
+Windows source-read modes run in the native platform comparison; Linux timings
+are not relabeled as Windows results. End-to-end CLI comparisons and the probe's
+full input/binary hashes belong to the focused performance note.
+
 ## Verification
 
 `tests/Msync.EndToEnd/journeys.py` checks scope-held functions, option order,
