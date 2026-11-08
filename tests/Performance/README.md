@@ -25,3 +25,7 @@ or running another benchmark while collecting measurements. Retain raw results
 under the repository-root `.temp`; reusable conclusions belong in
 [`docs/design/performance-v080.md`](../../docs/design/performance-v080.md).
 No benchmark thresholds are CI quality gates.
+
+For a controlled optimization within 0.8, replace `--rust OLD` with
+`--previous-aot BEFORE` and keep `--aot AFTER`. Both images then use the same
+0.8 source and `.mso` format; only the changed runtime contract needs measuring.

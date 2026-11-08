@@ -86,7 +86,7 @@ def freeze(path: Path, name: str, root: Path) -> Image:
 
 
 def source(image: Image, text: str) -> str:
-    suffix = ";" if image.name == "aot" else ""
+    suffix = "" if image.name == "rust" else ";"
     return "\n".join(line + suffix for line in text.splitlines()) + "\n"
 
 
@@ -110,7 +110,7 @@ def prepare(image: Image, root: Path, file_count: int, file_bytes: int) -> Path:
             f"source-{i}.bin -> destination-{i}.bin" for i in range(128)
         ),
     }
-    extension = "mso" if image.name == "aot" else "mobj"
+    extension = "mobj" if image.name == "rust" else "mso"
     for name, text in scripts.items():
         script = workspace / f"{name}.msync"
         script.write_text(source(image, text), encoding="utf-8")
@@ -136,7 +136,11 @@ def arguments(image: Image, case: str, workspace: Path) -> list[str]:
         return ["--no-config", "check", str(workspace / f"{name}.msync")]
     name = "tree" if case.startswith("copy-tree") else "small"
     extension = (
-        "msync" if case.endswith("source") else "mso" if image.name == "aot" else "mobj"
+        "msync"
+        if case.endswith("source")
+        else "mobj"
+        if image.name == "rust"
+        else "mso"
     )
     return ["--no-config", "run", str(workspace / f"{name}.{extension}")]
 
@@ -204,8 +208,10 @@ def measure(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--rust", type=Path, required=True, help="Optimized Rust 0.7.3 executable"
+    previous = parser.add_mutually_exclusive_group(required=True)
+    previous.add_argument("--rust", type=Path, help="Optimized Rust 0.7.3 executable")
+    previous.add_argument(
+        "--previous-aot", type=Path, help="Previous Native AOT 0.8.0 executable"
     )
     parser.add_argument(
         "--aot", type=Path, required=True, help="Native AOT 0.8.0 executable"
@@ -221,10 +227,12 @@ def main() -> None:
     options = parser.parse_args()
     options.output = options.output.resolve()
     root = options.output.parent / f"fixture-{time.time_ns()}"
-    images = [
-        freeze(options.rust.resolve(), "rust", root),
-        freeze(options.aot.resolve(), "aot", root),
-    ]
+    previous_image = (
+        freeze(options.rust.resolve(), "rust", root)
+        if options.rust
+        else freeze(options.previous_aot.resolve(), "before", root)
+    )
+    images = [previous_image, freeze(options.aot.resolve(), "aot", root)]
     workspaces = {
         image.name: prepare(image, root, options.files, options.bytes)
         for image in images
@@ -258,6 +266,18 @@ def main() -> None:
             "verification": "outside timed interval; exact file bytes, tree count, native modes and ns mtime",
         },
         "images": [asdict(image) for image in images],
+        "artifacts": [
+            {
+                "image": image.name,
+                "case": name,
+                "bytes": (workspaces[image.name] / f"{name}.{extension}")
+                .stat()
+                .st_size,
+            }
+            for image in images
+            for extension in ("mobj" if image.name == "rust" else "mso",)
+            for name in ("small", "tree", "batch")
+        ],
         "measurements": [asdict(measurement) for measurement in measurements],
     }
     options.output.parent.mkdir(parents=True, exist_ok=True)

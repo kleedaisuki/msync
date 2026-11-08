@@ -42,9 +42,142 @@ equivalent container semantics (`input-tree -> output-tree/`) and the intended
 destination `output-tree/input-tree`. The comparison waits for an actual native
 published 0.8 image. The harness's existence is not a performance result.
 
-## Results
+## Initial native comparison
 
-Native AOT implementation and integration are in progress. Record the final
-image identities, environment, commands, measurements and causal interpretation
-here after the actual comparable run. Do not extrapolate temporary managed-build
-timings to distributed-package performance.
+Host: Linux 6.12.113+deb13-amd64, Debian 13, glibc 2.41, native ext4 filesystem;
+.NET SDK 10.0.403, optimized Rust release and Native AOT C#. Neither image is a
+managed/debug build. Raw results:
+`.temp/performance-v080/comparison-initial.json`.
+
+Frozen image identities:
+
+* Rust 0.7.3, 19,931,640 bytes,
+  SHA-256 `dc9a283064556fe517682afa5077d0228bb29e4f6c2150f1dbdbdc519634ad44`.
+* Initial 0.8 AOT, 5,799,648 bytes,
+  SHA-256 `bf89e052167ff056fff0755ec8020283781cd1b875ea46153f3d3757d6097fb8`.
+
+| Journey | Rust median ms | Initial AOT median ms |
+| --- | ---: | ---: |
+| Startup (`--version`) | 3.542 | 12.537 |
+| Check one transfer | 4.611 | 14.306 |
+| Check 128 transfers | 20.219 | 17.046 |
+| File replacement, source | 8.964 | 17.229 |
+| File replacement, object | 9.061 | 17.867 |
+| 256-file tree, source | 361.166 | 393.080 |
+| 256-file tree, object | 347.480 | 374.836 |
+
+All output bytes, native modes and modification timestamps matched. The initial
+AOT implementation has a material fixed startup regression and an approximately
+8% tree-copy regression. Faster 128-operation checking does not erase those
+costs. The investigation below targets their mechanisms rather than dismissing
+the differences as a host-language migration cost.
+
+Compiled artifact sizes for these fixtures were 3,929 versus 453 bytes for the
+single copy, 3,938 versus 675 bytes for the tree, and 268,010 versus 51,809 bytes
+for 128 transfers (`.mobj` versus `.mso`). These include absolute diagnostic source
+filenames; they vary with filename length. They establish compactness for this
+workload, not universally smaller objects or faster execution.
+
+## Startup: globalization, not async entrypoint
+
+`strace -f -c` on `--version` recorded 477 total syscalls in the initial AOT image
+versus 79 in Rust. AOT performed ICU version probing/loading, cgroup/sysfs
+inspection and GC/runtime initialization even though help/version bypassed
+configuration and telemetry. A disposable native entrypoint isolated the cost
+using identical source with and without invariant globalization:
+
+| Minimal native program | ICU median ms | Invariant median ms |
+| --- | ---: | ---: |
+| Return immediately | 4.308 | 4.378 |
+| Write through raw Console stream | 9.464 | 4.606 |
+| `Console.WriteLine` | 9.835 | 4.821 |
+| Async method writing Console | 10.254 | 5.086 |
+
+There were three warmups and 15 alternating paired samples. Probe source, build
+logs and binaries are under `.temp/performance-v080/entry-probe`. This isolates
+about 5 ms of globalization initialization; async Main itself is not the cause.
+
+The production flag is `InvariantGlobalization=true`. msync's string operations
+are explicitly ordinal/invariant and no locale/culture API is exposed. Contrary
+to the original .NET Core invariant mode, [.NET 6 and later retain full Unicode
+case mapping](https://learn.microsoft.com/en-us/dotnet/core/compatibility/globalization/6.0/culture-creation-invariant-mode).
+Actual 0.8 scripts produced identical ICU/invariant output for Greek sigma,
+Turkish dotted/dotless I, sharp-s, accented letters, Deseret astral letters,
+Unicode regex `\w`, astral regex matching and UTF-8 literal transfers. This
+comparison establishes that removing ICU does not introduce a new difference
+between the two 0.8 builds; it does not by itself prove legacy Rust full-string
+case-expansion compatibility, which is a separate language-contract question.
+
+A second experiment moved help/version into a synchronous entrypoint before the
+large async CLI body. It did **not** improve startup: paired medians were 7.630 ms
+without the split and 8.083 ms with it, with overlapping ranges. The extra layer
+was removed. The functional repair that routes `legacy --help/--version` before
+new-product flags is retained independently of this rejected optimization.
+
+The full-app invariant run is retained as
+`.temp/performance-v080/comparison-invariant.json`. It is not an exact-source
+before/after comparison because other integration work landed between native
+images. Its startup/check/file medians were about 10.2/10.1/12.8 ms against Rust
+3.0/3.7/8.0 ms in that run. A residual fixed runtime cost remains; this work does
+not claim startup parity with Rust.
+
+## Tree copy: one Unix worker, one reusable buffer
+
+[The upstream FileStream engineering account](https://devblogs.microsoft.com/dotnet/file-io-improvements-in-dotnet-6/)
+distinguishes native Windows overlapped I/O from Unix file operations scheduled
+on workers. The initial Unix tree loop awaited individual asynchronous reads and
+writes for every small file. A targeted trace made that scheduling cost visible.
+
+The accepted candidate owns one worker for a whole Unix local tree, using a
+single pooled configured-size buffer recursively. File reads/writes are
+synchronous within that owner, with cancellation checked per buffer. Windows
+retains native overlapped file I/O, and remote/stream writes keep their async
+path. Cached per-node filesystem metadata avoids repeated source stats; directory
+parents are created once by traversal, and a successful consuming rename is not
+followed by a pointless unlink of its now-absent stage name. File staging,
+metadata, one fsync and atomic replacement are unchanged.
+
+Controlled 0.8 native before/after command:
+
+```sh
+python3 tests/Performance/journeys.py \
+  --previous-aot .temp/performance-v080/split-aot/msync \
+  --aot .temp/performance-v080/local-sync-aot/msync \
+  --case copy-tree-source --case copy-tree-object \
+  --output .temp/performance-v080/comparison-local-sync.json
+```
+
+Both images use invariant globalization and the same disposable entrypoint split
+(subsequently rejected), so that split does not explain this tree comparison.
+Frozen hashes: before `85ed19d571943291fa37942b23abc8b63e98571474689065ad09e3c214ee4f74`,
+after `668e9897c8f82e593a586b7634448232109adb6cb2fbea1da6618f649b8b001d`.
+
+| Tree journey | Before median ms | After median ms | Change |
+| --- | ---: | ---: | ---: |
+| Source | 370.986 | 350.112 | -5.6% |
+| Source-free object | 377.485 | 354.235 | -6.2% |
+
+All nine paired object samples improved (median paired reduction 31.489 ms);
+six of nine source samples improved (median paired reduction 16.785 ms).
+Filesystem latency still produces broad ranges, so the causal syscall result is
+important alongside those medians:
+
+| Syscall, 256-file tree | Before count | After count |
+| --- | ---: | ---: |
+| `sched_yield` | 8,490 | 148 |
+| `futex` | 860 | 11 |
+| `lstat` | 1,319 | 789 |
+| `fsync` | 256 | 256 |
+| `unlink` of consumed staging paths | 256 | 0 |
+
+The traced timing is not used as a throughput measurement. Traces and summaries
+are `.temp/performance-v080/sync-{before,aot}-tree-syscalls.txt`. Output checks
+passed for both source and object tree journeys. Focused local transfer tests
+also passed bytes, modes, literal replacement, dangling symlinks, self-copy,
+descendant and ancestor overlap. No persistence protocol, reduced fsync contract,
+or silent cancellation weakening was used to obtain the improvement.
+
+This is an incremental native result for ordinary warm-cache Linux trees, not a
+native Windows, WSL, WAN or release-wide throughput claim. The initial broad
+comparison and targeted mechanism probes remain distinct from a final package
+acceptance snapshot.
