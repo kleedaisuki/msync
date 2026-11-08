@@ -99,10 +99,13 @@ internal sealed partial class LanguageServer(
         string prefix = text[..offset];
         IEnumerable<string> words = Keywords.Concat(Declaration().Matches(text).Select(m => m.Groups[2].Value));
         Match standard = StandardMember().Match(prefix);
-        if (standard.Success)
+        if (standard.Success && standard.Groups[1].Length == 0)
         {
-            string module = standard.Groups[1].Value;
-            words = module.Length == 0 ? ["fs", "path", "string", "bool", "ranges"] : Declaration().Matches(StandardSource($"msync-stdlib:///0.8.0/{module}.msync")).Select(m => m.Groups[2].Value);
+            words = ["fs", "path", "string", "bool", "ranges", "process"];
+        }
+        else if (StandardModule(prefix) is { } module)
+        {
+            words = Declaration().Matches(StandardSource($"msync-stdlib:///0.8.0/{module}.msync")).Select(m => m.Groups[2].Value);
         }
         JsonArray items = [];
         foreach (string word in words.Distinct(StringComparer.Ordinal)) items.Add((JsonNode)new JsonObject { ["label"] = word, ["kind"] = Keywords.Contains(word, StringComparer.Ordinal) ? 14 : 3 });
@@ -113,15 +116,31 @@ internal sealed partial class LanguageServer(
     {
         int offset = Offset(text, p.GetProperty("position"));
         string word = Word(text, offset);
+        int start = offset;
+        while (start > 0 && (char.IsLetterOrDigit(text[start - 1]) || text[start - 1] == '_')) start--;
+        if (StandardModule(text[..start]) is { } module)
+        {
+            string target = $"msync-stdlib:///0.8.0/{module}.msync";
+            string source = StandardSource(target);
+            foreach (Match match in Declaration().Matches(source))
+                if (match.Groups[2].Value == word) return new JsonObject { ["uri"] = target, ["range"] = Range(source, match.Groups[2].Index, match.Groups[2].Length) };
+            return null;
+        }
         foreach (Match match in Declaration().Matches(text))
             if (match.Groups[2].Value == word) return new JsonObject { ["uri"] = uri, ["range"] = Range(text, match.Groups[2].Index, match.Groups[2].Length) };
-        Match qualified = StandardMember().Match(text[..Math.Min(text.Length, offset + word.Length)]);
-        if (!qualified.Success || qualified.Groups[1].Length == 0) return null;
-        string target = $"msync-stdlib:///0.8.0/{qualified.Groups[1].Value}.msync";
-        string source = StandardSource(target);
-        foreach (Match match in Declaration().Matches(source))
-            if (match.Groups[2].Value == word) return new JsonObject { ["uri"] = target, ["range"] = Range(source, match.Groups[2].Index, match.Groups[2].Length) };
         return null;
+    }
+
+    private static string? StandardModule(string prefix)
+    {
+        Match qualifier = StandardQualifier().Match(prefix);
+        if (!qualifier.Success) return null;
+        if (qualifier.Groups["module"].Success) return qualifier.Groups["module"].Value;
+        string alias = qualifier.Groups["alias"].Value;
+        string? module = null;
+        foreach (Match declaration in StandardAlias().Matches(prefix))
+            if (declaration.Groups[1].Value == alias) module = declaration.Groups[2].Value;
+        return module;
     }
 
     private static JsonArray Symbols(string text)
@@ -251,6 +270,10 @@ internal sealed partial class LanguageServer(
     private static partial Regex Declaration();
     [GeneratedRegex(@"\$std::(?:(\w+)::)?[\w]*$", RegexOptions.CultureInvariant)]
     private static partial Regex StandardMember();
+    [GeneratedRegex(@"(?:\$std::(?<module>\w+)|(?<alias>\w+))::\w*$", RegexOptions.CultureInvariant)]
+    private static partial Regex StandardQualifier();
+    [GeneratedRegex(@"\blet\s+(\w+)\s*=\s*\$std::(\w+)\s*;", RegexOptions.CultureInvariant)]
+    private static partial Regex StandardAlias();
     [GeneratedRegex("""(?<comment>(?<!\S)(?:\#|//)[^\r\n]*)|(?<string>"(?:[^"]|"")*")|(?<uri>[A-Za-z][A-Za-z0-9+.-]*://[^\s;{}(),"]*)|(?<word>[\p{L}_][\p{L}\p{N}_]*)|(?<operator>::|->|=>|==|!=|[?=/$|])""", RegexOptions.CultureInvariant)]
     private static partial Regex LexicalTokens();
 }
