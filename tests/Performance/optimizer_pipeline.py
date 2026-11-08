@@ -146,7 +146,9 @@ def main() -> None:
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--baseline-source", required=True)
     parser.add_argument("--candidate-source", required=True)
-    parser.add_argument("--case", action="append", choices=(*CASES, "call_dag"))
+    parser.add_argument(
+        "--case", action="append", choices=(*CASES, "call_dag", "transfers")
+    )
     parser.add_argument(
         "--candidate-case", action="append", choices=("mutable_scopes",)
     )
@@ -185,7 +187,8 @@ def main() -> None:
             "warmups_per_api": options.warmups,
             "order": "AB/BA fresh processes; warmed in-process phases",
             "p95": "type 7 linear interpolation",
-            "correctness": "actual Path oracle at each level and artifact roundtrip",
+            "correctness": "actual Path/Number oracle and codec roundtrip; "
+            "transfer compiler cases validate typed artifacts without executing I/O",
         },
         "records": records,
     }

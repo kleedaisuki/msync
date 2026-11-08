@@ -83,6 +83,7 @@ internal static class OptimizerPipelineProbe
     private static void Profile(PipelineOptions options, string workload, int size, List<PipelineShape> shapes, List<PipelineObservation> observations)
     {
         bool bytecode = workload == "call_dag";
+        bool transfers = workload == "transfers";
         string source = bytecode ? "" : Source(workload, size);
         string sourceName = $"optimizer-{workload}-{size}.msync";
         File.WriteAllText(Path.Combine(Path.GetDirectoryName(options.Output)!, sourceName), source);
@@ -93,10 +94,20 @@ internal static class OptimizerPipelineProbe
         {
             Module optimized = bytecode ? Optimizer.Optimize(raw, level) : SourceCompiler.Compile(source, sourceName, level);
             Module executable = Binding.Bind(optimized, binding);
-            Verify(optimized, runtime, size, bytecode);
-            Verify(executable, runtime, size, bytecode);
-            Verify(RoundTrip(optimized), runtime, size, bytecode);
-            Verify(RoundTrip(executable), runtime, size, bytecode);
+            if (transfers)
+            {
+                Artifact.Validate(optimized);
+                Artifact.Validate(executable);
+                Artifact.Validate(RoundTrip(optimized));
+                Artifact.Validate(RoundTrip(executable));
+            }
+            else
+            {
+                Verify(optimized, runtime, size, bytecode);
+                Verify(executable, runtime, size, bytecode);
+                Verify(RoundTrip(optimized), runtime, size, bytecode);
+                Verify(RoundTrip(executable), runtime, size, bytecode);
+            }
             shapes.Add(Shape(workload, size, level, "relocatable", source, optimized));
             shapes.Add(Shape(workload, size, level, "executable", source, executable));
             (string Name, Func<object> Run)[] stages =
@@ -110,6 +121,7 @@ internal static class OptimizerPipelineProbe
             foreach (var stage in stages)
             {
                 if (bytecode && stage.Name == "compile") continue;
+                if (transfers && stage.Name.StartsWith("run_", StringComparison.Ordinal)) continue;
                 PipelineObservation observation = Measure(options, workload, size, level, stage.Name, stage.Run);
                 observations.Add(observation);
                 Console.WriteLine($"{workload,-13} n={size,-4} O{level} {stage.Name,-15} p50={observation.P50Milliseconds:F4} ms p95={observation.P95Milliseconds:F4} ms alloc={observation.AllocatedBytesPerOperation:F0} B/op");
@@ -202,6 +214,11 @@ internal static class OptimizerPipelineProbe
     private static string Source(string workload, int size)
     {
         StringBuilder text = new();
+        if (workload == "transfers")
+        {
+            for (int index = 0; index < size; index++) text.AppendLine($"./source_{index} -> ./destination_{index};");
+            return text.ToString();
+        }
         if (workload == "mutable_scopes")
         {
             text.AppendLine("scope Factory { create: fn { scope { filename?: null } } };");

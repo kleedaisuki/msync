@@ -113,6 +113,14 @@ source functions that capture their callee and therefore exercise a different
 inlining path. A large final-IR reduction does not justify exponential optimizer
 work or retained dead local slots.
 
+The explicit `transfers` case compiles ordinary straight-line file transfers,
+without declaring unused values. Use `--case transfers --sizes 128 1024` in the
+paired driver to inspect the dominant I/O-script compiler workload. It measures
+compilation, raw optimization and binding only, and validates both typed codec
+roundtrips; it does not execute fixture paths that do not exist. Actual transfer
+bytes and publication behavior belong to the separate CLI/scheduler journeys,
+not a fabricated zero-I/O VM timing for this case.
+
 ```sh
 /path/to/native/msync-components --optimizer-pipeline \
   --sizes 1,32,128,512 --levels 0,1,2,3 --samples 15 --warmups 3 \
