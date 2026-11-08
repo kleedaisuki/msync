@@ -24,6 +24,10 @@ on:
         description: Optional comma-separated valid workloads for the previous C# image
         type: string
         default: ''
+      previous_windows_cases:
+        description: Optional previous-C# workload override for Windows only
+        type: string
+        default: ''
       wsl:
         description: Exercise an owned WSL1 distro when the Windows host supports it
         type: boolean
@@ -132,6 +136,7 @@ jobs:
         env:
           PREVIOUS_NATIVE: ${{ steps.previous.outputs.binary }}
           PREVIOUS_AOT_CASES: ${{ inputs.previous_aot_cases }}
+          PREVIOUS_WINDOWS_CASES: ${{ inputs.previous_windows_cases }}
           PACKAGE_RID: ${{ matrix.rid }}
         run: |
           import os
@@ -140,7 +145,8 @@ jobs:
           aot: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
           common: list[str] = ['python', 'tests/Performance/journeys.py', '--previous-aot', os.environ['PREVIOUS_NATIVE'], '--aot', str(aot), '--samples', '31', '--warmups', '3']
           selected: list[str] = []
-          for case in os.environ['PREVIOUS_AOT_CASES'].split(','):
+          cases: str = os.environ['PREVIOUS_WINDOWS_CASES'] if os.name == 'nt' and os.environ['PREVIOUS_WINDOWS_CASES'] else os.environ['PREVIOUS_AOT_CASES']
+          for case in cases.split(','):
               if case.strip():
                   selected.extend(['--case', case.strip()])
           subprocess.run([*common, *selected, '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-aot-before-after.json'], check=True)
