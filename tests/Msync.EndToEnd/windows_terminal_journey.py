@@ -223,7 +223,8 @@ def run(binary: Path, directory: Path, phases: list[str]) -> dict[str, object]:
         terminal.key('"EDIT_BAD"')
         terminal.key("\x1b[D")
         for _ in range(3):
-            terminal.key("\x08")
+            # ConPTY uses DEL for Backspace; BS selects Ctrl+Backspace.
+            terminal.key("\x7f")
         terminal.key("GOOD")
         terminal.key("\x1b[F")
         terminal.send("\r")
