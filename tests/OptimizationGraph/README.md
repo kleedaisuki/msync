@@ -39,3 +39,30 @@ minimum number of nondecreasing transfer groups; source-owned marker/transfer
 identities must remain ordered. Paired admission identities and legacy module
 semantics remain opaque. Four byte-level differential cases also cover repeated
 publication and read-after-write across mixed directional markers.
+
+## Linux Native AOT integration evidence
+
+After directional normalization, an isolated Native AOT publish passed five
+actual process journeys (`owner`, `overlap`, `resource-order`, `selected`,
+`deferred-dataflow`) in both source and serialized bound-executable modes:
+
+```text
+dotnet publish src/Msync.Cli/Msync.Cli.csproj -c Release -r linux-x64 \
+  --artifacts-path artifacts/build/optimizer-directional \
+  -o artifacts/validation/optimizer-directional-linux
+python3 tests/Msync.EndToEnd/scheduling_journey.py \
+  --binary artifacts/validation/optimizer-directional-linux/msync \
+  --case owner --case overlap --case resource-order \
+  --case selected --case deferred-dataflow --executable
+```
+
+The second invocation omitted `--executable` for the source path. The fixture
+interpreter was `/home/moesegfault/.python/bin/python3`. Executable SHA-256:
+`264b4d14595f5a831371ab8b5399171d3670caa1b82170b2124e2b1089b7380e`.
+The tested `DirectionalNormalization.cs` SHA-256 was
+`42b086395fe4472e70f6cd92ffc39f33dca29f0560db0c0d54670a895e2d1533`.
+
+Separate artifacts output avoids concurrent publishers replacing the DLL/PDB
+pair while ILCompiler reads sequence points. The first shared-output attempt
+failed in that reader with `Invalid compressed integer`; the isolated build
+completed without changing product code or disabling debug information.
