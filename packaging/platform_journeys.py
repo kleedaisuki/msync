@@ -123,6 +123,16 @@ def main() -> int:
     phases = [
         run_phase("language", language, output),
         run_phase(
+            "endpoint-projection",
+            [
+                sys.executable,
+                "packaging/endpoint_projection.py",
+                "--binary",
+                str(binary),
+            ],
+            output,
+        ),
+        run_phase(
             "cli",
             [
                 sys.executable,
