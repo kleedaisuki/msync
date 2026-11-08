@@ -55,3 +55,10 @@ var windowsDocument = Parser.Parse("C:/Users/Klee/config.toml -> C:/Users/Klee/b
 var windowsCopy = (BinaryExpr)((ExpressionStatement)windowsDocument.Statements[0]).Expression;
 if (((PathExpr)windowsCopy.Left).Path != "C:/Users/Klee/config.toml") throw new Exception("Windows forward-slash drive split");
 Console.WriteLine("Windows drive paths ok");
+var arithmeticDocument = Parser.Parse("fn countdown(value) { if value == 0 { true } else { countdown(value - 1) } }; countdown(4);");
+var arithmeticFunction = ((FunctionDeclaration)arithmeticDocument.Statements[0]).Function;
+var arithmeticIf = (IfExpr)((ExpressionStatement)arithmeticFunction.Body.Statements[0]).Expression;
+var arithmeticElse = (BlockExpr)arithmeticIf.Else!;
+var arithmeticCall = ((CallExpr)((ExpressionStatement)arithmeticElse.Statements[0]).Expression).Arguments[0];
+if (arithmeticCall is not BinaryExpr { Operator: "-" }) throw new Exception("Arithmetic recursion operand parsed as a Path");
+Console.WriteLine("Arithmetic recursion syntax ok");

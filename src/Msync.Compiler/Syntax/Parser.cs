@@ -91,8 +91,8 @@ public sealed class Parser
         Expr left = Prefix();
         while (true)
         {
-            if (At(TokenKind.LeftParen) && 8 >= minimum) { left = Call(left); continue; }
-            if (At(TokenKind.Question) && 8 >= minimum)
+            if (At(TokenKind.LeftParen) && 9 >= minimum) { left = Call(left); continue; }
+            if (At(TokenKind.Question) && 9 >= minimum)
             {
                 Next(); left = new UnaryExpr("?", left, SourceSpan.Cover(left.Span, Previous.Span)); continue;
             }
@@ -125,7 +125,7 @@ public sealed class Parser
         TokenKind.GreaterEqual => ">=",
         TokenKind.Select => "::",
         TokenKind.Slash => "/",
-        TokenKind.Atom when Current.Text is "and" or "or" or "is" => Current.Text,
+        TokenKind.Atom when Current.Text is "and" or "or" or "is" or "+" or "-" or "*" => Current.Text,
         _ => null
     };
     private static int Precedence(string? op) => op switch
@@ -136,8 +136,10 @@ public sealed class Parser
         "|" => 4,
         "is" or "is not" or "==" or "!=" => 5,
         "<" or "<=" or ">" or ">=" => 6,
-        "/" => 9,
-        "::" => 10,
+        "+" or "-" => 7,
+        "*" => 8,
+        "/" => 11,
+        "::" => 12,
         _ => -1
     };
     private bool IsExpressionEnd() => Current.Kind is TokenKind.End or TokenKind.RightBrace or TokenKind.RightParen or TokenKind.RightBracket or TokenKind.Comma or TokenKind.Semicolon or TokenKind.Arrow || Word("in");
@@ -158,12 +160,17 @@ public sealed class Parser
         if (TakeWord("break")) { Expr? value = IsExpressionEnd() ? null : Expression(); return new BreakExpr(value, SourceSpan.Cover(token.Span, value?.Span ?? token.Span)); }
         if (TakeWord("exists") || TakeWord("not"))
         {
-            var operand = Expression(token.Text == "not" ? 5 : 8);
+            var operand = Expression(token.Text == "not" ? 5 : 9);
             return new UnaryExpr(token.Text, operand, SourceSpan.Cover(token.Span, operand.Span));
+        }
+        if (TakeWord("-"))
+        {
+            var operand = Expression(9);
+            return new UnaryExpr("-", operand, SourceSpan.Cover(token.Span, operand.Span));
         }
         if (Take(TokenKind.Dollar))
         {
-            var operand = Expression(11);
+            var operand = Expression(13);
             return new UnaryExpr("$", operand, SourceSpan.Cover(token.Span, operand.Span));
         }
         if (At(TokenKind.LeftBrace)) return Block();
@@ -185,7 +192,7 @@ public sealed class Parser
         if (Take(TokenKind.Slash))
         {
             if (IsExpressionEnd()) return new PathExpr("/", token.Span);
-            var right = Expression(10);
+            var right = Expression(12);
             return new BinaryExpr("/", new PathExpr("/", token.Span), right, SourceSpan.Cover(token.Span, right.Span));
         }
         if (Take(TokenKind.String)) return new StringExpr(token.Text, token.Span);
@@ -332,6 +339,6 @@ public sealed class Parser
         return new(name.Text, arguments, alternatives, nullable, SourceSpan.Cover(name.Span, Previous.Span));
     }
     private bool ContinuesBarePath() => source[Previous.Span.End..Current.Span.Start].All(c => c is ' ' or '\t');
-    private static bool CanContinuePath(string text) => text is not ("true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "loop" or "native") && !TypeNames.Contains(text);
+    private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "loop" or "native") && !TypeNames.Contains(text);
     private static bool IsIdentifier(string text) => text.Length > 0 && (char.IsLetter(text[0]) || text[0] == '_') && text.All(c => char.IsLetterOrDigit(c) || c == '_');
 }
