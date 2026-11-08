@@ -81,10 +81,10 @@ internal static class Program
             if (options.Command == "doctor") return Complete(Doctor(), telemetry);
             string file = options.File ?? throw new ArgumentException("A source or artifact filename is required; use --help for commands.");
             if (options.Command == "fmt") return Complete(Format(file, options), telemetry);
+            if (file.EndsWith(".mobj", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) return Complete(await Legacy(args), telemetry);
             bool binary = IsArtifact(file);
             string? source = binary ? null : await ReadSource(file);
-            if (source is not null && IsLegacySource(source)) return await Legacy(args);
-            if (file.EndsWith(".mobj", StringComparison.OrdinalIgnoreCase) || file.EndsWith(".json", StringComparison.OrdinalIgnoreCase)) return await Legacy(args);
+            if (source is not null && IsLegacySource(source)) return Complete(await Legacy(args, file == "-" ? source : null), telemetry);
             long compileStart = Stopwatch.GetTimestamp();
             Module module = binary ? Artifact.Read(file) : SourceCompiler.Compile(source!, file, options.Optimization);
             telemetry?.Observe(new("compile", "ok", Source: file, DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(compileStart).TotalMilliseconds * 1_000_000)));
@@ -234,15 +234,20 @@ internal static class Program
         return 0;
     }
 
-    private static async Task<int> Legacy(string[] args)
+    private static async Task<int> Legacy(string[] args, string? source = null)
     {
         string? executable = Environment.GetEnvironmentVariable("MSYNC_LEGACY");
         executable ??= FindExecutable("msync-legacy");
         if (executable is null)
             throw new ArgumentException("This command/source uses the preserved Rust baseline. Build it with `cargo build --release --manifest-path legacy/Cargo.toml`, then set MSYNC_LEGACY to the resulting msync executable, or run it directly with these arguments.");
-        ProcessStartInfo start = new(executable) { UseShellExecute = false };
+        ProcessStartInfo start = new(executable) { UseShellExecute = false, RedirectStandardInput = source is not null };
         foreach (string arg in args) start.ArgumentList.Add(arg);
         using Process process = Process.Start(start) ?? throw new IOException($"Cannot launch legacy executable '{executable}'");
+        if (source is not null)
+        {
+            await process.StandardInput.WriteAsync(source);
+            process.StandardInput.Close();
+        }
         await process.WaitForExitAsync();
         return process.ExitCode;
     }

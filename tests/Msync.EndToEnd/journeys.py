@@ -58,6 +58,24 @@ def repl(binary: Path, cwd: Path) -> None:
             process.wait()
 
 
+def legacy_stdin(binary: Path, baseline: Path, cwd: Path) -> None:
+    environment = dict(os.environ)
+    environment["MSYNC_LEGACY"] = str(baseline.resolve())
+    result = subprocess.run(
+        [str(binary), "--no-config", "run", "-"],
+        cwd=cwd,
+        env=environment,
+        input='# msync: 0.7\n"stdin baseline" -> baseline-output\n',
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (cwd / "baseline-output").read_text() == "stdin baseline"
+
+
 def run(binary: Path, cwd: Path) -> None:
     source = cwd / "source.msync"
     source.write_text(
@@ -115,11 +133,15 @@ def run(binary: Path, cwd: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
+    parser.add_argument("--legacy-binary", type=Path)
     args = parser.parse_args()
     temporary = ROOT / ".temp"
     temporary.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="cli-journeys-", dir=temporary) as name:
-        run(args.binary.resolve(), Path(name))
+        directory = Path(name)
+        run(args.binary.resolve(), directory)
+        if args.legacy_binary is not None:
+            legacy_stdin(args.binary.resolve(), args.legacy_binary, directory)
 
 
 if __name__ == "__main__":
