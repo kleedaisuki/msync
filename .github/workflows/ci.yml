@@ -59,7 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-dotnet@v5
-        if: inputs.reuse_run == ''
+        if: inputs.reuse_run == '' || hashFiles('tests/IO/WslTarProbe/WslTarProbe.csproj') != ''
         with:
           global-json-file: global.json
       - uses: actions/setup-python@v6
@@ -135,9 +135,22 @@ jobs:
       - name: Exercise actual Windows console editing and foreground input ownership
         if: ${{ !cancelled() && steps.conpty.outcome == 'success' }}
         run: python tests/Msync.EndToEnd/windows_terminal_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-console.json
+      - name: Build the isolated native WSL process and archive phase probe
+        id: wslprobe
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.reused.outcome == 'success' && inputs.wsl && hashFiles('tests/IO/WslTarProbe/WslTarProbe.csproj') != '' }}
+        run: dotnet publish tests/IO/WslTarProbe/WslTarProbe.csproj -c Release -r win-x64 --artifacts-path artifacts/wsl-probe-build -o artifacts/wsl-tar-probe -p:RestoreLockedMode=true
       - name: Exercise the actual Windows to WSL home and path projection
         if: ${{ !cancelled() && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') && github.event_name == 'workflow_dispatch' && inputs.wsl && hashFiles('packaging/wsl_journey.py') != '' }}
-        run: python packaging/wsl_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/wsl.json
+        shell: python
+        env:
+          PROCESS_PROBE: ${{ steps.wslprobe.outcome == 'success' && 'artifacts/wsl-tar-probe/WslTarProbe.exe' || '' }}
+        run: |
+          import os
+          import subprocess
+          arguments: list[str] = ['python', 'packaging/wsl_journey.py', '--binary', 'artifacts/publish/win-x64/msync.exe', '--output', '.temp/platform-results/wsl.json']
+          if os.environ['PROCESS_PROBE']:
+              arguments.extend(['--process-probe', os.environ['PROCESS_PROBE']])
+          subprocess.run(arguments, check=True)
       - name: Build the preserved optimized Rust baseline on this same runner
         id: rust
         if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.benchmark && steps.package.outcome == 'success' }}
@@ -234,5 +247,6 @@ jobs:
             .temp/platform-results/**
             artifacts/previous-native/baseline.json
             artifacts/reused-native/baseline.json
+            artifacts/wsl-tar-probe/*.exe
             .temp/wsl-journey-*/diagnostics/**
             .temp/windows-install-test-*/**/*.log
