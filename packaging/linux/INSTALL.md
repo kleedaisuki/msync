@@ -4,8 +4,9 @@ Extract the archive, then run `./bin/msync --help` or `./bin/msync` for the REPL
 The release workflow builds GNU/Linux packages on Ubuntu 22.04 (glibc 2.35).
 Other architectures and older libc systems should build from the matching
 source tag. The published executable is Native AOT and needs no installed .NET
-runtime. Normal platform libraries, including the ICU package when using a
-globalized build, must be available.
+runtime or system ICU installation. String case mapping and regex operations
+use the language's invariant/ordinal semantics; the runtime does not expose
+locale-dependent operations.
 
 Keep the extracted package in a stable per-user directory, for example
 `~/.local/opt/msync-0.8.0-linux-x86_64`. Keep the complete `bin/` payload together:

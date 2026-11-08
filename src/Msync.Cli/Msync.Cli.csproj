@@ -4,7 +4,7 @@
     <AssemblyName>msync</AssemblyName>
     <RootNamespace>Msync.Cli</RootNamespace>
     <PublishAot>true</PublishAot>
-    <InvariantGlobalization>false</InvariantGlobalization>
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Msync.Compiler/Msync.Compiler.csproj" />
