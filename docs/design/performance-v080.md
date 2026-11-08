@@ -20,8 +20,10 @@ not an equivalent result.
 
 Default cases are startup, check of one/128 transfers, 4 KiB ordinary file
 replacement, and a 256-file tree with 4 KiB per file. Source and object execution
-are measured separately. There are two warmups and nine samples, with no
-page-cache eviction; subprocess launch and normal CLI work are included.
+are measured separately. The initial round used two warmups and nine samples;
+the current harness defaults to three warmups and 31 samples. Individual tables
+state their selection. There is no page-cache eviction; subprocess launch and
+normal CLI work are included.
 The small check versus 128-operation check separates fixed startup from scaling.
 Source versus object separates frontend costs from runtime work. Single-file
 versus tree distinguishes fixed overhead from per-member I/O and publication.
@@ -39,8 +41,9 @@ The resulting optimized 0.7.3 image is retained under
 `.temp/performance-v080/baseline/msync`; the benchmark makes another frozen copy
 and records its SHA-256 before measuring. A repeated real tree transfer confirms
 equivalent container semantics (`input-tree -> output-tree/`) and the intended
-destination `output-tree/input-tree`. The comparison waits for an actual native
-published 0.8 image. The harness's existence is not a performance result.
+destination `output-tree/input-tree`. The native image snapshots and actual
+execution results below distinguish the initial rewrite from the subsequently
+accepted product baseline and optimized candidates.
 
 ## Initial native comparison
 
