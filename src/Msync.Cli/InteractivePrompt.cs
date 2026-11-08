@@ -156,7 +156,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
 
         protected override Task<TextSpan> GetSpanToReplaceByCompletionAsync(string text, int caret, CancellationToken cancellationToken)
         {
-            if (SourceCompletion.Find(text, caret, includeBarePaths: true, resolveEndpoint: ResolveEndpoint) is { } context)
+            if (FindSource(text, caret) is { } context)
                 return Task.FromResult(new TextSpan(context.Start, context.Length));
             int start = caret, end = caret;
             if (insight?.Receiver?.Members is not null)
@@ -173,6 +173,16 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
         private ConnectionValue? ResolveEndpoint(string name) =>
             (completionBindings ?? bindings).TryGetValue(name, out var value) ? value.Endpoint : insight?.Receiver?.Endpoint;
 
+        private SourceCompletionContext? FindSource(string text, int caret)
+        {
+            SemanticMember? receiver = insight?.Receiver;
+            PathValue? path = receiver?.KnownPath ?? (receiver?.KnownText is { } value ? new PathValue(value) : null);
+            bool unknown = receiver is not null && path is null
+                && (receiver.Type.Contains("Path", StringComparison.Ordinal) || receiver.Type.Contains("String", StringComparison.Ordinal) || receiver.Type == "Unknown");
+            return SourceCompletion.Find(text, caret, includeBarePaths: true, resolveEndpoint: ResolveEndpoint,
+                receiverPath: path, unknownPathReceiver: unknown);
+        }
+
         protected override async Task<IReadOnlyList<CompletionItem>> GetCompletionItemsAsync(string text, int caret, TextSpan spanToBeReplaced, CancellationToken cancellationToken)
         {
             string prefix = text[spanToBeReplaced.Start..caret];
@@ -186,10 +196,10 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
                 .Distinct(StringComparer.Ordinal).Order(TextSemantics.Ordinal).Select(word => new CompletionItem(word,
                     getExtendedDescription: _ => Task.FromResult<FormattedString>(symbols.TryGetValue(word, out var binding) ? binding.Signature : word))).ToList();
             if (members is not null) return items;
-            if (SourceCompletion.Find(text, caret, includeBarePaths: true, resolveEndpoint: ResolveEndpoint) is { } context)
+            if (FindSource(text, caret) is { } context)
                 foreach (var candidate in await CompleteSourceAsync(context, cancellationToken))
                     items.Add(new CompletionItem(candidate.Replacement, displayText: candidate.Label,
-                        filterText: prefix + candidate.Label[context.Prefix.Length..].Replace("\"", "\"\"", StringComparison.Ordinal),
+                        filterText: candidate.FilterText ?? prefix + candidate.Label[context.Prefix.Length..].Replace("\"", "\"\"", StringComparison.Ordinal),
                         getExtendedDescription: _ => Task.FromResult<FormattedString>(candidate.Detail)));
             return items;
         }
