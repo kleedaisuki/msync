@@ -16,7 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
-from lsp_analysis_journey import notify
+from lsp_analysis_journey import diagnostics, notify
 from lsp_latency import Client
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -625,6 +625,124 @@ def remote_queries(
         client.close()
 
 
+def distinct_endpoint_queries(
+    binary: Path,
+    directory: Path,
+    endpoint: str,
+    remote_directory: Path,
+    remote_pwd: str,
+    environment: dict[str, str],
+) -> dict[str, int]:
+    relative = Path(os.path.relpath(remote_directory, remote_pwd))
+    local_cwd = directory / "domain-local-cwd"
+    local_cwd.mkdir()
+    local_directory = local_cwd / relative
+    local_directory.mkdir(parents=True)
+    (local_directory / "LOCAL_ONLY.txt").write_bytes(b"local domain")
+    (remote_directory / "REMOTE_ONLY.txt").write_bytes(b"remote domain")
+    raw = "./" + relative.as_posix() + "/"
+    declaration = "let remote = " + endpoint + ";\n"
+    stored = declaration + "let folder = remote::" + quote(raw) + ";\n"
+    cases = [
+        (declaration + "remote::" + raw + CARET, "REMOTE_ONLY.txt"),
+        (declaration + "remote::(" + raw + CARET + ")", "REMOTE_ONLY.txt"),
+        (
+            "scope Endpoints { host: "
+            + endpoint
+            + " };\nEndpoints::host::("
+            + raw
+            + CARET
+            + ")",
+            "REMOTE_ONLY.txt",
+        ),
+        (stored + "folder/" + CARET, "REMOTE_ONLY.txt"),
+        (stored + "$local::(folder/" + CARET + ")", "LOCAL_ONLY.txt"),
+        (stored + "remote::($local::(folder/" + CARET + "))", "REMOTE_ONLY.txt"),
+        (declaration + "$local::(remote::(" + raw + CARET + "))", "LOCAL_ONLY.txt"),
+        (declaration + "remote:: " + quote(raw + CARET), "REMOTE_ONLY.txt"),
+        (declaration + "remote::(" + quote(raw + CARET) + ")", "REMOTE_ONLY.txt"),
+        (declaration + "remote::({ " + quote(raw + CARET) + " })", "REMOTE_ONLY.txt"),
+        (
+            declaration
+            + "remote::(if true { "
+            + quote(raw + CARET)
+            + " } else { ./unused })",
+            "REMOTE_ONLY.txt",
+        ),
+        (
+            declaration
+            + "remote::(match true { true => { "
+            + quote(raw + CARET)
+            + " }, false => { ./unused } })",
+            "REMOTE_ONLY.txt",
+        ),
+        (
+            declaration
+            + "fn identity(path: Path) { path };\nremote::(identity("
+            + quote(raw + CARET)
+            + "))",
+            "LOCAL_ONLY.txt",
+        ),
+        (
+            declaration
+            + "remote::(if exists "
+            + quote(raw + CARET)
+            + " { ./unused } else { ./unused })",
+            "LOCAL_ONLY.txt",
+        ),
+        (
+            declaration + "remote::((fn() { " + quote(raw + CARET) + " })())",
+            "LOCAL_ONLY.txt",
+        ),
+    ]
+    client = Client(binary, cwd=local_cwd, environment=environment)
+    uri = (local_cwd / "endpoint-domain.msync").as_uri()
+    try:
+        client.request("initialize", {"capabilities": {}})
+        for version, (marked, expected) in enumerate(cases, 1):
+            offset = marked.index(CARET)
+            text = marked.replace(CARET, "") + ";\n"
+            notify(client, uri, version, text, opening=version == 1)
+            response, _ = client.request(
+                "textDocument/completion",
+                {"textDocument": {"uri": uri}, "position": lsp_position(text, offset)},
+            )
+            names = {
+                marker
+                for marker in ("LOCAL_ONLY.txt", "REMOTE_ONLY.txt")
+                if any(
+                    marker in item.get("textEdit", {}).get("newText", "")
+                    for item in response
+                )
+            }
+            assert names == {expected}, (version, marked, expected, names, response)
+        invalid_version = len(cases) + 1
+        malformed = "fn inspect(scope) { scope::endpoint::(/tmp/) };\n"
+        notify(client, uri, invalid_version, malformed)
+        problem = diagnostics(client, uri, invalid_version)
+        assert problem["diagnostics"], problem
+        corrected = "scope Ready { useful: true };\nReady::"
+        notify(client, uri, invalid_version + 1, corrected)
+        recovered, _ = client.request(
+            "textDocument/completion",
+            {
+                "textDocument": {"uri": uri},
+                "position": lsp_position(corrected, len(corrected)),
+            },
+        )
+        items = {item["label"]: item for item in recovered}
+        assert "useful" in items and "Bool" in (items["useful"].get("detail") or ""), (
+            items
+        )
+        assert client.process.poll() is None
+        return {
+            "distinct_local_remote_domains": len(cases),
+            "same_process_malformed_edit_recovery": 1,
+        }
+    finally:
+        client.close()
+
+
 def wsl(binary: Path, directory: Path, distro: str) -> dict[str, int]:
     executable = shutil.which("wsl.exe")
     assert executable is not None, "Actual WSL completion requires native wsl.exe"
@@ -696,6 +814,33 @@ def ssh_fixture(binary: Path, directory: Path) -> dict[str, int]:
         assert calls.count("ssh") == 2 and "scp" not in calls, calls
         result["retained_native_ssh_clients"] = 1
         result["selected_cli_transfer_ssh_clients"] = 1
+        pwd_result = subprocess.run(
+            ["/usr/bin/ssh", "-F", str(fixture.config), "Perf_Fixture", "pwd"],
+            cwd=directory,
+            env=environment,
+            capture_output=True,
+            check=False,
+            timeout=15,
+        )
+        assert pwd_result.returncode == 0, pwd_result.stderr
+        domain_remote = fixture.root / "endpoint-directory"
+        domain_remote.mkdir()
+        before_domain = len(lines(fixture.calls))
+        result.update(
+            distinct_endpoint_queries(
+                binary,
+                directory,
+                "ssh://Perf_Fixture",
+                domain_remote,
+                pwd_result.stdout.decode("utf-8").strip(),
+                environment,
+            )
+        )
+        domain_calls = lines(fixture.calls)[before_domain:]
+        assert domain_calls.count("ssh") == 1 and "scp" not in domain_calls, (
+            domain_calls
+        )
+        result["domain_query_retained_native_ssh_clients"] = 1
         return result
 
 

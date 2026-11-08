@@ -116,3 +116,40 @@ five native clients and three authentications; see
 The portable editor journeys and the native Windows WSL fixture own integrated
 completion acceptance. Their results should be attached to this protocol
 contract rather than substituted with a local fake transport.
+
+## Physical ownership through transparent path expressions
+
+A discriminating native editor probe found that the closest PathJoin receiver
+could omit an enclosing physical qualification. For `remote::(./relative/)`, the
+receiver still described `./relative` with no Connection, so completion queried
+the editor's local directory rather than the selected SSH directory. Existing
+loopback tests using an identical absolute path on both sides did not distinguish
+these domains.
+
+The focused fixture now puts different marker names at the same relative
+spelling under the actual SSH PWD and the editor's separate working directory.
+The pre-fix native image `605d540a...` passed the unparenthesized remote control
+but returned `LOCAL_ONLY.txt` for the parenthesized remote request. The fixture
+also covers a Scope-held Connection, a stored qualified Path, and nested physical
+qualifications where the final outer endpoint overrides an inner endpoint.
+This is a path-value ownership property, not permission to apply a source-level
+Connection to every filesystem operand appearing inside that expression: call
+arguments, conditions and function bodies retain their own evaluation domains.
+
+The semantic correction preserves the actual physical value-flow owner through
+parentheses, block tails, conditional branch results and match-arm results.
+It qualifies selected Path facts with `PathSemantics.Qualify`, the same operation
+used by execution. Editor contexts also expose the physical owner of String
+operands, so whitespace before a quoted RHS does not erase the selected endpoint.
+The provider consumes these facts without recovering an endpoint by guessing
+from the last visible text token. Unknown or contextual owners do not fall back
+to the local filesystem.
+
+The corrected managed CLI passed all fifteen distinct-domain requests over one
+retained native SSH client: direct controls, parenthesized paths and Strings,
+a Scope-held Connection, stored qualified Paths, nested outer-endpoint overrides,
+and block/if/match result paths. Negative controls kept call arguments,
+conditions and anonymous-function bodies local. The pre-fix Native AOT image
+and the corrected managed process use the same native encrypted SSH fixture;
+final native platform acceptance must run these integrated cases again on the
+new package rather than reuse the pre-fix result.
