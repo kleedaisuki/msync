@@ -101,7 +101,13 @@ writes. RAW, WAR and WAW dependencies retain source order, including directory
 subtree overlap; independent siblings do not conflict merely because publication
 changes their parent mtime. Finding predecessors visits path ancestors and actual
 overlapping descendants, rather than scanning every previously queued copy.
-Local identity resolves existing filesystem aliases. Unknown remote projections
+Local identity resolves existing filesystem aliases. A selected Path-copy producer
+may publish a directory or link used by a later descendant operand. Admission
+waits for that specific predecessor, then resolves the descendant's new physical
+footprint before later work is admitted; it does not drain unrelated jobs. Same-
+file dependencies and independent-copy frontiers need no extra stat or graph
+scan. This preserves WAR ordering when a new directory link points outside the
+copied tree. Unknown remote projections
 conflict only within their selected endpoint: discovering independence must not
 authenticate an endpoint merely mentioned by an unselected branch.
 
@@ -148,6 +154,14 @@ no dependency proof authorizes authenticating or executing an unselected branch.
 The directional analogy follows [LLVM's motion rules](https://llvm.org/docs/Atomics.html)
 without adding CPU atomic pairing or importing a memory model into file copying.
 
+Symbolic-link publication renames the owned same-directory stage as an entry,
+using native `rename`/`MoveFileEx`; public `File.Move` first tests `File.Exists`,
+which treats a link to an existing directory as a non-file. Link targets and their
+contents are never removed to publish or clean up a link. Ordinary real-directory
+destination checks remain distinct from replacement of a symbolic-link entry.
+Focused source/object/executable journeys live in
+`tests/SchedulingGraph/PathNamespaceChecks.cs` (`--namespace-only`).
+
 A consumed `->` yields Bool. Operational I/O/permission/native-process failures
 yield false, preserve source/destination/cause diagnostics, and increment failed
 transfer accounting. Cancellation and malformed typed operations do not become
@@ -159,10 +173,19 @@ only on demand. `MakeLazyRange` stores already-pure values directly and explicit
 zero-argument closures for effectful elements; a compact mask distinguishes them.
 `DeferRange` invokes a range-producing closure on first demand, including its
 arguments. The source compiler therefore does not spend effects on `take(0)`.
-A REPL session retains local values; lazy values keep their originating compiled
-module/context alive rather than looking up a later process cwd. Deferred call
-resolution memoizes the resulting range on first demand, so repeated consumers
-do not reevaluate the source call's arguments/body.
+A REPL session retains local values and stable function identities. Deferred
+callbacks may observe a callable assigned in a later submission, so their code
+linkage follows the session's latest typed image while their original physical
+context remains fixed. The latest code and constants are projected together for
+that origin, never mixed with a later submission's bound constant table. An old
+range created in directory A still evaluates uncaptured path literals in A even
+after `/cd B`; a replacement callback's already-evaluated captured Path from B
+retains B. This is caller-context evaluation, not a new function-definition
+context. Projections are shared per exact binding context and image generation;
+they contain typed code templates, not live lexical cells or Scope instances.
+Standalone artifact interpreters remain frozen. Deferred call resolution
+memoizes the resulting range on first demand, so repeated consumers do not
+reevaluate the source call's arguments/body.
 
 `RangeValue.Selection` retains `PathSelection` origin (directory, .NET regex,
 recursive traversal and composed native adaptor projection). A deferred range's
