@@ -79,7 +79,8 @@ public static class EffectAnalysis
                 if (instruction.Op == OpCode.StoreLocal && instruction.A < module.Functions[index].CaptureCount)
                     summaries[index] |= InstructionEffect.Write;
                 if (dynamicTypes && instruction.Op is OpCode.Not or OpCode.Negate or OpCode.Add or OpCode.Subtract or OpCode.Multiply
-                    or OpCode.Divide or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual or OpCode.NativeCall)
+                    or OpCode.Divide or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual or OpCode.Equal or OpCode.NotEqual
+                    or OpCode.IsType or OpCode.PathJoin or OpCode.NativeCall)
                     summaries[index] |= InstructionEffect.MayFail;
                 if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue && instruction.A <= pc)
                     summaries[index] |= InstructionEffect.Diverge;

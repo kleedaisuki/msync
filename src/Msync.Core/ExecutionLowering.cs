@@ -5,6 +5,7 @@ public static class ExecutionLowering
     public static Module Lower(Module module)
     {
         if (module.Context is null) throw new MsyncException("Executable lowering requires a bound context");
+        if (module.Functions.All(FunctionAnalysis.LiteralBody)) return module.Blocks is null ? Optimizer.FormBlocks(module) : module;
         var constants = module.Constants.ToList();
         var functions = module.Functions.Select(function => LowerFunction(function, constants, module.Context)).ToArray();
         return Optimizer.FormBlocks(module with { Constants = constants, Functions = functions });

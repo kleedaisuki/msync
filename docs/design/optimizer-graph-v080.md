@@ -98,3 +98,37 @@ independent demand roots. If a joined stack column retains the callable on
 another edge, lowering explicitly consumes it below the native arguments while
 preserving the returned value. This keeps the historical stack ABI without
 charging ordinary statically known native calls for a dynamic dispatch.
+
+## Analysis applicability and lifetime
+
+The module driver computes a compact opcode-feature summary before requesting
+analyses. Predicate propagation needs a conditional or a type/null test; field
+scalarization needs an allocation; loop analysis needs an iterator; directional
+normalization needs a plain marker. A literal followed by Return is already a
+fixed point. These are applicability proofs, not size quotas or reduced language
+semantics. In particular a literal-return function and an already optimized
+bound module do not allocate CFG/capture/field analyses a second time.
+
+Within one optimization invocation, preparation is memoized by function identity
+and index. Graph results are retained only while the interprocedural effect
+vector is unchanged. A changed vector advances the graph-analysis epoch;
+rewriting a function changes its identity. Constants are append-only until final
+table relocation, so cached instruction operands remain valid. No cache crosses
+the source/relocatable/executable boundary, context binding, REPL submissions, or
+object serialization. This follows the analysis-preservation discipline of
+[LLVM's new pass manager](https://llvm.org/docs/NewPassManager.html#using-analyses),
+without importing a general pass-manager framework into the small bytecode VM.
+
+Inlining performs one expansion wave before returning to dataflow/DCE. Its
+multi-use body-cost budgets are 32/128/512 instructions at O1/O2/O3; single-use
+inlining does not duplicate the body. These are profitability decisions, never
+input restrictions. Interleaving folding prevents an acyclic repeated-call DAG
+from materializing an exponential transient tree before its result is folded.
+Private local slots are compacted after graph cleanup, retaining the captures
+and parameters ABI prefix and all exported REPL slots.
+
+The constant pool, dataflow meets and value-number keys use bit-exact
+`ValueRepresentation`, distinct from language numeric equality. This preserves
+negative zero and NaN payloads without changing range `contains`/`find`/`unique`
+or ordinary comparison semantics. A successful `x == 0` predicate therefore
+does not replace x by a particular signed-zero representation.

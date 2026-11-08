@@ -506,6 +506,8 @@ internal static class GraphOptimization
                 OpCode.MakeClosure or OpCode.MakeScope or OpCode.MakeRange or OpCode.MakeLazyRange or OpCode.DeferRange or OpCode.IsNull or OpCode.SelectPath => false,
                 OpCode.SetMember => false,
                 OpCode.NativeCall => EffectAnalysis.NativeEffects(node.Instruction.Text) != InstructionEffect.None,
+                OpCode.PathJoin => !CompatiblePathOperands(node),
+                OpCode.Convert => Resolve(node.Inputs[0]) is not (PathValue or StringValue),
                 OpCode.Call when node.NativeName is not null => EffectAnalysis.NativeEffects(node.NativeName) != InstructionEffect.None,
                 OpCode.Call when node.Instruction.B > 0 && summaries is not null && Resolve(node.Inputs[0]) is FunctionValue { NativeName: null } =>
                     (summaries[node.Instruction.B - 1] & ~InstructionEffect.Capture) != InstructionEffect.None,
@@ -514,6 +516,9 @@ internal static class GraphOptimization
                 _ => true
             };
         }
+
+        private bool CompatiblePathOperands(Node node) => Resolve(node.Inputs[0]) is PathValue or StringValue
+            && Resolve(node.Inputs[1]) is PathValue or StringValue;
 
         private void Demand(int token)
         {

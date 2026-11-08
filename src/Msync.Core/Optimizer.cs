@@ -6,44 +6,82 @@ public static class Optimizer
     {
         if (level is < 0 or > 3) throw new MsyncException($"Optimization level must be 0, 1, 2, or 3; received {level}");
         if (level == 0) return FormBlocks(module with { OptimizationLevel = level });
+        if (module.Functions.All(FunctionAnalysis.LiteralBody))
+            return FormBlocks(ModuleOptimization.Compact(LocalSlotCompaction.Compact(module with { OptimizationLevel = level })));
+        var preparation = module.Functions.Select(_ => new Dictionary<FunctionCode, FunctionCode>(ReferenceEqualityComparer.Instance)).ToArray();
+        var graphs = module.Functions.Select(_ => new Dictionary<FunctionCode, (int Epoch, FunctionCode Result)>(ReferenceEqualityComparer.Instance)).ToArray();
+        IReadOnlyList<InstructionEffect>? previousEffects = null;
+        var effectEpoch = 0;
         var current = module with { OptimizationLevel = level, Blocks = null };
         while (true)
         {
+            if (current.Functions.All(FunctionAnalysis.LiteralBody))
+                return FormBlocks(ModuleOptimization.Compact(LocalSlotCompaction.Compact(current)));
             var constants = current.Constants.ToList();
-            var prepared = current with { Constants = constants, Functions = current.Functions.Select((function, index) =>
+            var context = current with { Constants = constants };
+            var prepared = context with
+            {
+                Functions = current.Functions.Select((function, index) =>
             {
                 if (current.PreserveLocals && index == current.EntryPoint) return function;
-                var context = current with { Constants = constants };
-                var predicated = PredicateOptimization.Optimize(context, function, constants);
-                var scalar = ScopeScalarization.Optimize(context, predicated, constants);
-                var tail = TailCallOptimization.Optimize(context, scalar, index);
-                return LoopOptimization.Optimize(context, tail, constants, level);
-            }).ToArray() };
+                if (FunctionAnalysis.LiteralBody(function)) return function;
+                if (preparation[index].TryGetValue(function, out var existing)) return existing;
+                var features = FunctionAnalysis.Features(function);
+                var predicated = (features & FunctionFeatures.Predicates) != 0 ? PredicateOptimization.Optimize(context, function, constants) : function;
+                var scalar = (features & FunctionFeatures.Scope) != 0 ? ScopeScalarization.Optimize(context, predicated, constants) : predicated;
+                var tail = (features & FunctionFeatures.Call) != 0 ? TailCallOptimization.Optimize(context, scalar, index) : scalar;
+                var result = (features & FunctionFeatures.Iteration) != 0 ? LoopOptimization.Optimize(context, tail, constants, level) : tail;
+                result = Unchanged(function, result);
+                preparation[index].Add(function, result);
+                return result;
+            }).ToArray()
+            };
             var effects = EffectAnalysis.FunctionEffects(prepared);
+            if (previousEffects is null || !effects.SequenceEqual(previousEffects)) { effectEpoch++; previousEffects = effects; }
             var functions = prepared.Functions.Select((function, index) => prepared.PreserveLocals && index == prepared.EntryPoint
-                ? function : GraphOptimization.Optimize(prepared, function, constants, effects)).ToArray();
+                || FunctionAnalysis.LiteralBody(function) ? function : Graph(function, index)).ToArray();
             var reduced = LocalSlotCompaction.Compact(prepared with { Constants = constants, Functions = functions });
             var inlined = FunctionInlining.Inline(reduced, level);
             if (inlined.Functions.Select((function, index) => function.Instructions.SequenceEqual(current.Functions[index].Instructions)).All(equal => equal))
             {
-                var numbered = inlined with { Functions = inlined.Functions.Select((function, index) => inlined.PreserveLocals && index == inlined.EntryPoint
-                    ? function : Number(function)).ToArray() };
+                var numbered = inlined with
+                {
+                    Functions = inlined.Functions.Select((function, index) => inlined.PreserveLocals && index == inlined.EntryPoint
+                    ? function : Number(function)).ToArray()
+                };
                 var numberedConstants = numbered.Constants.ToList();
                 var numberedEffects = EffectAnalysis.FunctionEffects(numbered);
-                var cleaned = numbered with { Functions = numbered.Functions.Select((function, index) => numbered.PreserveLocals && index == numbered.EntryPoint
-                    ? function : GraphOptimization.Optimize(numbered, function, numberedConstants, numberedEffects)).ToArray(), Constants = numberedConstants };
+                var cleaned = numbered with
+                {
+                    Functions = numbered.Functions.Select((function, index) => numbered.PreserveLocals && index == numbered.EntryPoint
+                    || FunctionAnalysis.LiteralBody(function) ? function : GraphOptimization.Optimize(numbered, function, numberedConstants, numberedEffects)).ToArray(),
+                    Constants = numberedConstants
+                };
                 return FormBlocks(ModuleOptimization.Compact(LocalSlotCompaction.Compact(cleaned)));
 
                 FunctionCode Number(FunctionCode function)
                 {
-                    var normalized = DirectionalNormalization.Optimize(inlined, function);
-                    var available = level >= 2 ? GlobalRedundancy.Optimize(inlined, normalized, constants) : normalized;
+                    if (FunctionAnalysis.LiteralBody(function)) return function;
+                    var features = FunctionAnalysis.Features(function);
+                    var normalized = (features & FunctionFeatures.Directional) != 0 ? DirectionalNormalization.Optimize(inlined, function) : function;
+                    var available = level >= 2 && (features & FunctionFeatures.Branch) != 0 ? GlobalRedundancy.Optimize(inlined, normalized, constants) : normalized;
                     return ValueNumbering.Eliminate(available, constants);
                 }
             }
             current = inlined;
+
+            FunctionCode Graph(FunctionCode function, int index)
+            {
+                if (graphs[index].TryGetValue(function, out var existing) && existing.Epoch == effectEpoch) return existing.Result;
+                var result = Unchanged(function, GraphOptimization.Optimize(prepared, function, constants, effects));
+                graphs[index][function] = (effectEpoch, result);
+                graphs[index][result] = (effectEpoch, result);
+                return result;
+            }
         }
     }
+    private static FunctionCode Unchanged(FunctionCode previous, FunctionCode next) => next.LocalCount == previous.LocalCount
+        && next.Instructions.SequenceEqual(previous.Instructions) ? previous : next;
     public static Module FormBlocks(Module module) => module with
     { Blocks = module.Functions.SelectMany((function, index) => Partition(function, index)).ToArray() };
     private static IEnumerable<BasicBlock> Partition(FunctionCode function, int functionIndex)
