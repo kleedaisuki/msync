@@ -31,7 +31,7 @@ jobs:
         with:
           global-json-file: global.json
       - name: Publish native language server
-        run: dotnet publish src/Msync.Cli/Msync.Cli.csproj -c Release -r linux-x64 -p:PublishAot=true -o artifacts/editor-server
+        run: dotnet publish src/Msync.Cli/Msync.Cli.csproj -c Release -r linux-x64 -p:RestoreLockedMode=true -o artifacts/editor-server
       - name: Install and build editor
         working-directory: editors/vscode
         run: npm ci --ignore-scripts && npm run build
