@@ -185,6 +185,11 @@ jobs:
       - name: Record native Windows O1 optimizer cost and executable shape
         if: ${{ !cancelled() && steps.state-components.outcome == 'success' }}
         run: artifacts/state-components/msync-components.exe --optimizer-pipeline --cases calls,scope_calls --sizes 1,32,128 --levels 1 --samples 7 --warmups 3 --output .temp/platform-results/optimizer-components.json
+      - name: Compare selected Windows Rust, editing-control and current native journeys
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.state == 'true' && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python packaging/windows_threeway.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/final-threeway.json
       - name: Verify captured Windows root and incomplete UNC path semantics
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.editing == 'true' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: dotnet run --project tests/PathProjection/Msync.PathProjection.Tests.csproj -c Release --artifacts-path artifacts/editing-roots -p:RestoreLockedMode=true -- --windows-rooted
