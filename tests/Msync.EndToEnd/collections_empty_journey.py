@@ -82,7 +82,9 @@ def main() -> None:
     def code(source: str) -> str:
         return prefix + source.replace("$std::collections::", "") if prefix else source
 
-    with tempfile.TemporaryDirectory(prefix="collections-empty-", dir=ROOT / ".temp") as name:
+    temp = ROOT / ".temp"
+    temp.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="collections-empty-", dir=temp) as name:
         work = Path(name)
         source = work / "empty.msync"
         source.write_text(code(SOURCE), encoding="utf-8")
