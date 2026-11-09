@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Msync.OptimizationDependencies.Tests</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Msync.Core/Msync.Core.csproj" />
+    <ProjectReference Include="../../src/Msync.Runtime/Msync.Runtime.csproj" />
+  </ItemGroup>
+</Project>

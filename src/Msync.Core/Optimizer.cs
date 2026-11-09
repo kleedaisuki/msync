@@ -10,9 +10,7 @@ public static class Optimizer
         if (module.Functions.All(FunctionAnalysis.LiteralBody))
             return FormBlocks(ModuleOptimization.Compact(LocalSlotCompaction.Compact(module with { OptimizationLevel = level })));
         var preparation = module.Functions.Select(_ => new Dictionary<FunctionCode, FunctionCode>(ReferenceEqualityComparer.Instance)).ToList();
-        var graphs = module.Functions.Select(_ => new Dictionary<FunctionCode, (int Epoch, FunctionCode Result)>(ReferenceEqualityComparer.Instance)).ToList();
-        IReadOnlyList<InstructionEffect>? previousEffects = null;
-        var effectEpoch = 0;
+        var graphs = module.Functions.Select(_ => new Dictionary<FunctionCode, (OptimizationDependencies Dependencies, FunctionCode Result)>(ReferenceEqualityComparer.Instance)).ToList();
         var current = module with { OptimizationLevel = level, Blocks = null };
         while (true)
         {
@@ -61,12 +59,12 @@ public static class Optimizer
                 }
             }
             var effects = EffectAnalysis.FunctionEffects(prepared);
-            if (previousEffects is null || !effects.SequenceEqual(previousEffects)) { effectEpoch++; previousEffects = effects; }
             var functions = prepared.Functions.Select((function, index) => prepared.PreserveLocals && index == prepared.EntryPoint
                 || FunctionAnalysis.LiteralBody(function) ? function : Evaluate(Graph(function, index))).ToArray();
             var reduced = LocalSlotCompaction.Compact(prepared with { Constants = constants, Functions = functions });
             for (var index = 0; index < reduced.Functions.Count; index++)
-                graphs[index][reduced.Functions[index]] = (effectEpoch, reduced.Functions[index]);
+                graphs[index][reduced.Functions[index]] =
+                    (OptimizationDependencies.Capture(reduced.Functions[index], reduced, effects), reduced.Functions[index]);
             var specialized = level >= 2 ? InterproceduralSpecialization.Optimize(reduced, level) : reduced;
             if (level >= 2) specialized = AggregateArgumentSpecialization.Optimize(specialized, level);
             var inlined = FunctionInlining.Inline(specialized, level);
@@ -81,14 +79,13 @@ public static class Optimizer
                 var numberedConstants = numbered.Constants.ToList();
                 var numberedInterner = new ConstantInterner(numberedConstants);
                 var numberedEffects = EffectAnalysis.FunctionEffects(numbered);
-                var sameEffects = numberedEffects.SequenceEqual(effects);
                 var cleaned = numbered with { Functions = numbered.Functions.Select(Clean).ToArray(), Constants = numberedConstants };
                 return FormBlocks(ModuleOptimization.Compact(LocalSlotCompaction.Compact(cleaned)));
 
                 FunctionCode Clean(FunctionCode function, int index)
                 {
                     if (numbered.PreserveLocals && index == numbered.EntryPoint || FunctionAnalysis.LiteralBody(function)) return function;
-                    if (sameEffects && graphs[index].TryGetValue(function, out var existing) && existing.Epoch == effectEpoch) return existing.Result;
+                    if (graphs[index].TryGetValue(function, out var existing) && existing.Dependencies.Matches(numbered, numberedEffects)) return existing.Result;
                     return GraphOptimization.Optimize(numbered, function, numberedConstants, numberedEffects, numberedInterner);
                 }
 
@@ -105,10 +102,11 @@ public static class Optimizer
 
             FunctionCode Graph(FunctionCode function, int index)
             {
-                if (graphs[index].TryGetValue(function, out var existing) && existing.Epoch == effectEpoch) return existing.Result;
+                if (graphs[index].TryGetValue(function, out var existing) && existing.Dependencies.Matches(prepared, effects)) return existing.Result;
                 var result = Unchanged(function, GraphOptimization.Optimize(prepared, function, constants, effects, constantInterner));
-                graphs[index][function] = (effectEpoch, result);
-                graphs[index][result] = (effectEpoch, result);
+                var dependencies = OptimizationDependencies.Capture(function, prepared, effects);
+                graphs[index][function] = (dependencies, result);
+                graphs[index][result] = (dependencies, result);
                 return result;
             }
 
