@@ -69,8 +69,9 @@ prefixes are counted incrementally, rather than scanning the whole prefix once
 per match. Group positions within a match reuse that prefix count; lookbehind
 captures before the match use their actual earlier position.
 
-`matches` parses the pattern when selected and performs matching as its Range
-is consumed. Enumeration replays engine matches and creates fresh mutable record
+`matches` parses the pattern when its deferred Range call is first resolved,
+and performs matching as that Range is consumed. An unused Range does not
+validate its pattern. Enumeration replays engine matches and creates fresh mutable record
 Scopes, so modifying a returned record does not mutate the input String or the
 next enumeration's records. Invalid selected patterns preserve the BCL reason
 under the source operation name. Unselected source branches do not parse or

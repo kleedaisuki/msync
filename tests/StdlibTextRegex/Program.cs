@@ -57,6 +57,13 @@ foreach (int level in new[] { 0, 2, 3 })
     await Check("let item = $std::ranges::first($std::regex::matches(\"A😀abc\", \"(?<part>abc)\")); let group = $std::ranges::last(item::groups); group::index", "2", level);
     await Check("let matches = $std::regex::matches(\"abc\", \"abc\"); let first = $std::ranges::first(matches); first::value = \"changed\"; $std::ranges::first(matches)::value", "abc", level);
     await Check("if false { $std::regex::is_match(\"x\", \"[\"); }; \"ok\"", "ok", level);
+    Module invalid = Frontend.Compile("let _ = $std::regex::is_match(\"x\", \"[\");", "regex-pattern-error", level);
+    foreach (Module stage in new[] { invalid, RoundTrip(invalid), RoundTrip(Binding.Bind(invalid, new(Environment.CurrentDirectory, HostContext.HomeDirectory))) })
+    {
+        try { _ = await Interpreter.ExecuteAsync(stage); }
+        catch (MsyncException error) when (error.Message.Contains("regex.is_match:", StringComparison.Ordinal)) { checks++; continue; }
+        throw new InvalidOperationException($"O{level} {stage.Stage} lost the selected regex parse diagnostic.");
+    }
 }
 Console.WriteLine($"PASS: {checks} text builder and regex source/artifact contracts");
 
