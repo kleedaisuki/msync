@@ -1,0 +1,273 @@
+# Ordered collections own materialized Range snapshots, not lazy mutation chains.
+# Input elements retain identity; replacing a collection never mutates an element.
+fn List(initial: Range) {
+    let state = scope { items: $std::ranges::materialize(initial) };
+    scope {
+        snapshot: fn { $std::ranges::materialize(state::items) },
+        size: fn { $std::ranges::size(state::items) },
+        is_empty: fn { $std::ranges::empty(state::items) },
+        clear: fn {
+            state::items = $std::ranges::materialize(
+                $std::ranges::take(state::items, 0)
+            );
+        },
+        get: fn(index: Number) { $std::ranges::at(state::items, index) },
+        get_or: fn(index: Number, fallback?) {
+            $std::ranges::at_or(state::items, index, fallback)
+        },
+        add: fn(value?) {
+            state::items = $std::ranges::materialize(
+                $std::ranges::concat(state::items, [value])
+            );
+        },
+        add_all: fn(values: Range) {
+            state::items = $std::ranges::materialize(
+                $std::ranges::concat(state::items, values)
+            );
+        },
+        insert: fn(index: Number, value?) {
+            if index < 0 or index > $std::ranges::size(state::items) {
+                return false;
+            };
+            state::items = $std::ranges::materialize(
+                $std::ranges::concat(
+                    $std::ranges::take(state::items, index),
+                    $std::ranges::concat([value],
+                        $std::ranges::drop(state::items, index))
+                )
+            );
+            true
+        },
+        set: fn(index: Number, value?) {
+            if index < 0 or index >= $std::ranges::size(state::items) {
+                return false;
+            };
+            state::items = $std::ranges::materialize(
+                $std::ranges::concat(
+                    $std::ranges::take(state::items, index),
+                    $std::ranges::concat([value],
+                        $std::ranges::drop(state::items, index + 1))
+                )
+            );
+            true
+        },
+        remove_at: fn(index: Number) {
+            if index < 0 or index >= $std::ranges::size(state::items) {
+                return false;
+            };
+            state::items = $std::ranges::materialize(
+                $std::ranges::concat(
+                    $std::ranges::take(state::items, index),
+                    $std::ranges::drop(state::items, index + 1)
+                )
+            );
+            true
+        },
+        remove_where: fn(predicate: Function) {
+            let previous = $std::ranges::size(state::items);
+            state::items = $std::ranges::materialize(
+                $std::ranges::reject(state::items, predicate)
+            );
+            previous - $std::ranges::size(state::items)
+        },
+        contains: fn(value?) { $std::ranges::contains(state::items, value) },
+        index_of: fn(value?) { $std::ranges::index_of(state::items, value) },
+        slice: fn(start: Number, count: Number) {
+            $std::ranges::materialize(
+                $std::ranges::slice(state::items, start, count)
+            )
+        },
+        reverse: fn {
+            state::items = $std::ranges::materialize(
+                $std::ranges::reverse(state::items)
+            );
+        },
+        sort_with: fn(less: Function) {
+            state::items = $std::ranges::materialize(
+                $std::ranges::sort_with(state::items, less)
+            );
+        }
+    }
+};
+
+# Equality is explicit and stable insertion order is part of the contract.
+fn SetWith(initial: Range, equal: Function) {
+    let state = scope { items: $std::ranges::take(initial, 0) };
+    let contains = fn(value?) {
+        $std::ranges::any(state::items, fn(item?) { equal(item, value) })
+    };
+    let add = fn(value?) {
+        if contains(value) { return false; };
+        state::items = $std::ranges::materialize(
+            $std::ranges::concat(state::items, [value])
+        );
+        true
+    };
+    for value in initial { add(value); };
+    scope {
+        snapshot: fn { $std::ranges::materialize(state::items) },
+        size: fn { $std::ranges::size(state::items) },
+        is_empty: fn { $std::ranges::empty(state::items) },
+        clear: fn {
+            state::items = $std::ranges::materialize(
+                $std::ranges::take(state::items, 0)
+            );
+        },
+        contains: contains,
+        add: add,
+        remove: fn(value?) {
+            let previous = $std::ranges::size(state::items);
+            state::items = $std::ranges::materialize(
+                $std::ranges::reject(state::items,
+                    fn(item?) { equal(item, value) })
+            );
+            previous != $std::ranges::size(state::items)
+        },
+        union_with: fn(other: Range) {
+            for value in other { add(value); };
+        },
+        intersect_with: fn(other: Range) {
+            let buffered = $std::ranges::materialize(other);
+            state::items = $std::ranges::materialize(
+                $std::ranges::filter(state::items, fn(item?) {
+                    $std::ranges::any(buffered,
+                        fn(value?) { equal(item, value) })
+                })
+            );
+        },
+        except_with: fn(other: Range) {
+            let buffered = $std::ranges::materialize(other);
+            state::items = $std::ranges::materialize(
+                $std::ranges::reject(state::items, fn(item?) {
+                    $std::ranges::any(buffered,
+                        fn(value?) { equal(item, value) })
+                })
+            );
+        },
+        is_subset_of: fn(other: Range) {
+            let buffered = $std::ranges::materialize(other);
+            $std::ranges::all_of(state::items, fn(item?) {
+                $std::ranges::any(buffered,
+                    fn(value?) { equal(item, value) })
+            })
+        },
+        overlaps: fn(other: Range) { $std::ranges::any(other, contains) }
+    }
+};
+fn Set(initial: Range) { SetWith(initial, $std::ranges::matches) };
+
+# Keys and values use separate fixed-schema snapshots; entries are observations.
+# The last duplicate value wins without changing the first insertion position.
+fn MapWith(initial: Range, equal: Function) {
+    let state = scope {
+        keys: $std::ranges::materialize($std::ranges::transform(
+            $std::ranges::take(initial, 0), fn(entry) { entry::key }
+        )),
+        values: $std::ranges::materialize($std::ranges::transform(
+            $std::ranges::take(initial, 0), fn(entry) { entry::value }
+        ))
+    };
+    let locate = fn(key?) {
+        $std::ranges::index_if(state::keys,
+            fn(item?) { equal(item, key) })
+    };
+    let put = fn(key?, value?) {
+        let index? = locate(key);
+        if index is null {
+            state::keys = $std::ranges::materialize(
+                $std::ranges::concat(state::keys, [key])
+            );
+            state::values = $std::ranges::materialize(
+                $std::ranges::concat(state::values, [value])
+            );
+            true
+        } else {
+            state::values = $std::ranges::materialize($std::ranges::concat(
+                $std::ranges::take(state::values, index),
+                $std::ranges::concat([value],
+                    $std::ranges::drop(state::values, index + 1))
+            ));
+            false
+        }
+    };
+    for entry in initial { put(entry::key, entry::value); };
+    scope {
+        entries: fn {
+            $std::ranges::materialize($std::ranges::transform(
+                $std::ranges::zip(state::keys, state::values), fn(pair) {
+                    scope { key?: pair::first, value?: pair::second }
+                }
+            ))
+        },
+        keys: fn { $std::ranges::materialize(state::keys) },
+        values: fn { $std::ranges::materialize(state::values) },
+        size: fn { $std::ranges::size(state::keys) },
+        is_empty: fn { $std::ranges::empty(state::keys) },
+        clear: fn {
+            state::keys = $std::ranges::materialize(
+                $std::ranges::take(state::keys, 0)
+            );
+            state::values = $std::ranges::materialize(
+                $std::ranges::take(state::values, 0)
+            );
+        },
+        contains_key: fn(key?) { locate(key) is not null },
+        get_or: fn(key?, fallback?) {
+            let index? = locate(key);
+            if index is null { fallback } else {
+                $std::ranges::at(state::values, index)
+            }
+        },
+        put: put,
+        try_add: fn(key?, value?) {
+            if locate(key) is not null { false } else { put(key, value) }
+        },
+        remove: fn(key?) {
+            let index? = locate(key);
+            if index is null { return false; };
+            state::keys = $std::ranges::materialize($std::ranges::concat(
+                $std::ranges::take(state::keys, index),
+                $std::ranges::drop(state::keys, index + 1)
+            ));
+            state::values = $std::ranges::materialize($std::ranges::concat(
+                $std::ranges::take(state::values, index),
+                $std::ranges::drop(state::values, index + 1)
+            ));
+            true
+        }
+    }
+};
+fn Map(initial: Range) { MapWith(initial, $std::ranges::matches) };
+
+fn Stack(initial: Range) {
+    let items = List(initial);
+    scope {
+        snapshot: items::snapshot,
+        size: items::size,
+        is_empty: items::is_empty,
+        clear: items::clear,
+        push: items::add,
+        peek: fn { $std::ranges::last(items::snapshot()) },
+        pop: fn {
+            let value? = $std::ranges::last(items::snapshot());
+            if not items::is_empty() { items::remove_at(items::size() - 1); };
+            value
+        }
+    }
+};
+fn Queue(initial: Range) {
+    let items = List(initial);
+    scope {
+        snapshot: items::snapshot,
+        size: items::size,
+        is_empty: items::is_empty,
+        clear: items::clear,
+        enqueue: items::add,
+        peek: fn { $std::ranges::first(items::snapshot()) },
+        dequeue: fn {
+            let value? = $std::ranges::first(items::snapshot());
+            if not items::is_empty() { items::remove_at(0); };
+            value
+        }
+    }
+};
