@@ -107,4 +107,8 @@ const string variadicAlias = "let values = $std::ranges::of;";
 EditorAnalysis variadic = EditorCompiler.Analyze(variadicAlias, "variadic-signature-editor.msync");
 Require(variadic.Occurrences.Any(item => item.Span.Start == variadicAlias.IndexOf("values", StringComparison.Ordinal)
     && item.Signature.Contains("...value", StringComparison.Ordinal)), "Native variadic hover lost its argument tail.");
+const string unfinished = "concept Editing { field: typename }";
+EditorAnalysis editing = EditorCompiler.Analyze(unfinished, "unfinished-associated.msync");
+Require(!editing.At(unfinished.IndexOf('}')).Bindings.Any(member => member.Name.Length == 0),
+    "An unfinished associated declaration offered an empty completion label.");
 Console.WriteLine($"PASS {checks} standard concept editor contracts");

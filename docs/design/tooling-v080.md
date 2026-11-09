@@ -802,7 +802,9 @@ segment, including when namespace separators contain whitespace. A lexical
 `std` binding continues to shadow the predefined namespace.
 
 Inline associated declarations use ordinary keyword coloring for `typename`
-and type coloring for the declared name:
+and type coloring for the declared name, following the
+[VS Code semantic token taxonomy](https://github.com/microsoft/vscode-docs/blob/main/api/language-extensions/semantic-highlight-guide.md)
+rather than imposing a palette:
 
 ```msync
 concept Product {
@@ -828,6 +830,14 @@ bases. Standard concept references navigate into the running executable's
 versioned `msync-stdlib` source, using the same bytes as compilation. Native
 function inspection obtains parameter names and written constraints from those
 declarations, while retaining the actual callable identity through aliases.
+
+Type spans are meaningful only with their declaration's source text and URI.
+Definition-time type environments retain that pair when a library function is
+specialized from another document. A bad policy value is located at the caller's
+argument; its contract and concept remain separate
+[related diagnostic locations](https://github.com/microsoft/vscode-languageserver-node/blob/main/types/src/main.ts).
+Reusing the caller's text with a declaration's offsets can otherwise fault the
+analysis worker or display an unrelated source fragment.
 
 Named families such as `$std::containers::Set` and `$std::data::Option` use the
 type role; their associated functions use the function role. Instances remain

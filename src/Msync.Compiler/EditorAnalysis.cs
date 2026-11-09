@@ -229,7 +229,7 @@ public static class EditorCompiler
         {
             if (node is ConceptDeclaration concept)
             {
-                var declarations = concept.Types.Where(type => type.NameSpan is not null).DistinctBy(type => type.Name).ToDictionary(type => type.Name,
+                var declarations = concept.Types.Where(type => type.NameSpan is { Length: > 0 }).DistinctBy(type => type.Name).ToDictionary(type => type.Name,
                     type => new EditorLocation(sourceName, source, type.NameSpan!.Value), StringComparer.Ordinal);
                 foreach (TypeSyntax type in RequirementTypes(concept.Members))
                     if (declarations.TryGetValue(type.Name, out var target))
@@ -260,7 +260,8 @@ public static class EditorCompiler
         foreach (Node node in nodes)
         {
             if (node is ConceptDeclaration concept)
-                yield return (concept.Span, concept.Types.Select(type => new SemanticMember(type.Name, "Type", $"typename {type.Name}",
+                yield return (concept.Span, concept.Types.Where(type => type.NameSpan is { Length: > 0 })
+                    .Select(type => new SemanticMember(type.Name, "Type", $"typename {type.Name}",
                     "An associated type selected from the constrained Scope.", SemanticRole: "type") { IsConstraint = true }).ToArray());
             foreach (var scope in ConceptTypeScopes(Compilation.Children(node))) yield return scope;
         }
