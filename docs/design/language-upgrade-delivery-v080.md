@@ -264,3 +264,44 @@ The selected static-optimization journey also inspects final bytecode for
 public Buffer read/count reuse, while preserving distinct buffer identities and
 callee-before-argument evaluation across source and both binary stages. It does
 not repeat the optimizer owner's internal graph/effect matrices.
+
+### First Native wave and focused repairs
+
+Run [42646810447](https://github.com/kleedaisuki/msync/actions/runs/42646810447)
+built source `7b891eacedb0593bfb6a2f927616d6b0ab536f53`. The immutable images were
+Linux `0b45d226284aa6a8f927bddc9653542925aaf3673c992e82da424c11fd7b7cc2`
+and Windows `3d35993771224559e08405c9454f01a51fd7912f660b7932504e784d5dd43415`.
+Both passed data/Option, concept tooling, runtime Number/object, static Buffer
+optimization, selected command policies and all four ordered-structure journeys.
+Linux additionally passed terminal-library and actual PTY REPL work. Both
+platforms produced the focused absolute Native component and cold-cost reports.
+This wave is not an aggregate success: it exposed two nullable-flow regressions
+in lazy Range arguments and two Windows-specific product issues.
+
+The repairs preserve the language contract instead of rewriting library callers:
+
+- `6e50f37` tracks stable local locations by declaration identity. Narrowed,
+  unwritten locals remain usable as lazy Range arguments, while actual future
+  writes and persistent REPL locations retain their sharing semantics. The owner
+  accepted the prior 192 and new 101 focused contracts and the actual failing
+  class-library/type-trait programs, without adding guards or casts to stdlib.
+- `ebfcbcf` makes tracked `.msync` source use LF on every checkout. Literal LF in
+  executable standard sources is data, not the host's preferred line ending.
+  In particular `wc` must count LF bytes even in a Windows-built product.
+- `887da51` configures UTF-8 without BOM at the Windows human-console boundary
+  and restores the prior output encoding afterwards. It leaves input encoding,
+  paths and fully redirected/language-server transport unchanged.
+
+The immutable Windows A/B run
+[42649863293](https://github.com/kleedaisuki/msync/actions/runs/42649863293)
+proved the console diagnosis: both default and CP65001 input contained six UTF-8
+bytes for the two CJK characters and both changed into the real Unicode folder;
+only default-code-page painting lost the characters. The formal Unicode paint
+assertion remains strict. Raw evidence is retained under
+`artifacts/ci/42649863293/windows/`.
+
+The second Native wave selects `library-policy`, `type-traits`,
+`terminal-library`, `shell-repl`, `concepts-tooling`, `number-allocation` and
+`stdlib-cost`. It rebuilds both current packages and records final-image costs,
+while reusing the first wave's unaffected ordered/data/static-optimization
+platform evidence rather than repeating the tree/property matrices.
