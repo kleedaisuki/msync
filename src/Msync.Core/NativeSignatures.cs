@@ -3,11 +3,18 @@ using System.Diagnostics.CodeAnalysis;
 namespace Msync.Core;
 
 public enum NativeEffect : byte { Pure, Read, Write }
-public enum NativeResultRule : byte { Fixed, FirstArgument, RangeOfArguments, RangeItem, Transform }
+[Flags]
+public enum NativeBehavior : byte { None = 0, MayFail = 1, Enumerates = 2, Deferred = 4, Invokes = 8 }
+public enum NativeResultRule : byte
+{
+    Fixed, FirstArgument, RangeOfArguments, RangeItem, Transform, CastTarget,
+    RangeConcat, RangeFlatten, RangeZip, RangeEnumerate, RangeNested, RangeScan, RangeRepeat
+}
 public sealed record NativeSignature(string Name, IReadOnlyList<TypeRef> Parameters, TypeRef Result,
-    NativeEffect Effect = NativeEffect.Pure, bool Variadic = false, NativeResultRule ResultRule = NativeResultRule.Fixed);
+    NativeEffect Effect = NativeEffect.Pure, bool Variadic = false, NativeResultRule ResultRule = NativeResultRule.Fixed,
+    NativeBehavior? Behavior = null);
 
-public static class NativeSignatures
+public static partial class NativeSignatures
 {
     private static readonly IReadOnlyDictionary<string, NativeSignature> Signatures = Build();
     public static IEnumerable<NativeSignature> All => Signatures.Values;
@@ -19,7 +26,7 @@ public static class NativeSignatures
         Dictionary<string, NativeSignature> result = new(StringComparer.Ordinal);
         TypeRef path = TypeRef.Union(TypeRef.Path, TypeRef.String);
         TypeRef range = new(TypeKind.Range);
-        TypeRef any = new(TypeKind.Any & ~TypeKind.Null);
+        TypeRef any = TypeRef.Any;
         void Add(string group, string names, TypeRef output, NativeEffect effect, params TypeRef[] inputs)
         {
             foreach (string name in names.Split(' ', StringSplitOptions.RemoveEmptyEntries))
@@ -75,6 +82,12 @@ public static class NativeSignatures
         Add("process", "stdout stderr", TypeRef.String, NativeEffect.Pure, TypeRef.Process);
         Add("process", "success", TypeRef.Bool, NativeEffect.Pure, TypeRef.Process);
         Add("process", "exit_code", TypeRef.Number, NativeEffect.Pure, TypeRef.Process);
+        RegisterCast(result);
+        RegisterRanges(result);
+        RegisterTextPaths(result);
+        RegisterIOProcess(result);
+        RegisterMath(result);
+        RegisterIteration(result);
         return result;
     }
 }

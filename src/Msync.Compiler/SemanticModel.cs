@@ -19,8 +19,12 @@ internal sealed class StorageConstraint(TypeRef? type, Info? callables = null, S
     public int Revision { get; set; }
     public ImmutableHashSet<StorageConstraint> Sources { get; set; } = source is null ? [] : [source];
     public ImmutableDictionary<string, CallableContract> Contracts { get; set; } = ImmutableDictionary<string, CallableContract>.Empty;
+    public ImmutableDictionary<string, CastTypeContract> CastContracts { get; set; } = ImmutableDictionary<string, CastTypeContract>.Empty;
+    public ImmutableDictionary<string, DeferredTypeWrite> DeferredTypeWrites { get; set; } = ImmutableDictionary<string, DeferredTypeWrite>.Empty;
 }
 internal sealed record CallableContract(Info Result, string Source, string SourceName, SourceSpan Span);
+internal sealed record CastTypeContract(TypeRef Input, TypeRef Target, string Source, string SourceName, SourceSpan Span);
+internal sealed record DeferredTypeWrite(TypeRef? Target, string Source, string SourceName, SourceSpan Span);
 internal sealed record ScopeInfo(IReadOnlyDictionary<string, Info> Members, bool Named = false,
     IReadOnlyDictionary<string, IReadOnlyList<EditorLocation>>? Origins = null,
     IReadOnlySet<string>? NullableMembers = null, IReadOnlyDictionary<string, TypeRef?>? StorageTypes = null)
@@ -50,6 +54,15 @@ internal sealed class Specialization(int id, Info result, IReadOnlyList<TypeRef>
     public IReadOnlyList<TypeRef> ParameterTypes { get; } = parameterTypes;
     public IReadOnlyDictionary<object, Info> Effects { get; set; } = new Dictionary<object, Info>();
 }
+internal sealed class LoopContext(string label, bool isFor, int acquireDepth, int iteratorDepth)
+{
+    public string Label { get; } = label;
+    public bool IsFor { get; } = isFor;
+    public int AcquireDepth { get; } = acquireDepth;
+    public int IteratorDepth { get; } = iteratorDepth;
+    public List<Info> Values { get; } = [];
+    public List<ImmutableDictionary<object, Info>> ExitFacts { get; } = [];
+}
 internal sealed class Frame(string source, string sourceName, ImmutableDictionary<string, Binding>? environment = null)
 {
     public string Source { get; } = source;
@@ -75,9 +88,8 @@ internal sealed class Frame(string source, string sourceName, ImmutableDictionar
     public SourceSpan? ExpectedReturnSpan { get; set; }
     public Dictionary<int, int[]> SelfCaptureSlots { get; } = [];
     public List<string> AcquireRegions { get; } = [];
-    public List<int> LoopAcquireDepths { get; } = [];
-    public List<List<int>> Breaks { get; } = [];
-    public List<List<Info>> BreakValues { get; } = [];
+    public List<LoopContext> Loops { get; } = [];
+    public List<int> Iterators { get; } = [];
     public int Allocate() => Locals++;
     public void Bind(string name, Binding binding)
     {

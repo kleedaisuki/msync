@@ -13,7 +13,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
     private readonly List<Template> templates = [];
     private ImmutableDictionary<string, Binding> sessionEnvironment = ImmutableDictionary<string, Binding>.Empty;
     private int sessionLocals;
-    private static readonly Lazy<IReadOnlyDictionary<string, (string Source, Document Document)>> libraries = new(ReadLibraries);
+    private static readonly Lazy<IReadOnlyDictionary<string, StandardSource>> libraries = new(ReadLibraries);
     private int nextTemplate;
 
     public Module Run() => Submit(source);
@@ -27,6 +27,8 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         PrepareSessionBindings();
         solvedStorage.Clear();
         changedCallableStorage.Clear();
+        changedCastTargets?.Clear();
+        int previousCastEpoch = castContractEpoch;
         newMutableCalls.Clear();
         Frame frame = new(text, sourceName, sessionEnvironment) { Locals = sessionLocals };
         SnapshotFacts(frame);
@@ -50,6 +52,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         }
         catch
         {
+            RestoreCastTargets(previousCastEpoch);
             foreach (var storage in solvedStorage) storage.Type = null;
             foreach (var (storage, previous) in changedCallableStorage)
             {
@@ -71,17 +74,32 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         }
     }
 
-    private static IReadOnlyDictionary<string, (string Source, Document Document)> ReadLibraries()
+    private sealed class StandardSource
     {
-        Dictionary<string, (string, Document)> result = [];
+        private readonly Lazy<string> source;
+        private readonly Lazy<Document> document;
+        public string Source => source.Value;
+        public Document Document => document.Value;
+        public StandardSource(string resource, string module)
+        {
+            source = new(() =>
+            {
+                using var stream = typeof(Compiler).Assembly.GetManifestResourceStream(resource)!;
+                using StreamReader reader = new(stream);
+                return reader.ReadToEnd();
+            });
+            document = new(() => Parser.Parse(source.Value, $"msync-stdlib:///0.8.0/{module}.msync"));
+        }
+    }
+
+    private static IReadOnlyDictionary<string, StandardSource> ReadLibraries()
+    {
+        Dictionary<string, StandardSource> result = [];
         var assembly = typeof(Compiler).Assembly;
         foreach (var name in assembly.GetManifestResourceNames().Where(n => n.EndsWith(".msync", StringComparison.Ordinal)))
         {
-            using var stream = assembly.GetManifestResourceStream(name)!;
-            using StreamReader reader = new(stream);
-            var text = reader.ReadToEnd();
             var module = name.Split('.')[^2];
-            result[module] = (text, Parser.Parse(text, $"msync-stdlib:///0.8.0/{module}.msync"));
+            result[module] = new(name, module);
         }
         return result;
     }

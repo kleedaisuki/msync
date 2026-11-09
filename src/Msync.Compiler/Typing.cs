@@ -29,6 +29,9 @@ internal sealed partial class Compilation
             case NamePattern name: Observe(frame, name.Span, value, name.Name); Store(frame, name.Name, value, name.Span, nullable, constraint ?? StorageType(value.Type, nullable)); break;
             case TuplePattern tuple:
                 Require(frame, value.Type, new(TypeKind.Range), pattern.Span);
+                Constant(frame, new NumberValue(tuple.Items.Count), pattern.Span);
+                frame.Emit(OpCode.NativeCall, 2, text: "ranges.take", span: pattern.Span);
+                frame.Emit(OpCode.NativeCall, 1, text: "ranges.materialize", span: pattern.Span);
                 int sourceSlot = frame.Allocate(); frame.Emit(OpCode.StoreLocal, sourceSlot);
                 for (int index = 0; index < tuple.Items.Count; index++)
                 {

@@ -13,17 +13,20 @@ public static partial class NativeRegistry
         if (!signature.Variadic && arguments.Count != signature.Parameters.Count)
             throw new MsyncException($"Native '{name}' expects {signature.Parameters.Count} arguments, received {arguments.Count}");
         if (context.DryRun && signature.Effect == NativeEffect.Write) return signature.Result == TypeRef.Bool ? Value.True : Value.Null;
+        if (name == "cast") return CastOperation(arguments, context);
         int separator = name.IndexOf('.');
         string group = separator < 0 ? "" : name[..separator];
         string operation = separator < 0 ? name : name[(separator + 1)..];
         return group switch
         {
             "fs" => await FileSystemAsync(operation, arguments, context, cancellationToken, signature.Effect),
-            "string" => StringOperation(operation, arguments),
+            "io" => await IOOperationAsync(operation, arguments, context, cancellationToken),
+            "math" => MathOperation(operation, arguments),
+            "string" => await StringOperationAsync(operation, arguments, cancellationToken),
             "bool" => BooleanOperation(operation, arguments),
             "path" => PathOperation(operation, arguments, context),
             "ranges" => await RangeOperationAsync(operation, arguments, invoke, cancellationToken),
-            "process" => ProcessOperation(operation, arguments),
+            "process" => await ProcessOperationAsync(operation, arguments, cancellationToken),
             _ => throw new MsyncException($"Native namespace '{group}' is not registered")
         };
     }
@@ -55,7 +58,7 @@ public static partial class NativeRegistry
             "split" => new RangeValue(Split(first, Text(args[1])).Select(part => (Value)new StringValue(part)), TypeRef.String),
             "empty" => Bool(first.Length == 0),
             "equal" => Bool(first == Text(args[1])),
-            _ => throw new MsyncException($"Unknown string native '{name}'")
+            _ => ExtendedStringOperation(name, args)
         };
     }
 

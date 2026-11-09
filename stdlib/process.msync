@@ -1,5 +1,29 @@
-# Process calls use exact argv; these functions inspect a completed process value.
+# Ordinary Path calls inherit stdin. Spawn creates a controlled stdin pipe.
+native fn spawn(executable: Path | String, arguments: Range) -> Process;
+native fn pid(process: Process) -> Number;
+native fn running(process: Process) -> Bool;
+native fn wait(process: Process) -> Process;
+native fn kill(process: Process) -> Bool;
+native fn terminate(process: Process) -> Bool;
+native fn write_stdin(process: Process, text: String) -> Null;
+native fn close_stdin(process: Process) -> Null;
 native fn stdout(process: Process) -> String;
 native fn stderr(process: Process) -> String;
 native fn success(process: Process) -> Bool;
 native fn exit_code(process: Process) -> Number;
+
+fn failed(process: Process) { not success(process) };
+fn communicate(process: Process, input: String) {
+    write_stdin(process, input);
+    close_stdin(process);
+    wait(process)
+};
+fn run(executable: Path | String, arguments: Range) {
+    let process = spawn(executable, arguments);
+    close_stdin(process);
+    wait(process)
+};
+fn run_input(executable: Path | String, arguments: Range, input: String) {
+    let process = spawn(executable, arguments);
+    communicate(process, input)
+};

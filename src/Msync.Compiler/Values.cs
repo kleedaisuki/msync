@@ -131,6 +131,7 @@ internal sealed partial class Compilation
                 if (binary.Operator == "is not") frame.Emit(OpCode.Not);
                 bool? known = right.Type == TypeRef.Null ? left.Type == TypeRef.Null ? true : !left.Type.Nullable ? false : null
                     : right.TypeValue is null ? null : left.TypeValue is not null ? right.TypeValue.Accepts(left.TypeValue)
+                    : (left.Type.Kind & TypeKind.Type) != 0 ? null
                     : right.TypeValue.Accepts(left.Type) ? true : (right.TypeValue.Kind & left.Type.Kind) == 0 ? false : null;
                 if (binary.Operator == "is not" && known is not null) known = !known.Value;
                 return new(TypeRef.Bool, KnownBool: known);
@@ -181,6 +182,7 @@ internal sealed partial class Compilation
 
     private Info Select(Frame frame, BinaryExpr binary)
     {
+        if (TryStandardSelection(frame, binary, out var standard)) return standard;
         if (binary.Left is NameExpr alias && RemovedRangeAlias(alias.Name) && !frame.Environment.ContainsKey(alias.Name))
             throw RangeAliasError(frame, alias.Name, alias.Span);
         var left = Expression(frame, binary.Left);

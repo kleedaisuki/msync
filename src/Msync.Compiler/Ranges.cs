@@ -55,13 +55,16 @@ internal sealed partial class Compilation
             EditorCallTrace = frame.EditorCallTrace
         };
         clone.AcquireRegions.AddRange(frame.AcquireRegions);
-        clone.LoopAcquireDepths.AddRange(frame.LoopAcquireDepths);
+        clone.Iterators.AddRange(frame.Iterators);
         foreach (var pair in frame.SelfCaptureSlots) clone.SelfCaptureSlots[pair.Key] = pair.Value;
         return clone;
     }
 
     private void EmitThunk(Frame frame, Frame scratch, Info result, string name)
     {
+        if (scratch.Code.FirstOrDefault(instruction => instruction.Op == OpCode.Jump && instruction.Text?.StartsWith(LoopLabelPrefix, StringComparison.Ordinal) == true) is { } exit)
+            throw Error(scratch, "break cannot leave a deferred Range expression.", new(exit.Span!.Value.Start, exit.Span.Value.Length),
+                help: "Place break in the enclosing for/loop body. Deferred Range expressions execute in their own invocation.", code: "E0207");
         int parentLocals = frame.Locals;
         var captured = scratch.Code.Where(instruction => instruction.Op is OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage or OpCode.StoreLocal && instruction.A < parentLocals)
             .Select(instruction => instruction.A).Distinct().Order().ToArray();

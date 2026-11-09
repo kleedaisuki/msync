@@ -291,6 +291,7 @@ internal static class PredicateOptimization
         }
         private static Value? KnownTypeTest(TypeRef actual, TypeRef expected)
         {
+            if ((actual.Kind & TypeKind.Type) != 0) return null;
             if (actual.Kind == TypeKind.Never) return null;
             if ((actual.Kind & expected.Kind) == 0) return Value.False;
             if (!expected.Accepts(actual)) return null;

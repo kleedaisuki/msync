@@ -228,6 +228,41 @@ EXAMPLES: tuple[Example, ...] = (
         b"after",
     ),
     Example(
+        "for-break-null",
+        'let count = 0; let stopped: Null = for item in [1, 2, 3] { count = count + 1; break; }; if count == 1 and stopped is null { "one" -> ./result; };',
+        b"one",
+    ),
+    Example(
+        "nested-for-break",
+        'let count = 0; for outer in [1, 2] { loop { for inner in [1, 2] { count = count + 1; break; }; break; }; }; if count == 2 { "two" -> ./result; };',
+        b"two",
+    ),
+    Example(
+        "tuple-prefix-once",
+        'let count = 0; let values = $std::ranges::transform(["first", "second", "unseen"], fn(value) { count = count + 1; value }); let (first, second) = values; if count == 2 { $std::string::concat(first, second) -> ./result; };',
+        b"firstsecond",
+    ),
+    Example(
+        "tuple-bounded-repeat",
+        'let (first, second) = $std::ranges::repeat(7, 1000000000000); if first == 7 and second == 7 { "bounded" -> ./result; };',
+        b"bounded",
+    ),
+    Example(
+        "type-value-present",
+        'let target = if exists ./input { Number } else { String }; if target is Number { if $std::cast("41", target) == 41 { "number" -> ./result; }; } else { "wrong" -> ./result; };',
+        b"number",
+    ),
+    Example(
+        "type-value-absent",
+        'let target = if exists ./missing { Number } else { String }; if target is Number { "wrong" -> ./result; } else { "string" -> ./result; };',
+        b"string",
+    ),
+    Example(
+        "type-value-match",
+        'let target = if exists ./input { Number } else { String }; let value = match target { Number => { $std::cast("41", target) }, _ => { 0 } }; if value == 41 { "matched" -> ./result; };',
+        b"matched",
+    ),
+    Example(
         "short-circuit-selected-or",
         'let value? = null; if false or { value = "after"; true } { }; value -> ./result;',
         b"after",

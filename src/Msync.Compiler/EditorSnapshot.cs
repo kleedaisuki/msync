@@ -14,6 +14,8 @@ internal sealed class EditorSnapshot
         if (!storage.TryGetValue(constraint, out var result))
         {
             storage.Add(constraint, result = new(constraint.Type) { Revision = constraint.Revision });
+            result.CastContracts = constraint.CastContracts;
+            result.DeferredTypeWrites = constraint.DeferredTypeWrites;
             result.Callables = constraint.Callables is { } domain ? Info(domain, null, unprovenCapture: true) : null;
             result.Sources = System.Collections.Immutable.ImmutableHashSet.CreateRange(constraint.Sources.Select(Storage));
             result.Contracts = constraint.Contracts.ToImmutableDictionary(pair => pair.Key,

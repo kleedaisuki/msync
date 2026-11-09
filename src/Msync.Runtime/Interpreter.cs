@@ -371,11 +371,13 @@ public sealed partial class Interpreter
     }
     private RangeValue CreateDeferredRange(Value thunk)
     {
+        var itemType = thunk is FunctionValue { NativeName: null } function
+            ? module.Functions[function.Function].ReturnType.Element ?? TypeRef.Any : TypeRef.Any;
         Task<RangeValue>? resolved = null;
         async Task<RangeValue> Evaluate(CancellationToken cancellationToken) => await InvokeAsync(thunk, [], cancellationToken) as RangeValue
             ?? throw new MsyncException("Deferred range function did not return Range");
         ValueTask<RangeValue> Resolve(CancellationToken cancellationToken) => new(resolved ??= Evaluate(cancellationToken));
-        return new RangeValue(EnumerateDeferredRangeAsync(Resolve), TypeRef.Any, Resolve: Resolve);
+        return new RangeValue(EnumerateDeferredRangeAsync(Resolve), itemType, Resolve: Resolve);
     }
     private static async IAsyncEnumerable<Value> EnumerateDeferredRangeAsync(Func<CancellationToken, ValueTask<RangeValue>> resolve,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -414,7 +416,10 @@ public sealed partial class Interpreter
     {
         try
         {
-            if (!LegacyScheduling && name.StartsWith("process.", StringComparison.Ordinal) && arguments[0] is ProcessValue process)
+            if (name == "_core.iterator_close") return await CloseIteratorAsync(arguments[0]);
+            if (name is "io.read_lines" or "io.read_bytes") return ReadIORange(name, arguments, cancellationToken);
+            if (name == "process.spawn") return await SpawnProcessAsync(arguments, cancellationToken);
+            if (!LegacyScheduling && name is "process.stdout" or "process.stderr" or "process.success" or "process.exit_code" && arguments[0] is ProcessValue process)
                 return ProcessMember(process, name[8..]);
             if (!LegacyScheduling && arguments.Any(value => value is DeferredValue)
                 && (EffectAnalysis.NativeEffects(name) & (InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.Invoke)) == 0

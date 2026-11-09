@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using Msync.Core;
 
 namespace Msync.Runtime;
@@ -19,7 +20,7 @@ public sealed partial class Interpreter
     private async ValueTask<Value> RunProcessAsync(PathValue executable, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
         => await AcquireAsync(await StartProcessAsync(executable, await ResolveArgumentsAsync(arguments), cancellationToken));
 
-    private async ValueTask<ProcessValue> StartProcessAsync(PathValue executable, IReadOnlyList<Value> arguments, CancellationToken cancellationToken, SourceSpan? origin = null)
+    private async ValueTask<ProcessValue> StartProcessAsync(PathValue executable, IReadOnlyList<Value> arguments, CancellationToken cancellationToken, SourceSpan? origin = null, bool pipeInput = false)
     {
         cancellationToken.ThrowIfCancellationRequested();
         await ordering;
@@ -27,22 +28,45 @@ public sealed partial class Interpreter
         if (context.DryRun)
         {
             await context.Output.WriteLineAsync($"process {executable}({string.Join(", ", arguments)})");
-            return new ProcessValue(0, "", "");
+            return new ProcessValue(0, "", "") { ProcessId = 0 };
         }
         ProcessStartInfo info;
+        bool controlledRemote = pipeInput && executable.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl;
         if (executable.Connection is { Kind: ConnectionKind.Ssh or ConnectionKind.Wsl } remote)
-            info = TransferEngine.CreateRemoteProcessStartInfo(remote, executable.Raw, arguments.Select(argument => argument is PathValue path ? path.Raw : Text(argument)).ToArray());
+        {
+            var argv = arguments.Select(argument => argument is PathValue path ? path.Raw : Text(argument)).ToArray();
+            info = controlledRemote ? RemoteProcessControl.StartInfo(remote, executable.Raw, argv)
+                : TransferEngine.CreateRemoteProcessStartInfo(remote, executable.Raw, argv);
+        }
         else
         {
             info = new(executable.LocalPath(context.WorkingDirectory, context.HomeDirectory));
             foreach (var argument in arguments) info.ArgumentList.Add(argument is PathValue path ? path.LocalPath(context.WorkingDirectory, context.HomeDirectory) : Text(argument));
         }
         info.WorkingDirectory = context.WorkingDirectory; info.UseShellExecute = false; info.RedirectStandardOutput = true; info.RedirectStandardError = true;
+        info.RedirectStandardInput = pipeInput;
+        if (pipeInput) info.StandardInputEncoding = new UTF8Encoding(false);
         var started = context.Observe is null ? 0 : Stopwatch.GetTimestamp();
         var process = Process.Start(info) ?? throw new MsyncException($"Could not start '{executable}'");
-        context.Observe?.Invoke(new("process", "started", executable.ToString(), Detail: $"pid={process.Id}"));
+        IProcessControl? control = executable.Connection?.Kind is not (ConnectionKind.Ssh or ConnectionKind.Wsl)
+            ? new LocalProcessControl(process, pipeInput) : null;
+        string initialDiagnostic = "";
+        if (controlledRemote)
+        {
+            using CancellationTokenRegistration startupCancel = cancellationToken.Register(() => StopProcess(process));
+            try
+            {
+                var identity = await RemoteProcessControl.ReadIdentityAsync(process, cancellationToken);
+                control = new RemoteProcessControl(process, identity.Id);
+                initialDiagnostic = identity.Diagnostic;
+            }
+            catch { StopProcess(process); process.Dispose(); throw; }
+        }
+        context.Observe?.Invoke(new("process", "started", executable.ToString(), Detail: control is null
+            ? $"transport_pid={process.Id}" : $"pid={control.ProcessId}"));
         async Task<ProcessValue> Complete()
         {
+            using CancellationTokenRegistration cancel = cancellationToken.Register(() => StopProcess(process));
             using (process)
                 try
                 {
@@ -52,18 +76,41 @@ public sealed partial class Interpreter
                     await process.WaitForExitAsync(CancellationToken.None);
                     var output = await Task.WhenAll(stdout, stderr);
                     context.Observe?.Invoke(new("process", process.ExitCode == 0 ? "success" : "failure", executable.ToString(), Detail: $"exit={process.ExitCode}", DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(started).TotalMilliseconds * 1_000_000)));
-                    return new(process.ExitCode, output[0], output[1]);
+                    return new(process.ExitCode, output[0], initialDiagnostic + output[1]) { ProcessId = control?.ProcessId, Control = control };
                 }
                 catch (Exception error) when (error is IOException or InvalidOperationException or System.ComponentModel.Win32Exception)
                 {
                     context.Observe?.Invoke(new("process", "failure", executable.ToString(), Detail: error.ToString()));
                     throw new MsyncException($"Cannot collect the result of '{executable}'.", origin, error);
                 }
+                finally
+                {
+                    if (control is LocalProcessControl local) local.Complete();
+                    if (control is RemoteProcessControl endpoint) endpoint.Complete();
+                }
         }
-        var value = new ProcessValue(0, "", "") { Completion = Complete() };
+        var value = new ProcessValue(0, "", "") { Completion = Complete(), ProcessId = control?.ProcessId, Control = control };
         (currentOwner.Processes ??= []).Add(value);
         sessionProcesses.Add(value);
         return value;
+    }
+    private static void StopProcess(Process process)
+    {
+        try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
+        catch (InvalidOperationException) { }
+    }
+    private async ValueTask<Value> SpawnProcessAsync(IReadOnlyList<Value> arguments, CancellationToken token)
+    {
+        arguments = await ResolveArgumentsAsync(arguments);
+        if (arguments[1] is not RangeValue range) throw new MsyncException("process.spawn expects a Range of arguments.");
+        List<Value> values = [];
+        await foreach (Value value in range.Items.WithCancellation(token))
+        {
+            if (value is not (PathValue or StringValue or NumberValue or BoolValue))
+                throw new MsyncException($"Process arguments require Path, String, Number or Bool, received {value.Type}.");
+            values.Add(value);
+        }
+        return await StartProcessAsync(context.AsPath(arguments[0]), await ResolveArgumentsAsync(values), token, pipeInput: true);
     }
     private static Value ProcessMember(ProcessValue process, string name)
     {

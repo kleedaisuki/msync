@@ -533,6 +533,23 @@ internal static class MemoryEffects
         private ValueInfo Native(State state, string name, ValueInfo[] arguments)
         {
             if (!NativeSignatures.TryGet(name, out var signature)) { Unknown(state, arguments); return ValueInfo.Top; }
+            if (signature.ResultRule == NativeResultRule.CastTarget && arguments.Length > 0) return arguments[0];
+            if (signature.Behavior is { } behavior)
+            {
+                if ((behavior & NativeBehavior.Deferred) != 0)
+                {
+                    foreach (var argument in arguments) Escape(state, argument, []);
+                    deferred = true;
+                    return new([], [], [], Deferred: true);
+                }
+                if ((behavior & NativeBehavior.Enumerates) != 0)
+                    for (var index = 0; index < arguments.Length && index < signature.Parameters.Count; index++)
+                        if ((signature.Parameters[index].Kind & TypeKind.Range) != 0 && MayEnumerate(arguments[index]))
+                            Enumerate(state, arguments[index]);
+                if ((behavior & NativeBehavior.Invokes) != 0) Unknown(state, arguments);
+                return signature.ResultRule == NativeResultRule.FirstArgument && arguments.Length > 0 ? arguments[0]
+                    : signature.Result.Kind == TypeKind.Range ? new([], [], [], CallbackFreeRange: true) : ValueInfo.Empty;
+            }
             if (name.StartsWith("ranges.", StringComparison.Ordinal))
             {
                 if ((EffectAnalysis.NativeEffects(name) & InstructionEffect.Invoke) != 0)

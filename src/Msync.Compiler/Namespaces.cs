@@ -23,7 +23,7 @@ internal sealed partial class Compilation
             if (signature.Variadic && index >= signature.Parameters.Count) continue;
             if (parameter.Type is null)
             {
-                if (signature.ResultRule != NativeResultRule.Fixed || signature.Parameters[index].Kind == (TypeKind.Any & ~TypeKind.Null)) continue;
+                if (signature.ResultRule != NativeResultRule.Fixed || signature.Parameters[index].WithoutNull.Kind == (TypeKind.Any & ~TypeKind.Null)) continue;
                 throw Error(frame, "This native parameter requires an explicit type.", parameter.Span);
             }
             var actual = ResolveType(frame, parameter.Type);
@@ -42,24 +42,28 @@ internal sealed partial class Compilation
     {
         if (frame.Environment.TryGetValue("$std", out var existing))
         {
-            frame.Emit(OpCode.LoadLocal, existing.Slot); return existing.Info;
+            frame.Emit(OpCode.LoadLocal, existing.Slot); return Current(frame, existing);
         }
-        Dictionary<string, Info> members = [];
-        Dictionary<string, IReadOnlyList<EditorLocation>>? origins = editorContexts is null ? null : new(StringComparer.Ordinal);
-        foreach (var module in libraries.Value.Keys.Order(StringComparer.Ordinal))
+        var bindings = StandardNames().ToDictionary(name => name, name => StandardBinding(frame, name, span), StringComparer.Ordinal);
+        foreach (var binding in bindings.Values) frame.Emit(OpCode.LoadCell, binding.Slot);
+        frame.Emit(OpCode.MakeScope, bindings.Count, text: string.Join('\0', bindings.Keys));
+        var root = StandardRootInfo(frame);
+        var info = root with
         {
-            members[module] = StandardModule(frame, module, span);
-            if (origins is not null) origins[module] = [new($"msync-stdlib:///0.8.0/{module}.msync", libraries.Value[module].Source, new(0, 0))];
-        }
-        frame.Emit(OpCode.MakeScope, members.Count, text: string.Join('\0', members.Keys));
-        var info = new Info(TypeRef.Scope, Scope: new(members, Origins: origins));
+            Scope = root.Scope! with
+            {
+                FieldBindings = bindings,
+                Storage = bindings.ToDictionary(pair => pair.Key, pair => pair.Value.Storage, StringComparer.Ordinal)
+            }
+        };
         frame.Emit(OpCode.Dup); Store(frame, "$std", info);
         return info;
     }
     private Info StandardModule(Frame frame, string name, SourceSpan span)
     {
         if (!libraries.Value.TryGetValue(name, out var library)) return StandardNativeModule(frame, name, span);
-        Frame module = new(library.Source, $"msync-stdlib:///0.8.0/{name}.msync") { Locals = frame.Locals };
+        Frame module = new(library.Source, $"msync-stdlib:///0.8.0/{name}.msync", StandardEnvironment(frame))
+        { Locals = frame.Locals, Facts = frame.Facts };
         List<string> keys = []; Dictionary<string, Info> members = [];
         Dictionary<string, Binding> bindings = [];
         Dictionary<string, IReadOnlyList<EditorLocation>>? origins = editorContexts is null ? null : new(StringComparer.Ordinal);
@@ -88,6 +92,7 @@ internal sealed partial class Compilation
         foreach (var key in keys) module.Emit(OpCode.LoadStorage, bindings[key].Slot);
         module.Emit(OpCode.MakeScope, keys.Count, text: string.Join('\0', keys), span: span);
         frame.Code.AddRange(module.Code); frame.Locals = module.Locals;
+        foreach (var (cacheName, binding) in StandardEnvironment(module)) frame.Bind(cacheName, binding);
         var result = new Info(TypeRef.Scope, Scope: new(members, Origins: origins)
         {
             FieldBindings = bindings,

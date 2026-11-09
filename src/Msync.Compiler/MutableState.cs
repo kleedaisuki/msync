@@ -81,6 +81,7 @@ internal sealed partial class Compilation
                     help: $"Declare it first with 'let {name.Name} = ...;'.", code: "E0211");
             var value = Expression(frame, assignment.Value);
             value = StoreInfo(frame, value, binding.Storage.Type, binding.AdmitsNull, assignment.Value.Span, name.Name);
+            CheckCastTargetStore(frame, binding.Storage, value, assignment.Value.Span);
             if (binding.Storage.Type is null && StorageType(value.Type, binding.AdmitsNull) is { } solved)
             {
                 Solve(binding.Storage, solved);
@@ -109,6 +110,7 @@ internal sealed partial class Compilation
             var storage = scope.Storage[field];
             var constraint = storage.Type;
             value = StoreInfo(frame, value, constraint, nullable, assignment.Value.Span, field);
+            CheckCastTargetStore(frame, storage, value, assignment.Value.Span);
             ObserveCallableStore(storage, value);
             if (constraint is null && StorageType(value.Type, nullable) is { } solved) Solve(storage, solved);
             var members = scope.Members.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
@@ -145,13 +147,25 @@ internal sealed partial class Compilation
         _ => null
     };
 
-    private static ImmutableDictionary<string, Binding> RefineMember(Frame frame, Expr target, TypeRef type, bool positive)
+    private static Info RefineInfo(Info info, TypeRef type, bool positive, bool denoted = false)
+    {
+        var kinds = positive ? info.Type.Kind & type.Kind : info.Type.Kind & ~type.Kind;
+        if (denoted && (info.Type.Kind & TypeKind.Type) != 0)
+        {
+            kinds |= TypeKind.Type;
+            bool exact = type.Kind != TypeKind.Range && type.Kind != TypeKind.Never
+                && ((ushort)type.Kind & ((ushort)type.Kind - 1)) == 0;
+            if (positive && kinds == TypeKind.Type && exact) return info with { Type = TypeRef.Type, TypeValue = type };
+        }
+        return info with { Type = new(kinds, info.Type.Element) };
+    }
+
+    private static ImmutableDictionary<string, Binding> RefineMember(Frame frame, Expr target, TypeRef type, bool positive, bool denoted = false)
     {
         if (target is not BinaryExpr { Operator: "::" } member || MemberName(member.Right) is not { } name
             || StorageInfo(frame, member.Left)?.Scope is not { } scope || !scope.Members.TryGetValue(name, out var info))
             return frame.Environment;
-        var narrowed = positive ? info.Type.Kind & type.Kind : info.Type.Kind & ~type.Kind;
-        var refined = info with { Type = new(narrowed, info.Type.Element) };
+        var refined = RefineInfo(info, type, positive, denoted);
         var members = scope.Members.ToDictionary();
         members[name] = refined;
         frame.Facts = frame.Facts.SetItem(scope.Identity, new(TypeRef.Scope, Scope: scope with { Members = members }));
@@ -254,7 +268,12 @@ internal sealed partial class Compilation
         {
             if (externalBindings.Contains(binding.Identity)) return binding;
             if (bindings.TryGetValue(binding.Identity, out var existing)) return existing;
-            var fresh = binding with { Identity = new(), Storage = new(binding.Storage.Type) };
+            var fresh = binding with
+            {
+                Identity = new(),
+                Storage = new(binding.Storage.Type)
+                { CastContracts = binding.Storage.CastContracts, DeferredTypeWrites = binding.Storage.DeferredTypeWrites }
+            };
             bindings.Add(binding.Identity, fresh);
             fresh = fresh with { Info = Fresh(Current(frame, binding)) };
             ObserveCallableStore(fresh.Storage, fresh.Info);

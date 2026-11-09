@@ -31,12 +31,7 @@ internal sealed partial class Compilation
     {
         if (!frame.EditorRecovery) ValidateGlobalImports(frame, function);
         var usedNames = Names(function.Body).ToHashSet(StringComparer.Ordinal);
-        bool needsStandard = HasStandardReference(function.Body);
-        if (needsStandard && !frame.Environment.ContainsKey("std") && !frame.Environment.ContainsKey("$std"))
-        {
-            Standard(frame, function.Span); frame.Emit(OpCode.Pop);
-        }
-        if (needsStandard) usedNames.Add("$std");
+        CaptureStandardDependencies(frame, function.Body, usedNames);
         var captures = Captures(frame, usedNames, declaration is null ? function.Name : null);
         if (functionSites.TryGetValue(function, out var atSite))
         {
@@ -115,9 +110,10 @@ internal sealed partial class Compilation
         var reads = ReadNames(template.Syntax.Body).ToHashSet(StringComparer.Ordinal);
         // A write-only capture's old callable identity cannot affect this body.
         // Including it would create unbounded specializations for recursive stores.
-        string CaptureKey(Info info) => info.Type + ":" + (info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope.Identity));
+        string CaptureKey(Info info) => info.Type + ":" + info.TypeValue + ":" + (info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope.Identity));
         string key = (caller.DeferredCaptures ? "deferred|" : "") + string.Join(';', arguments.Select(argument => InfoKey(argument))) + "|" + string.Join(';', captures
             .Select(pair => !reads.Contains(pair.Key) ? pair.Value.Info.Type.ToString() : caller.DeferredCaptures ? CaptureKey(pair.Value.Info) : InfoKey(pair.Value.Info)));
+        if (castContractEpoch != 0) key = castContractEpoch + "/" + key;
         if (specializations.TryGetValue(key, out var existing)) return existing;
         if (activeEditorSpecializations?.Contains(template.Syntax) == true)
         {
@@ -254,6 +250,7 @@ internal sealed partial class Compilation
             frame.Locals = scratch.Locals;
             frame.Environment = scratch.Environment;
             frame.Facts = scratch.Facts;
+            MergeControlExits(frame, scratch);
         }
         return result;
     }
@@ -315,19 +312,15 @@ internal sealed partial class Compilation
             var accepted = signature.Parameters.Count == 0 ? TypeRef.Any : signature.Parameters[Math.Min(index, signature.Parameters.Count - 1)];
             CheckConversion(frame, arguments[index].Type, accepted, argumentExpressions?[index].Span ?? span);
         }
+        ValidateNativeRange(frame, signature, arguments, span);
         Info? callbackResult = null;
         int callbackIndex = arguments.Count - 1;
         if (callbackIndex >= 1 && arguments[0].Type.Kind == TypeKind.Range && arguments[callbackIndex].Type == TypeRef.Function)
         {
-            var item = arguments[0].Element ?? new Info(arguments[0].Type.Element ?? TypeRef.Any);
             bool deferred = frame.DeferredCaptures;
             frame.DeferredCaptures |= signature.Result.Kind == TypeKind.Range;
-            var callback = ResolveDispatch(frame, arguments[callbackIndex], [item], span);
-            frame.DeferredCaptures = deferred;
-            callbackResult = callback.Result;
-            if (callback.Mapping.Length != 0) frame.Emit(OpCode.SpecializeClosure, text: callback.Mapping, span: span);
-            if (identity is "ranges.filter" or "ranges.take_while" or "ranges.drop_while" or "ranges.any" or "ranges.any_of" or "ranges.all_of" or "ranges.none" or "ranges.none_of" or "ranges.find_if")
-                Require(frame, callbackResult.Type, TypeRef.Bool, span);
+            try { callbackResult = NativeCallback(frame, signature, arguments, span, argumentExpressions); }
+            finally { frame.DeferredCaptures = deferred; }
         }
         var result = signature.ResultRule switch
         {
@@ -335,7 +328,7 @@ internal sealed partial class Compilation
             NativeResultRule.RangeOfArguments => MakeRangeInfo(arguments),
             NativeResultRule.RangeItem when arguments.Count > 0 => arguments[0].Element ?? new(arguments[0].Type.Element ?? TypeRef.Any),
             NativeResultRule.Transform when callbackResult is not null => new(new(TypeKind.Range, callbackResult.Type), Element: callbackResult),
-            _ => new Info(signature.Result)
+            _ => ExtendedNativeResult(frame, signature, arguments, callbackResult, span, argumentExpressions)
         };
         frame.Emit(OpCode.Call, arguments.Count, span: span);
         return result;
@@ -382,7 +375,7 @@ internal sealed partial class Compilation
         KnownText = projection ? info.KnownText : null,
         Element = projection ? info.Element : ForgetEndpoint(info.Element)
     };
-    private static string InfoKey(Info info) => $"{info.Type}:{(info.Function is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Function))}:{info.NativeName}:{(info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope))}:{string.Join(',', info.Alternatives?.Select(InfoKey) ?? [])}:{(info.Element is null ? "" : InfoKey(info.Element))}";
+    private static string InfoKey(Info info) => $"{info.Type}:{info.TypeValue}:{(info.Function is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Function))}:{info.NativeName}:{(info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope))}:{string.Join(',', info.Alternatives?.Select(InfoKey) ?? [])}:{(info.Element is null ? "" : InfoKey(info.Element))}";
 
 
 }

@@ -147,6 +147,11 @@ internal static class BytecodeValidation
                         break;
                     }
                 case OpCode.NativeCall:
+                    if (instruction.Text == "_core.iterator_close")
+                    {
+                        if (instruction.A != 1 || !Pop().Iterator) throw Error("iterator cleanup requires one loop iterator");
+                        Push(TypeRef.Null); break;
+                    }
                     if (instruction.Text is null || !NativeSignatures.TryGet(instruction.Text, out var signature)) throw Error($"native '{instruction.Text}' is not registered");
                     var arguments = PopMany(instruction.A);
                     if (!signature.Variadic && arguments.Length != signature.Parameters.Count || signature.Variadic && arguments.Length < signature.Parameters.Count)
@@ -186,7 +191,8 @@ internal static class BytecodeValidation
                     var expected = Pop(); Require(expected, TypeKind.Type); var actual = Pop();
                     var actualType = actual.Constant is TypeValue knownType ? knownType.Data : actual.Type;
                     var expectedType = (expected.Constant as TypeValue)?.Data;
-                    Push(TypeRef.Bool, expectedType is null ? null : expectedType.Accepts(actualType) ? Value.True : (expectedType.Kind & actualType.Kind) == 0 ? Value.False : null); break;
+                    Push(TypeRef.Bool, expectedType is null || actual.Constant is not TypeValue && (actual.Type.Kind & TypeKind.Type) != 0
+                        ? null : expectedType.Accepts(actualType) ? Value.True : (expectedType.Kind & actualType.Kind) == 0 ? Value.False : null); break;
                 case OpCode.RegexMatch:
                     if (instruction.Text is null) Require(Pop(), TypeKind.String | TypeKind.Path);
                     var regexInput = Pop(); Push(TypeRef.Bool, (regexInput.Type.Kind & (TypeKind.String | TypeKind.Path)) == 0 ? Value.False : null); break;

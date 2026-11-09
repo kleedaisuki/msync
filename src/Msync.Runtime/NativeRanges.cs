@@ -8,6 +8,8 @@ public static partial class NativeRegistry
     private static async ValueTask<Value> RangeOperationAsync(string name, IReadOnlyList<Value> args,
         Func<Value, IReadOnlyList<Value>, CancellationToken, ValueTask<Value>> invoke, CancellationToken token)
     {
+        if (IsExtendedRangeOperation(name))
+            return await ExtendedRangeOperationAsync(name, args, invoke, token);
         if (name == "of") return new RangeValue(args, args.Aggregate(new TypeRef(TypeKind.Never), (type, value) => TypeRef.Union(type, value.Type)));
         if (name == "single") return new RangeValue([args[0]], args[0].Type);
         RangeValue source = args[0] as RangeValue ?? throw new MsyncException($"ranges.{name} expects Range");

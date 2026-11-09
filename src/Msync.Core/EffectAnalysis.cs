@@ -68,6 +68,19 @@ public static class EffectAnalysis
     {
         if (name is null || !NativeSignatures.TryGet(name, out var signature))
             return InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.Invoke | InstructionEffect.MayFail;
+        if (signature.Behavior is { } behavior)
+        {
+            var effects = signature.Effect switch
+            {
+                NativeEffect.Read => InstructionEffect.Read | InstructionEffect.MayFail,
+                NativeEffect.Write => InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.MayFail,
+                _ => InstructionEffect.None
+            };
+            if ((behavior & NativeBehavior.MayFail) != 0) effects |= InstructionEffect.MayFail;
+            if ((behavior & NativeBehavior.Enumerates) != 0) effects |= InstructionEffect.Read | InstructionEffect.Invoke | InstructionEffect.MayFail;
+            if ((behavior & NativeBehavior.Invokes) != 0) effects |= InstructionEffect.Invoke | InstructionEffect.MayFail;
+            return effects;
+        }
         if (name == "string.replace") return InstructionEffect.MayFail;
         if (name.StartsWith("process.", StringComparison.Ordinal)) return InstructionEffect.Read | InstructionEffect.Invoke | InstructionEffect.MayFail;
         if (name.StartsWith("ranges.", StringComparison.Ordinal))
