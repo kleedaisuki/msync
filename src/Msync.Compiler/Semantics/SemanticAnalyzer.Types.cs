@@ -37,7 +37,8 @@ internal sealed partial class SemanticAnalyzer
             IndexedRegion: payload?.IndexedRegion ?? (first.IndexedRegion == second.IndexedRegion ? first.IndexedRegion : null),
             DenotedType: first.DenotedType == second.DenotedType ? first.DenotedType : null,
             DeferredEffects: CombineDeferredEffects(first.DeferredEffects, second.DeferredEffects),
-            IndexedAliases: payload?.IndexedAliases ?? JoinIndexedResources(first, second));
+            IndexedAliases: payload?.IndexedAliases ?? JoinIndexedResources(first, second),
+            OpenSessionCalls: CombineSessionCalls(first.OpenSessionCalls, second.OpenSessionCalls));
     }
 
     private static int IndexedResourceCount(SemanticValue value) => value.IndexedRegion is not null ? 1
@@ -93,8 +94,18 @@ internal sealed partial class SemanticAnalyzer
         return regions.ToImmutable();
     }
 
-    private static IEnumerable<SemanticCallable> Choices(SemanticValue value) => value.Callables.IsDefault
-        ? [] : value.Callables;
+    private static IEnumerable<SemanticCallable> Choices(SemanticValue value) => value.Callables.IsDefaultOrEmpty
+        ? [] : value.Callables.Length == 1 ? value.Callables : value.Callables.Distinct(NativeCallableIdentity.Instance);
+
+    private sealed class NativeCallableIdentity : IEqualityComparer<SemanticCallable>
+    {
+        public static NativeCallableIdentity Instance { get; } = new();
+        public bool Equals(SemanticCallable? first, SemanticCallable? second) =>
+            first?.NativeName is { } name && second?.NativeName is not null
+                ? name == second.NativeName && first.Template == second.Template : first == second;
+        public int GetHashCode(SemanticCallable value) => value.NativeName is { } name
+            ? HashCode.Combine(name, value.Template) : value.GetHashCode();
+    }
 
     private int Shape(ImmutableDictionary<string, SemanticValue> fields)
     {

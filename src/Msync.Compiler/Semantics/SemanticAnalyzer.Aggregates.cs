@@ -130,6 +130,7 @@ internal sealed partial class SemanticAnalyzer
         var delayed = node.Kind == HirKind.LazyRange ? hir.Ranges[node.Data].Deferred : default;
         List<HirNodeId> values = [];
         SemanticValue? element = null;
+        ImmutableArray<SemanticDeferredWrite>.Builder? admission = null;
         for (int index = 0; index < children.Length; index++)
         {
             SemanticValue value;
@@ -138,6 +139,8 @@ internal sealed partial class SemanticAnalyzer
                 var thunk = RangeThunk(children[index], context);
                 value = thunk.Value;
                 values.Add(thunk.Closure);
+                if (!thunk.AdmissionEffects.IsDefaultOrEmpty)
+                    (admission ??= ImmutableArray.CreateBuilder<SemanticDeferredWrite>()).AddRange(thunk.AdmissionEffects);
             }
             else
             {
@@ -161,10 +164,10 @@ internal sealed partial class SemanticAnalyzer
             expression = context.Output!.Add(node.Kind, type, node.Source,
                 System.Runtime.InteropServices.CollectionsMarshal.AsSpan(values), descriptor, effects: node.Effects);
         }
-        return new(type, expression, Element: element);
+        return new(type, expression, Element: element, DeferredEffects: admission?.ToImmutable() ?? []);
     }
 
-    private (SemanticValue Value, HirNodeId Closure) RangeThunk(HirNodeId expression, SemanticContext context)
+    private (SemanticValue Value, HirNodeId Closure, ImmutableArray<SemanticDeferredWrite> AdmissionEffects) RangeThunk(HirNodeId expression, SemanticContext context)
     {
         HashSet<HirLocationId> read = [], declared = [];
         CollectLocations(expression, read, declared);
@@ -180,23 +183,26 @@ internal sealed partial class SemanticAnalyzer
                 ?? ValueForType(ResolveHirType(hir.Locations[source.Value].StorageType, context));
             HirTypeId storage = context.Storage.GetValueOrDefault(source, value.Type);
             deferred.Values[target] = !Stable(original) || value.Scope is not null
-                ? FutureRead(value, storage, deferred) : value;
+                ? FutureRead(value, storage, deferred, source) : value;
             deferred.Storage[target] = storage;
+            RegisterStorageAlias(target, source, deferred);
             captures.Add(new(target, HirCaptureMode.Location, source, HirNodeId.None));
         }
         foreach (var local in declared) _ = AllocateThunkLocation(local, deferred);
         context.Output?.ReserveFunction(new("<range-item>", [], captures.ToImmutable(),
             hir.Type(TypeRef.Any), HirNodeId.None, IsOpen: true));
         SemanticValue result = Analyze(expression, deferred);
-        if (!context.Publish) return (result, HirNodeId.None);
+        result = PublishResultGraph(result, deferred, context, out var admissionEffects);
+        if (!context.Publish) return (result, HirNodeId.None, admissionEffects);
         context.Output!.SealFunction(deferred.Function, new("<range-item>", [], captures.ToImmutable(), result.Type, result.Node));
         int closure = hir.Closures.Count;
         context.Output!.AddClosure(new(deferred.Function, captures.ToImmutable()));
-        return (result, context.Output!.Add(HirKind.Closure, hir.Type(TypeRef.Function), program.Node(expression).Source, data: closure));
+        return (result, context.Output!.Add(HirKind.Closure, hir.Type(TypeRef.Function), program.Node(expression).Source, data: closure), admissionEffects);
     }
 
     private HirLocationId AllocateThunkLocation(HirLocationId original, SemanticContext context)
     {
+        HirLocationId definition = context.Definitions.GetValueOrDefault(context.Location(original), program.Original(original));
         HirLocationId target = original;
         if (context.Publish)
         {
@@ -204,6 +210,7 @@ internal sealed partial class SemanticAnalyzer
             context.Output!.ReserveLocation(hir.Locations[original.Value] with { Owner = context.Function, TemplateOwner = null });
         }
         context.Locations.Add(original, target);
+        context.Definitions[target] = definition;
         return target;
     }
 

@@ -9,8 +9,9 @@ internal sealed partial class SemanticAnalyzer
 {
     internal sealed class InstantiationWorkspace
     {
-        internal Dictionary<string, FunctionInstance> Instances { get; } = new(StringComparer.Ordinal);
+        internal SemanticInstanceCache Instances { get; } = new();
         internal Dictionary<int, SemanticScope> Singletons { get; } = [];
+        internal StorageConstraintGraph? StorageConstraints { get; set; }
     }
 
     // An instance is a code/signature promise in formal provenance space. Caller
@@ -26,6 +27,9 @@ internal sealed partial class SemanticAnalyzer
         public ImmutableDictionary<int, SemanticIndexed> Indexed { get; set; } = ImmutableDictionary<int, SemanticIndexed>.Empty;
         public ImmutableDictionary<HirLocationId, SemanticValue> Cells { get; set; } = ImmutableDictionary<HirLocationId, SemanticValue>.Empty;
         public ImmutableDictionary<int, ImmutableHashSet<int>> AliasViews { get; set; } = ImmutableDictionary<int, ImmutableHashSet<int>>.Empty;
+        public ImmutableDictionary<(int Region, string Field), ImmutableArray<SemanticMemberContract>> MemberContracts { get; set; }
+            = ImmutableDictionary<(int Region, string Field), ImmutableArray<SemanticMemberContract>>.Empty;
+        public ImmutableDictionary<HirLocationId, HirLocationId> Definitions { get; set; } = ImmutableDictionary<HirLocationId, HirLocationId>.Empty;
         public ImmutableArray<SemanticWriteEvent> WriteEvents { get; set; } = default;
         public ImmutableHashSet<int> IndexedWrites { get; set; } = [];
         public ImmutableHashSet<HirLocationId> CellWrites { get; set; } = [];
@@ -35,7 +39,7 @@ internal sealed partial class SemanticAnalyzer
 
     private readonly record struct FunctionInvocation(HirFunctionId Id, SemanticValue Result,
         ImmutableArray<SemanticDeferredWrite> Effects);
-    private readonly Dictionary<string, FunctionInstance> instances = new(StringComparer.Ordinal);
+    private readonly SemanticInstanceCache instances = codeCache ?? new();
     private readonly Dictionary<int, SemanticScope> projectedSingletons = [];
 
     private SemanticContext QueryContext(SemanticContext context, SemanticValue callee,
@@ -57,6 +61,9 @@ internal sealed partial class SemanticAnalyzer
                 scope = context.Objects.GetValueOrDefault(scope.Region, scope);
                 if (scope.Region >= 0 && !importedRegions.Add(scope.Region)) return;
                 query.Objects[scope.Region] = scope;
+                foreach (var field in scope.Fields.Keys)
+                    if (context.MemberContracts.TryGetValue((scope.Region, field), out var contracts))
+                        query.MemberContracts[(scope.Region, field)] = contracts;
                 if (context.AliasViews.TryGetValue(scope.Region, out var views))
                 {
                     query.AliasViews[scope.Region] = views;
@@ -76,6 +83,13 @@ internal sealed partial class SemanticAnalyzer
                 query.Indexed[region] = indexed;
                 Import(indexed.Element);
             }
+            if (!value.IndexedAliases.IsDefaultOrEmpty)
+                foreach (int alias in value.IndexedAliases)
+                    if (context.Indexed.TryGetValue(alias, out var storage))
+                    {
+                        query.Indexed[alias] = storage;
+                        Import(storage.Element);
+                    }
             if (value.Element is { } element) Import(element);
             if (!value.DeferredEffects.IsDefault)
                 foreach (var write in value.DeferredEffects)
@@ -98,6 +112,7 @@ internal sealed partial class SemanticAnalyzer
 
         void ImportLocation(HirLocationId location)
         {
+            if (context.Definitions.TryGetValue(location, out var definition)) query.Definitions[location] = definition;
             if (context.Storage.TryGetValue(location, out var type)) query.Storage[location] = type;
             if (!context.Values.TryGetValue(location, out var value)) return;
             query.Values[location] = value;
@@ -126,6 +141,9 @@ internal sealed partial class SemanticAnalyzer
             Callables: [new(closure.Template, Captures: captures.ToImmutable())]);
     }
 
+    private HirLocationId? CanonicalDefinition(HirLocationId location) =>
+        program.TryDeclaration(location, out _) ? program.Original(location) : null;
+
     private FunctionInvocation Instantiate(HirTemplateId id, ImmutableArray<SemanticCapture> captured,
         IReadOnlyList<SemanticValue> arguments, HirSourceRange source, SemanticContext caller, bool applyEffects = true)
     {
@@ -139,16 +157,19 @@ internal sealed partial class SemanticAnalyzer
                 new(declaration.Name, declaration.Text ?? "", new(template.Source.Start, template.Source.Length),
                     "function signature declared here"));
         }
+        RequireArgumentConcepts(template, arguments, source, caller);
         var actualCaptures = captured.IsDefault ? ImmutableArray<SemanticCapture>.Empty : captured;
         SemanticValue[] captureValues = new SemanticValue[actualCaptures.Length];
         for (int index = 0; index < actualCaptures.Length; index++)
         {
             var capture = actualCaptures[index];
             var value = capture.Mode == HirCaptureMode.Location
-                ? caller.Values.GetValueOrDefault(capture.Source, capture.Value) : capture.Value;
+                ? StorageValue(capture.Source, caller) ?? capture.Value : capture.Value;
+            var storage = capture.Mode == HirCaptureMode.Location ? StorageType(capture.Source, caller) : value.Type;
+            if (hir.Types[value.Type.Value].TypeParameter >= 0) value = value with { Type = storage };
             if (caller.DeferredReads && capture.Mode == HirCaptureMode.Location
                 && (!Stable(capture.Source) || value.Scope is not null))
-                value = FutureRead(value, caller.Storage.GetValueOrDefault(capture.Source, value.Type), caller);
+                value = FutureRead(value, storage, caller, capture.Source);
             captureValues[index] = value;
         }
         string key = InstanceKey(id, arguments, captureValues, caller);
@@ -163,7 +184,7 @@ internal sealed partial class SemanticAnalyzer
     private FunctionInstance BuildInstance(HirTemplateId id, HirTemplate template,
         IReadOnlyList<SemanticValue> arguments, IReadOnlyList<SemanticValue> captureValues,
         ImmutableArray<SemanticCapture> captured, HirSourceRange source, SemanticContext caller,
-        Dictionary<string, FunctionInstance> cache, string key)
+        SemanticInstanceCache cache, string key)
     {
         SemanticValue? recursiveSignature = null;
         if (caller.Publish && template.ResultAnnotation is null
@@ -189,6 +210,7 @@ internal sealed partial class SemanticAnalyzer
                 caller.Output!.ReserveLocation(location with { Owner = function, TemplateOwner = null });
             }
             context.Locations.Add(declaration.Location, target);
+            context.Definitions[target] = program.Original(declaration.Location);
         }
         FormalInput input = new(this, caller, context);
         foreach (var pair in context.Locations) input.Locations[pair.Key] = pair.Value;
@@ -203,7 +225,9 @@ internal sealed partial class SemanticAnalyzer
             var target = context.Location(definition.Target);
             var value = input.Abstract(captureValues[index]);
             context.Values[target] = value;
-            context.Storage[target] = caller.Storage.GetValueOrDefault(captured[index].Source, value.Type);
+            context.Storage[target] = StorageType(captured[index].Source, caller);
+            if (StandardCell(captured[index].Source, caller) is { } moduleCell)
+                RegisterStorageAlias(target, moduleCell, context);
             input.Locations[captured[index].Source] = target;
             formalCaptures.Add(value);
             captureTargets.Add(target);
@@ -310,7 +334,7 @@ internal sealed partial class SemanticAnalyzer
         }
     }
 
-    private static void FreezeSummary(FunctionInstance instance, SemanticContext context)
+    private void FreezeSummary(FunctionInstance instance, SemanticContext context)
     {
         Dictionary<int, SemanticScope> objects = [];
         Dictionary<int, SemanticIndexed> indexed = [];
@@ -327,6 +351,15 @@ internal sealed partial class SemanticAnalyzer
         instance.CellWrites = context.CellWrites.ToImmutableHashSet();
         instance.IndexedWrites = context.IndexedWrites.ToImmutableHashSet();
         instance.WriteEvents = context.WriteEvents is null ? default : context.WriteEvents.ToImmutableArray();
+        instance.MemberContracts = context.MemberContracts.Where(pair => objects.ContainsKey(pair.Key.Region))
+            .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
+        HashSet<HirLocationId> reachedLocations = [.. cells.Keys, .. instance.CaptureTargets];
+        foreach (var argument in instance.Arguments)
+            if (argument.Location is { } location) reachedLocations.Add(location);
+        foreach (var scope in objects.Values)
+            reachedLocations.UnionWith(scope.Locations.Values);
+        instance.Definitions = context.Definitions.Where(pair => reachedLocations.Contains(pair.Key))
+            .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
         instance.AliasViews = context.AliasViews.Where(pair => objects.ContainsKey(pair.Key))
             .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
 
@@ -337,7 +370,7 @@ internal sealed partial class SemanticAnalyzer
         }
         void VisitCell(HirLocationId location)
         {
-            if (cells.ContainsKey(location) || !context.Values.TryGetValue(location, out var value)) return;
+            if (cells.ContainsKey(location) || StorageValue(location, context) is not { } value) return;
             cells[location] = value;
             Visit(value);
         }
@@ -356,6 +389,10 @@ internal sealed partial class SemanticAnalyzer
                         foreach (var view in views) VisitRegion(view);
                 }
             }
+            if (!value.IndexedAliases.IsDefaultOrEmpty)
+                foreach (int alias in value.IndexedAliases)
+                    if (context.Indexed.TryGetValue(alias, out var aliasedStorage) && indexed.TryAdd(alias, aliasedStorage))
+                        Visit(aliasedStorage.Element);
             if (value.Element is { } element) Visit(element);
             if (!value.DeferredEffects.IsDefault)
                 foreach (var write in value.DeferredEffects)
@@ -421,7 +458,7 @@ internal sealed partial class SemanticAnalyzer
 
     private static bool IsScalarSchema(SemanticValue value) => value.Scope is null
         && value.Element is null && value.Callables.IsDefaultOrEmpty && value.IndexedRegion is null
-        && value.Alternatives.IsDefaultOrEmpty && value.DeferredEffects.IsDefaultOrEmpty;
+        && value.Alternatives.IsDefaultOrEmpty && value.DeferredEffects.IsDefaultOrEmpty && value.IndexedAliases.IsDefaultOrEmpty;
 
     private string ValueKey(SemanticValue value)
     {
@@ -459,6 +496,14 @@ internal sealed partial class SemanticAnalyzer
                 var member = scope.Locations.TryGetValue(field.Key, out var location)
                     ? context?.Values.GetValueOrDefault(location, field.Value) ?? field.Value : field.Value;
                 AppendValueKey(key, member, context, active, provenance);
+                if (context?.MemberContracts.TryGetValue((scope.Region, field.Key), out var contracts) == true)
+                    foreach (var contract in contracts)
+                    {
+                        key.Append('K').Append(contract.Concept).Append(':').Append(contract.Requirement.Type.Value)
+                            .Append(':').Append(contract.Requirement.Signature);
+                        foreach (var associated in contract.Associated.OrderBy(pair => pair.Key.Value))
+                            key.Append('A').Append(associated.Key.Value).Append(':').Append(associated.Value.Value);
+                    }
             }
             key.Append('}');
         }
@@ -466,8 +511,22 @@ internal sealed partial class SemanticAnalyzer
         if (value.IndexedRegion is { } region && context?.Indexed.TryGetValue(region, out var indexed) == true)
         {
             key.Append('I').Append(provenance.Region(region)).Append(':').Append(indexed.FixedCarrier?.Value ?? -1);
+            if (!indexed.CarrierConstraints.IsDefaultOrEmpty)
+                foreach (var constraint in indexed.CarrierConstraints) key.Append('C').Append(constraint.Value);
             AppendValueKey(key, indexed.Element, context, active, provenance);
         }
+        if (!value.IndexedAliases.IsDefaultOrEmpty)
+            foreach (int alias in value.IndexedAliases)
+            {
+                key.Append('J').Append(provenance.Region(alias));
+                if (context?.Indexed.TryGetValue(alias, out var storage) == true)
+                {
+                    key.Append('C').Append(storage.FixedCarrier?.Value ?? -1);
+                    if (!storage.CarrierConstraints.IsDefaultOrEmpty)
+                        foreach (var constraint in storage.CarrierConstraints) key.Append('C').Append(constraint.Value);
+                    AppendValueKey(key, storage.Element, context, active, provenance);
+                }
+            }
         if (!value.DeferredEffects.IsDefaultOrEmpty)
             foreach (var write in value.DeferredEffects)
             {

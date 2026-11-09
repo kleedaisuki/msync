@@ -6,7 +6,8 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 
 namespace Msync.Compiler.Semantics;
 
-internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObservationBuilder? observations = null)
+internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObservationBuilder? observations = null,
+    SemanticInstanceCache? codeCache = null, SemanticSessionDispatch? sessionDispatch = null)
 {
     private readonly SemanticArena hir = new(program.Hir);
     private readonly int boundNodeCount = program.Hir.Nodes.Count;
@@ -28,9 +29,11 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
             body = body with { Node = output.Add(HirKind.Block, body.Type,
                 program.Node(program.Body).Source, System.Runtime.InteropServices.CollectionsMarshal.AsSpan(entryPrelude)) };
         }
+        RefreshSessionCalls(context);
         output.SealFunction(program.Entry, new("<main>", [], [], body.Type, body.Node));
         context.NextRegion = nextRegion;
-        return HirSealer.Seal(output.Freeze(program.Entry, program.IsSession));
+        return HirSealer.Seal(output.Freeze(program.Entry, program.IsSession) with
+        { SessionDispatches = sessionDispatch?.Tables ?? [] });
     }
 
     private SemanticValue Analyze(HirNodeId id, SemanticContext context)
@@ -80,11 +83,14 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         SemanticValue value = context.Values.TryGetValue(location, out var current)
             ? current : new(Resolve(hir.Locations[location.Value].StorageType, context), HirNodeId.None);
         value = FlowRead(id, location, value, context);
+        if (StandardCell(location, context) is not null && StorageValue(location, context) is { } moduleValue)
+            value = moduleValue;
         if (value.Scope is { } scope && context.Objects.TryGetValue(scope.Region, out var active))
         {
             if (active.Initializing) throw Error(node.Source, "A named Scope cannot be read before its initialization completes.", "E0211");
             value = value with { Scope = active };
         }
+        value = RefreshIndexed(value, context);
         HirTypeId type = value.Type;
         return value with { Type = type, Node = Add(node with { Data = location.Value }, type, [], context), Location = location };
     }
@@ -101,9 +107,9 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
                 new(node.Source.Start, node.Source.Length), definition);
         Require(value, type, node.Source, allowImplicit: true, context);
         value = Convert(value, type, node.Source, context);
-        context.Storage[location] = type;
+        SealStorage(location, type, context);
         context.Values[location] = value;
-        context.Output?.SetLocation(location, hir.Locations[location.Value] with { StorageType = type });
+        UpdateStorageValue(location, value, context);
         var declaredNode = Add(node with { Data = location.Value }, hir.Type(TypeRef.Null), [value.Node], context);
         return new(hir.Type(TypeRef.Null), declaredNode);
     }
@@ -113,7 +119,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         SemanticValue value = Analyze(children[^1], context);
         var valueSource = program.Node(children[^1]).Source;
         HirLocationId location = context.Location(new(node.Data));
-        HirTypeId target = context.Storage.GetValueOrDefault(location, hir.Locations[location.Value].StorageType);
+        HirTypeId target = StorageType(location, context);
         try { Require(value, target, valueSource, allowImplicit: true, context); }
         catch (CompileException error)
         {
@@ -122,8 +128,17 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
                 definition, hir.Types[target.Value].RuntimeType);
             throw;
         }
+        HirTypeId resolved = ResolveHirType(target, context);
+        if (hir.Locations[location.Value].AdmitsNull) resolved = Nullable(resolved);
+        if (resolved != target)
+        {
+            target = resolved;
+            SealStorage(location, target, context);
+        }
         value = Convert(value, target, valueSource, context);
+        CheckSessionAssignment(location, value, valueSource, context);
         context.Values[location] = value;
+        UpdateStorageValue(location, value, context);
         context.CellWrites.Add(location);
         context.RecordWrite(new(SemanticWriteKind.Location, value, Location: location));
         return new(hir.Type(TypeRef.Null), Add(node with { Data = location.Value }, hir.Type(TypeRef.Null), [value.Node], context));

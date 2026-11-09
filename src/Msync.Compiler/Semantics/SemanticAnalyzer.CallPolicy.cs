@@ -27,7 +27,7 @@ internal sealed partial class SemanticAnalyzer
             bool stable = Stable(original);
             HirTypeId initial = stable ? current?.Type ?? storage : storage;
             if (current is not null && (!stable || current.Scope is not null))
-                context.Values[location] = FutureRead(current, initial, context);
+                context.Values[location] = FutureRead(current, initial, context, location);
             domains[location] = new(hir.Types[storage.Value].RuntimeType, hir.Types[storage.Value].RuntimeType,
                 stable, InitialType: hir.Types[initial.Value].RuntimeType,
                 StorageSemanticType: storage, InitialSemanticType: initial, DeferredSemanticType: storage);
@@ -72,8 +72,9 @@ internal sealed partial class SemanticAnalyzer
                 ?? ValueForType(ResolveHirType(hir.Locations[source.Value].StorageType, caller));
             HirTypeId storage = caller.Storage.GetValueOrDefault(source, value.Type);
             deferred.Values[target] = !Stable(original) || value.Scope is not null
-                ? FutureRead(value, storage, deferred) : value;
+                ? FutureRead(value, storage, deferred, source) : value;
             deferred.Storage[target] = storage;
+            RegisterStorageAlias(target, source, deferred);
             captures.Add(new(target, HirCaptureMode.Location, source, HirNodeId.None));
             sources[target] = source;
         }
@@ -81,6 +82,7 @@ internal sealed partial class SemanticAnalyzer
         caller.Output?.ReserveFunction(new("<range-call>", [], captures.ToImmutable(),
             hir.Type(TypeRef.Any), HirNodeId.None, IsOpen: true));
         SemanticValue result = Call(node, children, deferred, allowDeferral: false);
+        result = PublishResultGraph(result, deferred, caller);
         var effects = result.DeferredEffects.IsDefault ? ImmutableArray<SemanticDeferredWrite>.Empty : result.DeferredEffects;
         effects = effects.Select(effect => effect.Kind == SemanticWriteKind.Location
             && sources.TryGetValue(effect.Location, out HirLocationId source)
@@ -281,15 +283,20 @@ internal sealed partial class SemanticAnalyzer
             return result;
         }
         if (node.Kind == HirKind.Break) return Shape(hir.Type(new TypeRef(TypeKind.Never)));
-        if (node.Kind == HirKind.IsType && program.Node(children[1]).Kind == HirKind.TypeValue)
+        if (node.Kind == HirKind.MemberRead)
         {
-            HirNodeId operand = children[0];
-            if (program.Node(operand).Kind == HirKind.TypeOf) operand = program.Children(operand)[0];
-            FlowFact actual = ProjectReturn(operand, context, ref facts, eager, returns).Fact;
-            HirTypeId required = ResolveHirType(new(program.Node(children[1]).Data), context);
-            TypeRef target = hir.Types[required.Value].RuntimeType;
-            bool? known = target.Accepts(actual.Type) ? true : (target.Kind & actual.Type.Kind) == 0 ? false : null;
-            return new(new(TypeRef.Bool, Boolean: known, SemanticType: hir.Type(TypeRef.Bool)));
+            ReturnShape receiver = ProjectReturn(children[0], context, ref facts, eager, returns);
+            if (receiver.Value?.Scope is { } row && node.Text is { } name)
+            {
+                row = context.Objects.GetValueOrDefault(row.Region, row);
+                if (row.Fields.TryGetValue(name, out SemanticValue? member))
+                {
+                    if (row.Locations.TryGetValue(name, out HirLocationId location))
+                        member = context.Values.GetValueOrDefault(location, member);
+                    return new(Shape(member.Type).Fact, member.EagerRange || member.IndexedRegion is not null
+                        || !member.IndexedAliases.IsDefaultOrEmpty, member);
+                }
+            }
         }
         if (node.Kind == HirKind.Call)
         {
@@ -309,10 +316,17 @@ internal sealed partial class SemanticAnalyzer
                     _ => Shape(hir.Type(signature.Result)).Fact
                 };
                 bool eagerResult = (signature.Behavior.GetValueOrDefault() & NativeBehavior.EagerRange) != 0;
+                SemanticValue? nativeMetadata = signature.ResultRule switch
+                {
+                    NativeResultRule.FirstArgument when arguments.Length != 0 => arguments[0].Value,
+                    NativeResultRule.RangeItem when arguments.Length != 0 && arguments[0].Value is { } range => Item(range),
+                    _ => null
+                };
                 if (signature.ResultRule == NativeResultRule.FirstArgument && arguments.Length != 0
                     && (signature.Behavior.GetValueOrDefault() & NativeBehavior.Deferred) == 0)
                     eagerResult |= arguments[0].Eager;
-                return new(fact, eagerResult);
+                return new(fact, eagerResult || nativeMetadata?.EagerRange == true || nativeMetadata?.IndexedRegion is not null
+                    || nativeMetadata is { IndexedAliases.IsDefaultOrEmpty: false }, nativeMetadata);
             }
             ReturnShape? result = null;
             foreach (SemanticCallable choice in choices)

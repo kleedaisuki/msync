@@ -5,19 +5,25 @@ namespace Msync.Compiler.Semantics;
 
 internal sealed partial class SemanticAnalyzer
 {
+    private BoundCallableWrites? futureCallableWrites;
+
     // A deferred read preserves location/shape provenance, not an observation of
     // a writable cell made while the lazy operation was being constructed.
-    private SemanticValue FutureRead(SemanticValue value, HirTypeId storage, SemanticContext context)
+    private SemanticValue FutureRead(SemanticValue value, HirTypeId storage, SemanticContext context,
+        HirLocationId? location = null)
     {
+        value = FutureCallables(value, location, context);
         if (value.Scope is not null || value.Element is not null) return FutureRead(value, storage, context, []);
         return value.Type == storage && value.Literal is null && value.Observation is null && !value.EagerRange
-            ? value : value with { Type = storage, Literal = null, Observation = null, EagerRange = false };
+            && value.DenotedType is null ? value : value with
+            { Type = storage, Literal = null, Observation = null, EagerRange = false, DenotedType = null };
     }
 
     private SemanticValue FutureRead(SemanticValue value, HirTypeId storage,
         SemanticContext context, HashSet<int> active)
     {
-        SemanticValue result = value with { Type = storage, Literal = null, Observation = null, EagerRange = false };
+        SemanticValue result = value with { Type = storage, Literal = null, Observation = null,
+            EagerRange = value.IndexedRegion is not null || !value.IndexedAliases.IsDefaultOrEmpty, DenotedType = null };
         if (value.Element is { } element)
         {
             HirType descriptor = hir.Types[storage.Value];
@@ -45,6 +51,7 @@ internal sealed partial class SemanticAnalyzer
             {
                 current = context.Values.GetValueOrDefault(location, current);
                 domain = context.Storage.GetValueOrDefault(location, domain);
+                current = FutureCallables(current, location, context, scope);
             }
             SemanticValue future = FutureRead(current, domain, context, active);
             fields[field.Name] = future;
@@ -57,5 +64,104 @@ internal sealed partial class SemanticAnalyzer
             context.Objects[scope.Region] = scope;
         }
         return result with { Scope = scope };
+    }
+
+    private SemanticValue FutureCallables(SemanticValue value, HirLocationId? location, SemanticContext context,
+        SemanticScope? receiver = null)
+    {
+        if (location is not { } source || hir.Types[value.Type.Value].RuntimeType.WithoutNull != Msync.Core.TypeRef.Function)
+            return value;
+        HirLocationId definition = program.Original(context.Definitions.GetValueOrDefault(source, source));
+        var choices = Choices(value).ToList();
+        HashSet<HirLocationId> active = [];
+        Collect(definition);
+        return value with { Callables = choices.Distinct().ToImmutableArray(), Alternatives = default };
+
+        void Collect(HirLocationId target)
+        {
+            if (!active.Add(target)) return;
+            foreach (HirNodeId write in (futureCallableWrites ??= new(program)).Values(target))
+            {
+                if (receiver is not null)
+                {
+                    HirNodeId[] owners = futureCallableWrites.Receivers(target, write).ToArray();
+                    if (owners.Length != 0 && owners.All(owner => !FutureReceiver(owner, receiver, context, []))) continue;
+                }
+                if (futureCallableWrites.Writer(target, write) is { } writer
+                    && !FutureCapturedWriter(writer, target, source, context)) continue;
+                HirNode expression = program.Node(write);
+                if (expression.Kind is HirKind.ReadLocation or HirKind.ReadStorage)
+                    Collect(program.Original(new(expression.Data)));
+                foreach (SemanticCallable choice in BoundCallables(write, context))
+                    if (!choices.Any(existing => existing.Template == choice.Template && existing.NativeName == choice.NativeName))
+                        choices.Add(choice);
+            }
+        }
+    }
+
+    private bool FutureCapturedWriter(HirTemplateId writer, HirLocationId definition, HirLocationId source,
+        SemanticContext context)
+    {
+        bool unknown = false;
+        foreach (HirNodeId site in futureCallableWrites!.CallSites(writer))
+        {
+            SemanticCallable[] choices = FutureWriterChoices(site, context, []).Where(choice => choice.Template == writer).ToArray();
+            if (choices.Length == 0) { unknown = true; continue; }
+            foreach (SemanticCallable choice in choices)
+            {
+                bool found = false;
+                foreach (SemanticCapture capture in choice.Captures.IsDefault ? [] : choice.Captures)
+                {
+                    HirLocationId origin = program.Original(context.Definitions.GetValueOrDefault(capture.Source, capture.Source));
+                    if (origin != definition) continue;
+                    found = true;
+                    if (StorageOwner(capture.Source, context) == StorageOwner(source, context)) return true;
+                }
+                if (!found) unknown = true;
+            }
+        }
+        return unknown;
+    }
+
+    private IEnumerable<SemanticCallable> FutureWriterChoices(HirNodeId site, SemanticContext context,
+        HashSet<HirLocationId> active)
+    {
+        SemanticCallable[] choices = BoundCallables(site, context).ToArray();
+        if (choices.Length != 0) return choices;
+        HirNode node = program.Node(site);
+        if (node.Kind is not (HirKind.ReadLocation or HirKind.ReadStorage)) return [];
+        HirLocationId parameter = program.Original(new(node.Data));
+        if (!active.Add(parameter)) return [];
+        var result = futureCallableWrites!.Arguments(parameter).Concat(futureCallableWrites.Values(parameter))
+            .SelectMany(input => FutureWriterChoices(input, context, active)).ToArray();
+        active.Remove(parameter);
+        return result;
+    }
+
+    private bool FutureReceiver(HirNodeId id, SemanticScope expected, SemanticContext context,
+        HashSet<HirLocationId> active)
+    {
+        HirNode node = program.Node(id);
+        if (StableReceiver(id) && BoundValue(id, context)?.Scope is { } actual)
+        {
+            int[] first = ScopeAliases(expected).ToArray(), second = ScopeAliases(actual).ToArray();
+            return first.Length == 0 || second.Length == 0 || first.Intersect(second).Any();
+        }
+        if (node.Kind is not (HirKind.ReadLocation or HirKind.ReadStorage)) return true;
+        HirLocationId parameter = program.Original(new(node.Data));
+        if (!active.Add(parameter)) return true;
+        HirNodeId[] inputs = futureCallableWrites!.Arguments(parameter).ToArray();
+        bool result = inputs.Length == 0 || inputs.Any(input => FutureReceiver(input, expected, context, active));
+        active.Remove(parameter);
+        return result;
+    }
+
+    private bool StableReceiver(HirNodeId id)
+    {
+        HirNode node = program.Node(id);
+        if (node.Kind is HirKind.ReadLocation or HirKind.ReadStorage)
+            return !program.WrittenLocations.Contains(program.Original(new(node.Data)));
+        return node.Kind == HirKind.MemberRead && !futureCallableWrites!.WritesMember(node.Text!)
+            && StableReceiver(program.Children(id)[0]);
     }
 }

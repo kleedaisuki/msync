@@ -93,6 +93,9 @@ internal sealed partial class SemanticAnalyzer
             if (formal.Element is { } element && actual.Element is { } actualElement) Bind(element, actualElement);
             if (formal.IndexedRegion is { } indexed && actual.IndexedRegion is { } actualIndexed)
                 indexedRegions[indexed] = actualIndexed;
+            if (!formal.IndexedAliases.IsDefaultOrEmpty && !actual.IndexedAliases.IsDefaultOrEmpty)
+                for (int index = 0; index < Math.Min(formal.IndexedAliases.Length, actual.IndexedAliases.Length); index++)
+                    indexedRegions[formal.IndexedAliases[index]] = actual.IndexedAliases[index];
             if (!formal.Callables.IsDefaultOrEmpty && !actual.Callables.IsDefaultOrEmpty)
                 for (int choice = 0; choice < Math.Min(formal.Callables.Length, actual.Callables.Length); choice++)
                 {
@@ -178,10 +181,13 @@ internal sealed partial class SemanticAnalyzer
                     caller.Indexed[region] = storage with { Element = Project(storage.Element) };
                 result = result with { IndexedRegion = region };
             }
+            if (!value.IndexedAliases.IsDefaultOrEmpty)
+                result = result with { IndexedAliases = value.IndexedAliases.Select(MapIndexedRegion).Distinct().Order().ToImmutableArray() };
             if (!value.DeferredEffects.IsDefaultOrEmpty)
                 result = result with { DeferredEffects = value.DeferredEffects.Select(write => write with
                 {
                     After = Project(write.After),
+                    IndexedStorage = write.IndexedStorage is { } storage ? storage with { Element = Project(storage.Element) } : null,
                     Location = write.Kind == SemanticWriteKind.Location ? MapLocation(write.Location) : write.Location,
                     Region = write.Kind == SemanticWriteKind.Field ? MapRegion(write.Region)
                         : write.Kind == SemanticWriteKind.Indexed ? MapIndexedRegion(write.Region) : write.Region
@@ -194,6 +200,11 @@ internal sealed partial class SemanticAnalyzer
         {
             if (indexedRegions.TryGetValue(formal, out var region)) return region;
             indexedRegions[formal] = region = ++owner.nextRegion;
+            if (instance.Indexed.TryGetValue(formal, out var storage))
+            {
+                caller.Indexed[region] = storage with { Element = owner.ValueForType(storage.Element.Type) };
+                caller.Indexed[region] = storage with { Element = Project(storage.Element) };
+            }
             return region;
         }
 
@@ -220,7 +231,8 @@ internal sealed partial class SemanticAnalyzer
                     ? write with { Location = location, After = Project(write.After) } : null;
             if (write.Kind == SemanticWriteKind.Indexed)
                 return indexedRegions.TryGetValue(write.Region, out var indexed)
-                    ? write with { Region = indexed, After = Project(write.After) } : null;
+                    ? write with { Region = indexed, After = Project(write.After),
+                        IndexedStorage = write.IndexedStorage is { } storage ? storage with { Element = Project(storage.Element) } : null } : null;
             if (!regions.TryGetValue(write.Region, out var region))
             {
                 if (!instance.Objects.TryGetValue(write.Region, out var shape) || !shape.Named
@@ -333,13 +345,21 @@ internal sealed partial class SemanticAnalyzer
             }
             foreach (var region in instance.IndexedWrites)
                 if (indexedRegions.TryGetValue(region, out var actual) && instance.Indexed.TryGetValue(region, out var storage))
-                    writes.Add(new(SemanticWriteKind.Indexed, Project(storage.Element), Region: actual));
+                    writes.Add(new(SemanticWriteKind.Indexed, Project(storage.Element), Region: actual,
+                        IndexedStorage: storage with { Element = Project(storage.Element) }));
             return writes.ToImmutable();
         }
 
         public void ApplyEffects(ImmutableArray<SemanticDeferredWrite> writes, SemanticContext? destination = null)
         {
             var context = destination ?? caller;
+            foreach (var pair in instance.MemberContracts)
+            {
+                if (!regions.TryGetValue(pair.Key.Region, out var region)) continue;
+                var key = (region, pair.Key.Field);
+                context.MemberContracts[key] = context.MemberContracts.GetValueOrDefault(key, [])
+                    .AddRange(pair.Value).Distinct().ToImmutableArray();
+            }
             foreach (var pair in instance.AliasViews)
             {
                 int source = MapRegion(pair.Key);
@@ -351,6 +371,7 @@ internal sealed partial class SemanticAnalyzer
                 if (write.Kind == SemanticWriteKind.Location)
                 {
                     context.Values[write.Location] = write.After;
+                    owner.MarkProgramCell(write.Location, context);
                     context.CellWrites.Add(write.Location);
                     context.RecordWrite(write);
                     continue;
@@ -358,7 +379,11 @@ internal sealed partial class SemanticAnalyzer
                 if (write.Kind == SemanticWriteKind.Indexed)
                 {
                     if (context.Indexed.TryGetValue(write.Region, out var storage))
-                        context.Indexed[write.Region] = storage with { Element = write.After };
+                        context.Indexed[write.Region] = write.IndexedStorage is { } summarized
+                            ? owner.JoinIndexed(storage, summarized) with { Element = write.After }
+                            : storage with { Element = write.After,
+                                FixedCarrier = storage.FixedCarrier ?? (storage.CarrierConstraints.IsDefaultOrEmpty
+                                    && owner.Runtime(write.After).Kind != TypeKind.Never ? write.After.Type : null) };
                     context.IndexedWrites.Add(write.Region);
                     context.RecordWrite(write);
                     continue;
@@ -367,7 +392,11 @@ internal sealed partial class SemanticAnalyzer
                 owner.InvalidateScopeAliases(target, context);
                 target = target with { Fields = target.Fields.SetItem(write.Field!, write.After) };
                 context.Objects[write.Region] = target;
-                if (target.Locations.TryGetValue(write.Field!, out var location)) context.Values[location] = write.After;
+                if (target.Locations.TryGetValue(write.Field!, out var location))
+                {
+                    context.Values[location] = write.After;
+                    owner.MarkProgramCell(location, context);
+                }
                 context.FieldWrites.Add((write.Region, write.Field!));
                 context.RecordWrite(write);
                 foreach (var pair in regions)
@@ -389,7 +418,13 @@ internal sealed partial class SemanticAnalyzer
 
         private HirLocationId MapLocation(HirLocationId formal)
         {
+            var ownerLocation = owner.StorageOwner(formal, caller);
             if (Locations.TryGetValue(formal, out var actual)) return actual;
+            if (Locations.TryGetValue(ownerLocation, out actual))
+            {
+                Locations[formal] = actual;
+                return actual;
+            }
             actual = formal;
             if (caller.Publish)
             {
@@ -397,6 +432,10 @@ internal sealed partial class SemanticAnalyzer
                 caller.Output!.ReserveLocation(owner.hir.Locations[formal.Value] with { Owner = caller.Function, TemplateOwner = null });
             }
             Locations[formal] = actual;
+            Locations[ownerLocation] = actual;
+            caller.Storage[actual] = owner.StorageType(formal, caller);
+            if (instance.Definitions.TryGetValue(formal, out var definition)
+                || instance.Definitions.TryGetValue(ownerLocation, out definition)) caller.Definitions[actual] = definition;
             if (instance.Cells.TryGetValue(formal, out var value)) caller.Values[actual] = Project(value);
             return actual;
         }

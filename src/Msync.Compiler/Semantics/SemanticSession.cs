@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 using Msync.Hir;
+using Msync.Optimization;
 
 namespace Msync.Compiler.Semantics;
 
@@ -12,34 +13,41 @@ internal sealed class SemanticSession(string sourceName, int optimization)
 {
     private readonly HirBuilder workspace = new();
     private readonly HirLoweringSession lowering = new();
+    private readonly SemanticInstanceCache instances = new();
     private BoundProgram? accepted;
     private SemanticContext? facts;
     private PendingSubmission? pending;
     private HirLoweringLayout acceptedLayout = HirLoweringLayout.Empty;
     private SemanticObservationView? descriptions;
     private SemanticSessionSites? acceptedSites;
+    private SemanticSessionDispatch dispatches = new();
 
     private sealed record PendingSubmission(BoundProgram Program, SemanticContext Facts,
-        HirLoweringLayout Layout);
+        HirLoweringLayout Layout, SemanticSessionDispatch Dispatches);
 
     public IReadOnlyCollection<string> BindingNames => accepted?.Exports.Keys.ToArray() ?? [];
 
     public Module Compile(string source, Document? document = null)
     {
         using var transaction = workspace.BeginTransaction();
+        using var additions = instances.BeginAdditions();
         BoundProgram bound = Binder().Bind(source, sourceName, document);
-        SemanticAnalyzer analyzer = new(bound);
+        SemanticSessionDispatch nextDispatches = dispatches.Fork();
+        SemanticAnalyzer analyzer = new(bound, codeCache: instances, sessionDispatch: nextDispatches);
         HirModule module = analyzer.Analyze(facts);
         HirLoweringResult result = lowering.Lower(module, new(optimization, PreserveLocals: true));
-        pending = new(bound, analyzer.FinalState, result.Layout);
+        Module executable = Optimizer.Optimize(result.Module, optimization);
+        pending = new(bound, analyzer.FinalState, result.Layout, nextDispatches);
+        additions.Commit();
         transaction.Commit();
-        return result.Module;
+        return executable;
     }
 
     internal SemanticEditorResult AnalyzeEditor(string source, Document? document = null,
         Func<int, Value?>? resolveAcceptedValue = null)
     {
         using var transaction = workspace.BeginTransaction();
+        using var additions = instances.BeginAdditions();
         SemanticContext? seed = facts;
         if (resolveAcceptedValue is not null && accepted is not null && facts is not null)
         {
@@ -50,7 +58,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         BoundProgram bound = Binder(observations: true, editorMode: true).Bind(source, sourceName, document);
         SemanticObservationBuilder observations = new(bound);
         SourceDiagnostic? diagnostic = bound.Diagnostics.FirstOrDefault();
-        SemanticAnalyzer analyzer = new(bound, observations);
+        SemanticAnalyzer analyzer = new(bound, observations, instances, dispatches.Fork());
         HirModule module;
         try { module = analyzer.Analyze(seed); }
         catch (CompileException error)
@@ -77,6 +85,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
     {
         if (pending is not { } submission) return;
         accepted = submission.Program;
+        dispatches = submission.Dispatches;
         acceptedLayout = submission.Layout;
         acceptedSites = new(accepted, acceptedLayout);
         facts = submission.Facts.QueryFork();
@@ -96,6 +105,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
                 && initialized(slot)) exports = exports.SetItem(name, location);
         }
         accepted = submission.Program;
+        dispatches = submission.Dispatches;
         accepted.Exports = exports;
         acceptedLayout = submission.Layout;
         acceptedSites = new(accepted, acceptedLayout);

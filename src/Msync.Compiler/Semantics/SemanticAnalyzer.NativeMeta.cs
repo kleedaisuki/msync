@@ -10,7 +10,7 @@ internal sealed partial class SemanticAnalyzer
     {
         public static implicit operator MetaQueryResult(SemanticValue value) => new(value);
     }
-    private static bool IsDependentMeta(string? name) => name is
+    internal static bool IsDependentMeta(string? name) => name is
         "meta.is_invocable" or "meta.is_invocable_r" or "meta.invoke_result" or
         "meta.parameter_count" or "meta.parameter_types" or "meta.is_variadic" or
         "meta.has_member" or "meta.member_type" or "meta.member_names" or "meta.member_count";

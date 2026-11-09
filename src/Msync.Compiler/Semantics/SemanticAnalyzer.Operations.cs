@@ -205,6 +205,7 @@ internal sealed partial class SemanticAnalyzer
         HirLocationId? location = scope.Locations.TryGetValue(node.Text!, out var member) ? member : null;
         if (location is { } fieldLocation && context.Values.TryGetValue(fieldLocation, out var actual)) value = actual;
         if (location is { } flowLocation) value = FlowRead(id, flowLocation, value, context);
+        value = RefreshIndexed(value, context);
         return value with { Node = Add(node with { Data = offset }, value.Type, [receiver.Node], context), Location = location };
     }
 
@@ -229,12 +230,21 @@ internal sealed partial class SemanticAnalyzer
         }
         value = Convert(value, target, valueSource, context);
         CheckMemberContracts(scope, node.Text!, value, valueSource, context);
+        CheckSessionMemberAssignment(scope, node.Text!, value, valueSource, context);
         InvalidateScopeAliases(scope, context);
         var updated = scope with { Fields = scope.Fields.SetItem(node.Text!, value) };
         context.Objects[scope.Region] = updated;
         context.FieldWrites.Add((scope.Region, node.Text!));
         context.RecordWrite(new(SemanticWriteKind.Field, value, Region: scope.Region, Field: node.Text!));
-        if (scope.Locations.TryGetValue(node.Text!, out var location)) context.Values[location] = value;
+        if (scope.Locations.TryGetValue(node.Text!, out var location))
+        {
+            context.Values[location] = value;
+            if (StandardCell(location, context) is { } canonical)
+            {
+                context.CellWrites.Add(canonical);
+                MarkProgramCell(canonical, context);
+            }
+        }
         return new(hir.Type(TypeRef.Null), Add(node with { Data = offset }, hir.Type(TypeRef.Null), [receiver.Node, value.Node], context));
     }
 

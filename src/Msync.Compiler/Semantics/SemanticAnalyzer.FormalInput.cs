@@ -20,7 +20,7 @@ internal sealed partial class SemanticAnalyzer
             // Bool argument must not delete the other caller's branch from shared code.
             var result = value with { Node = HirNodeId.None, Location = null,
                 Literal = value.DenotedType is null ? null : value.Literal,
-                Callables = [], Scope = null, Element = null, Alternatives = [], IndexedRegion = null, Origin = null, Observation = null, DeferredEffects = [] };
+                Callables = [], Scope = null, Element = null, Alternatives = [], IndexedRegion = null, Origin = null, Observation = null, DeferredEffects = [], IndexedAliases = [] };
             values[value] = result;
             if (value.Scope is { } scope)
             {
@@ -42,6 +42,9 @@ internal sealed partial class SemanticAnalyzer
                     symbolic = symbolic with { Fields = fields,
                         Aliases = scope.Aliases.IsDefault ? [] : scope.Aliases.Select(MapSourceRegion).ToImmutableArray() };
                     formal.Objects[region] = symbolic;
+                    foreach (var field in scope.Fields.Keys)
+                        if (caller.MemberContracts.TryGetValue((scope.Region, field), out var contracts))
+                            formal.MemberContracts[(region, field)] = contracts;
                     if (caller.AliasViews.TryGetValue(scope.Region, out var views))
                         formal.AliasViews[region] = views.Select(MapSourceRegion).ToImmutableHashSet();
                     result = result with { Scope = symbolic };
@@ -74,10 +77,13 @@ internal sealed partial class SemanticAnalyzer
                 }
                 result = result with { IndexedRegion = region };
             }
+            if (!value.IndexedAliases.IsDefaultOrEmpty)
+                result = result with { IndexedAliases = value.IndexedAliases.Select(MapIndexedRegion).Distinct().Order().ToImmutableArray() };
             if (!value.DeferredEffects.IsDefaultOrEmpty)
                 result = result with { DeferredEffects = value.DeferredEffects.Select(write => write with
                 {
                     After = Abstract(write.After),
+                    IndexedStorage = write.IndexedStorage is { } storage ? storage with { Element = Abstract(storage.Element) } : null,
                     Location = write.Kind == SemanticWriteKind.Location ? FormalLocation(write.Location) : write.Location,
                     Region = write.Kind == SemanticWriteKind.Field ? MapSourceRegion(write.Region)
                         : write.Kind == SemanticWriteKind.Indexed ? MapIndexedRegion(write.Region) : write.Region
@@ -133,9 +139,13 @@ internal sealed partial class SemanticAnalyzer
             if (formal.Publish)
             {
                 target = new(owner.hir.Locations.Count);
-                formal.Output!.ReserveLocation(owner.hir.Locations[source.Value] with { Owner = formal.Function, TemplateOwner = null });
+                formal.Output!.ReserveLocation(owner.hir.Locations[source.Value] with { Owner = formal.Function, TemplateOwner = null,
+                    StorageType = owner.ResolveHirType(caller.Storage.GetValueOrDefault(source,
+                        owner.hir.Locations[source.Value].StorageType), caller) });
             }
             Locations[source] = target;
+            if (caller.Definitions.TryGetValue(source, out var definition)) formal.Definitions[target] = definition;
+            else if (owner.CanonicalDefinition(source) is { } canonical) formal.Definitions[target] = canonical;
             return target;
         }
     }

@@ -40,8 +40,13 @@ internal sealed partial class SemanticAnalyzer
         BoundModule bound = program.StandardModules[name];
         SemanticContext target = context.Publish ? entryState! : context;
         SemanticValue value = Analyze(bound.Body, target);
-        if (!context.Publish) return value;
         HirLocationId location = program.StandardLocations[name];
+        if (!context.Publish)
+        {
+            context.Values[location] = value;
+            context.Storage[location] = value.Type;
+            return value;
+        }
         target.Values[location] = value;
         target.Storage[location] = value.Type;
         context.Values[location] = value;
@@ -50,7 +55,7 @@ internal sealed partial class SemanticAnalyzer
         if (context.Publish)
         {
             modules.Add(name, value);
-            context.Output!.SetLocation(location, hir.Locations[location.Value] with { StorageType = value.Type });
+            SealStorage(location, value.Type, target);
             entryPrelude.Add(context.Output!.Add(HirKind.Declare, hir.Type(TypeRef.Null), source, [value.Node], location.Value));
         }
         return value;

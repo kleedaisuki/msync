@@ -51,27 +51,79 @@ internal sealed partial class SemanticAnalyzer
         SemanticValue? result = null;
         List<HirDispatchTarget> dispatch = [];
         ImmutableArray<SemanticDeferredWrite>.Builder deferredEffects = ImmutableArray.CreateBuilder<SemanticDeferredWrite>();
+        List<SemanticContext>? alternatives = choices.Length == 1 ? null : [];
         foreach (var choice in choices)
         {
             if (choice.Template is not { } template) throw Error(source, "A mixed native/source call domain needs a resolved dispatch signature.", "E0204");
-            var instance = Instantiate(template, choice.Captures, arguments, source, context);
+            SemanticContext selected = alternatives is null ? context : CallAlternative(context);
+            var instance = Instantiate(template, choice.Captures, arguments, source, selected);
+            alternatives?.Add(selected);
             result = result is null ? instance.Result : Join(result, instance.Result!);
-            if (context.DeferredReads) deferredEffects.AddRange(instance.Effects);
+            if (context.DeferredReads && alternatives is null) deferredEffects.AddRange(instance.Effects);
             dispatch.Add(new(HirCallableId.From(template), instance.Id));
         }
+        if (alternatives is not null) deferredEffects.AddRange(MergeCallAlternatives(context, alternatives));
         var call = choices.Length == 1
             ? new HirCall(HirCallKind.Function, dispatch[0].Target)
             : new HirCall(HirCallKind.Dynamic, new(-1), Targets: dispatch.ToImmutableArray());
         if (resultDomain is { } domain) result = result! with { Type = domain };
+        int slot = OpenSessionCall(callee, arguments, result!.Type, source, context);
+        if (slot >= 0)
+        {
+            call = call with { SessionSlot = slot };
+            result = FutureRead(result, result.Type, context) with
+            { OpenSessionCalls = AddSessionCall(result.OpenSessionCalls, slot) };
+        }
         return result! with { Node = EmitCall(call, callee, arguments, result!.Type, source, context), Location = null,
             DeferredEffects = result.DeferredEffects.IsDefaultOrEmpty ? deferredEffects.ToImmutable()
                 : result.DeferredEffects.AddRange(deferredEffects) };
+    }
+
+    private static SemanticContext CallAlternative(SemanticContext context) => new(context.Function, context.Output, context)
+    {
+        DeferredReads = context.DeferredReads, Queries = context.Queries,
+        ExpectedReturn = context.ExpectedReturn, FlowAnalysis = context.FlowAnalysis,
+        NextRegion = context.NextRegion, InitializedSingletons = context.InitializedSingletons,
+        MaybeInitializedSingletons = context.MaybeInitializedSingletons,
+        ActiveSingletonGuards = context.ActiveSingletonGuards,
+        WriteEvents = context.WriteEvents is null ? null : []
+    };
+
+    private ImmutableArray<SemanticDeferredWrite> MergeCallAlternatives(SemanticContext context,
+        List<SemanticContext> alternatives)
+    {
+        SemanticContext[] branches = alternatives.ToArray();
+        MergeSingletonFlow(context, branches);
+        MergeIndexedContexts(context, branches);
+        MergeQueryContexts(context, branches);
+        var effects = ImmutableArray.CreateBuilder<SemanticDeferredWrite>();
+        foreach (HirLocationId location in branches.SelectMany(branch => branch.CellWrites).Distinct())
+        {
+            context.CellWrites.Add(location);
+            effects.Add(new(SemanticWriteKind.Location, context.Values[location], Location: location));
+        }
+        foreach (var (region, field) in branches.SelectMany(branch => branch.FieldWrites).Distinct())
+        {
+            context.FieldWrites.Add((region, field));
+            effects.Add(new(SemanticWriteKind.Field, context.Objects[region].Fields[field], Region: region, Field: field));
+        }
+        foreach (int region in branches.SelectMany(branch => branch.IndexedWrites).Distinct())
+        {
+            context.IndexedWrites.Add(region);
+            effects.Add(new(SemanticWriteKind.Indexed, context.Indexed[region].Element, Region: region));
+        }
+        foreach (SemanticDeferredWrite effect in effects) context.RecordWrite(effect);
+        foreach (SemanticContext branch in branches)
+            foreach (var definition in branch.Definitions.LocalEntries) context.Definitions[definition.Key] = definition.Value;
+        return context.DeferredReads ? effects.ToImmutable() : [];
     }
 
     private HirNodeId EmitCall(HirCall call, SemanticValue? callee, IReadOnlyList<SemanticValue> arguments,
         HirTypeId result, HirSourceRange source, SemanticContext context, HirEffects effects = HirEffects.None)
     {
         if (!context.Publish) return HirNodeId.None;
+        if (call.SessionSlot >= 0)
+            effects |= HirEffects.Invoke | HirEffects.ReadMemory | HirEffects.WriteMemory | HirEffects.MayFail;
         int data = hir.Calls.Count; context.Output!.AddCall(call);
         HirNodeId[] children = new HirNodeId[arguments.Count + (callee is null ? 0 : 1)];
         int offset = 0;

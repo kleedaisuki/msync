@@ -369,6 +369,13 @@ internal sealed partial class SemanticAnalyzer
     private void MergeContexts(SemanticContext destination, params SemanticContext[] branches)
     {
         if (branches.Length == 0) return;
+        foreach (SemanticContext branch in branches)
+        {
+            destination.CellWrites.UnionWith(branch.CellWrites);
+            destination.IndexedWrites.UnionWith(branch.IndexedWrites);
+            destination.FieldWrites.UnionWith(branch.FieldWrites);
+            destination.ReplacedProgramCells = destination.ReplacedProgramCells.Union(branch.ReplacedProgramCells);
+        }
         MergeSingletonFlow(destination, branches);
         MergeIndexedContexts(destination, branches);
         if (!destination.Publish) { MergeQueryContexts(destination, branches); return; }

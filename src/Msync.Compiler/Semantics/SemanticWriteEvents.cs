@@ -27,7 +27,7 @@ internal sealed partial class SemanticContext
                 WriteEvents.Add(new(new(SemanticWriteKind.Field, value, Region: region, Field: field), ActiveSingletonGuards));
         foreach (var region in IndexedWrites)
             if (Indexed.TryGetValue(region, out var storage))
-                WriteEvents.Add(new(new(SemanticWriteKind.Indexed, storage.Element, Region: region), ActiveSingletonGuards));
+                WriteEvents.Add(new(new(SemanticWriteKind.Indexed, storage.Element, Region: region, IndexedStorage: storage), ActiveSingletonGuards));
     }
 
     public SemanticWriteTarget WriteTarget(SemanticDeferredWrite write)

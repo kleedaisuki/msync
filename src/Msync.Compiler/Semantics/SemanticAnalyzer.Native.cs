@@ -46,6 +46,8 @@ internal sealed partial class SemanticAnalyzer
         }
         var value = NativeResult(signature, inputs, callback, source, context);
         NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
+        ImmutableArray<int> openCalls = [];
+        foreach (var input in inputs) openCalls = CombineSessionCalls(openCalls, input.OpenSessionCalls);
         ImmutableArray<SemanticDeferredWrite> pending = callbackEffects;
         for (int index = 0; index < signature.Parameters.Count && index < inputs.Length; index++)
             if (signature.Parameters[index].WithoutNull.Kind == TypeKind.Range)
@@ -53,21 +55,24 @@ internal sealed partial class SemanticAnalyzer
         if (signature.ResultRule == NativeResultRule.RangeFlatten && inputs[0].Element is { } nested)
             pending = pending.AddRange(nested.DeferredEffects.IsDefault ? [] : nested.DeferredEffects);
         if ((behavior & NativeBehavior.Deferred) != 0)
-            value = value with { DeferredEffects = pending, EagerRange = false };
+            value = value with { DeferredEffects = pending, EagerRange = false, OpenSessionCalls = openCalls };
         else if ((behavior & (NativeBehavior.Enumerates | NativeBehavior.Invokes)) != 0)
         {
+            ApplySessionCallEffects(openCalls, context);
             ApplyDeferredEffects(pending, context);
-            value = value with { DeferredEffects = [] };
+            value = value with { DeferredEffects = [], OpenSessionCalls = [] };
         }
         if (value.Literal is { } literal && signature.Name.StartsWith("meta.", StringComparison.Ordinal))
             return value with { Node = context.Publish ? context.Output!.Literal(literal, value.Type, source) : HirNodeId.None };
         callee ??= new(hir.Type(TypeRef.Function), context.Publish
             ? context.Output!.Add(HirKind.NativeFunction, hir.Type(TypeRef.Function), source, text: name) : HirNodeId.None,
             Callables: [new(NativeName: name)]);
+        int slot = OpenSessionCall(callee, inputs, value.Type, source, context);
+        var emittedCall = new HirCall(HirCallKind.Native, new(-1), name) { SessionSlot = slot };
         return value with
         {
-            Node = EmitCall(new(HirCallKind.Native, new(-1), name), callee, inputs, value.Type, source, context, NativeEffects(signature)),
-            Location = null
+            Node = EmitCall(emittedCall, callee, inputs, value.Type, source, context, NativeEffects(signature)),
+            Location = null, OpenSessionCalls = slot >= 0 ? AddSessionCall(value.OpenSessionCalls, slot) : value.OpenSessionCalls
         };
     }
 
@@ -113,9 +118,11 @@ internal sealed partial class SemanticAnalyzer
         if (output is null) throw Error(source, "The callback is not a resolved Function value.", "E0204");
         if (context.Publish && targets.Count != 0)
         {
+            int slot = OpenSessionCall(callable, arguments, output.Type, source, context);
             int adaptation = hir.Adaptations.Count;
-            context.Output!.AddAdaptation(new(targets.ToImmutable()));
-            callable = callable with { Node = context.Output!.Add(HirKind.AdaptFunction, callable.Type, source, [callable.Node], adaptation) };
+            context.Output!.AddAdaptation(new(targets.ToImmutable()) { SessionSlot = slot });
+            callable = callable with { Node = context.Output!.Add(HirKind.AdaptFunction, callable.Type, source, [callable.Node], adaptation),
+                OpenSessionCalls = slot >= 0 ? AddSessionCall(callable.OpenSessionCalls, slot) : callable.OpenSessionCalls };
         }
         return (output, callable, effects.ToImmutable());
     }
@@ -127,8 +134,11 @@ internal sealed partial class SemanticAnalyzer
         return second.IsDefaultOrEmpty ? first : first.AddRange(second);
     }
 
-    private void ApplyDeferredEffects(SemanticValue range, SemanticContext context) =>
+    private void ApplyDeferredEffects(SemanticValue range, SemanticContext context)
+    {
+        ApplySessionCallEffects(range.OpenSessionCalls, context);
         ApplyDeferredEffects(range.DeferredEffects, context);
+    }
 
     private void ApplyDeferredEffects(ImmutableArray<SemanticDeferredWrite> writes, SemanticContext context)
     {
@@ -147,10 +157,16 @@ internal sealed partial class SemanticAnalyzer
             if (write.Kind == SemanticWriteKind.Indexed)
             {
                 if (context.Indexed.TryGetValue(write.Region, out var storage))
-                    context.Indexed[write.Region] = storage with { Element = Join(storage.Element, write.After) with { Literal = null } };
+                {
+                    var written = write.IndexedStorage ?? new(write.After,
+                        Runtime(write.After).Kind == TypeKind.Never ? null : write.After.Type);
+                    var joined = JoinIndexed(storage, written);
+                    context.Indexed[write.Region] = joined with { Element = joined.Element with { Literal = null } };
+                }
                 context.IndexedWrites.Add(write.Region);
                 if (context.Indexed.TryGetValue(write.Region, out var afterStorage))
-                    context.RecordWrite(new(SemanticWriteKind.Indexed, afterStorage.Element, Region: write.Region));
+                    context.RecordWrite(new(SemanticWriteKind.Indexed, afterStorage.Element, Region: write.Region,
+                        IndexedStorage: afterStorage));
                 continue;
             }
             if (!context.Objects.TryGetValue(write.Region, out var target)
@@ -356,6 +372,8 @@ internal sealed partial class SemanticAnalyzer
         int count = IndexedResourceCount(arguments[0]);
         if (count == 0)
             throw Error(source, "Indexed operations require a Buffer-owned Range; construct it with Buffer::new.", "E0222");
+        bool readsElement = signature.Name is "storage.buffer_get" or "storage.buffer_pop"
+            or "storage.buffer_remove" or "storage.buffer_snapshot";
         SemanticValue? element = null;
         for (int index = 0; index < count; index++)
         {
@@ -379,8 +397,8 @@ internal sealed partial class SemanticAnalyzer
                 context.Indexed[identity] = storage;
             }
             if (signature.Effect == NativeEffect.Write)
-                context.RecordWrite(new(SemanticWriteKind.Indexed, storage.Element, Region: identity));
-            element = element is null ? storage.Element : Join(element, storage.Element);
+                context.RecordWrite(new(SemanticWriteKind.Indexed, storage.Element, Region: identity, IndexedStorage: storage));
+            if (readsElement) element = element is null ? storage.Element : Join(element, storage.Element);
         }
         return signature.Name switch
         {
