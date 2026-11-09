@@ -82,7 +82,7 @@ try
         ("oversized-slide", "$std::ranges::slide([1, 2], 2147483648)", "[]"),
         ("oversized-chunk", "$std::ranges::chunk([1, 2], 2147483648)", "[[1,2]]"),
         ("sequence", "$std::ranges::sequence(3, 0, -1)", "[3,2,1]"),
-        ("fractional-sequence", "$std::ranges::sequence(0, 1, $std::cast(\"0.25\", Number))", "[0,0.25,0.5,0.75]"),
+        ("fractional-sequence", "$std::ranges::sequence(0, 1, (\"0.25\" as Number))", "[0,0.25,0.5,0.75]"),
         ("repeat", "$std::ranges::repeat(null, 3)", "[null,null,null]"),
         ("sum", "$std::ranges::sum([1, 2, 3, 4])", "10"),
         ("fold", "$std::ranges::fold([1, 2, 3], 10, fn(accumulator, value) { accumulator + value })", "16"),

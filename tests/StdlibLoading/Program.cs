@@ -18,7 +18,7 @@ foreach ((string name, string source, string expected) in new[]
 {
     ("bool", "$std::bool::identity(true)", "true"),
     ("cross-module", "$std::path::filename(./folder/input.txt)", "input.txt"),
-    ("root-cast", "$std::cast(42, String)", "42"),
+    ("explicit-cast", "42 as String", "42"),
     ("root-module-replacement", "fn read() { $std::bool::identity(false) }; let root = $std; root::bool = scope { identity: fn(value: Bool) { not value } }; read()", "true"),
     ("module-member-replacement", "let boolean = $std::bool; let root = $std; boolean::identity = fn(value: Bool) { not value }; root::bool::identity(false)", "true"),
     ("root-before-function", "let root = $std; fn read() { $std::bool::identity(false) }; root::bool = scope { identity: fn(value: Bool) { not value } }; read()", "true"),
