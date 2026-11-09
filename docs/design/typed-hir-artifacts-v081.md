@@ -92,6 +92,31 @@ locations and captures rather than pretending that bytecode slot numbers or an
 optimization level are HIR properties. VS Code uses the same read-only native
 view, source links and file-change notification ownership as existing IR files.
 
+## Artifact acceptance
+
+The CLI journey on the managed frozen4 producer covers standard-module
+initialization, generic control flow, independent constructors with shared
+captured locations, and concept/metadata composition at O0/O2/O3. Each source
+is exported and deleted before semantic-artifact inspection and lowering.
+Loaded HIR produces byte-identical `.mso` output to direct source compilation;
+`.mso`, context-bound `.mexe` and raw HIR execution produce the same expected
+bytes: 12 routes and 54 exact byte observations. Export and inspection are inert.
+A selected failing transfer after source deletion retains its original source
+line and caret in the runtime diagnostic.
+
+`tests/Msync.EndToEnd/hir_artifact_journey.py` owns this repeatable user journey.
+The frozen producer's six-assembly receipt and O2/complementary O0/O3 reports
+are retained under `.temp/hir-artifacts` for this investigation; these are
+disposable evidence, not product inputs. The focused codec suite currently
+passes 330 contracts, including exact literal bits, canonical read/write bytes,
+stable allocation-site identity, malformed references, and evaluated dynamic
+Type-valued `is` targets. Both static one-child type tests and evaluated
+two-child type tests are semantic operations, not a reason to replay source.
+
+NativeAOT packaging and the real VS Code read-only HIR viewer use their
+registered release journeys. The managed producer results above do not claim
+that those platform/package acceptance runs have completed.
+
 ## Engineering basis
 
 [MLIR bytecode](https://mlir.llvm.org/docs/BytecodeFormat/) separates container
