@@ -92,6 +92,11 @@ def audit_native(
         actual = files[target]
         if actual == expected:
             continue
+        assert not name.startswith("stdlib/"), (
+            archive.name,
+            target,
+            "Standard source literals must retain the authored bytes",
+        )
         assert windows and actual == expected.replace(b"\n", b"\r\n"), (
             archive.name,
             target,

@@ -163,11 +163,38 @@ jobs:
         run: |
           mkdir -p ../../dist
           npx --yes @vscode/vsce@4.1.0 package --allow-missing-repository --out "../../dist/msync-language-$PACKAGE_VERSION.vsix"
+      - name: Verify packaged editor payload
+        shell: python
+        run: |
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, 'packaging')
+          from audit_payloads import audit_vsix
+
+          version: str = os.environ['PACKAGE_VERSION']
+          archive: Path = Path('dist') / f'msync-language-{version}.vsix'
+          output: Path = Path('.temp/editor-release/payload.json')
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(json.dumps({'version': version, 'members': audit_vsix(archive, version)}, indent=2) + '\n', encoding='utf-8')
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-vscode
           if-no-files-found: error
           path: dist/*.vsix
+      - name: Retain editor acceptance reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: acceptance-vscode
+          if-no-files-found: ignore
+          path: |
+            .temp/editor-release/payload.json
+            .temp/vscode-host-*/run.json
+            .temp/vscode-host-*/result.json
+            .temp/vscode-host-*/host.log
 
   publish:
     needs: [version, native, editor]
@@ -182,6 +209,26 @@ jobs:
           pattern: release-*
           path: dist
           merge-multiple: true
+      - name: Verify native manifests and executable standard sources
+        shell: python
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, 'packaging')
+          from audit_payloads import audit_native, source_files
+
+          version: str = os.environ['PACKAGE_VERSION']
+          sources: dict[str, bytes] = source_files(os.environ['GITHUB_SHA'])
+          report: dict[str, object] = {
+              'linux': audit_native(Path('dist') / f'msync-{version}-linux-x86_64.tar.gz', sources, False),
+              'windows': audit_native(Path('dist') / f'msync-{version}-windows-x86_64.zip', sources, True),
+          }
+          print(json.dumps(report, indent=2))
       - name: Publish complete checksummed assets without replacing released versions
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
