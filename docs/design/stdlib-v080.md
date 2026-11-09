@@ -1,5 +1,120 @@
 # Typed, source-backed standard library in 0.8
 
+## Native families, records and policies
+
+The current canonical source API separates three things that the earlier
+factory-object API combined:
+
+1. A named Scope owns a family of reusable constructors and operations.
+2. An anonymous Scope owns each instance's data and selected policy values.
+3. A concept constrains the fields or operations actually needed by an
+   algorithm. It does not create a new runtime kind or a global instance search.
+
+For example, `containers::List::new` constructs a data record, while
+`containers::List::push(value, item)` mutates that record through an explicit
+first argument. The operations are not copied into the record, and a field
+read does not allocate or call a getter closure. Named family and default-policy
+Scopes follow the ordinary declaration-site singleton rule. Instance records
+are fresh anonymous Scopes; aliases retain the same mutable instance identity.
+
+| Family | Instance data | Explicit policy boundary |
+| --- | --- | --- |
+| `$std::containers::List`, `Stack`, `Queue` | Typed materialized items and storage policy | `RangeStorage::snapshot` |
+| `$std::containers::Map`, `Set` | Typed item/key/value snapshots, equality and storage policies | Associated-carrier `Equality`, plus `RangeStorage` |
+| `$std::io::File` | Path and text-IO policy | First-order `TextIOPolicy`; Path provenance remains attached |
+| `$std::io::Directory` | Path | Existing filesystem/Range operations |
+| `$std::process::Command` | Executable Path and materialized argument snapshot | Actual Process operations, not a fabricated host resource |
+| `$std::process::Completed` | Completed Process, output/error text and status | No hidden last-result slot |
+| `$std::text::StringBuilder` | Chunks, Unicode-scalar length and chunk policy | Typed `TextChunks` append/build operations |
+| `$std::regex::Pattern` | Pattern expression | Existing native regular-expression primitives |
+
+Generic `fn` operations specialize using the actual instance row and policy
+callable identities. A policy is an ordinary Scope value selected explicitly by
+the caller, not a runtime string switch, reflection registry or implicit global
+implementation. Named family functions receive `self` explicitly, so their
+data dependencies remain visible to compiler dataflow and Scope scalarization.
+The model borrows the organization and explicit receiver of
+[Rust associated functions and methods](https://doc.rust-lang.org/book/ch05-03-method-syntax.html),
+without importing `impl`, ownership syntax or another open type universe.
+Concept bounds play the capability role described by
+[Rust trait bounds](https://doc.rust-lang.org/book/ch10-02-traits.html), but msync
+uses its existing structural checking and native Scope/Fn specialization.
+
+The expression-problem motivation is closely related to
+[object algebras](https://www.cs.utexas.edu/~wcook/projects/oa/oa.pdf): an
+operation family and its carrier can vary independently. Here ordinary Scope
+records and explicit policy arguments provide that separation, while existing
+specialization removes known callable indirection. This does not introduce a
+second runtime object model.
+
+Policy signatures are checked at specialization. Their behavioral contracts
+remain explicit: storage snapshots preserve ordered contents; an equality
+policy supplies a stable equivalence relation on its stated carrier; a text-IO
+policy owns the selected read/write behavior; a chunk policy preserves ordered
+text concatenation. Signature satisfaction alone is not proof of these laws,
+purity, or permission to reorder effects.
+
+The earlier Pascal-named factory functions (`List`, `File`, `Command`, `Builder`
+and their peers) remain source-compatible adapters. They are not the canonical
+model for new code. In particular, a named Scope is not made implicitly callable
+as a constructor: construction is an explicit `family::new(...)` operation.
+Existing low-level `Path`, `Process`, `Range`, `io` and `fs` operations remain
+useful directly; no wrapper record is required merely to use a native value.
+
+Class-like family Scopes use PascalCase and functions use lowercase snake_case.
+This convention applies to new associated operations and the existing scalar,
+Range, filesystem and process primitives, without adding a second spelling API.
+`$std::data::{Option, Result, Either, Pair}` supplies native algebraic composition
+families, described in [the data representation contract](standard-data-v080.md).
+
+An equality policy is a reusable source declaration, rather than a constructor
+option interpreted by a runtime registry:
+
+```msync
+scope FoldCase {
+    Self: String,
+    equal: fn(left: String, right: String) -> Bool {
+        $std::string::to_lowercase(left) == $std::string::to_lowercase(right)
+    },
+};
+let names = $std::containers::Set::with_equality(["Klee", "klee"], FoldCase);
+$std::containers::Set::insert(names, "Alice");
+let unique = $std::containers::Set::snapshot(names);
+```
+
+The constructor checks the standard `Equality` contract. `Self` and the function
+annotations constrain actual operation arguments and results; a callback that
+returns Number instead of Bool is rejected before execution. The selected
+record stores `FoldCase` as its policy, while the compiler retains its concrete
+callable identity. Changing the policy is an explicit value choice, not an
+integer mode flag or a hidden global equality setting.
+
+### Focused integration observations
+
+The canonical collection owner accepted nine real source/object/executable
+routes at O0/O2/O3, 126 exact output observations and three policy/storage type
+rejections. The final naming-only correction reused those semantic results and
+accepted the three O2 routes, 42 observations and the same three diagnostics.
+The callable `collections` compatibility module remained byte-identical.
+
+The service owner accepted 180 actual filesystem, custom-policy and child-process
+assertions through source and serialized `.mso`/`.mexe` at O0/O2/O3. The text and
+pattern owner accepted 153 canonical record/policy assertions and 207 existing
+text/regex contracts; the final snake_case correction reran the affected 153
+checks rather than the unchanged historical matrix. These are focused owner
+observations, not a sum of independent end-to-end scenarios.
+
+`tests/Msync.EndToEnd/stdlib_policy_journey.py` combines the canonical collection
+journey with actual File reads/rename, a selected in-memory uppercase IO policy,
+a custom materialized chunk policy, regex, a real child msync process and the
+existing Builder compatibility path. The cross-module slice passed all nine
+managed staged routes before the final spelling correction; the final snake_case
+O2 slice passed three routes, 39 byte observations and three useful diagnostics.
+Its `--services-only` selection avoids repeating the collection owner's local
+acceptance. Native platform delivery runs the full combined selection; its exact
+image identities and results belong to the delivery record, not these managed
+component observations.
+
 ## Two layers, one semantic implementation
 
 The November 9, 2026 expansion follows two complementary requirements:
@@ -32,11 +147,15 @@ maintaining another authoritative signature table.
 | `$std::fs` | Existing filesystem inspection and mutation API | Retained compatibility surface, not silently removed in favor of `io` |
 | `$std::process` | Completed values and live process operations | Runtime-owned process lifetime/control, never a fabricated portable PID |
 | `$std::bool` | Boolean expression tools | Existing source composition remains valid |
-| `$std::collections` | Mutable ordered List, Map, Set, Stack and Queue objects | Source factories retain fixed-schema materialized Ranges and share captured storage through aliases |
-| `$std::text` | Incremental text construction and layout | Source Builder uses one native persistent-chunk primitive instead of repeatedly copying prior text |
-| `$std::regex` | Pattern matching, replacement and match/group records | Native regular-expression engine; Unicode scalar indexes, source pattern-bound service objects |
-| `$std::files` | File and Directory service objects | Source composition over established IO, Path and filesystem primitives; construction performs no IO |
-| `$std::commands` | Reusable command specifications and captured results | Source composition over Process, with explicit materialized argument snapshots and selected effects |
+| `$std::containers` | Named collection families and explicit equality/storage policies | Typed data records; shared associated functions, Range snapshots and native indexed storage where required |
+| `$std::data` | Option, Result, Either and Pair composition | Closed runtime kinds; native null sum, Scope products and explicit eliminators |
+| `$std::concepts` | Reusable structural and policy contracts | Compile-time declarations; no runtime concept values or implicit instance registry |
+| `$std::meta` | Closed-type and callable metaprogramming | Unevaluated compiler queries and finite Type operations, not a user-extensible runtime type hierarchy |
+| `$std::collections` | Compatibility callable collection factories | Established source behavior retained; new code uses `containers` |
+| `$std::text` | StringBuilder and text layout | Source data records use one native persistent-chunk primitive instead of repeatedly copying prior text |
+| `$std::regex` | Pattern family, matching and match/group records | Native regular-expression engine; Unicode scalar indexes and raw pattern specification records |
+| `$std::files` | Compatibility callable File/Directory services | Existing source behavior retained; new code uses `io::File` and `io::Directory` |
+| `$std::commands` | Compatibility callable command/result services | Existing source behavior retained; new code uses `process::Command` and `process::Completed` |
 | `$std::environment` | Process variables and captured execution directories | Narrow host primitives plus source nullable/default/path-list composition |
 
 `stdlib/_core.msync` has no public root cast export: conversions are language

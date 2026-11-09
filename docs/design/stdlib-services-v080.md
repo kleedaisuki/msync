@@ -1,8 +1,50 @@
 # Source-composed file and command services
 
-`files` and `commands` add object-oriented workflows without another host
-resource type. They are executable source modules; the existing filesystem,
-UTF-8 IO, Range and Process primitives remain the only effectful boundary.
+`io` and `process` organize associated operations in named Scopes without
+another host resource type. Canonical instances contain data, not a collection
+of captured getter and method functions. The existing filesystem, UTF-8 IO,
+Range and Process primitives remain the effectful boundary.
+
+## Canonical associated operations
+
+```msync
+let file = $std::io::File::new(./report.txt);
+$std::io::File::write(file, "completed");
+let alias = file;
+$std::io::File::move_to(alias, ./finished.txt);
+let text = $std::io::File::read_text(file);
+```
+
+The record has a `path` field and a `policy` field. `TextFile` composes the
+`PathRecord` and `TextIOPolicy` requirements; operations that only need a path
+accept the smaller `PathRecord` contract. `File::with_policy(path, policy)`
+selects read/line-production/write/append behavior explicitly. The named `NativeText`
+policy invokes the established IO primitives. A policy can instead apply a
+codec or implement an application store without changing the File family or
+pretending that a different runtime resource kind has been introduced.
+Line production is its own policy operation so the native default preserves
+streaming reads instead of buffering an entire file through `read` first.
+
+`Directory::new(path)` stores only its Path. Directory operations take that
+record explicitly and retain ordinary lazy enumeration versus eager snapshot
+semantics. `Command::new(executable, arguments)` stores the executable Path and
+one materialized argument snapshot. `Command::run(self)` returns a real Process;
+`Command::capture(self)` returns a completed data record with `process`,
+`output`, `error`, `code`, and `success` fields. `Completed::lines(self)` and
+`Completed::write_to(self, destination)` are shared associated functions, not
+closures allocated into every result.
+
+Construction does no filesystem observation, opens no file, and starts no
+process or SSH authentication. Mutation changes the existing anonymous Scope
+record, so aliases see the same Path or configuration; fresh constructors do
+not share instance state. `move_to` updates `self::path` only after the rename
+succeeds. Policy and data field storage types remain fixed.
+
+## Compatibility callable services
+
+The following factory-style API remains supported for existing source. New code
+uses the named families above; these older contracts are not a template for
+adding further getter/method bags.
 
 ## File and directory ownership
 

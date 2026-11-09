@@ -1,5 +1,41 @@
 # Source-backed ordered collections in 0.8
 
+## Canonical families and policy ownership
+
+`$std::containers::List`, `Map`, `Set`, `Stack` and `Queue` are named Scope
+families. Associated operations take the instance explicitly:
+
+```msync
+let values = $std::containers::List::new([1, 2]);
+let alias = values;
+$std::containers::List::push(alias, 3);
+let snapshot = $std::containers::List::snapshot(values);
+```
+
+The instance contains typed Range storage and its policy values, not a copied
+set of closures. Named family code and named default policies are shared;
+instance records and their mutations retain ordinary Scope identity. Fixed
+storage schemas, shallow snapshot identity and explicit nullable admission are
+the same language rules used by ordinary records.
+
+`RangeStorage` requires a typed `snapshot(Range) -> Range` operation. The default
+`SnapshotStorage` materializes the selected input. Custom storage policies can
+trace or implement a different snapshot representation while preserving ordered
+contents. Mutations eagerly publish the policy's selected snapshot rather than
+store a lazy self-referential update. `Map::with_equality` and
+`Set::with_equality` accept an `Equality` policy, whose associated `Self` and
+first-order `equal(Self, Self) -> Bool` signature are compiler checked.
+`with_policy` selects equality and storage together. This permits case-folded
+String keys without introducing a global equality instance or a runtime policy
+registry. The actual policy's callable identities participate in ordinary
+generic function specialization.
+
+## Compatibility callable factories
+
+The earlier Pascal-named factories below remain supported. They preserve
+established method-call source; new code uses the associated family operations
+above rather than introducing more factory-object wrappers.
+
 `$std::collections` provides `List`, `Map`, `MapWith`, `Set`, `SetWith`,
 `Stack`, and `Queue`. They are normal generic source functions returning fresh
 anonymous Scope objects. Methods close over shared mutable state. Copying a
