@@ -22,12 +22,19 @@ internal static class SkillReference
         new("paths", "Path values, literal text and file transfers", "paths"),
         new("paths/connections", "Native SSH and WSL endpoint qualification", "connections"),
         new("library", "Source-backed standard library", "library"),
-        .. StandardModules().Select(module => new Topic("library/" + module,
-            $"Executable {module} declarations and operations", "module", module)),
+        .. StandardModules().Select(ModuleTopic),
         new("workflow", "Check, inspect, format and execute", "workflow"),
         new("workflow/artifacts", "Compile .mso and bind .mexe", "artifacts"),
         new("troubleshooting", "Read and repair source diagnostics", "troubleshooting")
     ];
+
+    private static Topic ModuleTopic(string module)
+    {
+        bool concepts = Msync.Compiler.Syntax.Parser.Parse(ReadStandard(module)).Statements
+            .All(statement => statement is Msync.Compiler.Syntax.ConceptDeclaration);
+        return new("library/" + module, concepts ? $"Compile-time {module} declarations" : $"Executable {module} declarations and operations",
+            concepts ? "concept-module" : "module", module);
+    }
 
     private static IEnumerable<string> StandardModules() => typeof(SkillReference).Assembly
         .GetManifestResourceNames()

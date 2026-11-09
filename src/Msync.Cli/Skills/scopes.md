@@ -54,3 +54,27 @@ A Null field initializer requires `?`: `filename: null` is an error.
 the later Path store fixes it to Path with Null admitted, before execution.
 Further stores must respect that fixed type. After a possibly overlapping write
 or call, narrow a nullable field again before using its non-null capabilities.
+
+## Generic families and policies
+
+The standard library uses named Scopes for constructors and associated
+operations. Instances are anonymous data Scopes; operations receive the
+instance explicitly. A policy is another Scope checked by a concept and
+specialized at compile time:
+
+```msync
+scope IgnoreCase {
+    Self: String,
+    equal: fn(left: String, right: String) -> Bool {
+        $std::string::to_lowercase(left) == $std::string::to_lowercase(right)
+    },
+};
+let names = $std::containers::EqualitySet::with_equality(["Klee"], IgnoreCase);
+$std::containers::EqualitySet::insert(names, "KLEE");
+```
+
+`IgnoreCase` satisfies `$std::concepts::Equality`. The EqualitySet specializes
+against that policy rather than attaching a method-closure table to each
+instance. `let alias = names` shares one mutable instance; a new constructor
+call owns separate state. Class names use PascalCase; associated function
+names use lowercase words joined with underscores.

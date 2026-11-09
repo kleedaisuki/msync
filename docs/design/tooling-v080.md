@@ -762,8 +762,8 @@ cwd/home/endpoint facts; those facts are not source-rewriting instructions.
 `$en` selecting `env` produces `$env`, never `$$env`. Its root catalog contains
 `std`, `local`, `wsl`, `pwd`, `file`, `path` and `env`. Canonical range operations
 are members of `$std::ranges`; former view/range convenience roots are absent
-from new source and public completion. Historical object instructions retain
-private execution compatibility.
+from source and public completion. Current binary readers accept format 4;
+older artifacts require source recompilation.
 
 Environment and PATH completion query the actual process context. `pwd` and
 `file` combine their real special members with correctly projected physical
@@ -790,3 +790,56 @@ compositions into the installed `msync-stdlib` virtual documents, checks their
 selected definition ranges and inferred types, and completes structured Range
 elements. This is independent of the existing source and artifact host suites,
 so a library-only change does not repeat unrelated editing or binary workflows.
+
+## Standard concepts, associated types and named families
+
+The type namespace is distinct from runtime values. Standard constraints such
+as `$std::concepts::Option` are offered only in annotations and concept bases;
+selecting a concept does not instantiate a module or construct a runtime Type.
+LSP and REPL share the same prefix-aware type completion: `$` selects `$std::`,
+then `concepts::`, then the final concept name. Edits replace only the active
+segment, including when namespace separators contain whitespace. A lexical
+`std` binding continues to shadow the predefined namespace.
+
+Inline associated declarations use ordinary keyword coloring for `typename`
+and type coloring for the declared name:
+
+```msync
+concept Product {
+    first?: typename First,
+    second?: typename Second,
+};
+concept Sequence {
+    items: Range<typename Item>,
+    accepts: fn(value: Item) -> Bool,
+};
+```
+
+References navigate to the inline binder, including names introduced in nested
+Range arguments. Completion offers `typename` in concept requirements, not in
+ordinary function annotations. The old standalone spelling remains accepted
+for existing source but is not suggested. Formatting preserves source-owned
+declarations rather than synthesizing a duplicate type section; generic angle
+brackets follow annotation spans and remain compact without changing `<` and
+`>` expression operators.
+
+Concept hover includes adjacent source documentation, required members and
+bases. Standard concept references navigate into the running executable's
+versioned `msync-stdlib` source, using the same bytes as compilation. Native
+function inspection obtains parameter names and written constraints from those
+declarations, while retaining the actual callable identity through aliases.
+
+Named families such as `$std::containers::Set` and `$std::data::Option` use the
+type role; their associated functions use the function role. Instances remain
+ordinary anonymous Scope values. Function names use snake_case and class names
+use PascalCase. Policy and instance member completion follows actual inferred
+structure instead of guessing from names or adding implicit receivers.
+
+Focused coverage lives in `tests/StandardConceptTooling` and
+`tests/Msync.EndToEnd/standard_concepts_tooling_journey.py`. The latter uses an
+actual server, persistent REPL and native terminal (ConPTY on Windows).
+`MSYNC_TEST_STANDARD_CONCEPTS_ONLY=1` selects the independent VS Code host suite:
+it edits a policy constructor call, follows embedded declarations, checks both
+light and dark semantic roles, and checks/runs the resulting program with the
+same frozen executable. The delivery report records the final Native image and
+host run; managed development observations are not platform acceptance claims.

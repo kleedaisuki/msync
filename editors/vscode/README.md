@@ -187,15 +187,15 @@ scope SameNumber {
 };
 let values = $std::containers::EqualitySet::with_equality([3, 1], SameNumber);
 $std::containers::EqualitySet::insert(values, 2);
-let report = $std::io::File::new(./report.txt);
+let report = $std::files::File::new(./report.txt);
 ```
 
 Class names use the type role; their snake_case function names use the
 function role. Completion replaces the exact function identifier, such as
 `with_equality` or `read_text`, without changing its qualifier. Policy calls specialize through the
 normal generic `fn`/`scope` mechanism, not through a runtime method registry.
-Historical factory APIs remain available for existing source; new examples use
-the named families under `containers`, `data`, `io`, `process`, `text` and `regex`.
+Named families live under `containers`, `data`, `files`, `commands`, `text` and
+`regex`; `io` and `process` retain their lower-level primitives.
 
 Conversion uses `as`,
 not a dynamic-looking cast helper. Only Path/String conversion is implicit.

@@ -1,8 +1,9 @@
 # Source-backed standard library
 
-`$std` is a Scope. Each module is another Scope with ordinary source functions
-and explicit host-native declarations. Module topic pages show the executable
-embedded declarations, not a separately maintained list of signatures.
+`$std` is a Scope. Runtime modules contain ordinary source functions and explicit
+host-native declarations. The compile-time `concepts` namespace supplies named
+constraints without introducing runtime values. Module topic pages show the
+same embedded declarations used by the compiler.
 
 ```msync
 let fs = $std::fs;
@@ -21,12 +22,56 @@ let combined = $std::bool::both(available, true);
 - `bool`: Bool composition as ordinary source functions.
 - `ranges`: lazy adapters, structured elements, searches, folds and sorting.
 - `process`: Process inspection, explicit waiting and live process control.
-- `collections`: Range-backed List, Map, Set, Stack and Queue objects.
-- `text`: reusable text builders and composition helpers.
-- `regex`: typed match and group records.
-- `files`: File and Directory service objects.
-- `commands`: reusable process commands with captured argument values.
+- `containers`: List, Map, EqualitySet, Stack, Queue, Set, BTree, BPlusTree, Heap.
+- `text`: StringBuilder and text composition policies.
+- `regex`: Pattern operations with typed match and group records.
+- `files`: File and Directory families with explicit I/O policies.
+- `commands`: Command, Completed and Checked families with runner policies.
+- `data`: Option, Result, Either and Pair composition.
 - `environment`: local environment and execution-context tools.
+- `concepts`: reusable product, sum, capability and algebraic constraints.
+- `meta`: closed-type traits and unevaluated callable/member queries.
+- `shell`: typed Unix-style terminal functions and explicit filesystem effects.
+
+```msync
+fn preserve(value: $std::concepts::Option?) -> $std::concepts::Option? {
+    value
+};
+let selected? = preserve($std::data::Option::some("Klee"));
+```
+
+## Named families and policies
+
+State belongs to plain Scope records. Named Scopes group constructors and
+associated operations; pass the instance explicitly, as with Rust associated
+functions:
+
+```msync
+let labels = $std::containers::List::new(["first"]);
+$std::containers::List::push(labels, "second");
+let snapshot = $std::containers::List::snapshot(labels);
+let report = $std::files::File::new(./report.txt);
+```
+
+Select a policy through a concept-constrained constructor, such as
+`EqualitySet::with_equality(initial, equality)` or `File::with_policy(path, io)`.
+The compiler specializes ordinary `fn` bodies using the supplied Scope and
+callable identities. It does not use a runtime registration table or allocate
+a separate collection of method closures for each instance.
+
+Classes and named Scopes use PascalCase; functions use lowercase words joined
+with underscores. Families expose constructors and explicit instance parameters;
+instances contain data rather than per-object method tables.
+
+`Set` is a red-black tree using an ordering policy; `EqualitySet` is the
+separate equality-only collection. BTree, BPlusTree and Heap provide distinct
+ordered data structures. Their `StrictOrder` policies do not change the
+language's IEEE Number comparisons.
+
+Concepts check fields, signatures and associated types without adding runtime
+type kinds. Ordinary Scope records and generic functions supply the values and
+operations. Mathematical laws remain semantic contracts rather than compiler
+proofs inferred from an operation's name.
 
 Explicit conversion is language syntax: `"42" as Number`. Read
 `msync skill language conversions`; it is not a root `$std` function.
