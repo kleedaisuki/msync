@@ -13,7 +13,8 @@ public static class MetaTypes
         TypeKind text = TypeKind.Path | TypeKind.String;
         TypeKind retained = source.Kind & ~text;
         return (source.Kind & text) != 0 && (target.Kind & text) != 0 &&
-            target.Accepts(new(retained, source.Element));
+            (target.Kind & retained) == retained &&
+            (target.Element is null || source.Element is null || target.Element.Accepts(source.Element));
     }
 
     public static Value Evaluate(string operation, IReadOnlyList<TypeRef> types)
