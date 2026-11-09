@@ -124,6 +124,7 @@ public sealed partial class HirBuilder
             owner.Nodes.RemoveRange(nodes, owner.Nodes.Count - nodes);
             owner.Edges.RemoveRange(edges, owner.Edges.Count - edges);
             owner.Literals.RemoveRange(literals, owner.Literals.Count - literals);
+            owner.RewindScopeLayouts(scopeLayouts);
             owner.ScopeLayouts.RemoveRange(scopeLayouts, owner.ScopeLayouts.Count - scopeLayouts);
             owner.Signatures.RemoveRange(signatures, owner.Signatures.Count - signatures);
             owner.Calls.RemoveRange(calls, owner.Calls.Count - calls);

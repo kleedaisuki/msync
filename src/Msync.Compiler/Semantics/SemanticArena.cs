@@ -31,12 +31,7 @@ internal sealed class SemanticArena(HirBuilder builder)
     public ReadOnlySpan<HirNodeId> Children(HirNode node) =>
         System.Runtime.InteropServices.CollectionsMarshal.AsSpan(builder.Edges)
             .Slice(node.Children.Start, node.Children.Count);
-    public int InternScopeLayout(HirScopeLayout layout)
-    {
-        int index = builder.ScopeLayouts.Count;
-        builder.ScopeLayouts.Add(layout);
-        return index;
-    }
+    public int InternScopeLayout(HirScopeLayout layout) => builder.InternScopeLayout(layout);
     public int InternSignature(HirSignature signature)
     {
         int index = builder.Signatures.Count;

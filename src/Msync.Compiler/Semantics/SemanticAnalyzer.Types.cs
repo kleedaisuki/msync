@@ -46,11 +46,7 @@ internal sealed partial class SemanticAnalyzer
     {
         var layout = fields.Select(pair => new HirField(pair.Key, pair.Value.Type,
             hir.Types[pair.Value.Type.Value].RuntimeType.Nullable)).ToImmutableArray();
-        for (int index = 0; index < hir.ScopeLayouts.Count; index++)
-            if (hir.ScopeLayouts[index].Fields.AsSpan().SequenceEqual(layout.AsSpan())) return index;
-        int result = hir.ScopeLayouts.Count;
-        hir.InternScopeLayout(new(layout));
-        return result;
+        return hir.InternScopeLayout(new(layout));
     }
 
     private HirTypeId ResolveHirType(HirTypeId type, SemanticContext context)

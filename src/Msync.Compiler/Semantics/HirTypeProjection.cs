@@ -137,10 +137,7 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
             fields.Add(new(descriptor.Name, type, descriptor.AdmitsNull));
         }
         ImmutableArray<HirField> row = fields.ToImmutable();
-        int shape = -1;
-        for (int index = 0; index < hir.ScopeLayouts.Count; index++)
-            if (hir.ScopeLayouts[index].Fields.AsSpan().SequenceEqual(row.AsSpan())) { shape = index; break; }
-        if (shape < 0) shape = hir.InternScopeLayout(new(row));
+        int shape = hir.InternScopeLayout(new(row));
         return Fact(hir.Type(new HirType(TypeRef.Scope, Shape: shape)));
     }
 

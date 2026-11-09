@@ -87,14 +87,7 @@ internal sealed partial class SemanticAnalyzer
         return valueResult;
     }
 
-    private int InternShape(ImmutableArray<HirField> fields)
-    {
-        for (int index = 0; index < hir.ScopeLayouts.Count; index++)
-            if (hir.ScopeLayouts[index].Fields.AsSpan().SequenceEqual(fields.AsSpan())) return index;
-        int shape = hir.ScopeLayouts.Count;
-        hir.InternScopeLayout(new(fields));
-        return shape;
-    }
+    private int InternShape(ImmutableArray<HirField> fields) => hir.InternScopeLayout(new(fields));
 
     private SemanticValue Range(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context)
     {
