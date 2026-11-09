@@ -87,7 +87,7 @@ jobs:
           from pathlib import Path
 
           binary: Path = Path('artifacts/package') / f"msync-{os.environ['PACKAGE_VERSION']}-{os.environ['PACKAGE_NAME']}" / 'bin' / ('msync.exe' if os.name == 'nt' else 'msync')
-          phases: tuple[str, ...] = ('hir-semantics', 'concepts-tooling', 'library-policy', 'type-traits', 'shell-repl', 'artifact')
+          phases: tuple[str, ...] = ('hir-semantics', 'hir-artifact', 'concepts-tooling', 'library-policy', 'type-traits', 'shell-repl', 'artifact')
           arguments: list[str] = [sys.executable, 'packaging/language_upgrade.py', '--binary', str(binary.resolve())]
           for phase in phases:
               arguments.extend(('--phase', phase))
