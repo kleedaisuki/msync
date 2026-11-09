@@ -33,6 +33,31 @@ prepared Debug VM run of 4096 32-character appends took 1174.850 ms and allocate
 406,358,792 bytes. This measured cost justified one precise host primitive,
 rather than introducing an opaque builder runtime kind or many native methods.
 
+### Prepared interpreter measurement
+
+The final comparison uses the same snapshot-3 managed Debug assemblies,
+optimization O2, 32-character chunks, one warm run, and the median of three
+execution-only samples. Compilation is excluded; allocated bytes use
+`GC.GetTotalAllocatedBytes(true)`. These are source-object/interpreter costs,
+not claims about Native AOT startup, IO, or application-wide throughput.
+
+| Appends | Source binary forest ms / bytes | Native persistent chunks ms / bytes |
+| ---: | ---: | ---: |
+| 64 | 31.475 / 10,957,816 | 14.816 / 4,544,808 |
+| 512 | 115.915 / 52,561,832 | 26.050 / 11,434,824 |
+| 4096 | 826.307 / 385,533,304 | 153.825 / 66,423,352 |
+
+At 4096 appends, this is about 5.37 times faster and 82.8% fewer managed
+allocated bytes in the measured execution. Remaining allocations include
+ordinary Fn/Scope interpreter invocation and scheduling machinery; the primitive
+does not remove that broader runtime cost.
+
+Reproduce with `tests/StdlibTextRegex --bench`; `--bench-source=PATH` selects a
+source baseline without replacing product files. The forest baseline is
+`a426bb6:stdlib/text.msync`, with each `merge` and `tail` result resolved using
+`ranges.empty` before overwriting the captured operand binding. That resolution
+is required to prevent deferred Range self-reference in the old source design.
+
 `join_lines`, `indent`, and `unindent` compose the existing scalar String and
 Range operations. The latter two normalize line boundaries to LF and do not
 retain a final input line terminator, following `string.lines`.

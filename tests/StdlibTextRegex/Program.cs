@@ -5,7 +5,9 @@ using Frontend = Msync.Compiler.Compiler;
 
 if (args.Contains("--bench", StringComparer.Ordinal))
 {
-    string library = File.ReadAllText("stdlib/text.msync");
+    string libraryPath = args.FirstOrDefault(argument => argument.StartsWith("--bench-source=", StringComparison.Ordinal))?[15..]
+        ?? "stdlib/text.msync";
+    string library = File.ReadAllText(libraryPath);
     foreach (int count in new[] { 64, 512, 4096 })
     {
         string source = library + $"let b = Builder(); for x in $std::ranges::iota(0, {count}) {{ b::append(\"abcdefghijklmnopqrstuvwxyz012345\"); }}; b::build()";

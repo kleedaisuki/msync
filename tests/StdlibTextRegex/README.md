@@ -20,3 +20,6 @@ embedded snapshot; normal mode validates actual embedded product bytes.
 prepared interpreter execution and total managed allocations for 64/512/4096
 32-character appends. It validates output length; results are not Native AOT
 startup or IO measurements.
+`--bench-source=PATH` selects a source baseline; the accepted source-forest
+comparison and its reconstruction are recorded in
+`docs/design/text-regex-library-v080.md`.
