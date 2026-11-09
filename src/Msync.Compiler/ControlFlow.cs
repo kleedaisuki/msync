@@ -185,7 +185,7 @@ internal sealed partial class Compilation
         {
             CheckReturnConversion(frame, result.Type, frame.ExpectedReturn, returned.Span);
             Convert(frame, result.Type, frame.ExpectedReturn, returned.Span);
-            result = Retype(result, frame.ExpectedReturn);
+            if (!frame.ExpectedReturn.Accepts(result.Type)) result = Retype(result, frame.ExpectedReturn);
         }
         CloseIterators(frame, 0, returned.Span);
         CloseAcquireRegions(frame, 0, returned.Span);

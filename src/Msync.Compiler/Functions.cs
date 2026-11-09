@@ -220,7 +220,7 @@ internal sealed partial class Compilation
             {
                 CheckReturnConversion(frame, result.Type, asserted, template.Syntax.Body.Span);
                 Convert(frame, result.Type, asserted, template.Syntax.Body.Span);
-                result = Retype(result, asserted);
+                if (!asserted.Accepts(result.Type)) result = Retype(result, asserted);
             }
         }
         catch (CompileException error)
