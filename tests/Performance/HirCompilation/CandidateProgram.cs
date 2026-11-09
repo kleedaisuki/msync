@@ -8,7 +8,7 @@ using Msync.Hir;
 using SourceCompiler = Msync.Compiler.Compiler;
 
 if (args.Length < 2)
-    throw new ArgumentException("Usage: msync-hir-compilation SOURCE LEVEL [SAMPLES] [--retention-only]");
+    throw new ArgumentException("Usage: msync-hir-compilation SOURCE LEVEL [SAMPLES] [--retention-only | --trace-once]");
 
 string source = File.ReadAllText(Path.GetFullPath(args[0]));
 int level = int.Parse(args[1], CultureInfo.InvariantCulture);
@@ -17,6 +17,11 @@ int samples = args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordi
 const string sourceName = "hir-compilation.msync";
 bool retention = args.Contains("--retention-only", StringComparer.Ordinal);
 bool includeCompile = args.Contains("--include-compile", StringComparer.Ordinal);
+if (args.Contains("--trace-once", StringComparer.Ordinal))
+{
+    TraceOnce(source, sourceName, level);
+    return;
+}
 if (args.Contains("--validate-only", StringComparer.Ordinal))
 {
     var validated = SourceCompiler.Compile(source, sourceName, level);
@@ -122,6 +127,60 @@ static Observation<T> Observe<T>(Func<T> create, string stage, int samples) wher
         ["warm_ms"] = new JsonArray(times.Select(value => JsonValue.Create(value)).ToArray()),
         ["warm_allocated_bytes"] = new JsonArray(allocations.Select(value => JsonValue.Create(value)).ToArray())
     });
+}
+
+static void TraceOnce(string source, string sourceName, int level)
+{
+    JsonObject assemblies = new();
+    foreach (string path in Directory.GetFiles(AppContext.BaseDirectory, "Msync*.dll").Order(StringComparer.Ordinal))
+        assemblies[Path.GetFileName(path)] = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(path)));
+    Console.WriteLine(new JsonObject
+    {
+        ["stage"] = "input",
+        ["source_sha256"] = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(source))),
+        ["optimization"] = level,
+        ["assemblies"] = assemblies
+    }.ToJsonString());
+    Console.Out.Flush();
+    HirModule hir = Stage("analyze", () => SourceCompiler.Analyze(source, sourceName), value => new()
+    {
+        ["functions"] = value.Functions.Length,
+        ["templates"] = value.Templates.Length,
+        ["nodes"] = value.Nodes.Length,
+        ["locations"] = value.Locations.Length,
+        ["types"] = value.Types.Length,
+        ["scope_layouts"] = value.ScopeLayouts.Length
+    });
+    var module = Stage("lower", () => HirLowerer.Lower(hir,
+        new HirLoweringOptions(level, RetainLayout: false)).Module, CodeCounts);
+    var optimized = Stage("optimize", () => Msync.Optimization.Optimizer.Optimize(module, level), CodeCounts);
+    GC.KeepAlive(hir);
+    GC.KeepAlive(optimized);
+
+    static JsonObject CodeCounts(Msync.Core.Module value) => new()
+    {
+        ["functions"] = value.Functions.Count,
+        ["instructions"] = value.Functions.Sum(function => function.Instructions.Count)
+    };
+
+    static T Stage<T>(string name, Func<T> action, Func<T, JsonObject> counts)
+    {
+        Console.WriteLine(new JsonObject { ["stage"] = name, ["event"] = "start" }.ToJsonString());
+        Console.Out.Flush();
+        long bytes = GC.GetAllocatedBytesForCurrentThread();
+        long start = Stopwatch.GetTimestamp();
+        T result = action();
+        double milliseconds = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - bytes;
+        JsonObject report = counts(result);
+        report["stage"] = name;
+        report["event"] = "end";
+        report["elapsed_ms"] = milliseconds;
+        report["allocated_bytes"] = allocated;
+        Console.WriteLine(report.ToJsonString());
+        Console.Out.Flush();
+        return result;
+    }
 }
 
 internal sealed record Observation<T>(T Result, JsonObject Report);

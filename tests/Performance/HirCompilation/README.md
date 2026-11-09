@@ -401,3 +401,18 @@ deltas after release are not charged to a result whose weak reference is dead.
 These measurements do not prove per-body streaming disposal or final editor
 retention behavior. No old baseline was remeasured and no timing speedup or
 regression is attributed under concurrent shared builds.
+
+## A single phase discriminator
+
+The HIR-enabled component also accepts `SOURCE LEVEL --trace-once`. This mode
+performs exactly one Analyze → Lower → Optimize pass: no warmup, repeated
+sampling, serialization or retention experiment. It flushes a JSON record at
+each stage start and end, and records source/assembly hashes plus completed HIR
+and bytecode counts. Use it to locate a stalled stage before running any cost
+matrix. An interrupted stage has no invented final counts or timing score.
+
+Frozen9 exposed this distinction: even one direct B-tree insertion grew inside
+Analyze without reaching Lower or Optimize. The resource-growth observation is
+recorded in `docs/design/typed-hir-validation-v081.md`; it is not a successful
+candidate cost observation. Wait for the responsible semantic correction before
+repeating that input or increasing its insertion count.
