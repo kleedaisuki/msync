@@ -1,0 +1,9 @@
+SQLitePCLRaw 2.1.13
+Copyright 2014-2024 SourceGear, LLC
+Authors: Eric Sink
+Source: https://github.com/ericsink/SQLitePCL.raw
+License: Apache-2.0 (as declared by the distributed NuGet packages)
+
+The SQLitePCLRaw.lib.e_sqlite3 package contains platform-specific native SQLite
+builds. SQLite itself is in the public domain:
+https://www.sqlite.org/copyright.html

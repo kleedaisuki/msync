@@ -1,0 +1,36 @@
+# Explicit mutable indexed storage. A snapshot freezes membership while keeping
+# the normal identity of each stored value. No user-visible type kind is added.
+native fn buffer_new(initial: Range) -> Range;
+native fn buffer_get(items: Range, index: Number) -> Bool | String | Path
+    | Range | Function | Scope | Process | Connection | Type | Number | Null;
+native fn buffer_set(items: Range, index: Number, value?) -> Null;
+native fn buffer_push(items: Range, value?) -> Number;
+native fn buffer_pop(items: Range) -> Bool | String | Path | Range | Function
+    | Scope | Process | Connection | Type | Number | Null;
+native fn buffer_insert(items: Range, index: Number, value?) -> Null;
+native fn buffer_remove(items: Range, index: Number) -> Bool | String | Path
+    | Range | Function | Scope | Process | Connection | Type | Number | Null;
+native fn buffer_swap(items: Range, first: Number, second: Number) -> Null;
+native fn buffer_size(items: Range) -> Number;
+native fn buffer_clear(items: Range) -> Null;
+native fn buffer_snapshot(items: Range) -> Range;
+
+scope Buffer {
+    new: buffer_new,
+    empty: fn(prototype?) {
+        buffer_new($std::ranges::take([prototype], 0))
+    },
+    size: buffer_size,
+    is_empty: fn(self) {
+        Buffer::size(self) == 0
+    },
+    get: buffer_get,
+    set: buffer_set,
+    push: buffer_push,
+    pop: buffer_pop,
+    insert: buffer_insert,
+    remove: buffer_remove,
+    swap: buffer_swap,
+    clear: buffer_clear,
+    snapshot: buffer_snapshot,
+};

@@ -1,5 +1,72 @@
 # Unified local telemetry
 
+## Native AOT implementation (0.8)
+
+The C# CLI retains opt-in `--trace FILE`, `--trace -`, `--telemetry-db FILE`,
+configured destinations, and `--no-telemetry`. `TelemetrySession` owns one
+bounded BCL channel and one writer task. Producers use nonblocking `TryWrite`;
+queue overflow is counted and reported as incomplete recording. Disabled
+execution supplies no runtime callback, so formatting event metadata and
+allocating observations do not occur on the ordinary unobserved path.
+
+Runtime observations describe actual transfer completion/failure, native
+failures, and process lifecycle; the CLI records compile and command completion.
+All child spans identify their command root explicitly rather than depending on
+thread-local ancestry. The root record is held outside the bounded queue and
+written after admitted records drain, so a full queue cannot silently lose the
+command outcome. Root errors retain the exception chain; runtime failure records
+retain their operation-specific causes and useful source/destination metadata.
+Runtime `success`/`failure` outcomes map to the established JSONL `ok`/`error`
+vocabulary. The serializer uses generated `System.Text.Json` metadata, not
+reflection-based serialization.
+
+SQLite recording uses the mature
+[Microsoft.Data.Sqlite provider](https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/)
+at version 10.0.14. Its
+[default bundled SQLitePCLRaw provider](https://learn.microsoft.com/en-us/dotnet/standard/data/sqlite/custom-versions)
+uses a native library adjacent to the Native AOT executable: `libe_sqlite3.so`
+on Linux, `e_sqlite3.dll` on Windows. Distribution remains independent of an
+installed .NET runtime, but the native sidecar must be packaged and tested.
+No ORM or runtime code generation is involved. This deliberately avoids a new
+custom SQLite binding or a less established static-link package.
+
+The database keeps application ID `0x4d53594e`, schema version 1, and the existing
+normalized tables and views. The original Rust telemetry query/export commands
+can read recordings from the C# implementation; schema compatibility does not
+require reparsing opaque JSON blobs. Schema claiming uses an immediate SQLite
+transaction; foreign databases are not adopted or changed to WAL. A single
+worker owns reusable SQL commands, commits bounded batches, and flushes an
+available partial batch immediately. This stays within the configured maximum
+flush interval without an idle timer. NORMAL WAL synchronization remains the
+default; FULL is explicit. Record/page/session budgets affect observation only.
+
+Observer initialization, writing and closing failures warn with destination and
+cause; they do not replace the actual command result. Explicit custom parents
+are not created. A conventional state parent is created only when an actual
+observer opens. Disabled telemetry, zero whole-session sampling, configuration
+inspection, help, version and LSP admission create no observer output.
+
+The executable harness is `tests/Telemetry/journeys.py`, with fixtures below
+`.temp/telemetry-v080`. Its six actual-process journeys cover JSONL/runtime
+bytes, SQLite native loading and repeated-session append, failed-copy outcome
+and causes, observer-open failure preserving file work, disabled/zero-sampling
+non-admission, and preservation of an unrelated SQLite database. Managed CLI
+execution and the installed-layout Linux Native AOT package both passed all six
+journeys. The native image SHA-256 was
+`c8333cd814b31a6d402525abe483b60bfbe07a6e9c35008c05f62e5d95daa7f9`;
+the exact invocation was:
+
+```sh
+python3 tests/Telemetry/journeys.py artifacts/package/msync-0.8.0-linux-x86_64/bin/msync
+```
+
+The JSONL success/failure recordings each contained three records; two SQLite
+invocations appended six records and two completed sessions. The original Rust
+0.7.3 `telemetry summary` command independently read the resulting schema-1
+database and reported both sessions and the command/compile/transfer phases.
+Native results live below `.temp/telemetry-v080/c8333cd814b3/`. These are Linux
+native package results, not a claim of Windows execution.
+
 ## SQLite recording and operator workflow
 
 The current backend is a normalized SQLite database (`rusqlite` with bundled

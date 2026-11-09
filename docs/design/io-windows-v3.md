@@ -238,3 +238,80 @@ host/timing experiments stay explicitly ignored by the ordinary suite.
 - [QueryIoRingCapabilities](https://learn.microsoft.com/en-us/windows/win32/api/ioringapi/nf-ioringapi-queryioringcapabilities): process-local capabilities and minimum supported Windows build.
 - [BuildIoRingReadFile](https://learn.microsoft.com/en-us/windows/win32/api/ioringapi/nf-ioringapi-buildioringreadfile), [SubmitIoRing](https://learn.microsoft.com/en-us/windows/win32/api/ioringapi/nf-ioringapi-submitioring): asynchronous buffer/reference and completion semantics.
 - [CloseIoRing](https://learn.microsoft.com/en-us/windows/win32/api/ioringapi/nf-ioringapi-closeioring): in-flight operations remain active after closing the ring.
+
+## v0.8 followup: cancellable native ordinary-file copy
+
+The historical Rust measurements above remain historical, but their selected
+mechanism is still relevant to the C# rewrite. `legacy/src/io/windows.rs` already
+has a synchronous CopyFileExW callback that checks cancellation after reported
+progress. The current C# ordinary-file path instead uses native overlapped
+FileStream reads/writes. It should be compared against that existing OS-level
+copy mechanism before adding a custom queue or assuming an async API is faster.
+
+### Mature API and contract choices
+
+The pinned [.NET 10 FileSystem implementation](https://github.com/dotnet/runtime/blob/v10.0.0/src/libraries/System.Private.CoreLib/src/System/IO/FileSystem.Windows.cs)
+passes File.Copy to its Windows interop copy. That
+[interop wrapper](https://github.com/dotnet/runtime/blob/v10.0.0/src/libraries/Common/src/Interop/Windows/Kernel32/Interop.CopyFile.cs)
+already calls CopyFileExW, but with no progress callback and a permanently zero
+cancel flag. Thus substituting BCL File.Copy is not the needed cancellable fast
+path. A direct call reuses the same OS mechanism while retaining cancellation.
+The [.NET interop declaration](https://github.com/dotnet/runtime/blob/v10.0.0/src/libraries/Common/src/Interop/Windows/Kernel32/Interop.CopyFileEx.cs)
+also makes the long-path boundary explicit; a new P/Invoke must not lose the
+extended-prefix behavior already provided by managed System.IO.
+
+[CopyFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-copyfileexw)
+preserves named streams, extended attributes and file attributes. Its cancelled
+progress result deletes the partial destination; a stopped result instead leaves
+it. Copy into an exclusively owned sibling stage with FAIL_IF_EXISTS and publish
+only after success. Do not request RESTARTABLE: it introduces persistent progress
+and may flush repeatedly, opposing the normal-copy cost model. NO_BUFFERING is a
+separate large/cold-file experiment, not the ordinary warm-file default. Source
+symlinks must retain the existing explicit link-entry path or use the documented
+COPY_SYMLINK behavior, not be silently dereferenced by a regular-file shortcut.
+
+[CopyFile2](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-copyfile2)
+is available on the supported Windows generation and adds more structured
+stream callbacks. It is not selected merely because it is newer: it needs more
+callback-union ABI handling, and it does not expose the CopyFileEx security
+resource-attribute behavior identically. The smaller, already-used CopyFileEx
+surface is the first discriminating experiment.
+
+The [native progress callback contract](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nc-winbase-lpprogress_routine)
+provides source/destination handles, cumulative byte counts, and stream-switch
+notifications. Cancellation must return CANCEL rather than QUIET, which disables
+later callbacks. No managed exception may escape an unmanaged callback. A bounded
+worker owns the synchronous call until it returns; requesting cancellation is
+not permission to release its callback state or native handles early.
+
+A readonly copied stage cannot simply be reopened for generic write to flush it.
+[Microsoft's handle-retention example](https://devblogs.microsoft.com/oldnewthing/20221007-00/?p=107261/)
+duplicates a destination handle supplied by the callback, retaining its existing
+access until copy completion. The proposed normal-file experiment retains the
+first-stream handle, performs one explicit flush, closes it before rename, and
+then publishes. It does not copy that article's per-stream flushing scheme,
+which would exceed the one-flush normal-path budget when named streams exist.
+It preserves their bytes without claiming stronger crash durability for them.
+
+For Native AOT, use source-generated UTF-16 LibraryImport declarations and a
+static unmanaged callback/function pointer, following
+[.NET's interop guidance](https://learn.microsoft.com/en-us/dotnet/standard/native-interop/best-practices).
+Retain callback state through the synchronous call, capture the native error
+before cleanup, and propagate genuine OS/permission/storage failures. Falling
+back on every error could silently erase named streams or change error semantics;
+this API exists on the supported platform and ordinary failures are not evidence
+that it is unavailable.
+
+### Actual next measurement
+
+`tests/IO/WindowsCopyProbe` is a standalone Native AOT probe, not a production
+change. It compares 4 KiB/1 MiB/64 MiB copies and a 256-member small-file cohort
+with equal sibling staging, one explicit flush and atomic replacement. It records
+raw paired wall/CPU samples and checks bytes/mtime outside timing. Callback/write
+completion cancellation trials preserve old target bytes and report latency only
+after positive transfer. Named-stream, readonly, long-path and empty-file cases
+exercise the semantic differences that a raw throughput number would miss.
+The root platform workflow runs it on actual Windows beside native application
+and legacy Rust journeys. No Windows timing result is inferred from this Linux
+host's successful strict SDK build. The decision is to test native copy first,
+not to replace the production backend before that measurement.

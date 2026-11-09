@@ -1,0 +1,32 @@
+# Variables belong to the current process; directory values use this execution's
+# captured context rather than changing the process-wide working directory.
+native fn get(name: String) -> String | Null;
+native fn set(name: String, value: String) -> Null;
+native fn unset(name: String) -> Null;
+native fn variables() -> Range<Scope>;
+native fn working_directory() -> Path;
+native fn set_working_directory(path: Path | String) -> Path;
+native fn home_directory() -> Path;
+native fn operating_system() -> String;
+native fn newline() -> String;
+native fn path_separator() -> String;
+
+fn has(name: String) { get(name) is not null };
+fn get_or(name: String, fallback: String) {
+    let value? = get(name);
+    if value is null { fallback } else { value }
+};
+fn names() {
+    $std::ranges::map(variables(), fn(variable) { variable::name })
+};
+fn paths(name: String) {
+    let value? = get(name);
+    if value is null {
+        $std::ranges::take([~], 0)
+    } else {
+        $std::ranges::map(
+            $std::string::split(value, path_separator()),
+            fn(entry: String) { entry as Path }
+        )
+    }
+};

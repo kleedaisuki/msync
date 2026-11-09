@@ -1,0 +1,139 @@
+# One shared native runner owns live spawn and completed input/output behavior.
+scope NativeProcess {
+    wait: $std::process::wait,
+    stdout: $std::process::stdout,
+    stderr: $std::process::stderr,
+    exit_code: $std::process::exit_code,
+    success: $std::process::success,
+    spawn: $std::process::spawn,
+    run: $std::process::run,
+    run_input: $std::process::run_input,
+};
+
+# Completed data retains the actual Process and owns its captured output strings.
+scope Completed {
+    new: fn(process: Process) {
+        let value = NativeProcess::wait(process);
+        scope {
+            process: value,
+            output: NativeProcess::stdout(value),
+            error: NativeProcess::stderr(value),
+            code: NativeProcess::exit_code(value),
+            success: NativeProcess::success(value),
+        }
+    },
+    lines: fn(self: $std::concepts::CompletedProcess) {
+        $std::string::lines(self::output)
+    },
+    error_lines: fn(self: $std::concepts::CompletedProcess) {
+        $std::string::lines(self::error)
+    },
+    write_to: fn(
+        self: $std::concepts::CompletedProcess,
+        destination: Path | String
+    ) {
+        $std::io::write_text(destination, self::output)
+    },
+};
+
+# Construction snapshots argument data without starting or observing a process.
+scope Command {
+    new: fn(executable: Path | String, arguments: Range) {
+        Command::with_runner(executable, arguments, NativeProcess)
+    },
+    with_runner: fn(
+        executable: Path | String,
+        arguments: Range,
+        runner: $std::concepts::ProcessRunner
+    ) -> $std::concepts::CommandSpec {
+        scope {
+            executable: executable as Path,
+            arguments: $std::ranges::materialize(arguments),
+            runner: runner,
+        }
+    },
+    with_args: fn(self: $std::concepts::CommandSpec, values: Range) {
+        Command::with_runner(self::executable, values, self::runner)
+    },
+    append_args: fn(self: $std::concepts::CommandSpec, values: Range) {
+        Command::with_runner(
+            self::executable,
+            $std::ranges::concat(self::arguments, values),
+            self::runner
+        )
+    },
+    on: fn(self: $std::concepts::CommandSpec, connection: Connection) {
+        Command::with_runner(
+            self::executable @ connection,
+            self::arguments,
+            self::runner
+        )
+    },
+    spawn: fn(self: $std::concepts::CommandSpec) {
+        let policy = self::runner;
+        policy::spawn(self::executable, self::arguments)
+    },
+    run: fn(self: $std::concepts::CommandSpec) {
+        let policy = self::runner;
+        policy::run(self::executable, self::arguments)
+    },
+    run_input: fn(self: $std::concepts::CommandSpec, input: String) {
+        let policy = self::runner;
+        policy::run_input(self::executable, self::arguments, input)
+    },
+    capture: fn(self: $std::concepts::CommandSpec) {
+        Completed::new(Command::run(self))
+    },
+    capture_input: fn(self: $std::concepts::CommandSpec, input: String) {
+        Completed::new(Command::run_input(self, input))
+    },
+    output: fn(self: $std::concepts::CommandSpec) {
+        NativeProcess::stdout(Command::run(self))
+    },
+    lines: fn(self: $std::concepts::CommandSpec) {
+        $std::string::lines(NativeProcess::stdout(Command::run(self)))
+    },
+};
+
+# Exit classification does not alter launch policy or discard completed data.
+scope ExitStatus {
+    accept: fn(result: $std::concepts::CompletedProcess) -> Bool {
+        result::success
+    },
+};
+
+scope Checked {
+    new: fn(command: $std::concepts::CommandSpec)
+        -> $std::concepts::CheckedCommand {
+        Checked::with_policy(command, ExitStatus)
+    },
+    with_policy: fn(
+        command: $std::concepts::CommandSpec,
+        exit_policy: $std::concepts::ExitPolicy
+    ) -> $std::concepts::CheckedCommand {
+        scope {
+            command: command,
+            exit_policy: exit_policy
+        }
+    },
+    classify: fn(
+        result: $std::concepts::CompletedProcess,
+        policy: $std::concepts::ExitPolicy
+    ) -> $std::concepts::Result {
+        if policy::accept(result) {
+            $std::data::Result::ok(result)
+        } else {
+            $std::data::Result::err(result)
+        }
+    },
+    run: fn(self: $std::concepts::CheckedCommand) -> $std::concepts::Result {
+        Checked::classify(Command::capture(self::command), self::exit_policy)
+    },
+    run_input: fn(self: $std::concepts::CheckedCommand, input: String)
+        -> $std::concepts::Result {
+        Checked::classify(
+            Command::capture_input(self::command, input),
+            self::exit_policy
+        )
+    },
+};

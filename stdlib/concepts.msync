@@ -1,0 +1,173 @@
+# Structural product: two independently typed payload fields.
+concept Product {
+    first?: typename First,
+    second?: typename Second,
+};
+
+# Native optional value: a present payload wrapper. Option? adds absent Null;
+# some(null) is present and distinct from none().
+concept Option {
+    value?: typename Item,
+};
+
+# Same representation as Option; named for capability-oriented annotations.
+concept Optional {
+    Option,
+};
+
+# A sum exposes one eliminator, invoked with both alternative callbacks.
+# Callback specialization checks payloads; this is not a higher-kinded type.
+concept Sum {
+    fold: Function,
+};
+
+# Success/error sum, with fold(success, error) callback ordering.
+concept Result {
+    Sum,
+};
+
+# Left/right sum, with fold(left, right) callback ordering.
+concept Either {
+    Sum,
+};
+
+# Operation dictionaries for generic composition. Callable fields intentionally
+# remain Function: dependent callback results specialize at ordinary call sites.
+concept Mapper {
+    map: Function,
+};
+
+concept Bindable {
+    and_then: Function,
+};
+
+concept Folder {
+    fold: Function,
+};
+
+concept Traversable {
+    traverse: Function,
+};
+
+concept Callable {
+    call: Function,
+};
+
+concept Predicate {
+    test: Function,
+};
+
+# Storage policy: take an eager reusable snapshot with the same element schema.
+concept RangeStorage {
+    snapshot: fn(values: Range) -> Range,
+};
+
+# Data-only filesystem record; physical endpoint provenance stays in Path.
+concept PathRecord {
+    path: Path,
+};
+
+# A selected process-launch policy returns real Process values and owns the
+# distinction between a live spawn, a completed run and input-fed completion.
+concept ProcessRunner {
+    spawn: fn(executable: Path, arguments: Range) -> Process,
+    run: fn(executable: Path, arguments: Range) -> Process,
+    run_input: fn(executable: Path, arguments: Range, input: String) -> Process,
+};
+
+# Data-only process specification, with materialized arguments and launch policy.
+concept CommandSpec {
+    executable: Path,
+    arguments: Range,
+    runner: ProcessRunner,
+};
+
+# Captured process completion, retaining the process identity and its outputs.
+concept CompletedProcess {
+    process: Process,
+    output: String,
+    error: String,
+    code: Number,
+    success: Bool,
+};
+
+# Selected text I/O policy; records and policies own distinct responsibilities.
+concept TextIOPolicy {
+    read: fn(path: Path) -> String,
+    lines: fn(path: Path) -> Range<String>,
+    write: fn(path: Path, text: String) -> Null,
+    append: fn(path: Path, text: String) -> Null,
+};
+
+# A text file's data and its selected I/O implementation.
+concept TextFile {
+    PathRecord,
+    policy: TextIOPolicy,
+};
+
+# Persistent text chunk policy; append must retain prior chunk snapshots.
+concept TextChunks {
+    append: fn(chunks: Range<String>, text: String) -> Range<String>,
+    build: fn(chunks: Range<String>) -> String,
+};
+
+# Explicit builder state, with a selected persistent chunk policy.
+concept TextBuffer {
+    chunks: Range<String>,
+    length: Number,
+    policy: TextChunks,
+};
+
+# Regular-expression specification, separate from selected matching operations.
+concept PatternSpec {
+    expression: String,
+};
+
+# Equivalence relation: reflexive, symmetric and transitive on the carrier.
+concept Equality {
+    equal: fn(left: typename Self, right: Self) -> Bool,
+};
+
+# Reflexive, antisymmetric and transitive less_equal, consistent with equal.
+concept PartialOrder {
+    Equality,
+    less_equal: fn(left: Self, right: Self) -> Bool,
+};
+
+# PartialOrder with totality: a <= b or b <= a for every carrier pair.
+concept TotalOrder {
+    PartialOrder,
+};
+
+# Strict weak-order policy: irreflexive/transitive less with transitive
+# incomparability. Tree and heap families check its carrier and signature.
+concept StrictOrder {
+    sample?: typename Self,
+    less: fn(left: Self, right: Self) -> Bool,
+};
+
+# One binary operation closed over Self; no additional algebraic law.
+concept Magma {
+    combine: fn(left: typename Self, right: Self) -> Self,
+};
+
+# Associativity: combine(combine(a, b), c) = combine(a, combine(b, c)).
+concept Semigroup {
+    Magma,
+};
+
+# Semigroup with a two-sided identity: identity * a = a = a * identity.
+concept Monoid {
+    Semigroup,
+    identity: Self,
+};
+
+# Exit classification is separate from launching and retains all completed data.
+concept ExitPolicy {
+    accept: fn(result: CompletedProcess) -> Bool,
+};
+
+concept CheckedCommand {
+    command: CommandSpec,
+    exit_policy: ExitPolicy,
+};

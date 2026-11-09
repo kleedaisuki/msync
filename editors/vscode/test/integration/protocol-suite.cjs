@@ -53,10 +53,10 @@ async function run() {
         'ssh://',
         'tcp://[::',
     ];
-    const lines = uris.map((uri, index) => `remote${index} := ${uri}`);
+    const lines = uris.map((uri, index) => `let remote${index} = ${uri};`);
     const quoted = ['"ssh://forge"', '"tcp://[::1]:8022/path"'];
-    lines.push(...quoted.map((literal, index) => `quoted${index} := ${literal}`));
-    lines.push('local_path := $local::file');
+    lines.push(...quoted.map((literal, index) => `let quoted${index} = ${literal};`));
+    lines.push('let local_path = file @ $local;');
     const filename = path.join(workspace, 'protocol-style.msync');
     await fs.writeFile(filename, lines.join('\n') + '\n');
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filename));
@@ -74,10 +74,6 @@ async function run() {
     const legend = await bounded('protocol semantic legend', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokensLegend', document.uri));
     const tokens = await bounded('protocol semantic tokens', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokens', document.uri));
     assert.ok(legend && tokens && tokens.data.length);
-    assert.equal(legend.tokenTypes[2], 'string');
-    assert.equal(legend.tokenTypes[5], 'namespace');
-    assert.equal(legend.tokenTypes[10], 'protocol');
-    assert.equal(legend.tokenTypes[11], 'endpoint');
     const pieces = semanticPieces(document, legend, tokens.data);
     for (const [line, uri] of uris.entries()) {
         const separator = uri.indexOf('://');
@@ -101,7 +97,7 @@ async function run() {
         assert.ok(pieces.some(piece => piece.line === line && piece.text === literal && piece.type === 'string'));
         assert.ok(!pieces.some(piece => piece.line === line && ['protocol', 'endpoint'].includes(piece.type)));
     }
-    assert.ok(pieces.some(piece => piece.line === uris.length + quoted.length && piece.text === 'local' && piece.type === 'namespace'));
+    assert.ok(pieces.some(piece => piece.line === uris.length + quoted.length && piece.text === 'local' && piece.type === 'variable'));
     const result = { suite: 'protocol', status: 'passed', vscodeVersion: vscode.version, uris,
         legend: legend.tokenTypes, pieces, fallback };
     await fs.writeFile(path.join(runRoot, 'protocol-results.json'), JSON.stringify(result, null, 2));

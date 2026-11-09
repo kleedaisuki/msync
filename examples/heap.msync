@@ -1,0 +1,36 @@
+# Min-heap by default. All operations take the ordinary data instance explicitly.
+let pending = $std::containers::Heap::new([9, 2, 7, 1]);
+$std::containers::Heap::push(pending, 3);
+let next? = $std::containers::Heap::pop(pending);
+if next is not null {
+    (next as String) -> ./heap-first.txt;
+};
+
+# Snapshot membership is stable; producing sorted values does not consume pending.
+let sorted = $std::containers::Heap::sorted(pending);
+$std::string::join(
+    $std::ranges::map(sorted, fn(value: Number) {
+        value as String
+    }),
+    ","
+) -> ./heap-sorted.txt;
+
+# A policy changes the order, not the Heap implementation or its runtime kind.
+scope Descending {
+    Self: Number,
+    sample?: null,
+    less: fn(left: Number, right: Number) -> Bool {
+        left > right
+    },
+};
+
+let urgent = $std::containers::Heap::with_policy([9, 2, 7, 1], Descending);
+$std::string::join(
+    $std::ranges::map(
+        $std::containers::Heap::drain(urgent),
+        fn(value: Number) {
+            value as String
+        }
+    ),
+    ","
+) -> ./heap-descending.txt;

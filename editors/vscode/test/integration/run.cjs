@@ -58,8 +58,19 @@ async function main() {
     }, null, 2));
     await fs.writeFile(path.join(directories.workspace, 'preserved.txt'), 'keep me\n');
     const serverSha256 = createHash('sha256').update(await fs.readFile(serverPath)).digest('hex');
+    const managedAssemblies = {};
+    for (const entry of await fs.readdir(path.dirname(serverPath), { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.dll')) continue;
+        const bytes = await fs.readFile(path.join(path.dirname(serverPath), entry.name));
+        managedAssemblies[entry.name] = createHash('sha256').update(bytes).digest('hex');
+    }
+    const languageUpgradeOnly = process.env.MSYNC_TEST_LANGUAGE_UPGRADE_ONLY === '1';
+    const standardConceptsOnly = process.env.MSYNC_TEST_STANDARD_CONCEPTS_ONLY === '1';
     const protocolOnly = process.env.MSYNC_TEST_PROTOCOL_ONLY === '1';
-    const metadata = { serverPath, serverSha256, runRoot, suite: protocolOnly ? 'protocol' : 'full', startedAt: new Date().toISOString() };
+    const artifactOnly = process.env.MSYNC_TEST_ARTIFACT_ONLY === '1';
+    const stdlibOnly = process.env.MSYNC_TEST_STDLIB_ONLY === '1';
+    const suite = standardConceptsOnly ? 'standard-concepts' : languageUpgradeOnly ? 'language-upgrade' : stdlibOnly ? 'stdlib' : artifactOnly ? 'artifact' : protocolOnly ? 'protocol' : 'full';
+    const metadata = { serverPath, serverSha256, managedAssemblies, runRoot, suite, startedAt: new Date().toISOString() };
     await fs.writeFile(path.join(runRoot, 'run.json'), JSON.stringify(metadata, null, 2));
     const log = createWriteStream(path.join(runRoot, 'host.log'));
     const tee = target => new Writable({ write(chunk, encoding, callback) {
@@ -70,7 +81,7 @@ async function main() {
     try {
         await runTests({
             extensionDevelopmentPath: extensionRoot,
-            extensionTestsPath: path.join(__dirname, protocolOnly ? 'protocol-suite.cjs' : 'suite.cjs'),
+            extensionTestsPath: path.join(__dirname, standardConceptsOnly ? 'standard-concepts-suite.cjs' : languageUpgradeOnly ? 'language-upgrade-suite.cjs' : stdlibOnly ? 'stdlib-suite.cjs' : artifactOnly ? 'artifact-suite.cjs' : protocolOnly ? 'protocol-suite.cjs' : 'suite.cjs'),
             extensionTestsEnv: {
                 MSYNC_TEST_SERVER_PATH: serverPath,
                 MSYNC_TEST_WORKSPACE: directories.workspace,

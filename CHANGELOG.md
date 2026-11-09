@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.0 — development
+
+- Replace the product implementation with C#/.NET 10 Native AOT while retaining
+  the independent Rust implementation and its established semantics in `legacy/`.
+- Introduce brace-delimited block expressions, semicolon value discards, `let`,
+  generic first-class `fn`, lexical scope values, exhaustive `match`, explicit
+  nullable bindings and flow-sensitive narrowing, type patterns and unevaluated
+  `decltype`. Connections and callable paths have distinct types.
+- Compile to versioned binary relocatable `.mso` and context-bound `.mexe`
+  bytecode; execute source-free artifacts with typed block interpretation,
+  machine-independent optimization and runtime specialization.
+- Keep normal copy/retry semantics, native SSH/WSL transport ownership, literal
+  String data, source-backed standard modules and typed host capabilities.
+- Add Native AOT packaging, the updated VS Code grammar/LSP workflow, persistent
+  non-replaying REPL, effective TOML configuration and opt-in JSONL/SQLite
+  observability. Published earlier tags/assets remain unchanged.
+
+See the [development delivery note](docs/releases/0.8.0.md).
+
 ## 0.7.3 — 2026-11-04
 
 - Remove backslash escape decoding from String source syntax. Windows path text

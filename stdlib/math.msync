@@ -1,0 +1,128 @@
+# Number operations use binary64, with no integer casts or implicit truthiness.
+native fn abs(value: Number) -> Number;
+native fn floor(value: Number) -> Number;
+native fn ceil(value: Number) -> Number;
+native fn trunc(value: Number) -> Number;
+native fn round(value: Number) -> Number;
+native fn round_even(value: Number) -> Number;
+native fn sqrt(value: Number) -> Number;
+native fn cbrt(value: Number) -> Number;
+native fn exp(value: Number) -> Number;
+native fn exp2(value: Number) -> Number;
+native fn expm1(value: Number) -> Number;
+native fn log(value: Number) -> Number;
+native fn log2(value: Number) -> Number;
+native fn log10(value: Number) -> Number;
+native fn log1p(value: Number) -> Number;
+native fn sin(value: Number) -> Number;
+native fn cos(value: Number) -> Number;
+native fn tan(value: Number) -> Number;
+native fn asin(value: Number) -> Number;
+native fn acos(value: Number) -> Number;
+native fn atan(value: Number) -> Number;
+native fn sinh(value: Number) -> Number;
+native fn cosh(value: Number) -> Number;
+native fn tanh(value: Number) -> Number;
+native fn asinh(value: Number) -> Number;
+native fn acosh(value: Number) -> Number;
+native fn atanh(value: Number) -> Number;
+native fn divide(left: Number, right: Number) -> Number;
+native fn fmin(left: Number, right: Number) -> Number;
+native fn fmax(left: Number, right: Number) -> Number;
+native fn pow(value: Number, exponent: Number) -> Number;
+native fn atan2(y: Number, x: Number) -> Number;
+native fn hypot(x: Number, y: Number) -> Number;
+native fn fmod(value: Number, divisor: Number) -> Number;
+native fn remainder(value: Number, divisor: Number) -> Number;
+native fn copysign(value: Number, sign: Number) -> Number;
+native fn nextafter(value: Number, toward: Number) -> Number;
+native fn fma(left: Number, right: Number, addend: Number) -> Number;
+native fn clamp(value: Number, lower: Number, upper: Number) -> Number;
+native fn is_finite(value: Number) -> Bool;
+native fn is_nan(value: Number) -> Bool;
+native fn is_infinite(value: Number) -> Bool;
+native fn is_integer(value: Number) -> Bool;
+native fn is_safe_integer(value: Number) -> Bool;
+native fn signbit(value: Number) -> Bool;
+let nan = 0 / 0;
+let infinity = 1 / 0;
+let epsilon = 2.220446049250313e-16;
+let max_safe_integer = 9007199254740991;
+let min_positive = 5e-324;
+let max_value = 1.7976931348623157e308;
+fn square(value: Number) {
+    value * value
+};
+fn cube(value: Number) {
+    value * value * value
+};
+fn min(left, right) {
+    if right < left {
+        right
+    } else {
+        left
+    }
+};
+fn max(left, right) {
+    if left < right {
+        right
+    } else {
+        left
+    }
+};
+fn pi() {
+    acos(-1)
+};
+fn tau() {
+    2 * pi()
+};
+fn e() {
+    exp(1)
+};
+fn radians(degrees: Number) {
+    degrees * divide(pi(), 180)
+};
+fn degrees(radians: Number) {
+    radians * divide(180, pi())
+};
+fn sign(value: Number) {
+    if is_nan(value) or value == 0 {
+        return value;
+    };
+    if value < 0 {
+        -1
+    } else {
+        1
+    }
+};
+fn between(value: Number, lower: Number, upper: Number) {
+    not is_nan(value) and not is_nan(lower) and not is_nan(upper) and lower
+        <= value and value <= upper
+};
+fn positive_difference(left: Number, right: Number) {
+    if is_nan(left) or is_nan(right) {
+        return left + right;
+    };
+    if left > right {
+        left - right
+    } else {
+        0
+    }
+};
+fn lerp(first: Number, last: Number, amount: Number) {
+    if amount == 0 {
+        return first;
+    };
+    if amount == 1 {
+        return last;
+    };
+    if(first <= 0 and last >= 0) or(first >= 0 and last <= 0) {
+        return amount * last +(1 - amount) * first;
+    };
+    let value = first + amount *(last - first);
+    if(amount > 1) == (last > first) {
+        max(last, value)
+    } else {
+        min(last, value)
+    }
+};

@@ -1,0 +1,40 @@
+--- a/src/Msync.Runtime/Interpreter.cs
++++ b/src/Msync.Runtime/Interpreter.cs
+@@ -154,3 +154,9 @@
+-                            if (instruction.Op == OpCode.Call && instruction.Text is not null && callee is FunctionValue { NativeName: null } dynamicFunction) callee = Specialize(dynamicFunction, instruction);
+-                            else if (instruction.Op == OpCode.Call && instruction.B != 0) callee = ((FunctionValue)callee) with { Function = instruction.B - 1 };
+-                            stack.Add(await InvokeScheduledAsync(callee, arguments, LegacyScheduling ? 0 : instruction.B, instruction.Span, cancellationToken)); break;
++                            int? target = null;
++                            if (instruction.Op == OpCode.Call && instruction.Text is not null && callee is FunctionValue { NativeName: null } dynamicFunction)
++                                target = DispatchTarget(dynamicFunction, instruction);
++                            else if (instruction.Op == OpCode.Call && instruction.B != 0)
++                            {
++                                var functionValue = (FunctionValue)callee;
++                                if (functionValue.NativeName is null) target = instruction.B - 1;
++                            }
++                            stack.Add(await InvokeScheduledAsync(callee, arguments, LegacyScheduling ? 0 : instruction.B, instruction.Span, cancellationToken, target)); break;
+@@ -303,6 +309,10 @@
+-        if (!dispatchTables.TryGetValue(instruction.Text, out var targets))
+-        {
+-            targets = FunctionDispatch.Parse(instruction.Text);
+-            dispatchTables.Add(instruction.Text, targets);
+-        }
+-        return targets.TryGetValue(function.Function, out var target) ? function with { Function = target }
++        return function with { Function = DispatchTarget(function, instruction) };
++    }
++    private int DispatchTarget(FunctionValue function, Instruction instruction)
++    {
++        if (!dispatchTables.TryGetValue(instruction.Text!, out var targets))
++        {
++            targets = FunctionDispatch.Parse(instruction.Text!);
++            dispatchTables.Add(instruction.Text!, targets);
++        }
++        return targets.TryGetValue(function.Function, out var target) ? target
+--- a/src/Msync.Runtime/Interpreter.Processes.cs
++++ b/src/Msync.Runtime/Interpreter.Processes.cs
+@@ -8 +8 @@
+-    private async ValueTask<Value> InvokeScheduledAsync(Value callee, IReadOnlyList<Value> arguments, int scheduling, SourceSpan? origin, CancellationToken cancellationToken)
++    private async ValueTask<Value> InvokeScheduledAsync(Value callee, IReadOnlyList<Value> arguments, int scheduling, SourceSpan? origin, CancellationToken cancellationToken, int? compiledTarget = null)
+@@ -16,0 +17,2 @@
++        if (compiledTarget is { } target && callee is FunctionValue { NativeName: null } function)
++            return await RunFunctionAsync(target, function.Captures ?? [], ValueArguments(arguments), cancellationToken);

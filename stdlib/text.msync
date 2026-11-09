@@ -1,0 +1,69 @@
+# Persistent chunks preserve snapshots without copying prior text on append.
+let newline = "
+";
+native fn append_chunk(chunks: Range<String>, text: String) -> Range<String>;
+
+# Chunk policies preserve ordered concatenation; their storage need not be eager.
+scope ChunkStorage {
+    append: fn(chunks: Range<String>, text: String) -> Range<String> {
+        append_chunk(chunks, text)
+    },
+    build: fn(chunks: Range<String>) -> String {
+        $std::string::join(chunks, "")
+    },
+};
+
+# Instances contain data and one shared policy, not captured accessor functions.
+scope StringBuilder {
+    with_policy: fn(policy: $std::concepts::TextChunks) {
+        scope { chunks: [""], length: 0, policy: policy }
+    },
+    new: fn {
+        scope { chunks: [""], length: 0, policy: ChunkStorage }
+    },
+    append: fn(self: $std::concepts::TextBuffer, text: String) {
+        self::chunks = self::policy::append(self::chunks, text);
+        self::length = self::length + $std::string::length(text);
+    },
+    append_line: fn(self: $std::concepts::TextBuffer, text: String) {
+        self::chunks = self::policy::append(self::chunks, text);
+        self::chunks = self::policy::append(self::chunks, newline);
+        self::length = self::length + $std::string::length(text) + 1;
+    },
+    append_all: fn(self: $std::concepts::TextBuffer, values: Range<String>) {
+        for text in values {
+            self::chunks = self::policy::append(self::chunks, text);
+            self::length = self::length + $std::string::length(text);
+        };
+    },
+    clear: fn(self: $std::concepts::TextBuffer) {
+        self::chunks = [""];
+        self::length = 0;
+    },
+    build: fn(self: $std::concepts::TextBuffer) -> String {
+        self::policy::build(self::chunks)
+    },
+    len: fn(self: $std::concepts::TextBuffer) -> Number { self::length },
+    is_empty: fn(self: $std::concepts::TextBuffer) -> Bool {
+        self::length == 0
+    },
+    snapshot: fn(self: $std::concepts::TextBuffer) -> String {
+        self::policy::build(self::chunks)
+    },
+};
+
+fn join_lines(lines: Range<String>) { $std::string::join(lines, newline) };
+fn indent(text: String, prefix: String) {
+    $std::string::join($std::ranges::map(
+        $std::string::lines(text), fn(line: String) {
+            $std::string::concat(prefix, line)
+        }
+    ), newline)
+};
+fn unindent(text: String, prefix: String) {
+    $std::string::join($std::ranges::map(
+        $std::string::lines(text), fn(line: String) {
+            $std::string::remove_prefix(line, prefix)
+        }
+    ), newline)
+};

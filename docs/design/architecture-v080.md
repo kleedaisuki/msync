@@ -1,0 +1,170 @@
+# 0.8 language and execution architecture
+
+## Scope and ownership
+
+The 0.8 migration replaces the indentation-based Rust frontend with a C#
+compiler and a Native AOT executable. The original 0.7.3 implementation is
+preserved, independently buildable, under [`legacy/`](../../legacy/MIGRATION.md).
+Its source and artifact semantics are not changed by the new parser. Published
+tags and asset bytes are never rewritten.
+
+The root build uses .NET 10. The implementation boundaries are:
+
+| Component | Owns | Must not own |
+| --- | --- | --- |
+| `Msync.Core` | Semantic types, values, typed bytecode, artifact codec, machine-independent optimizer, module/stage contract | Source parser, authenticated sessions |
+| `Msync.Compiler` | Tokens/AST, binding, type inference, refinement, specialization, lowering | Executing filesystem observations or processes |
+| `Msync.Runtime` | Contextual binding/lowering, native operations, interpretation and transfer lifetime | Parsing/debug-source execution |
+| `Msync.Cli` | Commands, REPL, diagnostics, LSP transport and native process entrypoint | A second implementation of source semantics |
+
+Compilers, interpreters and native registries share semantic types rather than
+guessing capabilities from identifier spelling. Standard-library source modules
+are compiler inputs, not a second prose-only API.
+
+```text
+*.msync
+   -> tokens / syntax tree
+   -> inferred typed operations + specialized function identities
+   -> relocatable bytecode
+   -> machine-independent optimization and control/effect blocks (-O level)
+   -> *.mso
+        -> contextual binding + runtime lowering of selected work
+        -> *.mexe
+             -> interpreter / native operation admission / execution
+```
+
+The artifacts contain operations, types, constants, symbolic context and source
+locations, not source to evaluate later. Source locations are diagnostic data.
+The current binary contract is format 4, language 0.8.0 (semantic flags 3).
+Readers reject earlier C# formats 1/2/3; compatibility code and old builtin
+alias identities are not retained. Historical versioning discussions describe
+previous releases, not a requirement to maintain their readers.
+Relocatable artifacts capture no live authentication, filesystem snapshots,
+handles or optimizer proofs about a previous execution. Executable artifacts
+freeze context, not remote credentials or a claim that external files still
+exist. Loading an artifact does not authorize reusing stale observations.
+
+## Language decisions
+
+* Braces define expression blocks. A trailing expression supplies the value;
+  `;` discards a value and an empty/discard-only block evaluates to `null`.
+  Whitespace and indentation do not establish syntax structure.
+* `let` introduces a mutable lexical location with an immutable inferred or
+  declared type; another `let` shadows it with a new identity. Assignments
+  update the selected value without widening its type. Scope aliases share
+  instance identity and field mutations. `_` discards a value without
+  introducing a nullable binding. The November 9 requirement supersedes the
+  earlier immutable model; see [mutable state and effects](mutable-state-and-effects-v080.md).
+* `Null` is a real type and `null` a value, not `false`. Null tests use `is` /
+  `is not`; boolean conditions still require Bool. A nullable binding requires
+  written `?`, including Scope fields such as `filename?: null`, and `value?`
+  means **is null**, following the user's example.
+  Tests refine the same binding in the appropriate control-flow branch.
+* `fn` unifies the old macro/symbol/boolean distinction. Specialization is keyed
+  by function identity and argument types, not source substitution. A recursive
+  specialization reserves its identity before lowering its body: recursion is
+  a normal typed call edge, not an infinite demand for inlining. New closures
+  retain captured lexical locations; parameter expressions execute once.
+  `global` explicitly imports definition-time lexical ancestor locations under
+  the same shared-cell contract; it is not process-global name lookup.
+* Scope is a lexical member object. Connection identifies a physical endpoint.
+  Scope/Process member selection uses `::`; `Path | String @ Connection` is
+  physical qualification and evaluates left then right. Connection `::` is
+  rejected with migration guidance. Named Scope declarations initialize once on
+  first execution and share an instance within a program/REPL session; anonymous
+  Scopes allocate fresh instances. This is not a process-wide shared registry.
+* Paths retain raw text, captured local projection and explicit endpoint
+  provenance. Requalifying an unbound `~` uses the selected endpoint's home.
+  Lexical path operations do not accidentally turn raw text into local absolute
+  strings. Path/String conversion follows the consuming operation; a bare
+  String transfer source remains literal bytes, preserving the existing useful
+  contract rather than guessing from file existence.
+* Match is exhaustive over the inferred input domain. Regex patterns inspect a
+  path's native string projection. Type patterns operate on semantic types.
+  `decltype(expr)` performs inference only; even native/process/transfer
+  expressions in its operand are not executed.
+* Number is binary64 with IEEE division, unordered NaN comparisons, signed-zero
+  equality, truncating remainder and right-associative exponentiation. Finite
+  integral Int64 counts/indices serve lazy Range workloads without Int32 caps.
+  Numeric syntax and semantics are shared by static evaluation and execution.
+* `as` accepts a statically known target and a closed conversion matrix; only
+  Path/String conversion is implicit. A named `concept` composes structural
+  member, associated-type and function-signature constraints. Checking occurs
+  during specialization and annotated-result checking, not through runtime
+  dispatch. Concepts neither add TypeKinds/operator overloads nor prove laws.
+  See [the language contract](language-v080.md) for syntax and conversions.
+* Removed syntax (`:=`, binding `=>`, indentation declarations, async/await and
+  the delete statement keyword) is not reintroduced through frontend aliases.
+  Native filesystem deletion remains a callable library operation.
+
+## Effects, scheduling and compatibility
+
+Control-flow edges and effect dependencies are separate concerns. Runtime
+admission belongs to selected work: a possible SSH operand in an unselected
+branch must not connect, prompt or globally join unrelated operations. Unknown
+effects prohibit only transformations needing their independence. Static
+optimization must not pre-execute filesystem queries, transfers or programs.
+
+The ordinary-copy contract is unchanged: an owned same-directory temporary file,
+atomic replacement, at most one file fsync, and cleanup by the live owner.
+Completed members of a failed directory/range copy may remain; report the actual
+outcome and permit retry. There is no persistent rollback journal, before-image,
+startup scan, parent-wide publication lock or filesystem-wide syncfs.
+One finite remote transfer uses one native SSH client/channel for metadata and
+bytes, preserving configured aliases, agents and native prompts.
+
+The old Rust implementation remains a separate historical baseline; its formats
+are not current C# execution inputs. Binary headers distinguish format version
+and language semantics, and unsupported versions are rejected explicitly.
+Native AOT distribution must run without an installed
+.NET runtime; `.mexe` is msync executable IR, not an OS-native executable.
+
+Contextual binding captures cwd/home/source and binds constants once, lowers
+physical builtins and local transfers, invokes the optimizer once at the chosen
+level (default O2), then lowers newly exposed transfers/no-ops. Executable IR
+runs without rebinding or repeating this optimization pipeline. Structural
+artifact validation occurs at read; source type errors are checked before dead
+code elimination. Actual I/O admission owns failures and diagnostics rather
+than repeatedly proving permissions or file existence. A weak module-identity
+cache may retain immutable per-PC block lookup, never mutable cells, credentials
+or filesystem proofs. See [runtime details](runtime-v080.md).
+
+## Engineering and research basis
+
+* [Microsoft Native AOT deployment](https://learn.microsoft.com/en-us/dotnet/core/deploying/native-aot/)
+  makes the distribution self-contained and disallows runtime code generation.
+  Use a static opcode interpreter and statically reachable native registry, not
+  Reflection.Emit or runtime-loaded compiler assemblies. Runtime-specific
+  optimization means contextual lowering and execution choices, not a hidden JIT.
+* [Rust's monomorphization collector](https://rustc-dev-guide.rust-lang.org/backend/monomorph.html)
+  separates discovering concrete callable instances from code generation.
+  Adopt identity-based specialization and retain recursion as a graph edge.
+* [MLIR bytecode versioning](https://mlir.llvm.org/docs/BytecodeFormat/)
+  distinguishes stable container encoding from evolving operation semantics.
+  Apply that distinction to msync's own compact format; a dependency on the
+  LLVM/MLIR runtime is not needed for this DSL.
+* [Fallin and Bernstein, PLDI 2025](https://doi.org/10.1145/3729259)
+  derive whole-program compilation through partial evaluation of an interpreter.
+  The relevant lesson is one operational semantics across stages, not a promise
+  of adopting their C/C++ compiler technique directly in Native AOT C#.
+* [Pečimúth et al., ECOOP 2025](https://doi.org/10.4230/LIPIcs.ECOOP.2025.25)
+  reuse optimized IR with verified specialization assumptions and relocation.
+  Keep persistent machine-independent operations separate from live observations
+  and runtime-owned identities; do not persist the latter as portable proofs.
+
+## Integration acceptance
+
+The key acceptance journey is source -> compile `.mso` without effects -> remove
+source -> execute -> bind `.mexe` -> change cwd -> execute with captured context.
+Use real filesystem bytes and real child processes. Incremental probes should
+cover null refinements, exhaustive pattern/type matching, generic/recursive
+closures, scope ownership, finite selectors, ordinary replacement, endpoint
+selection and authentication ownership. A native published binary must run those
+same journeys; managed-build success alone does not establish Native AOT
+compatibility. Cross-platform installation evidence supplements local checks.
+
+Implementation-specific language, runtime, tooling and validation findings belong
+in their focused 0.8 notes. This document fixes cross-component decisions, not a
+claim that every acceptance journey has already passed.
+The active [upgrade delivery matrix](language-upgrade-delivery-v080.md) separates
+required contracts, owner evidence, managed integration and native acceptance.

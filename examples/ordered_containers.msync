@@ -1,0 +1,83 @@
+# All four families are source Scope declarations with explicit instance operands.
+let by_name = $std::containers::BTree::new("", 0);
+$std::containers::BTree::insert(by_name, "Klee", 9);
+$std::containers::BTree::insert(by_name, "Ada", 3);
+$std::containers::BTree::insert(by_name, "Klee", 10);
+let found? = $std::containers::BTree::get(by_name, "Klee");
+if found is not null {
+    (found::value as String) -> ./btree-value.txt;
+};
+
+# A B+ tree seeks a range once, then walks its linked leaves.
+let by_number = $std::containers::BPlusTree::new(0, "");
+for number in $std::ranges::iota(0, 260) {
+    $std::containers::BPlusTree::insert(by_number, number, number as String);
+};
+
+$std::string::join(
+    $std::ranges::map(
+        $std::containers::BPlusTree::range(by_number, 23, 27),
+        fn(entry) {
+            let value? = entry::value;
+            if value is null {
+                ""
+            } else {
+                value
+            }
+        }
+    ),
+    ","
+) -> ./bplus-range.txt;
+
+# Comparator policy supplies equivalence; the Set implementation stays unchanged.
+scope FoldCase {
+    sample: "",
+    less: fn(left: String, right: String) -> Bool {
+        $std::string::to_lowercase(left) < $std::string::to_lowercase(right)
+    },
+};
+
+let names = $std::containers::Set::with_policy(
+    ["Klee", "klee", "Ada"],
+    FoldCase
+);
+$std::string::join($std::containers::Set::snapshot(names), ",")
+    -> ./set-names.txt;
+
+# Record metadata is inferred through the policy's structural exemplar.
+scope ByPriority {
+    sample: scope {
+        priority: 0,
+        name: ""
+    },
+    less: fn(left, right) -> Bool {
+        left::priority < right::priority
+    },
+};
+
+let jobs = $std::containers::Heap::with_policy(
+    [
+        scope {
+            priority: 7,
+            name: "archive"
+        },
+        scope {
+            priority: 1,
+            name: "config"
+        },
+        scope {
+            priority: 3,
+            name: "notes"
+        }
+    ],
+    ByPriority
+);
+$std::string::join(
+    $std::ranges::map(
+        $std::containers::Heap::drain(jobs),
+        fn(job) {
+            job::name
+        }
+    ),
+    ","
+) -> ./heap-jobs.txt;

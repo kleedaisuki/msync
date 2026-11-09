@@ -1,8 +1,8 @@
 {
   "name": "msync-language",
   "displayName": "msync Language",
-  "description": "msync 0.7 syntax highlighting and language-server support",
-  "version": "0.7.3",
+  "description": "Inferred types, actionable diagnostics, navigation and formatting for msync 0.8",
+  "version": "0.8.0",
   "publisher": "msync",
   "license": "GPL-3.0-only",
   "engines": {
@@ -13,7 +13,9 @@
   ],
   "main": "./out/extension.cjs",
   "activationEvents": [
-    "onLanguage:msync"
+    "onLanguage:msync",
+    "onLanguage:msync-ir",
+    "onCustomEditor:msync.bytecode"
   ],
   "contributes": {
     "languages": [
@@ -26,6 +28,15 @@
           ".msync"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "msync-ir",
+        "aliases": [
+          "msync Typed IR"
+        ],
+        "extensions": [
+          ".msync-ir"
+        ]
       }
     ],
     "grammars": [
@@ -36,6 +47,11 @@
         "unbalancedBracketScopes": [
           "string.regexp.msync"
         ]
+      },
+      {
+        "language": "msync-ir",
+        "scopeName": "source.msync-ir",
+        "path": "./syntaxes/msync-ir.tmLanguage.json"
       }
     ],
     "snippets": [
@@ -51,7 +67,7 @@
           "type": "string",
           "default": "msync",
           "scope": "machine",
-          "description": "Path to the msync executable (0.6+; 0.7.2+ for operator-aware editing and filesystem completion). Launched directly with --language-server; shell arguments are not accepted. Changes restart the server automatically."
+          "description": "Path to the msync 0.8 executable. Launched directly with --language-server; shell arguments are not accepted. Changes restart the server automatically."
         }
       }
     },
@@ -59,8 +75,58 @@
       {
         "command": "msync.restartLanguageServer",
         "title": "msync: Restart Language Server"
+      },
+      {
+        "command": "msync.openArtifactText",
+        "title": "msync: Open Bytecode as Read-only IR"
+      },
+      {
+        "command": "msync.refreshArtifact",
+        "title": "msync: Refresh Bytecode View"
       }
     ],
+    "customEditors": [
+      {
+        "viewType": "msync.bytecode",
+        "displayName": "msync Bytecode",
+        "selector": [
+          {
+            "filenamePattern": "*.mso"
+          },
+          {
+            "filenamePattern": "*.mexe"
+          },
+          {
+            "filenamePattern": "*.MSO"
+          },
+          {
+            "filenamePattern": "*.MEXE"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "msync.openArtifactText",
+          "when": "resourceExtname == .mso || resourceExtname == .mexe || resourceExtname == .MSO || resourceExtname == .MEXE",
+          "group": "navigation"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "msync.openArtifactText",
+          "when": "activeCustomEditorId == msync.bytecode",
+          "group": "navigation"
+        },
+        {
+          "command": "msync.refreshArtifact",
+          "when": "activeCustomEditorId == msync.bytecode || resourceScheme == msync-artifact",
+          "group": "navigation"
+        }
+      ]
+    },
     "semanticTokenTypes": [
       {
         "id": "protocol",
@@ -71,6 +137,11 @@
         "id": "endpoint",
         "superType": "string",
         "description": "The address portion of an unquoted endpoint URI, including its user, host, port and path."
+      },
+      {
+        "id": "controlKeyword",
+        "superType": "keyword",
+        "description": "Conditional and matching control flow, including the null-test question mark."
       }
     ],
     "semanticTokenScopes": [
@@ -82,10 +153,28 @@
           ],
           "endpoint": [
             "string.unquoted.endpoint.msync"
+          ],
+          "function": [
+            "entity.name.function.msync"
+          ],
+          "type": [
+            "entity.name.type.msync"
+          ],
+          "variable": [
+            "variable.other.readwrite.msync"
+          ],
+          "controlKeyword": [
+            "keyword.control.msync"
           ]
         }
       }
-    ]
+    ],
+    "configurationDefaults": {
+      "[msync]": {
+        "editor.semanticHighlighting.enabled": true,
+        "editor.defaultFormatter": "msync.msync-language"
+      }
+    }
   },
   "scripts": {
     "test": "node --test test/*.test.cjs",
@@ -100,6 +189,7 @@
     "@vscode/test-electron": "3.1.0",
     "esbuild": "0.28.2",
     "vscode-oniguruma": "2.0.1",
-    "vscode-textmate": "9.3.2"
+    "vscode-textmate": "9.3.2",
+    "vscode-uri": "3.2.0"
   }
 }

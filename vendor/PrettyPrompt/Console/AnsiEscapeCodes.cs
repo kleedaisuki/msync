@@ -1,0 +1,112 @@
+﻿#region License Header
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#endregion
+
+using PrettyPrompt.Highlighting;
+
+namespace PrettyPrompt.Consoles;
+public static class AnsiEscapeCodes
+{
+    private const char EscapeChar = '\u001b';
+    private const string Escape = "\u001b";
+    private const string ResetForegroundColor = "39";
+    private const string ResetBackgroundColor = "49";
+    private const char ResetChar = '0';
+    private const char Bold = '1';
+    private const char Underline = '4';
+    private const string Reverse = "7";
+    public const string ClearLine = $"{Escape}[0K";
+    public const string ClearToEndOfScreen = $"{Escape}[0J";
+    public const string ClearEntireScreen = $"{Escape}[2J";
+    public static readonly string Reset = $"{Escape}[{ResetChar}m";
+
+    // xterm "modifyOtherKeys" (XTMODKEYS, resource Pp=4). When enabled, combinations that otherwise
+    // share an encoding with an unmodified key - notably Shift/Ctrl/Alt+Enter, which all arrive as a
+    // bare CR - are reported as distinct "CSI 27 ; <modifier> ; <keycode> ~" sequences, which we parse
+    // in KeyPress.MapInputEscapeSequence. We use LEVEL 1, not 2: level 1 leaves keys with well-known
+    // behavior alone (Shift+letter still produces its capital via the keyboard layout), while level 2
+    // encodes *everything*, turning Shift+C into an escape sequence and breaking ordinary typing -
+    // and shifted punctuation can't be reconstructed without layout knowledge anyway.
+    // See https://invisible-island.net/xterm/ctlseqs/ctlseqs.html
+    public const string EnableModifyOtherKeys = $"{Escape}[>4;1m";
+    public const string DisableModifyOtherKeys = $"{Escape}[>4;0m";
+
+    /// <param name="index">Index starts at 1.</param>
+    public static string GetMoveCursorToColumn(int index) => $"{Escape}[{index}G";
+
+    public static string GetMoveCursorUp(int count) => count == 0 ? "" : $"{Escape}[{count}A";
+    public static string GetMoveCursorDown(int count) => count == 0 ? "" : $"{Escape}[{count}B";
+    public static string GetMoveCursorRight(int count) => count == 0 ? "" : $"{Escape}[{count}C";
+    public static string GetMoveCursorLeft(int count) => count == 0 ? "" : $"{Escape}[{count}D";
+
+    /// <param name="sb">Target StringBUilder.</param>
+    /// <param name="index">Index starts at 1.</param>
+    public static void AppendMoveCursorToColumn(StringBuilder sb, int index) => MoveCursor(sb, index, 'G');
+
+    public static void AppendMoveCursorUp(StringBuilder sb, int count) => MoveCursor(sb, count, 'A');
+    public static void AppendMoveCursorDown(StringBuilder sb, int count) => MoveCursor(sb, count, 'B');
+    public static void AppendMoveCursorRight(StringBuilder sb, int count) => MoveCursor(sb, count, 'C');
+    public static void AppendMoveCursorLeft(StringBuilder sb, int count) => MoveCursor(sb, count, 'D');
+
+    private static void MoveCursor(StringBuilder sb, int count, char direction)
+    {
+        if (count > 0)
+        {
+            sb.Append(EscapeChar);
+            sb.Append('[');
+            sb.Append(count);
+            sb.Append(direction);
+        }
+    }
+
+    internal static string ToAnsiEscapeSequence(string colorCode) => $"{Escape}[{colorCode}m";
+
+    public static string ToAnsiEscapeSequenceSlow(ConsoleFormat formatting)
+    {
+        var sb = new StringBuilder();
+        AppendAnsiEscapeSequence(sb, formatting);
+        return sb.ToString();
+    }
+
+    public static void AppendAnsiEscapeSequence(StringBuilder stringBuilder, ConsoleFormat formatting)
+    {
+        stringBuilder.Append(EscapeChar);
+        stringBuilder.Append('[');
+        if (formatting.Inverted)
+        {
+            const string ResetAndReverse = ResetForegroundColor + ";" + ResetBackgroundColor + ";" + Reverse;
+            stringBuilder.Append(ResetAndReverse);
+        }
+        else
+        {
+            stringBuilder.Append(ResetChar);
+
+            if (formatting.ForegroundCode != null)
+            {
+                stringBuilder.Append(';');
+                stringBuilder.Append(formatting.ForegroundCode);
+            }
+
+            if (formatting.BackgroundCode != null)
+            {
+                stringBuilder.Append(';');
+                stringBuilder.Append(formatting.BackgroundCode);
+            }
+
+            if (formatting.Bold)
+            {
+                stringBuilder.Append(';');
+                stringBuilder.Append(Bold);
+            }
+
+            if (formatting.Underline)
+            {
+                stringBuilder.Append(';');
+                stringBuilder.Append(Underline);
+            }
+        }
+        stringBuilder.Append('m');
+    }
+}

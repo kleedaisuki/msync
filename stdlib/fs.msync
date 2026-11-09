@@ -1,83 +1,75 @@
-# Filesystem values retain their endpoint; lexical operations never inspect files.
-scope fs:
-    native exists(path) -> Bool = "fs.exists"
-    native delete(path) -> Void = "fs.delete"
-    native status(path) -> String = "fs.status"
-    native symlink_status(path) -> String = "fs.symlink_status"
-    native is_regular_file(path) -> Bool = "fs.is_regular_file"
-    native is_directory(path) -> Bool = "fs.is_directory"
-    native is_symlink(path) -> Bool = "fs.is_symlink"
-    native is_block_file(path) -> Bool = "fs.is_block_file"
-    native is_character_file(path) -> Bool = "fs.is_character_file"
-    native is_fifo(path) -> Bool = "fs.is_fifo"
-    native is_socket(path) -> Bool = "fs.is_socket"
-    native is_other(path) -> Bool = "fs.is_other"
-    native is_empty(path) -> Bool = "fs.is_empty"
-    native permissions(path) -> Range<String> = "fs.permissions"
-    native set_permissions(path, flags) -> Void = "fs.set_permissions"
-    native is_readonly(path) -> Bool = "fs.is_readonly"
-    native set_readonly(path, readonly) -> Void = "fs.set_readonly"
-    native equivalent(left, right) -> Bool = "fs.equivalent"
-    native absolute(path) -> Path = "fs.absolute"
-    native canonical(path) -> Path = "fs.canonical"
-    native weakly_canonical(path) -> Path = "fs.weakly_canonical"
-    native read_symlink(path) -> Path = "fs.read_symlink"
-    native temp_directory_path() -> Path = "fs.temp_directory_path"
-    native create_directory(path) -> Bool = "fs.create_directory"
-    native create_directories(path) -> Bool = "fs.create_directories"
-    native remove(path) -> Bool = "fs.remove"
-    native remove_all(path) -> Bool = "fs.remove_all"
-    native rename(source, destination) -> Void = "fs.rename"
-    native create_hard_link(target, link) -> Void = "fs.create_hard_link"
-    native create_symlink(target, link) -> Void = "fs.create_symlink"
-    native create_directory_symlink(target, link) -> Void = "fs.create_directory_symlink"
-    native copy_symlink(source, destination) -> Void = "fs.copy_symlink"
-    native copy_file(source, destination) -> Bool = "fs.copy_file"
-    native components(path) -> Range<Path> = "fs.components"
-    native directory_iterator(path) -> Range<Path> = "fs.directory_iterator"
-    native recursive_directory_iterator(path) -> Range<Path> = "fs.recursive_directory_iterator"
-    native root_name(path) -> Path = "fs.root_name"
-    native root_directory(path) -> Path = "fs.root_directory"
-    native root_path(path) -> Path = "fs.root_path"
-    native relative_path(path) -> Path = "fs.relative_path"
-    native parent_path(path) -> Path = "fs.parent_path"
-    native filename(path) -> Path = "fs.filename"
-    native stem(path) -> Path = "fs.stem"
-    native extension(path) -> Path = "fs.extension"
-    native lexically_normal(path) -> Path = "fs.lexically_normal"
-    native lexically_relative(path, base) -> Path = "fs.lexically_relative"
-    native lexically_proximate(path, base) -> Path = "fs.lexically_proximate"
-    native replace_filename(path, name) -> Path = "fs.replace_filename"
-    native replace_extension(path, extension) -> Path = "fs.replace_extension"
-    native remove_filename(path) -> Path = "fs.remove_filename"
-    native append(path, suffix) -> Path = "fs.append"
-    native concat(path, suffix) -> Path = "fs.concat"
-    native make_preferred(path) -> Path = "fs.make_preferred"
-    native string(path) -> String = "fs.string"
-    native generic_string(path) -> String = "fs.generic_string"
-    native has_root_name(path) -> Bool = "fs.has_root_name"
-    native has_root_directory(path) -> Bool = "fs.has_root_directory"
-    native has_root_path(path) -> Bool = "fs.has_root_path"
-    native has_relative_path(path) -> Bool = "fs.has_relative_path"
-    native has_parent_path(path) -> Bool = "fs.has_parent_path"
-    native has_filename(path) -> Bool = "fs.has_filename"
-    native has_stem(path) -> Bool = "fs.has_stem"
-    native has_extension(path) -> Bool = "fs.has_extension"
-    native is_absolute(path) -> Bool = "fs.is_absolute"
-    native path_empty(path) -> Bool = "fs.path_empty"
-    native is_relative(path) -> Bool = "fs.is_relative"
+# Host filesystem operations preserve endpoint provenance and execute only at runtime.
+native fn exists(path: Path | String) -> Bool;
+native fn delete(path: Path | String) -> Null;
+native fn touch(path: Path | String) -> Null;
+native fn status(path: Path | String) -> String;
+native fn symlink_status(path: Path | String) -> String;
+native fn is_regular_file(path: Path | String) -> Bool;
+native fn is_directory(path: Path | String) -> Bool;
+native fn is_symlink(path: Path | String) -> Bool;
+native fn is_block_file(path: Path | String) -> Bool;
+native fn is_character_file(path: Path | String) -> Bool;
+native fn is_fifo(path: Path | String) -> Bool;
+native fn is_socket(path: Path | String) -> Bool;
+native fn is_other(path: Path | String) -> Bool;
+native fn is_empty(path: Path | String) -> Bool;
+native fn permissions(path: Path | String) -> Range<String>;
+native fn set_permissions(path: Path | String, flags: String) -> Null;
+native fn is_readonly(path: Path | String) -> Bool;
+native fn set_readonly(path: Path | String, readonly: Bool) -> Null;
+native fn equivalent(left: Path | String, right: Path | String) -> Bool;
+native fn absolute(path: Path | String) -> Path;
+native fn canonical(path: Path | String) -> Path;
+native fn weakly_canonical(path: Path | String) -> Path;
+native fn read_symlink(path: Path | String) -> Path;
+native fn temp_directory_path() -> Path;
+native fn create_directory(path: Path | String) -> Bool;
+native fn create_directories(path: Path | String) -> Bool;
+native fn remove(path: Path | String) -> Bool;
+native fn remove_all(path: Path | String) -> Bool;
+native fn remove_directory(path: Path | String) -> Bool;
+native fn rename(source: Path | String, destination: Path | String) -> Null;
+native fn create_hard_link(target: Path | String, link: Path | String) -> Null;
+native fn create_symlink(target: Path | String, link: Path | String) -> Null;
+native fn create_directory_symlink(target: Path | String, link: Path | String) -> Null;
+native fn copy_symlink(source: Path | String, destination: Path | String) -> Null;
+native fn copy_file(source: Path | String, destination: Path | String) -> Bool;
+native fn components(path: Path | String) -> Range<Path>;
+native fn directory_iterator(path: Path | String) -> Range<Path>;
+native fn recursive_directory_iterator(path: Path | String) -> Range<Path>;
+native fn root_name(path: Path | String) -> Path;
+native fn root_directory(path: Path | String) -> Path;
+native fn root_path(path: Path | String) -> Path;
+native fn relative_path(path: Path | String) -> Path;
+native fn parent_path(path: Path | String) -> Path;
+native fn filename(path: Path | String) -> Path;
+native fn stem(path: Path | String) -> Path;
+native fn extension(path: Path | String) -> Path;
+native fn lexically_normal(path: Path | String) -> Path;
+native fn lexically_relative(path: Path | String, base: Path | String) -> Path;
+native fn lexically_proximate(path: Path | String, base: Path | String) -> Path;
+native fn replace_filename(path: Path | String, name: Path | String) -> Path;
+native fn replace_extension(path: Path | String, extension: Path | String) -> Path;
+native fn remove_filename(path: Path | String) -> Path;
+native fn append(path: Path | String, suffix: Path | String) -> Path;
+native fn concat(path: Path | String, suffix: Path | String) -> Path;
+native fn make_preferred(path: Path | String) -> Path;
+native fn string(path: Path | String) -> String;
+native fn generic_string(path: Path | String) -> String;
+native fn has_root_name(path: Path | String) -> Bool;
+native fn has_root_directory(path: Path | String) -> Bool;
+native fn has_root_path(path: Path | String) -> Bool;
+native fn has_relative_path(path: Path | String) -> Bool;
+native fn has_parent_path(path: Path | String) -> Bool;
+native fn has_filename(path: Path | String) -> Bool;
+native fn has_stem(path: Path | String) -> Bool;
+native fn has_extension(path: Path | String) -> Bool;
+native fn is_absolute(path: Path | String) -> Bool;
+native fn path_empty(path: Path | String) -> Bool;
+native fn is_relative(path: Path | String) -> Bool;
 
-    symbol current_path():
-        return $pwd::pwd
-
-    symbol relative(path, base):
-        return lexically_relative(weakly_canonical(path), weakly_canonical(base))
-
-    symbol proximate(path, base):
-        return lexically_proximate(weakly_canonical(path), weakly_canonical(base))
-
-    boolean status_known(status):
-        return status != "none"
-
-    macro copy(source, destination):
-        source -> destination
+fn current_path() { $pwd::pwd };
+fn relative(path, base) { lexically_relative(weakly_canonical(path), weakly_canonical(base)) };
+fn proximate(path, base) { lexically_proximate(weakly_canonical(path), weakly_canonical(base)) };
+fn status_known(status: String) { status != "none" };
+fn copy(source, destination) { source -> destination };

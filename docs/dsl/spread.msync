@@ -1,28 +1,19 @@
-remote => $wsl
-# token: remote => $ wsl
+# Physical endpoints use @; lexical Scope members use ::.
+let remote = $wsl;
+let config = ~/.codex/config.toml;
+config @ remote -> config;
 
-remote::~/.codex/config.toml -> ~/.codex/config.toml
-# token: remote :: ~ / .codex / config.toml -> ~ / .codex / config.toml
-# 覆盖 config.toml，-> 左端为文件夹同样覆盖并递归拷贝
+# A directory destination retains the source's filename.
+~/.codex/AGENTS.md @ $local -> ~/.codex/;
 
-$local::~/.codex/AGENTS.md -> ~/.codex/
-# token: $ loacal :: ~ / .codex / AGENTS.md -> ~ / .codex /
-# 在其下创建同名文件或文件夹（如果文件已经存在则报错，文件夹递归拷贝）
+# SSH aliases use the native client configuration when an operation runs.
+let server = ssh://forge;
+config -> ~/.codex/config.toml @ server;
 
-server => ssh://moesegfault@127.0.0.1
-# token: server => ssh :// moesegfault @ 127.0.0.1
+# Dot-prefixed names are ordinary bindings. Regex paths select file sets.
+let .codex = ~/.codex;
+.codex/agents/<.+\.toml> -> ~/.codex/agents/ @ remote;
 
-public => https://www.moesegfault.dev
-# token: public => https :// www.moesegfault.dev
-
-public::~/v1/help.html -> ~/help.html
-# token: public :: ~ / v1 / help.html -> ~ / help.html
-
-$path::gcc.exe -> $env::LOCALAPPDATA/
-# token: $ path :: gcc.exe -> $ env :: LOCALAPPDATA /
-
-.codex := ~/.codex
-# token: .codex := ~ / .codex
-
-.codex/agents/<.+\.toml> -> $wsl::.codex/agents/
-# token: .codex / agents / < .+\.toml > -> $ wsl :: .codex / agents /
+# Paths are values; explicit conversion produces their textual spelling.
+let settings = scope { config: config, remote: remote };
+let description = settings::config as String;

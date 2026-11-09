@@ -1,0 +1,39 @@
+using Msync.Core;
+
+namespace Msync.Runtime;
+
+public sealed partial class Interpreter
+{
+    private Module? fusionImage;
+    private Dictionary<FunctionCode, bool[]>? fusionSites;
+
+    private void PrepareFusion()
+    {
+        if (ReferenceEquals(fusionImage, module)) return;
+        fusionImage = module;
+        fusionSites = null;
+        foreach (var block in module.Blocks!)
+        {
+            var function = module.Functions[block.Function];
+            var code = function.Instructions;
+            for (var pc = block.Start; pc + 2 < block.End; pc++)
+            {
+                if (code[pc].Op != OpCode.LoadLocal || code[pc + 1].Op != OpCode.LoadLocal || code[pc + 2].Op != OpCode.Add) continue;
+                fusionSites ??= new(ReferenceEqualityComparer.Instance);
+                if (!fusionSites.TryGetValue(function, out var sites)) fusionSites.Add(function, sites = new bool[code.Count]);
+                sites[pc] = true;
+            }
+        }
+    }
+
+    private static Value FusedAdd(Value left, Value right)
+    {
+        if (left is NumberValue l && right is NumberValue r) return new NumberValue(l.Data + r.Data);
+        var type = left.Type == TypeRef.String ? TypeRef.String : TypeRef.Number;
+        return CombineValues(left, right, type, static (a, b) =>
+        {
+            if (a is StringValue sa && b is StringValue sb) return new StringValue(sa.Data + sb.Data);
+            return new NumberValue(((NumberValue)a).Data + ((NumberValue)b).Data);
+        });
+    }
+}

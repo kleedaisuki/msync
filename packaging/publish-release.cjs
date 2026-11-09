@@ -13,7 +13,7 @@ module.exports = async function publish({github, context, core, version, directo
   try { release = (await github.rest.repos.getReleaseByTag({...repo, tag})).data; }
   catch (error) { if (error.status !== 404) throw error; }
   if (release && !release.draft) {
-    core.notice(`${tag} is published; assets were not changed. Bump the Cargo version for another release.`);
+    core.notice(`${tag} is published; assets were not changed. Bump the package version for another release.`);
     return;
   }
   if (release && release.target_commitish !== context.sha) {

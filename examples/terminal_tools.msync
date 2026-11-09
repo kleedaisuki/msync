@@ -1,0 +1,27 @@
+# Run from a disposable directory; all output stays beneath ./terminal-demo.
+let shell = $std::shell;
+shell::mkdir(./terminal-demo);
+"info started
+error network unavailable
+info retrying
+error network unavailable
+error recovered
+" -> ./terminal-demo/application.log;
+
+let selected = shell::head(
+    shell::uniq(shell::grep("^error", ./terminal-demo/application.log)),
+    10
+);
+$std::io::write_text(
+    ./terminal-demo/errors.txt,
+    $std::text::join_lines(selected)
+);
+
+let counts = shell::wc(./terminal-demo/application.log);
+let summary = $std::string::concat("lines=", counts::lines as String);
+shell::tee(summary, ./terminal-demo/summary.txt);
+shell::cp(./terminal-demo/errors.txt, ./terminal-demo/errors-copy.txt);
+shell::touch(./terminal-demo/errors-copy.txt);
+
+# The REPL streams this Range; a script may instead inspect or transfer it.
+shell::ls_at(./terminal-demo)

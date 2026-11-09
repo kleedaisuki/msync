@@ -150,3 +150,107 @@ Disposable final logs are `.temp/scheduler-perf/final-first.csv` and
 constant payload verifier; they are not the accepted results above because
 unchanged existing outputs could have hidden an accidental no-op. The durable
 tables retain the strengthened measurements even if `.temp` is cleaned.
+
+## C# completed-prefix retirement (0.8, 2026-11-09)
+
+The current product is the Native AOT C# runtime, not the Rust scheduler
+described above. A real `copy; acquire; fs.exists(output-directory)` sequence
+exposed a different historical-state cost: successful tasks left empty path
+nodes in `ResourceIndex.Children`. Looking up a directory therefore revisited
+every previously completed descendant. The earlier ordinary-independent-copy
+counter only established cheap same-depth leaf queries, not cheap directory
+observations after many successive frontiers.
+
+An initial managed structural discriminator copied actual files and checked every
+64-byte output. At fixed path depth, 100/1,000 independent copies visited
+3,684/36,984 nodes, while the copy/acquire/directory-observation sequence visited
+9,634/546,484. Those setup-specific counts are respectively `37N - 16` and
+`N²/2 + 46.5N - 16`. Their difference exposes history traversal, not extra
+observable dependencies. They are not Native latency measurements.
+
+### Frozen Native comparison
+
+The accepted component comparison uses exact product snapshots and an identical
+probe, without compiling or binding in the execution interval:
+
+| Input | Before | Candidate |
+| --- | --- | --- |
+| Product source | `ec37545` | `c0b21ab` |
+| Measurement source | `98fffa2` | `98fffa2` |
+| Native executable SHA256 | `227eda9f08fb2e53e18dc465eccacd318ff2a54f3353839b81a00589e01765d5` | `b52a6158baddd330be10a4777fbb4f5440370f2a59ab9121647a2107de1be12e` |
+
+Both were published from separate repository-root `.temp` source archives using
+the pinned SDK, Release, linux-x64, project-owned Native AOT, locked RID package
+resolution, and the corresponding `SourceRevisionId`. Only the runtime
+retirement change differs in the product code. Source-archive hashes and actual
+embedded runtime/core build identities are saved beside the reports.
+
+The harness alternates AB/BA process batches for three rounds. Each process has
+one warmup and three accepted samples, giving nine observations per image/case.
+Every sample writes a random fixed-size generation and checks every output
+outside timing. Fixtures are ordinary warm-overwrite local files; no page-cache
+eviction or artificial transport is used. Constructor cost, execution cost,
+global allocated bytes and public resource statistics are recorded separately.
+
+The raw module is already executable and uses the ordinary interpreter,
+dependency index, copy slots, staged publication, metadata and fsync behavior.
+The `gated_literal` control launches the same native component executable as a
+real child; its stdout is unavailable until the host observes all admissions
+and writes a gate. `gated_shared` first publishes a shared source through that
+child, then admits Path readers which depend on it. Its original source is
+deliberately stale. These cases distinguish admission from later I/O completion
+and detect a removed RAW edge without replacing actual work with a Task mock.
+
+All values below are milliseconds, p50 / descriptive p95:
+
+| Prepared execution workload | Before | Candidate |
+| --- | ---: | ---: |
+| 100 independent copies | 47.347 / 48.632 | 49.408 / 55.734 |
+| 1,000 independent copies | 468.299 / 522.342 | 484.725 / 534.490 |
+| 100 copy/acquire/directory observations | 144.673 / 192.605 | 140.314 / 160.744 |
+| 1,000 copy/acquire/directory observations | 1,630.907 / 1,905.470 | 1,440.278 / 1,477.722 |
+| 1,000 same-file dependency-chain copies | 1,261.727 / 1,363.509 | 1,278.506 / 1,469.326 |
+| 1,000 gated String transfers | 491.570 / 599.383 | 491.094 / 588.010 |
+| 1,000 gated shared-source Path transfers | 499.442 / 717.611 | 525.315 / 555.074 |
+
+The directory-observation workload improves in every alternating round; at
+1,000 operations its median drops by 190.629 ms / 11.7%. Its resource visits
+fall from 551,482 to 24,000. Execution allocations rise from 12,443,968 to
+16,100,296 bytes because serial frontiers repeatedly retire and recreate common
+prefix nodes. This 3.66 MB churn is an explicit cost, not a memory-optimization
+claim. A node pool is not introduced merely to recover it: late completion
+leases, comparers and lifetime ownership would become more complicated.
+
+The ordinary and dependency-chain controls do not establish a general copy
+speedup. Their median drain costs vary with real filesystem completion. Their
+admission medians stay approximately unchanged: independent 52.667 to 51.359 ms,
+chain 50.440 to 50.090 ms. Ordinary independent allocations remain approximately
+9.32 MB, and resource visits remain 40,982. Gated shared-source admission drops
+from 49.165 to 43.559 ms even though its execution median is higher; the latter
+must not be reported as a scheduler speedup. All byte-generation oracles pass,
+and the chain/shared controls preserve exactly 999/1,000 dependency edges.
+
+The adoption is narrow: retire completed frontier state so native directory
+observations do not pay for historical descendants. It is not evidence that
+fsync, kernel I/O, SSH, or every task launch became faster. An auxiliary
+`strace -f -c` run confirms exactly 100 fsyncs and 100 renames for 100 copies;
+its setup/verification and tracing distortion exclude it from latency results.
+
+### Reproduction and scope
+
+```sh
+python3 tests/Performance/scheduler_components.py \
+  --before .temp/scheduler-performance/before-native/msync-scheduling-components \
+  --after .temp/scheduler-performance/after-native/msync-scheduling-components \
+  --sizes 100,1000 --cases independent,observe_directory \
+  --rounds 3 --samples 3 --warmups 1 \
+  --output .temp/scheduler-performance/final-core.json
+```
+
+The companion controls use `--sizes 1,1000 --cases
+chain,gated_literal,gated_shared`. Reports, all raw observations and build/source
+manifests are under `.temp/scheduler-performance/`. These are same-host Linux
+component measurements. Whole-CLI source/object/executable journeys are a
+separate question (`tests/Performance/scheduler.py --stage ...`); native Windows
+behavior is accepted by the delivery owner, not inferred from this Linux run.
+No benchmark threshold is a CI quality gate.

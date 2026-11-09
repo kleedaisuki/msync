@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><AllowUnsafeBlocks>true</AllowUnsafeBlocks><InvariantGlobalization>true</InvariantGlobalization><PublishAot>true</PublishAot></PropertyGroup>
+  <ItemGroup><Compile Include="../Shared/KernelFileCopy.cs" Link="KernelFileCopy.cs" /></ItemGroup>
+</Project>

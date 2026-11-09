@@ -1,0 +1,37 @@
+# .NET regular expressions; record offsets and lengths count Unicode scalars.
+# Inline options such as (?im) select case and multiline behavior.
+native fn is_match(text: String, pattern: String) -> Bool;
+native fn find(text: String, pattern: String) -> Scope?;
+native fn matches(text: String, pattern: String) -> Range<Scope>;
+native fn replace(text: String, pattern: String, replacement: String) -> String;
+native fn split(text: String, pattern: String) -> Range<String>;
+native fn escape(text: String) -> String;
+
+# A pattern is a specification record; matching remains a selected operation.
+scope Pattern {
+    new: fn(expression: String) { scope { expression: expression } },
+    is_match: fn(self: $std::concepts::PatternSpec, text: String) -> Bool {
+        is_match(text, self::expression)
+    },
+    find: fn(self: $std::concepts::PatternSpec, text: String) {
+        find(text, self::expression)
+    },
+    matches: fn(self: $std::concepts::PatternSpec, text: String) {
+        matches(text, self::expression)
+    },
+    replace: fn(self: $std::concepts::PatternSpec, text: String,
+        replacement: String) -> String {
+        replace(text, self::expression, replacement)
+    },
+    split: fn(self: $std::concepts::PatternSpec, text: String) {
+        split(text, self::expression)
+    },
+};
+
+fn values(text: String, pattern: String) {
+    $std::ranges::map(matches(text, pattern), fn(matched) { matched::value })
+};
+fn count(text: String, pattern: String) {
+    $std::ranges::size(matches(text, pattern))
+};
+fn remove(text: String, pattern: String) { replace(text, pattern, "") };

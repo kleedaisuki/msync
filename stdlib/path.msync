@@ -1,8 +1,122 @@
-# Path construction uses the language's endpoint-preserving operators.
-scope path:
-    symbol join(base, child):
-        return base / child
-    symbol qualify(scope, path):
-        return scope::path
-    symbol identity(path):
-        return path
+# Path operators retain raw spelling and selected endpoint identity.
+fn join(base: Path | String, child: Path | String) {
+    base/child
+};
+fn qualify(connection: Connection, path: Path | String) {
+    path @ connection
+};
+fn identity(path: Path | String) {
+    path
+};
+# The lexical filesystem primitives are shared, not duplicated host operations.
+fn root_name(path: Path | String) {
+    $std::fs::root_name(path)
+};
+fn root_directory(path: Path | String) {
+    $std::fs::root_directory(path)
+};
+fn root_path(path: Path | String) {
+    $std::fs::root_path(path)
+};
+fn relative_path(path: Path | String) {
+    $std::fs::relative_path(path)
+};
+fn parent_path(path: Path | String) {
+    $std::fs::parent_path(path)
+};
+fn filename(path: Path | String) {
+    $std::fs::filename(path)
+};
+fn stem(path: Path | String) {
+    $std::fs::stem(path)
+};
+fn extension(path: Path | String) {
+    $std::fs::extension(path)
+};
+fn components(path: Path | String) {
+    $std::fs::components(path)
+};
+fn lexically_normal(path: Path | String) {
+    $std::fs::lexically_normal(path)
+};
+fn lexically_relative(path: Path | String, base: Path | String) {
+    $std::fs::lexically_relative(path, base)
+};
+fn lexically_proximate(path: Path | String, base: Path | String) {
+    $std::fs::lexically_proximate(path, base)
+};
+fn replace_filename(path: Path | String, name: Path | String) {
+    $std::fs::replace_filename(path, name)
+};
+fn replace_extension(path: Path | String, extension: Path | String) {
+    $std::fs::replace_extension(path, extension)
+};
+fn remove_filename(path: Path | String) {
+    $std::fs::remove_filename(path)
+};
+fn append(path: Path | String, child: Path | String) {
+    $std::fs::append(path, child)
+};
+fn concat(path: Path | String, suffix: Path | String) {
+    $std::fs::concat(path, suffix)
+};
+fn make_preferred(path: Path | String) {
+    $std::fs::make_preferred(path)
+};
+fn string(path: Path | String) {
+    $std::fs::string(path)
+};
+fn generic_string(path: Path | String) {
+    $std::fs::generic_string(path)
+};
+fn native(path: Path | String) {
+    $std::fs::string(path)
+};
+fn has_root_name(path: Path | String) {
+    $std::fs::has_root_name(path)
+};
+fn has_root_directory(path: Path | String) {
+    $std::fs::has_root_directory(path)
+};
+fn has_root_path(path: Path | String) {
+    $std::fs::has_root_path(path)
+};
+fn has_relative_path(path: Path | String) {
+    $std::fs::has_relative_path(path)
+};
+fn has_parent_path(path: Path | String) {
+    $std::fs::has_parent_path(path)
+};
+fn has_filename(path: Path | String) {
+    $std::fs::has_filename(path)
+};
+fn has_stem(path: Path | String) {
+    $std::fs::has_stem(path)
+};
+fn has_extension(path: Path | String) {
+    $std::fs::has_extension(path)
+};
+fn is_absolute(path: Path | String) {
+    $std::fs::is_absolute(path)
+};
+fn is_relative(path: Path | String) {
+    $std::fs::is_relative(path)
+};
+fn empty(path: Path | String) {
+    $std::fs::path_empty(path)
+};
+fn normalize(path: Path | String) {
+    lexically_normal(path)
+};
+fn dirname(path: Path | String) {
+    parent_path(path)
+};
+fn basename(path: Path | String) {
+    filename(path)
+};
+fn with_filename(path: Path | String, name: Path | String) {
+    replace_filename(path, name)
+};
+fn with_extension(path: Path | String, extension: Path | String) {
+    replace_extension(path, extension)
+};

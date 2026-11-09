@@ -1,0 +1,14 @@
+# Boolean expressions are ordinary source functions specialized by the compiler.
+scope bool:
+    boolean identity(value):
+        return value
+    boolean negate(value):
+        return not value
+    boolean both(left, right):
+        return left and right
+    boolean either(left, right):
+        return left or right
+    boolean xor(left, right):
+        return left != right
+    boolean implies(left, right):
+        return not left or right

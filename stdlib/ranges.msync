@@ -1,53 +1,225 @@
-# $std::ranges lowers the following source compositions into typed lazy range IR.
-# $view remains the compatible primitive scope used to express these definitions.
-scope ranges:
-    symbol single(value):
-        return [value]
-    symbol identity(values):
-        return values
-    symbol all(values):
-        return values
-    symbol as_const(values):
-        return values
-    symbol as_rvalue(values):
-        return values
-    symbol common(values):
-        return values
-    symbol step(values, count):
-        return values | $view::stride(count)
-    symbol first(values):
-        return values | $view::front
-    symbol last(values):
-        return values | $view::back
-    symbol reverse(values):
-        return values | $view::reverse
-    symbol unique(values):
-        return values | $view::unique
-    symbol take(values, count):
-        return values | $view::take(count)
-    symbol drop(values, count):
-        return values | $view::drop(count)
-    symbol stride(values, count):
-        return values | $view::stride(count)
-    boolean empty(values):
-        return values | $view::empty
-    boolean contains(values, value):
-        return values | $view::contains(value)
-    symbol front(values):
-        return values | $view::front
-    symbol back(values):
-        return values | $view::back
-    symbol find(values, value):
-        return values | $view::find(value)
-    # Variadic values and callback parameters are specialized compiler-native inputs.
-    native of(values...) = "ranges.of"
-    native filter(values, predicate) = "ranges.filter"
-    native transform(values, function) = "ranges.transform"
-    native take_while(values, predicate) = "ranges.take_while"
-    native drop_while(values, predicate) = "ranges.drop_while"
-    native any(values, predicate) = "ranges.any"
-    native any_of(values, predicate) = "ranges.any_of"
-    native all_of(values, predicate) = "ranges.all_of"
-    native none(values, predicate) = "ranges.none"
-    native none_of(values, predicate) = "ranges.none_of"
-    native find_if(values, predicate) = "ranges.find_if"
+# Native signatures specialize item and callback result types at each call.
+fn single(value?) { [value] };
+fn identity(values: Range) { values };
+fn all(values: Range) { values };
+native fn of(value) -> Range;
+native fn take(values: Range, count: Number) -> Range;
+native fn drop(values: Range, count: Number) -> Range;
+native fn stride(values: Range, count: Number) -> Range;
+native fn step(values: Range, count: Number) -> Range;
+native fn reverse(values: Range) -> Range;
+native fn unique(values: Range) -> Range;
+native fn filter(values: Range, predicate: Function) -> Range;
+native fn transform(values: Range, function: Function) -> Range;
+native fn take_while(values: Range, predicate: Function) -> Range;
+native fn drop_while(values: Range, predicate: Function) -> Range;
+native fn empty(values: Range) -> Bool;
+native fn contains(values: Range, value?) -> Bool;
+native fn any(values: Range, predicate: Function) -> Bool;
+native fn any_of(values: Range, predicate: Function) -> Bool;
+native fn all_of(values: Range, predicate: Function) -> Bool;
+native fn none(values: Range, predicate: Function) -> Bool;
+native fn none_of(values: Range, predicate: Function) -> Bool;
+native fn front(values: Range) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
+native fn back(values: Range) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
+native fn first(values: Range) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
+native fn last(values: Range) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
+native fn find(values: Range, value?) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
+native fn find_if(values: Range, predicate: Function) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
+
+# Iterator capabilities; adapters defer source and callback work until consumption.
+native fn concat(left: Range, right: Range) -> Range;
+native fn flatten(values: Range) -> Range;
+native fn zip(left: Range, right: Range) -> Range<Scope>;
+native fn enumerate_from(values: Range, start: Number) -> Range<Scope>;
+native fn chunk(values: Range, count: Number) -> Range<Range>;
+native fn slide(values: Range, count: Number) -> Range<Range>;
+native fn materialize(values: Range) -> Range;
+native fn sort(values: Range) -> Range;
+native fn sort_with(values: Range, less: Function) -> Range;
+native fn scan(values: Range, initial?, operation: Function) -> Range;
+native fn sequence(start: Number, stop: Number, step: Number) -> Range<Number>;
+native fn repeat(value?, count: Number) -> Range;
+native fn at(values: Range, index: Number) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
+
+fn map(values: Range, operation: Function) { transform(values, operation) };
+fn reject(values: Range, predicate: Function) {
+    filter(values, fn(value?) { not predicate(value) })
+};
+fn flat_map(values: Range, operation: Function) {
+    flatten(transform(values, operation))
+};
+fn join(values: Range) { flatten(values) };
+fn enumerate(values: Range) { enumerate_from(values, 0) };
+fn indices(values: Range) {
+    transform(enumerate(values), fn(item) { item::index })
+};
+fn keys(pairs: Range) { transform(pairs, fn(pair) { pair::first }) };
+fn values(pairs: Range) { transform(pairs, fn(pair) { pair::second }) };
+fn iota(start: Number, stop: Number) { sequence(start, stop, 1) };
+fn generate(count: Number, factory: Function) {
+    transform(enumerate(repeat(null, count)), fn(item) { factory(item::index) })
+};
+fn slice(values: Range, start: Number, count: Number) {
+    take(drop(values, start), count)
+};
+fn tail(values: Range) { drop(values, 1) };
+fn init(values: Range) { transform(slide(values, 2), fn(pair) { first(pair) }) };
+fn cache(values: Range) { materialize(values) };
+fn sorted(values: Range) { sort(values) };
+fn sorted_with(values: Range, less: Function) { sort_with(values, less) };
+fn sort_by(values: Range, projection: Function) {
+    let keyed = transform(values, fn(value?) {
+        scope { key: projection(value), value?: value }
+    });
+    let ordered = sort_with(keyed, fn(left, right) { left::key < right::key });
+    transform(ordered, fn(item) { item::value })
+};
+
+# Terminals are ordinary typed programs, not one host entrypoint per algorithm.
+fn size(values: Range) {
+    let result = 0;
+    for value in values { result = result + 1; };
+    result
+};
+fn distance(values: Range) { size(values) };
+fn count_if(values: Range, predicate: Function) {
+    size(filter(values, predicate))
+};
+fn matches(left?, right?) {
+    if left is null {
+        right is null
+    } else {
+        if right is null { false } else { contains([left], right) }
+    }
+};
+fn count(values: Range, target?) {
+    count_if(values, fn(value?) { matches(value, target) })
+};
+fn for_each(values: Range, operation: Function) {
+    for value in values { operation(value); };
+};
+fn copy_if(values: Range, destination, predicate: Function) {
+    filter(values, predicate) -> destination
+};
+fn fold(values: Range, initial?, operation: Function) {
+    let state = scope { value?: initial };
+    for value in values { state::value = operation(state::value, value); };
+    state::value
+};
+fn reduce(values: Range, initial?, operation: Function) {
+    fold(values, initial, operation)
+};
+fn fold_right(values: Range, initial?, operation: Function) {
+    fold(reverse(values), initial, fn(accumulator?, value?) {
+        operation(value, accumulator)
+    })
+};
+fn sum(values: Range) {
+    fold(values, 0, fn(accumulator: Number, value: Number) {
+        accumulator + value
+    })
+};
+fn product(values: Range) {
+    fold(values, 1, fn(accumulator: Number, value: Number) {
+        accumulator * value
+    })
+};
+fn find_or(values: Range, fallback?, predicate: Function) {
+    for value in values { if predicate(value) { return value; }; };
+    fallback
+};
+fn first_or(values: Range, fallback?) {
+    for value in values { return value; };
+    fallback
+};
+fn last_or(values: Range, fallback?) {
+    let state = scope { value?: fallback };
+    for value in values { state::value = value; };
+    state::value
+};
+fn at_or(values: Range, index: Number, fallback?) {
+    first_or(drop(values, index), fallback)
+};
+fn index_if(values: Range, predicate: Function) {
+    for item in enumerate(values) {
+        if predicate(item::value) { return item::index; };
+    };
+    null
+};
+fn index_of(values: Range, target?) {
+    index_if(values, fn(value?) { matches(value, target) })
+};
+fn min(values: Range) {
+    let buffered = materialize(values);
+    fold(drop(buffered, 1), first(buffered), fn(best, value) {
+        if value < best { value } else { best }
+    })
+};
+fn max(values: Range) {
+    let buffered = materialize(values);
+    fold(drop(buffered, 1), first(buffered), fn(best, value) {
+        if value > best { value } else { best }
+    })
+};
+fn min_by(values: Range, projection: Function) {
+    let keyed = transform(values, fn(value?) {
+        scope { key: projection(value), value?: value }
+    });
+    let buffered = materialize(keyed);
+    let selected = fold(drop(buffered, 1), first(buffered), fn(best, value) {
+        if value::key < best::key { value } else { best }
+    });
+    selected::value
+};
+fn max_by(values: Range, projection: Function) {
+    let keyed = transform(values, fn(value?) {
+        scope { key: projection(value), value?: value }
+    });
+    let buffered = materialize(keyed);
+    let selected = fold(drop(buffered, 1), first(buffered), fn(best, value) {
+        if value::key > best::key { value } else { best }
+    });
+    selected::value
+};
+fn partition(values: Range, predicate: Function) {
+    let buffered = materialize(values);
+    scope {
+        accepted: filter(buffered, predicate),
+        rejected: reject(buffered, predicate)
+    }
+};
+fn equal(left: Range, right: Range) {
+    let first = materialize(left);
+    let second = materialize(right);
+    if size(first) != size(second) { return false; };
+    all_of(zip(first, second), fn(pair) { matches(pair::first, pair::second) })
+};
+fn starts_with(values: Range, prefix: Range) {
+    let expected = materialize(prefix);
+    let count = size(expected);
+    let seen = 0;
+    for pair in zip(take(values, count), expected) {
+        if not matches(pair::first, pair::second) { return false; };
+        seen = seen + 1;
+    };
+    seen == count
+};
+fn ends_with(values: Range, suffix: Range) {
+    starts_with(reverse(values), reverse(suffix))
+};
+fn lexicographical_compare(left: Range, right: Range) {
+    let first = materialize(left);
+    let second = materialize(right);
+    for pair in zip(first, second) {
+        if pair::first < pair::second { return true; };
+        if pair::second < pair::first { return false; };
+    };
+    size(first) < size(second)
+};
+fn adjacent_find_or(values: Range, fallback?, predicate: Function) {
+    for pair in slide(values, 2) {
+        if predicate(first(pair), last(pair)) { return first(pair); };
+    };
+    fallback
+};

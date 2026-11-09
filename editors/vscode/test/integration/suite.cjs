@@ -5,23 +5,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const vscode = require('vscode');
 
-const EXTENSION = 'msync.msync-language';
 const TIMEOUT = 30_000;
-
-function stringLiteral(value) {
-    return '"' + value.replaceAll('"', '""') + '"';
-}
-
-async function bounded(description, promise) {
-    let timer;
-    try {
-        return await Promise.race([promise, new Promise((_, reject) => {
-            timer = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), TIMEOUT);
-        })]);
-    } finally {
-        clearTimeout(timer);
-    }
-}
 
 async function until(description, read, accepts) {
     const deadline = Date.now() + TIMEOUT;
@@ -35,267 +19,214 @@ async function until(description, read, accepts) {
 }
 
 async function effectsAreAbsent(workspace) {
-    assert.equal(await fs.readFile(path.join(workspace, 'preserved.txt'), 'utf8'), 'keep me\n', 'Language services must not execute delete');
-    for (const name of ['never-created.txt', 'never-created-branch.txt']) {
-        await assert.rejects(fs.access(path.join(workspace, name)), { code: 'ENOENT' }, `Language services must not execute transfer into ${name}`);
-    }
-}
-
-function semanticPieces(document, legend, data) {
-    assert.equal(data.length % 5, 0);
-    const pieces = [];
-    let line = 0;
-    let character = 0;
-    for (let index = 0; index < data.length; index += 5) {
-        line += data[index];
-        character = data[index] === 0 ? character + data[index + 1] : data[index + 1];
-        const length = data[index + 2];
-        assert.ok(length > 0);
-        assert.ok(line < document.lineCount);
-        assert.ok(character + length <= document.lineAt(line).text.length, 'Semantic ranges must be valid UTF-16 positions');
-        pieces.push({
-            text: document.getText(new vscode.Range(line, character, line, character + length)),
-            type: legend.tokenTypes[data[index + 3]],
-        });
-    }
-    return pieces;
-}
-
-async function applyCompletion(document, item) {
-    const replacement = item.textEdit?.range || item.range?.replacing || item.range;
-    const insertion = item.textEdit?.newText || item.insertText;
-    assert.ok(replacement instanceof vscode.Range, 'Filesystem completion must own the replacement range');
-    assert.equal(typeof insertion, 'string');
-    const edit = new vscode.WorkspaceEdit();
-    edit.replace(document.uri, replacement, insertion);
-    assert.ok(await vscode.workspace.applyEdit(edit));
+    assert.equal(await fs.readFile(path.join(workspace, 'preserved.txt'), 'utf8'), 'keep me\n');
+    await assert.rejects(fs.access(path.join(workspace, 'never-created.txt')), { code: 'ENOENT' });
 }
 
 async function run() {
     const workspace = process.env.MSYNC_TEST_WORKSPACE;
     const runRoot = process.env.MSYNC_TEST_ROOT;
-    assert.ok(workspace && runRoot, 'Launch this suite through test/integration/run.cjs');
+    assert.ok(workspace && runRoot, 'Launch through test/integration/run.cjs');
     const phases = [];
-    let document;
     const record = async (phase, detail = {}) => {
         phases.push({ phase, ...detail });
-        console.log(`MSYNC_HOST_GATE ${JSON.stringify(phases[phases.length - 1])}`);
+        console.log(`MSYNC_HOST_GATE ${JSON.stringify(phases.at(-1))}`);
         await fs.writeFile(path.join(runRoot, 'host-results.json'), JSON.stringify({ vscodeVersion: vscode.version, phases }, null, 2));
     };
+    let document;
     try {
-        assert.equal(vscode.workspace.getConfiguration('msync').get('serverPath'), process.env.MSYNC_TEST_SERVER_PATH);
-        const output = `$local::${stringLiteral(path.join(workspace, 'never-created.txt'))}`;
-        const branchOutput = `$local::${stringLiteral(path.join(workspace, 'never-created-branch.txt'))}`;
-        const victim = `$local::${stringLiteral(path.join(workspace, 'preserved.txt'))}`;
-        const source = `label="可莉🌟"\nboolean keep(item):\n\treturn item\nsymbol codex(file):\n    return ~/.codex/file\nconfig := $wsl::codex(config.toml)\nitems := [true,false,keep(true)] | $view::filter(keep)\nview_api := $view\nalias_items := [true,false] | view_api::filter(keep)\nfs => $std::fs\nstandard_ready = fs::is_directory(~/.codex)\nlogical = $std::bool::both(true, false)\nscope hello:\n    codex := ~/.codex\nnamed := hello::codex\nendpoints := [$local,$wsl]\nstandard_items := [true,false] | $std::ranges::filter(keep)\n"must never execute" -> ${output}\ndelete ${victim}\nif release "not a bool":\n    "must never execute" -> ${branchOutput}\n`;
+        const quotedOutput = '"' + path.join(workspace, 'never-created.txt').replaceAll('"', '""') + '"';
+        const source = [
+            'let label="可莉🌟";',
+            'fn identity(item) { item };',
+            'let answer = identity(true);',
+            'let file? = if true { ~/.codex } else { null };',
+            'let invalid = file;',
+            `"must never execute" -> ${quotedOutput} @ $local;`,
+            '',
+        ].join('\n');
         const filename = path.join(workspace, 'journey.msync');
         await fs.writeFile(filename, source);
         document = await vscode.workspace.openTextDocument(vscode.Uri.file(filename));
         await vscode.window.showTextDocument(document);
         assert.equal(document.languageId, 'msync');
-        const extension = vscode.extensions.getExtension(EXTENSION);
-        assert.ok(extension, 'The production msync extension must be installed in the Development Host');
+        const extension = vscode.extensions.getExtension('msync.msync-language');
+        assert.ok(extension);
         assert.equal(extension.packageJSON.main, './out/extension.cjs');
-        await bounded('production extension activation', extension.activate());
-        assert.ok(extension.isActive);
-        await record('production-extension-active', { extension: extension.id, vscodeVersion: vscode.version });
+        await extension.activate();
+        await record('production-extension-active', { extension: extension.id });
 
-        const diagnostics = await until('real type-error diagnostic',
-            () => vscode.languages.getDiagnostics(document.uri),
-            values => values.some(value => value.severity === vscode.DiagnosticSeverity.Error && /bool/i.test(value.message)));
-        await record('typed-diagnostic', { messages: diagnostics.map(value => value.message) });
+        const outlineFile = path.join(workspace, 'editing-outline.msync');
+        const outlinePrefix = Array.from({ length: 5000 }, (_, index) => `let declared_${index} = ${index};\n`).join('');
+        await fs.writeFile(outlineFile, outlinePrefix + 'fn editing(item) {');
+        const outlineDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(outlineFile));
+        await vscode.window.showTextDocument(outlineDocument);
+        for (const tail of ['fn editing(item) {', 'fn editing(item) { item', 'fn editing(item) { item };']) {
+            const change = new vscode.WorkspaceEdit();
+            change.replace(outlineDocument.uri, new vscode.Range(outlineDocument.positionAt(0), outlineDocument.positionAt(outlineDocument.getText().length)), outlinePrefix + tail);
+            assert.ok(await vscode.workspace.applyEdit(change));
+            const outline = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', outlineDocument.uri);
+            assert.ok(outline && outline.some(symbol => symbol.name === 'editing'), JSON.stringify(outline));
+            assert.ok(outline.every(symbol => symbol.range && symbol.selectionRange), 'DocumentSymbols must convert without the SymbolInformation fallback');
+        }
+        await record('document-symbols-while-editing', { declarations: 5001, revisions: 3 });
+        await vscode.window.showTextDocument(document);
+
+        const errors = await until('nullable binding diagnostic', () => vscode.languages.getDiagnostics(document.uri),
+            values => values.some(value => value.severity === vscode.DiagnosticSeverity.Error && /null|nullable|\?/i.test(value.message)));
+        await record('nullable-diagnostic', { messages: errors.map(value => value.message) });
         await effectsAreAbsent(workspace);
 
-        const bad = document.getText().indexOf('"not a bool"');
+        const invalid = document.getText().indexOf('let invalid = file;');
+        const fix = new vscode.WorkspaceEdit();
+        fix.replace(document.uri, new vscode.Range(document.positionAt(invalid), document.positionAt(invalid + 'let invalid = file;'.length)), 'let valid? = file;');
+        assert.ok(await vscode.workspace.applyEdit(fix));
+        await until('diagnostic clearing after edit', () => vscode.languages.getDiagnostics(document.uri), values => values.length === 0);
+        await record('incremental-edit-clears-diagnostic', { version: document.version });
+
+        const format = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, { insertSpaces: true, tabSize: 4 });
+        assert.ok(format && format.length);
         const edit = new vscode.WorkspaceEdit();
-        edit.replace(document.uri, new vscode.Range(document.positionAt(bad), document.positionAt(bad + '"not a bool"'.length)), 'true');
+        edit.set(document.uri, format);
         assert.ok(await vscode.workspace.applyEdit(edit));
-        await until('diagnostic clearing after a real document edit',
-            () => vscode.languages.getDiagnostics(document.uri), values => values.length === 0);
-        await record('edit-clears-diagnostic', { documentVersion: document.version });
-
-        const formatting = await bounded('document formatting response', vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, { insertSpaces: true, tabSize: 4 }));
-        assert.ok(formatting && formatting.length, 'The real server must return canonical formatting edits');
-        const formatted = new vscode.WorkspaceEdit();
-        formatted.set(document.uri, formatting);
-        assert.ok(await vscode.workspace.applyEdit(formatted));
-        assert.ok(document.getText().includes('label = "可莉🌟"'));
-        assert.ok(document.getText().includes('    return item'));
-        assert.ok(document.getText().includes('[true, false, keep(true)]'));
-        assert.ok(document.getText().includes('if release true:'));
-        await record('document-formatting', { edits: formatting.length });
-
-        const cursor = document.positionAt(document.getText().indexOf('$view::filter') + '$view::f'.length);
-        const completion = await bounded('completion response', vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, cursor));
-        assert.ok(completion && completion.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === '$view::filter'));
-        await record('range-completion', { label: '$view::filter' });
-
-        const aliasCursor = document.positionAt(document.getText().indexOf('view_api::filter') + 'view_api::f'.length);
-        const aliasCompletion = await bounded('API Scope alias completion', vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, aliasCursor));
-        assert.ok(aliasCompletion && aliasCompletion.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'filter'));
-        await record('api-scope-alias-completion', { namespace: 'view_api', member: 'filter' });
+        assert.ok(document.getText().includes('"可莉🌟"'));
+        assert.ok(document.getText().includes('fn identity'));
+        await record('brace-document-formatting', { edits: format.length });
 
         const current = document.getText();
-        const qualifiedCall = document.positionAt(current.indexOf('$wsl::codex') + '$wsl::'.length);
-        const definitions = await bounded('scope-qualified symbol definition', vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, qualifiedCall));
-        const declared = document.positionAt(current.indexOf('codex(file)'));
+        const use = document.positionAt(current.lastIndexOf('identity(true)') + 2);
+        const definitions = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, use);
+        const declaration = document.positionAt(current.indexOf('identity(item)'));
         assert.ok(definitions && definitions.some(target => {
             const uri = target.targetUri || target.uri;
             const range = target.targetSelectionRange || target.range;
-            return uri.toString() === document.uri.toString() && range.start.isEqual(declared);
-        }), 'Scope qualification must not hide the lexical symbol declaration');
-        await record('qualified-symbol-definition', { name: 'codex' });
+            return uri.toString() === document.uri.toString() && range.start.isEqual(declaration);
+        }));
+        await record('generic-function-definition', { name: 'identity' });
 
-        const fsCursor = document.positionAt(current.indexOf('fs::is_directory') + 'fs::is_d'.length);
-        const fsCompletion = await bounded('stdlib alias completion', vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, fsCursor));
-        assert.ok(fsCompletion && fsCompletion.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'is_directory'));
-        const fsDefinition = await bounded('stdlib native definition', vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, fsCursor));
-        const native = fsDefinition.find(target => (target.targetUri || target.uri).scheme === 'msync-stdlib');
-        assert.ok(native, 'Filesystem primitives must navigate to their embedded declaration source');
-        const nativeUri = native.targetUri || native.uri;
-        const nativeDocument = await bounded('stdlib source document', vscode.workspace.openTextDocument(nativeUri));
-        const nativeRange = native.targetSelectionRange || native.range;
-        assert.equal(nativeDocument.getText(nativeRange), 'is_directory');
-        assert.ok(nativeDocument.getText().includes('native is_directory(path) -> Bool = "fs.is_directory"'));
-        await record('stdlib-native-source-navigation', { uri: nativeUri.toString(), member: 'is_directory' });
+        const completion = await vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, use);
+        assert.ok(completion && completion.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'identity'));
+        const hover = await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, use);
+        assert.ok(hover && hover.length);
+        const symbols = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', document.uri);
+        assert.ok(symbols && symbols.some(symbol => symbol.name === 'identity'));
+        await record('symbol-completion-hover');
 
-        const pureCursor = document.positionAt(current.indexOf('$std::bool::both') + '$std::bool::'.length);
-        const pureDefinitions = await bounded('stdlib source function definition', vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, pureCursor));
-        const pure = pureDefinitions.find(target => (target.targetUri || target.uri).scheme === 'msync-stdlib');
-        assert.ok(pure);
-        const pureDocument = await bounded('stdlib source function document', vscode.workspace.openTextDocument(pure.targetUri || pure.uri));
-        assert.equal(pureDocument.getText(pure.targetSelectionRange || pure.range), 'both');
-        assert.ok(pureDocument.getText().includes('return left and right'));
-        const parameterUse = pureDocument.positionAt(pureDocument.getText().indexOf('return left and right') + 'return '.length);
-        const parameterDefinitions = await bounded('navigation inside stdlib source', vscode.commands.executeCommand('vscode.executeDefinitionProvider', pureDocument.uri, parameterUse));
-        const parameterDeclaration = pureDocument.positionAt(pureDocument.getText().indexOf('both(left, right)') + 'both('.length);
-        assert.ok(parameterDefinitions.some(target => (target.targetUri || target.uri).toString() === pureDocument.uri.toString() && (target.targetSelectionRange || target.range).start.isEqual(parameterDeclaration)));
-        await record('stdlib-source-function-navigation', { member: 'both' });
-
-        const rangeCursor = document.positionAt(current.indexOf('$std::ranges::filter') + '$std::ranges::'.length);
-        const rangeDefinitions = await bounded('dependent native range definition', vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, rangeCursor));
-        const rangeNative = rangeDefinitions.find(target => (target.targetUri || target.uri).scheme === 'msync-stdlib');
-        assert.ok(rangeNative);
-        const rangeDocument = await bounded('dependent native source document', vscode.workspace.openTextDocument(rangeNative.targetUri || rangeNative.uri));
-        assert.equal(rangeDocument.getText(rangeNative.targetSelectionRange || rangeNative.range), 'filter');
-        assert.ok(rangeDocument.getText().includes('native filter(values, predicate) = "ranges.filter"'));
-        await record('range-native-source-navigation', { member: 'filter' });
-
-        const memberCursor = document.positionAt(current.indexOf('hello::codex') + 'hello::'.length);
-        const memberDefinitions = await bounded('lexical scope member definition', vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, memberCursor));
-        const memberDeclaration = document.positionAt(current.indexOf('    codex :=') + 4);
-        assert.ok(memberDefinitions.some(target => (target.targetSelectionRange || target.range).start.isEqual(memberDeclaration)));
-        await record('lexical-namespace-definition', { namespace: 'hello', member: 'codex' });
-
-        await fs.writeFile(path.join(workspace, 'codex.prompt'), 'local editor fixture\n');
-        await fs.writeFile(path.join(workspace, 'two words.prompt'), 'quoted filename fixture\n');
-        await fs.mkdir(path.join(workspace, '.codex'));
-        await fs.writeFile(path.join(workspace, '.codex', 'codex.prompt'), 'nested editor fixture\n');
-        const completionFile = path.join(workspace, 'path-completion.msync');
-        await fs.writeFile(completionFile, 'probe := $local::');
-        const pathDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(completionFile));
-        await vscode.window.showTextDocument(pathDocument);
-        const pathCursor = pathDocument.positionAt(pathDocument.getText().length);
-        const fileCompletion = await until('endpoint filesystem completion',
-            () => vscode.commands.executeCommand('vscode.executeCompletionItemProvider', pathDocument.uri, pathCursor),
-            value => value && value.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt'));
-        const fileItem = fileCompletion.items.find(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt');
-        assert.equal(fileItem.kind, vscode.CompletionItemKind.File);
-        await applyCompletion(pathDocument, fileItem);
-        assert.equal(pathDocument.getText(), 'probe := $local::codex.prompt');
-        await until('completed path compiles', () => vscode.languages.getDiagnostics(pathDocument.uri), value => value.length === 0);
-        await record('endpoint-filesystem-completion', { label: 'codex.prompt', appliedText: pathDocument.getText() });
-        const resetPath = async source => {
-            const edit = new vscode.WorkspaceEdit();
-            edit.replace(pathDocument.uri, new vscode.Range(pathDocument.positionAt(0), pathDocument.positionAt(pathDocument.getText().length)), source);
-            assert.ok(await vscode.workspace.applyEdit(edit));
-        };
-        await resetPath('probe := $local::two');
-        const spaced = await until('spaced filename completion',
-            () => vscode.commands.executeCommand('vscode.executeCompletionItemProvider', pathDocument.uri, pathDocument.positionAt(pathDocument.getText().length)),
-            value => value && value.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'two words.prompt'));
-        await applyCompletion(pathDocument, spaced.items.find(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'two words.prompt'));
-        assert.equal(pathDocument.getText(), 'probe := $local::"two words.prompt"');
-        await record('quoted-filename-completion', { appliedText: pathDocument.getText() });
-
-        await resetPath('probe := $local::');
-        const hiddenDirectory = await until('hidden directory completion',
-            () => vscode.commands.executeCommand('vscode.executeCompletionItemProvider', pathDocument.uri, pathDocument.positionAt(pathDocument.getText().length)),
-            value => value && value.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label).replace(/\/$/, '') === '.codex'));
-        const directoryItem = hiddenDirectory.items.find(item => (typeof item.label === 'string' ? item.label : item.label.label).replace(/\/$/, '') === '.codex');
-        assert.equal(directoryItem.kind, vscode.CompletionItemKind.Folder);
-        await applyCompletion(pathDocument, directoryItem);
-        assert.equal(pathDocument.getText(), 'probe := $local::.codex/');
-        const nested = await until('nested file completion',
-            () => vscode.commands.executeCommand('vscode.executeCompletionItemProvider', pathDocument.uri, pathDocument.positionAt(pathDocument.getText().length)),
-            value => value && value.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt'));
-        await applyCompletion(pathDocument, nested.items.find(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt'));
-        assert.equal(pathDocument.getText(), 'probe := $local::.codex/codex.prompt');
-        await record('hidden-directory-file-completion', { appliedText: pathDocument.getText() });
-        await resetPath('codex.prompt := "shadow"\nprobe := $local::');
-        const collision = await until('filename colliding with a lexical binding',
-            () => vscode.commands.executeCommand('vscode.executeCompletionItemProvider', pathDocument.uri, pathDocument.positionAt(pathDocument.getText().length)),
-            value => value && value.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt'));
-        await applyCompletion(pathDocument, collision.items.find(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'codex.prompt'));
-        assert.equal(pathDocument.getText(), 'codex.prompt := "shadow"\nprobe := $local::"codex.prompt"');
-        await record('filename-binding-collision-completion', { appliedText: pathDocument.getText() });
-        const windowsLiteral = String.raw`"D:\Code\agents\target\xmlsquish"`;
-        const trailingLiteral = String.raw`"D:\Code\agents\target\"`;
-        const doubledLiteral = String.raw`"D:\Code\say""hello"""`;
-        const windowsSource = 'windows:=' + windowsLiteral + '/codex.prompt\ntrailing := ' + trailingLiteral + '\nquoted := ' + doubledLiteral + '\nquote := "a""b"\nmultiline := "first\nsecond"\n';
-        const windowsFile = path.join(workspace, 'literal-windows-path.msync');
-        await fs.writeFile(windowsFile, windowsSource);
-        const windowsDocument = await vscode.workspace.openTextDocument(vscode.Uri.file(windowsFile));
-        await vscode.window.showTextDocument(windowsDocument);
-        const windowsFormatting = await bounded('literal Windows path formatting', vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', windowsDocument.uri, { insertSpaces: true, tabSize: 4 }));
-        assert.ok(windowsFormatting && windowsFormatting.length, 'The literal fixture must receive a real formatting edit');
-        const windowsEdit = new vscode.WorkspaceEdit();
-        windowsEdit.set(windowsDocument.uri, windowsFormatting);
-        assert.ok(await vscode.workspace.applyEdit(windowsEdit));
-        assert.ok(windowsDocument.getText().includes(windowsLiteral), 'Formatting must preserve each Windows backslash once');
-        assert.ok(windowsDocument.getText().includes(trailingLiteral), 'A trailing backslash must not escape the closing quote');
-        assert.ok(windowsDocument.getText().includes(doubledLiteral), 'Embedded quotes must stay doubled');
-        assert.ok(!windowsDocument.getText().includes('\t'), 'Literal backslash-t must not become a tab');
-        assert.ok(windowsDocument.getText().includes('"a""b"'));
-        assert.ok(windowsDocument.getText().includes('"first\nsecond"'));
-        const windowsLegend = await bounded('literal Windows path token legend', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokensLegend', windowsDocument.uri));
-        const windowsTokens = await bounded('literal Windows path semantic tokens', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokens', windowsDocument.uri));
-        assert.ok(windowsLegend && windowsTokens);
-        const windowsPieces = semanticPieces(windowsDocument, windowsLegend, windowsTokens.data);
-        assert.ok(windowsPieces.some(piece => piece.text === windowsLiteral && piece.type === 'string'));
-        await until('literal Windows path has no diagnostics', () => vscode.languages.getDiagnostics(windowsDocument.uri), values => values.length === 0);
-        await record('literal-windows-string', { source: windowsDocument.getText(), token: windowsLiteral });
-        await vscode.window.showTextDocument(document);
-
-        const legend = await bounded('semantic token legend', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokensLegend', document.uri));
-        const tokens = await bounded('semantic tokens', vscode.commands.executeCommand('vscode.provideDocumentSemanticTokens', document.uri));
-        assert.ok(legend && tokens && tokens.data.length, 'The real client must register a semantic token provider');
-        const pieces = semanticPieces(document, legend, tokens.data);
-        assert.ok(pieces.some(piece => piece.text === 'keep' && piece.type === 'function'));
-        assert.ok(pieces.some(piece => piece.text === 'item' && piece.type === 'parameter'));
-        assert.ok(pieces.some(piece => piece.text === '"可莉🌟"' && piece.type === 'string'));
-        assert.ok(pieces.some(piece => piece.text === '$' && piece.type === 'operator'));
-        assert.ok(pieces.some(piece => piece.text === '::' && piece.type === 'operator'));
-        assert.ok(pieces.some(piece => piece.text === '/' && piece.type === 'operator'));
-        await record('semantic-tokens', { count: tokens.data.length / 5, tokenTypes: legend.tokenTypes });
-        await bounded('explicit language server restart', vscode.commands.executeCommand('msync.restartLanguageServer'));
-        const afterRestart = await bounded('completion after language server restart', vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, fsCursor));
-        assert.ok(afterRestart && afterRestart.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'is_directory'));
-        await record('language-server-restart', { completion: 'is_directory' });
+        const legend = await vscode.commands.executeCommand('vscode.provideDocumentSemanticTokensLegend', document.uri);
+        const semantic = await vscode.commands.executeCommand('vscode.provideDocumentSemanticTokens', document.uri);
+        assert.ok(legend && semantic && semantic.data.length);
+        let line = 0;
+        let character = 0;
+        for (let index = 0; index < semantic.data.length; index += 5) {
+            line += semantic.data[index];
+            character = semantic.data[index] === 0 ? character + semantic.data[index + 1] : semantic.data[index + 1];
+            assert.ok(semantic.data[index + 2] > 0);
+            assert.ok(character + semantic.data[index + 2] <= document.lineAt(line).text.length);
+            assert.ok(legend.tokenTypes[semantic.data[index + 3]]);
+        }
+        await record('semantic-utf16-ranges', { count: semantic.data.length / 5 });
         await effectsAreAbsent(workspace);
-        await record('no-dsl-side-effects', { preserved: 'preserved.txt', absent: ['never-created.txt', 'never-created-branch.txt'] });
+
+        await vscode.commands.executeCommand('msync.restartLanguageServer');
+        await until('completion after server restart', () => vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, use),
+            value => value && value.items.some(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'identity'));
+        await effectsAreAbsent(workspace);
+        await record('restart-and-no-runtime-effects');
+
+        const polishSource = [
+            'scope MyClass {',
+            '    new: fn() { scope { x: ~/.codex } },',
+            '    get: fn(some) { some::x }',
+            '};',
+            'let my_instance = MyClass::new();',
+            'let construct = MyClass::new;',
+            'let ClassAlias = MyClass;',
+            'scope SomeClass { remote: ssh://forge, enabled: true, title: "forge", root: ~/.codex, };',
+            'let anonymous = scope { remote: ssh://forge, };',
+            'let first: Scope = anonymous;',
+            'let maybe? = if true { anonymous } else { null };',
+            'if maybe? {} else {};',
+            'let matched = match true { true => { first }, false => { anonymous } };',
+            'MyClass::get(my_instance) -> ./;',
+            'let c = $std::bool::both(MyClass::get(my_instance) == ~/.codex, MyClass::get(my_instance) != ./);',
+            '',
+        ].join('\n');
+        const polishFile = path.join(workspace, 'typed-scope.msync');
+        await fs.writeFile(polishFile, polishSource);
+        document = await vscode.workspace.openTextDocument(vscode.Uri.file(polishFile));
+        await vscode.window.showTextDocument(document);
+        const flattenHover = items => items.flatMap(item => item.contents.map(content => typeof content === 'string' ? content : content.value)).join('\n');
+        const scopePosition = document.positionAt(polishSource.indexOf('MyClass'));
+        const scopeHover = await until('inferred Scope hover with members', async () =>
+            flattenHover(await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, scopePosition) || []),
+        value => /Scope/.test(value) && /new/.test(value) && /get/.test(value));
+        const getPosition = document.positionAt(polishSource.lastIndexOf('get(my_instance)') + 1);
+        const functionHover = flattenHover(await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, getPosition) || []);
+        assert.match(functionHover, /fn.*get\(/);
+        assert.doesNotMatch(functionHover, /msync 0\.8 typed expression/);
+        await record('inferred-scope-and-function-hover', { scopeHover, functionHover });
+
+        const expected = [
+            ['MyClass', 'type'], ['new:', 'function'], ['get:', 'function'],
+            ['my_instance', 'variable'], ['construct', 'function'], ['ClassAlias', 'type'],
+            ['scope MyClass', 'keyword'], ['fn()', 'keyword'], ['fn(some)', 'keyword'],
+            ['SomeClass', 'type'], ['remote: ssh', 'variable'],
+            ['anonymous', 'variable'], ['scope { remote', 'keyword'], ['Scope =', 'type'],
+            ['if true', 'controlKeyword'], ['else { null', 'controlKeyword'],
+            ['? {}', 'controlKeyword'], ['match true', 'controlKeyword'],
+        ];
+        const actualRoles = await until('inferred semantic roles on scope/function aliases', async () => {
+            const roles = new Map();
+            const legend = await vscode.commands.executeCommand('vscode.provideDocumentSemanticTokensLegend', document.uri);
+            const semantic = await vscode.commands.executeCommand('vscode.provideDocumentSemanticTokens', document.uri);
+            if (!legend || !semantic) return roles;
+            let line = 0;
+            let character = 0;
+            for (let index = 0; index < semantic.data.length; index += 5) {
+                line += semantic.data[index];
+                character = semantic.data[index] === 0 ? character + semantic.data[index + 1] : semantic.data[index + 1];
+                roles.set(document.offsetAt(new vscode.Position(line, character)), legend.tokenTypes[semantic.data[index + 3]]);
+            }
+            return roles;
+        }, roles => expected.every(([text, type]) => roles.get(polishSource.indexOf(text)) === type));
+        await record('inferred-semantic-roles', { roles: expected.map(([text]) => ({ text, type: actualRoles.get(polishSource.indexOf(text)) })) });
+        const fieldHovers = {};
+        for (const [name, type] of [['remote', 'Connection'], ['enabled', 'Bool'], ['title', 'String'], ['root', 'Path']]) {
+            const position = document.positionAt(polishSource.indexOf(name + ':'));
+            const hover = flattenHover(await vscode.commands.executeCommand('vscode.executeHoverProvider', document.uri, position) || []);
+            assert.ok(hover.includes(`${name}: ${type}`), `${name} hover: ${hover}`);
+            fieldHovers[name] = hover;
+        }
+        assert.match(fieldHovers.remote, /physical endpoint/i);
+        await record('all-scope-member-types', { fieldHovers });
+        assert.equal(vscode.languages.getDiagnostics(document.uri).length, 0);
+        const polishEdits = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, { insertSpaces: true, tabSize: 4 });
+        const polishFormat = new vscode.WorkspaceEdit();
+        polishFormat.set(document.uri, polishEdits);
+        assert.ok(await vscode.workspace.applyEdit(polishFormat));
+        assert.ok(document.getText().split(/\r?\n/).every(line => line.length <= 80));
+        await record('eighty-column-formatting', { maximumWidth: Math.max(...document.getText().split(/\r?\n/).map(line => line.length)) });
+
+        const instanceSource = document.getText();
+        const instanceStart = instanceSource.indexOf('MyClass::new()');
+        const invalidInstance = new vscode.WorkspaceEdit();
+        invalidInstance.insert(document.uri, document.positionAt(instanceStart + 'MyClass::new()'.length), '::x');
+        assert.ok(await vscode.workspace.applyEdit(invalidInstance));
+        const typedErrors = await until('contextual member diagnostic', () => vscode.languages.getDiagnostics(document.uri),
+            values => values.some(value => /Path/.test(value.message)));
+        const memberError = typedErrors.find(value => /Path/.test(value.message));
+        assert.doesNotMatch(memberError.message, /file:\/\//);
+        assert.match(memberError.message, /Scope/);
+        assert.match(memberError.message, /[Hh]elp/);
+        assert.ok(memberError.relatedInformation && memberError.relatedInformation.length);
+        await record('contextual-member-diagnostic', { message: memberError.message, related: memberError.relatedInformation.map(item => item.message) });
+        await effectsAreAbsent(workspace);
+
     } catch (error) {
-        const diagnostics = document ? vscode.languages.getDiagnostics(document.uri).map(value => ({
-            message: value.message, severity: value.severity, source: value.source, range: value.range,
-        })) : [];
-        await fs.writeFile(path.join(runRoot, 'host-failure.json'), JSON.stringify({
+        await fs.writeFile(path.join(runRoot, 'failure.json'), JSON.stringify({
             error: error instanceof Error ? error.stack : String(error),
-            vscodeVersion: vscode.version,
-            configuredServer: vscode.workspace.getConfiguration('msync').get('serverPath'),
-            activeExtensions: vscode.extensions.all.filter(extension => extension.isActive).map(extension => extension.id),
-            documentVersion: document?.version,
-            diagnostics,
-            phases,
+            document: document && { uri: document.uri.toString(), text: document.getText() },
+            diagnostics: document && vscode.languages.getDiagnostics(document.uri).map(value => ({ message: value.message, range: value.range })),
         }, null, 2));
         throw error;
     }

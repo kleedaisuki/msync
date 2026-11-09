@@ -1,0 +1,300 @@
+# Terminal tools return ordinary language values. The REPL renders those values;
+# scripts can compose them without parsing a subprocess's terminal output.
+native fn tail_lines(values: Range<String>, count: Number) -> Range<String>;
+native fn unique_lines(values: Range<String>) -> Range<String>;
+native fn which(name: String) -> Path?;
+native fn process_table() -> Range<Scope>;
+
+# Session context is local. Physical remote work uses explicit Path @ Connection.
+fn pwd() {
+    $std::environment::working_directory()
+};
+
+fn cd(path: Path | String) {
+    $std::environment::set_working_directory(path)
+};
+
+fn home() {
+    $std::environment::home_directory()
+};
+
+fn ls() {
+    $std::fs::directory_iterator(pwd())
+};
+
+fn ls_at(directory: Path | String) {
+    $std::fs::directory_iterator(directory)
+};
+
+fn find(directory: Path | String) {
+    $std::fs::recursive_directory_iterator(directory)
+};
+
+fn find_if(directory: Path | String, predicate: Function) {
+    $std::ranges::filter(find(directory), predicate)
+};
+
+fn basename(path: Path | String) {
+    let value = path as Path;
+    let name = $std::path::filename(value);
+    if not $std::path::empty(name) {
+        return name;
+    };
+    let trimmed = $std::path::parent_path(value);
+    let trimmed_name = $std::path::filename(trimmed);
+    if not $std::path::empty(trimmed_name) {
+        trimmed_name
+    } else {
+        $std::path::root_path(value)
+    }
+};
+
+fn dirname(path: Path | String) {
+    let value = path as Path;
+    if $std::path::empty($std::path::filename(value))
+        and not $std::path::empty($std::path::relative_path(value)) {
+        value = $std::path::parent_path(value);
+    };
+    let parent = $std::path::parent_path(value);
+    if $std::path::empty(parent) {
+        $std::path::replace_filename(value, ".")
+    } else {
+        parent
+    }
+};
+
+fn realpath(path: Path | String) {
+    $std::fs::canonical(path)
+};
+
+fn stat(path: Path | String) {
+    scope {
+        path: path as Path,
+        kind: $std::fs::symlink_status(path),
+    }
+};
+
+fn cat(path: Path | String) {
+    $std::io::read_text(path)
+};
+
+fn lines(input: Path | String | Range<String>) {
+    match input {
+        Path => {
+            $std::io::read_lines(input)
+        },
+        String => {
+            $std::string::lines(input)
+        },
+        Range<String> => {
+            input
+        },
+    }
+};
+
+fn head(input: Path | String | Range<String>, count: Number) {
+    $std::ranges::take(lines(input), count)
+};
+
+fn tail(input: Path | String | Range<String>, count: Number) {
+    tail_lines(lines(input), count)
+};
+
+fn grep(pattern: String, input: Path | String | Range<String>) {
+    $std::ranges::filter(
+        lines(input),
+        fn(line: String) {
+            $std::regex::is_match(line, pattern)
+        }
+    )
+};
+
+fn grep_fixed(text: String, input: Path | String | Range<String>) {
+    $std::ranges::filter(
+        lines(input),
+        fn(line: String) {
+            $std::string::contains(line, text)
+        }
+    )
+};
+
+fn grep_not(pattern: String, input: Path | String | Range<String>) {
+    $std::ranges::filter(
+        lines(input),
+        fn(line: String) {
+            not $std::regex::is_match(line, pattern)
+        }
+    )
+};
+
+fn sort(input: Path | String | Range<String>) {
+    $std::ranges::sort(lines(input))
+};
+
+# Like Unix uniq, only adjacent equal lines are collapsed; ordering is unchanged.
+fn uniq(input: Path | String | Range<String>) {
+    unique_lines(lines(input))
+};
+
+fn nl(input: Path | String | Range<String>) {
+    $std::ranges::enumerate_from(lines(input), 1)
+};
+
+fn cut(input: Path | String | Range<String>, index: Number) {
+    $std::ranges::map(
+        lines(input),
+        fn(line: String) {
+            $std::ranges::at_or(
+                $std::string::split_whitespace(line),
+                index,
+                ""
+            )
+        }
+    )
+};
+
+fn sed(
+    pattern: String,
+    replacement: String,
+    input: Path | String | Range<String>
+) {
+    $std::ranges::map(
+        lines(input),
+        fn(line: String) {
+            $std::regex::replace(line, pattern, replacement)
+        }
+    )
+};
+
+fn wc(input: Path | String) {
+    let text = if input is Path {
+        cat(input)
+    } else {
+        input
+    };
+    let bytes = if input is Path {
+        $std::io::file_size(input)
+    } else {
+        $std::string::utf8_size(text)
+    };
+    scope {
+        lines: $std::ranges::count($std::string::chars(text), "
+"),
+        words: $std::ranges::size($std::string::split_whitespace(text)),
+        characters: $std::string::length(text),
+        bytes: bytes,
+    }
+};
+
+fn wc_lines(input: Path | String | Range<String>) {
+    $std::ranges::size(lines(input))
+};
+
+fn echo(text: String) {
+    text
+};
+
+fn tee(text: String, destination: Path | String) {
+    $std::io::write_text(destination, text);
+    text
+};
+
+fn tee_lines(input: Path | String | Range<String>, destination: Path | String) {
+    let values = $std::ranges::materialize(lines(input));
+    $std::io::write_text(destination, $std::text::join_lines(values));
+    values
+};
+
+fn cp(source: Path | String | Range, destination: Path | String) {
+    # A terminal copy's String operand names a file, unlike String -> Path text.
+    if source is String {
+        (source as Path) -> destination
+    } else {
+        source -> destination
+    }
+};
+
+fn mv(source: Path | String, destination: Path | String) {
+    $std::fs::rename(source, destination)
+};
+
+fn rm(path: Path | String) {
+    $std::fs::delete(path)
+};
+
+fn rmdir(path: Path | String) {
+    $std::fs::remove_directory(path)
+};
+
+fn rm_tree(path: Path | String) {
+    $std::fs::remove_all(path)
+};
+
+fn mkdir(path: Path | String) {
+    $std::fs::create_directories(path)
+};
+
+fn mkdir_one(path: Path | String) {
+    $std::fs::create_directory(path)
+};
+
+fn touch(path: Path | String) {
+    $std::fs::touch(path)
+};
+
+fn ln(target: Path | String, link: Path | String) {
+    $std::fs::create_hard_link(target, link)
+};
+
+fn ln_s(target: Path | String, link: Path | String) {
+    $std::fs::create_symlink(target, link)
+};
+
+fn readlink(path: Path | String) {
+    $std::fs::read_symlink(path)
+};
+
+fn chmod(path: Path | String, permissions: String) {
+    $std::fs::set_permissions(path, permissions)
+};
+
+fn env() {
+    $std::environment::variables()
+};
+
+fn getenv(name: String) {
+    $std::environment::get(name)
+};
+
+fn setenv(name: String, value: String) {
+    $std::environment::set(name, value)
+};
+
+fn unsetenv(name: String) {
+    $std::environment::unset(name)
+};
+
+fn ps() {
+    process_table()
+};
+
+let spawn = $std::process::spawn;
+fn run(executable: Path | String, arguments: Range) {
+    $std::process::run(executable, arguments)
+};
+
+fn xargs(executable: Path | String, arguments: Range) {
+    $std::process::run(executable, arguments)
+};
+
+fn wait(process: Process) {
+    $std::process::wait(process)
+};
+
+fn kill(process: Process) {
+    $std::process::kill(process)
+};
+
+fn terminate(process: Process) {
+    $std::process::terminate(process)
+};

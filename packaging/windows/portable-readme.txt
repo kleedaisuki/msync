@@ -2,8 +2,9 @@
 
 Portable package: extract the complete ZIP, then run bin\msync.exe --help.
 The ZIP changes no PATH, registry, user configuration or SSH accounts. Add its
-bin directory to your user PATH yourself if desired; keep the remaining files
-for documentation and license information.
+bin directory to your user PATH yourself if desired; keep e_sqlite3.dll beside
+msync.exe and retain the remaining documentation and license information. Do not
+copy only the executable away from its native library payload.
 
 Installer: run msync-VERSION-windows-x86_64-setup.exe. Installation is per-user,
 requires no administrator privileges, and defaults to %USERPROFILE%\.msync.
@@ -20,21 +21,26 @@ First safe journey:
 Inspect the preview before running without --dry-run: execution writes real data.
 See share\doc\msync\README.md for language, IR commands and resource controls.
 
-msync does not yet read ~/.msync/config.toml or save SSH passwords. Existing
-OpenSSH configuration remains authoritative (~/.ssh/config, or the explicitly
-selected MSYNC_SSH_CONFIG). SSH/WSL/HTTP features require their native clients:
-ssh/scp, WSL and curl respectively. Local copies do not need those optional tools.
+msync reads %APPDATA%\msync\config.toml, with ~/.msync/config.toml as the fallback;
+--config selects an explicit file, --no-config disables discovery, and msync config
+prints effective settings. It does not save SSH passwords. Existing OpenSSH
+configuration remains authoritative (~/.ssh/config, or MSYNC_SSH_CONFIG).
+Remote transfers require the native ssh client; a finite transfer uses one
+native channel, not a separate scp authentication. WSL endpoints use the optional
+Windows WSL feature. Local copies do not need either transport.
 No OS feature, SSH server, account, runtime redistributable or administrator
 component is installed automatically.
 
-The supplied executable uses Rust's MSVC target with a static C runtime.
+The supplied executable uses .NET 10 Native AOT and needs no installed .NET
+runtime or ICU package. The complete native SQLite payload ships in bin.
 manifest.sha256 lists SHA-256 hashes of all other portable payload files;
 SHA256SUMS on the official GitHub Release covers the downloaded ZIP and installer.
 These hashes detect corruption,
 not publisher identity: an unsigned installer may trigger Windows SmartScreen.
 
-Building packages (not using them) requires a Git checkout, Rust's MSVC toolchain,
-Inno Setup 6 and Python 3 for collecting THIRD-PARTY-NOTICES.txt from the locked
-dependency sources and matching Rust toolchain. None is needed for installation.
+Building packages (not using them) requires a Git checkout, the .NET 10 SDK,
+Visual Studio's native C++ toolchain and Windows SDK, and Python 3. Inno Setup 6
+is needed to build the installer; it is not needed for the portable ZIP.
+The retained Rust baseline under legacy is independent of the new product.
 Complete project sources are available at https://github.com/kleedaisuki/msync;
 use the source archive for the same version tag as the distributed executable.

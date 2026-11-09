@@ -1,0 +1,42 @@
+# msync: 0.7
+fs => $std::fs
+text => $std::string
+scope package:
+    input := std-input
+
+native present(path) = "fs.is_regular_file"
+macro publish(scope, file):
+    "endpoint argument" -> scope::file
+macro copy(scope, file):
+    scope::file -> "std-output"/copied.prompt
+
+"installed standard library" -> std-input
+fs::create_directories(std-output)
+for endpoint in [$local] | $std::ranges::take(1):
+    package::input -> endpoint::std-output/payload
+    for file in [std-output/argument-first, std-output/argument-second]:
+        publish(endpoint, file)
+fs::rename(std-output/payload, std-output/renamed)
+if fs::is_directory(std-output) and present(std-output/renamed):
+    text::trim(" ready ") -> std-output/status
+else:
+    "wrong" -> std-output/status
+
+# Exercise reference, qualification and compact joins through the installed compiler.
+$fs::create_directories(.codex)
+"operator payload" -> ".codex"/codex.prompt
+copy($ local, .codex/codex.prompt)
+
+# The slash capability admits every String/Path operand pairing.
+".codex"/"codex.prompt" -> "std-output"/string-string
+".codex"/codex.prompt -> "std-output"/string-path
+.codex/"codex.prompt" -> "std-output"/path-string
+.codex/codex.prompt -> "std-output"/path-path
+
+# Lexical Path operations work even when String data resembles source syntax.
+selector_shaped := "."/"<literal>"
+fs::string(fs::filename(selector_shaped)) -> std-output/literal-name
+
+# Ordinary String data has no backslash escapes or raw-prefix variant.
+"D:\Code\agents\target\new\runtime\artifacts" -> std-output/windows-spelling
+"say ""hello""" -> std-output/quoted-content

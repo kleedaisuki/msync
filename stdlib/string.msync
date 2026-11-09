@@ -1,17 +1,191 @@
-# Unicode-aware text operations use native Rust string primitives.
-scope string:
-    native contains(text, part) -> Bool = "string.contains"
-    native starts_with(text, prefix) -> Bool = "string.starts_with"
-    native ends_with(text, suffix) -> Bool = "string.ends_with"
-    native concat(left, right) -> String = "string.concat"
-    native trim(text) -> String = "string.trim"
-    native trim_start(text) -> String = "string.trim_start"
-    native trim_end(text) -> String = "string.trim_end"
-    native to_lowercase(text) -> String = "string.to_lowercase"
-    native to_uppercase(text) -> String = "string.to_uppercase"
-    native replace(text, from, to) -> String = "string.replace"
-    native split(text, separator) -> Range<String> = "string.split"
-    boolean empty(text):
-        return text == ""
-    boolean equal(left, right):
-        return left == right
+# Unicode casing uses the embedded Unicode 17.0 scalar tables.
+native fn contains(text: String, part: String) -> Bool;
+native fn starts_with(text: String, prefix: String) -> Bool;
+native fn ends_with(text: String, suffix: String) -> Bool;
+native fn concat(left: String, right: String) -> String;
+native fn trim(text: String) -> String;
+native fn trim_start(text: String) -> String;
+native fn trim_end(text: String) -> String;
+native fn to_lowercase(text: String) -> String;
+native fn to_uppercase(text: String) -> String;
+native fn replace(text: String, from: String, to: String) -> String;
+native fn split(text: String, separator: String) -> Range < String >;
+native fn length(text: String) -> Number;
+native fn utf8_size(text: String) -> Number;
+native fn is_ascii(text: String) -> Bool;
+native fn chars(text: String) -> Range < String >;
+native fn lines(text: String) -> Range < String >;
+native fn split_whitespace(text: String) -> Range < String >;
+native fn char_at(text: String, index: Number) -> String;
+native fn substring(text: String, start: Number, count: Number) -> String;
+native fn find(text: String, part: String) -> Number?;
+native fn rfind(text: String, part: String) -> Number?;
+native fn compare(left: String, right: String) -> Number;
+native fn repeat(text: String, count: Number) -> String;
+native fn join(values: Range < String >, separator: String) -> String;
+fn empty(text: String) {
+    text == ""
+};
+fn equal(left: String, right: String) {
+    left == right
+};
+fn size(text: String) {
+    length(text)
+};
+fn front(text: String) {
+    char_at(text, 0)
+};
+fn back(text: String) {
+    char_at(text, length(text) - 1)
+};
+fn slice(text: String, first: Number, last: Number) {
+    substring(text, first, last - first)
+};
+fn try_at(text: String, index: Number) {
+    let _ = repeat("", index);
+    if index < length(text) {
+        char_at(text, index)
+    } else {
+        null
+    }
+};
+fn take(text: String, count: Number) {
+    substring(text, 0, count)
+};
+fn drop(text: String, count: Number) {
+    let _ = repeat("", count);
+    if count > length(text) {
+        ""
+    } else {
+        substring(text, count, length(text))
+    }
+};
+fn take_last(text: String, count: Number) {
+    let _ = repeat("", count);
+    if count >= length(text) {
+        text
+    } else {
+        substring(text, length(text) - count, count)
+    }
+};
+fn drop_last(text: String, count: Number) {
+    let _ = repeat("", count);
+    if count >= length(text) {
+        ""
+    } else {
+        substring(text, 0, length(text) - count)
+    }
+};
+fn remove_prefix(text: String, prefix: String) {
+    if starts_with(text, prefix) {
+        drop(text, length(prefix))
+    } else {
+        text
+    }
+};
+fn remove_suffix(text: String, suffix: String) {
+    if ends_with(text, suffix) {
+        drop_last(text, length(suffix))
+    } else {
+        text
+    }
+};
+fn replace_range(
+    text: String,
+    start: Number,
+    count: Number,
+    replacement: String
+) {
+    let prefix = substring(text, 0, start);
+    let removed = substring(text, start, count);
+    concat(prefix, concat(replacement, drop(text, start + length(removed))))
+};
+fn insert(text: String, index: Number, value: String) {
+    replace_range(text, index, 0, value)
+};
+fn erase(text: String, index: Number, count: Number) {
+    replace_range(text, index, count, "")
+};
+fn replace_first(text: String, part: String, replacement: String) {
+    let position? = find(text, part);
+    if position? {
+        text
+    } else {
+        replace_range(text, position, length(part), replacement)
+    }
+};
+fn replace_last(text: String, part: String, replacement: String) {
+    let position? = rfind(text, part);
+    if position? {
+        text
+    } else {
+        replace_range(text, position, length(part), replacement)
+    }
+};
+fn partition(text: String, separator: String) {
+    let position? = find(text, separator);
+    if position? {
+        scope {
+            found: false,
+            before: text,
+            separator: "",
+            after: ""
+        }
+    } else {
+        scope {
+            found: true,
+            before: take(text, position),
+            separator: separator,
+            after: drop(text, position + length(separator)),
+        }
+    }
+};
+fn rpartition(text: String, separator: String) {
+    let position? = rfind(text, separator);
+    if position? {
+        scope {
+            found: false,
+            before: "",
+            separator: "",
+            after: text
+        }
+    } else {
+        scope {
+            found: true,
+            before: take(text, position),
+            separator: separator,
+            after: drop(text, position + length(separator)),
+        }
+    }
+};
+fn pad_left(text: String, width: Number) {
+    let _ = repeat("", width);
+    if width > length(text) {
+        concat(repeat(" ", width - length(text)), text)
+    } else {
+        text
+    }
+};
+fn pad_right(text: String, width: Number) {
+    let _ = repeat("", width);
+    if width > length(text) {
+        concat(text, repeat(" ", width - length(text)))
+    } else {
+        text
+    }
+};
+fn equal_ignore_case(left: String, right: String) {
+    equal(to_uppercase(left), to_uppercase(right))
+};
+fn compare_ignore_case(left: String, right: String) {
+    compare(to_uppercase(left), to_uppercase(right))
+};
+fn contains_ignore_case(text: String, part: String) {
+    contains(to_uppercase(text), to_uppercase(part))
+};
+fn starts_with_ignore_case(text: String, prefix: String) {
+    starts_with(to_uppercase(text), to_uppercase(prefix))
+};
+fn ends_with_ignore_case(text: String, suffix: String) {
+    ends_with(to_uppercase(text), to_uppercase(suffix))
+};

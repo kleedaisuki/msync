@@ -49,7 +49,7 @@ FinishedLabel=msync has been installed. Restart your entire terminal application
 Name: addpath; Description: "Add msync to my user PATH (recommended; new terminals only)"; GroupDescription: "Command-line access:"
 
 [Files]
-Source: "{#SourceDir}\bin\msync.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "{#SourceDir}\bin\*"; DestDir: "{app}\bin"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\share\doc\msync\*"; DestDir: "{app}\share\doc\msync"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\share\msync\std\*"; DestDir: "{app}\share\msync\std"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\INSTALL.md"; DestDir: "{app}\share\doc\msync"; Flags: ignoreversion

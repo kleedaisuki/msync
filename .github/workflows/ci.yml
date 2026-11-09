@@ -1,98 +1,536 @@
-name: Rust
+name: Native platform journeys
 
 on:
   push:
+    paths: ['src/**', 'stdlib/**', 'tests/**', 'packaging/**', 'Directory.Build.props', 'global.json', '.github/workflows/ci.yml']
   pull_request:
+    paths: ['src/**', 'stdlib/**', 'tests/**', 'packaging/**', 'Directory.Build.props', 'global.json', '.github/workflows/ci.yml']
   workflow_dispatch:
     inputs:
-      full:
-        description: Run the complete Rust and documentation acceptance matrix
+      platform:
+        description: Select the affected native platform
+        type: choice
+        options: [both, windows, linux]
+        default: both
+      benchmark:
+        description: Compare optimized Rust and Native AOT on each native runner
         type: boolean
         default: true
-      baseline:
-        description: Select changed contracts against this git ref when full is false
+      baseline_run:
+        description: Optional recorded native CI run for same-host previous-C# comparison
         type: string
         default: ''
-      platform:
-        description: Native platform to verify
-        type: choice
-        options: [both, windows, ubuntu]
-        default: both
+      previous_aot_cases:
+        description: Optional comma-separated valid workloads for the previous C# image
+        type: string
+        default: ''
+      previous_windows_cases:
+        description: Optional previous-C# workload override for Windows only
+        type: string
+        default: ''
+      wsl:
+        description: Exercise an owned WSL1 distro when the Windows host supports it
+        type: boolean
+        default: true
+      reuse_run:
+        description: Reuse this recorded Windows package for focused console, endpoint or polish diagnostics
+        type: string
+        default: ''
+      console:
+        description: Exercise the actual Windows console fixture
+        type: boolean
+        default: true
+      polish_phases:
+        description: Optional polish groups portable,editor,editing,identifiers,state,closing,linear,memory,artifacts,artifact_protocol,call_order,scheduler,stdlib,stdlib_docs,upgrade,completion,authentication,presentation_console,hints_console,wsl
+        type: string
+        default: ''
+      upgrade_phases:
+        description: Optional comma-separated current-upgrade phases for immutable-image follow-up
+        type: string
+        default: ''
+      polish_only:
+        description: Build native packages and exercise changed diagnostics, insight and formatter contracts only
+        type: boolean
+        default: false
+      wsl_only:
+        description: Build one new native package and run only changed WSL contracts
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
 
 concurrency:
-  group: rust-${{ github.event.pull_request.number || github.ref }}
+  group: native-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      rust: ${{ steps.select.outputs.rust }}
-      full: ${{ steps.select.outputs.full }}
-      docs: ${{ steps.select.outputs.docs }}
-      targets: ${{ steps.select.outputs.targets }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - id: select
-        shell: pwsh
-        env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          FORCE_FULL: ${{ github.event_name == 'workflow_dispatch' && inputs.full }}
-          SELECTED_BASELINE: ${{ github.event_name == 'workflow_dispatch' && inputs.baseline || '' }}
-        run: |
-          if ($env:FORCE_FULL -eq 'true') {
-            ./scripts/ci-select.ps1 -ForceFull -GitHubOutput
-          } elseif ($env:SELECTED_BASELINE) {
-            ./scripts/ci-select.ps1 -Base $env:SELECTED_BASELINE -GitHubOutput
-          } else {
-            if (-not $env:BASE -or $env:BASE -match '^0+$') {
-              $env:BASE = git merge-base HEAD origin/main
-            }
-            ./scripts/ci-select.ps1 -Base $env:BASE -GitHubOutput
-          }
-  test:
-    needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.docs == 'true'
-    timeout-minutes: 30
+  native:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ fromJSON((github.event_name != 'workflow_dispatch' || inputs.platform == 'both') && '["ubuntu-latest","windows-latest"]' || inputs.platform == 'windows' && '["windows-latest"]' || '["ubuntu-latest"]') }}
+        include: ${{ fromJSON(((inputs.reuse_run != '' || inputs.platform == 'windows') && '[{"os":"windows-latest","rid":"win-x64"}]') || (inputs.platform == 'linux' && '[{"os":"ubuntu-22.04","rid":"linux-x64"}]') || '[{"os":"ubuntu-22.04","rid":"linux-x64"},{"os":"windows-latest","rid":"win-x64"}]') }}
     runs-on: ${{ matrix.os }}
-    env:
-      CARGO_BUILD_JOBS: 2
-      CARGO_INCREMENTAL: 0
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - if: needs.changes.outputs.rust == 'true'
-        shell: pwsh
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@v5
+        if: inputs.reuse_run == '' || hashFiles('tests/IO/WslTarProbe/WslTarProbe.csproj') != ''
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Select changed polish contract groups
+        id: polish
+        if: inputs.polish_only
+        shell: python
         env:
-          FULL: ${{ needs.changes.outputs.full }}
-          TARGETS: ${{ needs.changes.outputs.targets }}
+          POLISH_PHASES: ${{ inputs.polish_phases }}
         run: |
-          if ($env:FULL -eq 'true') {
-            cargo test --locked --tests --no-fail-fast
-            exit $LASTEXITCODE
-          }
-          $targets = @($env:TARGETS | ConvertFrom-Json)
-          $testArgs = @('test', '--locked', '--no-fail-fast', '--lib', '--bin', 'msync')
-          foreach ($target in $targets) {
-            $testArgs += @('--test', $target)
-          }
-          & cargo @testArgs
-          exit $LASTEXITCODE
-      - name: Exercise native terminal notification wakeups
-        if: needs.changes.outputs.rust == 'true'
+          import os
+          groups: set[str] = {'portable', 'editor', 'editing', 'identifiers', 'state', 'closing', 'linear', 'memory', 'artifacts', 'artifact_protocol', 'call_order', 'scheduler', 'stdlib', 'stdlib_docs', 'upgrade', 'completion', 'authentication', 'presentation_console', 'hints_console', 'wsl'}
+          requested: str = os.environ['POLISH_PHASES']
+          selected: set[str] = {part.strip() for part in requested.split(',')} if requested else groups
+          unknown: set[str] = selected - groups
+          if unknown:
+              raise ValueError(f'Unknown polish groups: {sorted(unknown)}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              for group in sorted(groups):
+                  output.write(f'{group}={str(group in selected).lower()}\n')
+      - uses: actions/setup-node@v6
+        if: inputs.polish_only && (steps.polish.outputs.editing == 'true' || steps.polish.outputs.portable == 'true')
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: editors/vscode/package-lock.json
+      - name: Install the pinned upstream protocol converter dependencies
+        if: inputs.polish_only && (steps.polish.outputs.editing == 'true' || steps.polish.outputs.portable == 'true')
+        working-directory: editors/vscode
+        run: npm ci --ignore-scripts
+      - name: Install native Linux prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev openssh-server
+      - name: Build and exercise the actual Native AOT package
+        id: package
+        if: inputs.reuse_run == ''
+        run: python packaging/build.py --rid ${{ matrix.rid }} --smoke
+      - name: Reuse the exact recorded Windows native payload for endpoint diagnostics
+        id: reused
+        if: inputs.reuse_run != ''
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE_RUN: ${{ inputs.reuse_run }}
+        run: |
+          import hashlib
+          import json
+          import os
+          import shutil
+          import subprocess
+          from pathlib import Path
+          subprocess.run(['python', 'packaging/performance_baseline.py', '--run', os.environ['REUSE_RUN'], '--rid', 'win-x64', '--output', 'artifacts/reused-native'], check=True)
+          metadata: dict[str, object] = json.loads(Path('artifacts/reused-native/baseline.json').read_text(encoding='utf-8'))
+          source: Path = Path(str(metadata['binary']))
+          target: Path = Path('artifacts/publish/win-x64')
+          shutil.copytree(source.parent, target, dirs_exist_ok=True)
+          assert hashlib.sha256((target / 'msync.exe').read_bytes()).hexdigest() == metadata['binary_sha256']
+      - name: Install the pinned Windows console transport for selected polish fixtures
+        if: ${{ !cancelled() && inputs.polish_only && (steps.polish.outputs.presentation_console == 'true' || steps.polish.outputs.hints_console == 'true' || steps.polish.outputs.editing == 'true' || steps.polish.outputs.upgrade == 'true' || steps.polish.outputs.portable == 'true') && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
+      - name: Exercise the integrated current language and library through Native AOT
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.upgrade == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        shell: python
+        env:
+          PACKAGE_RID: ${{ matrix.rid }}
+          UPGRADE_PHASES: ${{ inputs.upgrade_phases }}
+        run: |
+          import os
+          import subprocess
+          from pathlib import Path
+          binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
+          arguments: list[str] = ['python', 'packaging/language_upgrade.py', '--binary', str(binary), '--output', '.temp/platform-results/language-upgrade']
+          for phase in os.environ['UPGRADE_PHASES'].split(','):
+              if phase.strip():
+                  arguments.extend(['--phase', phase.strip()])
+          if os.name != 'nt':
+              arguments.append('--ssh-fixture')
+          subprocess.run(arguments, check=True)
+      - name: Publish focused native Number and object-allocation probes
+        id: allocation-components
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.upgrade == 'true' && (inputs.upgrade_phases == '' || contains(format(',{0},', inputs.upgrade_phases), ',number-allocation,')) && inputs.reuse_run == '' && steps.package.outcome == 'success' }}
+        shell: python
+        env:
+          PACKAGE_RID: ${{ matrix.rid }}
+        run: |
+          import os
+          import subprocess
+          projects: tuple[tuple[str, str], ...] = (
+              ('tests/Performance/NumberExecution/Msync.NumberExecution.csproj', 'number'),
+              ('tests/Performance/ObjectAllocations/ObjectAllocations.csproj', 'objects'),
+          )
+          for project, name in projects:
+              subprocess.run(['dotnet', 'publish', project, '-c', 'Release', '-r', os.environ['PACKAGE_RID'], f"-p:RuntimeIdentifier={os.environ['PACKAGE_RID']}", '--artifacts-path', 'artifacts/allocation-components', '-o', f'artifacts/allocation-probes/{name}', '-p:RestoreLockedMode=true', '-p:BuildInParallel=false'], check=True)
+      - name: Observe actual native Number and object-allocation costs
+        if: ${{ !cancelled() && steps.allocation-components.outcome == 'success' }}
+        shell: python
+        run: |
+          import os
+          import subprocess
+          from pathlib import Path
+          suffix: str = '.exe' if os.name == 'nt' else ''
+          output: Path = Path('.temp/platform-results/number-allocation')
+          output.mkdir(parents=True, exist_ok=True)
+          number: Path = Path('artifacts/allocation-probes/number') / f'msync-number-probe{suffix}'
+          objects: Path = Path('artifacts/allocation-probes/objects') / f'ObjectAllocations{suffix}'
+          subprocess.run([str(number), '--cases', 'arithmetic,powers,captured,literal', '--size', '1024', '--samples', '9', '--iterations', '8', '--root', str(output / 'number-work'), '--output', str(output / 'number.json')], check=True)
+          for case in ('objects', 'captures', 'paths', 'literal'):
+              subprocess.run([str(objects), '--case', case, '--size', '256', '--samples', '9', '--iterations', '8', '--root', str(output / f'object-{case}-work'), '--output', str(output / f'objects-{case}.json')], check=True)
+      - name: Observe matched language-upgrade native latency
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.upgrade == 'true' && inputs.benchmark && inputs.baseline_run != '' && steps.package.outcome == 'success' }}
+        shell: python
+        env:
+          PACKAGE_RID: ${{ matrix.rid }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import json
+          import os
+          import subprocess
+          from pathlib import Path
+          binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
+          subprocess.run(['python', 'packaging/performance_baseline.py', '--run', os.environ['BASELINE_RUN'], '--rid', os.environ['PACKAGE_RID'], '--output', 'artifacts/upgrade-previous'], check=True)
+          metadata: dict[str, object] = json.loads(Path('artifacts/upgrade-previous/baseline.json').read_text(encoding='utf-8'))
+          previous: str = str(metadata['binary'])
+          subprocess.run(['python', 'tests/Msync.EndToEnd/stdlib_upgrade_journey.py', '--binary', str(binary), '--baseline', previous, '--perf-only', '--samples', '15', '--output', '.temp/platform-results/language-upgrade/loading-latency.json'], check=True)
+          for size in (128, 1024):
+              subprocess.run(['python', 'tests/Performance/journeys.py', '--previous-aot', previous, '--aot', str(binary), '--samples', '9', '--warmups', '2', '--case', 'check-batch', '--case', 'check-values', '--case', 'values-object', '--case', 'values-bound', '--statements', str(size), '--files', '1', '--bytes', '4096', '--output', f'.temp/platform-results/language-upgrade/latency-{size}.json'], check=True)
+      - name: Exercise changed frozen-context paths on Windows
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.upgrade == 'true' && (inputs.upgrade_phases == '' || contains(format(',{0},', inputs.upgrade_phases), ',language,') || contains(format(',{0},', inputs.upgrade_phases), ',path-display,')) && inputs.reuse_run == '' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: dotnet run --project tests/ContextBinding/Msync.ContextBinding.Tests.csproj -c Release -p:RestoreLockedMode=true -p:BuildInParallel=false
+      - name: Exercise changed terminal, compiler insight and formatter user journeys
+        if: inputs.polish_only && (steps.polish.outputs.portable == 'true' || steps.polish.outputs.editor == 'true' || steps.polish.outputs.editing == 'true' || steps.polish.outputs.identifiers == 'true' || steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true' || steps.polish.outputs.linear == 'true' || steps.polish.outputs.memory == 'true' || steps.polish.outputs.artifacts == 'true' || steps.polish.outputs.artifact_protocol == 'true' || steps.polish.outputs.call_order == 'true' || steps.polish.outputs.scheduler == 'true' || steps.polish.outputs.stdlib == 'true' || steps.polish.outputs.stdlib_docs == 'true' || steps.polish.outputs.completion == 'true' || (steps.polish.outputs.authentication == 'true' && runner.os == 'Linux')) && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
+        shell: python
+        env:
+          PACKAGE_RID: ${{ matrix.rid }}
+          REUSED_NATIVE_RUN: ${{ inputs.reuse_run }}
+          POLISH_PORTABLE: ${{ steps.polish.outputs.portable }}
+          POLISH_COMPLETION: ${{ steps.polish.outputs.completion }}
+          POLISH_EDITOR: ${{ steps.polish.outputs.editor }}
+          POLISH_EDITING: ${{ steps.polish.outputs.editing }}
+          POLISH_IDENTIFIERS: ${{ steps.polish.outputs.identifiers }}
+          POLISH_STATE: ${{ steps.polish.outputs.state }}
+          POLISH_CLOSING: ${{ steps.polish.outputs.closing }}
+          POLISH_LINEAR: ${{ steps.polish.outputs.linear }}
+          POLISH_MEMORY: ${{ steps.polish.outputs.memory }}
+          POLISH_ARTIFACTS: ${{ steps.polish.outputs.artifacts }}
+          POLISH_ARTIFACT_PROTOCOL: ${{ steps.polish.outputs.artifact_protocol }}
+          POLISH_CALL_ORDER: ${{ steps.polish.outputs.call_order }}
+          POLISH_SCHEDULER: ${{ steps.polish.outputs.scheduler }}
+          POLISH_STDLIB: ${{ steps.polish.outputs.stdlib }}
+          POLISH_STDLIB_DOCS: ${{ steps.polish.outputs.stdlib_docs }}
+          POLISH_AUTHENTICATION: ${{ steps.polish.outputs.authentication }}
+        run: |
+          import os
+          import subprocess
+          from pathlib import Path
+          binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
+          arguments: list[str] = ['python', 'packaging/polish_journeys.py', '--binary', str(binary), '--output', '.temp/platform-results']
+          if os.environ['POLISH_PORTABLE'] != 'true':
+              if os.environ['POLISH_EDITOR'] == 'true':
+                  for phase in ('presentation', 'lsp-analysis', 'lsp-response', 'completion'):
+                      arguments.extend(['--phase', phase])
+              if os.environ['POLISH_EDITING'] == 'true':
+                  for phase in ('editing-regression', 'completion', 'reference', 'identifier-return', 'navigation', 'repl-palette'):
+                      arguments.extend(['--phase', phase])
+                  if os.name != 'nt':
+                      arguments.extend(['--phase', 'terminal-detail'])
+              if os.environ['POLISH_STATE'] == 'true':
+                  for phase in ('mutable-state', 'scheduling', 'repl-state', 'presentation', 'navigation'):
+                      arguments.extend(['--phase', phase])
+              if os.environ['POLISH_CLOSING'] == 'true':
+                  for phase in ('repl-state', 'mutable-getters', 'reference-options'):
+                      arguments.extend(['--phase', phase])
+              if os.environ['POLISH_LINEAR'] == 'true':
+                  arguments.extend(['--phase', 'linear-effect'])
+              if os.environ['POLISH_MEMORY'] == 'true':
+                  for phase in ('memory-layout', 'memory-nullable-payloads', 'nullable-scope-user', 'global-import'):
+                      arguments.extend(['--phase', phase])
+                  if os.name != 'nt':
+                      arguments.extend(['--phase', 'global-terminal'])
+              if os.environ['POLISH_ARTIFACTS'] == 'true':
+                  for phase in ('artifact-view', 'artifact-disassembly'):
+                      arguments.extend(['--phase', phase])
+              if os.environ['POLISH_ARTIFACT_PROTOCOL'] == 'true':
+                  arguments.extend(['--phase', 'artifact-view'])
+              if os.environ['POLISH_CALL_ORDER'] == 'true':
+                  arguments.extend(['--phase', 'call-order'])
+              if os.environ['POLISH_SCHEDULER'] == 'true':
+                  for phase in ('scheduler-frontier-source', 'scheduler-frontier-executable'):
+                      arguments.extend(['--phase', phase])
+              if os.environ['POLISH_STDLIB'] == 'true':
+                  for phase in ('stdlib-experience', 'stdlib-control'):
+                      arguments.extend(['--phase', phase])
+              if os.environ['POLISH_STDLIB_DOCS'] == 'true':
+                  for phase in ('stdlib-skills', 'stdlib-cast-contract'):
+                      arguments.extend(['--phase', phase])
+              if os.environ['POLISH_IDENTIFIERS'] == 'true':
+                  arguments.extend(['--phase', 'identifier-return'])
+              if os.environ['POLISH_COMPLETION'] == 'true':
+                  arguments.extend(['--phase', 'completion'])
+              if os.environ['POLISH_AUTHENTICATION'] == 'true' and os.name != 'nt':
+                  arguments.extend(['--phase', 'authentication'])
+          if os.environ['REUSED_NATIVE_RUN']:
+              arguments.extend(['--native-origin', 'artifacts/reused-native/baseline.json'])
+          subprocess.run(arguments, check=True)
+      - name: Exercise Core equivalence, legacy artifacts and real namespace publication
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.state == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: python packaging/state_contracts.py --output .temp/platform-results/state-contracts
+      - name: Verify only repaired legacy-format and Windows namespace contracts
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.closing == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        shell: python
+        run: |
+          import os
+          import subprocess
+          arguments: list[str] = ['python', 'packaging/state_contracts.py', '--output', '.temp/platform-results/state-contracts', '--contract', 'format-one-paths']
+          if os.name == 'nt':
+              arguments.extend(['--contract', 'path-namespace'])
+          subprocess.run(arguments, check=True)
+      - name: Verify only changed linear normalization and constant interning
+        if: ${{ !cancelled() && inputs.polish_only && inputs.reuse_run == '' && steps.polish.outputs.linear == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: python packaging/state_contracts.py --output .temp/platform-results/state-contracts --contract constant-interner
+      - name: Exercise selected cross-block memory and compact layout contracts
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.memory == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: python packaging/state_contracts.py --output .temp/platform-results/memory-contracts --contract cross-block-memory --contract memory-effects --contract scope-layout --contract aggregate-arguments
+      - name: Exercise only scheduler retirement and namespace lifetimes
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.scheduler == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: python packaging/state_contracts.py --output .temp/platform-results/scheduler-contracts --contract scheduler-retirement --contract path-namespace
+      - name: Exercise standard library loading and shared module cells
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.stdlib == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: python packaging/state_contracts.py --output .temp/platform-results/stdlib-contracts --contract stdlib-loading
+      - name: Exercise standard library IO and controlled child processes through Native AOT
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.stdlib == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        shell: python
+        env:
+          PACKAGE_RID: ${{ matrix.rid }}
+        run: |
+          import os
+          import subprocess
+          from pathlib import Path
+          subprocess.run(['dotnet', 'build', 'tests/StdlibIOProcess/Msync.StdlibIOProcess.Tests.csproj', '-c', 'Release', '-p:RestoreLockedMode=true', '-m:1', '-nr:false'], check=True)
+          binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
+          child: Path = Path('tests/StdlibIOProcess/bin/Release/net10.0') / ('Msync.StdlibIOProcess.Tests.exe' if os.name == 'nt' else 'Msync.StdlibIOProcess.Tests')
+          subprocess.run(['python', 'tests/StdlibIOProcess/native_journey.py', '--binary', str(binary), '--child', str(child)], check=True)
+          if os.name != 'nt':
+              subprocess.run(['python', 'tests/StdlibIOProcess/remote_native_journey.py', '--binary', str(binary), '--child', str(child)], check=True)
+      - name: Publish native memory optimizer component observation image
+        id: memory-components
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.memory == 'true' && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        run: dotnet publish tests/Performance/Components/Msync.Components.csproj -c Release -r win-x64 -p:RestoreLockedMode=true -p:SourceRevisionId=${{ github.sha }} --artifacts-path artifacts/memory-component-build -o artifacts/memory-components -m:1 -nr:false
+      - name: Record native Windows cross-block memory and layout costs
+        if: ${{ !cancelled() && steps.memory-components.outcome == 'success' }}
+        run: artifacts/memory-components/msync-components.exe --optimizer-pipeline --cases memory_branches,memory_loop,layout_factory --sizes 1,32 --levels 2 --samples 7 --warmups 3 --output .temp/platform-results/memory-components.json
+      - name: Publish the native Windows optimizer component observation image
+        id: state-components
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.state == 'true' && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        run: dotnet publish tests/Performance/Components/Msync.Components.csproj -c Release -r win-x64 -p:RestoreLockedMode=true -p:SourceRevisionId=${{ github.sha }} --artifacts-path artifacts/state-component-build -o artifacts/state-components -m:1 -nr:false
+      - name: Record native Windows O1 optimizer cost and executable shape
+        if: ${{ !cancelled() && steps.state-components.outcome == 'success' }}
+        run: artifacts/state-components/msync-components.exe --optimizer-pipeline --cases calls,scope_calls --sizes 1,32,128 --levels 1 --samples 7 --warmups 3 --output .temp/platform-results/optimizer-components.json
+      - name: Record native Windows ordinary-transfer compilation cost
+        if: ${{ !cancelled() && steps.state-components.outcome == 'success' }}
+        run: artifacts/state-components/msync-components.exe --optimizer-pipeline --cases transfers --sizes 128,1024 --levels 1 --samples 7 --warmups 3 --output .temp/platform-results/optimizer-transfer-components.json
+      - name: Compare selected Windows Rust, editing-control and current native journeys
+        if: ${{ !cancelled() && inputs.polish_only && (steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true' || steps.polish.outputs.linear == 'true') && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python packaging/windows_threeway.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/final-threeway.json
+      - name: Verify captured Windows root and incomplete UNC path semantics
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.editing == 'true' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: dotnet run --project tests/PathProjection/Msync.PathProjection.Tests.csproj -c Release --artifacts-path artifacts/editing-roots -p:RestoreLockedMode=true -- --windows-rooted
+      - name: Exercise the actual native authentication helper and cancellation
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.authentication == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        shell: python
+        env:
+          PACKAGE_RID: ${{ matrix.rid }}
+        run: |
+          import os
+          import shutil
+          import subprocess
+          import tempfile
+          from pathlib import Path
+          binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
+          Path('.temp').mkdir(exist_ok=True)
+          with tempfile.TemporaryDirectory(prefix='native prompt product ', dir='.temp') as name:
+              payload: Path = Path(name).resolve()
+              shutil.copytree(binary.parent, payload, dirs_exist_ok=True)
+              subprocess.run(['dotnet', 'run', '--project', 'tests/Msync.Authentication.Tests/Msync.Authentication.Tests.csproj', '-c', 'Release', '--artifacts-path', 'artifacts/auth-contract', '-p:RestoreLockedMode=true', '--', str(payload / binary.name)], check=True)
+      - name: Exercise actual Windows auto-color and diagnostic console output
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.presentation_console == 'true' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: python tests/Msync.EndToEnd/windows_presentation_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-presentation.json
+      - name: Exercise actual Windows ghost rendering and explicit hint acceptance
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.hints_console == 'true' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: python tests/Msync.EndToEnd/windows_hint_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-hints.json
+      - name: Exercise changed actual WSL directory completion on one owned endpoint
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.wsl == 'true' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: python packaging/wsl_journey.py --binary artifacts/publish/win-x64/msync.exe --completion-only --output .temp/platform-results/wsl-completion.json
+      - name: Exercise typed language, process, session and stdio editor journeys
+        if: inputs.reuse_run == '' && !inputs.wsl_only && !inputs.polish_only
+        shell: python
+        env:
+          PACKAGE_RID: ${{ matrix.rid }}
+        run: |
+          import os
+          import subprocess
+          from pathlib import Path
+          binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
+          subprocess.run(['python', 'packaging/platform_journeys.py', '--binary', str(binary), '--output', '.temp/platform-results'], check=True)
+      - name: Verify actual Windows file attributes, alternate streams and link ownership
+        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: python tests/IO/windows_file_metadata.py artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-file-metadata.json
+      - name: Verify Linux nanosecond metadata through actual local and SSH transfers
+        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Linux' && steps.package.outcome == 'success' }}
+        run: python tests/IO/nanosecond_metadata.py artifacts/publish/linux-x64/msync --ssh --output .temp/platform-results/nanosecond-metadata.json
+      - name: Verify Linux overlapping sources and positive-progress cancellation
+        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Linux' && steps.package.outcome == 'success' }}
+        run: python tests/IO/overlap_cancel.py artifacts/publish/linux-x64/msync --output .temp/platform-results/overlap-cancellation.json
+      - name: Exercise per-user installer ownership and upgrade lifecycle
+        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         shell: pwsh
         run: |
-          $env:CARGO_TARGET_DIR = Join-Path $PWD 'target'
-          cargo test --locked --manifest-path vendor/rustyline/Cargo.toml --no-default-features --features custom-bindings,buffer-redux --lib external_printer_
-          exit $LASTEXITCODE
-      - name: Exercise native SSH credential windows
-        if: runner.os == 'Windows' && needs.changes.outputs.rust == 'true'
-        run: cargo test --locked --test windows_askpass -- --ignored --test-threads=1
-      - if: needs.changes.outputs.docs == 'true' || needs.changes.outputs.full == 'true'
-        run: cargo test --locked --doc
+          $version = python packaging/build.py --version
+          ./packaging/windows/test.ps1 -InstallerPath "dist/msync-$version-windows-x86_64-setup.exe"
+      - name: Verify native path projection and historical artifact decoding on this host
+        if: ${{ !cancelled() && !inputs.wsl_only && !inputs.polish_only && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') && hashFiles('tests/PathProjection/Msync.PathProjection.Tests.csproj') != '' }}
+        shell: python
+        run: |
+          import subprocess
+          from pathlib import Path
+          subprocess.run(['dotnet', 'build', 'tests/PathProjection/Msync.PathProjection.Tests.csproj', '-c', 'Release', '--artifacts-path', 'artifacts/path-projection-contract', '-p:RestoreLockedMode=true'], check=True)
+          contract: Path = Path('artifacts/path-projection-contract/bin/Msync.PathProjection.Tests/release/Msync.PathProjection.Tests.dll')
+          subprocess.run(['dotnet', str(contract)], check=True)
+      - name: Install the pinned Windows console transport for requested fixtures
+        id: conpty
+        if: ${{ !cancelled() && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') && !inputs.polish_only && (github.event_name != 'workflow_dispatch' || inputs.console || (inputs.wsl_only && inputs.wsl)) && hashFiles('tests/Msync.EndToEnd/windows_terminal_journey.py') != '' }}
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
+      - name: Exercise actual Windows console editing and foreground input ownership
+        if: ${{ !cancelled() && steps.conpty.outcome == 'success' && (github.event_name != 'workflow_dispatch' || inputs.console) }}
+        run: python tests/Msync.EndToEnd/windows_terminal_journey.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/windows-console.json
+      - name: Build the isolated native WSL process and archive phase probe
+        id: wslprobe
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.reused.outcome == 'success' && !inputs.polish_only && inputs.wsl && hashFiles('tests/IO/WslTarProbe/WslTarProbe.csproj') != '' }}
+        run: dotnet publish tests/IO/WslTarProbe/WslTarProbe.csproj -c Release -r win-x64 --artifacts-path artifacts/wsl-probe-build -o artifacts/wsl-tar-probe -p:RestoreLockedMode=true
+      - name: Exercise the actual Windows to WSL home and path projection
+        if: ${{ !cancelled() && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') && github.event_name == 'workflow_dispatch' && !inputs.polish_only && inputs.wsl && hashFiles('packaging/wsl_journey.py') != '' }}
+        shell: python
+        env:
+          PROCESS_PROBE: ${{ steps.wslprobe.outcome == 'success' && 'artifacts/wsl-tar-probe/WslTarProbe.exe' || '' }}
+        run: |
+          import os
+          import subprocess
+          arguments: list[str] = ['python', 'packaging/wsl_journey.py', '--binary', 'artifacts/publish/win-x64/msync.exe', '--output', '.temp/platform-results/wsl.json']
+          if os.environ['PROCESS_PROBE']:
+              arguments.extend(['--process-probe', os.environ['PROCESS_PROBE']])
+          subprocess.run(arguments, check=True)
+      - name: Build the preserved optimized Rust baseline on this same runner
+        id: rust
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && !inputs.polish_only && inputs.benchmark && steps.package.outcome == 'success' }}
+        run: cargo build --release --locked --manifest-path legacy/Cargo.toml --bin msync --target-dir artifacts/legacy-target
+      - name: Measure paired native product journeys without a timing quality gate
+        if: ${{ !cancelled() && steps.rust.outcome == 'success' }}
+        shell: python
+        env:
+          PACKAGE_RID: ${{ matrix.rid }}
+        run: |
+          import os
+          import subprocess
+          from pathlib import Path
+          suffix: str = '.exe' if os.name == 'nt' else ''
+          aot: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync' + suffix)
+          rust: Path = Path('artifacts/legacy-target/release') / ('msync' + suffix)
+          common: list[str] = ['python', 'tests/Performance/journeys.py', '--rust', str(rust), '--aot', str(aot), '--warmups', '3']
+          subprocess.run([*common, '--samples', '31', '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-cli.json'], check=True)
+          subprocess.run([*common, '--samples', '31', '--case', 'check-batch', '--statements', '1024', '--output', '.temp/platform-results/paired-compiler-1024.json'], check=True)
+          subprocess.run([*common, '--samples', '9', '--case', 'check-values', '--case', 'values-object', '--case', 'values-bound', '--statements', '1024', '--output', '.temp/platform-results/paired-values-1024.json'], check=True)
+          subprocess.run(['python', 'tests/Performance/interactive.py', '--rust', str(rust), '--aot', str(aot), '--samples', '31', '--warmups', '3', '--bindings', '128', '--output', '.temp/platform-results/paired-interactive.json'], check=True)
+      - name: Fetch the recorded previous C# image for this native platform
+        id: previous
+        if: ${{ !cancelled() && steps.package.outcome == 'success' && !inputs.polish_only && inputs.benchmark && inputs.baseline_run != '' }}
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_RUN: ${{ inputs.baseline_run }}
+          PACKAGE_RID: ${{ matrix.rid }}
+        run: |
+          import os
+          import subprocess
+          subprocess.run(['python', 'packaging/performance_baseline.py', '--run', os.environ['BASELINE_RUN'], '--rid', os.environ['PACKAGE_RID'], '--output', 'artifacts/previous-native', '--github-output', os.environ['GITHUB_OUTPUT']], check=True)
+      - name: Measure previous and current C# on this same native runner
+        if: ${{ !cancelled() && steps.previous.outcome == 'success' }}
+        shell: python
+        env:
+          PREVIOUS_NATIVE: ${{ steps.previous.outputs.binary }}
+          PREVIOUS_AOT_CASES: ${{ inputs.previous_aot_cases }}
+          PREVIOUS_WINDOWS_CASES: ${{ inputs.previous_windows_cases }}
+          PACKAGE_RID: ${{ matrix.rid }}
+        run: |
+          import os
+          import subprocess
+          from pathlib import Path
+          aot: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
+          common: list[str] = ['python', 'tests/Performance/journeys.py', '--previous-aot', os.environ['PREVIOUS_NATIVE'], '--aot', str(aot), '--warmups', '3']
+          selected: list[str] = []
+          cases: str = os.environ['PREVIOUS_WINDOWS_CASES'] if os.name == 'nt' and os.environ['PREVIOUS_WINDOWS_CASES'] else os.environ['PREVIOUS_AOT_CASES']
+          for case in cases.split(','):
+              if case.strip():
+                  selected.extend(['--case', case.strip()])
+          subprocess.run([*common, '--samples', '31', *selected, '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-aot-before-after.json'], check=True)
+          subprocess.run([*common, '--samples', '31', '--case', 'check-batch', '--statements', '1024', '--output', '.temp/platform-results/paired-aot-compiler-1024.json'], check=True)
+          subprocess.run([*common, '--samples', '9', '--case', 'check-values', '--case', 'values-object', '--case', 'values-bound', '--statements', '1024', '--output', '.temp/platform-results/paired-aot-values-1024.json'], check=True)
+          subprocess.run(['python', 'tests/Performance/interactive.py', '--previous-aot', os.environ['PREVIOUS_NATIVE'], '--aot', str(aot), '--samples', '31', '--warmups', '3', '--bindings', '128', '--output', '.temp/platform-results/paired-aot-interactive.json'], check=True)
+      - name: Publish the bounded native Windows copy mechanism probe
+        id: copy-probe
+        if: ${{ !cancelled() && runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && !inputs.polish_only && inputs.benchmark && steps.package.outcome == 'success' && hashFiles('tests/IO/WindowsCopyProbe/WindowsCopyProbe.csproj') != '' }}
+        run: dotnet publish tests/IO/WindowsCopyProbe/WindowsCopyProbe.csproj -c Release -r win-x64 --artifacts-path artifacts/io-probe -o artifacts/windows-copy-probe -p:RestoreLockedMode=true
+      - name: Compare Windows copy mechanisms and cancellation outside product timings
+        if: ${{ !cancelled() && steps.copy-probe.outcome == 'success' }}
+        run: artifacts/windows-copy-probe/WindowsCopyProbe.exe --output .temp/platform-results/windows-copy-probe.json
+      - name: Publish native compiler, VM and source-reader component probes once
+        id: components
+        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && !inputs.polish_only && inputs.benchmark && steps.package.outcome == 'success' }}
+        run: dotnet publish tests/Performance/Components/Msync.Components.csproj -c Release -r ${{ matrix.rid }} --artifacts-path artifacts/component-build -o artifacts/components -p:RestoreLockedMode=true
+      - name: Measure typed compilation, artifact loading, binding and interpreter components
+        if: ${{ !cancelled() && steps.components.outcome == 'success' }}
+        shell: python
+        run: |
+          import os
+          import subprocess
+          from pathlib import Path
+          probe: Path = Path('artifacts/components') / ('msync-components.exe' if os.name == 'nt' else 'msync-components')
+          subprocess.run([str(probe), '--root', str(Path.cwd()), '--output', '.temp/platform-results/components.json', '--sizes', '128,1024', '--samples', '9', '--warmups', '2', '--stages', 'parse,compile_o1,artifact_validate,artifact_decode,bind_and_lower,vm_no_io'], check=True)
+      - name: Isolate cold synchronous versus asynchronous source reads
+        if: ${{ !cancelled() && steps.components.outcome == 'success' }}
+        shell: python
+        run: |
+          import os
+          import subprocess
+          from pathlib import Path
+          probe: Path = Path('artifacts/components') / ('msync-components.exe' if os.name == 'nt' else 'msync-components')
+          subprocess.run(['python', 'tests/Performance/source_read.py', '--binary', str(probe), '--samples', '31', '--warmups', '3', '--output', '.temp/platform-results/source-read.json'], check=True)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: native-${{ matrix.rid }}-${{ github.sha }}
+          include-hidden-files: true
+          if-no-files-found: ignore
+          path: |
+            dist/*
+            .temp/platform-results/**
+            artifacts/previous-native/baseline.json
+            artifacts/upgrade-previous/baseline.json
+            artifacts/reused-native/baseline.json
+            artifacts/wsl-tar-probe/*.exe
+            .temp/wsl-journey-*/diagnostics/**
+            .temp/windows-install-test-*/**/*.log

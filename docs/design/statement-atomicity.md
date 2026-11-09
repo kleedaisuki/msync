@@ -74,3 +74,128 @@ must not be cloned simply to defend against hypothetical interference.
 registry tests to actual copy, overwrite, retry, native path and one-channel SSH
 journeys. The [cost audit](safety-cost-audit.md) retains why the old design was
 removed. Published v0.6.5 artifacts and historical measurements are unchanged.
+
+## C# v0.8 implementation
+
+`Msync.Runtime.TransferEngine` implements the same retry contract without calling
+the retained Rust binary. Ordinary local files use an owned same-parent stage,
+stream through the configured buffer, apply metadata, flush once, and replace
+with `File.Move(overwrite: true)`. Literal writes preserve an existing target's
+permissions. Directory entries merge, symlinks retain their raw targets, and
+completed entries are not rolled back. A proven same-node transfer is a no-op;
+only actual tree overlap retains a temporary input copy before publication.
+This avoids both self-destructive `tree -> tree/.` and recursively discovering a
+new destination when a tree is copied into one of its descendants. Snapshot
+scratch belongs to the live operation and does not become a recovery registry.
+
+The native transport uses one selected `ssh` or `wsl.exe` process. Uploads use
+[`System.Formats.Tar`](https://learn.microsoft.com/en-us/dotnet/api/system.formats.tar?view=net-10.0)
+PAX entries rather than requiring a client tar executable. GNU tar and small POSIX
+shell helpers carry metadata and bytes over the same channel; the helpers install
+ordinary files by rename and retain unrelated directory children. The producer's
+exit status and an upload completion marker must both succeed. No compile/check,
+artifact binding, or unselected branch starts these helpers. Native OpenSSH owns
+host aliases, agent/key handling, host verification and prompts; the existing
+`MSYNC_SSH_CONFIG` selection is passed through as `ssh -F`.
+
+Path data is always passed as literal argv, not interpolated into shell source.
+Shell command substitutions use a non-newline sentinel when preserving path
+values: ordinary Unix filenames ending in newlines are not silently truncated.
+Archive entries are consumed sequentially before advancing `TarReader`, following
+its documented streaming lifetime. Native process execution reuses the same
+transport argument builder, including port/config handling and remote home
+expansion, instead of introducing a second interpretation of connection values.
+
+`tests/Msync.Transfer.Tests` contains focused engine journeys;
+`ssh_journeys.py` reuses the real loopback OpenSSH fixture kept with the Rust
+baseline. The accepted C# run completed fifteen remote operations with
+exactly fifteen ssh clients, fifteen public-key authentications, fifteen server exec
+sessions and zero scp clients, with ControlMaster disabled. It checked ordinary
+upload, literal overwrite, symlink/dangling-link trees, download, same-endpoint
+copy, finite cohorts in both directions, a trailing-newline/Unicode/quote filename,
+a genuine incompatible-parent failure followed by retry, and actual upload/self/ancestor
+tree replacement plus finite descendant-tree copy. Overlapping remote tree copies
+retain their input beside the source tree, outside the selected source, rather
+than recursively capturing their newly created output. This is protocol and
+Linux filesystem evidence, not a Windows/WSL or WAN performance measurement.
+
+
+### Selected range discovery and native queries
+
+A runtime `PathSelection` descriptor retains the source directory, exact .NET
+regex, recursive traversal flag, and composed range adaptors; it does not contain
+source-language syntax. A deferred source keeps a demand-time resolver, so its
+function is evaluated once when the transfer is selected. `take(0)` removes the
+demand rather than opening the source endpoint and discarding its answer.
+
+One duplex native session emits NUL-separated relative path names. The client
+sorts names and evaluates the actual .NET regex and typed callback chain, then
+sends literal selected paths as octal-encoded protocol lines. The same process
+produces the archive or performs same-endpoint installation. Recursive directory
+iteration uses the same mechanism, preserving descendant paths until ordinary
+cohort basename collision preflight. No-match selection does not create a target
+or authenticate an unused destination endpoint.
+
+A callback's selected remote filesystem queries use a scoped, endpoint-matching
+`AsyncLocal` transport owner while the discovery session awaits final selection.
+The helper executes the same registered native shell operation and returns its
+status plus byte-count-framed output; the typed callback still executes in the
+bytecode VM. Native filesystem predicates therefore do not introduce separately
+authenticated helpers or a source interpreter. Other endpoint operations retain
+their own actual selected transport ownership. Transformations that produce
+paths outside the original endpoint finish discovery and dispatch their real
+resulting values normally instead of treating endpoint provenance as a rejection
+policy.
+
+The expanded encrypted OpenSSH suite passed with **28 clients, 28 public-key
+authentications, 28 exec sessions and zero scp clients**. This includes recursive
+selection, a deferred metadata filter followed by reverse/take/transform,
+negative-lookahead regexes, no-match and `take(0)` non-admission, a same-endpoint
+path transformation to another directory, a transformation to a captured local
+path, and collision detection before target creation. Multiple filesystem
+predicate calls remain inside the one selected source session. The C# local
+journey also cancels a real large-file copy after observing its owned stage,
+checks unchanged prior target bytes, and checks cleanup of that live stage.
+
+Local explicit finite-cohort tree replacement uses the same retained-input
+capture as a single overlapping tree, but only when source and target paths
+actually overlap. Disjoint selected sources are copied directly after explicit
+replacement. Overlapping cohorts capture names and metadata before creating
+scratch, so they cannot recursively enumerate their own new stage; transient
+input copies are not flushed, while final ordinary-file publication retains its
+one-flush path. Native canonical resource paths detect overlap through directory
+symlinks. Same-object no-op requires actual filesystem identity, not Windows
+case folding, and does not treat a destination symlink as an ordinary hard-link
+alias: replacing that entry must still replace the link itself.
+
+### Compiled CLI and artifact transport proof
+
+`tests/Msync.Transfer.Tests/cli_ssh_journeys.py` closes the source-to-transport
+integration path using real loopback OpenSSH. It compiles a deferred remote
+selector and a deferred recursive native iterator, each composed with an ordinary
+`fs.is_regular_file` callback and `ranges.take(2)`. Each program executes from
+source, relocatable `.mso`, and bound `.mexe`: all **six executions used exactly
+one native SSH client, one authentication and one server exec session**, with no
+scp. Compilation and binding opened no endpoint. Different bytes before every
+stage prove that artifacts did not cache transferred data; different execution
+working directories prove `.mso` relocation and `.mexe` context retention. The
+accepted managed image was freshly built from the integrated source with strict
+analysis and no warnings. The same runner accepts the packaged Native AOT image
+for final binary acceptance without treating an engine-only test as compiler
+integration evidence.
+
+Filesystem and selected-path traversal order uses the shared
+`TextSemantics.Ordinal` Unicode scalar comparer, matching the Rust baseline
+rather than UTF-16 code-unit order. This affects enumeration/admission order,
+not dictionary key equality, native filesystem identity, or Windows case rules.
+
+The final extracted Linux Native AOT package passed the identical six real SSH
+CLI/artifact journeys with empty stderr, one client/authentication/exec session
+per execution, zero scp, and zero compile/bind clients. The accepted executable's
+SHA-256 is
+`ca5c2eb2aebe1397f4ec3a745a6e76dcfcf598723ba1046523f183012263f38b`.
+This confirms the packaged interpreter, embedded standard library, binary
+artifacts, native metadata query session, and transfer channel work together
+without a .NET runtime installation. The test owner records individual journey
+counts and actual bytes/context assertions in its `.temp` report; the maintained
+runner preserves the verification procedure after those fixtures are cleaned.

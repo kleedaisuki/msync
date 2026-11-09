@@ -2,8 +2,12 @@
 
 const vscode = require('vscode');
 const { LanguageClient } = require('vscode-languageclient/node');
+const { registerSshPrompts } = require('./ssh-prompts.cjs');
+const { registerArtifactViews } = require('./artifact-viewer.cjs');
 
 let client;
+let sshPrompts;
+let artifactViews;
 let enabled = false;
 let lifecycle = Promise.resolve();
 
@@ -24,6 +28,8 @@ function startupMessage(message) {
 async function stop() {
     const running = client;
     client = undefined;
+    sshPrompts?.dispose();
+    sshPrompts = undefined;
     if (running) await running.dispose();
 }
 
@@ -45,11 +51,15 @@ async function start() {
             { scheme: 'msync-stdlib', language: 'msync' },
         ],
         outputChannelName: 'msync Language Server',
+        initializationOptions: { sshPrompt: true },
     });
+    const prompts = registerSshPrompts(vscode, candidate);
     try {
         await candidate.start();
         client = candidate;
+        sshPrompts = prompts;
     } catch (error) {
+        prompts.dispose();
         await candidate.dispose();
         const detail = error instanceof Error ? error.message : String(error);
         startupMessage(`Cannot start msync language services: ${detail}. Install msync or configure msync.serverPath, then use msync: Restart Language Server. Syntax highlighting remains available.`);
@@ -61,6 +71,7 @@ function restart() {
         if (!enabled) return;
         await stop();
         await start();
+        artifactViews?.serverChanged();
     });
 }
 
@@ -80,11 +91,18 @@ async function activate(context) {
             },
         }),
     );
+    artifactViews = registerArtifactViews(vscode, context, async (parameters, token) => {
+        await lifecycle;
+        if (!client) throw new Error('msync language server is not running. Configure msync.serverPath, then use msync: Restart Language Server.');
+        return client.sendRequest('msync/artifact', parameters, token);
+    });
     await restart();
 }
 
 function deactivate() {
     enabled = false;
+    artifactViews?.dispose();
+    artifactViews = undefined;
     return serialize(stop);
 }
 

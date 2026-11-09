@@ -1,0 +1,465 @@
+# Named data families own operations; anonymous Scope values own payloads.
+
+scope Pair {
+    # Products retain payloads as data. Operations take the record explicitly;
+    # there is no per-instance closure table or hidden receiver.
+    new: fn(first?, second?) -> $std::concepts::Product {
+        scope {
+            First: decltype(first),
+            Second: decltype(second),
+            first?: first,
+            second?: second,
+        }
+    },
+
+    swap: fn(value: $std::concepts::Product) -> $std::concepts::Product {
+        Pair::new(value::second, value::first)
+    },
+
+    map_first: fn(value: $std::concepts::Product, operation: Function)
+        -> $std::concepts::Product {
+        Pair::new(operation(value::first), value::second)
+    },
+
+    map_second: fn(value: $std::concepts::Product, operation: Function)
+        -> $std::concepts::Product {
+        Pair::new(value::first, operation(value::second))
+    },
+
+    bimap: fn(
+        value: $std::concepts::Product,
+        first: Function,
+        second: Function
+    ) -> $std::concepts::Product {
+        Pair::new(first(value::first), second(value::second))
+    },
+
+    fold: fn(value: $std::concepts::Product, operation: Function) {
+        operation(value::first, value::second)
+    },
+
+    curry: fn(operation: Function) {
+        fn(first?) {
+            fn(second?) {
+                operation(Pair::new(first, second))
+            }
+        }
+    },
+
+    uncurry: fn(operation: Function) {
+        fn(value: $std::concepts::Product) {
+            operation(value::first)(value::second)
+        }
+    },
+
+    # Equality is selected explicitly. Both policy carriers are checked against
+    # actual fields when this generic function specializes.
+    equal: fn(
+        left: $std::concepts::Product,
+        right: $std::concepts::Product,
+        first: $std::concepts::Equality,
+        second: $std::concepts::Equality
+    ) {
+        first::equal(left::first, right::first)
+            and second::equal(left::second, right::second)
+    },
+};
+
+scope Option {
+    # Absence is the language's Null. some boxes its payload so some(null) remains
+    # distinct from none; objects store data rather than a bag of method closures.
+    some: fn(value?) -> $std::concepts::Option {
+        scope {
+            Item: decltype(value),
+            value?: value
+        }
+    },
+
+    none: fn() {
+        null
+    },
+
+    is_some: fn(option?: $std::concepts::Option) -> Bool {
+        option is not null
+    },
+
+    is_none: fn(option?: $std::concepts::Option) -> Bool {
+        option is null
+    },
+
+    map: fn(option?: $std::concepts::Option, operation: Function)
+        -> $std::concepts::Option? {
+        if option is null {
+            null
+        } else {
+            Option::some(operation(option::value))
+        }
+    },
+
+    and_then: fn(option?: $std::concepts::Option, operation: Function)
+        -> $std::concepts::Option? {
+        if option is null {
+            null
+        } else {
+            operation(option::value)
+        }
+    },
+
+    fold: fn(
+        option?: $std::concepts::Option,
+        on_some: Function,
+        on_none: Function
+    ) {
+        if option is null {
+            on_none()
+        } else {
+            on_some(option::value)
+        }
+    },
+
+    get_or: fn(option?: $std::concepts::Option, fallback?) {
+        if option is null {
+            fallback
+        } else {
+            option::value
+        }
+    },
+
+    get_or_else: fn(option?: $std::concepts::Option, fallback: Function) {
+        if option is null {
+            fallback()
+        } else {
+            option::value
+        }
+    },
+
+    or_else: fn(option?: $std::concepts::Option, fallback: Function)
+        -> $std::concepts::Option? {
+        if option is null {
+            fallback()
+        } else {
+            option
+        }
+    },
+
+    filter: fn(option?: $std::concepts::Option, predicate: Function)
+        -> $std::concepts::Option? {
+        if option is null {
+            null
+        } else {
+            if predicate(option::value) {
+                option
+            } else {
+                null
+            }
+        }
+    },
+
+    from_nullable: fn(value?) -> $std::concepts::Option? {
+        if value is null {
+            null
+        } else {
+            Option::some(value)
+        }
+    },
+
+    to_nullable: fn(option?: $std::concepts::Option) {
+        if option is null {
+            null
+        } else {
+            option::value
+        }
+    },
+
+    flatten: fn(option?: $std::concepts::Option) -> $std::concepts::Option? {
+        if option is null {
+            null
+        } else {
+            option::value
+        }
+    },
+
+    zip: fn(left?: $std::concepts::Option, right?: $std::concepts::Option)
+        -> $std::concepts::Option? {
+        if left is null {
+            null
+        } else {
+            if right is null {
+                null
+            } else {
+                Option::some(
+                    scope {
+                        first?: left::value,
+                        second?: right::value
+                    }
+                )
+            }
+        }
+    },
+
+    zip_with: fn(
+        left?: $std::concepts::Option,
+        right?: $std::concepts::Option,
+        operation: Function
+    ) -> $std::concepts::Option? {
+        if left is null {
+            null
+        } else {
+            if right is null {
+                null
+            } else {
+                Option::some(operation(left::value, right::value))
+            }
+        }
+    },
+};
+
+scope Result {
+    # A closed runtime Scope cannot express a correlated tagged union. One generic
+    # eliminator retains each variant's payload type and requires both callbacks;
+    # all other operations belong to this named module Scope, not to the instance.
+    ok: fn(value?) -> $std::concepts::Result {
+        scope {
+            fold: fn(on_ok: Function, on_error: Function) {
+                on_ok(value)
+            },
+        }
+    },
+
+    err: fn(error?) -> $std::concepts::Result {
+        scope {
+            fold: fn(on_ok: Function, on_error: Function) {
+                on_error(error)
+            },
+        }
+    },
+
+    fold: fn(
+        value: $std::concepts::Result,
+        on_ok: Function,
+        on_error: Function
+    ) {
+        value::fold(on_ok, on_error)
+    },
+
+    is_ok: fn(value: $std::concepts::Result) -> Bool {
+        Result::fold(
+            value,
+            fn(item?) {
+                true
+            },
+            fn(error?) {
+                false
+            }
+        )
+    },
+
+    is_err: fn(value: $std::concepts::Result) -> Bool {
+        not Result::is_ok(value)
+    },
+
+    map: fn(value: $std::concepts::Result, operation: Function)
+        -> $std::concepts::Result {
+        Result::fold(
+            value,
+            fn(item?) {
+                Result::ok(operation(item))
+            },
+            Result::err
+        )
+    },
+
+    map_error: fn(value: $std::concepts::Result, operation: Function)
+        -> $std::concepts::Result {
+        Result::fold(
+            value,
+            Result::ok,
+            fn(error?) {
+                Result::err(operation(error))
+            }
+        )
+    },
+
+    bimap: fn(
+        value: $std::concepts::Result,
+        on_ok: Function,
+        on_error: Function
+    ) -> $std::concepts::Result {
+        Result::fold(
+            value,
+            fn(item?) {
+                Result::ok(on_ok(item))
+            },
+            fn(error?) {
+                Result::err(on_error(error))
+            }
+        )
+    },
+
+    and_then: fn(value: $std::concepts::Result, operation: Function)
+        -> $std::concepts::Result {
+        Result::fold(value, operation, Result::err)
+    },
+
+    or_else: fn(value: $std::concepts::Result, operation: Function)
+        -> $std::concepts::Result {
+        Result::fold(value, Result::ok, operation)
+    },
+
+    get_or: fn(value: $std::concepts::Result, fallback?) {
+        Result::fold(
+            value,
+            fn(item?) {
+                item
+            },
+            fn(error?) {
+                fallback
+            }
+        )
+    },
+
+    get_or_else: fn(value: $std::concepts::Result, fallback: Function) {
+        Result::fold(value, fn(item?) {
+            item
+        }, fallback)
+    },
+
+    to_option: fn(value: $std::concepts::Result) -> $std::concepts::Option? {
+        Result::fold(
+            value,
+            Option::some,
+            fn(error?) {
+                null
+            }
+        )
+    },
+
+    error_option: fn(value: $std::concepts::Result) -> $std::concepts::Option? {
+        Result::fold(
+            value,
+            fn(item?) {
+                null
+            },
+            Option::some
+        )
+    },
+
+    from_option: fn(value?: $std::concepts::Option, error?)
+        -> $std::concepts::Result {
+        Option::fold(
+            value,
+            Result::ok,
+            fn {
+                Result::err(error)
+            }
+        )
+    },
+
+    flatten: fn(value: $std::concepts::Result) -> $std::concepts::Result {
+        Result::and_then(
+            value,
+            fn(item: $std::concepts::Result) {
+                item
+            }
+        )
+    },
+
+    zip: fn(left: $std::concepts::Result, right: $std::concepts::Result)
+        -> $std::concepts::Result {
+        Result::fold(
+            left,
+            fn(first?) {
+                Result::fold(
+                    right,
+                    fn(second?) {
+                        Result::ok(Pair::new(first, second))
+                    },
+                    Result::err
+                )
+            },
+            Result::err
+        )
+    },
+
+    zip_with: fn(
+        left: $std::concepts::Result,
+        right: $std::concepts::Result,
+        operation: Function
+    ) -> $std::concepts::Result {
+        Result::fold(
+            left,
+            fn(first?) {
+                Result::fold(
+                    right,
+                    fn(second?) {
+                        Result::ok(operation(first, second))
+                    },
+                    Result::err
+                )
+            },
+            Result::err
+        )
+    },
+};
+
+scope Either {
+    # Either and Result share the same binary-sum eliminator representation. This
+    # family names neutral alternatives rather than imposing success/error meaning.
+    left: fn(value?) -> $std::concepts::Either {
+        Result::ok(value)
+    },
+
+    right: fn(value?) -> $std::concepts::Either {
+        Result::err(value)
+    },
+
+    fold: fn(
+        value: $std::concepts::Either,
+        on_left: Function,
+        on_right: Function
+    ) {
+        value::fold(on_left, on_right)
+    },
+
+    is_left: fn(value: $std::concepts::Either) -> Bool {
+        Result::is_ok(value)
+    },
+
+    is_right: fn(value: $std::concepts::Either) -> Bool {
+        not Either::is_left(value)
+    },
+
+    map_left: fn(value: $std::concepts::Either, operation: Function)
+        -> $std::concepts::Either {
+        Result::map(value, operation)
+    },
+
+    map_right: fn(value: $std::concepts::Either, operation: Function)
+        -> $std::concepts::Either {
+        Result::map_error(value, operation)
+    },
+
+    bimap: fn(
+        value: $std::concepts::Either,
+        on_left: Function,
+        on_right: Function
+    ) -> $std::concepts::Either {
+        Result::bimap(value, on_left, on_right)
+    },
+
+    swap: fn(value: $std::concepts::Either) -> $std::concepts::Either {
+        Either::fold(value, Either::right, Either::left)
+    },
+
+    merge: fn(value: $std::concepts::Either) {
+        Either::fold(
+            value,
+            fn(item?) {
+                item
+            },
+            fn(item?) {
+                item
+            }
+        )
+    },
+};

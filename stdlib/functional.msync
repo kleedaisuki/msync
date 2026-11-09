@@ -1,0 +1,25 @@
+# Callable combinators are normal specialized closures, not runtime AST evaluation.
+fn identity(value?) { value };
+fn constant(value?) { fn { value } };
+fn compose(outer: Function, inner: Function) {
+    fn(value?) { outer(inner(value)) }
+};
+fn flip(operation: Function) { fn(left?, right?) { operation(right, left) } };
+fn negate(predicate: Function) { fn(value?) { not predicate(value) } };
+fn both(first: Function, second: Function) {
+    fn(value?) { first(value) and second(value) }
+};
+fn either(first: Function, second: Function) {
+    fn(value?) { first(value) or second(value) }
+};
+fn apply(operation: Function, value?) { operation(value) };
+fn apply_two(operation: Function, first?, second?) { operation(first, second) };
+fn apply_three(operation: Function, first?, second?, third?) {
+    operation(first, second, third)
+};
+fn when(condition: Bool, operation: Function) { if condition { operation() } };
+fn unless(condition: Bool, operation: Function) { if not condition { operation() } };
+fn tap(value?, operation: Function) { operation(value); value };
+fn on(compare: Function, projection: Function) {
+    fn(left?, right?) { compare(projection(left), projection(right)) }
+};
