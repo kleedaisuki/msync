@@ -123,8 +123,10 @@ randomized within each pair, and complete adjacent payloads are frozen and
 fingerprinted. The realistic case includes a first-ever canonical standard
 library query, typed functions/Scopes, repeated tokens, selected completion
 details, shadows and close/reopen isolation, without executing source effects.
-The flat cases retain the 128/4,000-binding edit-burst workload and negotiate
-documentation resolution like the editor. Selected-item resolution is timed
+The flat cases retain the 128/4,000-binding edit-burst workload; `--case flat80
+--case flat400` selects ordinary and moderate documents for the Typed HIR
+comparison. Defaults are unchanged. All negotiate documentation resolution like
+the editor. Selected-item resolution is timed
 separately from the initial candidate response. Legacy clients without the
 capability remain covered by `lsp_response_journey.py`.
 

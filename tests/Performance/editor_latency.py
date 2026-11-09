@@ -21,6 +21,12 @@ from lsp_latency import measure
 from lsp_response_journey import run as response_journey
 
 CASES = ("realistic", "flat128", "flat4000")
+CASE_ROWS: dict[str, int] = {
+    "flat80": 80,
+    "flat128": 128,
+    "flat400": 400,
+    "flat4000": 4000,
+}
 
 
 def freeze(binary: Path, directory: Path) -> dict[str, Any]:
@@ -39,7 +45,7 @@ def observe(binary: Path, case: str, workspace: Path) -> dict[str, Any]:
     if case == "realistic":
         workspace.mkdir()
         return response_journey(binary, workspace, negotiate=True)
-    rows = 128 if case == "flat128" else 4000
+    rows = CASE_ROWS[case]
     return measure(binary, rows, 16, resolve_documentation=True)
 
 
@@ -86,7 +92,7 @@ def main() -> None:
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--baseline-source", default="unspecified")
     parser.add_argument("--candidate-source", default="unspecified")
-    parser.add_argument("--case", action="append", choices=CASES)
+    parser.add_argument("--case", action="append", choices=("realistic", *CASE_ROWS))
     parser.add_argument("--samples", type=int, default=7)
     parser.add_argument("--seed", type=int, default=807)
     parser.add_argument("--output", type=Path, required=True)
