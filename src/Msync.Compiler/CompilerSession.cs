@@ -15,6 +15,7 @@ public sealed class CompilerSession
     public Module Compile(string submission, Document? document) => compilation.Submit(submission, document);
     public IReadOnlyCollection<string> BindingNames => compilation.BindingNames;
     public IReadOnlyList<SemanticMember> DescribeBindings() => EditorCompiler.DescribeBindings(compilation.EditorBindings);
+    public IReadOnlyList<SemanticMember> DescribeConcepts() => compilation.DescribeConcepts();
     public EditorAnalysis AnalyzeEditor(string submission, Func<int, Value?>? resolveAcceptedValue = null) =>
         EditorCompiler.Analyze(submission, compilation, resolveAcceptedValue);
     public void AcceptSubmission() => compilation.AcceptSubmission();

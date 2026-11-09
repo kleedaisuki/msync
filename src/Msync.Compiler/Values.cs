@@ -89,6 +89,7 @@ internal sealed partial class Compilation
             case "not": Require(frame, operand.Type, TypeRef.Bool, unary.Operand.Span); frame.Emit(OpCode.Not, span: unary.Span); return new(TypeRef.Bool, KnownBool: operand.KnownBool is null ? null : !operand.KnownBool.Value);
             case "exists": Require(frame, operand.Type, PathCompatible, unary.Operand.Span); frame.Emit(OpCode.NativeCall, 1, text: "fs.exists", span: unary.Span); return new(TypeRef.Bool);
             case "-": Require(frame, operand.Type, TypeRef.Number, unary.Operand.Span); frame.Emit(OpCode.Negate, span: unary.Span); return operand;
+            case "+": Require(frame, operand.Type, TypeRef.Number, unary.Operand.Span); return operand;
             default: throw Error(frame, $"Unknown unary operator '{unary.Operator}'.", unary.Span);
         }
     }
@@ -97,6 +98,7 @@ internal sealed partial class Compilation
     private Info Binary(Frame frame, BinaryExpr binary)
     {
         if (binary.Operator == "::") return Select(frame, binary);
+        if (binary.Operator == "@") return Qualify(frame, binary);
         if (binary.Operator == "|") return Pipe(frame, binary);
         if (binary.Operator is "and" or "or") return Logical(frame, binary);
         var left = Current(frame, Expression(frame, binary.Left));
@@ -116,6 +118,11 @@ internal sealed partial class Compilation
         switch (binary.Operator)
         {
             case "/":
+                if (left.Type == TypeRef.Number && right.Type == TypeRef.Number)
+                {
+                    frame.Emit(OpCode.Divide, span: binary.Span);
+                    return new(TypeRef.Number);
+                }
                 Require(frame, left.Type, PathCompatible, binary.Left.Span); Require(frame, right.Type, PathCompatible, binary.Right.Span);
                 frame.Emit(OpCode.PathJoin, span: binary.Span); return new(TypeRef.Path, KnownPath: JoinedPath(left, right));
             case "->":
@@ -155,8 +162,15 @@ internal sealed partial class Compilation
             case "+":
             case "-":
             case "*":
+            case "%":
+            case "**":
                 Require(frame, left.Type, TypeRef.Number, binary.Left.Span); Require(frame, right.Type, TypeRef.Number, binary.Right.Span);
-                frame.Emit(binary.Operator switch { "+" => OpCode.Add, "-" => OpCode.Subtract, _ => OpCode.Multiply }, span: binary.Span);
+                if (binary.Operator == "**")
+                {
+                    frame.Emit(OpCode.NativeCall, 2, text: "math.pow", span: binary.Span);
+                    return new(TypeRef.Number);
+                }
+                frame.Emit(binary.Operator switch { "+" => OpCode.Add, "-" => OpCode.Subtract, "%" => OpCode.Remainder, _ => OpCode.Multiply }, span: binary.Span);
                 return new(TypeRef.Number);
             default: throw Error(frame, $"Unknown operator '{binary.Operator}'.", binary.Span);
         }
@@ -215,18 +229,39 @@ internal sealed partial class Compilation
             frame.Emit(OpCode.GetMember, text: member, span: binary.Span);
             return new(type);
         }
-        if (left.Type != TypeRef.Connection)
-            throw Error(frame, member is null ? $"Cannot use '::' on a {left.Type} value." : $"Cannot select '{member}' from a {left.Type} value.", binary.Left.Span,
-                label: $"this is {left.Type}, not a Scope or Connection",
-                note: "'::' selects a member of a lexical Scope, or qualifies a path with a Connection.",
-                help: left.Type == TypeRef.Path
-                    ? "Pass the Scope itself, not one of its Path members. An unbound bare name is a Path; use $local, $wsl or an SSH connection for endpoint qualification."
-                    : "Use a Scope value for member access, or a Connection value for endpoint qualification.", code: "E0206");
+        throw Error(frame, member is null ? $"Cannot use '::' on a {left.Type} value." : $"Cannot select '{member}' from a {left.Type} value.", binary.Left.Span,
+            label: $"this is {left.Type}, not a lexical Scope or Process",
+            note: "'::' selects lexical members. '@' binds a Path or String to a Connection.",
+            help: left.Type == TypeRef.Connection
+                ? "Write 'path @ connection' instead of 'connection::path'."
+                : "Select a member from a Scope, or qualify a path with 'path @ connection'.", code: "E0206");
+    }
+
+    private Info Qualify(Frame frame, BinaryExpr binary)
+    {
         var first = BeginPhysicalPathFlow(frame, binary);
-        var right = Expression(frame, binary.Right);
-        CompletePhysicalPathFlow(binary.Right, first, left.KnownConnection);
-        Require(frame, right.Type, PathCompatible, binary.Right.Span);
-        frame.Emit(OpCode.Qualify, span: binary.Span); return new(TypeRef.Path, KnownPath: QualifiedPath(left, right));
+        var path = Expression(frame, binary.Left);
+        Require(frame, path.Type, PathCompatible, binary.Left.Span);
+        int slot = frame.Allocate();
+        frame.Emit(OpCode.InitializeLocal, slot);
+        var connection = Expression(frame, binary.Right);
+        Require(frame, connection.Type, TypeRef.Connection, binary.Right.Span);
+        CompletePhysicalPathFlow(binary.Left, first, connection.KnownConnection);
+        frame.Emit(OpCode.LoadLocal, slot);
+        frame.Emit(OpCode.Qualify, span: binary.Span);
+        return new(TypeRef.Path, KnownPath: QualifiedPath(connection, path));
+    }
+
+    private Info Cast(Frame frame, CastExpr cast)
+    {
+        var value = Expression(frame, cast.Value);
+        TypeRef target = ResolveType(frame, cast.Type);
+        CheckConcept(frame, value, cast.Type, cast.Value.Span);
+        var result = CastResult(frame, [value, new(TypeRef.Type, TypeValue: target)], cast.Span, null);
+        if (target.Accepts(value.Type)) return result;
+        TypeConstant(frame, target, cast.Type.Span);
+        frame.Emit(OpCode.NativeCall, 2, text: "cast", span: cast.Span);
+        return result;
     }
 
     private static PathValue? LiteralPath(Info info) => info.KnownPath
@@ -265,6 +300,18 @@ internal sealed partial class Compilation
 
     private Info Scope(Frame frame, ScopeExpr scope, bool named = false)
     {
+        if (!scopeAllocationSites.TryGetValue(scope, out int allocation)) scopeAllocationSites.Add(scope, allocation = ++nextScopeAllocation);
+        int initialized = -1;
+        var beforeInitialization = frame.Facts;
+        if (named)
+        {
+            frame.Emit(OpCode.GetSingleton, allocation, span: scope.Span);
+            frame.Emit(OpCode.Dup);
+            frame.Emit(OpCode.IsNull);
+            initialized = frame.Emit(OpCode.JumpIfFalse);
+            frame.Emit(OpCode.Pop);
+        }
+        namedScopeInfos.TryGetValue(scope, out var existingSingleton);
         var old = frame.Environment;
         var owner = frame.ContextOwner;
         bool includesEnd = frame.ContextIncludesEnd;
@@ -296,6 +343,12 @@ internal sealed partial class Compilation
                     help: $"Declare '{member.Name}?: ...' to allow Null in this field.",
                     fix: member.NameSpan is { } fieldName ? new("Allow Null in this field", new(fieldName.End, 0), "?") : null,
                     code: "E0201");
+            if (named && existingSingleton?.Scope is { } previous)
+            {
+                info = StoreInfo(frame, info, previous.Storage[member.Name].Type, member.Nullable, member.Value.Span, member.Name);
+                CheckSingletonShape(frame, previous.Members[member.Name], info, member.Value.Span, member.Name);
+                ObserveCallableStore(previous.Storage[member.Name], info);
+            }
             if (member.Nullable) nullableMembers.Add(member.Name);
             storageTypes[member.Name] = StorageType(info.Type, member.Nullable);
             if (member.NameSpan is { } memberName) Observe(frame, memberName, info, member.Name);
@@ -308,8 +361,12 @@ internal sealed partial class Compilation
         }
         if (scope.Value is not null) { Expression(frame, scope.Value); frame.Emit(OpCode.Pop); }
         foreach (int slot in fieldSlots) frame.Emit(OpCode.LoadStorage, slot);
-        if (!scopeAllocationSites.TryGetValue(scope, out int allocation)) scopeAllocationSites.Add(scope, allocation = ++nextScopeAllocation);
         frame.Emit(OpCode.MakeScope, keys.Count, allocation, text: string.Join('\0', keys), span: scope.Span);
+        if (named)
+        {
+            frame.Emit(OpCode.SetSingleton, allocation, span: scope.Span);
+            frame.Patch(initialized, frame.Code.Count);
+        }
         CaptureContext(frame, scope.Span.End);
         RestoreScope(frame, old);
         frame.ContextOwner = owner;
@@ -322,6 +379,12 @@ internal sealed partial class Compilation
             FieldBindings = fieldBindings,
             Storage = fieldBindings.ToDictionary(pair => pair.Key, pair => pair.Value.Storage, StringComparer.Ordinal)
         });
+        if (named)
+        {
+            frame.Facts = JoinFacts(beforeInitialization, frame.Facts);
+            result = DeferredCapture(frame, new Binding(-1, existingSingleton ?? result));
+            if (!frame.EditorProbe && !frame.EditorRecovery) namedScopeInfos.TryAdd(scope, result);
+        }
         frame.Facts = frame.Facts.SetItem(result.Scope!.Identity, result);
         RegisterScope(frame, result.Scope);
         return result;

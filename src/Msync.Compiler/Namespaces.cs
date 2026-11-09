@@ -93,7 +93,7 @@ internal sealed partial class Compilation
         module.Emit(OpCode.MakeScope, keys.Count, text: string.Join('\0', keys), span: span);
         frame.Code.AddRange(module.Code); frame.Locals = module.Locals;
         foreach (var (cacheName, binding) in StandardEnvironment(module)) frame.Bind(cacheName, binding);
-        var result = new Info(TypeRef.Scope, Scope: new(members, Origins: origins)
+        var result = new Info(TypeRef.Scope, Scope: new(members, Named: true, Origins: origins)
         {
             FieldBindings = bindings,
             Storage = bindings.ToDictionary(pair => pair.Key, pair => pair.Value.Storage, StringComparer.Ordinal)

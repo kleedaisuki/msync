@@ -15,6 +15,8 @@ internal sealed class EditorSnapshot
         {
             storage.Add(constraint, result = new(constraint.Type) { Revision = constraint.Revision });
             result.CastContracts = constraint.CastContracts;
+            result.ConceptContracts = constraint.ConceptContracts;
+            result.ConceptMemberContracts = constraint.ConceptMemberContracts;
             result.DeferredTypeWrites = constraint.DeferredTypeWrites;
             result.Callables = constraint.Callables is { } domain ? Info(domain, null, unprovenCapture: true) : null;
             result.Sources = System.Collections.Immutable.ImmutableHashSet.CreateRange(constraint.Sources.Select(Storage));
@@ -80,7 +82,10 @@ internal sealed class EditorSnapshot
     {
         if (templates.TryGetValue((template, value), out var saved)) return saved;
         List<KeyValuePair<string, Binding>> captures = [];
-        Template snapshot = new(template.Id, template.Syntax, captures, template.Source, template.SourceName);
+        Template snapshot = new(template.Id, template.Syntax, captures, template.Source, template.SourceName)
+        {
+            Concepts = template.Concepts
+        };
         templates[(template, value)] = snapshot;
         bool matches = value is not null && (value.Function == template.Id || template.Specializations.Values.Any(item => item.Id == value.Function));
         bool actual = matches && value!.Captures?.Count == template.Captures.Count;

@@ -51,6 +51,7 @@ internal sealed partial class Compilation
     private Info Block(Frame frame, BlockExpr block)
     {
         var old = frame.Environment;
+        var concepts = frame.Concepts;
         var owner = frame.ContextOwner;
         bool includesEnd = frame.ContextIncludesEnd;
         frame.ContextOwner = block.Span;
@@ -62,7 +63,7 @@ internal sealed partial class Compilation
             CaptureContext(frame, block.Span.End);
             return result;
         }
-        finally { RestoreScope(frame, old); frame.ContextOwner = owner; frame.ContextIncludesEnd = includesEnd; }
+        finally { RestoreScope(frame, old); frame.Concepts = concepts; frame.ContextOwner = owner; frame.ContextIncludesEnd = includesEnd; }
     }
     private Info Conditional(Frame frame, IfExpr conditional)
     {
@@ -179,6 +180,7 @@ internal sealed partial class Compilation
     private Info Return(Frame frame, ReturnExpr returned)
     {
         var result = returned.Value is null ? Emit(frame, OpCode.Null, TypeRef.Null, returned.Span) : Expression(frame, returned.Value);
+        if (frame.ExpectedConceptReturn is { } conceptReturn) CheckConcept(frame, result, conceptReturn, returned.Span);
         if (frame.ExpectedReturn is not null)
         {
             CheckReturnConversion(frame, result.Type, frame.ExpectedReturn, returned.Span);

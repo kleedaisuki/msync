@@ -47,7 +47,7 @@ internal sealed partial class Compilation
         int id = functions.Count;
         functions.Add(new(function.Name ?? $"<lambda{nextTemplate++}>", function.Parameters.Count, captures.Length + function.Parameters.Count,
             [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, captures.Length));
-        Template template = new(id, function, captures, frame.Source, frame.SourceName);
+        Template template = new(id, function, captures, frame.Source, frame.SourceName) { Concepts = frame.Concepts };
         templates.Add(template);
         if (atSite is null) functionSites.Add(function, atSite = []);
         atSite.Add(template);
@@ -117,18 +117,24 @@ internal sealed partial class Compilation
         if (specializations.TryGetValue(key, out var existing)) return existing;
         if (activeEditorSpecializations?.Contains(template.Syntax) == true)
         {
-            var guarded = template.Syntax.ReturnType is null ? UnknownInfo : new Info(ResolveType(caller, template.Syntax.ReturnType));
+            var recursiveContext = CloneFrame(caller);
+            recursiveContext.Concepts = template.Concepts;
+            var guarded = template.Syntax.ReturnType is null ? UnknownInfo : ConceptInfo(recursiveContext, template.Syntax.ReturnType);
             return new(-1, guarded, arguments.Select(argument => argument.Type).ToArray());
         }
         int id = specializations.Count == 0 && !caller.EditorProbe && !template.Instance ? template.Id : functions.Count;
         if (id == functions.Count) functions.Add(functions[template.Id]);
-        var asserted = template.Syntax.ReturnType is null ? null : ResolveType(caller, template.Syntax.ReturnType);
+        var annotationFrame = CloneFrame(caller);
+        annotationFrame.Concepts = template.Concepts;
+        var asserted = template.Syntax.ReturnType is null ? null : ResolveType(annotationFrame, template.Syntax.ReturnType);
         Specialization specialization = new(id, new(asserted ?? new TypeRef(TypeKind.Never)), arguments.Select(info => info.Type).ToArray());
         specializations[key] = specialization;
         var environment = editorDefinitions is not null && editorDefinitions.TryGetValue(template, out var definition) ? definition.Environment : null;
         Frame frame = new(template.Source, template.SourceName, environment)
         {
             ExpectedReturn = asserted,
+            Concepts = template.Concepts,
+            ExpectedConceptReturn = template.Syntax.ReturnType,
             Facts = caller.Facts,
             FieldOwners = caller.FieldOwners,
             ExpectedReturnSpan = template.Syntax.ReturnType?.Span,
@@ -155,6 +161,7 @@ internal sealed partial class Compilation
             var info = argument with { KnownBool = null, KnownConnection = null, KnownPath = null, KnownText = null, Element = ForgetEndpoint(argument.Element) };
             if (parameter.Type is not null)
             {
+                CheckConcept(frame, info, parameter.Nullable ? parameter.Type with { Nullable = true } : parameter.Type, argumentExpressions?[index].Span ?? span);
                 var type = ResolveType(frame, parameter.Type);
                 if (parameter.Nullable) type = type.WithNull;
                 try { CheckConversion(caller, info.Type, type, argumentExpressions?[index].Span ?? span); }
@@ -188,6 +195,7 @@ internal sealed partial class Compilation
             if (parameter.Nullable && parameterConstraint is not null) parameterConstraint = parameterConstraint.WithNull;
             frame.Bind(parameter.Name, new(frame.Allocate(), info, Origin: origin, AdmitsNull: parameter.Nullable || parameterConstraint?.Nullable == true,
                 Constraint: parameterConstraint));
+            if (parameter.Type is not null) AttachConcept(frame, frame.Environment[parameter.Name].Storage, parameter.Nullable ? parameter.Type with { Nullable = true } : parameter.Type);
             if (origin is not null) CaptureDefinition(frame, origin.Span, [origin]);
         }
         if (template.Syntax.Name is not null && !frame.Environment.ContainsKey(template.Syntax.Name)) frame.Bind(template.Syntax.Name, new(-1, new(TypeRef.Function, template), template,
@@ -201,6 +209,7 @@ internal sealed partial class Compilation
         {
             result = Block(frame, template.Syntax.Body);
             foreach (var returned in frame.Returns) result = Join(result, returned);
+            if (template.Syntax.ReturnType is { } resultAnnotation) CheckConcept(frame, result, resultAnnotation, template.Syntax.Body.Span);
             if (asserted is not null)
             {
                 CheckReturnConversion(frame, result.Type, asserted, template.Syntax.Body.Span);
@@ -230,7 +239,7 @@ internal sealed partial class Compilation
     {
         Frame scratch = CloneFrame(frame);
         var result = CallEager(scratch, call);
-        if (result.Type.Kind == TypeKind.Range)
+        if (result.Type.Kind == TypeKind.Range && !result.EagerRange)
         {
             if (!scratch.DeferredCaptures)
             {
@@ -331,7 +340,7 @@ internal sealed partial class Compilation
             _ => ExtendedNativeResult(frame, signature, arguments, callbackResult, span, argumentExpressions)
         };
         frame.Emit(OpCode.Call, arguments.Count, span: span);
-        return result;
+        return result with { EagerRange = (signature.Behavior.GetValueOrDefault() & NativeBehavior.EagerRange) != 0 };
     }
     private (Info Result, string Mapping) ResolveDispatch(Frame frame, Info callee, IReadOnlyList<Info> arguments, SourceSpan span)
     {
@@ -375,7 +384,7 @@ internal sealed partial class Compilation
         KnownText = projection ? info.KnownText : null,
         Element = projection ? info.Element : ForgetEndpoint(info.Element)
     };
-    private static string InfoKey(Info info) => $"{info.Type}:{info.TypeValue}:{(info.Function is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Function))}:{info.NativeName}:{(info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope))}:{string.Join(',', info.Alternatives?.Select(InfoKey) ?? [])}:{(info.Element is null ? "" : InfoKey(info.Element))}";
+    private static string InfoKey(Info info) => $"{info.Type}:{info.TypeValue}:{info.EagerRange}:{(info.Function is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Function))}:{info.NativeName}:{(info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope))}:{string.Join(',', info.Alternatives?.Select(InfoKey) ?? [])}:{(info.Element is null ? "" : InfoKey(info.Element))}";
 
 
 }

@@ -23,7 +23,7 @@ internal sealed partial class Compilation
         string key = StandardCachePrefix + name;
         if (frame.Environment.TryGetValue(key, out var saved)) return saved;
         int slot = frame.Allocate();
-        Binding binding = new(slot, new(TypeRef.Scope, Scope: new(new Dictionary<string, Info>())), Constraint: TypeRef.Scope);
+        Binding binding = new(slot, new(TypeRef.Scope, Scope: new(new Dictionary<string, Info>(), Named: true)), Constraint: TypeRef.Scope);
         frame.Bind(key, binding);
         frame.Emit(OpCode.Null);
         frame.Emit(OpCode.InitializeLocal, slot);
@@ -64,12 +64,12 @@ internal sealed partial class Compilation
             }
             else if (libraries.Value.ContainsKey(name))
             {
-                members[name] = new(TypeRef.Scope);
+                members[name] = new(TypeRef.Scope, Scope: new(new Dictionary<string, Info>(), Named: true));
                 if (origins is not null) origins[name] = [new($"msync-stdlib:///0.8.0/{name}.msync", libraries.Value[name].Source, new(0, 0))];
             }
             else members[name] = new(TypeRef.Function, NativeName: name);
         }
-        return new(TypeRef.Scope, Scope: new(members, Origins: origins));
+        return new(TypeRef.Scope, Scope: new(members, Named: true, Origins: origins));
     }
 
     private bool TryStandardSelection(Frame frame, BinaryExpr binary, out Info info)
@@ -83,7 +83,7 @@ internal sealed partial class Compilation
             if (frame.EditorRecovery && binary.Right is MissingExpr)
             {
                 int first = binary.OperatorSpan?.End ?? binary.Right.Span.Start;
-                CaptureReceiver(frame, new(first, binary.Right.Span.End - first), StandardRootInfo(frame));
+                CaptureStandardReceiver(frame, binary, first);
                 return true;
             }
             return false;
@@ -91,12 +91,20 @@ internal sealed partial class Compilation
         if (!StandardNames().Contains(name, StringComparer.Ordinal)) return false;
         var binding = StandardBinding(frame, name, binary.Span);
         int start = binary.OperatorSpan?.End ?? binary.Right.Span.Start;
-        CaptureReceiver(frame, new(start, binary.Right.Span.End - start), StandardRootInfo(frame));
+        CaptureStandardReceiver(frame, binary, start);
         frame.Emit(OpCode.LoadLocal, binding.Slot, span: binary.Span);
         info = Current(frame, binding) with { Storage = binding.Storage };
         Observe(frame, binary.Right.Span, info, name);
         if (binding.Origin is { } origin) CaptureDefinition(frame, binary.Right.Span, [origin]);
         return true;
+    }
+
+    private void CaptureStandardReceiver(Frame frame, BinaryExpr binary, int start)
+    {
+        if (editorContexts is null || !IsCurrentSource(frame)) return;
+        Info root = StandardRootInfo(frame);
+        Observe(frame, binary.Left.Span, root, "std");
+        CaptureReceiver(frame, new(start, binary.Right.Span.End - start), root);
     }
 
     private void CaptureStandardDependencies(Frame frame, Node body, ISet<string> usedNames)

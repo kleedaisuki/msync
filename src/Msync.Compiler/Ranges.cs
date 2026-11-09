@@ -46,6 +46,8 @@ internal sealed partial class Compilation
             Allocations = frame.Allocations,
             FieldOwners = frame.FieldOwners,
             ExpectedReturn = frame.ExpectedReturn,
+            Concepts = frame.Concepts,
+            ExpectedConceptReturn = frame.ExpectedConceptReturn,
             ContextOwner = frame.ContextOwner,
             ContextIncludesEnd = frame.ContextIncludesEnd,
             EditorRecovery = frame.EditorRecovery,

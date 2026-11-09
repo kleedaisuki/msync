@@ -13,6 +13,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
     private readonly List<Template> templates = [];
     private ImmutableDictionary<string, Binding> sessionEnvironment = ImmutableDictionary<string, Binding>.Empty;
     private int sessionLocals;
+    private ImmutableDictionary<string, ConceptDefinition> sessionConcepts = ImmutableDictionary<string, ConceptDefinition>.Empty;
     private static readonly Lazy<IReadOnlyDictionary<string, StandardSource>> libraries = new(ReadLibraries);
     private int nextTemplate;
 
@@ -25,15 +26,17 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         var document = parsedDocument ?? Parser.Parse(text, sourceName);
         if (document.EditorError is { } syntax) throw syntax;
         PrepareSessionBindings();
+        ClearConceptStorage();
         solvedStorage.Clear();
         changedCallableStorage.Clear();
         changedCastTargets?.Clear();
         int previousCastEpoch = castContractEpoch;
         newMutableCalls.Clear();
-        Frame frame = new(text, sourceName, sessionEnvironment) { Locals = sessionLocals };
+        Frame frame = new(text, sourceName, sessionEnvironment) { Locals = sessionLocals, Concepts = sessionConcepts };
         SnapshotFacts(frame);
         if (functions.Count == 0) functions.Add(new("<main>", 0, 0, [], TypeRef.Null));
         var previousFunctions = functions.ToArray();
+        var previousNamedScopes = namedScopeInfos.Keys.ToHashSet(ReferenceEqualityComparer.Instance);
         int previousConstants = constants.Count;
         int previousTemplates = templates.Count;
         var previousKeys = templates.Select(template => template.Specializations.Keys.ToHashSet()).ToArray();
@@ -46,12 +49,15 @@ internal sealed partial class Compilation(string source, string sourceName, int 
             var module = Optimizer.Optimize(new(constants.ToArray(), code, OptimizationLevel: optimization,
                 PreserveLocals: submittedBindings is not null), optimization);
             sessionEnvironment = frame.Environment;
+            sessionConcepts = frame.Concepts;
             sessionLocals = frame.Locals;
             PruneMutableCalls();
             return module;
         }
         catch
         {
+            RestoreConceptStorage();
+            foreach (var scope in namedScopeInfos.Keys.Where(scope => !previousNamedScopes.Contains(scope)).ToArray()) namedScopeInfos.Remove(scope);
             RestoreCastTargets(previousCastEpoch);
             foreach (var storage in solvedStorage) storage.Type = null;
             foreach (var (storage, previous) in changedCallableStorage)
@@ -136,6 +142,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
     {
         LetStatement let => Let(frame, let),
         GlobalStatement global => ImportGlobals(frame, global),
+        ConceptDeclaration concept => DeclareConcept(frame, concept),
         FunctionDeclaration declaration => DeclareFunction(frame, declaration),
         NativeDeclaration native => Declare(frame, native.Name, Native(frame, native, null), native.NameSpan),
         ScopeDeclaration declaration => Declare(frame, declaration.Name, Scope(frame, declaration.Scope, named: true), declaration.NameSpan),
@@ -159,6 +166,8 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         bool nullable = let.Nullable || constraint?.Nullable == true;
         if (nullable && constraint is not null) constraint = constraint.WithNull;
         BindPattern(frame, let.Pattern, result, nullable, constraint);
+        if (let.Type is not null && let.Pattern is NamePattern name && frame.Environment.TryGetValue(name.Name, out var binding))
+            AttachConcept(frame, binding.Storage, let.Nullable ? let.Type with { Nullable = true } : let.Type);
         frame.Emit(OpCode.Null);
         return new(TypeRef.Null);
     }
@@ -178,6 +187,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         if (let.Nullable) asserted = asserted.WithNull;
         if (!result.EditorUnknown)
         {
+            CheckConcept(frame, result, let.Nullable ? let.Type! with { Nullable = true } : let.Type!, let.Value.Span);
             CheckConversion(frame, result.Type, asserted, let.Value.Span);
             Convert(frame, result.Type, asserted, let.Value.Span);
         }
@@ -235,6 +245,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         TypeExpr type => TypeConstant(frame, ResolveType(frame, type.Type), expression.Span),
         UnaryExpr unary => Unary(frame, unary),
         BinaryExpr binary => Binary(frame, binary),
+        CastExpr cast => Cast(frame, cast),
         AssignmentExpr assignment => Assign(frame, assignment),
         BarrierExpr barrier => Barrier(frame, barrier),
         BlockExpr block => Block(frame, block),

@@ -82,6 +82,7 @@ internal sealed partial class Compilation
             var value = Expression(frame, assignment.Value);
             value = StoreInfo(frame, value, binding.Storage.Type, binding.AdmitsNull, assignment.Value.Span, name.Name);
             CheckCastTargetStore(frame, binding.Storage, value, assignment.Value.Span);
+            CheckConceptStore(frame, binding.Storage, value, assignment.Value.Span);
             if (binding.Storage.Type is null && StorageType(value.Type, binding.AdmitsNull) is { } solved)
             {
                 Solve(binding.Storage, solved);
@@ -111,6 +112,7 @@ internal sealed partial class Compilation
             var constraint = storage.Type;
             value = StoreInfo(frame, value, constraint, nullable, assignment.Value.Span, field);
             CheckCastTargetStore(frame, storage, value, assignment.Value.Span);
+            CheckConceptStore(frame, storage, value, assignment.Value.Span);
             ObserveCallableStore(storage, value);
             if (constraint is null && StorageType(value.Type, nullable) is { } solved) Solve(storage, solved);
             var members = scope.Members.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
@@ -272,7 +274,12 @@ internal sealed partial class Compilation
             {
                 Identity = new(),
                 Storage = new(binding.Storage.Type)
-                { CastContracts = binding.Storage.CastContracts, DeferredTypeWrites = binding.Storage.DeferredTypeWrites }
+                {
+                    CastContracts = binding.Storage.CastContracts,
+                    DeferredTypeWrites = binding.Storage.DeferredTypeWrites,
+                    ConceptContracts = binding.Storage.ConceptContracts,
+                    ConceptMemberContracts = binding.Storage.ConceptMemberContracts
+                }
             };
             bindings.Add(binding.Identity, fresh);
             fresh = fresh with { Info = Fresh(Current(frame, binding)) };
@@ -285,7 +292,7 @@ internal sealed partial class Compilation
         {
             if (callables.TryGetValue(function, out var existing)) return existing;
             List<KeyValuePair<string, Binding>> captures = [];
-            Template fresh = new(function.Id, function.Syntax, captures, function.Source, function.SourceName) { Instance = true };
+            Template fresh = new(function.Id, function.Syntax, captures, function.Source, function.SourceName) { Instance = true, Concepts = function.Concepts };
             callables.Add(function, fresh);
             templates.Add(fresh);
             foreach (var capture in function.Captures) captures.Add(new(capture.Key, FreshBinding(capture.Value)));
@@ -295,7 +302,7 @@ internal sealed partial class Compilation
         {
             info = Current(frame, info);
             if (info.Function is { } function) return info with { Function = FreshFunction(function) };
-            if (info.Scope is not { } scope || external.Contains(scope.Identity)) return info;
+            if (info.Scope is not { } scope || scope.Named || external.Contains(scope.Identity)) return info;
             if (!instances.TryGetValue(scope.Identity, out var instance))
             {
                 Dictionary<string, Info> members = [];

@@ -1,11 +1,62 @@
 # Closed types, explicit operation dictionaries and algebraic contracts
 
-## Question and recommendation
+## Implemented named concepts
+
+The active language upgrade adopts named structural concepts, checked by the
+compiler at function specialization and annotated binding initialization. They
+are constraints over existing Scope values, not additional runtime types.
+
+```msync
+concept Semigroup {
+    type Self;
+    combine: fn(left: Self, right: Self) -> Self,
+};
+concept Monoid {
+    Semigroup,
+    identity: Self,
+};
+
+fn combine_identity(algebra: Monoid) -> Monoid {
+    algebra::combine(algebra::identity, algebra::identity);
+    algebra
+};
+
+combine_identity(scope {
+    identity: 0,
+    combine: fn(left, right) { left + right },
+});
+```
+
+Concept names have lexical definition-time ownership, including closures and
+REPL submissions. A concept body contains required fields, required operation
+signatures, associated type declarations (`type Self;`), and previously declared
+base concepts. Associated types are inferred from fields and operation parameter
+annotations; a matching Type-valued member may provide their carrier explicitly.
+A concrete associated Scope identity refines a broad Scope carrier and retains
+its recursively checked field schema. Inherited associated names are available
+to derived requirements. Operation parameters require an explicit builtin,
+concept, or associated type; implementation functions remain generic.
+
+Both argument and return annotations are checked without executing the checked
+operations. Nullable concepts use the normal explicit `?` rules. Existing mutable
+locations retain their concept contracts: replacing a whole constrained value or
+a required function member cannot invalidate the checked signature. Concept
+checking does not implicitly convert field representations or introduce runtime
+AST evaluation. Only ordinary specialization bytecode reaches artifacts.
+
+The checker diagnoses missing fields, incompatible carrier schemas, operation
+arguments/results and unresolved associated types with the concept declaration
+as related source context (`E0214`). Concepts express capabilities, not proofs
+of associativity, purity, or commutativity; they do not permit new optimization
+reorderings. `tests/Concepts` exercises source, serialized relocatable bytecode,
+context-bound executable bytecode, mutation, nested Scope carriers and sessions
+at O0/O2/O3.
+
+## Original investigation and rationale
 
 The November 9, 2026 question is how to express concept/trait-like algebraic
-requirements without opening msync's type universe. This note is a research
-proposal, not an implemented `concept` syntax or a request to change the current
-0.8 release. The related [Number investigation](number-semantics-v080.md) owns
+requirements without opening msync's type universe. The following investigation predates the implementation above; its distinction
+between structural capabilities and algebraic laws remains authoritative. The related [Number investigation](number-semantics-v080.md) owns
 numeric representation and language-surface decisions.
 
 **Recommendation:** keep the source representation as ordinary `scope` values

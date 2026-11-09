@@ -45,6 +45,11 @@ internal sealed partial class Compilation
     }
     private TypeRef ResolveType(Frame frame, TypeSyntax syntax)
     {
+        if (frame.Concepts.ContainsKey(syntax.Name))
+        {
+            CaptureConceptDefinition(frame, syntax);
+            return ConceptType(frame, syntax);
+        }
         if (!LanguageTypes.TryResolve(syntax.Name, out TypeRef type))
             throw Error(frame, $"Unknown type '{syntax.Name}'.", syntax.Span,
                 label: "not a built-in type",
@@ -86,7 +91,8 @@ internal sealed partial class Compilation
             left.KnownConnection == right.KnownConnection ? left.KnownConnection : null,
             left.EditorUnknown || right.EditorUnknown,
             left.KnownPath == right.KnownPath ? left.KnownPath : null,
-            left.KnownText == right.KnownText ? left.KnownText : null);
+            left.KnownText == right.KnownText ? left.KnownText : null,
+            EagerRange: left.EagerRange && right.EagerRange);
     }
     private Info Retype(Info info, TypeRef target)
     {
@@ -125,9 +131,11 @@ internal sealed partial class Compilation
                     ? "Call an fn value. A Scope groups members; select its function with 'scope::operation(...)'."
                     : expected.Kind == TypeKind.Range
                         ? "Iterate a Range, such as '[first, second]' or 'directory/<pattern>'. A single Path is not a collection."
-                        : PathCompatible.Accepts(expected)
-                            ? "Use a Path or String value. A Connection selects an endpoint; qualify a path with 'connection::path'."
-                            : $"Supply a {expected} value here. Type annotations constrain values; they do not add new capabilities.";
+                        : actual == TypeRef.Connection && PathCompatible.Accepts(expected)
+                            ? "Use a Path or String value. A Connection selects an endpoint; qualify a path with 'path @ connection'."
+                            : ExplicitConversions.Possible(actual, expected)
+                                ? $"Convert explicitly with 'value as {expected}'. Only Path and String convert implicitly; declared storage types do not change on assignment."
+                                : $"Supply a {expected} value here. Declared storage types do not change on assignment; use a new binding for a different type.";
         return Error(frame, $"Expected {expected}, found {actual}.", span,
             label: $"this expression has type {actual}", help: help, code: "E0203");
     }
@@ -164,6 +172,7 @@ internal sealed partial class Compilation
         ScopeMember member => [member.Value],
         UnaryExpr unary => [unary.Operand],
         BinaryExpr binary => [binary.Left, binary.Right],
+        CastExpr cast => [cast.Value],
         AssignmentExpr assignment => [assignment.Target, assignment.Value],
         BarrierExpr { Value: not null } barrier => [barrier.Value],
         CallExpr call => new Node[] { call.Callee }.Concat(call.Arguments),

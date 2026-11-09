@@ -223,7 +223,7 @@ internal sealed partial class Compilation
     {
         if (callee.Function is not { } function || function.Syntax.ReturnType is not null) return result with { Storage = null };
         if (!Accessor(function.Syntax.Body)) return result.Storage?.Type is { } type ? result with { Type = type } : result;
-        Frame frame = new(function.Source, function.SourceName) { Facts = caller.Facts, EditorProbe = true };
+        Frame frame = new(function.Source, function.SourceName) { Facts = caller.Facts, EditorProbe = true, Concepts = function.Concepts };
         foreach (var (name, binding) in function.Captures)
         {
             var info = DeferredCapture(caller, binding);

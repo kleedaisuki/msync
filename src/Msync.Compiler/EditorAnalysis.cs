@@ -6,7 +6,10 @@ namespace Msync.Compiler;
 
 public sealed record SemanticMember(string Name, string Type, string Signature, string Description,
     IReadOnlyList<SemanticMember>? Members = null, ConnectionValue? Endpoint = null, string SemanticRole = "variable",
-    PathValue? KnownPath = null, string? KnownText = null);
+    PathValue? KnownPath = null, string? KnownText = null)
+{
+    public bool IsConstraint { get; init; }
+}
 public sealed record SemanticOccurrence(SourceSpan Span, string Type, string Signature, string Description,
     IReadOnlyList<SemanticMember>? Members = null, ConnectionValue? Endpoint = null, string SemanticRole = "variable",
     PathValue? KnownPath = null, string? KnownText = null);
@@ -27,7 +30,11 @@ public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrence
     public EditorContext At(int offset)
     {
         EditorContext context = Contexts?.At(offset) ?? new(RecoveryBindings ?? [], null);
-        return IsTypePosition(offset) ? context with { IsTypePosition = true } : context;
+        return IsTypePosition(offset) ? context with
+        {
+            IsTypePosition = true,
+            Bindings = context.Bindings.Concat(Contexts?.ConceptsAt(offset) ?? []).ToArray()
+        } : context;
     }
     public SemanticMember? Resolve(int offset, string name) => Contexts is { } contexts ? contexts.Resolve(offset, name)
         : RecoveryBindings?.FirstOrDefault(binding => binding.Name == name);
@@ -142,9 +149,28 @@ public static class EditorCompiler
         catch (SyntaxException error) { diagnostic ??= error.Diagnostic; }
         Dictionary<ScopeInfo, ScopeDescription> scopeDescriptions = [];
         foreach (var (span, observation) in inferred)
+        {
             syntax[span] = observation.Multiple is { } alternatives
                 ? Describe(span, observation.Name, alternatives.Values, scopeDescriptions)
                 : Describe(span, observation.Name, observation.Single!, scopeDescriptions);
+            if (observation.Single is { } single && compilation?.ConceptRequirementSignature(single) is { } requirement)
+                syntax[span] = syntax[span] with
+                {
+                    Signature = requirement,
+                    Description = "A required member of this structural concept. The concrete operation is checked at specialization."
+                };
+        }
+        if (compilation?.EditorContexts is { } contexts)
+            foreach (var (span, occurrence) in syntax.ToArray())
+            {
+                if (occurrence.Type != "Type" || occurrence.SemanticRole != "type"
+                    || LanguageTypes.TryResolve(occurrence.Signature, out _)) continue;
+                SemanticMember? concept = contexts.ConceptsAt(span.Start).FirstOrDefault(item => item.Name == occurrence.Signature);
+                if (concept is not null) syntax[span] = occurrence with
+                {
+                    Signature = concept.Signature, Description = concept.Description, Members = concept.Members
+                };
+            }
         return new(syntax.Values.OrderBy(item => item.Span.Start).ThenBy(item => item.Span.Length).ToArray(), diagnostic, recovery, recoveryStart)
         { Contexts = compilation?.EditorContexts, RegexSpans = regexSpans, TypeSpans = typeSpans, Symbols = symbols };
     }
@@ -254,14 +280,14 @@ public static class EditorCompiler
         TypeRef core = type.WithoutNull;
         string description = core == TypeRef.Path ? "A filesystem path. Bare unbound names denote Paths. Calling a Path starts a Process."
             : core == TypeRef.Scope ? ScopeExplanation
-            : core == TypeRef.Connection ? "A physical endpoint. Qualify a filesystem path with `connection::path`."
+            : core == TypeRef.Connection ? "A physical endpoint. Select it with `path @ connection`; `::` selects lexical Scope members."
             : core == TypeRef.Function ? "A callable value. Unannotated parameters are specialized from each call's argument types."
             : type == TypeRef.Type ? "A type value. `decltype(expression)` infers without executing the expression."
             : core == TypeRef.Bool ? "A boolean value: `true` or `false`. Conditions require Bool; Null is not a boolean."
             : core == TypeRef.String ? "A text value. Transferring a String writes its bytes; a Path reads a file."
             : core == TypeRef.Process ? "A process value. Inspect `stdout`, `stderr`, `exit_code` or `success` with `::`."
             : type == TypeRef.Null ? "The absence of a value. Test with `is null` or `is not null`; postfix `?` means `is null`."
-            : type == TypeRef.Number ? "Inferred type: `Number`. Inspection does not execute this expression."
+            : type == TypeRef.Number ? "An IEEE 754 binary64 number. Arithmetic includes `+`, `-`, `*`, `/`, `%` and `**`; only explicit `as` converts other scalar types."
             : $"Inferred type: `{type}`. Inspection does not execute this expression.";
         return type.Nullable && type != TypeRef.Null
             ? description + " Handle Null before using the value; postfix `?` tests whether it is Null." : description;
@@ -329,6 +355,16 @@ public static class EditorCompiler
                 AddType(nativeType.ReturnType);
             }
             if (node is TypeExpr valueType) AddType(valueType.Type);
+            if (node is CastExpr cast) AddType(cast.Type);
+            if (node is ConceptDeclaration conceptType)
+                foreach (TypeSyntax inherited in conceptType.Bases) AddType(inherited);
+            if (node is ConceptMember requirement)
+            {
+                AddType(requirement.Type);
+                AddType(requirement.ReturnType);
+                if (requirement.Parameters is { } parameters)
+                    foreach (Parameter parameter in parameters) AddType(parameter.Type);
+            }
             switch (node)
             {
                 case FunctionDeclaration function:
@@ -339,6 +375,29 @@ public static class EditorCompiler
                     Add(native.NameSpan, "Function", FunctionSignature(native.Name, native.Parameters, Slice(source, native.ReturnType.Span), source));
                     break;
                 case ScopeDeclaration scope: Add(scope.NameSpan, "Scope", $"{scope.Name}: Scope", "type"); break;
+                case ConceptDeclaration concept:
+                    Add(concept.NameSpan, "Concept", $"concept {concept.Name}", "type");
+                    if (concept.NameSpan is { } conceptName)
+                        occurrences[conceptName] = occurrences[conceptName] with
+                        {
+                            Description = "A named structural constraint. Required fields and callable signatures are checked at specialization."
+                                + (concept.Members.Count == 0 ? "" : "\n\nRequired members:\n"
+                                    + string.Join("\n", concept.Members.Select(member => $"- `{Slice(source, member.Span)}`")))
+                        };
+                    Seed(concept.Types, source, occurrences, typeSpans);
+                    Seed(concept.Members, source, occurrences, typeSpans);
+                    break;
+                case ConceptAssociatedType associated:
+                    Add(associated.NameSpan, "Type", $"type {associated.Name}", "type");
+                    break;
+                case ConceptMember { Parameters: { } parameters } member:
+                    Add(member.NameSpan, "Function", FunctionSignature(member.Name, parameters,
+                        member.ReturnType is { } expected ? Slice(source, expected.Span) : "inferred at call", source));
+                    break;
+                case ConceptMember member:
+                    Add(member.NameSpan, member.Type is { } required ? Slice(source, required.Span) : "unknown",
+                        Slice(source, member.Span));
+                    break;
                 case FunctionExpr { Name: { } name } function:
                     Add(function.NameSpan, "Function", FunctionSignature(name, function.Parameters,
                         function.ReturnType is { } namedResult ? Slice(source, namedResult.Span) : "inferred at call", source));
@@ -362,11 +421,18 @@ public static class EditorCompiler
             int start = type.Span.Start;
             while (start > 0 && char.IsWhiteSpace(source[start - 1])) start--;
             typeSpans.Add(new(start, type.Span.End - start));
+            SourceSpan name = new(type.Span.Start, type.Name.Length);
+            occurrences[name] = new(name, "Type", type.Name,
+                "A type or structural concept constraint. It is checked without executing the expression.", SemanticRole: "type");
+            foreach (TypeSyntax argument in type.Arguments) AddType(argument);
+            foreach (TypeSyntax alternative in type.Alternatives) AddType(alternative);
         }
         void Add(SourceSpan? span, string type, string signature, string? role = null)
         {
             if (span is { } location) occurrences[location] = new(location, type, signature,
-                type == "Function" ? "A callable value. Its generic body is checked when specialized by a call."
+                type == "Concept" ? "A named structural constraint. Required fields and function signatures are checked at specialization."
+                    : type == "Type" ? "An associated type selected from the constrained Scope."
+                    : type == "Function" ? "A callable value. Its generic body is checked when specialized by a call."
                     : "A lexical Scope. Select its declared members with `::`.",
                 SemanticRole: role ?? (type == "Function" ? "function" : "variable"));
         }
@@ -375,6 +441,16 @@ public static class EditorCompiler
 
 internal sealed partial class Compilation
 {
+    private readonly Dictionary<Info, string>? editorConceptRequirements = observe is null ? null : new(ReferenceEqualityComparer.Instance);
+
+    private void DescribeConceptRequirement(Info info, ConceptDefinition definition, ConceptMember requirement)
+    {
+        if (editorConceptRequirements is not null)
+            editorConceptRequirements[info] = definition.Source[requirement.Span.Start..requirement.Span.End];
+    }
+
+    internal string? ConceptRequirementSignature(Info info) => editorConceptRequirements?.GetValueOrDefault(info);
+
     private void Observe(Frame frame, SourceSpan span, Info info, string? name = null)
     {
         if (observe is null || !IsCurrentSource(frame)) return;

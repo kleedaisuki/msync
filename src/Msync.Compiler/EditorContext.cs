@@ -24,9 +24,9 @@ internal sealed record EditorCallTrace(string SourceName, string Source, SourceS
 
 internal sealed partial class EditorContextCollector
 {
-    private sealed record Snapshot(SourceSpan Owner, bool IncludesEnd, int Point, ImmutableDictionary<string, Binding> Bindings, bool Concrete);
-    private sealed record Selection(SourceSpan Span, Info Receiver, bool Concrete, EditorReceiverKind Kind, Expr? Expression,
-        IReadOnlyList<SourceSpan>? PhysicalDomains = null);
+    private sealed record Snapshot(SourceSpan Owner, bool IncludesEnd, int Point, ImmutableDictionary<string, Binding> Bindings,
+        ImmutableDictionary<string, ConceptDefinition> Concepts, bool Concrete);
+    private sealed record Selection(SourceSpan Span, Info Receiver, bool Concrete, EditorReceiverKind Kind, Expr? Expression);
     private sealed record PathLeaf(Expr Expression, bool Concrete, bool HasOwner = false, ConnectionValue? Endpoint = null);
     private sealed record ImportContext(SourceSpan Span, ImmutableDictionary<string, Binding> Bindings, bool Concrete);
     private readonly List<Snapshot> snapshots = [];
@@ -35,7 +35,40 @@ internal sealed partial class EditorContextCollector
     private readonly List<ImportContext> imports = [];
     private readonly HashSet<Expr> physicalExpressions = new(ReferenceEqualityComparer.Instance);
 
-    public void Capture(Frame frame, int point) => snapshots.Add(new(frame.ContextOwner, frame.ContextIncludesEnd, point, frame.Environment, frame.EditorReportErrors));
+    public void Capture(Frame frame, int point) => snapshots.Add(new(frame.ContextOwner, frame.ContextIncludesEnd, point,
+        frame.Environment, frame.Concepts, frame.EditorReportErrors));
+
+    public IReadOnlyList<SemanticMember> ConceptsAt(int offset)
+    {
+        Snapshot[] containing = snapshots.Where(item => item.Owner.Start <= offset
+            && (offset < item.Owner.End || item.IncludesEnd && offset == item.Owner.End) && item.Point <= offset).ToArray();
+        if (containing.Length == 0) return [];
+        int width = containing.Min(item => item.Owner.Length);
+        Snapshot[] inner = containing.Where(item => item.Owner.Length == width).ToArray();
+        int point = inner.Max(item => item.Point);
+        Snapshot[] latest = inner.Where(item => item.Point == point).ToArray();
+        if (latest.Any(item => item.Concrete)) latest = latest.Where(item => item.Concrete).ToArray();
+        return latest[0].Concepts.Keys.Where(name => latest.All(item => item.Concepts.ContainsKey(name)))
+            .Select(name => DescribeConcept(latest[0].Concepts[name]))
+            .ToArray();
+    }
+
+    internal static SemanticMember DescribeConcept(ConceptDefinition definition)
+    {
+        SemanticMember[] members = definition.Syntax.Members.Select(member => new SemanticMember(member.Name,
+            member.Parameters is not null ? "Function" : member.Type is { } type ? definition.Source[type.Span.Start..type.Span.End] : "unknown",
+            definition.Source[member.Span.Start..member.Span.End],
+            "A required member of this structural concept.", SemanticRole: member.Parameters is null ? "variable" : "function")).ToArray();
+        string description = "A named structural constraint. Required fields and callable signatures are checked at specialization.";
+        if (definition.Syntax.Bases.Count != 0)
+            description += "\n\nIncludes: " + string.Join(", ", definition.Syntax.Bases.Select(type => $"`{type.Name}`")) + ".";
+        if (members.Length != 0)
+            description += "\n\nRequired members:\n" + string.Join("\n", members.Select(member => $"- `{member.Signature}`"));
+        return new(definition.Syntax.Name, "Type", $"concept {definition.Syntax.Name}", description, members, SemanticRole: "type")
+        {
+            IsConstraint = true
+        };
+    }
     public void Import(Frame frame, GlobalStatement statement)
     {
         int start = statement.Span.Start + "global".Length;
@@ -59,7 +92,6 @@ internal sealed partial class EditorContextCollector
     {
         HashSet<Expr> flow = new(ReferenceEqualityComparer.Instance);
         CollectPathFlow(expression, flow);
-        List<SourceSpan> domains = [];
         for (int index = first.Leaves; index < leaves.Count; index++)
         {
             PathLeaf leaf = leaves[index];
@@ -67,9 +99,7 @@ internal sealed partial class EditorContextCollector
             bool unknown = leaf.HasOwner && !Compilation.HasStaticPathProjection(leaf.Endpoint)
                 || connection is null;
             leaves[index] = leaf with { HasOwner = true, Endpoint = unknown ? null : connection };
-            domains.Add(leaf.Expression.Span);
         }
-        selections[first.Selections - 1] = selections[first.Selections - 1] with { PhysicalDomains = domains };
         for (int index = first.Selections; index < selections.Count; index++)
         {
             Selection selection = selections[index];
@@ -90,8 +120,8 @@ internal sealed partial class EditorContextCollector
                 CollectPathFlow(joined.Left, flow);
                 CollectPathFlow(joined.Right, flow);
                 break;
-            case BinaryExpr { Operator: "::" } qualified when physicalExpressions.Contains(qualified):
-                CollectPathFlow(qualified.Right, flow);
+            case BinaryExpr { Operator: "@" } qualified when physicalExpressions.Contains(qualified):
+                CollectPathFlow(qualified.Left, flow);
                 break;
             case BlockExpr { Statements.Count: > 0 } block when block.Statements[^1] is ExpressionStatement { Discarded: false } tail:
                 CollectPathFlow(tail.Expression, flow);
@@ -148,8 +178,7 @@ internal sealed partial class EditorContextCollector
             if (latest.Any(item => item.Concrete)) latest = latest.Where(item => item.Concrete).ToArray();
             bindings = latest.Select(item => item.Bindings).ToArray();
         }
-        var receivers = selections.Where(item => item.Span.Start <= offset && offset <= item.Span.End
-            && (item.PhysicalDomains is null || item.PhysicalDomains.Any(span => span.Start <= offset && offset <= span.End))).ToArray();
+        var receivers = selections.Where(item => item.Span.Start <= offset && offset <= item.Span.End).ToArray();
         if (receivers.Length != 0)
         {
             int width = receivers.Min(item => item.Span.Length);
@@ -188,6 +217,8 @@ internal sealed partial class Compilation
         foreach (string name in new[] { "local", "wsl", "pwd", "file", "env", "path" }) values["$" + name] = Name(frame, name, new(0, 0), reference: true);
         return values;
     }
+    internal IReadOnlyList<SemanticMember> DescribeConcepts() => sessionConcepts.Values
+        .Select(EditorContextCollector.DescribeConcept).ToArray();
     internal EditorContextCollector? EditorContexts => editorContexts;
     internal SourceDiagnostic? EditorDiagnostic => editorDiagnostic;
     internal string EditorSourceName => sourceName;
@@ -224,6 +255,7 @@ internal sealed partial class Compilation
     {
         Frame frame = new(source, sourceName, sessionEnvironment)
         {
+            Concepts = sessionConcepts,
             Locals = sessionLocals,
             ContextOwner = document.Span,
             EditorRecovery = true,
@@ -239,6 +271,7 @@ internal sealed partial class Compilation
         try { _ = FinalizeMutableCalls(); }
         catch (CompileException error) { EditorFailure(frame, error); }
         sessionEnvironment = frame.Environment;
+        sessionConcepts = frame.Concepts;
         sessionLocals = frame.Locals;
         ProbeUncalledFunctions();
     }
@@ -253,6 +286,7 @@ internal sealed partial class Compilation
             var definition = editorDefinitions[template];
             Frame frame = new(template.Source, template.SourceName, definition.Environment)
             {
+                Concepts = template.Concepts,
                 Locals = definition.Locals,
                 ContextOwner = template.Syntax.Body.Span,
                 ContextIncludesEnd = template.Syntax.Body.EditorIncomplete,
@@ -269,7 +303,12 @@ internal sealed partial class Compilation
             }
             if (template.Syntax.ReturnType is { } returnType)
             {
-                try { frame.ExpectedReturn = ResolveType(frame, returnType); frame.ExpectedReturnSpan = returnType.Span; }
+                try
+                {
+                    frame.ExpectedReturn = ResolveType(frame, returnType);
+                    frame.ExpectedReturnSpan = returnType.Span;
+                    frame.ExpectedConceptReturn = frame.Concepts.ContainsKey(returnType.Name) ? returnType : null;
+                }
                 catch (CompileException) { }
             }
             foreach (Parameter parameter in template.Syntax.Parameters)
@@ -278,7 +317,12 @@ internal sealed partial class Compilation
                 Info info = UnknownInfo;
                 if (parameter.Type is not null)
                 {
-                    try { info = new(ResolveType(frame, parameter.Type)); }
+                    try
+                    {
+                        CaptureConceptDefinition(frame, parameter.Type);
+                        info = frame.Concepts.ContainsKey(parameter.Type.Name)
+                            ? ConceptInfo(frame, parameter.Type) : new(ResolveType(frame, parameter.Type));
+                    }
                     catch (CompileException) { }
                 }
                 if (parameter.Nullable) info = info with { Type = info.Type.WithNull };
@@ -299,7 +343,11 @@ internal sealed partial class Compilation
         EditorSnapshot snapshot = new();
         var environment = sessionEnvironment.ToImmutableDictionary(pair => pair.Key,
             pair => snapshot.Binding(pair.Value, resolveValue?.Invoke(pair.Value.Slot)), StringComparer.Ordinal);
-        Compilation fork = new(text, sourceName, 0, observer) { editorIsolated = true, sessionEnvironment = environment, sessionLocals = sessionLocals };
+        Compilation fork = new(text, sourceName, 0, observer)
+        {
+            editorIsolated = true, sessionEnvironment = environment, sessionLocals = sessionLocals,
+            sessionConcepts = sessionConcepts
+        };
         fork.constants.AddRange(constants);
         foreach (var pair in constantIndices) fork.constantIndices.Add(pair.Key, pair.Value);
         fork.functions.AddRange(functions.Select(RenderMutableFunction));

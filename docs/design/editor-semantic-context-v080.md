@@ -112,7 +112,8 @@ specialization. An `if` without `else` joins that shape with Null, and
 The Null predecessor must not contribute an empty conflicting shape. This was
 the cause of the reported `object::item` failure in older server binaries, not
 the return/parameter annotations or the parentheses in
-`where::(object::item)`. The inner selection remains lexical; `where` is the
+the former `where::(object::item)` syntax. Its current spelling is
+`object::item @ where`: the inner selection remains lexical; `where` is the
 physical Connection.
 
 `nullable_scope_journey.py` keeps both reported source variants verbatim for
@@ -174,19 +175,19 @@ the acceptance criteria.
 
 ## Physical path-flow ownership
 
-A physical qualifier applies to the value produced by its right operand, not
+A physical qualifier applies to the value produced by its left operand, not
 merely to adjacent source text. Grouping can place a slash receiver inside that
-operand: `remote::(folder/)` still completes against the remote endpoint. Quoted
+operand: `(folder/) @ remote` still completes against the remote endpoint. Quoted
 and whitespace-separated leaf values likewise retain their physical owner even
-when a lexical completion fragment no longer includes `remote::`.
+when the caret is separated from the trailing `@ remote` expression.
 
 The collector records path-leaf and slash-expression identities during the real
 inference invocation. On qualification unwind it follows only transparent value
 flow: path joins, nested physical qualification, block tails, conditional result
 branches and match-arm values. It does not enter calls, callable bodies,
 conditions, discriminants, discarded statements or lexical Scope member-name
-lookup. Physical receiver ranges are clipped to these value domains, so a wide
-outer source span cannot make a call argument authenticate to the wrong host.
+lookup. Physical ownership is attached to these value-flow leaves, not to a wide
+outer source span that could make a call argument authenticate to the wrong host.
 
 Invocation checkpoints keep independent generic contexts separate; outer known
 qualifiers replace inner known endpoint ownership only within that invocation.
@@ -254,3 +255,36 @@ The actual stdio acceptance runner is
 coordinates, virtual standard-library definitions and complete/incomplete
 outlines in both protocol capability modes. Compiler `--navigation` checks the
 same origin and structural range model independently of JSON conversion.
+
+## Closed constraints and endpoint selection
+
+Named `concept` declarations live in a separate lexical type environment, not
+in the runtime binding table. Editor snapshots retain that immutable environment
+alongside ordinary bindings. Only a type-completion position merges its concept
+names into the completion list; a concept must not appear as an executable
+variable. The same declaration identity resolves annotation navigation. Concept
+outlines include associated types, field requirements and callable signatures.
+Uncalled constrained functions receive a structural probe shape, so their field
+completion remains useful before the first concrete call.
+
+Cast targets in `value as Type` are type positions. `Number` observations are
+numeric rather than Path observations; the editor never executes conversion or
+constraint checking effects. `$std` and its named module scopes, including
+unloaded module placeholders, retain named-Scope highlighting instead of
+changing colour after their first load.
+
+`path @ endpoint` associates the selected endpoint with value-flow leaves on
+its left. Unlike the former prefix qualifier, it does not require a preceding
+member-receiver selection. Path-join receivers and branch result paths inherit
+the physical endpoint; the endpoint expression remains an ordinary lexical
+completion position. This metadata is editor-only and does not authenticate.
+
+`tests/Msync.Compiler.Tests --upgrade-editor` exercises concept highlighting,
+type completion, declaration navigation and outlines, constrained generic member
+completion, cast target completion, named standard modules and SSH-owned path
+completion in one recovered-analysis workflow.
+
+Persistent REPL display metadata uses `CompilerSession.DescribeConcepts()`
+separately from `DescribeBindings()`. A `SemanticMember.IsConstraint` marker lets
+the prompt retain concept highlighting and hints without offering those names
+as executable values or treating them as bound filesystem operands.

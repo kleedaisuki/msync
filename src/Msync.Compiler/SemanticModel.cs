@@ -5,7 +5,7 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 
 namespace Msync.Compiler;
 
-internal sealed record Info(TypeRef Type, Template? Function = null, ScopeInfo? Scope = null, TypeRef? TypeValue = null, string? NativeName = null, IReadOnlyList<Info>? Alternatives = null, Info? Element = null, bool? KnownBool = null, ConnectionValue? KnownConnection = null, bool EditorUnknown = false, PathValue? KnownPath = null, string? KnownText = null, StorageConstraint? Storage = null);
+internal sealed record Info(TypeRef Type, Template? Function = null, ScopeInfo? Scope = null, TypeRef? TypeValue = null, string? NativeName = null, IReadOnlyList<Info>? Alternatives = null, Info? Element = null, bool? KnownBool = null, ConnectionValue? KnownConnection = null, bool EditorUnknown = false, PathValue? KnownPath = null, string? KnownText = null, StorageConstraint? Storage = null, bool EagerRange = false);
 internal sealed record Binding(int Slot, Info Info, Template? Self = null, EditorLocation? Origin = null,
     bool AdmitsNull = false, TypeRef? Constraint = null)
 {
@@ -16,6 +16,8 @@ internal sealed class StorageConstraint(TypeRef? type, Info? callables = null, S
 {
     public TypeRef? Type { get; set; } = type;
     public Info? Callables { get; set; } = callables;
+    public ImmutableDictionary<string, ConceptContract> ConceptContracts { get; set; } = ImmutableDictionary<string, ConceptContract>.Empty;
+    public ImmutableDictionary<string, ConceptMemberContract> ConceptMemberContracts { get; set; } = ImmutableDictionary<string, ConceptMemberContract>.Empty;
     public int Revision { get; set; }
     public ImmutableHashSet<StorageConstraint> Sources { get; set; } = source is null ? [] : [source];
     public ImmutableDictionary<string, CallableContract> Contracts { get; set; } = ImmutableDictionary<string, CallableContract>.Empty;
@@ -45,6 +47,7 @@ internal sealed class Template(int id, FunctionExpr syntax, IReadOnlyList<KeyVal
     public string Source { get; } = source;
     public string SourceName { get; } = sourceName;
     public Dictionary<string, Specialization> Specializations { get; } = [];
+    public ImmutableDictionary<string, ConceptDefinition> Concepts { get; init; } = ImmutableDictionary<string, ConceptDefinition>.Empty;
     public bool Instance { get; init; }
 }
 internal sealed class Specialization(int id, Info result, IReadOnlyList<TypeRef> parameterTypes)
@@ -84,6 +87,8 @@ internal sealed class Frame(string source, string sourceName, ImmutableDictionar
     public List<Instruction> Code { get; } = [];
     public int Locals { get; set; }
     public List<Info> Returns { get; } = [];
+    public ImmutableDictionary<string, ConceptDefinition> Concepts { get; set; } = ImmutableDictionary<string, ConceptDefinition>.Empty;
+    public TypeSyntax? ExpectedConceptReturn { get; set; }
     public TypeRef? ExpectedReturn { get; set; }
     public SourceSpan? ExpectedReturnSpan { get; set; }
     public Dictionary<int, int[]> SelfCaptureSlots { get; } = [];

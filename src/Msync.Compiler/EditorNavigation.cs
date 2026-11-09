@@ -26,6 +26,18 @@ internal static class EditorSymbols
                 case ScopeDeclaration scope:
                     Add(scope.Name, scope.NameSpan, scope.Span, EditorSymbolKind.Scope, Collect(scope.Scope.Members));
                     break;
+                case ConceptDeclaration concept:
+                    Add(concept.Name, concept.NameSpan, concept.Span, EditorSymbolKind.Scope,
+                        Collect(concept.Types.Cast<Node>().Concat(concept.Members)));
+                    break;
+                case ConceptAssociatedType associated:
+                    Add(associated.Name, associated.NameSpan, associated.Span, EditorSymbolKind.Scope, []);
+                    break;
+                case ConceptMember member:
+                    Add(member.Name, member.NameSpan, member.Span,
+                        member.Parameters is null ? EditorSymbolKind.Field : EditorSymbolKind.Function,
+                        member.Parameters is { } parameters ? Parameters(parameters) : []);
+                    break;
                 case LetStatement let:
                     foreach (NamePattern name in Names(let.Pattern))
                         Add(name.Name, name.Span, let.Span, ValueKind(let.Value), CollectValue(let.Value));
@@ -112,6 +124,13 @@ internal sealed partial class EditorContextCollector
 
 internal sealed partial class Compilation
 {
+    private void CaptureConceptDefinition(Frame frame, TypeSyntax syntax)
+    {
+        if (editorContexts is null || !frame.Concepts.TryGetValue(syntax.Name, out var definition)) return;
+        if (definition.Syntax.NameSpan is { } name)
+            CaptureDefinition(frame, new(syntax.Span.Start, syntax.Name.Length), [new(definition.SourceName, definition.Source, name)]);
+    }
+
     private EditorLocation? DeclarationOrigin(Frame frame, SourceSpan? span) =>
         editorContexts is not null && span is { Length: > 0 } name ? new(frame.SourceName, frame.Source, name) : null;
 

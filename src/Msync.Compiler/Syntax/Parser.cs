@@ -318,7 +318,7 @@ public sealed class Parser
         "::" => 17,
         _ => -1
     };
-    private bool IsExpressionEnd() => Current.Kind is TokenKind.End or TokenKind.RightBrace or TokenKind.RightParen or TokenKind.RightBracket or TokenKind.Comma or TokenKind.Semicolon or TokenKind.Arrow || Word("in");
+    private bool IsExpressionEnd() => Current.Kind is TokenKind.End or TokenKind.RightBrace or TokenKind.RightParen or TokenKind.RightBracket or TokenKind.Comma or TokenKind.Semicolon or TokenKind.Arrow or TokenKind.At || Word("in");
     private Expr Prefix()
     {
         Token token = Current;
