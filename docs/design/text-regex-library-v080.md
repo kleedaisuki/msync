@@ -58,6 +58,14 @@ source baseline without replacing product files. The forest baseline is
 `ranges.empty` before overwriting the captured operand binding. That resolution
 is required to prevent deferred Range self-reference in the old source design.
 
+The final snapshot-4 embedded module passes 207 focused contracts across
+O0/O2/O3, source execution, `.mso` round-trip, and bound `.mexe` round-trip.
+These include eager generic-input consumption, prior Range/String snapshots,
+factory independence and aliases, clear/reuse, chunk ordering, optional and
+lookbehind groups, scalar offsets, fresh replayed record identity, and selected
+pattern diagnostics. The existing Unicode/Path module journey also passes 412
+contracts after migration to `as` and `Path @ Connection` syntax.
+
 `join_lines`, `indent`, and `unindent` compose the existing scalar String and
 Range operations. The latter two normalize line boundaries to LF and do not
 retain a final input line terminator, following `string.lines`.

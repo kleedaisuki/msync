@@ -109,14 +109,14 @@ if (args.Contains("--native-only", StringComparer.Ordinal))
     ("$std::string::equal_ignore_case(\"Straße\", \"STRASSE\")", "Bool:true"),
     ("let calls = 0; let values = $std::ranges::transform([\"a\", \"b\"], fn(value: String) { calls = calls + 1; value }); let _ = $std::string::join(values, \",\"); calls", "Number:2"),
     ("let calls = 0; let values = $std::ranges::transform([\"a\", \"b\"], fn(value: String) { calls = calls + 1; value }); let _ = $std::string::join($std::ranges::take(values, 0), \",\"); calls", "Number:0"),
-    ("$std::path::filename(ssh://unused::./folder/name.txt)", "Path:name.txt"),
-    ("$std::path::extension(ssh://unused::./folder/name.txt)", "Path:.txt"),
-    ("$std::path::normalize(ssh://unused::./folder/../name.txt)", "Path:name.txt"),
-    ("$std::path::with_extension(ssh://unused::./folder/name.txt, \"md\")", "Path:./folder/name.md"),
-    ("$std::path::native(ssh://unused::./folder/name.txt)", "String:./folder/name.txt"),
-    ("$std::path::dirname(ssh://unused::./folder/name.txt)", "Path:./folder"),
-    ("$std::path::has_extension(ssh://unused::./folder/name.txt)", "Bool:true"),
-    ("$std::path::generic_string($std::path::filename(ssh://unused::./folder/\"one\\two\"))", "String:one\\two")
+    ("$std::path::filename(./folder/name.txt @ ssh://unused)", "Path:name.txt"),
+    ("$std::path::extension(./folder/name.txt @ ssh://unused)", "Path:.txt"),
+    ("$std::path::normalize(./folder/../name.txt @ ssh://unused)", "Path:name.txt"),
+    ("$std::path::with_extension(./folder/name.txt @ ssh://unused, \"md\")", "Path:./folder/name.md"),
+    ("$std::path::native(./folder/name.txt @ ssh://unused)", "String:./folder/name.txt"),
+    ("$std::path::dirname(./folder/name.txt @ ssh://unused)", "Path:./folder"),
+    ("$std::path::has_extension(./folder/name.txt @ ssh://unused)", "Bool:true"),
+    ("$std::path::generic_string($std::path::filename(./folder/\"one\\two\" @ ssh://unused))", "String:one\\two")
 ];
 foreach (int level in new[] { 0, 2, 3 })
     foreach ((string source, string expected) in cases)
@@ -129,9 +129,9 @@ foreach (int level in new[] { 0, 2, 3 })
 foreach (int level in new[] { 0, 2, 3 })
     foreach (string source in new[]
     {
-        "let _ = $std::string::repeat(\"\", $std::cast(\"0.5\", Number));",
+        "let _ = $std::string::repeat(\"\", \"0.5\" as Number);",
         "let _ = $std::string::char_at(\"😀\", 1);",
-        "let _ = $std::string::pad_left(\"wide enough\", $std::cast(\"0.5\", Number));"
+        "let _ = $std::string::pad_left(\"wide enough\", \"0.5\" as Number);"
     })
     {
         Module program = Frontend.Compile(source, "stdlib-selected-text-error", level);
@@ -144,7 +144,7 @@ foreach (int level in new[] { 0, 2, 3 })
     }
 foreach (int level in new[] { 0, 2, 3 })
     Equal("String:untouched", await Interpreter.ExecuteAsync(Frontend.Compile(
-        "if false { let _ = $std::string::repeat(\"\", $std::cast(\"0.5\", Number)); }; \"untouched\"", "unselected-text-error", level)),
+        "if false { let _ = $std::string::repeat(\"\", \"0.5\" as Number); }; \"untouched\"", "unselected-text-error", level)),
         "Unselected validation must not execute");
 Console.WriteLine($"PASS: {assertions} Unicode, source composition, contextual Path and binary round-trip contracts");
 
