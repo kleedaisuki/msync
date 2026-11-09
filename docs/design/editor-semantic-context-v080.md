@@ -5,7 +5,7 @@
 The Typed HIR migration separates editor analysis from executable lowering.
 The language server already consumes `EditorAnalysis`, not bytecode `Module`;
 its protocol does not need to expose backend slots or change for this boundary.
-The new producer must supply the same views from a read-only semantic generation:
+The producer supplies these views from a read-only semantic generation:
 
 * Occurrences retain their source-owned range, type, signature, semantic role,
   member shape and known Path/Connection provenance.
@@ -35,8 +35,8 @@ types, uncalled/incomplete contexts, latest-generation selection, nullable flow,
 error recovery, UTF-16 definition ranges, standard source navigation, exact
 qualified edits, close/reopen and absence of source effects. The baseline image
 is `10d27794ccf2dd4c5638fd6d77d3510de5b6f1dd61ac0e0557382e3cf36c32ad`.
-The same journey will consume the coherent new compiler and final Native images;
-the semantic-only API boundary is owned by the compiler rather than inferred
+The same journey consumes the coherent new compiler; final Native acceptance
+uses its published image. The semantic-only API boundary is owned by the compiler rather than inferred
 from the protocol test's absence of effects.
 
 The coherent Typed HIR managed snapshot passed the same eleven protocol checks,
@@ -154,18 +154,19 @@ The semantic snapshot answers `At(caret)` with two distinct things:
   location. This may be a Scope, a Connection, a Process, or unknown.
 
 An internal context entry stores a lexical owner span, a declaration boundary
-offset, and the existing immutable `Frame.Environment` root. The innermost owner
+offset, a shared immutable lexical name-to-location map and an independent
+projected-fact snapshot. The innermost owner
 containing the caret wins; within it, the last applicable declaration boundary
 wins. Before a binding's initializer, the old binding is still visible. After
 the declaration, its replacement shadows that name. Leaving a block restores
 the outer root. Future declarations and sibling function locals are not visible.
 
 Keep roots, not expanded completion lists, in this table. Materialize and render
-the selected environment only when queried, sharing the existing per-snapshot
-Scope-description cache. Eagerly rendering every visible binding at every
+the selected environment only when queried, sharing descriptions within the
+query-local presenter. Eagerly rendering every visible binding at every
 statement makes an ordinary sequence of declarations quadratic.
 
-`Template.Captures` is deliberately insufficient for completion: runtime closure
+`HirTemplate.Captures` is deliberately insufficient for completion: runtime closure
 capture stores only names already used by the body. An editor-only declaration
 environment root also retains outer names the user has not typed yet. This does
 not enlarge runtime closures or alter their captured slots.
@@ -190,16 +191,16 @@ constraints. An unconstrained generic parameter is an unknown **binding**, not
 an unbound Path. It shadows an outer binding of the same name even before its
 eventual call determines its type.
 
-Editor probes reuse the existing expression and binding semantics. They do not
-execute user code, authenticate endpoints, or introduce a second interpreter.
-Unknown-dependent results stay unknown; unrelated known declarations remain
-useful. If a binding initializer cannot be inferred yet, its pattern still owns
-the names it declares, so recovery cannot leak older same-named values.
+The binder has already recorded generic bodies, type variables, constraints and
+lexical declarations. The observer projects those bound facts without inventing
+a call, checking a speculative body or emitting bytecode. Unknown-dependent
+results stay unknown; unrelated known declarations remain useful. If a binding
+initializer cannot be inferred yet, its pattern still owns the names it declares,
+so recovery cannot leak older same-named values.
 
-Artificial unknown arguments must not enter the real generic-specialization
-cache or appear as actual call signatures. Probe state is separate from actual
-specializations, and no recovered tree or editor frame can become a published
-`.mso` or `.mexe`. Runtime and artifact compatibility are unchanged.
+No artificial unknown arguments enter the real generic-specialization cache or
+appear as actual call signatures. Partial editor generations publish semantic
+views only; they never become executable `.mso` or `.mexe` programs.
 
 ## Focused user journeys
 
@@ -255,7 +256,7 @@ item literal facts, so the first invocation cannot choose a later invocation's
 completion directory. Scope identities retain their declared member types, but
 mutable member values require reaching-write facts: an alias store or relevant
 callee write invalidates old literal/path facts. A persistent lexical snapshot
-must not acquire later mutations by sharing a mutable Info payload. See
+must not acquire later mutations by sharing a mutable inference payload. See
 [mutable state and effects](mutable-state-and-effects-v080.md).
 
 Materializing derived Path values is editor-only; ordinary compilation does not
@@ -374,8 +375,9 @@ alongside ordinary bindings. Only a type-completion position merges its concept
 names into the completion list; a concept must not appear as an executable
 variable. The same declaration identity resolves annotation navigation. Concept
 outlines include associated types, field requirements and callable signatures.
-Uncalled constrained functions receive a structural probe shape, so their field
-completion remains useful before the first concrete call.
+Uncalled constrained functions project their bound requirement descriptors, so
+field completion remains useful before the first concrete call without probing
+a speculative invocation.
 
 Cast targets in `value as Type` are type positions. `Number` observations are
 numeric rather than Path observations; the editor never executes conversion or
@@ -400,12 +402,12 @@ the prompt retain concept highlighting and hints without offering those names
 as executable values or treating them as bound filesystem operands.
 
 Parameter identity is distinct from the identity of its argument value.
-`Binding.IsParameter` preserves variable presentation for a Scope parameter even
+`SemanticBindingView.IsParameter` preserves variable presentation for a Scope parameter even
 when its actual argument is a named Scope. The editor records parameter origins
 and reference spans without copying or weakening the inferred Scope shape.
-Origin matching uses source-string reference identity plus the source span, not
-just a filename and offset: accepted REPL submissions share a filename but can
-reuse the same offsets for unrelated declarations. Function-valued parameters
+Origin matching uses source and logical declaration IDs, not just a filename
+and offset: accepted REPL submissions share a filename but can reuse the same
+offsets for unrelated declarations. Function-valued parameters
 retain function presentation. Associated type names are offered only in the
 owning concept's type positions; they are not executable bindings.
 
