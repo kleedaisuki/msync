@@ -357,7 +357,7 @@ internal static class PredicateOptimization
 
     // Raw locations flow separately from payload facts: LoadLocal dereferences,
     // whereas LoadCell/LoadStorage/GetCapture can establish another write alias.
-    private static int[] CaptureAliases(FunctionCode function)
+    internal static int[] CaptureAliases(FunctionCode function)
     {
         var code = function.Instructions;
         var aliases = Enumerable.Range(0, function.CaptureCount + function.ParameterCount).ToHashSet();

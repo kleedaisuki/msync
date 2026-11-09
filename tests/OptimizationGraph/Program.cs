@@ -204,6 +204,7 @@ async Task MutableChecks()
         ("mutable-capture", "let value = 2; let read = fn { value }; value = 9; read()"),
         ("mutable-callee-alias", "fn set(object) { object::filename = ./chosen; }; let object = scope { filename?: null }; set(object); object::filename"),
         ("mutable-closure-write", "let value = 2; let set = fn { value = 9; }; set(); value"),
+        ("mutable-callee-argument-order", "let action = fn(value: Bool) { \"A\" }; let replacement = fn(value: Bool) { \"B\" }; fn change() { action = replacement; true }; let first = action(change()); let second = action(false); $std::string::concat(first, second)"),
         ("mutable-scope-escape", "fn make() { let object = scope { field: 1 }; object::field = 7; object }; make()::field"),
         ("mutable-escaped-field-storage", "let getter = fn { 0 }; let object = scope { value: 1, hook: { getter = fn { value }; true } }; object::value = 2; getter()"),
         ("mutable-loop", "let value = 0; for item in [1, 2, 3] { value = value + item; }; value"),
@@ -214,8 +215,21 @@ async Task MutableChecks()
         "mutable-loop" => "Number:6",
         "mutable-escaped-field-storage" => "Number:2",
         "mutable-scope-escape" => "Number:7",
+        "mutable-callee-argument-order" => "String:AB",
         _ => null
     });
+
+    await Differential("mutable-callee-fresh-location", new Module(
+        [new FunctionValue(1), new FunctionValue(2), new FunctionValue(3), new StringValue("A"), new StringValue("B"), new StringValue("C")],
+        [new("main", 0, 2, [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0), new(OpCode.InitializeLocal, 1),
+            new(OpCode.Constant, 1), new(OpCode.InitializeLocal, 0), new(OpCode.Constant, 2), new(OpCode.StoreLocal, 1),
+            new(OpCode.LoadLocal, 0), new(OpCode.Call, 0), new(OpCode.Return)], TypeRef.String),
+            new("a", 0, 0, [new(OpCode.Constant, 3), new(OpCode.Return)], TypeRef.String),
+            new("b", 0, 0, [new(OpCode.Constant, 4), new(OpCode.Return)], TypeRef.String),
+            new("c", 0, 0, [new(OpCode.Constant, 5), new(OpCode.Return)], TypeRef.String)], OptimizationLevel: 0), expectedValue: "String:B");
+    Module direct = Optimizer.Optimize(Compiler.Compile("let action = fn { 42 }; action()", "direct-target", 0), 1);
+    Require(direct.Functions.Count == 1 && direct.Functions[0].Instructions.All(instruction => instruction.Op is OpCode.Constant or OpCode.Return),
+        "Ordinary unaliased call target lost its inlining proof");
 
     const string dead = "scope SomeType { remote: ssh://unused, new: fn { scope { filename?: null } } }; let object = SomeType::new(); object::filename = ~/.codex;";
     Module executable = Binding.Bind(Optimizer.Optimize(Compiler.Compile(dead, "dead-object", 0), 3), new(root, root));

@@ -151,6 +151,9 @@ internal static class FunctionInlining
             if (instruction.Op == OpCode.IteratorNext) incoming.Add(instruction.B);
         }
         var locals = new Shape?[function.LocalCount];
+        var aliases = function.Instructions.Any(instruction => instruction.Op == OpCode.StoreLocal)
+            && (function.CaptureCount > 0 || function.Instructions.Any(instruction => instruction.Op is OpCode.LoadCell or OpCode.LoadStorage or OpCode.GetCapture))
+            ? PredicateOptimization.CaptureAliases(function) : [];
         var stack = new List<Shape?>();
         Shape? Pop() { if (stack.Count == 0) return null; var item = stack[^1]; stack.RemoveAt(stack.Count - 1); return item; }
         Shape?[] PopMany(int count) { var result = new Shape?[count]; for (var i = count - 1; i >= 0; i--) result[i] = Pop(); return result; }
@@ -165,7 +168,15 @@ internal static class FunctionInlining
                 case OpCode.Null: case OpCode.True: case OpCode.False: case OpCode.LoadBuiltin: stack.Add(null); break;
                 case OpCode.LoadLocal: stack.Add(locals[instruction.A]); break;
                 case OpCode.LoadCell: case OpCode.LoadStorage: stack.Add(null); break;
-                case OpCode.StoreLocal: case OpCode.InitializeLocal: locals[instruction.A] = Pop(); break;
+                case OpCode.StoreLocal:
+                    var assigned = Pop();
+                    // A raw capture can put the same location in several slots.
+                    // Invalidate future loads, not already evaluated callees on
+                    // the operand stack: argument effects cannot replace them.
+                    if (Array.BinarySearch(aliases, instruction.A) >= 0)
+                        foreach (var alias in aliases) locals[alias] = null;
+                    locals[instruction.A] = assigned; break;
+                case OpCode.InitializeLocal: locals[instruction.A] = Pop(); break;
                 case OpCode.Pop: Pop(); break;
                 case OpCode.Dup: var item = Pop(); stack.Add(item); stack.Add(item); break;
                 case OpCode.MakeClosure: PopMany(instruction.B); stack.Add(new(instruction.A, Captures: instruction.B)); break;
