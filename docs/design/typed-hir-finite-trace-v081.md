@@ -209,6 +209,69 @@ The source supervisor now requires a matching successful-build fingerprint
 before running the host. An incidental stale-output launch after the initial
 failed mirror build was quarantined and excluded; it is not candidate evidence.
 
+## Exact three-line Compile input: callable-domain fan-out
+
+A later acceptance input was **not** the two-line Analyze fixture above. It
+includes the observable size/conversion/transfer tail and uses default Compile:
+
+```msync
+let tree = $std::containers::BTree::new(0, "");
+$std::containers::BTree::insert(tree, 0, "item-0");
+($std::containers::BTree::size(tree) as String) -> ./result.txt;
+```
+
+Its exact bytes, including line endings, have SHA256
+`1c02eee6f28d1454c1f72e10e5b8dc56b0a10b8da42816ffb442d8e821e44fcb`.
+The source was copied from `.temp/hir-cost-functional/btree-1/input.msync`;
+the host reads that preserved input rather than reconstructing a similar string.
+The Compiler mirror was refreshed from clean source HEAD
+`781ca56ee8d268788ae3cf70e95dbfc290d512df`, with frozen13 Core/HIR/Optimization
+DLL references. Mirror-only stage hooks surround Analyze, Lower and Optimizer
+inside default `Compiler.Compile(..., 2)`. No runtime program was executed.
+
+At both 120 and 300 instance-key entry limits, only `Analyze.enter` appeared.
+Neither Lower nor Optimizer had started. The 300-entry run stopped in about
+1.73 seconds with approximately 85 MiB child RSS, while functions/templates/
+types/layouts/Scope-constructions stayed at `9/49/1186/36/32`. The tail was not
+growing keys: template 31 (`Buffer::empty`) repeatedly hit the same 157-unit
+key at the same nesting depth, caller object/resource counts `14/5`.
+
+A third-visit FlowSolver probe found a real, ordinary refinement for logical
+place 479: unassigned Any without an element became unassigned Any with
+`Range<Number>` and semantic type ID 1185. At that point `Join(x,x)=x` and
+replaying transfer on the same input were both stable. Raising that diagnostic
+to a changing sixteenth visit did not trigger it in the repeating 300-entry
+trace. A full stack sample showed actual `Scope` initializer analysis and
+`Invoke`'s callable-choice enumeration, not FlowSolver, at the repetition.
+
+The decisive probe stopped at a single call site with **384 source callable
+choices**, all template 31 and all without a separate RuntimeIdentity. The
+entire set had:
+
+- one distinct capture-mode/canonical-storage-owner vector;
+- one distinct shallow capture value-summary vector;
+- identical first captures: location 110, canonical owner 109, type 1143,
+  Scope region 783; and location/owner 296, type 26.
+
+These were 384 alternatives of the same represented Buffer helper environment,
+each causing another cache hit from one Scope initializer. The source callable
+record contains an ImmutableArray of captures; representation-level inequality
+can therefore survive a normal `Distinct` even when the captured environment
+is semantically the same. Native-name-only de-duplication does not address it.
+
+The resulting correction belongs in the callable domain's captured-environment
+identity and joins. De-duplicating by template alone would incorrectly discard
+different closures; changing worklist limits or replacing inferred values with
+Any would address neither cause. This new exact-input finding does not turn the
+earlier two-line Analyze result into an acceptance result for default Compile.
+
+The decisive bounded fan-out trace has SHA256
+`8d9a0f2011a00c9a3486268223fa518430dfddc087c00924f36db219a27d6f5d`,
+Compiler mirror SHA256
+`a1041d6ceedb85ab5f7b0eedb7aaaf70620e5c4fb6650f0fbb7861390abeb8a2`.
+It stopped intentionally in about 1.70 seconds at fan-out greater than eight;
+no public CLI or 24-insert run was repeated to obtain this diagnosis.
+
 ## Receipts and reproduction
 
 The workspace retains:
