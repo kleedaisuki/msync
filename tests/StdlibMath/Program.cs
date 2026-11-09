@@ -114,13 +114,13 @@ foreach (var (source, expected) in new[]
     ("$std::math::square(7)", 49.0),
     ("$std::math::cube(-3)", -27.0),
     ("$std::math::sqrt(81)", 9.0),
-    ("$std::math::round($std::cast(\"2.5\", Number))", 3.0),
-    ("$std::math::round_even($std::cast(\"2.5\", Number))", 2.0),
+    ("$std::math::round((\"2.5\" as Number))", 3.0),
+    ("$std::math::round_even((\"2.5\" as Number))", 2.0),
     ("$std::math::clamp(8, 1, 4)", 4.0),
     ("$std::math::sign(- 0)", -0.0),
     ("$std::math::positive_difference(3, 5)", 0.0),
-    ("$std::math::lerp(2, 6, $std::cast(\"0.25\", Number))", 3.0),
-    ("$std::math::lerp($std::cast(\"-1e308\", Number), $std::cast(\"1e308\", Number), $std::cast(\"0.5\", Number))", 0.0),
+    ("$std::math::lerp(2, 6, (\"0.25\" as Number))", 3.0),
+    ("$std::math::lerp((\"-1e308\" as Number), (\"1e308\" as Number), (\"0.5\" as Number))", 0.0),
     ("$std::ranges::fold($std::ranges::transform([3, 4], $std::math::square), 0, fn(a: Number, b: Number) { a + b })", 25.0)
 })
 {
