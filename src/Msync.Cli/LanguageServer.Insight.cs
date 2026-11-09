@@ -44,8 +44,10 @@ internal sealed partial class LanguageServer
         string word = Word(document.Source.Text, offset);
         string? help = word switch
         {
-            "scope" => "```msync\nscope Name { member: value, optional?: null }\n```\n\nConstruct a lexical Scope; access or assign fields with `Name::member`. Field values are mutable; their inferred types stay fixed. Add `?` to admit Null. A Scope is not a filesystem Connection.",
+            "scope" => "```msync\nscope Name { member: value, optional?: null }\n```\n\nNamed scopes are shared singletons; anonymous `scope { ... }` creates a fresh lexical Scope. Access or assign fields with `Name::member`. Field values are mutable; their inferred types stay fixed. Add `?` to admit Null. A Scope is not a filesystem Connection.",
             "fn" => "```msync\nfn name(parameter: Type) -> Type { result }\n```\n\nOmit annotations for generic inference. A final expression returns its value; `;` discards it. Closures share captured binding locations, so later assignments are visible.",
+            "concept" => "```msync\nconcept Named { Base, type Self; member: Self, operation: fn(value: Self) -> Self };\n```\n\nDescribe a structural contract over existing values. Compose named concepts with base names; parameters and return values may use the contract without a new runtime type.",
+            "as" => "```msync\nexpression as Type\n```\n\nExplicit conversion to the target type. Only Path and String convert implicitly. The selected conversion runs once and reports invalid runtime data.",
             "global" => "```msync\nglobal root, .codex;\n```\n\nInside a function, explicitly import prior definition-time ancestor binding locations. The nearest ancestor wins; callers and future declarations are not searched. Imported values stay mutable with fixed storage types. Existing implicit captures remain valid.",
             "let" => "```msync\nlet name = value;\nname = replacement;\n```\n\nBind a mutable value with a fixed inferred or declared type. A new `let` shadows rather than updates the previous binding. Use `let name? = value;` to admit Null.",
             "decltype" => "```msync\ndecltype(expression)\n```\n\nInfer the expression’s type without executing its effects.",

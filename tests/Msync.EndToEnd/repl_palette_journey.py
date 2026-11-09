@@ -154,6 +154,12 @@ def main() -> None:
             result.update(terminal_palette(binary, Path(temporary)))
         elif os.name == "nt":
             result.update(windows_palette(binary, Path(temporary)))
+        from language_upgrade_tooling_journey import (
+            terminal_palette as upgraded_palette,
+        )
+
+        upgraded_palette(binary, Path(temporary))
+        result["upgraded_terminal_token_roles"] = 6
     print(json.dumps(result, indent=2))
 
 

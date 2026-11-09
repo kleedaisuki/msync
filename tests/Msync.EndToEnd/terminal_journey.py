@@ -343,12 +343,12 @@ def qualified_completion(binary: Path, directory: Path) -> dict[str, object]:
     terminal = Terminal(binary, directory)
     try:
         terminal.until(lambda: "> " in terminal.plain, "first prompt")
-        for index, qualifier in enumerate(("$local::", "$pwd::")):
-            terminal.key((qualifier + "./qual").encode())
+        for index, qualifier in enumerate(("$local", "$pwd")):
+            terminal.key(b"./qual")
             terminal.key(b"\t")
             terminal.key(b"\t")
             marker = f"QUALIFIED_{index}"
-            terminal.key(f' -> ./result-{index}; "{marker}"'.encode())
+            terminal.key(f' @ {qualifier} -> ./result-{index}; "{marker}"'.encode())
             terminal.send(b"\r")
             terminal.prompt(terminal.line(marker))
             assert (directory / f"result-{index}").read_text() == "QUALIFIED BYTES"

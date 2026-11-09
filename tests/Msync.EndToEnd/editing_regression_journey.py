@@ -157,8 +157,8 @@ def minimal_paths(binary: Path, directory: Path) -> dict[str, int]:
         ("let file = ./pl" + CARET + ";\n", "let file = ./plain.txt;\n"),
         ("let file = ./normal-f" + CARET + ";\n", "let file = ./normal-folder/;\n"),
         (
-            "let file = $local::./pl" + CARET + ";\n",
-            "let file = $local::./plain.txt;\n",
+            "let file = ./pl" + CARET + " @ $local;\n",
+            "let file = ./plain.txt @ $local;\n",
         ),
         ('let file = "./pl' + CARET + '";\n', 'let file = "./plain.txt";\n'),
         ('"payload" -> ./pl' + CARET + ";\n", '"payload" -> ./plain.txt;\n'),
@@ -286,12 +286,12 @@ def builtin_edits(binary: Path, directory: Path) -> dict[str, int]:
             ("let source = $file::th" + CARET + ";\n", "let source = $file::this;\n"),
             ("let parent = $file::pa" + CARET + ";\n", "let parent = $file::parent;\n"),
             (
-                "let current = $pwd::./pwd-ph" + CARET + ";\n",
-                "let current = $pwd::./pwd-physical.txt;\n",
+                "let current = ./pwd-ph" + CARET + " @ $pwd;\n",
+                "let current = ./pwd-physical.txt @ $pwd;\n",
             ),
             (
-                "let source = $file::./file-ph" + CARET + ";\n",
-                "let source = $file::./file-physical.txt;\n",
+                "let source = ./file-ph" + CARET + " @ $file;\n",
+                "let source = ./file-physical.txt @ $file;\n",
             ),
         ]
     )

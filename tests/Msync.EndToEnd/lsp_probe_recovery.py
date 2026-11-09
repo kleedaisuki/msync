@@ -17,9 +17,9 @@ def run(binary: Path) -> dict[str, Any]:
     uri: str = "file:///msync-editor-probe-recovery.msync"
     malformed: str = (
         "let ready = scope { useful: true }; "
-        "fn inspect(scope) { scope::endpoint::(/tmp/) }; "
+        "fn inspect(scope) { (/tmp/ @ scope::endpoint) }; "
         "inspect(scope { endpoint: ssh://one }); "
-        "inspect(scope { endpoint: ssh://two });"
+        "inspect(scope { endpoint: true });"
     )
     valid: str = "let recovered = true; recovered"
     try:
@@ -31,7 +31,9 @@ def run(binary: Path) -> dict[str, Any]:
             "textDocument/hover",
             {"textDocument": {"uri": uri}, "position": {"line": 0, "character": 5}},
         )
-        assert hovered is not None and "ready: Scope" in hovered["contents"]["value"], hovered
+        assert hovered is not None and "ready: Scope" in hovered["contents"]["value"], (
+            hovered
+        )
         notify(client, uri, 2, valid)
         assert diagnostics(client, uri, 2)["diagnostics"] == []
         recovered, _ = client.request(
@@ -41,7 +43,10 @@ def run(binary: Path) -> dict[str, Any]:
                 "position": {"line": 0, "character": valid.rindex("recovered") + 1},
             },
         )
-        assert recovered is not None and "recovered: Bool" in recovered["contents"]["value"], recovered
+        assert (
+            recovered is not None
+            and "recovered: Bool" in recovered["contents"]["value"]
+        ), recovered
         assert client.process.poll() is None
         return {
             "malformed_diagnostics": len(report["diagnostics"]),

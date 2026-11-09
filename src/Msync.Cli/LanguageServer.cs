@@ -20,7 +20,7 @@ internal sealed partial class LanguageServer(
     private bool hierarchicalDocumentSymbols;
     private bool completionResolveDocumentation;
     private long serverRequest;
-    private static readonly string[] Keywords = ["let", "global", "fn", "scope", "native", "if", "else", "for", "in", "match", "return", "break", "loop", "release", "acquire", "acqrel", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", .. LanguageTypes.Names];
+    private static readonly string[] Keywords = ["let", "global", "fn", "scope", "concept", "type", "as", "native", "if", "else", "for", "in", "match", "return", "break", "loop", "release", "acquire", "acqrel", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", .. LanguageTypes.Names];
 
     private JsonNode? Handle(string method, JsonElement p)
     {
@@ -38,7 +38,7 @@ internal sealed partial class LanguageServer(
                 && workspace.TryGetProperty("semanticTokens", out var tokens)
                 && tokens.TryGetProperty("refreshSupport", out var refresh) && refresh.ValueKind == JsonValueKind.True;
             return JsonNode.Parse("""
-            {"capabilities":{"positionEncoding":"utf-16","textDocumentSync":{"openClose":true,"change":2},"documentFormattingProvider":true,"codeActionProvider":true,"completionProvider":{"resolveProvider":true,"triggerCharacters":[":","$","/","\\"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["keyword","function","variable","type","string","comment","protocol","endpoint","operator","namespace","controlKeyword","regexp"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"msync","version":"0.8.0"}}
+            {"capabilities":{"positionEncoding":"utf-16","textDocumentSync":{"openClose":true,"change":2},"documentFormattingProvider":true,"codeActionProvider":true,"completionProvider":{"resolveProvider":true,"triggerCharacters":[":","$","/","\\","@"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["keyword","function","variable","type","string","comment","protocol","endpoint","operator","namespace","controlKeyword","regexp","number"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"msync","version":"0.8.0"}}
             """);
         }
         if (method == "shutdown") return null;
@@ -69,12 +69,12 @@ internal sealed partial class LanguageServer(
         bool lazyDocumentation = false)
     {
         int offset = Offset(document.Source, parameters.GetProperty("position"));
-        if (document.Analysis?.IsTypePosition(offset) == true) return TypeCompletions(document.Source, offset);
         context ??= document.Analysis?.At(offset);
+        if (document.Analysis?.IsTypePosition(offset) == true) return TypeCompletions(document.Source, offset, context);
         if (context?.IsGlobalImport == true)
             return NameCompletions(document.Source, offset,
                 MemberCompletions(context.Bindings, document.Generation, offset, lazyDocumentation));
-        JsonArray items = MemberCompletions(CompletionMembers(context), document.Generation, offset, lazyDocumentation);
+        JsonArray items = MemberCompletions(CompletionMembers(context).Where(member => !member.IsConstraint), document.Generation, offset, lazyDocumentation);
         if (context?.Receiver is not null && context.ReceiverKind == EditorReceiverKind.Member)
             return NameCompletions(document.Source, offset, items);
         foreach (string keyword in Keywords)
@@ -204,7 +204,25 @@ internal sealed partial class LanguageServer(
         int previousLine = 0, previousColumn = 0;
         var patterns = document.Analysis?.RegexSpans ?? [];
         int patternIndex = 0, patternEnd = -1;
+        var numberSpans = Msync.Compiler.Syntax.Parser.NumberSpans(text);
+        List<(int Index, int Length, bool Number)> lexical = [];
+        int numberIndex = 0;
         foreach (ValueMatch match in LexicalTokens().EnumerateMatches(text))
+        {
+            while (numberIndex < numberSpans.Count && numberSpans[numberIndex].End <= match.Index)
+            {
+                var number = numberSpans[numberIndex++];
+                lexical.Add((number.Start, number.Length, true));
+            }
+            if (numberIndex == numberSpans.Count || numberSpans[numberIndex].Start >= match.Index + match.Length)
+                lexical.Add((match.Index, match.Length, false));
+        }
+        while (numberIndex < numberSpans.Count)
+        {
+            var number = numberSpans[numberIndex++];
+            lexical.Add((number.Start, number.Length, true));
+        }
+        foreach (var match in lexical)
         {
             while (patternIndex < patterns.Count && patterns[patternIndex].Start <= match.Index)
             {
@@ -225,15 +243,22 @@ internal sealed partial class LanguageServer(
                 AddToken(match.Index + separator + 3, match.Length - separator - 3, 7);
                 continue;
             }
-            int type = comment ? 5 : quoted ? 4 : "?:-=!/$|".AsSpan().Contains(token[0]) ? 8 :
+            int type = comment ? 5 : quoted ? 4 : "?:-=!/$|@+*%<>".AsSpan().Contains(token[0]) ? 8 :
                 keyword ? char.IsUpper(token[0]) ? 3 : 0 :
                 match.Index > 0 && text[match.Index - 1] == '$' ? 9 : 2;
             if (!comment && !quoted)
             {
                 if (token.SequenceEqual("?") || ControlFlow(token)) type = 10;
+                else if (match.Number) type = 12;
             }
-            if (!keyword && inferred.TryGetValue(match.Index, out var semantic) && semantic.Span.Length == match.Length)
-                type = semantic.SemanticRole switch { "function" => 1, "type" => 3, _ => 2 };
+            if (!keyword)
+            {
+                inferred.TryGetValue(match.Index, out var semantic);
+                if (semantic is null && match.Index > 0 && text[match.Index - 1] == '$')
+                    inferred.TryGetValue(match.Index - 1, out semantic);
+                if (semantic is not null && semantic.Span.End == match.Index + match.Length)
+                    type = semantic.SemanticRole switch { "function" => 1, "type" => 3, _ => 2 };
+            }
             AddToken(match.Index, match.Length, type);
         }
         while (patternIndex < patterns.Count)
@@ -268,7 +293,7 @@ internal sealed partial class LanguageServer(
     private static bool ControlFlow(ReadOnlySpan<char> token) => token.SequenceEqual("if") || token.SequenceEqual("else")
         || token.SequenceEqual("match") || token.SequenceEqual("for") || token.SequenceEqual("in")
         || token.SequenceEqual("return") || token.SequenceEqual("break") || token.SequenceEqual("loop")
-        || token.SequenceEqual("release") || token.SequenceEqual("acquire") || token.SequenceEqual("acqrel");
+        || token.SequenceEqual("release") || token.SequenceEqual("acquire") || token.SequenceEqual("acqrel") || token.SequenceEqual("as");
 
     private static bool IsKeyword(ReadOnlySpan<char> token)
     {
@@ -339,6 +364,6 @@ internal sealed partial class LanguageServer(
         return text[start..end];
     }
 
-    [GeneratedRegex("""(?<comment>(?<!\S)(?:\#|//)[^\r\n]*)|(?<string>"(?:[^"]|"")*")|(?<uri>[A-Za-z][A-Za-z0-9+.-]*://[^\s;{}(),"]*)|(?<word>[\p{L}_][\p{L}\p{N}_]*)|(?<operator>::|->|=>|==|!=|[?=/$|])""", RegexOptions.CultureInvariant)]
+    [GeneratedRegex("""(?<comment>(?<!\S)(?:\#|//)[^\r\n]*)|(?<string>"(?:[^"]|"")*")|(?<uri>[A-Za-z][A-Za-z0-9+.-]*://[^\s;{}(),"]*)|(?<word>[\p{L}_][\p{L}\p{N}_]*)|(?<operator>::|->|=>|==|!=|\*\*|[?=/$|@+*%<>-])""", RegexOptions.CultureInvariant)]
     private static partial Regex LexicalTokens();
 }

@@ -70,7 +70,7 @@ def run_paths(binary: Path, directory: Path) -> dict[str, int]:
             start = complete(terminal, prefix)
             finish_submission(terminal, suffix, marker, start)
             assert (directory / f"result-{index}").read_bytes() == fixtures[name]
-            expected.append(replacement + suffix)
+            expected.append(replacement + suffix[suffix.index(" ->") :])
 
         marker = "MIDDLE_DETAIL"
         suffix = f' -> ./result-middle; "{marker}"'
@@ -205,19 +205,20 @@ def run_builtins(binary: Path, directory: Path) -> dict[str, int]:
 
         (directory / "pwdinput.txt").write_bytes(b"PWD CONTENT")
         for prefix, replacement, target, marker in [
-            ("$pwd::pwdin", "$pwd::pwdinput.txt", "pwd-result", "PWD_DETAIL_DONE"),
+            ("./pwdin", "./pwdinput.txt @ $pwd", "pwd-result", "PWD_DETAIL_DONE"),
             (
-                "$local::pwdin",
-                "$local::pwdinput.txt",
+                "./pwdin",
+                "./pwdinput.txt @ $local",
                 "local-result",
                 "LOCAL_DETAIL_DONE",
             ),
         ]:
             start = complete(terminal, prefix, "pwdinput.txt")
-            suffix = f' -> ./{target}; "{marker}"'
+            endpoint = "$pwd" if target == "pwd-result" else "$local"
+            suffix = f' @ {endpoint} -> ./{target}; "{marker}"'
             finish_submission(terminal, suffix, marker, start)
             assert (directory / target).read_bytes() == b"PWD CONTENT"
-            expected.append(replacement + suffix)
+            expected.append(replacement + suffix[suffix.index(" ->") :])
 
         start = complete(terminal, "$path::msync_detail_t", "msync_detail_tool")
         terminal.key(b'("EXECUTABLE")::stdout -> ./path-result; "PATH_PROGRAM_DONE"')

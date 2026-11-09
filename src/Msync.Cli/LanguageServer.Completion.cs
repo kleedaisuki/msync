@@ -55,31 +55,16 @@ internal sealed partial class LanguageServer
         var receiver = insight?.Receiver;
         var knownPath = receiver?.KnownPath ?? (receiver?.KnownText is { } text ? new PathValue(text) : null);
         var context = SourceCompletion.Find(document.Source.Text, offset,
-            resolveEndpoint: name => CompletionEndpoint(insight, name),
             receiverPath: knownPath,
             unknownPathReceiver: (receiver?.Type is "Path" or "Path?" or "String" or "String?" or "unknown") && knownPath is null,
             physicalEndpoint: insight?.PhysicalEndpoint,
             unknownPhysicalOwner: insight?.HasPhysicalOwner == true && insight.PhysicalEndpoint is null,
-            boundNames: insight?.Bindings.Select(binding => binding.Name).ToHashSet(StringComparer.Ordinal),
+            boundNames: insight?.Bindings.Where(binding => !binding.IsConstraint).Select(binding => binding.Name).ToHashSet(StringComparer.Ordinal),
             sourceFile: sourceFile);
         if (context is null)
             return items ?? (PromptSyntax.InsideLiteral(document.Source.Text, offset) ? [] : Completions(document, request, insight, completionResolveDocumentation));
         return SourceItems(document.Source, context,
             await service.CompleteAsync(context, Environment.CurrentDirectory, HostContext.HomeDirectory, work.Cancellation.Token), items);
-    }
-
-    private static ConnectionValue? CompletionEndpoint(EditorContext? context, string name)
-    {
-        if (context?.Receiver?.Endpoint is { } endpoint) return endpoint;
-        IReadOnlyList<SemanticMember>? members = context?.Bindings;
-        SemanticMember? selected = null;
-        foreach (string component in name.Split("::", StringSplitOptions.TrimEntries))
-        {
-            selected = members?.FirstOrDefault(member => member.Name == component);
-            if (selected is null) return null;
-            members = selected.Members;
-        }
-        return selected?.Endpoint;
     }
 
     private void PublishCompletion(CompletionEvent completed)

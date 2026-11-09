@@ -624,12 +624,17 @@ def remote_queries(
                 )
             qualifier = "remote" if alias else endpoint
             if stored:
-                declaration += "let folder = remote::" + quote(remote) + ";\n"
+                declaration += "let folder = " + quote(remote) + " @ remote;\n"
                 fragment = "folder/" + prefix
             else:
-                fragment = qualifier + "::" + remote + "/" + prefix
+                fragment = remote + "/" + prefix
+            suffix = "" if stored else " @ " + qualifier
             text = (
-                declaration + "let selected = " + fragment + ";\ndecltype(selected)\n"
+                declaration
+                + "let selected = "
+                + fragment
+                + suffix
+                + ";\ndecltype(selected)\n"
             )
             offset = text.index(fragment) + len(fragment)
             notify(client, uri, version, text, opening=version == 1)
@@ -660,7 +665,7 @@ def remote_queries(
             item = matches[0]
             assert "Path" in item.get("detail", ""), item
             edited = apply_edit(text, item["textEdit"])
-            assert ("remote::" if alias or stored else endpoint + "::") in edited, (
+            assert ("@ remote" if alias or stored else "@ " + endpoint) in edited, (
                 edited
             )
             native_run(binary, environment, directory, edited, "Path")
@@ -718,56 +723,56 @@ def distinct_endpoint_queries(
     (remote_directory / "REMOTE_ONLY.txt").write_bytes(b"remote domain")
     raw = "./" + relative.as_posix() + "/"
     declaration = "let remote = " + endpoint + ";\n"
-    stored = declaration + "let folder = remote::" + quote(raw) + ";\n"
+    stored = declaration + "let folder = " + quote(raw) + " @ remote;\n"
     cases = [
-        (declaration + "remote::" + raw + CARET, "REMOTE_ONLY.txt"),
-        (declaration + "remote::(" + raw + CARET + ")", "REMOTE_ONLY.txt"),
+        (declaration + raw + CARET + " @ remote", "REMOTE_ONLY.txt"),
+        (declaration + "(" + raw + CARET + ") @ remote", "REMOTE_ONLY.txt"),
         (
             "scope Endpoints { host: "
             + endpoint
-            + " };\nEndpoints::host::("
+            + " };\n("
             + raw
             + CARET
-            + ")",
+            + ") @ Endpoints::host",
             "REMOTE_ONLY.txt",
         ),
         (stored + "folder/" + CARET, "REMOTE_ONLY.txt"),
-        (stored + "$local::(folder/" + CARET + ")", "LOCAL_ONLY.txt"),
-        (stored + "remote::($local::(folder/" + CARET + "))", "REMOTE_ONLY.txt"),
-        (declaration + "$local::(remote::(" + raw + CARET + "))", "LOCAL_ONLY.txt"),
-        (declaration + "remote:: " + quote(raw + CARET), "REMOTE_ONLY.txt"),
-        (declaration + "remote::(" + quote(raw + CARET) + ")", "REMOTE_ONLY.txt"),
-        (declaration + "remote::({ " + quote(raw + CARET) + " })", "REMOTE_ONLY.txt"),
+        (stored + "(folder/" + CARET + ") @ $local", "LOCAL_ONLY.txt"),
+        (stored + "((folder/" + CARET + ") @ $local) @ remote", "REMOTE_ONLY.txt"),
+        (declaration + "((" + raw + CARET + ") @ remote) @ $local", "LOCAL_ONLY.txt"),
+        (declaration + quote(raw + CARET) + " @ remote", "REMOTE_ONLY.txt"),
+        (declaration + "(" + quote(raw + CARET) + ") @ remote", "REMOTE_ONLY.txt"),
+        (declaration + "({ " + quote(raw + CARET) + " }) @ remote", "REMOTE_ONLY.txt"),
         (
             declaration
-            + "remote::(if true { "
+            + "(if true { "
             + quote(raw + CARET)
-            + " } else { ./unused })",
+            + " } else { ./unused }) @ remote",
             "REMOTE_ONLY.txt",
         ),
         (
             declaration
-            + "remote::(match true { true => { "
+            + "(match true { true => { "
             + quote(raw + CARET)
-            + " }, false => { ./unused } })",
+            + " }, false => { ./unused } }) @ remote",
             "REMOTE_ONLY.txt",
         ),
         (
             declaration
-            + "fn identity(path: Path) { path };\nremote::(identity("
+            + "fn identity(path: Path) { path };\n(identity("
             + quote(raw + CARET)
-            + "))",
+            + ")) @ remote",
             "LOCAL_ONLY.txt",
         ),
         (
             declaration
-            + "remote::(if exists "
+            + "(if exists "
             + quote(raw + CARET)
-            + " { ./unused } else { ./unused })",
+            + " { ./unused } else { ./unused }) @ remote",
             "LOCAL_ONLY.txt",
         ),
         (
-            declaration + "remote::((fn() { " + quote(raw + CARET) + " })())",
+            declaration + "((fn() { " + quote(raw + CARET) + " })()) @ remote",
             "LOCAL_ONLY.txt",
         ),
     ]
@@ -793,7 +798,7 @@ def distinct_endpoint_queries(
             }
             assert names == {expected}, (version, marked, expected, names, response)
         invalid_version = len(cases) + 1
-        malformed = "fn inspect(scope) { scope::endpoint::(/tmp/) };\n"
+        malformed = "fn inspect(scope) { (/tmp/ @ scope::endpoint) }; inspect(scope { endpoint: true });\n"
         notify(client, uri, invalid_version, malformed)
         problem = diagnostics(client, uri, invalid_version)
         assert problem["diagnostics"], problem

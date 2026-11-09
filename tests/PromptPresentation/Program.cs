@@ -43,12 +43,29 @@ Color("file -> destination", "->", AnsiColor.Cyan);
 Color("$env::HOME", "$", AnsiColor.Cyan);
 Color("$env::HOME", "env", null);
 Color("$env::HOME", "HOME", null);
-Color("ssh://forge::./file", "ssh://", AnsiColor.Cyan);
-Color("ssh://forge::./file", "forge", null);
+Color("./file @ ssh://forge", "ssh://", AnsiColor.Cyan);
+Color("./file @ ssh://forge", "forge", null);
+Color("ssh://user@forge", "@", null);
 Color("let text = \"a doubled \"\"quote\"\"\";", "\"a doubled \"\"quote\"\"\"", AnsiColor.Green);
 Color("# fn if scope", "fn if scope", AnsiColor.BrightBlack);
 Color("let selected = match file { <(?<fn>if|scope)?> => { true } };", "<(?<fn>if|scope)?>", AnsiColor.Magenta);
 Color("let count = 12;", "12", AnsiColor.Magenta);
+foreach (string number in new[] { "1.25e-3", "0xff", "0b10", "0o7", "1_000", ".5", "0" })
+    Color("let number = " + number + ";", number, AnsiColor.Magenta);
+Color("2/3+4%2", "3", AnsiColor.Magenta);
+Color("2**3**2", "**", AnsiColor.Cyan);
+Color("-value", "-", AnsiColor.Cyan);
+Color("copy-config", "copy-config", null);
+Color("./-filename", "-filename", null);
+Color("./123/0xff", "123", null);
+Color("./123/0xff", "0xff", null);
+Color(".5notes", ".5notes", null);
+Color("value as Number", "as", AnsiColor.Magenta);
+Color("./file @ $local", "@", AnsiColor.Cyan);
+Color("concept Numeric { value: Number };", "concept", AnsiColor.Cyan);
+Color("concept Numeric { value: Number };", "Numeric", AnsiColor.Magenta);
+if (PromptSyntax.Hint("atlas", 5, new Dictionary<string, SemanticMember>()) is not null)
+    throw new InvalidOperationException("A name suffix is not an 'as' keyword.");
 
 Dictionary<string, SemanticMember> bindings = new(StringComparer.Ordinal)
 {
@@ -66,3 +83,17 @@ Color("instance::field", "instance", null, bindings);
 Color(".codex -> item", ".codex", null, bindings);
 Color("Named::\"get-path\"()", "\"get-path\"", AnsiColor.Yellow, bindings);
 Console.WriteLine($"{assertions} terminal palette character and span assertions passed.");
+
+if (args.Contains("--measure", StringComparer.Ordinal))
+{
+    const int repetitions = 10000;
+    const string line = "fn copy(file: Path) -> Path { file }; let number = 0xff + 1e-3; number as String";
+    int count = 0;
+    for (int index = 0; index < 1000; index++) count += PromptSyntax.Highlight(line, bindings).Count;
+    long allocation = GC.GetAllocatedBytesForCurrentThread();
+    var clock = System.Diagnostics.Stopwatch.StartNew();
+    for (int index = 0; index < repetitions; index++) count += PromptSyntax.Highlight(line, bindings).Count;
+    clock.Stop();
+    allocation = GC.GetAllocatedBytesForCurrentThread() - allocation;
+    Console.WriteLine($"Prompt Highlight: {clock.Elapsed.TotalMilliseconds / repetitions:F4} ms/call, {allocation / repetitions} bytes/call; {count} spans observed.");
+}

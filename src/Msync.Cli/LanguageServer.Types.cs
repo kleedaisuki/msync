@@ -15,7 +15,7 @@ internal sealed partial class LanguageServer
         return items;
     }
 
-    private static JsonArray TypeCompletions(SourceText source, int offset)
+    private static JsonArray TypeCompletions(SourceText source, int offset, EditorContext? context)
     {
         SourceSpan span = NameSyntax.SpanAt(source.Text, offset);
         JsonArray items = [];
@@ -27,6 +27,16 @@ internal sealed partial class LanguageServer
                 ["detail"] = name == "Range" ? "Range<T> — constrain the element type" : $"{name} — type constraint",
                 ["textEdit"] = new JsonObject { ["range"] = source.Range(span.Start, span.Length), ["newText"] = name }
             });
+        foreach (var concept in context?.Bindings.Where(member => member.IsConstraint) ?? [])
+            if (!LanguageTypes.Names.Contains(concept.Name, StringComparer.Ordinal))
+                items.Add((JsonNode)new JsonObject
+                {
+                    ["label"] = concept.Name,
+                    ["kind"] = 7,
+                    ["detail"] = concept.Signature,
+                    ["documentation"] = Documentation(concept.Description),
+                    ["textEdit"] = new JsonObject { ["range"] = source.Range(span.Start, span.Length), ["newText"] = concept.Name }
+                });
         return items;
     }
 }

@@ -12,9 +12,9 @@ internal sealed record SourceCompletionItem(string Label, string Replacement, st
 
 internal static class SourceCompletion
 {
-    private static readonly string[] WordBoundaries = ["and", "or", "is", "not", "in", "else", "if", "fn", "scope", "let", "match", "for", "exists", "return", "break", "loop", "native"];
+    private static readonly string[] WordBoundaries = ["and", "or", "is", "not", "in", "else", "if", "fn", "scope", "let", "match", "for", "exists", "return", "break", "loop", "native", "concept", "type", "as"];
 
-    public static SourceCompletionContext? Find(string text, int caret, bool includeBarePaths = false, Func<string, ConnectionValue?>? resolveEndpoint = null,
+    public static SourceCompletionContext? Find(string text, int caret, bool includeBarePaths = false,
         PathValue? receiverPath = null, bool unknownPathReceiver = false, ConnectionValue? physicalEndpoint = null, bool unknownPhysicalOwner = false, IReadOnlySet<string>? boundNames = null, string? sourceFile = null)
     {
         int start = 0;
@@ -71,7 +71,7 @@ internal static class SourceCompletion
                 && (index == 0 || text[index - 1] != ':') && (index + 1 == text.Length || text[index + 1] != ':')
                 && !(index == start + 1 && char.IsLetter(text[start]) && index + 1 < text.Length && text[index + 1] is '/' or '\\'))
             { start = index + 1; continue; }
-            if (Boundary(character) && !(uri && character is '[' or ']')) start = index + 1;
+            if (Boundary(character) && !(uri && character is '[' or ']' or '@')) start = index + 1;
         }
         if (comment || regex) return null;
         string fragment = text[start..caret];
@@ -92,26 +92,10 @@ internal static class SourceCompletion
                 receiverPath.Connection, receiverPath, BoundNames: boundNames), text, caret);
         }
         if (pathJoin >= 0 && unknownPathReceiver) return null;
-        int selection = LastSelection(fragment);
-        string qualifier = selection < 0 ? "" : fragment[..(selection + 2)];
+        if (LastSelection(fragment) >= 0) return null;
+        string qualifier = "";
         ConnectionValue? endpoint = physicalEndpoint;
-        if (selection >= 0)
-        {
-            string name = fragment[..selection];
-            var writtenEndpoint = name switch
-            {
-                "$local" => new ConnectionValue(ConnectionKind.Local),
-                "$pwd" => new ConnectionValue(ConnectionKind.Local, "pwd"),
-                "$wsl" => new ConnectionValue(ConnectionKind.Wsl),
-                _ when name.StartsWith("ssh://", StringComparison.Ordinal) => new ConnectionValue(ConnectionKind.Ssh, name[6..]),
-                _ when name.StartsWith("wsl://", StringComparison.Ordinal) => new ConnectionValue(ConnectionKind.Wsl, name[6..]),
-                _ => resolveEndpoint?.Invoke(name)
-            };
-            endpoint ??= writtenEndpoint;
-            if (endpoint is null) return null;
-            if (!PhysicalDirectory(endpoint, sourceFile)) return null;
-        }
-        string value = fragment[qualifier.Length..];
+        string value = fragment;
         bool isString = value.StartsWith('"');
         string raw = Decode(value);
         bool path = endpoint is not null || raw.Contains('/') || OperatingSystem.IsWindows() && raw.Contains('\\')
@@ -258,12 +242,12 @@ internal static class SourceCompletion
                 if (quoted && end + 1 < text.Length && text[end + 1] == '"') { end++; continue; }
                 quoted = !quoted;
             }
-            else if (!quoted && Boundary(character) && !(uri && character is '[' or ']')) break;
+            else if (!quoted && Boundary(character) && !(uri && character is '[' or ']' or '@')) break;
         }
         return end;
     }
 
-    private static bool Boundary(char character) => char.IsWhiteSpace(character) || "{}()[],;=|<>?".Contains(character, StringComparison.Ordinal);
+    private static bool Boundary(char character) => char.IsWhiteSpace(character) || "{}()[],;=|<>?@".Contains(character, StringComparison.Ordinal);
     internal static int LastSeparator(string path) => OperatingSystem.IsWindows() ? path.LastIndexOfAny(['/', '\\']) : path.LastIndexOf('/');
     private static string ExpandHome(string path, string home) => path == "~" ? home
         : path.StartsWith("~/", StringComparison.Ordinal) || OperatingSystem.IsWindows() && path.StartsWith("~\\", StringComparison.Ordinal)
@@ -290,15 +274,16 @@ internal static class SourceCompletion
         if (context.InsideString)
             return name.Replace("\"", "\"\"", StringComparison.Ordinal) + suffix + (context.CloseQuote ? "\"" : "");
         bool binding = !context.LiteralWindowsAtom && context.BoundNames?.Contains(name) == true;
-        return (NeedsQuotes(name) || binding ? Quote(name) : name) + suffix;
+        bool numericAtom = LastSeparator(context.Prefix) < 0 && (NumberSyntax.TryParse(name, out _)
+            || name.StartsWith('-') && NumberSyntax.TryParse(name[1..], out _));
+        return (NeedsQuotes(name) || binding || numericAtom ? Quote(name) : name) + suffix;
     }
 
     private static bool NeedsQuotes(string name) => name.Any(character => char.IsWhiteSpace(character)
-        || "{}()[],;?\"$|<>!=:+*".Contains(character, StringComparison.Ordinal))
+        || "{}()[],;?\"$|<>!=:+*%@".Contains(character, StringComparison.Ordinal))
         || name is "true" or "false" or "null" or "fn" or "scope" or "if" or "else" or "match" or "for"
-            or "in" or "is" or "not" or "and" or "or" or "exists" or "decltype" or "return" or "break" or "loop" or "native"
-            or "Bool" or "Range" or "String" or "Function" or "Scope" or "Path" or "Process" or "Connection" or "Null" or "Type" or "Number"
-        || long.TryParse(name, out _);
+            or "in" or "is" or "not" or "and" or "or" or "exists" or "decltype" or "return" or "break" or "loop" or "native" or "concept" or "type" or "as"
+            or "Bool" or "Range" or "String" or "Function" or "Scope" or "Path" or "Process" or "Connection" or "Null" or "Type" or "Number";
 
     private static SourceCompletionContext HostEdit(SourceCompletionContext context, string text, int caret)
     {

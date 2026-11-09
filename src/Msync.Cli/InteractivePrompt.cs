@@ -108,7 +108,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
             bindings = Flatten(values);
             completionBindings = null;
             insight = null;
-            boundNames = bindings.Keys.ToHashSet(StringComparer.Ordinal);
+            boundNames = bindings.Values.Where(member => !member.IsConstraint).Select(member => member.Name).ToHashSet(StringComparer.Ordinal);
         }
 
         private static IReadOnlyDictionary<string, SemanticMember> Flatten(IReadOnlyList<SemanticMember> values)
@@ -121,7 +121,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
             void Add(string name, SemanticMember value)
             {
                 current[name] = value;
-                if (value.Members is null) return;
+                if (value.IsConstraint || value.Members is null) return;
                 foreach (var member in value.Members) Add(name + "::" + member.Name, member);
             }
         }
@@ -144,7 +144,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
             {
                 insight = analyze(text).At(caret);
                 completionBindings = Flatten(insight.Bindings);
-                boundNames = completionBindings.Keys.ToHashSet(StringComparer.Ordinal);
+                boundNames = completionBindings.Values.Where(member => !member.IsConstraint).Select(member => member.Name).ToHashSet(StringComparer.Ordinal);
             }
             if (key.ConsoleKeyInfo.Key == ConsoleKey.Enter && key.ConsoleKeyInfo.Modifiers == 0 && incomplete(text))
                 key = new(new ConsoleKeyInfo('\n', ConsoleKey.Enter, shift: true, alt: false, control: false));
@@ -179,19 +179,12 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
             if (FindSource(text, caret) is { } context)
                 return Task.FromResult(new TextSpan(context.Start, context.Length));
             int start = caret, end = caret;
-            if (insight?.Receiver?.Members is not null)
-            {
-                while (start > 0 && (char.IsLetterOrDigit(text[start - 1]) || text[start - 1] == '_')) start--;
-                while (end < text.Length && (char.IsLetterOrDigit(text[end]) || text[end] == '_')) end++;
-                return Task.FromResult(TextSpan.FromBounds(start, end));
-            }
             while (start > 0 && !IsDelimiter(text[start - 1])) start--;
             while (end < text.Length && !IsDelimiter(text[end])) end++;
-            return Task.FromResult(TextSpan.FromBounds(start, end));
+            if (start == 0 && text.StartsWith('/')) return Task.FromResult(TextSpan.FromBounds(start, end));
+            var atom = NameSyntax.SpanAt(text, caret);
+            return Task.FromResult(new TextSpan(atom.Start, atom.Length));
         }
-
-        private ConnectionValue? ResolveEndpoint(string name) =>
-            (completionBindings ?? bindings).TryGetValue(name, out var value) ? value.Endpoint : insight?.Receiver?.Endpoint;
 
         private SourceCompletionContext? FindSource(string text, int caret)
         {
@@ -199,7 +192,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
             PathValue? path = receiver?.KnownPath ?? (receiver?.KnownText is { } value ? new PathValue(value) : null);
             bool unknown = receiver is not null && path is null
                 && (receiver.Type.Contains("Path", StringComparison.Ordinal) || receiver.Type.Contains("String", StringComparison.Ordinal) || receiver.Type == "Unknown");
-            return SourceCompletion.Find(text, caret, includeBarePaths: true, resolveEndpoint: ResolveEndpoint,
+            return SourceCompletion.Find(text, caret, includeBarePaths: true,
                 receiverPath: path, unknownPathReceiver: unknown, physicalEndpoint: insight?.PhysicalEndpoint,
                 unknownPhysicalOwner: insight?.HasPhysicalOwner == true && insight.PhysicalEndpoint is null,
                 boundNames: boundNames);
@@ -233,17 +226,19 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
             }
             string prefix = text[spanToBeReplaced.Start..caret];
             if (insight?.IsTypePosition == true)
-                return LanguageTypes.Names.Where(name => name.StartsWith(prefix, StringComparison.Ordinal))
+                return LanguageTypes.Names.Concat(insight.Bindings.Where(member => member.IsConstraint).Select(member => member.Name))
+                    .Distinct(StringComparer.Ordinal).Where(name => name.StartsWith(prefix, StringComparison.Ordinal))
                     .Select(name => new CaretCompletionItem(name,
-                        getExtendedDescription: _ => Task.FromResult<FormattedString>("Built-in type " + name)))
+                        getExtendedDescription: _ => Task.FromResult<FormattedString>(completionBindings?.TryGetValue(name, out var constraint) == true ? constraint.Signature : "Built-in type " + name)))
                     .ToArray();
             SourceCompletionContext? sourceContext = FindSource(text, caret);
             if (sourceContext is null && PromptSyntax.InsideLiteral(text, caret)) return [];
             IReadOnlyDictionary<string, SemanticMember> symbols = completionBindings ?? bindings;
             IReadOnlyList<SemanticMember>? members = insight?.Receiver?.Members;
             if (members is not null) symbols = members.ToDictionary(member => member.Name, StringComparer.Ordinal);
-            IEnumerable<string> words = members is not null ? symbols.Keys
-                : prefix.StartsWith('$') ? PromptSyntax.Builtins.Concat(symbols.Keys) : PromptSyntax.Keywords.Concat(names()).Concat(symbols.Keys);
+            IEnumerable<string> runtimeNames = symbols.Where(pair => !pair.Value.IsConstraint).Select(pair => pair.Key);
+            IEnumerable<string> words = members is not null ? runtimeNames
+                : prefix.StartsWith('$') ? PromptSyntax.Builtins.Concat(runtimeNames) : PromptSyntax.Keywords.Concat(names()).Concat(runtimeNames);
             if (spanToBeReplaced.Start == 0 && prefix.StartsWith('/')) words = PromptSyntax.Commands;
             List<CompletionItem> items = words.Where(word => word.StartsWith(prefix, StringComparison.Ordinal))
                 .Distinct(StringComparer.Ordinal).Order(TextSemantics.Ordinal).Select(word => (CompletionItem)new CaretCompletionItem(word,
@@ -271,7 +266,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
             finally { Console.TreatControlCAsInput = captured; Console.CancelKeyPress -= cancel; }
         }
 
-        private static bool IsDelimiter(char character) => char.IsWhiteSpace(character) || "{}()[],;=|<>?\"".Contains(character, StringComparison.Ordinal);
+        private static bool IsDelimiter(char character) => char.IsWhiteSpace(character) || "{}()[],;=|<>?\"@".Contains(character, StringComparison.Ordinal);
 
         protected override Task<PromptHint?> GetHintAsync(string text, int caret, CancellationToken cancellationToken) =>
             Task.FromResult(!color ? null : notice is not null ? new PromptHint("  [" + notice + "]", Insertable: false) : PromptSyntax.Hint(text, caret, bindings));

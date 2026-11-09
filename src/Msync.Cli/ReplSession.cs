@@ -19,7 +19,7 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
     public async Task<int> RunAsync()
     {
         await using InteractivePrompt? prompt = InteractivePrompt.IsSupported
-            ? new(syntax.IsIncomplete, () => compiler.BindingNames, color: TerminalPresentation.Colors(color), describe: compiler.DescribeBindings, analyze: source => compiler.AnalyzeEditor(source, execution.GetLocalValue), colorPolicy: color) : null;
+            ? new(syntax.IsIncomplete, () => compiler.BindingNames, color: TerminalPresentation.Colors(color), describe: DescribePromptBindings, analyze: source => compiler.AnalyzeEditor(source, execution.GetLocalValue), colorPolicy: color) : null;
         editing = prompt is not null;
         if (!Console.IsInputRedirected)
             Console.WriteLine(TerminalPresentation.Paint("msync 0.8.0", TerminalPresentation.HeadingColor, TerminalPresentation.Colors(color))
@@ -38,6 +38,9 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
         }
         finally { if (!editing) Console.CancelKeyPress -= Cancel; }
     }
+
+    private IReadOnlyList<SemanticMember> DescribePromptBindings() => compiler.DescribeBindings()
+        .Concat(compiler.DescribeConcepts()).DistinctBy(member => member.Name, StringComparer.Ordinal).ToArray();
 
     private async ValueTask<TerminalInput> ReadAsync(InteractivePrompt? prompt)
     {
