@@ -260,3 +260,39 @@ Do not treat later sealer pruning, artifact validity, or the absence of runtime
 I/O as proof that this query boundary is closed. The original finding 3 is now
 **closed for already-bound semantic operations; standard demand-binding
 ownership remains open**.
+
+## Architecture closure of the final demand-binding bypass
+
+Commit `6403421` closes the remaining phase-ownership bypass identified above.
+This conclusion is a targeted source review of that delta; no rebuild, full test
+rerun, or claim about a newer frozen default-Compile binary is involved.
+
+`BoundProgram` no longer stores a `BindModule` callback. `SourceBinder.Bind`
+finishes `SealStandardBindings` before returning its input to semantic analysis.
+A reserved standard import enters a deduplicated worklist; binding its selected
+source adds transitive imports to that same worklist. Explicit module demand
+therefore does not bind unrelated library families. A first-class `$std` root
+retains the complete public module shape, as required by its actual semantics.
+Concept annotation binding is owned by the same source-binding phase.
+
+`SemanticAnalyzer.EnsureModule` now looks up `program.StandardModules[name]`;
+it cannot invoke a retained binder to append source, declarations or bound
+payloads while a constraint query is running. Its emitting path still owns
+module initialization through `SemanticOutput`, whereas its query path analyzes
+the already-bound body in the query context and publishes no initializer.
+Prebinding source is not runtime initialization and does not execute native I/O.
+
+The binding owner's focused contracts cover selected, transitive and first-class
+root demand. The query-ownership checks now inspect the original `bound.Hir`
+table counts after analysis, rather than relying on the sealed module's counts;
+sealer pruning is not the evidence for this boundary. Those accepted checks were
+reused, not rerun by this review.
+
+**Architecture conclusion:** all three findings in this review are closed in
+the inspected implementation: cached code uses formal-space summaries with
+per-call provenance projection; type-only recursion owns query-local promises;
+and queries have neither executable-output capability nor a callback into a
+binding-phase writer. The fresh Scope field/capture alias discriminator was
+already verified on frozen snapshot 2. This closes this bounded architecture
+review, not the project's complete semantic compatibility, performance,
+cross-platform/editor acceptance, or release work.
