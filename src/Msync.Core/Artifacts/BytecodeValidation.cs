@@ -134,7 +134,20 @@ internal static class BytecodeValidation
                 case OpCode.ProcessCall:
                     {
                         PopMany(instruction.A); var callee = Pop(); Require(callee, TypeKind.Function | TypeKind.Path | TypeKind.String);
-                        var target = instruction.Op == OpCode.ProcessCall ? null : instruction.B == 0 ? callee.Function : instruction.B - 1;
+                        var target = instruction.Op == OpCode.ProcessCall || instruction.B < 0 ? null : instruction.B == 0 ? callee.Function : instruction.B - 1;
+                        if (instruction.Op == OpCode.Call && instruction.B < 0)
+                        {
+                            var table = module.SessionDispatches![-instruction.B - 1];
+                            TypeRef result = new(TypeKind.Never);
+                            foreach (int selected in table.Targets.Values)
+                            {
+                                var selectedFunction = module.Functions[selected];
+                                if (selectedFunction.ParameterCount != instruction.A) throw Error("session call argument count disagrees with function");
+                                result = TypeRef.Union(result, selectedFunction.ReturnType);
+                            }
+                            Push(table.Targets.Count == 0 ? TypeRef.Any : result);
+                            break;
+                        }
                         if (instruction.Op == OpCode.Call && instruction.Text is { } dispatch)
                             target = callee.Function is { } identity && FunctionDispatch.Parse(dispatch).TryGetValue(identity, out int selected) ? selected : null;
                         if (target is { } index)

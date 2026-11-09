@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "msync.core": {
+        "type": "Project"
+      },
+      "msync.optimization": {
+        "type": "Project",
+        "dependencies": {
+          "Msync.Core": "[0.8.1, )"
+        }
+      },
+      "msync.runtime": {
+        "type": "Project",
+        "dependencies": {
+          "Msync.Core": "[0.8.1, )",
+          "Msync.Optimization": "[0.8.1, )"
+        }
+      }
+    }
+  }
+}

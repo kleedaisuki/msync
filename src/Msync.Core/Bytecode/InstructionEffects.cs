@@ -5,6 +5,8 @@ public static class InstructionEffects
     public static InstructionEffect Effects(Instruction instruction) => instruction.Op switch
     {
         OpCode.NativeCall => NativeEffects(instruction.Text),
+        OpCode.Call when instruction.B < 0 => InstructionEffect.Read | InstructionEffect.Write
+            | InstructionEffect.Invoke | InstructionEffect.MayFail | InstructionEffect.Diverge,
         OpCode.Call => InstructionEffect.Invoke | InstructionEffect.MayFail | InstructionEffect.Diverge,
         OpCode.ProcessCall => InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.Invoke | InstructionEffect.MayFail,
         OpCode.Transfer or OpCode.LocalTransfer => InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.MayFail,

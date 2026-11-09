@@ -6,4 +6,5 @@ public sealed record Module(IReadOnlyList<Value> Constants, IReadOnlyList<Functi
 {
     // Session-only reachability metadata; object/executable files do not export locals.
     public IReadOnlyList<int>? SessionRoots { get; init; }
+    public IReadOnlyList<SessionDispatchTable>? SessionDispatches { get; init; }
 }

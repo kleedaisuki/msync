@@ -78,7 +78,12 @@ public sealed partial class Interpreter
                         {
                             var arguments = ValueArguments(stack.PopMany(instruction.A)); var callee = ReadValue(stack.Pop());
                             int? target = null;
-                            if (instruction.Op == OpCode.Call && instruction.Text is not null && callee is FunctionValue { NativeName: null } dynamicFunction)
+                            if (instruction.Op == OpCode.Call && instruction.B < 0)
+                            {
+                                if (callee is not FunctionValue selected) throw new MsyncException("An open session call requires a Function value.", instruction.Span);
+                                if (selected.NativeName is null) target = SessionDispatchTarget(selected, instruction);
+                            }
+                            else if (instruction.Op == OpCode.Call && instruction.Text is not null && callee is FunctionValue { NativeName: null } dynamicFunction)
                                 target = DispatchTarget(dynamicFunction, instruction);
                             else if (instruction.Op == OpCode.Call && instruction.B != 0)
                             {

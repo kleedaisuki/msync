@@ -63,6 +63,8 @@ public static class Artifact
     }
     public static void Write(Module module, Stream stream)
     {
+        if (module.SessionDispatches is { Count: > 0 })
+            throw new MsyncException("Open session call signatures require an active REPL session and cannot be exported as standalone bytecode. Compile a self-contained .msync source instead.");
         Validate(module);
         using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
         writer.Write(Magic); writer.Write(FormatVersion); writer.Write(LanguageVersion); writer.Write((byte)module.Semantics); writer.Write((byte)module.Stage);
@@ -87,6 +89,7 @@ public static class Artifact
         if (module.Semantics != ModuleSemantics.Current) throw new MsyncException($"Unsupported bytecode execution semantics {module.Semantics}; only the current execution contract is supported");
         if (module.EntryPoint < 0 || module.EntryPoint >= module.Functions.Count) throw new MsyncException("Bytecode entrypoint does not identify a function");
         if ((module.Stage == ArtifactStage.Executable) != (module.Context is not null)) throw new MsyncException("Bytecode stage and binding context disagree");
+        ValidateSessionDispatches(module);
         foreach (var constant in module.Constants) ValidateConstant(constant, module);
         foreach (var function in module.Functions)
         {
@@ -106,6 +109,9 @@ public static class Artifact
                     throw new MsyncException($"Invalid jump target {instruction.A}", instruction.Span);
                 if (instruction.Op == OpCode.IteratorNext && (instruction.B < 0 || instruction.B > function.Instructions.Count))
                     throw new MsyncException($"Invalid iterator target {instruction.B}", instruction.Span);
+                if (instruction.Op == OpCode.Call && instruction.B < 0
+                    && (module.SessionDispatches is not { } dispatches || (uint)(-instruction.B - 1) >= (uint)dispatches.Count))
+                    throw new MsyncException("Open call signature requires its active session dispatch table", instruction.Span);
                 if (instruction.Op is OpCode.Call or OpCode.SpecializeClosure && instruction.Text is not null)
                 {
                     foreach (var (source, target) in FunctionDispatch.Parse(instruction.Text))
@@ -119,6 +125,22 @@ public static class Artifact
             }
         }
         BytecodeValidation.Validate(module);
+    }
+    private static void ValidateSessionDispatches(Module module)
+    {
+        if (module.SessionDispatches is not { } tables) return;
+        for (int slot = 0; slot < tables.Count; slot++)
+        {
+            var table = tables[slot];
+            if (table.Slot != slot) throw new MsyncException("Session call signature slots must retain their dense identity order");
+            foreach (var (identity, target) in table.Targets)
+            {
+                if ((uint)identity >= (uint)module.Functions.Count || (uint)target >= (uint)module.Functions.Count)
+                    throw new MsyncException("Session call signature refers to a missing function");
+                if (module.Functions[identity].CaptureCount != module.Functions[target].CaptureCount)
+                    throw new MsyncException("Session call signature changes closure capture layout");
+            }
+        }
     }
     private static void ValidateConstant(Value value, Module module)
     {

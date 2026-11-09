@@ -37,6 +37,16 @@ public sealed partial class Interpreter
         return targets.TryGetValue(function.Function, out var target) ? target
             : throw new MsyncException($"Function #{function.Function} has no compiled specialization in this dispatch table", instruction.Span);
     }
+    private int SessionDispatchTarget(FunctionValue function, Instruction instruction)
+    {
+        RefreshSessionImage();
+        int slot = -instruction.B - 1;
+        if (module.SessionDispatches is not { } tables || (uint)slot >= (uint)tables.Count
+            || tables[slot].Slot != slot)
+            throw new MsyncException($"Session call signature #{slot} is unavailable. Execute this deferred value in its active REPL session.", instruction.Span);
+        return tables[slot].Targets.TryGetValue(function.Function, out int target) ? target
+            : throw new MsyncException($"Function #{function.Function} has no compiled specialization for session call signature #{slot}.", instruction.Span);
+    }
     private Value Capture(Value value) => value is PathValue path && (path.WorkingDirectory is null || path.HomeDirectory is null)
         ? path with { WorkingDirectory = path.WorkingDirectory ?? context.WorkingDirectory, HomeDirectory = path.HomeDirectory ?? context.HomeDirectory } : value;
     private Value Builtin(string name)
