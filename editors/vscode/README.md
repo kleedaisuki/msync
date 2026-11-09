@@ -149,6 +149,14 @@ versions, optimization level, typed constants, functions, captures, basic blocks
 instructions and bound context. The outline and operand links navigate within
 the artifact. The view uses your editor theme and has Find support.
 
+Both binary stages use independent IR highlighting: function, block, constant
+and local references have distinct roles; branches and acquire/release markers
+are control flow rather than ordinary opcodes. Field names and checked layout
+slots remain recognizable beside types, escaped path/String data and exact
+numeric representations, including hexadecimal bits, negative zero and NaN.
+The custom view reads VS Code theme colors; the text view uses standard TextMate
+scopes. Neither sends disassembled IR through the source-language checker.
+
 **Open IR as Text** opens the same decoded data in a normal read-only editor,
 with `msync-ir` highlighting, Outline, hover explanations and Go to Definition.
 The command is also available as **msync: Open Bytecode as Read-only IR** in the

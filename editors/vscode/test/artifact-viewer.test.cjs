@@ -273,10 +273,29 @@ test('IR grammar colors real labels and future instruction mnemonics without sou
     });
     const grammar = await registry.loadGrammar('source.msync-ir');
     for (const [line, token, expected] of [
-        ['const @c0: Path = path(raw="./可莉")', '@c0', 'entity.name.function.msync-ir'],
-        ['block @b0_0000 [0..4) pure successors []:', '@b0_0000', 'entity.name.function.msync-ir'],
+        ['const @c0: Path = path(raw="./可莉")', '@c0', 'constant.other.reference.msync-ir'],
+        ['fn @f0 "main"(%0: Path) -> Bool', '@f0', 'entity.name.function.msync-ir'],
+        ['block @b0_0000 [0..4) pure successors []:', '@b0_0000', 'entity.name.label.msync-ir'],
+        ['  0042: JumpIfFalse @b0_0000', 'JumpIfFalse', 'keyword.control.msync-ir'],
+        ['  0042: Barrier before-and-after (acqrel)', 'acqrel', 'keyword.control.msync-ir'],
+        ['  0042: Acquire session-owned pending work', 'Acquire', 'keyword.control.msync-ir'],
+        ['  0042: ProcessCall arguments 0, release flags 1', 'release', 'keyword.control.msync-ir'],
         ['  0042: FutureFieldOpcode @c0 %2', 'FutureFieldOpcode', 'keyword.operator.msync-ir'],
         ['  0042: FutureFieldOpcode @c0 %2', '%2', 'variable.other.msync-ir'],
+        ['  0042: GetMember "filename", slot #2 (layout-checked hint)', '"filename"', 'variable.other.property.msync-ir'],
+        ['  0042: GetMember "filename", slot #2 (layout-checked hint)', 'slot', 'variable.other.property.layout.msync-ir'],
+        ['  0042: GetMember "filename", slot #2 (layout-checked hint)', 'layout-checked', 'variable.other.property.layout.msync-ir'],
+        ['  0042: MakeScope fields ["filename", ".codex"], allocation-site 7', '".codex"', 'variable.other.property.msync-ir'],
+        ['  0042: MakeScope fields ["filename", ".codex"], allocation-site 7', 'allocation-site', 'variable.other.property.layout.msync-ir'],
+        ['const @c0: Path = path(raw="./可莉")', 'path', 'support.type.path.msync-ir'],
+        ['const @c0: Path = path(raw="./可莉")', 'Path', 'entity.name.type.msync-ir'],
+        ['const @c0: Path = path(raw="./可莉")', './可莉', 'string.quoted.double.msync-ir'],
+        ['const @c0: Number = number(-0, bits=0x8000000000000000)', '-0', 'constant.numeric.msync-ir'],
+        ['const @c0: Number = number(-0, bits=0x8000000000000000)', '0x8000000000000000', 'constant.numeric.msync-ir'],
+        ['const @c0: Number = number(1.2e-7)', '1.2e-7', 'constant.numeric.msync-ir'],
+        ['const @c0: Number = number(-Infinity)', '-Infinity', 'constant.numeric.msync-ir'],
+        ['const @c0: Number = number(NaN)', 'NaN', 'constant.numeric.msync-ir'],
+        ['const @c0: Bool = true', 'true', 'constant.language.msync-ir'],
         ['const @c0: String = "hello; world"', 'world', 'string.quoted.double.msync-ir'],
     ]) {
         const start = line.indexOf(token);
@@ -284,4 +303,39 @@ test('IR grammar colors real labels and future instruction mnemonics without sou
         assert.ok(actual.scopes.includes(expected), JSON.stringify({ line, token, actual }));
     }
     registry.dispose();
+});
+
+test('both binary webviews color separate IR roles through current-theme variables', () => {
+    const text = [
+        'const @c0: Path = path(raw="./可莉", cwd="/home/klee")',
+        'const @c1: Number = number(-0, bits=0x8000000000000000)',
+        'const @c2: Bool = true',
+        'const @c3: String = "color:#ff0000"',
+        'fn @f0 "main"(%0: Path) -> Bool captures 0 locals 1 {',
+        'block @b0_0000 [0..4) effects successors [@b0_0042]:',
+        '  0000: LoadLocal %0',
+        '  0001: GetMember "filename", slot #2 (layout-checked hint)',
+        '  0002: MakeScope fields [".codex", "host"], allocation-site 7',
+        '  0003: JumpIfFalse @b0_0042',
+        '  0004: Barrier before-and-after (acqrel)',
+        '  0005: ProcessCall arguments 0, release flags 1',
+        '  0006: Return',
+        '}',
+    ].join('\n');
+    for (const [extension, stage] of [['mso', 'relocatable'], ['mexe', 'executable']]) {
+        const model = { ...fixture(text), stage, symbols: [], references: [], hovers: [] };
+        const html = renderPage(URI.file('/job.' + extension), model);
+        for (const [role, value] of [
+            ['function', '@f0'], ['constant', '@c0'], ['block', '@b0_0000'], ['local', '%0'],
+            ['type', 'Path'], ['path', 'path'], ['string', '&quot;./可莉&quot;'],
+            ['number', '-0'], ['number', '0x8000000000000000'], ['literal', 'true'],
+            ['opcode', 'LoadLocal'], ['control', 'JumpIfFalse'], ['control', 'Barrier'], ['control', 'Return'],
+            ['control', 'acqrel'], ['control', 'release'], ['field', '&quot;filename&quot;'], ['field', '&quot;.codex&quot;'],
+            ['layout', 'slot'], ['layout', 'layout-checked'], ['layout', 'allocation-site'],
+        ]) assert.ok(html.includes(`<span class="${role}">${value}</span>`), `${extension}: ${role} ${value}`);
+        for (const name of ['keyword', 'operator', 'function', 'constant', 'reference', 'variable', 'property', 'number'])
+            assert.ok(html.includes(`var(--vscode-symbolIcon-${name}Foreground,`), name);
+        const styles = /<style[^>]*>([\s\S]*?)<\/style>/.exec(html)[1];
+        assert.ok(!/color:\s*#[0-9a-f]{3,8}\b/i.test(styles), 'Syntax colors must not hard-code a palette');
+    }
 });
