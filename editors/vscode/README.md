@@ -185,8 +185,8 @@ scope SameNumber {
     Self: Number,
     equal: fn(left: Number, right: Number) -> Bool { left == right },
 };
-let values = $std::containers::Set::with_equality([3, 1], SameNumber);
-$std::containers::Set::insert(values, 2);
+let values = $std::containers::EqualitySet::with_equality([3, 1], SameNumber);
+$std::containers::EqualitySet::insert(values, 2);
 let report = $std::io::File::new(./report.txt);
 ```
 

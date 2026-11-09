@@ -56,14 +56,14 @@ async function run() {
         '};',
         'let selected? = preserve($std::data::Option::some("Klee"));',
         '$std::data::Option::get_or(selected, "none") -> ./option.txt;',
-        'let numbers = $std::containers::Set::with_eq([3, 1], SameNumber);',
-        '$std::containers::Set::insert(numbers, 1);',
-        'let members = $std::containers::Set::snapshot(numbers);',
+        'let numbers = $std::containers::EqualitySet::with_eq([3, 1], SameNumber);',
+        '$std::containers::EqualitySet::insert(numbers, 1);',
+        'let members = $std::containers::EqualitySet::snapshot(numbers);',
         '$std::string::join($std::ranges::map(members, fn(value: Number) { value as String }), ",") -> ./set.txt;',
-        'let tree = $std::containers::RBTreeSet::new([3, 1, 2]);',
-        '$std::containers::RBTreeSet::insert(tree, 4);',
-        '$std::containers::RBTreeSet::remove(tree, 2);',
-        'let ordered = $std::containers::RBTreeSet::snapshot(tree);',
+        'let tree = $std::containers::Set::new([3, 1, 2]);',
+        '$std::containers::Set::insert(tree, 4);',
+        '$std::containers::Set::remove(tree, 2);',
+        'let ordered = $std::containers::Set::snapshot(tree);',
         '$std::string::join($std::ranges::map(ordered, fn(value: Number) { value as String }), ",") -> ./ordered.txt;',
         '',
     ].join('\n');
@@ -90,7 +90,7 @@ async function run() {
     assert.ok(await vscode.workspace.applyEdit(update));
     assert.ok(await document.save());
     const source = document.getText();
-    assert.ok(!source.includes('with_with') && !source.includes('Set::Set::') && !source.includes('$$'));
+    assert.ok(!source.includes('with_with') && !source.includes('EqualitySet::EqualitySet::') && !source.includes('$$'));
     const position = (spelling, delta = 1) => {
         const offset = source.indexOf(spelling);
         assert.ok(offset >= 0, spelling);
@@ -101,7 +101,7 @@ async function run() {
     for (const [spelling, expected] of [
         ['Option?)', /Option/],
         ['with_equality(', /Equality/],
-        ['Set::with_equality', /Scope/],
+        ['EqualitySet::with_equality', /Scope/],
         ['numbers =', /Scope/],
         ['tree =', /Scope/],
         ['typename First', /First/],
@@ -142,8 +142,8 @@ async function run() {
         ['First) ->', 'type'], ['fn preserve', 'keyword'], ['preserve(value', 'function'],
         ['Option?)', 'type'], ['scope SameNumber', 'keyword'], ['SameNumber {', 'type'],
         ['numbers =', 'variable'], ['data::Option', 'type'], ['Option::some', 'type'],
-        ['Set::with_equality', 'type'], ['with_equality(', 'function'],
-        ['RBTreeSet::new', 'type'],
+        ['EqualitySet::with_equality', 'type'], ['with_equality(', 'function'],
+        ['Set::new', 'type'],
     ];
     const themes = [];
     for (const theme of ['Default Dark Modern', 'Default Light Modern']) {
