@@ -66,7 +66,8 @@ async function main() {
     }
     const protocolOnly = process.env.MSYNC_TEST_PROTOCOL_ONLY === '1';
     const artifactOnly = process.env.MSYNC_TEST_ARTIFACT_ONLY === '1';
-    const suite = artifactOnly ? 'artifact' : protocolOnly ? 'protocol' : 'full';
+    const stdlibOnly = process.env.MSYNC_TEST_STDLIB_ONLY === '1';
+    const suite = stdlibOnly ? 'stdlib' : artifactOnly ? 'artifact' : protocolOnly ? 'protocol' : 'full';
     const metadata = { serverPath, serverSha256, managedAssemblies, runRoot, suite, startedAt: new Date().toISOString() };
     await fs.writeFile(path.join(runRoot, 'run.json'), JSON.stringify(metadata, null, 2));
     const log = createWriteStream(path.join(runRoot, 'host.log'));
@@ -78,7 +79,7 @@ async function main() {
     try {
         await runTests({
             extensionDevelopmentPath: extensionRoot,
-            extensionTestsPath: path.join(__dirname, artifactOnly ? 'artifact-suite.cjs' : protocolOnly ? 'protocol-suite.cjs' : 'suite.cjs'),
+            extensionTestsPath: path.join(__dirname, stdlibOnly ? 'stdlib-suite.cjs' : artifactOnly ? 'artifact-suite.cjs' : protocolOnly ? 'protocol-suite.cjs' : 'suite.cjs'),
             extensionTestsEnv: {
                 MSYNC_TEST_SERVER_PATH: serverPath,
                 MSYNC_TEST_WORKSPACE: directories.workspace,

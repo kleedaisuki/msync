@@ -712,3 +712,15 @@ constraints share the canonical type catalog. The return header `-> Type` is
 not the transfer operator context, and the REPL hint reflects that distinction.
 Definitions and outlines use parser declarations and actual binding origins,
 never declarations guessed from text inside comments or strings.
+
+## Source-backed library editor acceptance
+
+`MSYNC_TEST_STDLIB_ONLY=1` selects the focused actual VS Code host journey in
+`editors/vscode/test/integration/run.cjs`. As with the artifact journey, callers
+must supply an absolute `MSYNC_TEST_SERVER_PATH`; the runner records the server
+hash and any managed assembly hashes rather than selecting a Debug or PATH
+server implicitly. The suite follows cast, Range, String and functional
+compositions into the installed `msync-stdlib` virtual documents, checks their
+selected definition ranges and inferred types, and completes structured Range
+elements. This is independent of the existing source and artifact host suites,
+so a library-only change does not repeat unrelated editing or binary workflows.
