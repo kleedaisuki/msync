@@ -62,7 +62,8 @@ class ArtifactViews {
         const key = uri.toString();
         if (this.entries.has(key)) return this.entries.get(key);
         const entry = { uri, generation: 0, panels: new Set(), documents: 0, textOpen: false };
-        const parent = uri.with({ path: path.posix.dirname(uri.path), query: '', fragment: '' });
+        const directory = path.posix.dirname(uri.path);
+        const parent = uri.with({ path: /^\/[A-Za-z]:$/.test(directory) ? directory + '/' : directory, query: '', fragment: '' });
         const watcher = this.vscode.workspace.createFileSystemWatcher(new this.vscode.RelativePattern(parent, path.posix.basename(uri.path)));
         entry.watch = [watcher, watcher.onDidChange(() => this.invalidate(entry)),
             watcher.onDidCreate(() => this.invalidate(entry)), watcher.onDidDelete(() => this.invalidate(entry))];

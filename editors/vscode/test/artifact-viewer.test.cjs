@@ -131,6 +131,15 @@ test('artifact views use the configured reader protocol, share one decode and ne
     h.views.dispose();
 });
 
+test('watching a Windows drive-root artifact retains the absolute volume root', async () => {
+    const h = harness(); const uri = URI.parse('file:///D:/job.mso');
+    h.files.set(uri.toString(), Buffer.from('binary'));
+    await h.views.provideTextDocumentContent(textUri(h.host, uri));
+    assert.equal(h.watchers[0].pattern.baseUri.path.toLowerCase(), '/d:/');
+    assert.equal(h.watchers[0].pattern.pattern, 'job.mso');
+    h.views.dispose();
+});
+
 test('default custom editor is read-only and has bytecode metadata, outline and text controls', async () => {
     const h = harness(); const uri = URI.file('/job.mexe'); h.files.set(uri.toString(), Buffer.from('binary'));
     const document = await h.views.openCustomDocument(uri), view = panel();
