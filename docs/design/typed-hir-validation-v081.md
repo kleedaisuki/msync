@@ -207,3 +207,64 @@ warm component times. No warm matrix or Native latency claim follows from this
 functional gate. Exact frozen receipts and raw stage records are under
 `.temp/hir-stage-trace/frozen14-*`; the completed runtime outputs establish that
 subsequent cost measurements would concern functioning tree programs.
+
+## Same-source allocation regression and one diagnostic trace
+
+The tree above is **not** the original performance input. Its loop has one
+static insert call site; the published baseline probe instead unrolls 24 calls,
+uses `"item-N"` values and returns the nullable lookup result. That original
+source has SHA-256
+`3fc8333a4e8003c83495625dd59af655746af2bfb03075c10e040bebcc3626cb`.
+Its old and new function counts cannot be compared against the loop's counts.
+The unchanged no-stdlib/List/unrolled-tree inputs and exact image identities
+are recorded in `tests/Performance/HirCompilation/README.md`.
+
+Frozen14 does finish the original unrolled input, but its first Analyze
+allocates 1,478,691,760 B, before 716,840 B of lowering. The saved old first
+complete O0 Compile allocates 150,975,304 B. This approximately 9.79-fold
+construction-traffic signal is not explained by comparing cold to warm work,
+nor excused by a smaller residual program. Warm/retention batches were withheld
+while its cause was investigated.
+
+One `dotnet-trace` 10.0.750501 `gc-verbose` collection then runs that same
+frozen14 input once, with `DOTNET_TieredCompilation=0`, a 64 MiB EventPipe buffer,
+O0 and the one-pass phase host. There is no product instrumentation or new
+profiler. The offline reader uses the tool's existing TraceEvent library and
+weights `Microsoft-Windows-DotNETRuntime` GCAllocationTick samples by
+`AllocationAmount64`. This is sampled attribution, not a per-object census or
+retained-heap measurement; see the upstream
+[diagnostic profile documentation](https://github.com/dotnet/diagnostics/blob/main/documentation/dotnet-trace-instructions.md).
+
+The recording contains 13,481 allocation ticks, each with a recorded stack,
+and 1,484,342,248 B of allocation weights. The observed Analyze allocation is
+1,478,846,256 B with the same finalized graph counts. Assigning each tick to
+its nearest compiler frame produces disjoint groups:
+
+| Nearest compiler owner | Sample allocation weight, B |
+| --- | ---: |
+| FormalInput and its generated delegates | 864,857,680 |
+| EnrichFutureDomains and its generated delegates | 332,282,392 |
+| InvocationProjection | 174,674,216 |
+| Other frames or no compiler owner | 112,527,960 |
+
+The largest repeated stack is recursive `FormalInput.Abstract` through
+`ImmutableArray.CreateRange` and LINQ Select/ToArray (530,936,712 B). A parallel
+`EnrichFutureDomains.Visit` stack accounts for 177,453,776 B. `SemanticValue`
+accounts for about 624.8 MB of type-attributed weights, String for 187.1 MB;
+closure, delegate and iterator objects are also substantial. The CodeSchema
+ancestor covers about 632.9 MB of the FormalInput work, **not an additional
+disjoint amount**.
+
+These stacks target repeated semantic graph transformation and role-path string
+construction, not HIR sealing or bytecode optimization. Appropriate corrections
+preserve graph sharing, avoid reconstructing unchanged scalar/array/callable
+records and reuse call-local canonical views. They must not cache a first
+caller's semantic environment or erase alias/carrier distinctions. A corrected
+producer still needs its actual semantic result and the final matched cost
+observation; this diagnostic is not a speedup claim.
+
+The raw 8,288,346-byte trace has SHA-256
+`588e72d73fad58edd96f698ca61587b1925ee3e529744c955e90a3b929817f0b`.
+The exact command, producer receipt, parsed allocation stacks and offline reader
+are under `.temp/hir-final-cost/allocation-trace/`. The original trace is parsed
+multiple times without rerunning the product.
