@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>msync-adaptive-dispatch</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../src/Msync.Compiler/Msync.Compiler.csproj" />
+    <ProjectReference Include="../../../src/Msync.Runtime/Msync.Runtime.csproj" />
+  </ItemGroup>
+</Project>
