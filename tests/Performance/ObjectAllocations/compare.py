@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import statistics
 import subprocess
@@ -46,7 +47,12 @@ def main() -> None:
     output.mkdir(parents=True, exist_ok=True)
     images: dict[str, Path] = {"control": args.control.resolve(), "candidate": args.candidate.resolve()}
     cases: list[str] = args.cases or ["direct", "swap", "captures", "objects", "paths", "literal"]
-    summary: dict[str, Any] = {"images": {label: identity(image) for label, image in images.items()}, "cases": {}}
+    summary: dict[str, Any] = {
+        "images": {label: identity(image) for label, image in images.items()},
+        "environment": {name: os.environ.get(name) for name in ("DOTNET_TieredCompilation", "DOTNET_ReadyToRun")},
+        "pairs": args.pairs, "samples": args.samples, "iterations": args.iterations, "size": args.size,
+        "cases": {},
+    }
     for case in cases:
         results: dict[str, list[dict[str, Any]]] = {"control": [], "candidate": []}
         for pair in range(args.pairs):
