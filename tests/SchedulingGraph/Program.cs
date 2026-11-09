@@ -6,6 +6,11 @@ string scratch = Path.Combine(Directory.GetCurrentDirectory(), ".temp", "schedul
 Directory.CreateDirectory(scratch);
 try
 {
+    if (args.Contains("--retirement-only", StringComparer.Ordinal) || args.Contains("--retirement-observe", StringComparer.Ordinal))
+    {
+        await FrontierRetirementChecks.RunAsync(scratch, observe: args.Contains("--retirement-observe", StringComparer.Ordinal));
+        return;
+    }
     if (args.Contains("--namespace-only", StringComparer.Ordinal))
     {
         await PathNamespaceChecks.RunAsync(scratch);
