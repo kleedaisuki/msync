@@ -297,6 +297,15 @@ themes. It then checks and runs the editor-produced source with that same
 fingerprinted executable, verifying its Option and ordered-container results
 inside the isolated workspace. It does not rerun the unrelated artifact suite.
 
+`MSYNC_TEST_HIR_ONLY=1` selects the semantic artifact journey. It exports `.mhir`
+with the same fingerprinted executable, removes the source, and inspects the
+actual native semantic model in light and dark themes. The journey checks
+Outline, hover, internal identity navigation, readonly bytes, external atomic
+publication and corruption/repair refresh. Compilation and viewing must leave
+the program's transfer output absent. This selector requires a server with the
+Typed HIR export interface; mocked presentation tests do not establish native
+reader or extension-host acceptance.
+
 The 0.8 native-host journey passed on 2026-11-08 using VS Code **1.144.0**, the
 production esbuild extension bundle and the C# development apphost. It reported
 the nullable diagnostic, cleared it after an incremental correction, applied
