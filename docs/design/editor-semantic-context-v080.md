@@ -102,6 +102,32 @@ check ordinary compilation where the completed program is valid. Diagnostics,
 hover, member completion, and endpoint selection must agree on the same source
 generation and lexical context.
 
+### Nullable constructor results retain their actual member shape
+
+`fn -> Scope { scope { item: path } }` retains its inferred member metadata;
+the return annotation checks the value, not an erasure of its shape. A parameter
+annotated `Scope` likewise keeps the actual argument's members during generic
+specialization. An `if` without `else` joins that shape with Null, and
+`if not object?` narrows it back to Scope because postfix `?` means is-null.
+The Null predecessor must not contribute an empty conflicting shape. This was
+the cause of the reported `object::item` failure in older server binaries, not
+the return/parameter annotations or the parentheses in
+`where::(object::item)`. The inner selection remains lexical; `where` is the
+physical Connection.
+
+`nullable_scope_journey.py` keeps both reported source variants verbatim for
+CLI checks and actual LSP diagnostics, hover, completion and definition. It
+changes an uninstantiated generic declaration into the direct-return and rebuilt
+Scope variants in one document, checking that field origins follow the current
+variant. Controlled execution substitutes an owned temporary Path and local
+Connection, then checks both exists edges at O0/O2/O3 through source, `.mso` and
+`.mexe`; it never executes the user's home-directory or WSL transfer.
+
+The VS Code client launches `msync.serverPath` (default `msync` resolved from
+PATH), rather than embedding another compiler implementation. Installing an
+updated VSIX alone does not replace a separately installed old server; acceptance
+must use the intended Native executable and restart the language server.
+
 ## Static path values
 
 Typed descriptors retain a concrete-or-unknown `KnownPath` or `KnownText` fact
