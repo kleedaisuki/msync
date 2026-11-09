@@ -185,14 +185,14 @@ scope SameNumber {
     Self: Number,
     equal: fn(left: Number, right: Number) -> Bool { left == right },
 };
-let values = $std::containers::Set::with-equality([3, 1], SameNumber);
+let values = $std::containers::Set::with_equality([3, 1], SameNumber);
 $std::containers::Set::insert(values, 2);
 let report = $std::io::File::new(./report.txt);
 ```
 
-Class names use the type role; their lowercase-kebab function names use the
-function role. The editor preserves hyphenated names when completing a method
-such as `with-equality` or `read-text`. Policy calls specialize through the
+Class names use the type role; their snake_case function names use the
+function role. Completion replaces the exact function identifier, such as
+`with_equality` or `read_text`, without changing its qualifier. Policy calls specialize through the
 normal generic `fn`/`scope` mechanism, not through a runtime method registry.
 Historical factory APIs remain available for existing source; new examples use
 the named families under `containers`, `data`, `io`, `process`, `text` and `regex`.
@@ -283,7 +283,7 @@ selects the narrower semantic URI journey, including incomplete edits.
 
 `MSYNC_TEST_STANDARD_CONCEPTS_ONLY=1` selects the independent standard-concept
 journey: inline associated binders, embedded definitions, qualified constraints,
-hyphenated policy completion and named container families under light and dark
+snake_case policy completion and named container families under light and dark
 themes. It then checks and runs the editor-produced source with that same
 fingerprinted executable, verifying its Option and ordered-container results
 inside the isolated workspace. It does not rerun the unrelated artifact suite.

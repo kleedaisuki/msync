@@ -47,7 +47,7 @@ async function run() {
         'concept PairShape {',
         '    first?: typename First,',
         '    second?: typename Second,',
-        '    map-first: fn(value: First) -> First,',
+        '    map_first: fn(value: First) -> First,',
         '};',
         'fn preserve(value: $std::concepts::Option?) -> $std::concepts::Option? { value };',
         'scope SameNumber {',
@@ -55,8 +55,8 @@ async function run() {
         '    equal: fn(a: Number, b: Number) -> Bool { a == b },',
         '};',
         'let selected? = preserve($std::data::Option::some("Klee"));',
-        '$std::data::Option::get-or(selected, "none") -> ./option.txt;',
-        'let numbers = $std::containers::Set::with-eq([3, 1], SameNumber);',
+        '$std::data::Option::get_or(selected, "none") -> ./option.txt;',
+        'let numbers = $std::containers::Set::with_eq([3, 1], SameNumber);',
         '$std::containers::Set::insert(numbers, 1);',
         'let members = $std::containers::Set::snapshot(numbers);',
         '$std::string::join($std::ranges::map(members, fn(value: Number) { value as String }), ",") -> ./set.txt;',
@@ -75,22 +75,22 @@ async function run() {
     assert.ok(extension);
     await bounded('extension activation', extension.activate());
 
-    const incomplete = initial.indexOf('with-eq(');
-    const completion = await bounded('hyphenated policy method completion', vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, document.positionAt(incomplete + 'with-eq'.length)));
+    const incomplete = initial.indexOf('with_eq(');
+    const completion = await bounded('snake_case policy method completion', vscode.commands.executeCommand('vscode.executeCompletionItemProvider', document.uri, document.positionAt(incomplete + 'with_eq'.length)));
     const candidates = completion?.items || [];
-    const choice = candidates.find(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'with-equality');
+    const choice = candidates.find(item => (typeof item.label === 'string' ? item.label : item.label.label) === 'with_equality');
     assert.ok(choice, JSON.stringify(candidates.map(item => item.label)));
     const range = choice.textEdit?.range || choice.range?.replacing || choice.range;
     const newText = choice.textEdit?.newText || choice.insertText;
     assert.ok(range instanceof vscode.Range, 'Completion must own its exact source range');
-    assert.equal(document.getText(range), 'with-eq');
-    assert.equal(newText, 'with-equality');
+    assert.equal(document.getText(range), 'with_eq');
+    assert.equal(newText, 'with_equality');
     const update = new vscode.WorkspaceEdit();
     update.replace(document.uri, range, newText);
     assert.ok(await vscode.workspace.applyEdit(update));
     assert.ok(await document.save());
     const source = document.getText();
-    assert.ok(!source.includes('with-with') && !source.includes('Set::Set::') && !source.includes('$$'));
+    assert.ok(!source.includes('with_with') && !source.includes('Set::Set::') && !source.includes('$$'));
     const position = (spelling, delta = 1) => {
         const offset = source.indexOf(spelling);
         assert.ok(offset >= 0, spelling);
@@ -100,8 +100,8 @@ async function run() {
     const hovers = [];
     for (const [spelling, expected] of [
         ['Option?)', /Option/],
-        ['with-equality(', /Equality/],
-        ['Set::with-equality', /Scope/],
+        ['with_equality(', /Equality/],
+        ['Set::with_equality', /Scope/],
         ['numbers =', /Scope/],
         ['tree =', /Scope/],
         ['typename First', /First/],
@@ -114,7 +114,7 @@ async function run() {
     const references = [
         ['First) ->', document.uri, 'First'],
         ['Option?)', null, 'Option'],
-        ['with-equality(', null, 'with-equality'],
+        ['with_equality(', null, 'with_equality'],
     ];
     const definitions = [];
     for (const [spelling, expectedUri, name] of references) {
@@ -142,7 +142,7 @@ async function run() {
         ['First) ->', 'type'], ['fn preserve', 'keyword'], ['preserve(value', 'function'],
         ['Option?)', 'type'], ['scope SameNumber', 'keyword'], ['SameNumber {', 'type'],
         ['numbers =', 'variable'], ['data::Option', 'type'], ['Option::some', 'type'],
-        ['Set::with-equality', 'type'], ['with-equality(', 'function'],
+        ['Set::with_equality', 'type'], ['with_equality(', 'function'],
         ['RBTreeSet::new', 'type'],
     ];
     const themes = [];
@@ -165,7 +165,7 @@ async function run() {
         set: await fs.readFile(path.join(workspace, 'set.txt'), 'utf8'), ordered: await fs.readFile(path.join(workspace, 'ordered.txt'), 'utf8')};
     assert.deepEqual(output, {option: 'Klee', set: '3,1', ordered: '1,3,4'});
     const report = {status: 'passed', suite: 'standard-concepts', vscodeVersion: vscode.version,
-        completion: {inserted: newText, replaced: 'with-eq'}, hovers, definitions, conceptLabels, themes, output};
+        completion: {inserted: newText, replaced: 'with_eq'}, hovers, definitions, conceptLabels, themes, output};
     await fs.writeFile(path.join(runRoot, 'standard-concepts-results.json'), JSON.stringify(report, null, 2));
     console.log(`MSYNC_STANDARD_CONCEPTS_HOST ${JSON.stringify({status: report.status, vscodeVersion: vscode.version, themes: themes.length, embeddedDefinitions: definitions.length - 1, output})}`);
 }
