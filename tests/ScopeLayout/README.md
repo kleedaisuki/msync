@@ -3,10 +3,10 @@
 Run `dotnet run --project tests/ScopeLayout`. The source/object/executable
 journeys compare O0, O2 and O3 with actual results, aliases, nullable fields,
 closure-shared cells, loop-created instances and constructor-local storage.
-Manual typed bytecode also checks old name-only access, matching/mismatching
+Manual typed bytecode also checks name-only access, matching/mismatching
 offset hints, Connection/Process dispatch and selected duplicate-field errors.
-`tests/Msync.Runtime.Tests --mutable-compat` independently exercises format 2
-snapshot captures and fresh nested Scope constant instances.
+`tests/Msync.Runtime.Tests --mutable-state` independently exercises current live
+captures, obsolete-format rejection and fresh nested Scope constant instances.
 
 ## Ownership and layout
 

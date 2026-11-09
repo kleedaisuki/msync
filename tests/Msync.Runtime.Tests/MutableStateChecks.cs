@@ -4,21 +4,34 @@ using Msync.Runtime;
 
 internal static class MutableStateChecks
 {
-    public static async Task RunCompatibility()
+    public static async Task RunCurrentState()
     {
         using MemoryStream bytes = VersionTwoSnapshotCapture();
-        Module old = Artifact.Read(bytes);
+        try { Artifact.Read(bytes); throw new InvalidOperationException("Obsolete snapshot-capture artifact was accepted"); }
+        catch (MsyncException error)
+        {
+            if (!error.Message.Contains("format 2", StringComparison.Ordinal) || !error.Message.Contains("Recompile", StringComparison.Ordinal))
+                throw new InvalidOperationException("Obsolete artifact did not explain how to migrate", error);
+        }
+        Module current = new([new StringValue("before"), new StringValue("after")],
+            [new("main", 0, 2,
+            [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 1, 1),
+             new(OpCode.InitializeLocal, 1), new(OpCode.Constant, 1), new(OpCode.StoreLocal, 0), new(OpCode.LoadLocal, 1), new(OpCode.Call), new(OpCode.Return)], TypeRef.String),
+             new("read", 0, 1, [new(OpCode.LoadLocal, 0), new(OpCode.Return)], TypeRef.String, CaptureCount: 1)]);
         foreach (int level in new[] { 0, 3 })
         {
-            Module optimized = Optimizer.Optimize(old, level);
+            Module optimized = Optimizer.Optimize(current, level);
+            using MemoryStream encoded = new();
+            Artifact.Write(optimized, encoded); encoded.Position = 0;
+            optimized = Artifact.Read(encoded);
             Value relocatable = await Interpreter.ExecuteAsync(optimized);
-            Equal("before", relocatable, $"format 2 closure capture at O{level}");
+            Equal("after", relocatable, $"current closure capture at O{level}");
             Module bound = Binding.Bind(optimized, new(Environment.CurrentDirectory, Environment.CurrentDirectory));
             Value executable = await Interpreter.ExecuteAsync(bound);
-            Equal("before", executable, $"bound format 2 closure capture at O{level}");
+            Equal("after", executable, $"bound current closure capture at O{level}");
         }
         await ConstantIsolation();
-        Console.WriteLine("PASS: four old-format snapshot captures and fresh mutable Scope constants");
+        Console.WriteLine("PASS: obsolete artifact rejection, four current live captures and fresh mutable Scope constants");
     }
 
     private static async Task ConstantIsolation()

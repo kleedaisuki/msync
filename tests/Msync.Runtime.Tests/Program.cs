@@ -1,9 +1,9 @@
 using Msync.Core;
 using Msync.Runtime;
 
-if (args.Contains("--mutable-compat", StringComparer.Ordinal))
+if (args.Contains("--mutable-state", StringComparer.Ordinal))
 {
-    await MutableStateChecks.RunCompatibility();
+    await MutableStateChecks.RunCurrentState();
     return;
 }
 

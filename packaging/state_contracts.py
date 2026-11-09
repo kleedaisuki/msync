@@ -46,11 +46,11 @@ OPTIMIZER_CONTRACTS = (
 )
 COMPATIBILITY_CONTRACTS = (
     Contract(
-        "format-two-captures",
+        "current-captures",
         "Msync.Runtime.Tests/Msync.Runtime.Tests.csproj",
-        ("--mutable-compat",),
+        ("--mutable-state",),
     ),
-    Contract("format-one-paths", "PathProjection/Msync.PathProjection.Tests.csproj"),
+    Contract("current-paths", "PathProjection/Msync.PathProjection.Tests.csproj"),
     Contract(
         "path-namespace",
         "SchedulingGraph/Msync.SchedulingGraph.Tests.csproj",
