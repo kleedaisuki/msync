@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>msync-hir-editor</AssemblyName>
+    <AssemblySearchPaths>{HintPathFromItem};{RawFileName}</AssemblySearchPaths>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="Msync.Core"><HintPath>$(FrozenAssemblies)/Msync.Core.dll</HintPath></Reference>
+    <Reference Include="Msync.Compiler"><HintPath>$(FrozenAssemblies)/Msync.Compiler.dll</HintPath></Reference>
+    <Reference Include="Msync.Optimization"><HintPath>$(FrozenAssemblies)/Msync.Optimization.dll</HintPath></Reference>
+    <Reference Include="Msync.Hir" Condition="Exists('$(FrozenAssemblies)/Msync.Hir.dll')"><HintPath>$(FrozenAssemblies)/Msync.Hir.dll</HintPath></Reference>
+  </ItemGroup>
+  <Target Name="RequireFrozenAssemblies" BeforeTargets="ResolveReferences" Condition="'$(FrozenAssemblies)' == ''">
+    <Error Text="Set FrozenAssemblies to an immutable product assembly directory." />
+  </Target>
+</Project>
