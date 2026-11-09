@@ -70,3 +70,27 @@ The normal path remains one owned same-directory stage, atomic replacement and
 at most one file fsync. No rollback registry, global drain, polling worker,
 filesystem-observation cache or arbitrary task-count quota is added to reduce
 the measured cost of scheduling.
+
+## Accepted implementation and measurements
+
+The implementation is `c0b21ab`. Independent focused checks in `1633d78`
+exercise actual completed frontiers, retained failure/cancellation dependencies,
+late-registration identity, and source/object/executable failure/retry behavior.
+The affected selected-process, owner, inherited-acquire, After-region,
+acquire-break, deferred-dataflow and native-independent gates passed as source
+and bound executable journeys. Their accepted report is reused rather than
+turning this change into another full runtime matrix.
+
+The same-probe Native AOT comparison adopts the change for completed-frontier
+workloads: 1,000 copy/acquire/directory-observation operations fall from
+1,630.91 to 1,440.28 ms median, with resource visits falling from 551,482 to
+24,000. This fixture's repeated pruning/reconstruction increases allocation
+from 12.44 to 16.10 MB. Independent and dependent-copy controls do not establish
+a general transfer-throughput speedup. See the complete hashes, raw samples,
+phase definitions and trade-offs in the C# 0.8 section of
+[the scheduler performance record](performance-scheduler.md).
+
+The next integration responsibility is the targeted native Linux/Windows
+contract selection, not a new object pool or a replacement scheduler. The
+allocation trade-off is retained explicitly rather than expanding this bounded
+retirement fix into unrelated machinery.
