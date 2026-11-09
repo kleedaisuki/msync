@@ -231,7 +231,6 @@ internal sealed partial class Compilation
     private readonly List<Template>? editorDefinitionOrder = observe is null ? null : [];
     private readonly HashSet<Template>? editorCalledTemplates = observe is null ? null : [];
     private readonly Dictionary<Template, Dictionary<string, Specialization>>? probeSpecializations = observe is null ? null : [];
-    private readonly HashSet<FunctionExpr>? activeEditorSpecializations = observe is null ? null : new(ReferenceEqualityComparer.Instance);
     private SourceDiagnostic? editorDiagnostic;
     private bool editorIsolated;
     internal IReadOnlyDictionary<string, Info> BuiltinInfos()
@@ -327,7 +326,7 @@ internal sealed partial class Compilation
                 diagnostic.EditorReportErrors = true;
                 EditorFailure(diagnostic, error);
             }
-            TypeEnvironment typeEnvironment = new(template.Concepts, template.StandardShadowed);
+            TypeEnvironment typeEnvironment = new(template.Concepts, template.StandardShadowed, template.Source, template.SourceName);
             Frame annotationFrame = TypeFrame(frame, typeEnvironment);
             frame.ExpectedTypeEnvironment = typeEnvironment;
             if (template.Syntax.ReturnType is { } returnType)
@@ -356,7 +355,9 @@ internal sealed partial class Compilation
                 }
                 if (parameter.Nullable) info = info with { Type = info.Type.WithNull };
                 var origin = DeclarationOrigin(frame, new(parameter.Span.Start, parameter.Name.Length));
-                frame.Bind(parameter.Name, new(frame.Allocate(), info, Origin: origin) { IsParameter = true });
+                Binding bound = new(frame.Allocate(), info, Origin: origin) { IsParameter = true };
+                bound.Storage.IsUnwrittenParameter = !ParameterMayBeWritten(template.Syntax, parameter.Name);
+                frame.Bind(parameter.Name, bound);
                 CaptureParameter(frame, new(parameter.Span.Start, parameter.Name.Length));
                 if (origin is not null) CaptureDefinition(frame, origin.Span, [origin]);
                 Observe(frame, new(parameter.Span.Start, parameter.Name.Length), info, parameter.Name);

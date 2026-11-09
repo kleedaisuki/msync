@@ -34,9 +34,9 @@ internal sealed partial class Compilation
         UnaryExpr { Operator: "$" } unary => PureValue(unary.Operand),
         _ => false
     };
-    private static Frame CloneFrame(Frame frame)
+    private static Frame CloneFrame(Frame frame, string? source = null, string? sourceName = null)
     {
-        Frame clone = new(frame.Source, frame.SourceName, frame.Environment)
+        Frame clone = new(source ?? frame.Source, sourceName ?? frame.SourceName, frame.Environment)
         {
             Locals = frame.Locals,
             Facts = frame.Facts,
@@ -55,6 +55,7 @@ internal sealed partial class Compilation
             EditorProbe = frame.EditorProbe,
             EditorReportErrors = frame.EditorReportErrors,
             DeferredCaptures = frame.DeferredCaptures,
+            DeferredReads = frame.DeferredReads,
             EditorCallTrace = frame.EditorCallTrace
         };
         clone.AcquireRegions.AddRange(frame.AcquireRegions);

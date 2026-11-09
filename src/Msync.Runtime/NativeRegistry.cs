@@ -19,7 +19,7 @@ public static partial class NativeRegistry
         int separator = name.IndexOf('.');
         string group = separator < 0 ? "" : name[..separator];
         string operation = separator < 0 ? name : name[(separator + 1)..];
-        return group switch
+        Value result = group switch
         {
             "fs" => await FileSystemAsync(operation, arguments, context, cancellationToken, signature.Effect),
             "io" => await IOOperationAsync(operation, arguments, context, cancellationToken),
@@ -37,6 +37,22 @@ public static partial class NativeRegistry
             "shell" => ShellOperation(operation, arguments, context, cancellationToken),
             _ => throw new MsyncException($"Native namespace '{group}' is not registered")
         };
+        RetainRangeInputs(result, arguments, signature);
+        return result;
+    }
+
+    private static void RetainRangeInputs(Value result, IReadOnlyList<Value> arguments, NativeSignature signature)
+    {
+        if (result is not RangeValue { RetainedValues: null } range
+            || (signature.Behavior.GetValueOrDefault() & NativeBehavior.EagerRange) != 0
+            || signature.ResultRule == NativeResultRule.RangeItem) return;
+        bool retained = false;
+        foreach (var value in arguments)
+        {
+            if (ReferenceEquals(value, result)) return;
+            retained |= value is RangeValue or ScopeValue or FunctionValue or ProcessValue or CellValue;
+        }
+        if (retained) range.RetainedValues = arguments;
     }
 
     private static string Text(Value value) => value switch

@@ -67,7 +67,7 @@ internal sealed partial class Compilation
         List<string> keys = []; Dictionary<string, Info> members = [];
         Dictionary<string, Binding> bindings = [];
         Dictionary<string, IReadOnlyList<EditorLocation>>? origins = editorContexts is null ? null : new(StringComparer.Ordinal);
-        foreach (var statement in library.Document.Statements)
+        foreach (var statement in StandardDeclarations(name, library.Document))
         {
             if (statement is ConceptDeclaration) continue;
             string? memberName = null; Info? info = null;
@@ -89,9 +89,10 @@ internal sealed partial class Compilation
             };
             if (statement is ScopeDeclaration) module.Emit(OpCode.Pop);
             else Store(module, memberName, info, nameSpan);
+            if (!bindings.ContainsKey(memberName)) keys.Add(memberName);
             bindings[memberName] = module.Environment[memberName];
             if (origins is not null && module.Environment[memberName].Origin is { } origin) origins[memberName] = [origin];
-            keys.Add(memberName); members[memberName] = info;
+            members[memberName] = info;
         }
         foreach (var key in keys) module.Emit(OpCode.LoadStorage, bindings[key].Slot);
         module.Emit(OpCode.MakeScope, keys.Count, text: string.Join('\0', keys), span: span);

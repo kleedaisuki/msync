@@ -75,6 +75,15 @@ documents are reusable; metadata caches never retain user binding Cells,
 working directories or endpoint observations. Editor definition locations refer
 to the same `msync-stdlib` source bytes used by compilation.
 
+A type environment also owns the source text and name for its annotation spans.
+Checking a previously declared signature or storage contract must not combine
+that old syntax with a caller's current document or REPL submission. A failed
+value constraint is reported at the actual argument or assignment; the original
+annotation and concept declaration remain related locations. Unknown annotation
+names remain declaration errors rather than being relabeled as bad arguments.
+`tests/TypeContextSources` covers long declarations followed by short editor and
+REPL submissions, including successful use, failed mutation and recovery.
+
 ## Original investigation and rationale
 
 The November 9, 2026 question is how to express concept/trait-like algebraic

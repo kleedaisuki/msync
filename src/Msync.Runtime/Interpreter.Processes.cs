@@ -91,7 +91,11 @@ public sealed partial class Interpreter
                     if (control is RemoteProcessControl endpoint) endpoint.Complete();
                 }
         }
-        var value = new ProcessValue(0, "", "") { Completion = Complete(), ProcessId = control?.ProcessId, Control = control };
+        var value = new ProcessValue(0, "", "")
+        {
+            Completion = Complete(), ProcessId = control?.ProcessId, Control = control,
+            AbortOwnedTransport = control is null ? () => StopProcess(process) : null
+        };
         (currentOwner.Processes ??= []).Add(value);
         sessionProcesses.Add(value);
         return value;

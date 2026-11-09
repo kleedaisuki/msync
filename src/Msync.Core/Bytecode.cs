@@ -22,7 +22,11 @@ public sealed record BasicBlock(int Function, int Start, int End, IReadOnlyList<
 public sealed record BindingContext(string WorkingDirectory, string HomeDirectory, string? SourceFile = null);
 public sealed record Module(IReadOnlyList<Value> Constants, IReadOnlyList<FunctionCode> Functions, int EntryPoint = 0,
     ArtifactStage Stage = ArtifactStage.Relocatable, BindingContext? Context = null, int OptimizationLevel = 2,
-    IReadOnlyList<BasicBlock>? Blocks = null, ModuleSemantics Semantics = ModuleSemantics.Current, bool PreserveLocals = false);
+    IReadOnlyList<BasicBlock>? Blocks = null, ModuleSemantics Semantics = ModuleSemantics.Current, bool PreserveLocals = false)
+{
+    // Session-only reachability metadata; object/executable files do not export locals.
+    public IReadOnlyList<int>? SessionRoots { get; init; }
+}
 
 public sealed class MsyncException : Exception
 {

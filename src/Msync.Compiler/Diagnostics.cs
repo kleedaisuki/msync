@@ -26,6 +26,7 @@ public sealed record SourceDiagnostic(string Code, string Message, string Source
 
 public sealed class CompileException : Exception
 {
+    internal bool IsConceptMismatch { get; set; }
     public SourceDiagnostic Diagnostic { get; }
     public string SourceName => Diagnostic.SourceName;
     public SourceSpan Span => Diagnostic.Span;

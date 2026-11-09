@@ -27,6 +27,7 @@ public sealed class RuntimeContext
     public Action<RuntimeObservation>? Observe { get; }
     public Action<MsyncException>? ReportError { get; }
     private readonly Action<string>? workingDirectoryChanged;
+    private RuntimeContext? directoryCapture;
     public RuntimeContext(ExecutionOptions? options = null, BindingContext? binding = null)
     {
         options ??= new();
@@ -41,6 +42,24 @@ public sealed class RuntimeContext
         Jobs = options.Jobs;
         BufferSize = options.BufferSize; MemoryLimit = options.MemoryLimit; SpoolLimit = options.SpoolLimit; Observe = options.Observe;
     }
+    private RuntimeContext(RuntimeContext source)
+    {
+        WorkingDirectory = source.WorkingDirectory;
+        HomeDirectory = source.HomeDirectory;
+        SourceFile = source.SourceFile;
+        DryRun = source.DryRun;
+        Output = source.Output;
+        Error = source.Error;
+        ReportError = source.ReportError;
+        Jobs = source.Jobs;
+        BufferSize = source.BufferSize;
+        MemoryLimit = source.MemoryLimit;
+        SpoolLimit = source.SpoolLimit;
+        Observe = source.Observe;
+        directoryCapture = this;
+    }
+    // Deferred work retains its admission's directory, not later cd state.
+    internal RuntimeContext CaptureDirectory() => directoryCapture ??= new(this);
     public PathValue AsPath(Value value) => value switch
     {
         PathValue path => path,
@@ -57,7 +76,9 @@ public sealed class RuntimeContext
         string directory = Path.GetFullPath(LocalPath(path));
         if ((File.GetAttributes(directory) & FileAttributes.Directory) == 0)
             throw new IOException($"Cannot cd to '{directory}': it is not a directory.");
+        NativeAccess.SearchDirectory(directory);
         WorkingDirectory = directory;
+        directoryCapture = null;
         workingDirectoryChanged?.Invoke(directory);
         return new(directory, directory, HomeDirectory: HomeDirectory);
     }

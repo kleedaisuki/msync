@@ -1,0 +1,60 @@
+# Type predicates classify the complete supplied type, not its nullable base.
+native fn is_range(type: Type) -> Bool;
+# A union has at least two alternatives, including Null when admitted.
+native fn is_union(type: Type) -> Bool;
+# Scalar alternatives are Bool, Number, String, Path, Connection and Type.
+native fn is_scalar(type: Type) -> Bool;
+
+# Equality and acceptance inspect closed types, not Scope member contracts.
+native fn is_same(first: Type, second: Type) -> Bool;
+native fn accepts(target: Type, source: Type) -> Bool;
+# Assignment and implicit conversion admit only the Path/String conversion pair.
+native fn is_convertible(source: Type, target: Type) -> Bool;
+# Explicit conversion checks the same matrix as the as operator, not input data.
+native fn is_castable(source: Type, target: Type) -> Bool;
+
+native fn add_null(type: Type) -> Type;
+native fn remove_null(type: Type) -> Type;
+# The common type is the finite union, retaining Range element alternatives.
+native fn common_type(first: Type, second: Type) -> Type;
+native fn range_of(element: Type) -> Type;
+# Unknown Range elements yield Any; a non-Range yields null.
+native fn element_type(type: Type) -> Type?;
+native fn range_rank(type: Type) -> Number;
+native fn type_name(type: Type) -> String;
+# Alternatives appear in the language's stable builtin-kind order.
+native fn alternatives(type: Type) -> Range<Type>;
+
+# Ordinary generic source composition supplies the exact-kind conveniences.
+fn is_null(type: Type) -> Bool { is_same(type, Null) };
+fn is_bool(type: Type) -> Bool { is_same(type, Bool) };
+fn is_number(type: Type) -> Bool { is_same(type, Number) };
+fn is_string(type: Type) -> Bool { is_same(type, String) };
+fn is_path(type: Type) -> Bool { is_same(type, Path) };
+fn is_function(type: Type) -> Bool { is_same(type, Function) };
+fn is_scope(type: Type) -> Bool { is_same(type, Scope) };
+fn is_process(type: Type) -> Bool { is_same(type, Process) };
+fn is_connection(type: Type) -> Bool { is_same(type, Connection) };
+fn is_type(type: Type) -> Bool { is_same(type, Type) };
+fn is_never(type: Type) -> Bool { is_same(type, remove_null(Null)) };
+fn is_nullable(type: Type) -> Bool { accepts(type, Null) };
+fn is_assignable(target: Type, source: Type) -> Bool {
+    is_convertible(source, target)
+};
+
+# The following queries infer operands without executing them. A Type argument
+# is a witness of the prospective argument type; other expressions retain their
+# inferred fields and callable signatures. No tested operation or I/O runs.
+native fn is_invocable(operation, arguments?) -> Bool;
+native fn is_invocable_r(result: Type, operation, arguments?) -> Bool;
+native fn invoke_result(operation, arguments?) -> Type;
+# A variadic callable reports its minimum arity. Unknown signatures yield null.
+native fn parameter_count(operation) -> Number?;
+# Generic unannotated parameters are Any; this reports declarations, not HKT.
+native fn parameter_types(operation) -> Range<Type>?;
+native fn is_variadic(operation) -> Bool;
+# Nullable receivers must first be narrowed to guarantee a member exists.
+native fn has_member(value?, name: String) -> Bool;
+native fn member_type(value?, name: String) -> Type?;
+native fn member_names(value?) -> Range<String>;
+native fn member_count(value?) -> Number;

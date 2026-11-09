@@ -5,7 +5,7 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 
 namespace Msync.Compiler;
 
-internal sealed record Info(TypeRef Type, Template? Function = null, ScopeInfo? Scope = null, TypeRef? TypeValue = null, string? NativeName = null, IReadOnlyList<Info>? Alternatives = null, Info? Element = null, bool? KnownBool = null, ConnectionValue? KnownConnection = null, bool EditorUnknown = false, PathValue? KnownPath = null, string? KnownText = null, StorageConstraint? Storage = null, bool EagerRange = false);
+internal sealed record Info(TypeRef Type, Template? Function = null, ScopeInfo? Scope = null, TypeRef? TypeValue = null, string? NativeName = null, IReadOnlyList<Info>? Alternatives = null, Info? Element = null, bool? KnownBool = null, ConnectionValue? KnownConnection = null, bool EditorUnknown = false, PathValue? KnownPath = null, string? KnownText = null, StorageConstraint? Storage = null, bool EagerRange = false, IndexedStorage? Indexed = null, object? MemoryVersion = null);
 internal sealed record Binding(int Slot, Info Info, Template? Self = null, EditorLocation? Origin = null,
     bool AdmitsNull = false, TypeRef? Constraint = null)
 {
@@ -16,10 +16,12 @@ internal sealed record Binding(int Slot, Info Info, Template? Self = null, Edito
 internal sealed class StorageConstraint(TypeRef? type, Info? callables = null, StorageConstraint? source = null)
 {
     public TypeRef? Type { get; set; } = type;
+    public bool IsUnwrittenParameter { get; set; }
     public Info? Callables { get; set; } = callables;
     public ImmutableDictionary<string, ConceptContract> ConceptContracts { get; set; } = ImmutableDictionary<string, ConceptContract>.Empty;
     public ImmutableDictionary<string, ConceptMemberContract> ConceptMemberContracts { get; set; } = ImmutableDictionary<string, ConceptMemberContract>.Empty;
     public int Revision { get; set; }
+    public ImmutableHashSet<StorageConstraint> MemoryAliases { get; set; } = [];
     public ImmutableHashSet<StorageConstraint> Sources { get; set; } = source is null ? [] : [source];
     public ImmutableDictionary<string, CallableContract> Contracts { get; set; } = ImmutableDictionary<string, CallableContract>.Empty;
     public ImmutableDictionary<string, CastTypeContract> CastContracts { get; set; } = ImmutableDictionary<string, CastTypeContract>.Empty;
@@ -34,12 +36,25 @@ internal sealed record ScopeInfo(IReadOnlyDictionary<string, Info> Members, bool
 {
     public object Identity { get; init; } = new();
     public bool IsInitializing { get; set; }
+    public ScopeMemory Memory { get; init; } = new();
+    public IReadOnlyList<ScopeInfo>? Sources { get; init; }
+    public object? MemoryVersion { get; init; }
     public IReadOnlyDictionary<string, StorageConstraint> Storage { get; init; } =
         Members.ToDictionary(pair => pair.Key, pair => new StorageConstraint(StorageTypes?.GetValueOrDefault(pair.Key)
             ?? (pair.Value.Type.WithoutNull.Kind == TypeKind.Never ? null : pair.Value.Type),
             pair.Value.Type.WithoutNull == TypeRef.Function ? pair.Value with { Storage = null } : null, pair.Value.Storage));
     public IReadOnlyDictionary<string, Binding> FieldBindings { get; init; } = new Dictionary<string, Binding>();
     public int AllocationSite { get; init; }
+}
+internal sealed class ScopeMemory
+{
+    public ScopeInfo? View { get; set; }
+    public object Clock { get; set; } = new();
+}
+internal sealed class IndexedStorage(Info element)
+{
+    public Info Element { get; set; } = element;
+    public StorageConstraint Storage { get; init; } = new(element.Type, element.Type.WithoutNull == TypeRef.Function ? element : null, element.Storage);
 }
 internal sealed class Template(int id, FunctionExpr syntax, IReadOnlyList<KeyValuePair<string, Binding>> captures, string source, string sourceName)
 {
@@ -78,7 +93,7 @@ internal sealed class Frame(string source, string sourceName, ImmutableDictionar
     public ImmutableDictionary<object, Info> Facts { get; set; } = ImmutableDictionary<object, Info>.Empty;
     public Dictionary<(int Start, string Name), Binding> Declarations { get; init; } = [];
     public Dictionary<ScopeExpr, object> ScopeSites { get; init; } = new(ReferenceEqualityComparer.Instance);
-    public Dictionary<(Template Template, int Start), Info> Allocations { get; init; } = [];
+    public Dictionary<(Template Template, int Start, int Specialization), Info> Allocations { get; init; } = [];
     public Dictionary<object, HashSet<(object Scope, string Member)>> FieldOwners { get; init; } = [];
     public SourceSpan ContextOwner { get; set; } = new(0, source.Length);
     public bool ContextIncludesEnd { get; set; } = true;
@@ -87,6 +102,7 @@ internal sealed class Frame(string source, string sourceName, ImmutableDictionar
     public bool EditorProbe { get; set; }
     public bool EditorReportErrors { get; set; }
     public bool DeferredCaptures { get; set; }
+    public bool DeferredReads { get; set; }
     public EditorCallTrace? EditorCallTrace { get; set; }
     public List<Instruction> Code { get; } = [];
     public int Locals { get; set; }

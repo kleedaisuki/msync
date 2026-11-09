@@ -10,9 +10,10 @@ internal sealed record ConceptDefinition(ConceptDeclaration Syntax, string Sourc
 {
     public bool StandardShadowed { get; init; }
 }
-internal sealed record ConceptContract(ConceptDefinition Definition, TypeSyntax Annotation, ImmutableDictionary<string, ConceptDefinition> Environment);
+internal sealed record ConceptContract(TypeSyntax Annotation, TypeEnvironment Environment);
 internal sealed record ConceptMemberContract(ConceptDefinition Definition, ConceptMember Requirement, IReadOnlyDictionary<string, Info> Associated);
-internal sealed record TypeEnvironment(ImmutableDictionary<string, ConceptDefinition> Concepts, bool StandardShadowed);
+internal sealed record TypeEnvironment(ImmutableDictionary<string, ConceptDefinition> Concepts, bool StandardShadowed,
+    string Source, string SourceName);
 
 internal sealed partial class Compilation
 {
@@ -107,11 +108,10 @@ internal sealed partial class Compilation
 
     private void AttachConcept(Frame frame, StorageConstraint storage, TypeSyntax annotation)
     {
-        var definition = ReferencedConcept(frame, annotation);
-        if (definition is null) return;
+        if (ReferencedConcept(frame, annotation) is null) return;
         RememberConceptStorage(storage);
         storage.ConceptContracts = storage.ConceptContracts.SetItem(frame.SourceName + ":" + annotation.Span.Start,
-            new(definition, annotation, frame.Concepts));
+            new(annotation, new(frame.Concepts, frame.Environment.ContainsKey("std"), frame.Source, frame.SourceName)));
     }
 
     private ConceptDefinition? ReferencedConcept(Frame frame, TypeSyntax annotation)
@@ -124,11 +124,24 @@ internal sealed partial class Compilation
 
     private void CheckConceptStore(Frame frame, StorageConstraint storage, Info value, SourceSpan span)
     {
+        CheckOwnConceptStore(frame, storage, value, span);
+        if (storage.MemoryAliases.Count == 0) return;
+        HashSet<StorageConstraint> visited = [storage];
+        Stack<StorageConstraint> pending = new(storage.MemoryAliases);
+        while (pending.TryPop(out var alias))
+        {
+            if (!visited.Add(alias)) continue;
+            CheckOwnConceptStore(frame, alias, value, span);
+            foreach (var next in alias.MemoryAliases) pending.Push(next);
+        }
+    }
+
+    private void CheckOwnConceptStore(Frame frame, StorageConstraint storage, Info value, SourceSpan span)
+    {
         foreach (var contract in storage.ConceptContracts.Values)
         {
-            Frame lexical = CloneFrame(frame); lexical.Concepts = contract.Environment;
-            if (ReferencesStandardConcept(contract.Annotation)) lexical.Environment = lexical.Environment.Remove("std");
-            CheckConcept(lexical, Current(frame, value), contract.Annotation, span);
+            Frame lexical = TypeFrame(frame, contract.Environment);
+            CheckConceptAtUse(frame, lexical, Current(frame, value), contract.Annotation, span);
         }
         foreach (var contract in storage.ConceptMemberContracts.Values)
             CheckConceptMember(frame, value, contract.Definition, contract.Requirement, contract.Associated, span);
@@ -145,6 +158,10 @@ internal sealed partial class Compilation
         try
         {
             Dictionary<string, Info> associated = supplied is null ? new(StringComparer.Ordinal) : new(supplied, StringComparer.Ordinal);
+            foreach (var location in scope.Storage.Values)
+                foreach (var contract in location.ConceptMemberContracts.Values)
+                    if (ReferenceEquals(contract.Definition, definition))
+                        foreach (var (name, inferred) in contract.Associated) associated.TryAdd(name, inferred);
             foreach (var type in AssociatedTypes(definition))
                 if (scope.Members.TryGetValue(type.Name, out var member) && member.TypeValue is { } denoted)
                     associated[type.Name] = new(denoted);
@@ -266,7 +283,7 @@ internal sealed partial class Compilation
         Frame lexical = ConceptFrame(frame, definition);
         if (TryConcept(lexical, syntax.Name, out _))
         {
-            CheckConcept(lexical, actual, syntax, span);
+            CheckConceptAtUse(frame, lexical, actual, syntax, span);
             return;
         }
         var expected = RequirementInfo(frame, definition, syntax, associated, span);
@@ -318,11 +335,11 @@ internal sealed partial class Compilation
     }
 
     private static Frame ConceptFrame(Frame frame, ConceptDefinition definition)
-        => TypeFrame(frame, new(definition.Environment, definition.StandardShadowed));
+        => TypeFrame(frame, new(definition.Environment, definition.StandardShadowed, definition.Source, definition.SourceName));
 
     private static Frame TypeFrame(Frame frame, TypeEnvironment environment)
     {
-        Frame lexical = CloneFrame(frame);
+        Frame lexical = CloneFrame(frame, environment.Source, environment.SourceName);
         lexical.Concepts = environment.Concepts;
         lexical.Environment = environment.StandardShadowed
             ? lexical.Environment.SetItem("std", new(-1, UnknownInfo)) : lexical.Environment.Remove("std");
@@ -333,6 +350,20 @@ internal sealed partial class Compilation
         => CheckConcept(frame.ExpectedTypeEnvironment is { } environment ? TypeFrame(frame, environment) : frame,
             value, annotation, span);
 
+    private void CheckConceptAtUse(Frame caller, Frame declaration, Info value, TypeSyntax annotation, SourceSpan expression)
+    {
+        try { CheckConcept(declaration, value, annotation, annotation.Span); }
+        catch (CompileException failure) when (failure.IsConceptMismatch)
+        {
+            var diagnostic = failure.Diagnostic;
+            var error = Error(caller, diagnostic.Message, expression, diagnostic.Label, diagnostic.Help, diagnostic.Note, code: diagnostic.Code);
+            error.IsConceptMismatch = true;
+            error.Diagnostic.Related.Add(new(diagnostic.SourceName, diagnostic.Source, diagnostic.Span, "type constraint declared here"));
+            error.Diagnostic.Related.AddRange(diagnostic.Related);
+            throw error;
+        }
+    }
+
     private static CompileException ConceptError(Frame frame, string message, SourceSpan span) => Error(frame, message, span,
         label: "invalid concept declaration", help: "Declare a named structural concept before using it.", code: "E0214");
 
@@ -340,6 +371,7 @@ internal sealed partial class Compilation
     {
         var error = Error(frame, $"Value does not satisfy concept '{definition.Syntax.Name}': expected {expected}, found {actual}.", span,
             label: $"does not satisfy {definition.Syntax.Name}", help: "Provide the required members and operation signatures; concepts do not add runtime types.", code: "E0214");
+        error.IsConceptMismatch = true;
         error.Diagnostic.Related.Add(new(definition.SourceName, definition.Source, definition.Syntax.NameSpan ?? definition.Syntax.Span,
             $"concept '{definition.Syntax.Name}' declared here"));
         return error;

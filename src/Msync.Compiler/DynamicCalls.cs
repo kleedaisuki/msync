@@ -84,7 +84,10 @@ internal sealed partial class Compilation
             storage.Contracts = storage.Contracts.Add(signature, contract);
         }
         int id = freeMutableCalls.TryDequeue(out var reused) ? reused : mutableCalls.Count;
-        MutableCall call = new(CloneFrame(frame), storage, arguments.ToArray(), span, expressions, contract);
+        var recordedArguments = callee.NativeName == "storage.buffer_snapshot"
+            ? arguments.Select(new EditorSnapshot(copySpecializations: false).CopyInfo).ToArray()
+            : arguments.ToArray();
+        MutableCall call = new(CloneFrame(frame), storage, recordedArguments, span, expressions, contract);
         CheckCallableResult(call, callee, result);
         if (id == mutableCalls.Count) mutableCalls.Add(call);
         else mutableCalls[id] = call;
@@ -184,6 +187,19 @@ internal sealed partial class Compilation
 
     private static Info DeferredCapture(Frame frame, Binding binding)
     {
+        var current = Current(frame, binding);
+        // A Null value does not discard the captured cell's record contract.
+        if (!binding.Storage.IsUnwrittenParameter && current.Type == TypeRef.Null
+            && binding.Info.Scope is { } declared && binding.Storage.Type is { } domain
+            && (domain.Kind & TypeKind.Scope) != 0)
+            current = current with { Scope = declared };
+        var constraint = binding.Storage.IsUnwrittenParameter ? null : binding.Storage.Type;
+        return current.Scope is null ? CaptureInfo(current) with { Type = constraint ?? current.Type }
+            : DeferredScopeCapture(current, constraint);
+    }
+
+    private static Info DeferredScopeCapture(Info source, TypeRef? rootConstraint)
+    {
         Dictionary<object, ScopeInfo> scopes = [];
         Info Widen(Info info, TypeRef? constraint)
         {
@@ -198,7 +214,7 @@ internal sealed partial class Compilation
             }
             return info with { Scope = widened };
         }
-        return Widen(Current(frame, binding), binding.Storage.Type);
+        return Widen(source, rootConstraint);
     }
 
     private static void InstallCaptureFacts(Frame frame, Info info)
@@ -222,7 +238,7 @@ internal sealed partial class Compilation
     private Info CallableSignatureResult(Frame caller, Info callee, IReadOnlyList<Info> arguments, Info result)
     {
         if (callee.Function is not { } function || function.Syntax.ReturnType is not null) return result with { Storage = null };
-        if (!Accessor(function.Syntax.Body)) return result.Storage?.Type is { } type ? result with { Type = type } : result;
+        if (!Accessor(function.Syntax.Body)) return WidenCallableResult(result);
         Frame frame = new(function.Source, function.SourceName) { Facts = caller.Facts, EditorProbe = true, Concepts = function.Concepts };
         foreach (var (name, binding) in function.Captures)
         {
@@ -241,7 +257,9 @@ internal sealed partial class Compilation
                 if (parameter.Nullable) type = type.WithNull;
                 if (!type.Accepts(info.Type)) info = Retype(info, type);
             }
-            frame.Bind(parameter.Name, new(frame.Allocate(), info, Constraint: info.Type));
+            Binding bound = new(frame.Allocate(), info, Constraint: info.Type);
+            bound.Storage.IsUnwrittenParameter = !ParameterMayBeWritten(function.Syntax, parameter.Name);
+            frame.Bind(parameter.Name, bound);
         }
         try
         {
@@ -249,8 +267,11 @@ internal sealed partial class Compilation
             foreach (var returned in frame.Returns) signature = Join(signature, returned);
             return signature;
         }
-        catch (CompileException) { return result.Storage?.Type is { } type ? result with { Type = type } : result; }
+        catch (CompileException) { return WidenCallableResult(result); }
     }
+
+    private static Info WidenCallableResult(Info result) =>
+        result.Storage is { IsUnwrittenParameter: false, Type: { } type } ? result with { Type = type } : result;
 
     private static bool Accessor(Node node) => node switch
     {
@@ -290,7 +311,8 @@ internal sealed partial class Compilation
         {
             if (value.Scope is not { } scope || !visited.Add(scope.Identity)) return value.Type.ToString();
             return "Scope { " + string.Join(", ", scope.Members.Select(pair => pair.Key
-                + (scope.NullableMembers?.Contains(pair.Key) == true ? "?" : "") + ": " + Describe(pair.Value))) + " }";
+                + (scope.NullableMembers?.Contains(pair.Key) == true ? "?" : "") + ": " + Describe(pair.Value))) + " }"
+                + (value.Type.Nullable ? "?" : "");
         }
         return Describe(info);
     }
@@ -298,7 +320,7 @@ internal sealed partial class Compilation
     private void CheckCallableResult(MutableCall call, Info candidate, Info result)
     {
         result = CallableSignatureResult(call.Caller, candidate, call.Arguments, result);
-        if (call.Result.Storage?.Type is { } type) call.Result = call.Result with { Type = type };
+        call.Result = WidenCallableResult(call.Result);
         if (call.Result.Type.Kind == TypeKind.Never) call.Result = result;
         if (call.Caller.EditorRecovery && (call.Result.EditorUnknown || result.EditorUnknown)) return;
         if (CompatibleResult(call.Result, result)) return;

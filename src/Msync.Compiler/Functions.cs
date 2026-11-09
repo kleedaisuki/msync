@@ -1,4 +1,3 @@
-using System.Collections.Immutable;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
@@ -7,7 +6,9 @@ namespace Msync.Compiler;
 
 internal sealed partial class Compilation
 {
-    private readonly Dictionary<Template, Specialization> activeSpecializations = [];
+    private readonly record struct ActiveSpecialization(Specialization Specialization, IReadOnlyList<Info> Arguments,
+        IReadOnlyList<Info> Captures);
+    private readonly Dictionary<Template, Stack<ActiveSpecialization>> activeSpecializations = [];
     private readonly Dictionary<FunctionExpr, List<Template>> functionSites = new(ReferenceEqualityComparer.Instance);
     private Info DeclareFunction(Frame frame, FunctionDeclaration declaration)
     {
@@ -50,7 +51,8 @@ internal sealed partial class Compilation
         int id = functions.Count;
         functions.Add(new(function.Name ?? $"<lambda{nextTemplate++}>", function.Parameters.Count, captures.Length + function.Parameters.Count,
             [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null, captures.Length));
-        Template template = new(id, function, captures, frame.Source, frame.SourceName) { Concepts = frame.Concepts };
+        Template template = new(id, function, captures, frame.Source, frame.SourceName)
+        { Concepts = frame.Concepts, StandardShadowed = frame.Environment.ContainsKey("std") };
         templates.Add(template);
         if (atSite is null) functionSites.Add(function, atSite = []);
         atSite.Add(template);
@@ -102,8 +104,6 @@ internal sealed partial class Compilation
             throw error;
         }
         var specializations = template.Specializations;
-        if (activeSpecializations.TryGetValue(template, out var active)
-            && active.ParameterTypes.SequenceEqual(arguments.Select(argument => argument.Type))) return active;
         if (caller.EditorProbe)
         {
             if (!probeSpecializations!.TryGetValue(template, out specializations)) probeSpecializations[template] = specializations = [];
@@ -111,6 +111,10 @@ internal sealed partial class Compilation
         var captures = template.Captures.Select(pair => new KeyValuePair<string, Binding>(pair.Key,
             pair.Value with { Info = caller.DeferredCaptures ? DeferredCapture(caller, pair.Value) : CaptureInfo(Current(caller, pair.Value), caller.EditorRecovery, caller.EditorProbe) })).ToArray();
         var reads = ReadNames(template.Syntax.Body).ToHashSet(StringComparer.Ordinal);
+        // Source '$std' selections capture generated module locations, whose
+        // names do not occur in the source-name walk.
+        foreach (var capture in captures)
+            if (capture.Key == "$std" || capture.Key.StartsWith(StandardCachePrefix, StringComparison.Ordinal)) reads.Add(capture.Key);
         // A write-only capture's old callable identity cannot affect this body.
         // Including it would create unbounded specializations for recursive stores.
         string CaptureKey(Info info) => info.Type + ":" + info.TypeValue + ":" + (info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope.Identity));
@@ -118,7 +122,20 @@ internal sealed partial class Compilation
             .Select(pair => !reads.Contains(pair.Key) ? pair.Value.Info.Type.ToString() : caller.DeferredCaptures ? CaptureKey(pair.Value.Info) : InfoKey(pair.Value.Info)));
         if (castContractEpoch != 0) key = castContractEpoch + "/" + key;
         if (specializations.TryGetValue(key, out var existing)) return existing;
-        if (activeEditorSpecializations?.Contains(template.Syntax) == true)
+        var captureInfos = captures.Select(pair => pair.Value.Info).ToArray();
+        // Nested higher-order calls can share runtime kinds without sharing a
+        // specialization. Only the same semantic shape closes a recursive edge.
+        if (activeSpecializations.TryGetValue(template, out var active))
+            foreach (var candidate in active)
+                if (SameSpecializationShape(candidate.Arguments, arguments)
+                    && SameSpecializationShape(candidate.Captures, captureInfos))
+                {
+                    // Mutable-call finalization revisits this exact recursive
+                    // edge after the active frame has finished inference.
+                    specializations[key] = candidate.Specialization;
+                    return candidate.Specialization;
+                }
+        if (observe is not null && HasActiveEditorShape(template, arguments, captureInfos))
         {
             var recursiveContext = CloneFrame(caller);
             recursiveContext.Concepts = template.Concepts;
@@ -127,10 +144,8 @@ internal sealed partial class Compilation
         }
         int id = specializations.Count == 0 && !caller.EditorProbe && !template.Instance ? template.Id : functions.Count;
         if (id == functions.Count) functions.Add(functions[template.Id]);
-        var annotationFrame = CloneFrame(caller);
-        annotationFrame.Concepts = template.Concepts;
-        if (ReferencesStandardConcept(template.Syntax.ReturnType))
-            annotationFrame.Environment = template.Captures.ToImmutableDictionary(StringComparer.Ordinal);
+        TypeEnvironment typeEnvironment = new(template.Concepts, template.StandardShadowed, template.Source, template.SourceName);
+        var annotationFrame = TypeFrame(caller, typeEnvironment);
         var asserted = template.Syntax.ReturnType is null ? null : ResolveType(annotationFrame, template.Syntax.ReturnType);
         Specialization specialization = new(id, new(asserted ?? new TypeRef(TypeKind.Never)), arguments.Select(info => info.Type).ToArray());
         specializations[key] = specialization;
@@ -140,6 +155,7 @@ internal sealed partial class Compilation
             ExpectedReturn = asserted,
             Concepts = template.Concepts,
             ExpectedConceptReturn = template.Syntax.ReturnType,
+            ExpectedTypeEnvironment = typeEnvironment,
             Facts = caller.Facts,
             FieldOwners = caller.FieldOwners,
             ExpectedReturnSpan = template.Syntax.ReturnType?.Span,
@@ -166,8 +182,9 @@ internal sealed partial class Compilation
             var info = argument with { KnownBool = null, KnownConnection = null, KnownPath = null, KnownText = null, Element = ForgetEndpoint(argument.Element) };
             if (parameter.Type is not null)
             {
-                CheckConcept(frame, info, parameter.Nullable ? parameter.Type with { Nullable = true } : parameter.Type, argumentExpressions?[index].Span ?? span);
-                var type = ResolveType(frame, parameter.Type);
+                CheckConceptAtUse(caller, annotationFrame, info, parameter.Nullable ? parameter.Type with { Nullable = true } : parameter.Type,
+                    argumentExpressions?[index].Span ?? span);
+                var type = ResolveType(annotationFrame, parameter.Type);
                 if (parameter.Nullable) type = type.WithNull;
                 try { CheckConversion(caller, info.Type, type, argumentExpressions?[index].Span ?? span); }
                 catch (CompileException error)
@@ -196,12 +213,15 @@ internal sealed partial class Compilation
             }
             Observe(frame, new(parameter.Span.Start, parameter.Name.Length), info, parameter.Name);
             var origin = DeclarationOrigin(frame, new(parameter.Span.Start, parameter.Name.Length));
-            var parameterConstraint = parameter.Type is null ? StorageType(info.Type, parameter.Nullable) : ResolveType(frame, parameter.Type);
+            var parameterConstraint = parameter.Type is null ? StorageType(info.Type, parameter.Nullable) : ResolveType(annotationFrame, parameter.Type);
             if (parameter.Nullable && parameterConstraint is not null) parameterConstraint = parameterConstraint.WithNull;
-            frame.Bind(parameter.Name, new(frame.Allocate(), info, Origin: origin, AdmitsNull: parameter.Nullable || parameterConstraint?.Nullable == true,
-                Constraint: parameterConstraint) { IsParameter = true });
+            Binding parameterBinding = new(frame.Allocate(), info, Origin: origin,
+                AdmitsNull: parameter.Nullable || parameterConstraint?.Nullable == true,
+                Constraint: parameterConstraint) { IsParameter = true };
+            parameterBinding.Storage.IsUnwrittenParameter = !ParameterMayBeWritten(template.Syntax, parameter.Name);
+            frame.Bind(parameter.Name, parameterBinding);
             CaptureParameter(frame, new(parameter.Span.Start, parameter.Name.Length));
-            if (parameter.Type is not null) AttachConcept(frame, frame.Environment[parameter.Name].Storage, parameter.Nullable ? parameter.Type with { Nullable = true } : parameter.Type);
+            if (parameter.Type is not null) AttachConcept(annotationFrame, frame.Environment[parameter.Name].Storage, parameter.Nullable ? parameter.Type with { Nullable = true } : parameter.Type);
             if (origin is not null) CaptureDefinition(frame, origin.Span, [origin]);
         }
         if (template.Syntax.Name is not null && !frame.Environment.ContainsKey(template.Syntax.Name)) frame.Bind(template.Syntax.Name, new(-1, new(TypeRef.Function, template), template,
@@ -209,13 +229,13 @@ internal sealed partial class Compilation
         if (caller.EditorReportErrors) editorCalledTemplates?.Add(template);
         CaptureContext(frame, template.Syntax.Body.Span.Start);
         Info result;
-        activeEditorSpecializations?.Add(template.Syntax);
-        activeSpecializations[template] = specialization;
+        if (active is null) activeSpecializations[template] = active = [];
+        active.Push(new(specialization, arguments, captureInfos));
         try
         {
             result = Block(frame, template.Syntax.Body);
             foreach (var returned in frame.Returns) result = Join(result, returned);
-            if (template.Syntax.ReturnType is { } resultAnnotation) CheckConcept(frame, result, resultAnnotation, template.Syntax.Body.Span);
+            if (template.Syntax.ReturnType is { } resultAnnotation) CheckReturnConcept(frame, result, resultAnnotation, template.Syntax.Body.Span);
             if (asserted is not null)
             {
                 CheckReturnConversion(frame, result.Type, asserted, template.Syntax.Body.Span);
@@ -230,9 +250,19 @@ internal sealed partial class Compilation
                     : $"while checking this call with {string.Join(", ", template.Syntax.Parameters.Zip(arguments, (p, a) => $"{p.Name}: {a.Type}"))}"));
             throw;
         }
-        finally { activeEditorSpecializations?.Remove(template.Syntax); activeSpecializations.Remove(template); }
+        finally
+        {
+            active.Pop();
+            if (active.Count == 0) activeSpecializations.Remove(template);
+        }
         frame.Emit(OpCode.Return);
         result = Current(frame, result);
+        // A returned value does not alias its callee-owned binding location.
+        if (result.Storage is { } storage &&
+            (frame.Environment.Values.Any(binding => binding.IsParameter && binding.Slot >= template.Captures.Count
+                && ReferenceEquals(binding.Storage, storage))
+            || frame.Declarations.Values.Any(binding => ReferenceEquals(binding.Storage, storage))))
+            result = result with { Storage = null };
         specialization.Result = result;
         specialization.Effects = frame.Facts.Where(pair => !caller.Facts.TryGetValue(pair.Key, out var previous) || !ReferenceEquals(previous, pair.Value))
             .ToDictionary(pair => pair.Key, pair => pair.Value);
@@ -241,29 +271,75 @@ internal sealed partial class Compilation
         return specialization;
     }
 
+    private bool HasActiveEditorShape(Template template, IReadOnlyList<Info> arguments, IReadOnlyList<Info> captures)
+    {
+        foreach (var (owner, frames) in activeSpecializations)
+        {
+            if (!ReferenceEquals(owner.Syntax, template.Syntax)) continue;
+            foreach (var active in frames)
+                if (SameSpecializationShape(active.Arguments, arguments)
+                    && SameSpecializationShape(active.Captures, captures)) return true;
+        }
+        return false;
+    }
+
+    private static bool SameSpecializationShape(IReadOnlyList<Info> left, IReadOnlyList<Info> right)
+    {
+        HashSet<(ScopeInfo, ScopeInfo)> visited = [];
+        return left.Count == right.Count && left.Zip(right).All(pair => Same(pair.First, pair.Second));
+
+        bool Same(Info first, Info second)
+        {
+            if (first.Type != second.Type || first.TypeValue != second.TypeValue
+                || first.Function != second.Function || first.NativeName != second.NativeName
+                || first.EagerRange != second.EagerRange) return false;
+            if (first.Element is { } element)
+            {
+                if (second.Element is not { } otherElement || !Same(element, otherElement)) return false;
+            }
+            else if (second.Element is not null) return false;
+            if (first.Alternatives is { } alternatives)
+            {
+                if (second.Alternatives is not { } otherAlternatives || alternatives.Count != otherAlternatives.Count
+                    || !alternatives.Zip(otherAlternatives).All(pair => Same(pair.First, pair.Second))) return false;
+            }
+            else if (second.Alternatives is not null) return false;
+            if (first.Scope is not { } scope) return second.Scope is null;
+            if (second.Scope is not { } other || scope.Members.Count != other.Members.Count) return false;
+            if (!visited.Add((scope, other))) return true;
+            foreach (var (name, member) in scope.Members)
+                if (!other.Members.TryGetValue(name, out var otherMember)
+                    || scope.Storage.GetValueOrDefault(name)?.Type != other.Storage.GetValueOrDefault(name)?.Type
+                    || !Same(member, otherMember)) return false;
+            return true;
+        }
+    }
+
     private Info Call(Frame frame, CallExpr call)
     {
         Frame scratch = CloneFrame(frame);
         var result = CallEager(scratch, call);
         if (result.Type.Kind == TypeKind.Range && !result.EagerRange)
         {
-            if (!scratch.DeferredCaptures)
+            if (!scratch.DeferredReads)
             {
                 scratch = CloneFrame(frame);
                 scratch.DeferredCaptures = true;
+                scratch.DeferredReads = true;
                 result = CallEager(scratch, call);
             }
-            EmitThunk(frame, scratch, result, "<range-call>");
-            frame.Emit(OpCode.DeferRange, text: result.Type.Element?.ToString(), span: call.Span);
+            if (result.Type.Kind == TypeKind.Range && !result.EagerRange)
+            {
+                EmitThunk(frame, scratch, result, "<range-call>");
+                frame.Emit(OpCode.DeferRange, text: result.Type.Element?.ToString(), span: call.Span);
+                return result;
+            }
         }
-        else
-        {
-            AppendCode(frame, scratch.Code);
-            frame.Locals = scratch.Locals;
-            frame.Environment = scratch.Environment;
-            frame.Facts = scratch.Facts;
-            MergeControlExits(frame, scratch);
-        }
+        AppendCode(frame, scratch.Code);
+        frame.Locals = scratch.Locals;
+        frame.Environment = scratch.Environment;
+        frame.Facts = scratch.Facts;
+        MergeControlExits(frame, scratch);
         return result;
     }
 
@@ -277,6 +353,7 @@ internal sealed partial class Compilation
             return TypeConstant(frame, inferred.Type, call.Span);
         }
         var callee = Expression(frame, call.Callee);
+        if (TryMetaQuery(frame, callee, call, out var query)) return query;
         var arguments = call.Arguments.Select(argument => Expression(frame, argument)).ToArray();
         return Invoke(frame, callee, arguments, call.Span, call.Arguments);
     }
@@ -295,7 +372,7 @@ internal sealed partial class Compilation
             var specialization = Specialize(frame, callee.Function, arguments, span, argumentExpressions);
             frame.Emit(OpCode.Call, arguments.Count, specialization.Id + 1, span: span);
             ApplyEffects(frame, specialization);
-            var result = InstantiateResult(frame, specialization.Result, callee.Function, arguments, span);
+            var result = InstantiateResult(frame, specialization, callee.Function, arguments, span);
             return RecordMutableCall(frame, callee, arguments, span, argumentExpressions, result);
         }
         if (callee.NativeName is not null)
@@ -324,24 +401,26 @@ internal sealed partial class Compilation
             var accepted = signature.Parameters.Count == 0 ? TypeRef.Any : signature.Parameters[Math.Min(index, signature.Parameters.Count - 1)];
             CheckConversion(frame, arguments[index].Type, accepted, argumentExpressions?[index].Span ?? span);
         }
+        if (TryFoldMetaTypes(frame, identity, arguments, span, out var meta)) return meta;
         ValidateNativeRange(frame, signature, arguments, span);
         Info? callbackResult = null;
         int callbackIndex = arguments.Count - 1;
-        if (callbackIndex >= 1 && arguments[0].Type.Kind == TypeKind.Range && arguments[callbackIndex].Type == TypeRef.Function)
+        if (callbackIndex >= 1 && signature.Parameters.LastOrDefault() == TypeRef.Function
+            && arguments[0].Type.Kind == TypeKind.Range && arguments[callbackIndex].Type == TypeRef.Function)
         {
             bool deferred = frame.DeferredCaptures;
             frame.DeferredCaptures |= signature.Result.Kind == TypeKind.Range;
             try { callbackResult = NativeCallback(frame, signature, arguments, span, argumentExpressions); }
             finally { frame.DeferredCaptures = deferred; }
         }
-        var result = signature.ResultRule switch
+        var result = IndexedNativeResult(frame, signature, arguments, span, argumentExpressions) ?? (signature.ResultRule switch
         {
             NativeResultRule.FirstArgument when arguments.Count > 0 => arguments[0],
             NativeResultRule.RangeOfArguments => MakeRangeInfo(arguments),
             NativeResultRule.RangeItem when arguments.Count > 0 => arguments[0].Element ?? new(arguments[0].Type.Element ?? TypeRef.Any),
             NativeResultRule.Transform when callbackResult is not null => new(new(TypeKind.Range, callbackResult.Type), Element: callbackResult),
             _ => ExtendedNativeResult(frame, signature, arguments, callbackResult, span, argumentExpressions)
-        };
+        });
         frame.Emit(OpCode.Call, arguments.Count, span: span);
         return result with { EagerRange = (signature.Behavior.GetValueOrDefault() & NativeBehavior.EagerRange) != 0 };
     }

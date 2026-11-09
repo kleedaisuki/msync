@@ -45,7 +45,7 @@ internal sealed partial class Compilation
             if (binding.Origin is { } origin) CaptureDefinition(frame, span, [origin]);
             if (binding.Self is not null) EmitClosure(frame, binding.Self);
             else frame.Emit(OpCode.LoadLocal, binding.Slot, span: span);
-            var current = Current(frame, binding);
+            var current = frame.DeferredReads ? DeferredCapture(frame, binding) : Current(frame, binding);
             return current with { Storage = binding.Storage };
         }
         if (reference && name == "std") return Standard(frame, span);
@@ -222,7 +222,7 @@ internal sealed partial class Compilation
             Observe(frame, binary.Right.Span, info, member);
             if (left.Scope.Origins?.TryGetValue(member, out var origins) == true) CaptureDefinition(frame, binary.Right.Span, origins);
             frame.Emit(OpCode.GetMember, FieldLayoutHint(left.Scope, member), text: member, span: binary.Span);
-            info = Current(frame, info);
+            info = ReadIndexedScope(frame, Current(frame, info));
             return info with { Storage = left.Scope.Storage[member] };
         }
         if (left.Type == TypeRef.Process && member is not null)

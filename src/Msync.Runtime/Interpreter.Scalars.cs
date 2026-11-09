@@ -15,9 +15,13 @@ public sealed partial class Interpreter
     };
 
     // Keep captured callbacks out of scalar entrypoints and the bytecode loop.
-    private Value ConvertDeferred(Value value, string target) => MapValue(value,
-        target == "Path" ? TypeRef.Path : TypeRef.String,
-        item => ConvertScalar(item, target), value.Type == TypeRef.String ? "local" : PathEndpoint(value));
+    private Value ConvertDeferred(Value value, string target)
+    {
+        if (target == "String")
+            return MapValue(value, TypeRef.String, static item => new StringValue(Text(item)), PathEndpoint(value));
+        RuntimeContext origin = context.CaptureDirectory();
+        return MapValue(value, TypeRef.Path, origin.AsPath, value.Type == TypeRef.String ? "local" : PathEndpoint(value));
+    }
 
     private static Value CompareValues(Value left, Value right, OpCode operation) =>
         left is DeferredValue || right is DeferredValue ? CompareDeferred(left, right, operation)

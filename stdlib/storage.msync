@@ -1,0 +1,60 @@
+# Explicit mutable indexed storage. A snapshot freezes membership while keeping
+# the normal identity of each stored value. No user-visible type kind is added.
+native fn buffer_new(initial: Range) -> Range;
+native fn buffer_get(items: Range, index: Number) -> Bool | String | Path
+    | Range | Function | Scope | Process | Connection | Type | Number | Null;
+native fn buffer_set(items: Range, index: Number, value?) -> Null;
+native fn buffer_push(items: Range, value?) -> Number;
+native fn buffer_pop(items: Range) -> Bool | String | Path | Range | Function
+    | Scope | Process | Connection | Type | Number | Null;
+native fn buffer_insert(items: Range, index: Number, value?) -> Null;
+native fn buffer_remove(items: Range, index: Number) -> Bool | String | Path
+    | Range | Function | Scope | Process | Connection | Type | Number | Null;
+native fn buffer_swap(items: Range, first: Number, second: Number) -> Null;
+native fn buffer_size(items: Range) -> Number;
+native fn buffer_clear(items: Range) -> Null;
+native fn buffer_snapshot(items: Range) -> Range;
+
+scope Buffer {
+    new: fn(initial: Range) {
+        scope {
+            items: buffer_new(initial)
+        }
+    },
+    empty: fn(prototype?) {
+        Buffer::new($std::ranges::take([prototype], 0))
+    },
+    size: fn(self) {
+        buffer_size(self::items)
+    },
+    is_empty: fn(self) {
+        Buffer::size(self) == 0
+    },
+    get: fn(self, index: Number) {
+        buffer_get(self::items, index)
+    },
+    set: fn(self, index: Number, value?) {
+        buffer_set(self::items, index, value)
+    },
+    push: fn(self, value?) {
+        buffer_push(self::items, value)
+    },
+    pop: fn(self) {
+        buffer_pop(self::items)
+    },
+    insert: fn(self, index: Number, value?) {
+        buffer_insert(self::items, index, value)
+    },
+    remove: fn(self, index: Number) {
+        buffer_remove(self::items, index)
+    },
+    swap: fn(self, first: Number, second: Number) {
+        buffer_swap(self::items, first, second)
+    },
+    clear: fn(self) {
+        buffer_clear(self::items)
+    },
+    snapshot: fn(self) {
+        buffer_snapshot(self::items)
+    },
+};

@@ -27,6 +27,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         if (document.EditorError is { } syntax) throw syntax;
         PrepareSessionBindings();
         ClearConceptStorage();
+        ClearIndexedMutations();
         solvedStorage.Clear();
         changedCallableStorage.Clear();
         changedCastTargets?.Clear();
@@ -42,12 +43,17 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         var previousKeys = templates.Select(template => template.Specializations.Keys.ToHashSet()).ToArray();
         try
         {
+            PrepareStandardDemand(document);
             var result = Statements(frame, document.Statements, submittedBindings is not null);
             frame.Emit(OpCode.Return);
             functions[0] = new("<main>", 0, frame.Locals, frame.Code.ToArray(), result.Type);
             var code = FinalizeMutableCalls();
             var module = Optimizer.Optimize(new(constants.ToArray(), code, OptimizationLevel: optimization,
-                PreserveLocals: submittedBindings is not null), optimization);
+                PreserveLocals: submittedBindings is not null)
+                {
+                    SessionRoots = submittedBindings is null ? null
+                        : frame.Environment.Values.Where(binding => binding.Slot >= 0).Select(binding => binding.Slot).Distinct().ToArray()
+                }, optimization);
             sessionEnvironment = frame.Environment;
             sessionConcepts = frame.Concepts;
             sessionLocals = frame.Locals;
@@ -57,6 +63,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         catch
         {
             RestoreConceptStorage();
+            RestoreIndexedMutations();
             foreach (var scope in namedScopeInfos.Keys.Where(scope => !previousNamedScopes.Contains(scope)).ToArray()) namedScopeInfos.Remove(scope);
             RestoreCastTargets(previousCastEpoch);
             foreach (var storage in solvedStorage) storage.Type = null;

@@ -12,17 +12,25 @@ public sealed partial class Interpreter
     private readonly RuntimeContext context;
     private BasicBlock[][] blocks;
     private readonly SemaphoreSlim slots;
-    private readonly HashSet<IAsyncDisposable> iterators = [];
+    private readonly HashSet<IAsyncDisposable> iterators;
     private readonly Dictionary<string, IReadOnlyDictionary<int, int>> dispatchTables = [];
     private int failedTransfers;
+    private int callDepth;
     public int FailedTransfers => failedTransfers;
     private sealed record IteratorValue(IAsyncEnumerator<Value> Iterator) : Value { public override TypeRef Type => TypeRef.Any; }
 
-    public Interpreter(Module module, ExecutionOptions? options = null)
+    public Interpreter(Module module, ExecutionOptions? options = null) : this(module, options, null) { }
+    internal Interpreter(Module module, ExecutionOptions? options, Interpreter? previous)
     {
+        resources = previous?.resources ?? new();
+        pending = previous?.pending ?? [];
+        sessionProcesses = previous?.sessionProcesses ?? new(ReferenceEqualityComparer.Instance);
+        processDependencies = previous?.processDependencies ?? [];
+        namespaceProducers = previous?.namespaceProducers ?? [];
+        iterators = previous?.iterators ?? [];
         context = new(options, module.Context);
         (this.module, blocks) = ProjectImage(module);
-        slots = new(Math.Max(1, Math.Min(context.Jobs, (int)Math.Min(int.MaxValue, context.MemoryLimit / Math.Max(1, context.BufferSize)))));
+        slots = previous?.slots ?? new(Math.Max(1, Math.Min(context.Jobs, (int)Math.Min(int.MaxValue, context.MemoryLimit / Math.Max(1, context.BufferSize)))));
     }
     public static ValueTask<Value> ExecuteAsync(Module module, ExecutionOptions? options = null, CancellationToken cancellationToken = default)
         => new Interpreter(module, options).ExecuteAsync(cancellationToken);
@@ -37,8 +45,14 @@ public sealed partial class Interpreter
     }
     internal async ValueTask<Value> ExecuteEntryAsync(Value[] locals, int startInstruction, CancellationToken cancellationToken)
     {
-        try { return await ResolveResultAsync(await RunCodeAsync(module.EntryPoint, locals, startInstruction, cancellationToken)); }
-        finally { await DrainAsync(); foreach (var iterator in iterators) await iterator.DisposeAsync(); }
+        try { return await ResolveAsync(await RunCodeAsync(module.EntryPoint, locals, startInstruction, cancellationToken)); }
+        finally
+        {
+            await JoinTransfersAsync(includeProcessFlows: false);
+            RetireSessionWork();
+            foreach (var iterator in iterators) await iterator.DisposeAsync();
+            iterators.Clear();
+        }
     }
     private async ValueTask<Value> InvokeAsync(Value callee, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
     {
@@ -66,14 +80,41 @@ public sealed partial class Interpreter
         Array.Fill(locals, Value.Null);
         for (var i = 0; i < captures.Count; i++) locals[i] = captures[i];
         for (var i = 0; i < arguments.Count; i++) locals[function.CaptureCount + i] = ReadValue(arguments[i]);
-        return RunCodeAsync(functionIndex, locals, 0, cancellationToken);
+        return RunCodeAsync(functionIndex, locals, 0, cancellationToken, captures, arguments);
     }
-    private async ValueTask<Value> RunCodeAsync(int functionIndex, Value[] locals, int startInstruction, CancellationToken cancellationToken)
+    private async ValueTask<Value> RunCodeAsync(int functionIndex, Value[] locals, int startInstruction,
+        CancellationToken cancellationToken, IReadOnlyList<Value>? captures = null, IReadOnlyList<Value>? arguments = null)
     {
-        var caller = currentOwner;
+        var active = sessionImage?.ActiveInterpreter;
+        var outer = active is not null && !ReferenceEquals(active, this) ? active : null;
+        var previous = currentOwner;
+        var caller = outer?.currentOwner ?? previous;
+        bool hasCaller = outer is not null || callDepth != 0;
+        callDepth++;
+        if (sessionImage is { } session) session.ActiveInterpreter = this;
         currentOwner = default;
-        try { return await RunOwnedCodeAsync(functionIndex, locals, startInstruction, cancellationToken); }
-        finally { try { await JoinOwnerAsync(currentOwner); } finally { currentOwner = caller; } }
+        Value? result = null;
+        try
+        {
+            result = await RunOwnedCodeAsync(functionIndex, locals, startInstruction, cancellationToken);
+            return result;
+        }
+        finally
+        {
+            try
+            {
+                var roots = sessionImage is not null && functionIndex == module.EntryPoint ? module.SessionRoots : null;
+                PromoteReturnedProcesses(result, roots, locals, captures, arguments, ref caller, hasCaller);
+                await JoinOwnerAsync(currentOwner);
+            }
+            finally
+            {
+                currentOwner = outer is null ? caller : previous;
+                if (outer is not null) outer.currentOwner = caller;
+                callDepth--;
+                if (sessionImage is { } image) image.ActiveInterpreter = active;
+            }
+        }
     }
     private async ValueTask<Value> RunOwnedCodeAsync(int functionIndex, Value[] locals, int startInstruction, CancellationToken cancellationToken)
     {
@@ -182,7 +223,8 @@ public sealed partial class Interpreter
                         {
                             var values = stack.PopMany(instruction.A);
                             var type = instruction.B > 0 && module.Constants[instruction.B - 1] is TypeValue typed ? typed.Data : TypeRef.Any;
-                            stack.Add(new RangeValue(LazyItemsAsync(values, instruction.Text, cancellationToken), type)); break;
+                            stack.Add(new RangeValue(LazyItemsAsync(values, instruction.Text, cancellationToken), type)
+                            { RetainedValues = values }); break;
                         }
                     case OpCode.DeferRange:
                         stack.Add(CreateDeferredRange(stack.Pop())); break;
@@ -386,7 +428,8 @@ public sealed partial class Interpreter
         async Task<RangeValue> Evaluate(CancellationToken cancellationToken) => await InvokeAsync(thunk, [], cancellationToken) as RangeValue
             ?? throw new MsyncException("Deferred range function did not return Range");
         ValueTask<RangeValue> Resolve(CancellationToken cancellationToken) => new(resolved ??= Evaluate(cancellationToken));
-        return new RangeValue(EnumerateDeferredRangeAsync(Resolve), itemType, Resolve: Resolve);
+        return new RangeValue(EnumerateDeferredRangeAsync(Resolve), itemType, Resolve: Resolve)
+        { RetainedValues = (thunk as FunctionValue)?.Captures };
     }
     private static async IAsyncEnumerable<Value> EnumerateDeferredRangeAsync(Func<CancellationToken, ValueTask<RangeValue>> resolve,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -430,15 +473,20 @@ public sealed partial class Interpreter
             if (arguments.Any(value => value is DeferredValue)
                 && (EffectAnalysis.NativeEffects(name) & (InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.Invoke)) == 0
                 && NativeSignatures.TryGet(name, out var signature)
-                && !signature.Parameters.Any(type => (type.Kind & (TypeKind.Range | TypeKind.Function)) != 0))
+                && !arguments.Any(value => (value.Type.Kind & (TypeKind.Range | TypeKind.Function)) != 0))
             {
                 var inputs = arguments;
-                async Task<Value> Complete() => await NativeRegistry.InvokeAsync(name, await ResolveArgumentsAsync(inputs), context, InvokeAsync, cancellationToken);
-                return new DeferredValue(Complete(), signature.Result, inputs.SelectMany(Processes).Distinct().ToArray());
+                RuntimeContext origin = context.CaptureDirectory();
+                async Task<Value> Complete() => await NativeRegistry.InvokeAsync(name, await ResolveArgumentsAsync(inputs), origin, NativeCallback, cancellationToken);
+                TypeRef resultType = signature.ResultRule == NativeResultRule.CastTarget && inputs[1] is TypeValue target
+                    ? target.Data : signature.Result;
+                string? endpoint = resultType.WithoutNull == TypeRef.Path
+                    ? inputs[0].Type == TypeRef.String ? "local" : PathEndpoint(inputs[0]) : null;
+                return new DeferredValue(Complete(), resultType, inputs.SelectMany(Processes).Distinct().ToArray(), endpoint);
             }
             arguments = await ResolveArgumentsAsync(arguments);
             await AwaitNativeDependenciesAsync(name, arguments);
-            return await NativeRegistry.InvokeAsync(name, arguments, context, InvokeAsync, cancellationToken);
+            return await NativeRegistry.InvokeAsync(name, arguments, name == "cast" ? context.CaptureDirectory() : context, NativeCallback, cancellationToken);
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
@@ -449,12 +497,12 @@ public sealed partial class Interpreter
     private async IAsyncEnumerable<Value> SelectAsync(PathValue directory, string pattern, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         await AwaitNativeDependenciesAsync("fs.directory_iterator", [directory]);
-        var values = await NativeRegistry.InvokeAsync("fs.directory_iterator", [directory], context, InvokeAsync, cancellationToken) as RangeValue ?? throw new MsyncException("Directory iterator did not return a Range");
+        var values = await NativeRegistry.InvokeAsync("fs.directory_iterator", [directory], context, NativeCallback, cancellationToken) as RangeValue ?? throw new MsyncException("Directory iterator did not return a Range");
         var regex = new Regex(pattern, RegexOptions.CultureInvariant);
         await foreach (var item in values.Items.WithCancellation(cancellationToken))
             if (regex.IsMatch(item is PathValue itemPath ? PathSemantics.FileName(itemPath) : Path.GetFileName(Text(item)))) yield return item;
     }
-    private async Task<bool> TransferAsync(Value source, Value destination, SourceSpan? span, bool local, CancellationToken cancellationToken)
+    private async Task<bool> TransferAsync(Value source, Value destination, SourceSpan? span, bool local, RuntimeContext context, CancellationToken cancellationToken)
     {
         var started = context.Observe is null ? 0 : Stopwatch.GetTimestamp();
         try
@@ -492,12 +540,13 @@ public sealed partial class Interpreter
     };
 }
 
-public sealed class ExecutionSession(ExecutionOptions? options = null)
+public sealed class ExecutionSession(ExecutionOptions? options = null) : IAsyncDisposable
 {
     private sealed record UninitializedValue : Value { public override TypeRef Type => new(TypeKind.Never); }
     private static readonly Value Uninitialized = new UninitializedValue();
     private Value[] locals = [];
     private SessionImage? image;
+    private Interpreter? interpreter;
     private string workingDirectory = Path.GetFullPath(options?.WorkingDirectory ?? Environment.CurrentDirectory);
     public string WorkingDirectory => workingDirectory;
     public void ChangeWorkingDirectory(string path)
@@ -522,9 +571,10 @@ public sealed class ExecutionSession(ExecutionOptions? options = null)
         module = module with { PreserveLocals = true };
         if (image is null) image = new(module);
         else image.Publish(module);
-        var interpreter = new Interpreter(module, (options ?? new()) with
-        { WorkingDirectory = workingDirectory, WorkingDirectoryChanged = AcceptWorkingDirectory });
+        interpreter = new Interpreter(module, (options ?? new()) with
+        { WorkingDirectory = workingDirectory, WorkingDirectoryChanged = AcceptWorkingDirectory }, interpreter);
         interpreter.Attach(image);
         return interpreter.ExecuteEntryAsync(locals, startInstruction, cancellationToken);
     }
+    public ValueTask DisposeAsync() => interpreter?.CloseSessionAsync() ?? ValueTask.CompletedTask;
 }

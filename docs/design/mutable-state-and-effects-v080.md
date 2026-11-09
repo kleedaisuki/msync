@@ -268,7 +268,7 @@ Its old async/await spellings remain legacy-only; the current surface exposes
 | standalone `acquire` | Join pending work owned by the current execution context |
 | `acquire process` | Join that Process, not unrelated processes |
 | unmarked external call | Launch and wait, preserving ordinary sequential command use |
-| function return | Join outstanding programs owned by that invocation |
+| function return | Move escaping live processes and dependent flows to the caller; join the remaining invocation-owned work |
 
 A Before/release fence prevents earlier work moving forward across it; later
 work may move earlier if all other dependencies permit. An After/acquire fence
@@ -283,6 +283,44 @@ the client would introduce an artificial deadlock. A released process therefore
 needs a retained completion/output owner, not an already-completed Process
 snapshot. Reading a result member joins the necessary result; output streams
 retain their actual ownership and completion boundary.
+
+### Returning live resources and interactive roots
+
+A source function may return a live Process without waiting for its exit. The
+returned value is a snapshot of a value, not a request to join its Process.
+Ownership follows the actual returned graph, including Scope fields, captured
+locations, deferred result dependencies and retained Range values. Newly created
+processes stored through original argument graphs or definition-time captured
+cells also escape to the caller. Merely receiving an already caller-owned
+Process does not make unrelated output work escape. Reassigning a local parameter
+to a new private Scope does not change the original argument's ownership.
+
+Only invocations with process-related work inspect these graphs. Ordinary
+numeric calls retain their allocation-free work-owner frame. Range traversal for
+ownership is metadata-only: it does not enumerate a producer, execute callbacks,
+open paths or authenticate endpoints. Literal, materialized and Buffer snapshots
+refer to their actual stored membership; lazy views refer to the values their
+producer already captures. In particular, snapshot metadata must not retain an
+entire discarded input just to describe a small output.
+
+Interactive compilation carries in-memory exported-slot roots. A REPL
+submission's initialized globals, reachable closures and result can retain live
+processes across prompts; hidden block temporaries cannot. Successive interpreter
+contexts share process tracking, resource dependencies and ordering while keeping
+their own physical path origins. An older lazy producer still transfers work to
+the currently active caller, not to an orphan interpreter frame. Inspecting a
+Process displays its pending state; explicit wait/acquire and output consumption
+retain their usual completion semantics. Session disposal stops its owned live
+children or owned uncontrolled transports and drains their actual dependencies.
+This root manifest is runtime session metadata, not a new serialized IR format.
+
+The distinction between lexical call boundaries and longer-lived explicit owners
+matches the temporal scopes discussed in the
+[Rust structured-concurrency reference](https://rust-lang.github.io/async-book/part-reference/structured.html)
+and [WG21's async-scope design](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p3149r7.html).
+The implementation remains on .NET 10: [Process.Kill](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.process.kill?view=net-10.0)
+requests termination asynchronously, so session disposal waits for the owned
+completion after stopping the handle rather than treating disposal as a join.
 
 Within a selected block, evaluate scalar operands according to value/location
 dependencies, derive concrete resource conflicts, and admit ready independent

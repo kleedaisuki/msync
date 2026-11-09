@@ -15,7 +15,16 @@ internal sealed partial class Compilation
 
     private static Info Current(Frame frame, Info info)
     {
+        if (info.Indexed is { } indexed) return info with { Type = new(TypeKind.Range, indexed.Element.Type), Element = IndexedElement(indexed) };
         if (info.Scope is not { } scope) return info;
+        if (scope.Memory.View is { } view)
+        {
+            var version = IndexedVersion(frame, scope.Memory.Clock);
+            if (frame.Facts.TryGetValue(scope.Identity, out var known) && known.Scope is { } refined)
+                scope = refined;
+            if (version is not null && ReferenceEquals(scope.MemoryVersion, version)) return info with { Scope = scope };
+            return info with { Scope = scope with { Members = IndexedMembers(view), FieldBindings = view.FieldBindings, MemoryVersion = version } };
+        }
         if (frame.Facts.TryGetValue(scope.Identity, out var current)) scope = current.Scope!;
         return ReferenceEquals(info.Scope, scope) ? info : info with { Scope = scope };
     }
@@ -118,9 +127,16 @@ internal sealed partial class Compilation
             var members = scope.Members.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
             var types = scope.StorageTypes?.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal)
                 ?? scope.Members.ToDictionary(pair => pair.Key, pair => StorageType(pair.Value.Type, scope.NullableMembers?.Contains(pair.Key) == true), StringComparer.Ordinal);
+            if (scope.Memory.View is not null)
+            {
+                DynamicElement(frame, value);
+                AdvanceIndexedMemory(frame, scope.Memory.Clock);
+                members = IndexedMembers(scope.Memory.View);
+            }
             members[field] = value;
             types[field] = constraint ?? StorageType(value.Type, nullable);
-            var updated = scope with { Members = members, StorageTypes = types };
+            var updated = scope with { Members = members, StorageTypes = types,
+                MemoryVersion = scope.Memory.View is null ? null : IndexedVersion(frame, scope.Memory.Clock) };
             frame.Facts = frame.Facts.SetItem(scope.Identity, receiver with { Scope = updated });
             if (scope.FieldBindings.TryGetValue(field, out var fieldBinding)) frame.Facts = frame.Facts.SetItem(fieldBinding.Identity, value);
             Refresh(frame);
@@ -248,23 +264,36 @@ internal sealed partial class Compilation
 
     private static void ApplyEffects(Frame frame, Specialization specialization)
     {
-        frame.Facts = frame.Facts.SetItems(specialization.Effects);
+        // Repeated calls to a cached specialization are distinct memory writes.
+        frame.Facts = frame.Facts.SetItems(specialization.Effects.Select(pair => pair.Value.MemoryVersion is null ? pair
+            : new KeyValuePair<object, Info>(pair.Key, pair.Value with { MemoryVersion = new object() })));
         Refresh(frame);
     }
 
-    private Info InstantiateResult(Frame frame, Info result, Template template, IReadOnlyList<Info> arguments, SourceSpan span)
+    private Info InstantiateResult(Frame frame, Specialization specialization, Template template, IReadOnlyList<Info> arguments, SourceSpan span)
     {
-        var allocation = (template, span.Start);
+        var result = specialization.Result;
+        if (!HasResultIdentity(result)) return Current(frame, result);
+        var allocation = (template, span.Start, specialization.Id);
         if (frame.Allocations.TryGetValue(allocation, out var saved)) return Current(frame, saved);
         HashSet<object> external = [];
+        HashSet<Template> externalFunctions = [];
+        var externalBindings = template.Captures.Select(pair => pair.Value.Identity).ToHashSet();
         void Keep(Info info)
         {
+            if (info.Function is { } function && externalFunctions.Add(function))
+                foreach (var (_, binding) in function.Captures)
+                {
+                    externalBindings.Add(binding.Identity);
+                    Keep(Current(frame, binding));
+                }
+            if (info.Element is { } element) Keep(element);
+            foreach (var alternative in info.Alternatives ?? []) Keep(alternative);
             if (info.Scope is not { } scope || !external.Add(scope.Identity)) return;
             foreach (var member in scope.Members.Values) Keep(member);
         }
         foreach (var argument in arguments) Keep(argument);
         foreach (var capture in template.Captures) Keep(Current(frame, capture.Value));
-        var externalBindings = template.Captures.Select(pair => pair.Value.Identity).ToHashSet();
         Dictionary<object, ScopeInfo> instances = [];
         Dictionary<object, Binding> bindings = [];
         Dictionary<Template, Template> callables = [];
@@ -277,6 +306,7 @@ internal sealed partial class Compilation
                 Identity = new(),
                 Storage = new(binding.Storage.Type)
                 {
+                    IsUnwrittenParameter = binding.Storage.IsUnwrittenParameter,
                     CastContracts = binding.Storage.CastContracts,
                     DeferredTypeWrites = binding.Storage.DeferredTypeWrites,
                     ConceptContracts = binding.Storage.ConceptContracts,
@@ -292,6 +322,7 @@ internal sealed partial class Compilation
         }
         Template FreshFunction(Template function)
         {
+            if (externalFunctions.Contains(function)) return function;
             if (callables.TryGetValue(function, out var existing)) return existing;
             List<KeyValuePair<string, Binding>> captures = [];
             Template fresh = new(function.Id, function.Syntax, captures, function.Source, function.SourceName)
@@ -304,13 +335,16 @@ internal sealed partial class Compilation
         Info Fresh(Info info)
         {
             info = Current(frame, info);
+            if (info.Element is { } element) info = info with { Element = Fresh(element) };
+            if (info.Alternatives is { } alternatives) info = info with { Alternatives = alternatives.Select(Fresh).ToArray() };
             if (info.Function is { } function) return info with { Function = FreshFunction(function) };
             if (info.Scope is not { } scope || scope.Named || external.Contains(scope.Identity)) return info;
+            if (scope.Memory.View is not null) return ReadIndexedScope(frame, info);
             if (!instances.TryGetValue(scope.Identity, out var instance))
             {
                 Dictionary<string, Info> members = [];
                 Dictionary<string, Binding> fields = [];
-                instance = scope with { Identity = new(), Members = members, FieldBindings = fields };
+                instance = scope with { Identity = new(), Memory = new(), Sources = null, Members = members, FieldBindings = fields };
                 instances.Add(scope.Identity, instance);
                 foreach (var (name, binding) in scope.FieldBindings) fields[name] = FreshBinding(binding);
                 foreach (var (name, member) in scope.Members) members[name] = Fresh(member);
@@ -326,8 +360,17 @@ internal sealed partial class Compilation
             return info with { Scope = instance };
         }
         var instance = Fresh(result);
-        if (instance.Scope is not null || instance.Function is not null) frame.Allocations[allocation] = instance;
+        frame.Allocations[allocation] = instance;
         return instance;
+    }
+
+    private static bool HasResultIdentity(Info info)
+    {
+        if (info.Function is not null || info.Scope is not null) return true;
+        if (info.Element is { } element && HasResultIdentity(element)) return true;
+        foreach (var alternative in info.Alternatives ?? [])
+            if (HasResultIdentity(alternative)) return true;
+        return false;
     }
 
     private readonly List<StorageConstraint> solvedStorage = [];

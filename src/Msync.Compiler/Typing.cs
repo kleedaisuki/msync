@@ -81,6 +81,8 @@ internal sealed partial class Compilation
                 left.Scope.NullableMembers, left.Scope.StorageTypes)
             {
                 Identity = ReferenceEquals(left.Scope.Identity, right.Scope.Identity) ? left.Scope.Identity : new(),
+                Memory = ReferenceEquals(left.Scope.Identity, right.Scope.Identity) ? left.Scope.Memory : new(),
+                Sources = ReferenceEquals(left.Scope.Identity, right.Scope.Identity) ? left.Scope.Sources : [left.Scope, right.Scope],
                 FieldBindings = ReferenceEquals(left.Scope.Identity, right.Scope.Identity) ? left.Scope.FieldBindings : new Dictionary<string, Binding>(),
                 Storage = ReferenceEquals(left.Scope.Identity, right.Scope.Identity) ? left.Scope.Storage :
                     members.ToDictionary(pair => pair.Key, pair => new StorageConstraint(StorageType(pair.Value.Type, pair.Value.Type.Nullable)))
@@ -100,7 +102,10 @@ internal sealed partial class Compilation
             left.EditorUnknown || right.EditorUnknown,
             left.KnownPath == right.KnownPath ? left.KnownPath : null,
             left.KnownText == right.KnownText ? left.KnownText : null,
-            EagerRange: left.EagerRange && right.EagerRange);
+            EagerRange: left.EagerRange && right.EagerRange,
+            Indexed: ReferenceEquals(left.Indexed, right.Indexed) ? left.Indexed : null,
+            MemoryVersion: ReferenceEquals(left.MemoryVersion, right.MemoryVersion) ? left.MemoryVersion
+                : left.MemoryVersion is null && right.MemoryVersion is null ? null : new object());
     }
     private Info Retype(Info info, TypeRef target)
     {

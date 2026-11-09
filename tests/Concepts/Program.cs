@@ -78,6 +78,8 @@ foreach (int level in new[] { 0, 2, 3 })
     Require(await Interpreter.ExecuteAsync(conceptUnion) is BoolValue { Data: true }, "Qualified concept union");
     var lexical = Compiler.Compile(standard + "let std = scope { other: true }; checked(Operations)::equal(2, 2)", "qualified-lexical.msync", level);
     Require(await Interpreter.ExecuteAsync(lexical) is BoolValue { Data: true }, "Qualified function return resolved at definition, not caller");
+    var parameterNames = Compiler.Compile(standard + "fn named(std: Number, value?: $std::concepts::Equality) -> $std::concepts::Equality? { return value; }; named(1, Operations)::equal(2, 2)", "qualified-parameter-names.msync", level);
+    Require(await Interpreter.ExecuteAsync(parameterNames) is BoolValue { Data: true }, "Parameter names did not shadow the signature type environment");
     var fixedContract = Compiler.Compile(standard + "let target: $std::concepts::Equality = Operations; let std = scope {}; target = Operations; true", "qualified-storage.msync", level);
     Require(await Interpreter.ExecuteAsync(fixedContract) is BoolValue { Data: true }, "Stored concept contract retained lexical namespace");
     Reject(standard + "checked(scope { Self: Number, equal: fn(a: Number,b: Number) { 1 } })", "return", level);
@@ -116,6 +118,9 @@ foreach (int level in new[] { 0, 2, 3 })
     Reject("fn invalid() -> Number { ./path }; invalid()", "return type Number", level);
     Reject("fn invalid() -> Number { return ./path; }; invalid()", "return type Number", level);
     Reject("concept C { item: Number }; let value?: C = null; value = 3;", "Expected Scope?", level);
+    Reject("fn invalid(values: Range<String>) { values }; invalid([1])", "Expected Range<String>", level);
+    Reject("fn invalid() -> Range<String> { [1] }; invalid()", "return type Range<String>", level);
+    Reject("let invalid: Range<String> = [1];", "Expected Range<String>", level);
     const string inline = """
         concept Equal {
             equal: fn(left: typename Item, right: Item) -> Bool,

@@ -65,7 +65,8 @@ public static partial class NativeRegistry
 
     private static RangeValue CastRange(RangeValue source, TypeRef element, RuntimeContext context) =>
         new(CastItems(source, element, context), element, Resolve: source.Resolve is null ? null
-            : async token => CastRange(await source.Resolve(token), element, context));
+            : async token => CastRange(await source.Resolve(token), element, context))
+        { RetainedValues = source.RetainedValues };
 
     private static async IAsyncEnumerable<Value> CastItems(RangeValue source, TypeRef element, RuntimeContext context,
         [EnumeratorCancellation] CancellationToken token = default)

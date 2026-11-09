@@ -29,6 +29,14 @@ contract is in [mutable state and effects](mutable-state-and-effects-v080.md).
 Live cells and process completion owners are runtime state, never constants
 serialized as portable execution proofs.
 
+Live Process values can cross a source-function return or an interactive
+submission boundary. Their actual reachable resource graph transfers to the
+caller/session before nonescaping work is joined. See
+[the resource-return contract](mutable-state-and-effects-v080.md#returning-live-resources-and-interactive-roots)
+and the real gated-child workflows in `tests/ReturnedProcesses`. This preserves
+native Process handles and selected dependencies; it is not detached background
+execution or a session-wide drain at every prompt.
+
 `Artifact`, `Optimizer`, `Binding` and `Interpreter` are separate APIs:
 
 ```

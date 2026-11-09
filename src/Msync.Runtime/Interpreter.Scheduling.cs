@@ -21,17 +21,22 @@ public sealed partial class Interpreter
         public ResourceIndex.Registration? Registration;
     }
     private sealed record ResourceKey(string Endpoint, string Path);
-    private readonly ResourceIndex resources = new();
+    private readonly ResourceIndex resources;
     private long admittedTransfers;
     private long dependencyEdges;
     private long nativeHazardWaits;
     public SchedulingStatistics SchedulingStatistics => new(admittedTransfers, resources.NodesVisited, dependencyEdges, nativeHazardWaits);
-    private readonly List<PendingWork> pending = [];
-    private readonly HashSet<ProcessValue> sessionProcesses = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<Task, IReadOnlyList<ProcessValue>> processDependencies = [];
-    private readonly Dictionary<Task, ResourceKey> namespaceProducers = [];
+    private readonly List<PendingWork> pending;
+    private readonly HashSet<ProcessValue> sessionProcesses;
+    private readonly Dictionary<Task, IReadOnlyList<ProcessValue>> processDependencies;
+    private readonly Dictionary<Task, ResourceKey> namespaceProducers;
     private WorkOwner currentOwner = new();
-    private Task ordering = Task.CompletedTask;
+    private Task standaloneOrdering = Task.CompletedTask;
+    private Task ordering
+    {
+        get => sessionImage?.Ordering ?? standaloneOrdering;
+        set { if (sessionImage is { } image) image.Ordering = value; else standaloneOrdering = value; }
+    }
 
     private static Value ReadValue(Value value) => value is CellValue cell ? cell.Data : value;
     private static IReadOnlyList<Value> ValueArguments(IReadOnlyList<Value> arguments)
@@ -89,6 +94,7 @@ public sealed partial class Interpreter
     {
         // Resolve dependencies before starting I/O; the VM never runs mutable scalar bytecode in workers.
         var target = destination is DeferredValue ? null : context.AsPath(destination);
+        RuntimeContext origin = context.CaptureDirectory();
         var reads = source is PathValue path ? new[] { Key(path) }
             : source is DeferredValue && (source.Type.Kind & TypeKind.Path) != 0 ? [new ResourceKey(PathEndpoint(source) ?? "*", "")] : [];
         var writes = new[] { target is null ? new ResourceKey((destination.Type.Kind & TypeKind.Path) != 0 ? PathEndpoint(destination) ?? "*" : "local", "") : Key(target) };
@@ -116,9 +122,9 @@ public sealed partial class Interpreter
             await predecessor;
             if (dependencies.Count != 0) await Task.WhenAll(dependencies);
             var value = await ResolveAsync(source);
-            var actualTarget = target ?? context.AsPath(await ResolveAsync(destination));
+            var actualTarget = target ?? origin.AsPath(await ResolveAsync(destination));
             await slots.WaitAsync(cancellationToken);
-            try { return await TransferAsync(value, actualTarget, span, local, cancellationToken); }
+            try { return await TransferAsync(value, actualTarget, span, local, origin, cancellationToken); }
             finally { slots.Release(); }
         }
         var completion = Run();
@@ -184,9 +190,11 @@ public sealed partial class Interpreter
         if (flows.Length != 0)
         {
             await Task.WhenAll(flows.Select(work => work.Completion));
-            foreach (var work in flows) Retire(work);
+            foreach (var work in flows) { Retire(work); pending.Remove(work); }
         }
         sessionProcesses.Remove(process);
+        if (flows.Any(work => work.RequireSuccess && !work.Completion.Result))
+            throw new MsyncException("One or more file transfers failed; completed files remain in place and the operation can be retried");
         return completed;
     }
     private async ValueTask JoinOwnerAsync(WorkOwner owner)

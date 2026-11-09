@@ -12,7 +12,7 @@ public static partial class NativeRegistry
         {
             List<Value> values = [];
             await foreach (Value value in range.Items.WithCancellation(token)) values.Add(value);
-            return new RangeValue(new IndexedItems(values), range.ItemType);
+            return new RangeValue(new IndexedItems(values, range.ItemType), range.ItemType) { RetainedValues = values };
         }
         if (range.Items is not IndexedItems buffer)
             throw new MsyncException($"storage.{operation} requires Buffer storage; construct it with Buffer::new.");
@@ -25,10 +25,12 @@ public static partial class NativeRegistry
             case "buffer_get": return items[BufferIndex(args[1], items.Count, false, operation)];
             case "buffer_set":
                 items[BufferIndex(args[1], items.Count, false, operation)] = args[2];
+                range.InferItemType(args[2]);
                 return Value.Null;
             case "buffer_push":
                 int next = items.Count;
                 items.Add(args[1]);
+                range.InferItemType(args[1]);
                 return new NumberValue(next);
             case "buffer_pop":
                 if (items.Count == 0) throw new MsyncException("Buffer::pop requires a nonempty buffer.");
@@ -38,6 +40,7 @@ public static partial class NativeRegistry
                 return tail;
             case "buffer_insert":
                 items.Insert(BufferIndex(args[1], items.Count, true, operation), args[2]);
+                range.InferItemType(args[2]);
                 return Value.Null;
             case "buffer_remove":
                 int index = BufferIndex(args[1], items.Count, false, operation);
@@ -63,9 +66,10 @@ public static partial class NativeRegistry
 
     // The buffer owns its backing list. Ordinary Range materialization and the
     // snapshot operation publish separate membership arrays, not live aliases.
-    private sealed class IndexedItems(List<Value> values) : IAsyncEnumerable<Value>
+    private sealed class IndexedItems(List<Value> values, TypeRef initialItemType) : IAsyncEnumerable<Value>, IRangeTypeOrigin
     {
         public List<Value> Values { get; } = values;
+        public TypeRef InitialItemType { get; } = initialItemType;
         public async IAsyncEnumerator<Value> GetAsyncEnumerator(CancellationToken cancellationToken = default)
         {
             for (int index = 0; index < Values.Count; index++)
