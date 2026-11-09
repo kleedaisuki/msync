@@ -53,6 +53,38 @@ acceptance verdict.
 | Compiler cost | Separate real Analyze, Lower and HIR serialization APIs have measured allocation and lifetime observations for small controls. | Representative standard-library/generic workloads, unrelated-world scaling and matched user-visible latency. |
 | Delivery | Version/project locks and Native/editor release journeys are prepared. | Linux/Windows Native acceptance, matching VSIX, final provenance/checksums and immutable public 0.8.1 publication. |
 
+## Integration checkpoint: composed semantics and bounded-growth diagnosis
+
+The default-pipeline journey now has a concrete O2 result: frozen8 executes
+source, deleted-source `.mso` and context-bound `.mexe` with 84 exact file
+observations and six rejected invalid programs. The image identity and scope
+are recorded in [the validation note](typed-hir-validation-v081.md). This
+supersedes the earlier experimental-only source evidence, but does not establish
+complete standard-library or Native acceptance.
+
+The BTree input is a remaining release requirement, not an optional benchmark.
+Frozen9 reaches semantic analysis but grows without completing even one direct
+insert. The causal investigation separates repeated expansion of a small shared
+graph in the specialization key from subsequent recursive Scope/resource-view
+growth. The first boundary has a graph-definition/backreference correction in
+`5a05220`; the second requires finite formal views and caller-specific resource
+projection. [The focused review](typed-hir-review-v081.md) and bounded trace
+notes record the evidence. Neither a partial key timing nor an unfinished run
+is a whole-program speedup observation.
+
+Open-session future callable definitions have their own
+[signature-slot contract](typed-hir-session-dispatch-v081.md). Its runtime-only
+tables, semantic obligations and ordinary lowering replace instruction repair;
+closed file execution must remain unaffected. Final session and Native journeys
+must use the completed frontend, not infer acceptance from hand-built modules.
+
+Publication follows [byte-preserving candidate promotion](packaging-v080.md#candidate-validation-and-byte-preserving-promotion-081):
+freeze the source, validate Native/editor candidate packages, measure the actual
+candidate images, and only then publish those same bytes. No source or versioned
+documentation commit may intervene between the accepted candidate and promotion.
+Final release receipts can be committed after publication without changing the
+tagged source or asset bytes.
+
 ## Work ownership
 
 The compiler team owns semantic contracts, binding, specialization and lowering.
