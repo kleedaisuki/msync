@@ -102,11 +102,11 @@ internal static class FunctionInlining
             if (instruction.Op == OpCode.Jump) { Next(instruction.A, height); continue; }
             var delta = instruction.Op switch
             {
-                OpCode.Constant or OpCode.Null or OpCode.True or OpCode.False or OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage or OpCode.LoadBuiltin or OpCode.Dup => 1,
+                OpCode.Constant or OpCode.Null or OpCode.True or OpCode.False or OpCode.LoadLocal or OpCode.LoadCell or OpCode.LoadStorage or OpCode.LoadBuiltin or OpCode.GetSingleton or OpCode.Dup => 1,
                 OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.Pop or OpCode.JumpIfTrue or OpCode.JumpIfFalse => -1,
                 OpCode.MakeClosure => 1 - instruction.B,
                 OpCode.MakeScope or OpCode.MakeRange or OpCode.MakeLazyRange or OpCode.NativeCall => 1 - instruction.A,
-                OpCode.Nop or OpCode.SpecializeClosure or OpCode.GetMember or OpCode.GetCapture or OpCode.Not or OpCode.IsNull or OpCode.Negate
+                OpCode.Nop or OpCode.SetSingleton or OpCode.SpecializeClosure or OpCode.GetMember or OpCode.GetCapture or OpCode.Not or OpCode.IsNull or OpCode.Negate
                     or OpCode.Convert or OpCode.SelectPath or OpCode.DeferRange => 0,
                 OpCode.RegexMatch => instruction.Text is null ? -1 : 0,
                 _ => -1
@@ -164,6 +164,8 @@ internal static class FunctionInlining
             switch (instruction.Op)
             {
                 case OpCode.Nop: break;
+                case OpCode.GetSingleton: stack.Add(null); break;
+                case OpCode.SetSingleton: Pop(); stack.Add(null); break;
                 case OpCode.Constant: stack.Add(constants[instruction.A] is FunctionValue { NativeName: null } f ? new(f.Function, Captures: f.Captures?.Count ?? 0) : null); break;
                 case OpCode.Null: case OpCode.True: case OpCode.False: case OpCode.LoadBuiltin: stack.Add(null); break;
                 case OpCode.LoadLocal: stack.Add(locals[instruction.A]); break;

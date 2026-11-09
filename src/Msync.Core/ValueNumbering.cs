@@ -55,6 +55,8 @@ internal static class ValueNumbering
             switch (instruction.Op)
             {
                 case OpCode.Nop: case OpCode.Barrier: break;
+                case OpCode.GetSingleton: stack.Add(next++); break;
+                case OpCode.SetSingleton: Pop(); stack.Add(next++); break;
                 case OpCode.Constant: stack.Add(Literal(constants[instruction.A])); break;
                 case OpCode.True: stack.Add(Literal(Value.True)); break;
                 case OpCode.False: stack.Add(Literal(Value.False)); break;
@@ -126,7 +128,7 @@ internal static class ValueNumbering
         count = instruction.Op switch
         {
             OpCode.Not or OpCode.IsNull or OpCode.Negate or OpCode.Convert => 1,
-            OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Equal or OpCode.NotEqual
+            OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Remainder or OpCode.Equal or OpCode.NotEqual
                 or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual or OpCode.IsType or OpCode.PathJoin => 2,
             OpCode.RegexMatch => instruction.Text is null ? 2 : 1,
             OpCode.NativeCall when instruction.A <= 3 && instruction.Text is { } name && !name.StartsWith("ranges.", StringComparison.Ordinal)

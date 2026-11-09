@@ -199,3 +199,24 @@ property probes are executable counterexample searches, not SMT proofs. Their
 control must truly be O0: automatic context binding otherwise invokes the
 module's configured optimizer. LLVM's undefined-behavior model is not imported
 into msync's mutable locations, deferred effects or observable divergence.
+
+## Named Scope publication
+
+Named Scope declarations use session-owned singleton slots. `GetSingleton`
+produces Scope-or-Null without executing an initializer. Ordinary CFG null tests
+select initialization only when necessary. `SetSingleton` consumes the candidate
+Scope and produces the canonical published Scope; it does not prove that the
+candidate won publication when an initializer re-enters the same declaration.
+Both operations remain observable roots, and publication escapes the candidate
+allocation and its fields. Scalar replacement therefore cannot turn a named
+singleton into per-call field locals or delete stores observable through another
+call. Anonymous Scope construction remains fresh and eligible for private-object
+scalar replacement. Singleton access itself does not invoke callbacks or inspect
+filesystem state.
+
+The stack analyses model publication as a unary Scope-producing operation. Its
+result is opaque rather than an alias of the candidate, while memory summaries
+record external singleton reads/publication and escaped candidate fields.
+`tests/OptimizationGraph --singletons` checks aliases across calls, fresh
+anonymous objects and exactly-once initialization at O0–O3 through both artifact
+stages.

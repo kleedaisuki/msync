@@ -102,7 +102,7 @@ internal static class MemoryEffects
             : instruction.Op is OpCode.Null or OpCode.True or OpCode.False
             or OpCode.LoadLocal or OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.Pop or OpCode.Dup or OpCode.Nop
             or OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.Return or OpCode.Not or OpCode.IsNull or OpCode.IsType
-            or OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Negate or OpCode.Equal or OpCode.NotEqual
+            or OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Remainder or OpCode.Negate or OpCode.Equal or OpCode.NotEqual
             or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual or OpCode.PathJoin or OpCode.Convert
             or OpCode.Transfer or OpCode.LocalTransfer or OpCode.Acquire or OpCode.Barrier)
             ? FunctionMemoryEffects.Empty : null;
@@ -290,6 +290,8 @@ internal static class MemoryEffects
             switch (instruction.Op)
             {
                 case OpCode.Nop: case OpCode.Barrier: break;
+                case OpCode.GetSingleton: unknownReads = true; Push(ValueInfo.Top); break;
+                case OpCode.SetSingleton: Escape(state, Pop(state), []); unknownWrites = true; Push(ValueInfo.Top); break;
                 case OpCode.Constant:
                     var literal = module.Constants[instruction.A];
                     Push(literal is FunctionValue callable ? ConstantFunction(callable) : literal is ScopeValue or RangeValue ? ValueInfo.Top : ValueInfo.Empty); break;

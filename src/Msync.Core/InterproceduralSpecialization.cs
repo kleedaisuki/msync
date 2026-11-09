@@ -209,7 +209,7 @@ internal static class InterproceduralSpecialization
                 case OpCode.Add:
                 case OpCode.Subtract:
                 case OpCode.Multiply:
-                case OpCode.Divide:
+                case OpCode.Divide: case OpCode.Remainder:
                     var right = Pop(); var left = new HashSet<int>(Pop()); left.UnionWith(right); stack.Add(left); break;
                 case OpCode.JumpIfFalse:
                 case OpCode.JumpIfTrue:
@@ -221,7 +221,8 @@ internal static class InterproceduralSpecialization
                 case OpCode.False:
                 case OpCode.LoadCell:
                 case OpCode.LoadStorage:
-                case OpCode.LoadBuiltin: stack.Add([]); break;
+                case OpCode.SetSingleton: Pop(); stack.Add([]); break;
+                case OpCode.GetSingleton: case OpCode.LoadBuiltin: stack.Add([]); break;
                 case OpCode.Nop: case OpCode.Barrier: break;
                 default: Reset(); break;
             }
@@ -303,7 +304,8 @@ internal static class InterproceduralSpecialization
                 case OpCode.SelectPath:
                 case OpCode.DeferRange: Pop(); stack.Add(Unknown); break;
                 case OpCode.RegexMatch: PopMany(instruction.Text is null ? 2 : 1); stack.Add(Unknown); break;
-                case OpCode.LoadBuiltin: stack.Add(Unknown); break;
+                case OpCode.SetSingleton: Pop(); stack.Add(Unknown); break;
+                case OpCode.GetSingleton: case OpCode.LoadBuiltin: stack.Add(Unknown); break;
                 case OpCode.Acquire: if (instruction.A != 0) { Pop(); stack.Add(Unknown); } Invalidate(); break;
                 case OpCode.IteratorNext: stack.Add(Unknown); Invalidate(); break;
                 case OpCode.JumpIfFalse: case OpCode.JumpIfTrue: Pop(); stack.Clear(); Array.Fill(locals, Unknown); break;

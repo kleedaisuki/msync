@@ -158,6 +158,8 @@ internal static class AggregateArgumentSpecialization
                     stack.Add(new(new(TypeKind.Range, items.Select(item => item.Type).Aggregate(new TypeRef(TypeKind.Never), TypeRef.Union)), CallbackFreeRange: true)); break;
                 case OpCode.MakeLazyRange:
                     PopMany(instruction.A); stack.Add(new(new(TypeKind.Range), CallbackFreeRange: instruction.Text?.All(value => value == '0') == true)); break;
+                case OpCode.GetSingleton: stack.Add(new(new(TypeKind.Scope | TypeKind.Null))); break;
+                case OpCode.SetSingleton: Pop(); stack.Add(new(TypeRef.Scope)); break;
                 case OpCode.LoadBuiltin: stack.Add(Unknown); break;
                 case OpCode.Convert: Pop(); stack.Add(new(instruction.Text == "Path" ? TypeRef.Path : TypeRef.String)); break;
                 case OpCode.Qualify: case OpCode.PathJoin: PopMany(2); stack.Add(new(TypeRef.Path)); break;

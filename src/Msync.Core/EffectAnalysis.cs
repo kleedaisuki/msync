@@ -22,6 +22,8 @@ public static class EffectAnalysis
         OpCode.ProcessCall => InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.Invoke | InstructionEffect.MayFail,
         OpCode.Transfer or OpCode.LocalTransfer => InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.MayFail,
         OpCode.GetIterator or OpCode.IteratorNext => InstructionEffect.Read | InstructionEffect.Invoke | InstructionEffect.MayFail,
+        OpCode.GetSingleton => InstructionEffect.Read,
+        OpCode.SetSingleton => InstructionEffect.Write,
         OpCode.SetMember => InstructionEffect.Write | InstructionEffect.MayFail,
         OpCode.MakeScope when ScopeConstructionMayFail(instruction) => InstructionEffect.MayFail,
         OpCode.GetMember or OpCode.Qualify or OpCode.Convert or OpCode.RegexMatch => InstructionEffect.MayFail,
@@ -123,7 +125,7 @@ public static class EffectAnalysis
                 if (instruction.Op == OpCode.StoreLocal && instruction.A < module.Functions[index].CaptureCount)
                     summaries[index] |= InstructionEffect.Write;
                 if (dynamicTypes && instruction.Op is OpCode.Not or OpCode.Negate or OpCode.Add or OpCode.Subtract or OpCode.Multiply
-                    or OpCode.Divide or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual or OpCode.Equal or OpCode.NotEqual
+                    or OpCode.Divide or OpCode.Remainder or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual or OpCode.Equal or OpCode.NotEqual
                     or OpCode.IsType or OpCode.PathJoin or OpCode.NativeCall)
                     summaries[index] |= InstructionEffect.MayFail;
                 if (instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue && instruction.A <= pc)

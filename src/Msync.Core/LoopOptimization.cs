@@ -256,7 +256,7 @@ internal static class LoopOptimization
     private static int Arity(OpCode op) => op switch
     {
         OpCode.IsNull or OpCode.Not or OpCode.Negate or OpCode.Convert => 1,
-        OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Equal or OpCode.NotEqual
+        OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Remainder or OpCode.Equal or OpCode.NotEqual
             or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual or OpCode.PathJoin or OpCode.IsType => 2,
         _ => 0
     };
@@ -271,7 +271,7 @@ internal static class LoopOptimization
             return instruction.Text == "Path" ? TypeKind.Path : TypeKind.String;
         if (left == TypeKind.Number && right == TypeKind.Number)
         {
-            if (op is OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide) return TypeKind.Number;
+            if (op is OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Remainder) return TypeKind.Number;
             if (op is OpCode.Equal or OpCode.NotEqual or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual) return TypeKind.Bool;
         }
         if (left == TypeKind.String && right == TypeKind.String && op == OpCode.Add) return TypeKind.String;

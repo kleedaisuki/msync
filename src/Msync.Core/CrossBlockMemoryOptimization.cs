@@ -291,6 +291,8 @@ internal static partial class CrossBlockMemoryOptimization
                 switch (instruction.Op)
                 {
                     case OpCode.Nop: case OpCode.Barrier: break;
+                    case OpCode.GetSingleton: Unknown(0, kinds: TypeKind.Scope | TypeKind.Null); break;
+                    case OpCode.SetSingleton: Unknown(1, kinds: TypeKind.Scope); break;
                     case OpCode.Constant:
                         var literal = module.Constants[instruction.A];
                         state.Stack.Add(new(default, Opaque: true, Kinds: literal.Type.Kind,

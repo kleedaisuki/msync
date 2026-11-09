@@ -82,6 +82,8 @@ internal static class ScopeScalarization
                 switch (instruction.Op)
                 {
                     case OpCode.Nop: case OpCode.Barrier: break;
+                    case OpCode.GetSingleton: stack.Add(new()); break;
+                    case OpCode.SetSingleton: Escape(Pop()); stack.Add(new()); break;
                     case OpCode.Constant: case OpCode.Null: case OpCode.True: case OpCode.False: case OpCode.LoadBuiltin:
                         stack.Add(new()); break;
                     case OpCode.LoadLocal: stack.Add(ReadStorage(Local(instruction.A))); break;
