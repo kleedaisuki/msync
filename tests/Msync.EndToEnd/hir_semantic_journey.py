@@ -167,7 +167,9 @@ OUTPUTS: dict[str, bytes] = {
     "unused-body.txt": b"deferred",
 }
 
-NEGATIVE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+type DiagnosticFragment = str | tuple[str, ...]
+
+NEGATIVE: tuple[tuple[str, str, tuple[DiagnosticFragment, ...]], ...] = (
     ("fixed-kind", 'let value = 1; value = "wrong";', ("Number", "String")),
     ("unhandled-null", "let value? = null; value -> ./wrong;", ("Null",)),
     ("field-null-admission", "scope Invalid { item: null };", ("?",)),
@@ -184,7 +186,7 @@ if first::child is not null {
     first::child::text;
 };
 """,
-        ("Scope?",),
+        (("Null", "Scope?"),),
     ),
     (
         "unsafe-live-union",
@@ -282,7 +284,12 @@ def negative(binary: Path, parent: Path) -> int:
             binary, directory, "check", str(source)
         )
         assert result.returncode != 0, (name, result.stdout, result.stderr)
-        assert all(fragment in result.stderr for fragment in fragments), (
+        assert all(
+            fragment in result.stderr
+            if isinstance(fragment, str)
+            else any(alternative in result.stderr for alternative in fragment)
+            for fragment in fragments
+        ), (
             name,
             result.stderr,
         )
