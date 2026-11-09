@@ -9,7 +9,8 @@ internal enum FunctionFeatures
     Iteration = 4,
     Call = 8,
     Branch = 16,
-    Directional = 32
+    Directional = 32,
+    Fields = 64
 }
 
 internal static class FunctionAnalysis
@@ -24,6 +25,7 @@ internal static class FunctionAnalysis
                 OpCode.Jump => FunctionFeatures.Branch,
                 OpCode.IsType or OpCode.IsNull => FunctionFeatures.Predicates,
                 OpCode.MakeScope => FunctionFeatures.Scope,
+                OpCode.GetMember or OpCode.SetMember => FunctionFeatures.Fields,
                 OpCode.IteratorNext => FunctionFeatures.Iteration | FunctionFeatures.Branch,
                 OpCode.Call => FunctionFeatures.Call,
                 OpCode.Barrier when instruction.B == 0 && instruction.Text is null => FunctionFeatures.Directional,

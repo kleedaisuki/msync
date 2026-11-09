@@ -35,7 +35,10 @@ public static class Optimizer
                 if (preparation[index].TryGetValue(function, out var existing)) return existing;
                 var features = FunctionAnalysis.Features(function);
                 var predicated = (features & FunctionFeatures.Predicates) != 0 ? PredicateOptimization.OptimizeWithPool(context, function, constants, constantInterner) : function;
-                var scalar = (features & FunctionFeatures.Scope) != 0 ? ScopeScalarization.Optimize(context, predicated, constants) : predicated;
+                var memory = level >= 2 && (features & (FunctionFeatures.Scope | FunctionFeatures.Fields))
+                    == (FunctionFeatures.Scope | FunctionFeatures.Fields)
+                    ? CrossBlockMemoryOptimization.Optimize(context, predicated, constants) : predicated;
+                var scalar = (features & FunctionFeatures.Scope) != 0 ? ScopeScalarization.Optimize(context, memory, constants) : memory;
                 var tail = (features & FunctionFeatures.Call) != 0 ? TailCallOptimization.Optimize(context, scalar, index) : scalar;
                 var result = (features & FunctionFeatures.Iteration) != 0 ? LoopOptimization.Optimize(context, tail, constants, level) : tail;
                 result = Unchanged(function, result);
