@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -191,14 +191,19 @@ def command(binary: Path) -> list[str]:
 
 
 def invoke(
-    binary: Path, directory: Path, arguments: Sequence[str]
+    binary: Path,
+    directory: Path,
+    arguments: Sequence[str],
+    environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    environment = dict(os.environ)
-    environment["NO_COLOR"] = "1"
+    child_environment: dict[str, str] = dict(
+        os.environ if environment is None else environment
+    )
+    child_environment["NO_COLOR"] = "1"
     return subprocess.run(
         [*command(binary), "--no-config", "--no-telemetry", *arguments],
         cwd=directory,
-        env=environment,
+        env=child_environment,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -215,15 +220,58 @@ def accept(result: subprocess.CompletedProcess[str], context: str) -> None:
         )
 
 
+@dataclass(frozen=True)
+class MonitoredCli:
+    binary: Path
+    environment: Mapping[str, str] | None = None
+    transport_calls: Path | None = None
+    expected_ssh: int | None = None
+
+    def calls(self) -> list[str]:
+        if self.transport_calls is None or not self.transport_calls.exists():
+            return []
+        return self.transport_calls.read_text().splitlines()
+
+    def run(
+        self, directory: Path, arguments: Sequence[str]
+    ) -> subprocess.CompletedProcess[str]:
+        before = self.calls()
+        result = invoke(self.binary, directory, arguments, self.environment)
+        observed = self.calls()[len(before) :]
+        if arguments[0] in ("check", "compile", "bind-ir") and observed:
+            raise AssertionError(
+                f"{arguments[0]} authenticated the endpoint: {observed!r}"
+            )
+        if (
+            arguments[0] in ("run", "run-ir")
+            and self.expected_ssh is not None
+            and result.returncode == 0
+            and (observed.count("ssh") != self.expected_ssh or "scp" in observed)
+        ):
+            raise AssertionError(
+                f"{arguments!r} expected {self.expected_ssh} owned SSH channels: {observed!r}"
+            )
+        return result
+
+
 def run_examples(
-    binary: Path, parent: Path, levels: Sequence[int], selected: Sequence[str]
+    binary: Path,
+    parent: Path,
+    levels: Sequence[int],
+    selected: Sequence[str],
+    *,
+    examples: Sequence[Example] = EXAMPLES,
+    environment: Mapping[str, str] | None = None,
+    transport_calls: Path | None = None,
+    expected_ssh: int | None = None,
 ) -> list[dict[str, Any]]:
     examples = [
-        example for example in EXAMPLES if not selected or example.name in selected
+        example for example in examples if not selected or example.name in selected
     ]
     if not examples:
         raise ValueError("No library journeys selected")
     records: list[dict[str, Any]] = []
+    cli = MonitoredCli(binary, environment, transport_calls, expected_ssh)
     for example in examples:
         for level in levels:
             for stage in ("source", "relocatable", "executable"):
@@ -233,6 +281,7 @@ def run_examples(
                     path = directory / name
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(contents)
+
                 source = directory / "library 体验.msync"
                 program = "import sys;sys.stdout.write('HELLO');sys.stderr.write('WARN');sys.exit(7)"
                 source_text = example.source.replace(
@@ -240,7 +289,7 @@ def run_examples(
                 ).replace("__COMMAND_ARGS__", json.dumps(["-c", program]))
                 source.write_text(source_text, encoding="utf-8")
                 accept(
-                    invoke(binary, directory, ["check", str(source), f"-O{level}"]),
+                    cli.run(directory, ["check", str(source), f"-O{level}"]),
                     example.name + " check",
                 )
                 for name, _ in example.outputs:
@@ -252,8 +301,7 @@ def run_examples(
                 if stage != "source":
                     artifact = source.with_suffix(".mso")
                     accept(
-                        invoke(
-                            binary,
+                        cli.run(
                             directory,
                             ["compile", str(source), "-o", str(artifact), f"-O{level}"],
                         ),
@@ -262,8 +310,7 @@ def run_examples(
                     if stage == "executable":
                         executable = source.with_suffix(".mexe")
                         accept(
-                            invoke(
-                                binary,
+                            cli.run(
                                 directory,
                                 [
                                     "bind-ir",
@@ -278,17 +325,17 @@ def run_examples(
                         )
                         artifact = executable
                     source.unlink()
-                launch = directory
+                launch_directory = directory
                 if stage == "executable":
-                    launch = directory / "other working directory"
-                    launch.mkdir()
+                    launch_directory = directory / "other working directory"
+                    launch_directory.mkdir()
                 arguments = (
                     ["run", str(artifact), f"-O{level}"]
                     if stage == "source"
                     else ["run-ir", str(artifact)]
                 )
                 accept(
-                    invoke(binary, launch, arguments),
+                    cli.run(launch_directory, arguments),
                     f"{example.name} O{level} {stage}",
                 )
                 for name, expected in example.outputs:
@@ -308,9 +355,62 @@ def run_examples(
     return records
 
 
+def ssh_journey(binary: Path, directory: Path) -> dict[str, Any]:
+    sys.path.insert(0, str(ROOT / "legacy" / "benches"))
+    from ssh_v065 import Fixture
+
+    with Fixture(ROOT / ".temp" / "stdlib-upgrade" / "ssh") as fixture:
+        remote = json.dumps(
+            str(fixture.root / "remote data 星.txt"), ensure_ascii=False
+        )
+        source = f"""
+let endpoint = ssh://Perf_Fixture;
+let file = $std::files::File({remote} @ endpoint);
+file::write("remote🙂");
+file::append("!");
+file::read_text() -> ./remote-read.txt;
+file::copy_to(./remote-copy.txt);
+let command = $std::commands::Command("/bin/sh", [
+    "-c", "printf REMOTE; printf WARN >&2; exit 9"
+]);
+let remote_command = command::on(endpoint);
+let result = remote_command::capture();
+result::write_to(./remote-stdout.txt);
+result::error -> ./remote-stderr.txt;
+(result::code as String) -> ./remote-status.txt;
+"""
+        example = Example(
+            "ssh-file-and-command",
+            source,
+            (
+                ("remote-read.txt", "remote🙂!".encode()),
+                ("remote-copy.txt", "remote🙂!".encode()),
+                ("remote-stdout.txt", b"REMOTE"),
+                ("remote-stderr.txt", b"WARN"),
+                ("remote-status.txt", b"9"),
+            ),
+        )
+        records = run_examples(
+            binary,
+            directory,
+            (2,),
+            (),
+            examples=(example,),
+            environment=fixture.environment(),
+            transport_calls=fixture.calls,
+            expected_ssh=5,
+        )
+        return {
+            "routes": records,
+            "fixture": str(fixture.root),
+            "ssh_channels_per_route": 5,
+            "compile_bind_authentication": False,
+        }
+
+
 def identify(binary: Path) -> dict[str, Any]:
     components: dict[str, str] = {}
-    if binary.suffix == ".dll":
+    if (binary.parent / "Msync.Compiler.dll").exists():
         for name in ("Msync.Compiler.dll", "Msync.Core.dll", "Msync.Runtime.dll"):
             path = binary.parent / name
             components[name] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -365,6 +465,7 @@ def main() -> None:
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--baseline", type=Path)
     parser.add_argument("--perf-only", action="store_true")
+    parser.add_argument("--ssh-fixture", action="store_true")
     parser.add_argument("--performance", action="store_true")
     parser.add_argument("--samples", type=int, default=15)
     parser.add_argument("--level", type=int, action="append", choices=(0, 2, 3))
@@ -381,10 +482,17 @@ def main() -> None:
         "binary": identify(binary),
         "directory": str(directory),
     }
-    if not options.perf_only:
+    local_cases: list[str] = [
+        name for name in options.case if name != "ssh-file-and-command"
+    ]
+    if not options.perf_only and (local_cases or not options.case):
         report["journeys"] = run_examples(
-            binary, directory, options.level or (0, 2, 3), options.case
+            binary, directory, options.level or (0, 2, 3), local_cases
         )
+    if options.ssh_fixture and (
+        not options.case or "ssh-file-and-command" in options.case
+    ):
+        report["ssh"] = ssh_journey(binary, directory / "ssh")
     if options.performance or options.perf_only:
         images: list[tuple[str, Path]] = []
         if options.baseline:

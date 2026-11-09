@@ -64,3 +64,36 @@ Implementation and integrated journey evidence will be appended once the
 corresponding source/compiler/native contracts are executable. New source being
 present is not itself acceptance of its closures, callbacks, effects or binary
 round trips.
+
+### First integrated effect boundary
+
+Producer managed snapshot 2 (`.temp/language-upgrade-managed/snapshot-2/msync`)
+accepted the environment and file/command journeys at O2 through all three
+routes, including source-free bound execution from another working directory.
+There were six successful executions and thirty exact output comparisons.
+`.temp/stdlib-upgrade/snapshot2-env-services.json` retains the observations.
+An earlier image demonstrably returned a later environment value from the
+supposed snapshot; eager native Range results corrected that observable defect.
+
+### Actual SSH service composition
+
+The optional Linux loopback fixture is reused from
+`legacy/benches/ssh_v065.py` as development infrastructure. No Rust or Python
+code participates in product execution. Select just this journey with:
+
+```text
+python3 tests/Msync.EndToEnd/stdlib_upgrade_journey.py \
+  --binary PATH_TO_MSYNC --ssh-fixture --case ssh-file-and-command
+```
+
+It exercises `files::File(remote_path @ endpoint)` writing, appending, reading
+and copying to local storage, and `commands::Command(...)::on(endpoint)`
+capturing actual remote stdout/stderr and status 9. A filename contains spaces
+and Unicode. Checking, compilation and binding must launch no SSH client.
+Every selected route must use exactly five owned SSH channels (four file
+operations and one controlled process), with no `scp` subprocess.
+
+Snapshot 2 accepted all three O2 source/`.mso`/`.mexe` routes, fifteen output-byte
+comparisons, zero compile/bind authentications and five SSH clients per execution.
+The fixture and exact component SHA-256 identities are recorded in
+`.temp/stdlib-upgrade/snapshot2-ssh.json`.
