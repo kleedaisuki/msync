@@ -3,6 +3,19 @@ using Msync.Core;
 using Msync.Runtime;
 using Module = Msync.Core.Module;
 
+if (args.Contains("--captured-modules", StringComparer.Ordinal))
+{
+    await CapturedModuleChecks.Run(args);
+    return;
+}
+
+if (args.Contains("--demand-loading", StringComparer.Ordinal))
+{
+    int selected = Array.IndexOf(args, "--case");
+    await DemandLoadingChecks.Run(caseName: selected < 0 ? null : args[selected + 1]);
+    return;
+}
+
 int assertions = 0;
 void Check(bool value, string message)
 {
