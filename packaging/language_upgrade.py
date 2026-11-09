@@ -18,8 +18,10 @@ JOURNEYS: tuple[tuple[str, str], ...] = (
     ("language", "language_upgrade_journey.py"),
     ("tooling", "language_upgrade_tooling_journey.py"),
     ("library", "stdlib_upgrade_journey.py"),
+    ("empty-collections", "collections_empty_journey.py"),
     ("skill", "skill_journey.py"),
     ("artifact", "artifact_disassembly_journey.py"),
+    ("path-display", "path_display_journey.py"),
     ("remote-library", "stdlib_upgrade_journey.py"),
 )
 

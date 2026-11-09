@@ -140,3 +140,11 @@ and 128/1024-statement transfer compilation, generic value checking and
 object/executable execution. Each image creates and consumes its own binary
 format. The comparison does not require cross-version IR compatibility, build
 Rust again, or impose timing quality gates.
+
+Two late user-visible integration selections are explicit rather than hidden in
+older fixtures: `path-display` exercises remote Path display independently from
+its unchanged native String projection; `empty-collections` exercises all eight
+prototype-based empty collection factories, 23 observations through three O2
+stages and three fixed-schema/comparer rejections. The ordinary combined library
+programs already cover nonempty List/Map/Set, so delivery does not repeat the
+collection owner's full 35-program local matrix on every native platform.
