@@ -35,7 +35,7 @@ let identity = $std::process::pid(process);
 $std::process::write_stdin(process, "Klee 星🙂");
 $std::process::close_stdin(process);
 let completed = $std::process::wait(process);
-let expected = $std::string::concat($std::cast(identity, String), ":Klee 星🙂");
+let expected = $std::string::concat(identity as String, ":Klee 星🙂");
 if $std::process::stdout(completed) == expected {{ "pipe-ok" -> ./result; }};
 """,
             (("result", b"pipe-ok"),),

@@ -14,7 +14,7 @@ string source = workload switch
     "bool" => "$std::bool::both(true, false)",
     "ranges_common" => "$std::ranges::first($std::ranges::take([1, 2, 3], 2))",
     "ranges" => "$std::ranges::size($std::ranges::take([1, 2, 3], 2))",
-    "cast" => "$std::cast(\"42\", Number)",
+    "cast" => "\"42\" as Number",
     "functional" => "let op = $std::functional::compose($std::string::to_uppercase, $std::string::trim); op(\" hello \")",
     _ => throw new ArgumentException($"Unknown workload '{workload}'")
 };
