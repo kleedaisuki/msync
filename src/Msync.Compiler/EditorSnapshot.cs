@@ -25,7 +25,7 @@ internal sealed class EditorSnapshot(bool copySpecializations = true)
     private void PopulateStorage(StorageConstraint original, StorageConstraint result)
     {
         result.Revision = original.Revision;
-        result.IsUnwrittenParameter = original.IsUnwrittenParameter;
+        result.IsUnwritten = original.IsUnwritten;
         result.CastContracts = original.CastContracts;
         result.ConceptContracts = original.ConceptContracts;
         result.ConceptMemberContracts = original.ConceptMemberContracts.ToImmutableDictionary(pair => pair.Key,

@@ -285,7 +285,8 @@ internal sealed partial class Compilation
             ContextOwner = document.Span,
             EditorRecovery = true,
             EditorProbe = editorIsolated,
-            EditorReportErrors = true
+            EditorReportErrors = true,
+            UnwrittenLocations = CaptureWrites.Document(document, !editorIsolated)
         };
         if (functions.Count == 0) functions.Add(new("<main>", 0, 0, [], Msync.Core.TypeRef.Null));
         SnapshotFacts(frame);
@@ -317,7 +318,8 @@ internal sealed partial class Compilation
                 ContextIncludesEnd = template.Syntax.Body.EditorIncomplete,
                 EditorRecovery = true,
                 EditorProbe = true,
-                GlobalBindings = definition.Environment
+                GlobalBindings = definition.Environment,
+                UnwrittenLocations = UnwrittenLocations(template.Syntax)
             };
             try { ValidateGlobalImports(frame, template.Syntax); }
             catch (CompileException error)
@@ -356,7 +358,7 @@ internal sealed partial class Compilation
                 if (parameter.Nullable) info = info with { Type = info.Type.WithNull };
                 var origin = DeclarationOrigin(frame, new(parameter.Span.Start, parameter.Name.Length));
                 Binding bound = new(frame.Allocate(), info, Origin: origin) { IsParameter = true };
-                bound.Storage.IsUnwrittenParameter = !ParameterMayBeWritten(template.Syntax, parameter.Name);
+                bound.Storage.IsUnwritten = frame.UnwrittenLocations.Contains(parameter.Span.Start);
                 frame.Bind(parameter.Name, bound);
                 CaptureParameter(frame, new(parameter.Span.Start, parameter.Name.Length));
                 if (origin is not null) CaptureDefinition(frame, origin.Span, [origin]);

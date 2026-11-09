@@ -306,7 +306,7 @@ internal sealed partial class Compilation
                 Identity = new(),
                 Storage = new(binding.Storage.Type)
                 {
-                    IsUnwrittenParameter = binding.Storage.IsUnwrittenParameter,
+                    IsUnwritten = binding.Storage.IsUnwritten,
                     CastContracts = binding.Storage.CastContracts,
                     DeferredTypeWrites = binding.Storage.DeferredTypeWrites,
                     ConceptContracts = binding.Storage.ConceptContracts,

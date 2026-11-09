@@ -250,7 +250,7 @@ internal sealed partial class Compilation
                 });
             else frame.Environment = arm.Pattern is TypePattern type
                 ? RefineMember(frame, match.Value, ResolveType(frame, type.Type), true, true) : RefineMember(frame, match.Value, refined, true);
-            if (arm.Pattern is NamePattern { Name: not "_" } capture) frame.Bind(capture.Name, new(slot, value with { Type = refined }));
+            if (arm.Pattern is NamePattern { Name: not "_" } capture) BindMatchCapture(frame, capture, slot, value with { Type = refined });
             var branch = Expression(frame, arm.Value);
             if (branch.Type.Kind != TypeKind.Never) outgoing = outgoing is null ? frame.Facts : JoinFacts(outgoing, frame.Facts);
             result = result is null ? branch : Join(result, branch);
@@ -300,7 +300,14 @@ internal sealed partial class Compilation
             });
         else frame.Environment = pattern is TypePattern type
             ? RefineMember(frame, expression, ResolveType(frame, type.Type), true, true) : RefineMember(frame, expression, refined, true);
-        if (pattern is NamePattern { Name: not "_" } capture) frame.Bind(capture.Name, new(slot, value with { Type = refined }));
+        if (pattern is NamePattern { Name: not "_" } capture) BindMatchCapture(frame, capture, slot, value with { Type = refined });
+    }
+
+    private static void BindMatchCapture(Frame frame, NamePattern capture, int slot, Info value)
+    {
+        Binding binding = new(slot, value);
+        binding.Storage.IsUnwritten = frame.UnwrittenLocations.Contains(capture.Span.Start);
+        frame.Bind(capture.Name, binding);
     }
 
     private void EmitPattern(Frame frame, Pattern pattern, Info value, SourceSpan span)

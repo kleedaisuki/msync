@@ -76,18 +76,32 @@ alternative before consumption. A generic identity over String or Range is not
 always Range: if the deferred pass finds that union, it emits a normal call with
 the union result instead of an invalid `DeferRange` instruction.
 
-An unwritten formal parameter has a private by-value cell whose current value
-cannot change. A cached lexical write analysis recognizes that fact, including
-nested closures, `global` imports and shadowing by parameters, locals, loop
-patterns and Scope fields. Its admitted storage type can be wider without
-invalidating a branch refinement. This is not source-level immutability: an
-actual assignment or captured setter keeps the full mutable domain. A stable
-parameter containing a Scope does not make that Scope's fields immutable.
+An unwritten private binding cell retains its current value even when its
+admitted storage type is wider. A lexical write analysis identifies declarations,
+not name strings: parameters, local patterns, loop iterations and match captures
+each own a location. Nested closures and `global` imports resolve the nearest
+definition-time location; a later same-name declaration is a different location.
+The analysis visits each syntax node once using linked lexical scopes and local
+name dictionaries, rather than rescanning the body for every declaration.
 
-The scan runs once per function syntax and parameter. Cache hits do not allocate
-its recursive traversal closure, and scalar deferred reads do not allocate the
-Scope-widening dictionary. Argument and callback evaluation remain on demand;
-the compiler does not freeze an external live cell to recover a type proof.
+Function bodies are closed lifetimes, and a standalone complete source document
+can also prove its unwritten root declarations. Persistent REPL roots are not
+closed: later submissions may assign them, so they never obtain this proof from
+the current submission alone. Private blocks and function locals inside a REPL
+submission remain ordinary closed lexical locations. Loop bindings have the
+existing fresh `InitializeLocal` lifecycle per iteration.
+
+Scope fields and standard-module export cells remain externally writable even
+when their defining file contains no assignment. They do not receive private
+location proofs. A stable local Scope binding does not make its payload fields
+immutable, and indexed-memory identity/version checks remain independent.
+
+This is not source-level immutability: an actual assignment or captured setter
+keeps the full mutable domain. Function syntax facts use a weak cache containing
+only declaration positions, never a first caller's semantic environment. Scalar
+deferred reads do not allocate the Scope-widening dictionary. Arguments and
+callbacks still evaluate on demand; no external live cell is frozen to recover
+a type proof.
 
 ## Focused acceptance
 
@@ -104,6 +118,23 @@ payloads. All 192 focused contracts passed on the isolated managed product.
 The standard-library owners separately run actual public Result composition,
 Heap drain/map/join and terminal pipelines. These focused compiler checks do not
 replace those API journeys or Native AOT acceptance.
+
+The Native wave built from `7b891eacedb0593bfb6a2f927616d6b0ab536f53`
+found that the original formal-only proof erased valid non-null refinements for
+the private `Map::insert` index and a standalone `parameter_types` result. Linux
+image `0b45d226284aa6a8f927bddc9653542925aaf3673c992e82da424c11fd7b7cc2`
+and a managed Release build of the same product source both reproduce the two
+`E0203` errors; this is a declaration-classification defect, not AOT divergence.
+After generalizing the analysis, the actual selected `library-policy` journey
+passes six source/object/executable routes, 75 byte observations and six negative
+diagnostics. The `type-traits` journey passes three routes with 29 outputs and
+three forbidden effects per route, plus four negative diagnostics.
+
+`tests/HigherOrderCalls --lexical-locations` adds 101 focused contracts: 72 staged
+executions, nine unsafe private/field capture rejections, twelve persistent REPL
+and private-function/editor checks, and eight standalone editor analyses. It
+covers declaration shadowing, captured writers, loop/match lifetimes and a real
+standard-module field replacement. The previous 192 contracts remain accepted.
 
 ## Captured record values and nullable admission
 

@@ -2,6 +2,12 @@ using Msync.Compiler;
 using Msync.Core;
 using Msync.Runtime;
 
+if (args.Contains("--lexical-locations", StringComparer.Ordinal))
+{
+    Console.WriteLine($"PASS {await LexicalLocationChecks.RunAsync()} lexical capture location contracts");
+    return;
+}
+
 var cases = new (string Name, string Source, Value Expected)[]
 {
     ("nested-apply", """

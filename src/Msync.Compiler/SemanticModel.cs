@@ -16,7 +16,7 @@ internal sealed record Binding(int Slot, Info Info, Template? Self = null, Edito
 internal sealed class StorageConstraint(TypeRef? type, Info? callables = null, StorageConstraint? source = null)
 {
     public TypeRef? Type { get; set; } = type;
-    public bool IsUnwrittenParameter { get; set; }
+    public bool IsUnwritten { get; set; }
     public Info? Callables { get; set; } = callables;
     public ImmutableDictionary<string, ConceptContract> ConceptContracts { get; set; } = ImmutableDictionary<string, ConceptContract>.Empty;
     public ImmutableDictionary<string, ConceptMemberContract> ConceptMemberContracts { get; set; } = ImmutableDictionary<string, ConceptMemberContract>.Empty;
@@ -103,6 +103,7 @@ internal sealed class Frame(string source, string sourceName, ImmutableDictionar
     public bool EditorReportErrors { get; set; }
     public bool DeferredCaptures { get; set; }
     public bool DeferredReads { get; set; }
+    public IReadOnlySet<int> UnwrittenLocations { get; init; } = ImmutableHashSet<int>.Empty;
     public EditorCallTrace? EditorCallTrace { get; set; }
     public List<Instruction> Code { get; } = [];
     public int Locals { get; set; }

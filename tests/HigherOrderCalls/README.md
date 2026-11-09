@@ -34,3 +34,10 @@ No alternate evaluator, recursion limit or source-library workaround is used.
 The focused managed run passed 192 contracts: 162 staged executions, eighteen
 editor result-type checks and twelve unsafe-refinement rejections. See the mechanism in
 [`generic-specialization-v080.md`](../../docs/design/generic-specialization-v080.md).
+
+`--lexical-locations` selects 101 additional declaration-lifetime contracts
+without repeating the accepted 192-case group. It exercises standalone/private
+nullable guards, lexical shadowing, captured setters, loop/match captures,
+standard-module mutation and future writes to persistent REPL roots. The same
+compiler mechanism repairs the actual Map insertion and type-trait CLI journeys;
+no library casts or extra null guards are introduced.

@@ -285,11 +285,11 @@ internal sealed partial class Compilation
     {
         var current = Current(frame, binding);
         // A Null value does not discard the captured cell's record contract.
-        if (!binding.Storage.IsUnwrittenParameter && current.Type == TypeRef.Null
+        if (!binding.Storage.IsUnwritten && current.Type == TypeRef.Null
             && binding.Info.Scope is { } declared && binding.Storage.Type is { } domain
             && (domain.Kind & TypeKind.Scope) != 0)
             current = current with { Scope = declared };
-        var constraint = binding.Storage.IsUnwrittenParameter ? null : binding.Storage.Type;
+        var constraint = binding.Storage.IsUnwritten ? null : binding.Storage.Type;
         return current.Scope is null ? CaptureInfo(current) with { Type = constraint ?? current.Type }
             : DeferredScopeCapture(current, constraint);
     }
@@ -335,7 +335,13 @@ internal sealed partial class Compilation
     {
         if (callee.Function is not { } function || function.Syntax.ReturnType is not null) return result with { Storage = null };
         if (!Accessor(function.Syntax.Body)) return WidenCallableResult(result);
-        Frame frame = new(function.Source, function.SourceName) { Facts = caller.Facts, EditorProbe = true, Concepts = function.Concepts };
+        Frame frame = new(function.Source, function.SourceName)
+        {
+            Facts = caller.Facts,
+            EditorProbe = true,
+            Concepts = function.Concepts,
+            UnwrittenLocations = UnwrittenLocations(function.Syntax)
+        };
         foreach (var (name, binding) in function.Captures)
         {
             var info = DeferredCapture(caller, binding);
@@ -354,7 +360,7 @@ internal sealed partial class Compilation
                 if (!type.Accepts(info.Type)) info = Retype(info, type);
             }
             Binding bound = new(frame.Allocate(), info, Constraint: info.Type);
-            bound.Storage.IsUnwrittenParameter = !ParameterMayBeWritten(function.Syntax, parameter.Name);
+            bound.Storage.IsUnwritten = frame.UnwrittenLocations.Contains(parameter.Span.Start);
             frame.Bind(parameter.Name, bound);
         }
         try
@@ -367,7 +373,7 @@ internal sealed partial class Compilation
     }
 
     private static Info WidenCallableResult(Info result) =>
-        result.Storage is { IsUnwrittenParameter: false, Type: { } type } ? result with { Type = type } : result;
+        result.Storage is { IsUnwritten: false, Type: { } type } ? result with { Type = type } : result;
 
     private static bool Accessor(Node node) => node switch
     {

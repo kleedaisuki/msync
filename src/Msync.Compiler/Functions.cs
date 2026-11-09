@@ -165,6 +165,7 @@ internal sealed partial class Compilation
             EditorProbe = caller.EditorProbe,
             EditorReportErrors = caller.EditorReportErrors,
             DeferredCaptures = caller.DeferredCaptures,
+            UnwrittenLocations = UnwrittenLocations(template.Syntax),
             EditorCallTrace = caller.EditorRecovery ? new(caller.SourceName, caller.Source, span, template.Syntax.Parameters, specialization.ParameterTypes, caller.EditorCallTrace) : null
         };
         frame.SelfCaptureSlots[template.Id] = Enumerable.Range(0, template.Captures.Count).ToArray();
@@ -218,7 +219,7 @@ internal sealed partial class Compilation
             Binding parameterBinding = new(frame.Allocate(), info, Origin: origin,
                 AdmitsNull: parameter.Nullable || parameterConstraint?.Nullable == true,
                 Constraint: parameterConstraint) { IsParameter = true };
-            parameterBinding.Storage.IsUnwrittenParameter = !ParameterMayBeWritten(template.Syntax, parameter.Name);
+            parameterBinding.Storage.IsUnwritten = frame.UnwrittenLocations.Contains(parameter.Span.Start);
             frame.Bind(parameter.Name, parameterBinding);
             CaptureParameter(frame, new(parameter.Span.Start, parameter.Name.Length));
             if (parameter.Type is not null) AttachConcept(annotationFrame, frame.Environment[parameter.Name].Storage, parameter.Nullable ? parameter.Type with { Nullable = true } : parameter.Type);

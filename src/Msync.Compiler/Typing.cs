@@ -17,6 +17,7 @@ internal sealed partial class Compilation
             var key = (declaration.Start, name);
             if (frame.Declarations.TryGetValue(key, out var previous)) binding = binding with { Identity = previous.Identity, Storage = previous.Storage };
             else frame.Declarations.Add(key, binding);
+            binding.Storage.IsUnwritten = frame.UnwrittenLocations.Contains(declaration.Start);
         }
         frame.Bind(name, binding);
         if (origin is not null) CaptureDefinition(frame, origin.Span, [origin]);

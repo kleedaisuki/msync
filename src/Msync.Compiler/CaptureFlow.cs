@@ -1,85 +1,163 @@
+using System.Runtime.CompilerServices;
 using Msync.Compiler.Syntax;
 
 namespace Msync.Compiler;
 
 internal sealed partial class Compilation
 {
-    private readonly Dictionary<(FunctionExpr Function, string Name), bool> parameterWrites = [];
+    private static readonly ConditionalWeakTable<FunctionExpr, CaptureWrites> functionWrites = new();
 
-    private bool ParameterMayBeWritten(FunctionExpr function, string name)
+    private static IReadOnlySet<int> UnwrittenLocations(FunctionExpr function) =>
+        functionWrites.GetValue(function, static syntax => CaptureWrites.Function(syntax)).Unwritten;
+
+    private sealed class CaptureWrites(IReadOnlySet<int> unwritten)
     {
-        var key = (function, name);
-        if (parameterWrites.TryGetValue(key, out bool saved)) return saved;
-        bool written = FindParameterWrite(function.Body, name);
-        parameterWrites.Add(key, written);
-        return written;
-    }
+        public IReadOnlySet<int> Unwritten { get; } = unwritten;
 
-    private static bool FindParameterWrite(BlockExpr body, string name)
-    {
-        return Writes(body, true, false);
-
-        bool Writes(Node node, bool visible, bool global)
+        public static CaptureWrites Function(FunctionExpr function)
         {
-            switch (node)
+            Writer writer = new();
+            writer.Function(function, new());
+            return new(writer.Unwritten());
+        }
+
+        public static IReadOnlySet<int> Document(Document document, bool closedRoot)
+        {
+            Writer writer = new();
+            writer.Statements(document.Statements, new(), new(), closedRoot);
+            return writer.Unwritten();
+        }
+
+        private sealed class Location(int? position)
+        {
+            public int? Position { get; } = position;
+            public bool Written { get; set; }
+        }
+
+        private sealed class LexicalScope(LexicalScope? parent = null)
+        {
+            private readonly LexicalScope? enclosing = parent;
+            private readonly Dictionary<string, Location> bindings = new(StringComparer.Ordinal);
+            public void Bind(string name, Location location) => bindings[name] = location;
+            public Location? Find(string name)
             {
-                case AssignmentExpr { Target: NameExpr target } assignment:
-                    return visible && target.Name == name || Writes(assignment.Value, visible, global);
-                case BlockExpr block:
-                    return Block(block, visible, global);
-                case FunctionExpr nested:
-                    return Writes(nested.Body, visible && nested.Name != name
-                        && nested.Parameters.All(parameter => parameter.Name != name), visible);
-                case FunctionDeclaration declaration:
-                    return Writes(declaration.Function, visible && declaration.Name != name, global);
-                case ScopeDeclaration declaration:
-                    return Writes(declaration.Scope, visible && declaration.Name != name, global);
-                case ScopeExpr scope:
-                    return Scope(scope, visible && scope.Name != name, global);
-                case ForExpr loop:
-                    return Writes(loop.Source, visible, global)
-                        || Writes(loop.Body, visible && !Binds(loop.Pattern, name), global);
-                case MatchExpr match:
-                    return Writes(match.Value, visible, global)
-                        || match.Arms.Any(arm => Writes(arm.Value, visible && !Binds(arm.Pattern, name), global));
-                default:
-                    return Children(node).Any(child => Writes(child, visible, global));
+                for (LexicalScope? scope = this; scope is not null; scope = scope.enclosing)
+                    if (scope.bindings.TryGetValue(name, out var location)) return location;
+                return null;
             }
         }
 
-        bool Block(BlockExpr block, bool visible, bool global)
+        private sealed class Writer
         {
-            foreach (var statement in block.Statements)
+            private readonly List<Location> locations = [];
+            public IReadOnlySet<int> Unwritten() => locations.Where(location => !location.Written && location.Position is not null)
+                .Select(location => location.Position!.Value).ToHashSet();
+
+            private Location Declare(int? position)
             {
-                if (Writes(statement, visible, global)) return true;
-                visible = statement switch
+                Location location = new(position);
+                if (position is not null) locations.Add(location);
+                return location;
+            }
+
+            public void Function(FunctionExpr function, LexicalScope captures)
+            {
+                LexicalScope environment = new(captures);
+                if (function.Name is { } self) environment.Bind(self, Declare(null));
+                foreach (var parameter in function.Parameters)
+                    environment.Bind(parameter.Name, Declare(parameter.Span.Start));
+                Statements(function.Body.Statements, environment, captures, true);
+            }
+
+            public void Statements(IReadOnlyList<Statement> statements, LexicalScope environment,
+                LexicalScope globals, bool privateLocals)
+            {
+                foreach (var statement in statements)
                 {
-                    LetStatement let when Binds(let.Pattern, name) => false,
-                    FunctionDeclaration function when function.Name == name => false,
-                    ScopeDeclaration scope when scope.Name == name => false,
-                    NativeDeclaration native when native.Name == name => false,
-                    GlobalStatement import when import.Names.Any(item => item.Name == name) => global,
-                    _ => visible
-                };
+                    switch (statement)
+                    {
+                        case LetStatement let:
+                            Visit(let.Value, environment, globals);
+                            Pattern(let.Pattern, environment, privateLocals);
+                            break;
+                        case FunctionDeclaration function:
+                            environment.Bind(function.Name, Declare(null));
+                            Function(function.Function, environment);
+                            break;
+                        case ScopeDeclaration scope:
+                            environment.Bind(scope.Name, Declare(null));
+                            Visit(scope.Scope, environment, globals);
+                            break;
+                        case NativeDeclaration native:
+                            environment.Bind(native.Name, Declare(null));
+                            break;
+                        case GlobalStatement import:
+                            foreach (var name in import.Names)
+                                environment.Bind(name.Name, globals.Find(name.Name) ?? Declare(null));
+                            break;
+                        default:
+                            Visit(statement, environment, globals);
+                            break;
+                    }
+                }
             }
-            return false;
-        }
 
-        bool Scope(ScopeExpr scope, bool visible, bool global)
-        {
-            foreach (var member in scope.Members)
+            private void Pattern(Pattern pattern, LexicalScope environment, bool privateLocal)
             {
-                if (Writes(member.Value, visible, global)) return true;
-                if (member.Name == name) visible = false;
+                if (pattern is NamePattern { Name: not "_" } name)
+                    environment.Bind(name.Name, Declare(privateLocal ? name.Span.Start : null));
+                if (pattern is TuplePattern tuple)
+                    foreach (var item in tuple.Items) Pattern(item, environment, privateLocal);
             }
-            return scope.Value is not null && Writes(scope.Value, visible, global);
+
+            private void Visit(Node node, LexicalScope environment, LexicalScope globals)
+            {
+                switch (node)
+                {
+                    case AssignmentExpr { Target: NameExpr target } assignment:
+                        if (environment.Find(target.Name) is { } location) location.Written = true;
+                        Visit(assignment.Value, environment, globals);
+                        return;
+                    case BlockExpr block:
+                        Statements(block.Statements, new(environment), globals, true);
+                        return;
+                    case FunctionExpr function:
+                        Function(function, environment);
+                        return;
+                    case ScopeExpr scope:
+                        Scope(scope, environment, globals);
+                        return;
+                    case ForExpr loop:
+                        Visit(loop.Source, environment, globals);
+                        LexicalScope iteration = new(environment);
+                        Pattern(loop.Pattern, iteration, true);
+                        Visit(loop.Body, iteration, globals);
+                        return;
+                    case MatchExpr match:
+                        Visit(match.Value, environment, globals);
+                        foreach (var arm in match.Arms)
+                        {
+                            LexicalScope alternative = new(environment);
+                            Pattern(arm.Pattern, alternative, true);
+                            Visit(arm.Value, alternative, globals);
+                        }
+                        return;
+                }
+                foreach (var child in Children(node)) Visit(child, environment, globals);
+            }
+
+            private void Scope(ScopeExpr scope, LexicalScope parent, LexicalScope globals)
+            {
+                LexicalScope environment = new(parent);
+                if (scope.Name is { } self) environment.Bind(self, Declare(null));
+                foreach (var member in scope.Members)
+                {
+                    Visit(member.Value, environment, globals);
+                    // Fields stay writable through aliases outside this syntax tree.
+                    environment.Bind(member.Name, Declare(null));
+                }
+                if (scope.Value is not null) Visit(scope.Value, environment, globals);
+            }
         }
     }
-
-    private static bool Binds(Pattern pattern, string name) => pattern switch
-    {
-        NamePattern { Name: not "_" } bound => bound.Name == name,
-        TuplePattern tuple => tuple.Items.Any(item => Binds(item, name)),
-        _ => false
-    };
 }

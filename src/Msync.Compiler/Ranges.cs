@@ -56,6 +56,7 @@ internal sealed partial class Compilation
             EditorReportErrors = frame.EditorReportErrors,
             DeferredCaptures = frame.DeferredCaptures,
             DeferredReads = frame.DeferredReads,
+            UnwrittenLocations = frame.UnwrittenLocations,
             EditorCallTrace = frame.EditorCallTrace
         };
         clone.AcquireRegions.AddRange(frame.AcquireRegions);
