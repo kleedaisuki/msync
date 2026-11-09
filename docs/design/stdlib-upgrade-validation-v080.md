@@ -97,3 +97,28 @@ Snapshot 2 accepted all three O2 source/`.mso`/`.mexe` routes, fifteen output-by
 comparisons, zero compile/bind authentications and five SSH clients per execution.
 The fixture and exact component SHA-256 identities are recorded in
 `.temp/stdlib-upgrade/snapshot2-ssh.json`.
+
+### Structural concepts over actual library objects
+
+The File/Command program additionally declares `WritableText` with a
+`write: fn(value: String) -> Null` requirement and calls a generic
+`save(destination: WritableText, text: String)` using the actual File service.
+This checks structural conformance of a source-library method, rather than a
+synthetic test-only algebra object.
+
+Producer managed snapshot 3 accepted List aliases/snapshots and Map/Set custom
+equality through all eighteen O0/O2/O3 source/`.mso`/`.mexe` routes, then exposed
+a separate Regex factory bug: its new `pattern()` accessor shadowed the captured
+String for sibling methods. The source-only parameter rename in `1d14693`
+corrects that binding error; this is why source module checking alone does not
+replace a real call through its returned object.
+
+The unchanged collected outputs of those eighteen successful routes were retained
+and independently compared in
+`.temp/stdlib-upgrade/snapshot3-collections-accepted.json`. Another eighteen
+successful routes cover environment snapshots and the concept-backed File/Command
+program, including all optimization levels, source removal and changed launch
+working directory. Their report is
+`.temp/stdlib-upgrade/snapshot3-env-concept-services.json`. Together these are
+thirty-six actual executions and 171 exact output-byte comparisons before the
+remaining corrected Regex factory routes.

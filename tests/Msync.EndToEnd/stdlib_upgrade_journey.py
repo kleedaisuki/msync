@@ -160,10 +160,16 @@ $std::environment::get_or(name, "removed") -> ./removed.txt;
     Example(
         "directory-file-and-command",
         r"""
+concept WritableText {
+    write: fn(value: String) -> Null,
+};
+fn save(destination: WritableText, text: String) {
+    destination::write(text)
+};
 let directory = $std::files::Directory(./data);
 directory::create();
 let file = directory::file("payload.txt");
-file::write("before");
+save(file, "before");
 file::write("after");
 file::append("🙂");
 let command = $std::commands::Command(__COMMAND_EXECUTABLE__, __COMMAND_ARGS__);
