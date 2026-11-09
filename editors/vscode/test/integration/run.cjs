@@ -65,10 +65,11 @@ async function main() {
         managedAssemblies[entry.name] = createHash('sha256').update(bytes).digest('hex');
     }
     const languageUpgradeOnly = process.env.MSYNC_TEST_LANGUAGE_UPGRADE_ONLY === '1';
+    const standardConceptsOnly = process.env.MSYNC_TEST_STANDARD_CONCEPTS_ONLY === '1';
     const protocolOnly = process.env.MSYNC_TEST_PROTOCOL_ONLY === '1';
     const artifactOnly = process.env.MSYNC_TEST_ARTIFACT_ONLY === '1';
     const stdlibOnly = process.env.MSYNC_TEST_STDLIB_ONLY === '1';
-    const suite = languageUpgradeOnly ? 'language-upgrade' : stdlibOnly ? 'stdlib' : artifactOnly ? 'artifact' : protocolOnly ? 'protocol' : 'full';
+    const suite = standardConceptsOnly ? 'standard-concepts' : languageUpgradeOnly ? 'language-upgrade' : stdlibOnly ? 'stdlib' : artifactOnly ? 'artifact' : protocolOnly ? 'protocol' : 'full';
     const metadata = { serverPath, serverSha256, managedAssemblies, runRoot, suite, startedAt: new Date().toISOString() };
     await fs.writeFile(path.join(runRoot, 'run.json'), JSON.stringify(metadata, null, 2));
     const log = createWriteStream(path.join(runRoot, 'host.log'));
@@ -80,7 +81,7 @@ async function main() {
     try {
         await runTests({
             extensionDevelopmentPath: extensionRoot,
-            extensionTestsPath: path.join(__dirname, languageUpgradeOnly ? 'language-upgrade-suite.cjs' : stdlibOnly ? 'stdlib-suite.cjs' : artifactOnly ? 'artifact-suite.cjs' : protocolOnly ? 'protocol-suite.cjs' : 'suite.cjs'),
+            extensionTestsPath: path.join(__dirname, standardConceptsOnly ? 'standard-concepts-suite.cjs' : languageUpgradeOnly ? 'language-upgrade-suite.cjs' : stdlibOnly ? 'stdlib-suite.cjs' : artifactOnly ? 'artifact-suite.cjs' : protocolOnly ? 'protocol-suite.cjs' : 'suite.cjs'),
             extensionTestsEnv: {
                 MSYNC_TEST_SERVER_PATH: serverPath,
                 MSYNC_TEST_WORKSPACE: directories.workspace,

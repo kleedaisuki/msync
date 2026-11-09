@@ -155,7 +155,49 @@ let title = label(instance);
 Concepts describe required members and callable signatures without opening the
 runtime type universe. Named constraints participate in completion, hover,
 definition navigation and the document outline. A concept name is a type;
-`concept` and `type` remain declaration keywords. Conversion uses `as`,
+`concept` and inline `typename` remain declaration keywords. Associated names
+are introduced at their first requirement and reused as type constraints:
+
+```text
+concept Product {
+    first?: typename First,
+    second?: typename Second,
+};
+fn preserve(value: $std::concepts::Option?) -> $std::concepts::Option? {
+    value
+};
+let selected? = preserve($std::data::Option::some("Klee"));
+```
+
+The standard concepts participate in type-context completion, including each
+step of `$std::concepts::Option`. Completing a segment replaces only that
+segment; it does not duplicate `$` or its namespace qualifier. Hover shows the
+actual requirement and its source documentation. Definition navigation opens
+the executable's embedded `concepts.msync`; associated names navigate to their
+inline binder. Concepts are compile-time constraints, not runtime Scope fields.
+
+Named class Scopes group constructors and associated operations. Instances
+remain ordinary data Scopes, with explicit receiver arguments and policy
+Scopes checked by concepts:
+
+```text
+scope SameNumber {
+    Self: Number,
+    equal: fn(left: Number, right: Number) -> Bool { left == right },
+};
+let values = $std::containers::Set::with-equality([3, 1], SameNumber);
+$std::containers::Set::insert(values, 2);
+let report = $std::io::File::new(./report.txt);
+```
+
+Class names use the type role; their lowercase-kebab function names use the
+function role. The editor preserves hyphenated names when completing a method
+such as `with-equality` or `read-text`. Policy calls specialize through the
+normal generic `fn`/`scope` mechanism, not through a runtime method registry.
+Historical factory APIs remain available for existing source; new examples use
+the named families under `containers`, `data`, `io`, `process`, `text` and `regex`.
+
+Conversion uses `as`,
 not a dynamic-looking cast helper. Only Path/String conversion is implicit.
 Numeric-looking filename components retain path roles rather than being
 partially colored as numbers; inferred semantic tokens refine the fallback.
@@ -238,6 +280,13 @@ function/Scope aliases, inferred semantic roles, useful hovers, 80-column
 formatting and member-access diagnostics with call context. A transfer fixture
 must remain unexecuted throughout. `MSYNC_TEST_PROTOCOL_ONLY=1`
 selects the narrower semantic URI journey, including incomplete edits.
+
+`MSYNC_TEST_STANDARD_CONCEPTS_ONLY=1` selects the independent standard-concept
+journey: inline associated binders, embedded definitions, qualified constraints,
+hyphenated policy completion and named container families under light and dark
+themes. It then checks and runs the editor-produced source with that same
+fingerprinted executable, verifying its Option and ordered-container results
+inside the isolated workspace. It does not rerun the unrelated artifact suite.
 
 The 0.8 native-host journey passed on 2026-11-08 using VS Code **1.144.0**, the
 production esbuild extension bundle and the C# development apphost. It reported
