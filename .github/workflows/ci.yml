@@ -243,6 +243,8 @@ jobs:
           binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
           child: Path = Path('tests/StdlibIOProcess/bin/Release/net10.0') / ('Msync.StdlibIOProcess.Tests.exe' if os.name == 'nt' else 'Msync.StdlibIOProcess.Tests')
           subprocess.run(['python', 'tests/StdlibIOProcess/native_journey.py', '--binary', str(binary), '--child', str(child)], check=True)
+          if os.name != 'nt':
+              subprocess.run(['python', 'tests/StdlibIOProcess/remote_native_journey.py', '--binary', str(binary), '--child', str(child)], check=True)
       - name: Publish native memory optimizer component observation image
         id: memory-components
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.memory == 'true' && runner.os == 'Windows' && steps.package.outcome == 'success' }}
