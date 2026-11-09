@@ -1,5 +1,7 @@
 *.sh text eol=lf
 *.cs text eol=lf
+# Embedded language sources contain literal newlines; checkout must not change values.
+*.msync text eol=lf
 src/Msync.Cli/Skills/*.md text eol=lf
 packaging/licenses/** -text
 # Preserve the upstream license bytes, including its final blank line.
