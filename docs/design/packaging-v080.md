@@ -2,6 +2,62 @@
 
 ## Current complete local delivery set
 
+The current Number/concept language upgrade is product version **0.8.0**, default
+**O2**, with **current-only binary format 4**. Native source is
+`a952448083a6f0bea9ee2def0e775dcd804500f7`; later fixture fixes do not change its
+executable bytes. There is no old-IR reading compatibility: recompile older
+`.mso`/`.mexe` files from source. No public release, tag or pull request was created.
+
+| Asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `msync-0.8.0-linux-x86_64.tar.gz` | 7,035,661 | `caa61b73864eae5cfa2914e616e1a184ecadaec63d1c6be6704f07c9c01c072e` |
+| `msync-0.8.0-windows-x86_64.zip` | 7,549,823 | `bd44b4b16f2f5c619d469990ada4de660be475991899d69d6bc8d16efebd887f` |
+| `msync-0.8.0-windows-x86_64-setup.exe` | 7,269,994 | `0404cda9214996cdb79dba9f0c057ba925841c3273794a289f88e7016d0b2572` |
+| `msync-language-0.8.0.vsix` | 135,035 | `fb2e6d333828ce18956fd63aa71a2b7e6a1e86d0b7c9474a69b1e01203c99e47` |
+
+`dist/SHA256SUMS` covers exactly these four payloads. Each portable manifest has
+253 verified entries, including all 16 embedded standard-source files (15 public
+modules plus the internal core) and 59 modified MPL-2.0 PrettyPrompt source files.
+Windows source-line-ending differences are normalized only when comparing the
+corresponding source; every manifest checksum still verifies the actual bytes.
+All nine VSIX product payloads match the tested local bundle, grammar, snippets,
+documentation and notices.
+
+The accepted executable identities are:
+
+- Linux: `c828e4135c837da84b77f39c5117f9167742d27ef77830c170de59242772d69e`.
+- Windows: `a76b773498662ef3034221d339bbce5f18ee020c6aca50f7ab804d430f6d3d81`.
+
+[The native publication wave](https://github.com/kleedaisuki/msync/actions/runs/42619095812)
+accepted Linux's full changed language, real PTY, source library, empty factories,
+current artifacts, physical Path display and actual selected SSH workflows.
+Windows accepted package smoke, staged language/format behavior, captured-context
+filesystem semantics and matched performance there; its Python evidence printer
+then exposed the host CP1252 default. The UTF-8 fixture repair
+[reused the exact same Windows executable](https://github.com/kleedaisuki/msync/actions/runs/42620165945)
+for tooling/ConPTY and the remaining library/reference/artifact/display phases.
+It did not rebuild Native AOT or repeat the already accepted language/performance
+matrix.
+
+The final VS Code 1.144 host at `.temp/vscode-host-oa5zbm` used the absolute Linux
+binary path above with no managed assemblies. It accepted concept hover,
+definition, outline and completion; Number/`as`/`@`/named namespace roles in dark
+and light themes; and idempotent Boolean layout with maximum width 61. Two
+host-test-only corrections (`8b584a9`) repaired decimal-token substring selection
+and handling of an empty formatting edit, without changing product/VSIX bytes.
+
+The [upgrade delivery record](language-upgrade-delivery-v080.md) indexes focused
+owner and platform evidence. Complete raw collation metadata is
+`.temp/final-language-upgrade-delivery-v080.json`; the payload audit is
+`.temp/language-upgrade-delivery/final-payload-audit.json`.
+
+Because version 0.8.0 is retained, install both updated Native package and VSIX,
+reload the VS Code window, then run **msync: Restart Language Server**. A stale
+same-version executable selected by PATH or `msync.serverPath` does not provide
+the new language or binary format.
+
+## Previous mutable-state delivery set
+
 The current mutable-state/effect pipeline source is `372296b`, still version
 0.8.0. Default compilation is O2; O1 remains explicit for lower compilation cost,
 and O3 is an explicit tier. Current artifacts use format 3 with independent

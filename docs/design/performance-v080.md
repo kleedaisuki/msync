@@ -1344,3 +1344,55 @@ Frozen Core SHA-256 identities were
 (after). Raw samples and isolated source/build images are disposable under
 `.temp/context-binding/controlled-final.json`. This is a binding-cost result,
 not a claim about CLI startup or disk throughput.
+
+## Full Number/concept upgrade: matched native CLI observations
+
+The final language-upgrade publication source is
+`a952448083a6f0bea9ee2def0e775dcd804500f7`, compared with the accepted standard-library
+baseline `e85e6170598dfd38adefbcb778e43647686c3096`. Both images ran on the same
+native Linux runner or the same native Windows runner in
+[run 42619095812](https://github.com/kleedaisuki/msync/actions/runs/42619095812).
+Each image produced and consumed its own `.mso`/`.mexe`; old IR compatibility was
+neither required nor simulated. Version remains 0.8.0 and default O2.
+
+The no-library/Bool O0 checks alternate image order, with two warmups and fifteen
+observations. The staged workloads use two warmups and nine observations per
+image, with 128 or 1024 statements. Times below are external process p50 in
+milliseconds, including startup; they are not managed component timings or CI
+thresholds.
+
+| Workload | Linux before → after ms | Windows before → after ms |
+| --- | ---: | ---: |
+| No-library O0 check | 3.959 → 3.791 | 14.747 → 14.847 |
+| Bool module O0 check | 4.605 → 4.646 | 15.904 → 15.833 |
+| 128 transfer statements, check | 4.571 → 4.444 | 14.478 → 14.224 |
+| 1024 transfer statements, check | 6.242 → 6.707 | 19.350 → 19.082 |
+| 128 generic value bindings, check | 7.037 → 6.677 | 19.381 → 19.362 |
+| 1024 generic value bindings, check | 65.182 → 66.321 | 120.575 → 122.094 |
+| 128 generic values, object execution | 6.006 → 5.170 | 16.018 → 16.102 |
+| 1024 generic values, object execution | 5.001 → 5.272 | 16.537 → 15.982 |
+| 128 generic values, bound execution | 5.120 → 4.953 | 15.877 → 15.819 |
+| 1024 generic values, bound execution | 4.992 → 5.087 | 15.946 → 15.870 |
+
+The expanded grammar/type contract does not show a general CLI speedup. Small
+commands remain in roughly the same startup-dominated interval. The observed
+1024-binding checks cost about 1.1 ms more on Linux and 1.5 ms more on Windows;
+the samples do not isolate a causal regression. Linux transfer checking is
+0.465 ms higher in this cohort while Windows is 0.268 ms lower. Object/bound
+execution differences are small and mixed. Retain those observations rather than
+advertise only the favorable cells.
+
+The separately isolated [contextual binding result](#contextual-binding-one-optimizer-fixed-point)
+measures the useful internal improvement: one optimizer fixed point and
+copy-on-change lowering reduce prepared 128-transfer binding from 0.4634 to
+0.2524 ms and synchronous allocations from 197,480 to 100,936 bytes. That managed
+component result is not substituted for the actual native CLI numbers above.
+The [compiler component record](performance-components-v080.md) also documents
+the repaired Range<Scope> loop-shape convergence, rather than hiding a previously
+nonterminating Map workload inside average timings.
+
+Raw per-image identities, samples and p95 observations are under
+`artifacts/ci/42619095812/{linux,windows}/download/.temp/platform-results/language-upgrade/`:
+`loading-latency.json`, `latency-128.json` and `latency-1024.json`. The final Native
+images are Linux SHA-256 `c828e4135c837da84b77f39c5117f9167742d27ef77830c170de59242772d69e`
+and Windows `a76b773498662ef3034221d339bbce5f18ee020c6aca50f7ab804d430f6d3d81`.

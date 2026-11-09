@@ -173,6 +173,51 @@ against that immutable snapshot:
   routes. Delivery reuses that local evidence and runs the new platform boundary.
 
 The product tree at `c2caa704e311e3cf6622e748adc1f36a73d5b268` is committed; remaining
-fixture migrations do not imply uncommitted product bytes. Native platform
-acceptance, final VS Code host observation and final distribution audit remain
-pending until their immutable image reports are recorded below.
+fixture migrations do not imply uncommitted product bytes. At that handoff,
+native platform acceptance, the final VS Code host and the distribution audit
+were pending. The subsequent closure below records their actual results.
+
+## Final native and editor closure
+
+The upgrade is delivered locally as version **0.8.0**, default **O2**, current-only
+IR **4**. Exact native production source is
+`a952448083a6f0bea9ee2def0e775dcd804500f7`. Test-only follow-ups do not change those
+product bytes. No public release/tag was created or moved.
+
+| Boundary | Actual accepted result |
+| --- | --- |
+| Linux Native AOT | [Job 129166315467](https://github.com/kleedaisuki/msync/actions/runs/42619095812/job/129166315467) passed package smoke, all eight focused phases including real PTY and selected SSH, and matched native performance |
+| Windows Native language | [Job 129166315112](https://github.com/kleedaisuki/msync/actions/runs/42619095812/job/129166315112) passed package smoke, nine language stages/four diagnostics/four format contracts, matched performance and the captured-context filesystem journey |
+| Windows immutable-image follow-up | [Job 129169946668](https://github.com/kleedaisuki/msync/actions/runs/42620165945/job/129169946668) passed tooling/ConPTY, library, empty factories, skill, disassembly and Path display using the exact first image |
+| Actual VS Code 1.144 | `.temp/vscode-host-oa5zbm` passed the language-upgrade suite with absolute final Linux executable, no managed assemblies, two themes, concept navigation/completion and idempotent maximum-61-column formatting |
+| Distribution | Four final assets and complete checksums audited; 253 manifest entries on each OS, 16 corresponding standard sources, 59 modified MPL sources and nine matching VSIX product payloads |
+
+Accepted executable SHA-256 identities are Linux
+`c828e4135c837da84b77f39c5117f9167742d27ef77830c170de59242772d69e`
+and Windows
+`a76b773498662ef3034221d339bbce5f18ee020c6aca50f7ab804d430f6d3d81`.
+The final actual-host record contains the absolute Linux path and this exact
+hash; it did not accidentally launch a Debug/PATH server.
+
+The first Windows job's aggregate status is failure, not silently reclassified
+as success: its Python runner tried to print the completed tooling report through
+CP1252. Fixture `7aae458` explicitly configures UTF-8 output and child Python;
+only the affected and not-yet-executed phases were selected in the immutable
+follow-up. The accepted language/performance/context journeys were not repeated.
+The host suite also required test-only decimal-token-offset and empty-format-edit
+repairs in `8b584a9`; neither changed the Native or VSIX product bytes.
+
+Final raw collation is `.temp/final-language-upgrade-delivery-v080.json`.
+The refreshed `.temp/language-upgrade-delivery/native-wave.json` and
+`windows-reuse-wave.json` contain completed job states, not dispatch-time queued
+snapshots. Original native source and fixture revisions remain distinct there.
+Phase logs/results live under
+`artifacts/ci/42619095812/{linux,windows}/download/.temp/platform-results/language-upgrade/`
+and the downloaded Windows reuse artifact under `artifacts/ci/42620165945/windows/`.
+The [current package inventory](packaging-v080.md#current-complete-local-delivery-set)
+and [matched native performance record](performance-v080.md#full-numberconcept-upgrade-matched-native-cli-observations)
+provide the asset hashes and complete measurement interpretation.
+
+Install both the Native package and VSIX from `dist/`, reload the editor window,
+and restart the language server. Recompile old `.mso`/`.mexe` files. Existing
+same-version installations must not retain a stale `msync.serverPath` binary.
