@@ -6,11 +6,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform
 import subprocess
 import sys
 from dataclasses import asdict
+from io import TextIOWrapper
 from pathlib import Path
+from typing import cast
 
 from platform_journeys import ROOT, Phase, run_phase
 
@@ -27,6 +30,9 @@ JOURNEYS: tuple[tuple[str, str], ...] = (
 
 
 def main() -> int:
+    cast(TextIOWrapper, sys.stdout).reconfigure(encoding="utf-8")
+    cast(TextIOWrapper, sys.stderr).reconfigure(encoding="utf-8")
+    os.environ["PYTHONUTF8"] = "1"
     parser: argparse.ArgumentParser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument(

@@ -44,6 +44,10 @@ on:
         description: Optional polish groups portable,editor,editing,identifiers,state,closing,linear,memory,artifacts,artifact_protocol,call_order,scheduler,stdlib,stdlib_docs,upgrade,completion,authentication,presentation_console,hints_console,wsl
         type: string
         default: ''
+      upgrade_phases:
+        description: Optional comma-separated current-upgrade phases for immutable-image follow-up
+        type: string
+        default: ''
       polish_only:
         description: Build native packages and exercise changed diagnostics, insight and formatter contracts only
         type: boolean
@@ -140,12 +144,16 @@ jobs:
         shell: python
         env:
           PACKAGE_RID: ${{ matrix.rid }}
+          UPGRADE_PHASES: ${{ inputs.upgrade_phases }}
         run: |
           import os
           import subprocess
           from pathlib import Path
           binary: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync.exe' if os.name == 'nt' else 'msync')
           arguments: list[str] = ['python', 'packaging/language_upgrade.py', '--binary', str(binary), '--output', '.temp/platform-results/language-upgrade']
+          for phase in os.environ['UPGRADE_PHASES'].split(','):
+              if phase.strip():
+                  arguments.extend(['--phase', phase.strip()])
           if os.name != 'nt':
               arguments.append('--ssh-fixture')
           subprocess.run(arguments, check=True)
@@ -169,7 +177,7 @@ jobs:
           for size in (128, 1024):
               subprocess.run(['python', 'tests/Performance/journeys.py', '--previous-aot', previous, '--aot', str(binary), '--samples', '9', '--warmups', '2', '--case', 'check-batch', '--case', 'check-values', '--case', 'values-object', '--case', 'values-bound', '--statements', str(size), '--files', '1', '--bytes', '4096', '--output', f'.temp/platform-results/language-upgrade/latency-{size}.json'], check=True)
       - name: Exercise changed frozen-context paths on Windows
-        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.upgrade == 'true' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.upgrade == 'true' && inputs.reuse_run == '' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: dotnet run --project tests/ContextBinding/Msync.ContextBinding.Tests.csproj -c Release -p:RestoreLockedMode=true -p:BuildInParallel=false
       - name: Exercise changed terminal, compiler insight and formatter user journeys
         if: inputs.polish_only && (steps.polish.outputs.portable == 'true' || steps.polish.outputs.editor == 'true' || steps.polish.outputs.editing == 'true' || steps.polish.outputs.identifiers == 'true' || steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true' || steps.polish.outputs.linear == 'true' || steps.polish.outputs.memory == 'true' || steps.polish.outputs.artifacts == 'true' || steps.polish.outputs.artifact_protocol == 'true' || steps.polish.outputs.call_order == 'true' || steps.polish.outputs.scheduler == 'true' || steps.polish.outputs.stdlib == 'true' || steps.polish.outputs.stdlib_docs == 'true' || steps.polish.outputs.completion == 'true' || (steps.polish.outputs.authentication == 'true' && runner.os == 'Linux')) && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
