@@ -36,9 +36,9 @@ public static class HirLowerer
                 HirTemplateId id = new(index);
                 var template = hir.Templates[index];
                 code[layout.Templates[id]] = new(template.Name, template.Parameters.Length,
-                    template.Parameters.Length + template.Captures.Length,
+                    template.Parameters.Length + (template.Captures.IsDefault ? 0 : template.Captures.Length),
                     [new(OpCode.Null), new(OpCode.Return)], TypeRef.Null,
-                    template.Captures.Length);
+                    template.Captures.IsDefault ? 0 : template.Captures.Length);
             }
             if (code.Any(function => function is null))
                 throw new InvalidOperationException("A persistent HIR module must retain its prior callable definitions.");

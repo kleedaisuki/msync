@@ -10,7 +10,7 @@ and serialized context-bound `.mexe`. They cover arithmetic, shared captures,
 callee/argument order, branches, matches, value loops, iterator break, Scope
 field mutation, named-self reassignment and generic identity/dispatch. Three
 additional checks exercise two persistent HIR generations and the explicit
-location/export layout. The accepted local run passed **84 contracts** with
+location/export layout. The accepted local run passed **85 contracts** with
 zero compiler warnings.
 
 ```text

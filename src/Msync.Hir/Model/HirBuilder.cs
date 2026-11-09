@@ -26,7 +26,25 @@ public sealed class HirBuilder
     public List<HirTemplateClosure> TemplateClosures { get; } = [];
     public List<HirConcept> Concepts { get; } = [];
     public List<HirExport> Exports { get; } = [];
-    private readonly Dictionary<HirType, HirTypeId> types = [];
+    private readonly Dictionary<HirType, HirTypeId> types = new(new TypeComparer());
+
+    private sealed class TypeComparer : IEqualityComparer<HirType>
+    {
+        public bool Equals(HirType? first, HirType? second) => ReferenceEquals(first, second)
+            || first is not null && second is not null && first.RuntimeType == second.RuntimeType
+            && first.Shape == second.Shape && first.Signature == second.Signature
+            && first.Element == second.Element && first.TypeParameter == second.TypeParameter
+            && first.Concept == second.Concept && first.Nullable == second.Nullable
+            && first.Alternatives.AsSpan().SequenceEqual(second.Alternatives.AsSpan());
+        public int GetHashCode(HirType type)
+        {
+            HashCode hash = new();
+            hash.Add(type.RuntimeType); hash.Add(type.Shape); hash.Add(type.Signature);
+            hash.Add(type.Element); hash.Add(type.TypeParameter); hash.Add(type.Concept); hash.Add(type.Nullable);
+            foreach (var alternative in type.Alternatives.AsSpan()) hash.Add(alternative);
+            return hash.ToHashCode();
+        }
+    }
 
     public HirTypeId Type(TypeRef type) => Type(new HirType(type));
     public HirTypeId Type(HirType type)

@@ -32,6 +32,12 @@ foreach (var (name, make, expected) in new (string, Func<HirModule>, double)[]
         }
     }
 }
+HirBuilder canonical = new();
+HirTypeId variable = canonical.Type(new HirType(TypeRef.Any, TypeParameter: 0));
+HirTypeId textType = canonical.Type(TypeRef.String);
+Require(canonical.Type(new HirType(TypeRef.Any, Alternatives: [variable, textType]))
+    == canonical.Type(new HirType(TypeRef.Any, Alternatives: [variable, textType])),
+    "Equivalent symbolic types did not retain one canonical identity");
 Example persistent = New();
 var persistentX = persistent.Location("x", persistent.NumberType);
 persistent.Hir.Exports.Add(new("x", persistentX));
