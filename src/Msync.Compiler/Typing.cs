@@ -51,9 +51,17 @@ internal sealed partial class Compilation
             return ConceptType(frame, syntax);
         }
         if (!LanguageTypes.TryResolve(syntax.Name, out TypeRef type))
-            throw Error(frame, $"Unknown type '{syntax.Name}'.", syntax.Span,
-                label: "not a built-in type",
-                help: $"Use {string.Join(", ", LanguageTypes.Names.Select(name => name == "Range" ? "Range<T>" : name))}.", code: "E0202");
+        {
+            bool shadowed = syntax.Name.StartsWith(StandardCachePrefix, StringComparison.Ordinal)
+                && frame.Environment.ContainsKey("std");
+            var error = Error(frame, $"Unknown type '{syntax.Name}'.", syntax.Span,
+                label: "unknown type or concept",
+                help: shadowed ? "The lexical 'std' binding shadows the builtin standard namespace. Rename that binding to use standard concept declarations."
+                    : $"Use a declared concept, a qualified standard concept, or {string.Join(", ", LanguageTypes.Names.Select(name => name == "Range" ? "Range<T>" : name))}.", code: "E0202");
+            if (shadowed && frame.Environment["std"].Origin is { } origin)
+                error.Diagnostic.Related.Add(new(origin.SourceName, origin.Source, origin.Span, "this binding shadows the standard namespace"));
+            throw error;
+        }
         if (syntax.Name == "Range" && syntax.Arguments.Count != 0) type = new(TypeKind.Range, ResolveType(frame, syntax.Arguments[0]));
         foreach (var alternative in syntax.Alternatives) type = TypeRef.Union(type, ResolveType(frame, alternative));
         return syntax.Nullable ? type.WithNull : type;
