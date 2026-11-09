@@ -302,7 +302,13 @@ internal sealed partial class SemanticAnalyzer
                 foreach (var capture in callable.Captures)
                     if (ContainsCallable(context.Values.GetValueOrDefault(capture.Source, capture.Value), template, context, visited)) return true;
         }
-        return false;
+        if (value.Scope is { } scope)
+        {
+            scope = context.Objects.GetValueOrDefault(scope.Region, scope);
+            foreach (var field in scope.Fields.Values)
+                if (ContainsCallable(field, template, context, visited)) return true;
+        }
+        return value.Element is { } element && ContainsCallable(element, template, context, visited);
     }
 
     private string InstanceKey(HirTemplateId id, IReadOnlyList<SemanticValue> arguments,

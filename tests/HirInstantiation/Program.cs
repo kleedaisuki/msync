@@ -17,6 +17,7 @@ foreach (var test in new (string Name, string Source, double Expected, string Fu
     ("fresh-field-capture-separation", "fn make() { scope { value?: 1, get: fn { value } } }; let first = make(); let second = make(); first::value = null; if second::get()? { 9 } else { 7 }", 7, "make", 1),
     ("scope-write-projection", "fn set(x) { x::n = 7 }; let a = scope { n: 1 }; let b = scope { n: 2 }; set(a); set(b); b::n", 7, "set", 1),
     ("returned-closure-projection", "fn make(x) { fn { x } }; let first = make(2); let second = make(9); first(); second()", 9, "make", 1),
+    ("scope-recursive-signature", "scope Math { count: fn(x) { if x == 0 { 0 } else { Math::count(x - 1) } } }; Math::count(3)", 0, "<lambda>", 1),
     ("recursive-inferred-signature", "fn count(x) { if x == 0 { 0 } else { count(x - 1) } }; count(3)", 0, "count", 1),
     ("query-does-not-publish", "fn add(x) { x + 1 }; let t = decltype(add(2)); 3", 3, "add", 0),
     ("recursive-query-promise", "fn count(x: Number) -> Number { if x == 0 { 0 } else { count(x - 1) } }; let t = decltype(count(2)); count(2)", 0, "count", 1)
