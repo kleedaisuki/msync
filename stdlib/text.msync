@@ -2,28 +2,69 @@
 let newline = "
 ";
 native fn append_chunk(chunks: Range<String>, text: String) -> Range<String>;
+
+# Chunk policies preserve ordered concatenation; their storage need not be eager.
+scope ChunkStorage {
+    append: fn(chunks: Range<String>, text: String) -> Range<String> {
+        append_chunk(chunks, text)
+    },
+    build: fn(chunks: Range<String>) -> String {
+        $std::string::join(chunks, "")
+    },
+};
+
+# Instances contain data and one shared policy, not captured accessor functions.
+scope StringBuilder {
+    with-policy: fn(policy: $std::concepts::TextChunks) {
+        scope { chunks: [""], length: 0, policy: policy }
+    },
+    new: fn {
+        scope { chunks: [""], length: 0, policy: ChunkStorage }
+    },
+    append: fn(self: $std::concepts::TextBuffer, text: String) {
+        self::chunks = self::policy::append(self::chunks, text);
+        self::length = self::length + $std::string::length(text);
+    },
+    append-line: fn(self: $std::concepts::TextBuffer, text: String) {
+        self::chunks = self::policy::append(self::chunks, text);
+        self::chunks = self::policy::append(self::chunks, newline);
+        self::length = self::length + $std::string::length(text) + 1;
+    },
+    append-all: fn(self: $std::concepts::TextBuffer, values: Range<String>) {
+        for text in values {
+            self::chunks = self::policy::append(self::chunks, text);
+            self::length = self::length + $std::string::length(text);
+        };
+    },
+    clear: fn(self: $std::concepts::TextBuffer) {
+        self::chunks = [""];
+        self::length = 0;
+    },
+    build: fn(self: $std::concepts::TextBuffer) -> String {
+        self::policy::build(self::chunks)
+    },
+    len: fn(self: $std::concepts::TextBuffer) -> Number { self::length },
+    is-empty: fn(self: $std::concepts::TextBuffer) -> Bool {
+        self::length == 0
+    },
+    snapshot: fn(self: $std::concepts::TextBuffer) -> String {
+        self::policy::build(self::chunks)
+    },
+};
+
+# Compatibility factory; new code uses StringBuilder's associated operations.
 fn Builder() {
-    let chunks = [""];
-    let characters = 0;
-    let append = fn(value: String) {
-        chunks = append_chunk(chunks, value);
-        characters = characters + $std::string::length(value);
-    };
+    let self = StringBuilder::new();
     scope {
-        append: append,
-        append_line: fn(value: String) { append(value); append(newline); },
+        append: fn(value: String) { StringBuilder::append(self, value) },
+        append_line: fn(value: String) { StringBuilder::append-line(self, value) },
         append_all: fn(values: Range<String>) {
-            for value in values { append(value); };
+            StringBuilder::append-all(self, values)
         },
-        clear: fn {
-            chunks = [""];
-            characters = 0;
-        },
-        build: fn {
-            $std::string::join(chunks, "")
-        },
-        length: fn { characters },
-        empty: fn { characters == 0 }
+        clear: fn { StringBuilder::clear(self) },
+        build: fn { StringBuilder::build(self) },
+        length: fn { self::length },
+        empty: fn { self::length == 0 }
     }
 };
 

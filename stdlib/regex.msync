@@ -7,16 +7,40 @@ native fn replace(text: String, pattern: String, replacement: String) -> String;
 native fn split(text: String, pattern: String) -> Range<String>;
 native fn escape(text: String) -> String;
 
+# A pattern is a specification record; matching remains a selected operation.
+scope Pattern {
+    new: fn(expression: String) { scope { expression: expression } },
+    is-match: fn(self: $std::concepts::PatternSpec, text: String) -> Bool {
+        is_match(text, self::expression)
+    },
+    find: fn(self: $std::concepts::PatternSpec, text: String) {
+        find(text, self::expression)
+    },
+    matches: fn(self: $std::concepts::PatternSpec, text: String) {
+        matches(text, self::expression)
+    },
+    replace: fn(self: $std::concepts::PatternSpec, text: String,
+        replacement: String) -> String {
+        replace(text, self::expression, replacement)
+    },
+    split: fn(self: $std::concepts::PatternSpec, text: String) {
+        split(text, self::expression)
+    },
+};
+
+# Compatibility factory; new code uses Pattern's associated operations.
 fn compile(expression: String) {
+    let operations = Pattern;
+    let self = operations::new(expression);
     scope {
-        pattern: fn { expression },
-        is_match: fn(text: String) { is_match(text, expression) },
-        find: fn(text: String) { find(text, expression) },
-        matches: fn(text: String) { matches(text, expression) },
+        pattern: fn { self::expression },
+        is_match: fn(text: String) { operations::is-match(self, text) },
+        find: fn(text: String) { operations::find(self, text) },
+        matches: fn(text: String) { operations::matches(self, text) },
         replace: fn(text: String, replacement: String) {
-            replace(text, expression, replacement)
+            operations::replace(self, text, replacement)
         },
-        split: fn(text: String) { split(text, expression) }
+        split: fn(text: String) { operations::split(self, text) }
     }
 };
 fn values(text: String, pattern: String) {

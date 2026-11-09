@@ -3,6 +3,12 @@ using Msync.Core;
 using Msync.Runtime;
 using Frontend = Msync.Compiler.Compiler;
 
+if (args.Contains("--native-families", StringComparer.Ordinal))
+{
+    await NativeFamilies.RunAsync();
+    return;
+}
+
 if (args.Contains("--bench", StringComparer.Ordinal))
 {
     string libraryPath = args.FirstOrDefault(argument => argument.StartsWith("--bench-source=", StringComparison.Ordinal))?[15..]
