@@ -257,3 +257,7 @@ replacement, nested Range-of-Scope facts, nullable fields, changing callable
 identities and independent anonymous instances. At O0/O2/O3 it executes source,
 serialized `.mso`, and context-bound serialized `.mexe` modules: 54 actual-result
 checks, with artifacts retained under `.temp/compiler-convergence`.
+The original full Map fixture also completed nine CLI executions at those three
+levels, writing the expected replacement value `3` in each source/`.mso`/`.mexe`
+journey. Artifact execution ran from a different working directory after source
+removal; records and binaries are under `.temp/compiler-map-cost/cli`.
