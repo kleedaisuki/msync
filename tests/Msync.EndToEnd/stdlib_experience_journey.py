@@ -46,19 +46,19 @@ $std::io::write_text(./result.txt, $std::string::join(selected, "|"));
         (("result.txt", "HELLO|世界🙂|TRAILING".encode()),),
     ),
     Example(
-        "typed-cast-and-unicode",
+        "typed-conversion-and-unicode",
         """
-let number = $std::cast("27", Number);
-$std::cast(number + 1, String) -> ./number.txt;
+let number = "27" as Number;
+(number + 1) as String -> ./number.txt;
 let text = "A🙂é";
-$std::cast($std::string::length(text), String) -> ./length.txt;
+$std::string::length(text) as String -> ./length.txt;
 $std::string::char_at(text, 1) -> ./character.txt;
 $std::string::substring(text, 1, 2) -> ./slice.txt;
 $std::string::join($std::string::chars(text), "|") -> ./characters.txt;
-let file = $std::cast("./input data/世界🙂.txt", Path);
-$std::cast($std::path::filename(file), String) -> ./filename.txt;
-let endpoint = $std::cast("ssh://stdlib-test.invalid", Connection);
-$std::cast(endpoint, String) -> ./connection.txt;
+let file = "./input data/世界🙂.txt" as Path;
+$std::path::filename(file) as String -> ./filename.txt;
+let endpoint = "ssh://stdlib-test.invalid" as Connection;
+endpoint as String -> ./connection.txt;
 """,
         (
             ("number.txt", b"28"),
@@ -80,7 +80,7 @@ let labels = $std::ranges::transform(pairs, fn(pair) {
 $std::string::join(labels, ",") -> ./pairs.txt;
 let numbered = $std::ranges::enumerate(["α", "β"]);
 let numbered_labels = $std::ranges::transform(numbered, fn(row) {
-    $std::string::concat($std::cast(row::index, String), row::value)
+    $std::string::concat(row::index as String, row::value)
 });
 $std::string::join(numbered_labels, "|") -> ./numbered.txt;
 """,
@@ -95,14 +95,14 @@ let values = $std::ranges::transform([1, 2, 3], fn(value: Number) {
     value
 });
 let empty = $std::ranges::take(values, 0);
-$std::cast($std::ranges::size(empty), String) -> ./size.txt;
-$std::cast(calls, String) -> ./before.txt;
+$std::ranges::size(empty) as String -> ./size.txt;
+calls as String -> ./before.txt;
 let total = $std::ranges::fold(
     $std::ranges::take(values, 2), 0,
     fn(accumulator: Number, value: Number) { accumulator + value }
 );
-$std::cast(total, String) -> ./total.txt;
-$std::cast(calls, String) -> ./after.txt;
+total as String -> ./total.txt;
+calls as String -> ./after.txt;
 """,
         (
             ("size.txt", b"0"),
@@ -120,14 +120,14 @@ let values = $std::ranges::transform(["a", "b"], fn(value: String) {
     value
 });
 $std::string::join(values, ",");
-$std::cast(calls, String) -> ./join-calls.txt;
+calls as String -> ./join-calls.txt;
 let byte_calls = 0;
 let bytes = $std::ranges::transform([0, 255], fn(value: Number) {
     byte_calls = byte_calls + 1;
     value
 });
 $std::io::write_bytes(./payload.bin, bytes);
-$std::cast(byte_calls, String) -> ./byte-calls.txt;
+byte_calls as String -> ./byte-calls.txt;
 """,
         (
             ("join-calls.txt", b"2"),
@@ -138,12 +138,12 @@ $std::cast(byte_calls, String) -> ./byte-calls.txt;
     Example(
         "numeric-file-tools",
         """
-let path = $std::cast("./input data/世界🙂.txt", Path);
+let path = "./input data/世界🙂.txt" as Path;
 let bytes = $std::io::file_size(path);
 let blocks = $std::math::ceil($std::math::divide(bytes, 3));
-$std::cast(blocks, String) -> ./blocks.txt;
-$std::cast($std::math::cube(2), String) -> ./cube.txt;
-$std::cast($std::math::is_finite($std::math::sqrt(9)), String) -> ./finite.txt;
+blocks as String -> ./blocks.txt;
+$std::math::cube(2) as String -> ./cube.txt;
+$std::math::is_finite($std::math::sqrt(9)) as String -> ./finite.txt;
 """,
         (("blocks.txt", b"3"), ("cube.txt", b"8"), ("finite.txt", b"true")),
     ),
@@ -153,10 +153,10 @@ $std::cast($std::math::is_finite($std::math::sqrt(9)), String) -> ./finite.txt;
             """
 let target = if exists ./flag { Number } else { String };
 if target is Number {
-    let value = $std::cast("42", target);
-    $std::cast(value + 1, String) -> ./denoted-type.txt
+    let value = "42" as Number;
+    (value + 1) as String -> ./denoted-type.txt
 } else if target is String {
-    let value = $std::cast("42", target);
+    let value = "42" as String;
     $std::string::concat(value, "!") -> ./denoted-type.txt
 };
 """,
@@ -293,7 +293,7 @@ def execute(
 def editor(binary: Path, parent: Path) -> dict[str, int]:
     client = Client(binary, cwd=parent)
     uri = (parent / "library navigation 体验.msync").as_uri()
-    source = """let file = $std::cast("./input", Path);
+    source = """let file = "./input" as Path;
 let rows = $std::ranges::zip([file], [1]);
 for row in rows { let selected = row::first; };
 let text = $std::string::join(["a", "b"], "|");
@@ -317,7 +317,6 @@ let text = $std::string::join(["a", "b"], "|");
             )
             assert expected in result["contents"]["value"], (name, result)
         for spelling, module in (
-            ("cast(", "_core"),
             ("zip(", "ranges"),
             ("join(", "string"),
         ):
@@ -346,7 +345,7 @@ let text = $std::string::join(["a", "b"], "|");
         assert {"first", "second"} <= labels, labels
         return {
             "inferred_library_hovers": len(checks),
-            "embedded_library_definitions": 3,
+            "embedded_library_definitions": 2,
             "structured_range_completion": 1,
         }
     finally:
@@ -368,10 +367,7 @@ def skills(binary: Path, parent: Path) -> dict[str, int]:
             overview.stdout
         )
         assert "_core" not in overview.stdout, overview.stdout
-        for topic, module in (
-            ("cast", "_core"),
-            *((module, module) for module in modules),
-        ):
+        for topic, module in ((module, module) for module in modules):
             result = invoke(binary, parent, "skill", "library", topic)
             accept(result, "library " + topic)
             embedded, _ = client.request(
@@ -386,7 +382,7 @@ def skills(binary: Path, parent: Path) -> dict[str, int]:
                 topic,
                 result.stdout,
             )
-        for topic_path in ((), ("library",), ("library", "cast")):
+        for topic_path in ((), ("library",), ("language", "conversions")):
             plain = invoke(binary, parent, "skill", *topic_path)
             colored = invoke(
                 binary,
@@ -406,24 +402,23 @@ def skills(binary: Path, parent: Path) -> dict[str, int]:
             assert re.sub(r"\x1b\[[0-9;]*m", "", colored.stdout) == plain.stdout, (
                 topic_path
             )
-        return {"source_backed_skill_pages": len(modules) + 1, "skill_color_modes": 6}
+        return {"source_backed_skill_pages": len(modules), "skill_color_modes": 6}
     finally:
         client.close()
 
 
 def target_contract(binary: Path, parent: Path) -> dict[str, int]:
-    source = parent / "changed deferred cast target.msync"
+    source = parent / "unsupported structural conversion.msync"
     source.write_bytes(
-        b"let target = decltype([0]);\n"
-        b'let converted = $std::cast(["42"], target);\n'
-        b' target = decltype(["changed"]);\n'
-        b"for item in converted { $std::cast(item, String) -> ./unexpected; };\n"
+        b'let converted = scope { value: "42" } as Number;\n'
+        b"converted as String -> ./unexpected;\n"
     )
     result = invoke(binary, parent, "check", str(source))
-    assert result.returncode != 0 and "E0213" in result.stderr, result
-    assert "$std::cast" in result.stderr and "target" in result.stderr, result.stderr
+    assert result.returncode != 0, result
+    assert "Scope" in result.stderr and "Number" in result.stderr, result.stderr
+    assert "as Number" in result.stderr, result.stderr
     assert not (parent / "unexpected").exists()
-    return {"deferred_target_contract_diagnostics": 1}
+    return {"unsupported_conversion_diagnostics": 1}
 
 
 def fixture_contracts() -> None:

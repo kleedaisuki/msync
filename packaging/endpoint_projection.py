@@ -12,10 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE = """let remote = ssh://unused-endpoint-projection;
 let home = ~/.codex;
 let relative = ./dir/file;
-let home_text: String = remote::home;
-let relative_text: String = remote::relative;
-let direct_home: String = remote::~/.codex;
-let direct_relative: String = remote::./dir/file;
+let home_text: String = home @ remote;
+let relative_text: String = relative @ remote;
+let direct_home: String = ~/.codex @ remote;
+let direct_relative: String = ./dir/file @ remote;
 home_text -> home.txt;
 relative_text -> relative.txt;
 direct_home -> direct-home.txt;

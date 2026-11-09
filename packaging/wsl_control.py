@@ -176,7 +176,7 @@ def cancellation(
     (directory / "target").write_bytes(previous)
     script = directory / "cancel.msync"
     script.write_text(
-        f"let remote = wsl://{distro}; remote::~/.codex/large.bin -> ./target;\n",
+        f"let remote = wsl://{distro}; ~/.codex/large.bin @ remote -> ./target;\n",
         encoding="utf-8",
     )
     factory = cast(PtyFactory, importlib.import_module("winpty").PtyProcess)
@@ -239,7 +239,7 @@ def endpoint_failure(
     (directory / "target").write_bytes(previous)
     script = directory / "disconnect.msync"
     script.write_text(
-        f"let remote = wsl://{distro}; remote::~/.codex/large.bin -> ./target;\n",
+        f"let remote = wsl://{distro}; ~/.codex/large.bin @ remote -> ./target;\n",
         encoding="utf-8",
     )
     process = subprocess.Popen(

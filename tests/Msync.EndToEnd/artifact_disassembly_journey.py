@@ -60,7 +60,7 @@ def text_range(lines: list[str], span: dict[str, Any]) -> str:
 
 def validate_model(document: dict[str, Any], stage: str) -> dict[str, int]:
     assert document["schemaVersion"] == 1
-    assert document["formatVersion"] >= 3
+    assert document["formatVersion"] == 4
     assert document["languageVersion"] == "0.8.0"
     assert document["stage"] == stage
     assert document["optimizationLevel"] == 0
@@ -71,6 +71,8 @@ def validate_model(document: dict[str, Any], stage: str) -> dict[str, int]:
     assert "fs.exists" in text and "Transfer" in text
     assert "arguments" in text and "captures" in text and "Path" in text
     assert "世界" in text and "\\n" in text
+    assert "GetSingleton" in text and "SetSingleton" in text
+    assert "declaration #" in text and "Remainder" in text
     lines = text.splitlines()
     symbols = 0
 
@@ -108,6 +110,16 @@ def validate_model(document: dict[str, Any], stage: str) -> dict[str, int]:
             assert item["sourceName"]
     for item in document["hovers"]:
         assert text_range(lines, item["range"]) and item["markdown"]
+    for opcode, explanation in (
+        ("GetSingleton", "shared instance"),
+        ("SetSingleton", "canonical session-owned singleton"),
+        ("Remainder", "truncating remainder"),
+    ):
+        assert any(
+            text_range(lines, item["range"]) == opcode
+            and explanation in item["markdown"]
+            for item in document["hovers"]
+        ), (opcode, document["hovers"])
     assert targets > 0 and sources > 0
     if stage == "executable":
         assert "context {" in text and "cwd =" in text and "home =" in text
@@ -130,7 +142,10 @@ def main() -> None:
             "scope Demo { copy: fn(file: Path, destination: Path) -> Bool { file -> destination } };\n"
             'let message = "hello ""Klee""\n世界";\n'
             "if exists ./missing { message -> ./must-not-exist; };\n"
-            "Demo::copy(./missing, ./must-not-exist);\n",
+            "Demo::copy(./missing, ./must-not-exist);\n"
+            "fn state() { scope Shared { count: 7 }; Shared };\n"
+            "let first = state(); let second = state();\n"
+            "let remainder = first::count % 3;\n",
             encoding="utf-8",
         )
         relocatable = cwd / "readable.mso"

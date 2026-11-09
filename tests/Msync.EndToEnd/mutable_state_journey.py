@@ -249,7 +249,7 @@ EXAMPLES: tuple[Example, ...] = (
     ),
     Example(
         "type-value-present",
-        'let target = if exists ./input { Number } else { String }; if target is Number { if $std::cast("41", target) == 41 { "number" -> ./result; }; } else { "wrong" -> ./result; };',
+        'let target = if exists ./input { Number } else { String }; if target is Number { if "41" as Number == 41 { "number" -> ./result; }; } else { "wrong" -> ./result; };',
         b"number",
     ),
     Example(
@@ -259,7 +259,7 @@ EXAMPLES: tuple[Example, ...] = (
     ),
     Example(
         "type-value-match",
-        'let target = if exists ./input { Number } else { String }; let value = match target { Number => { $std::cast("41", target) }, _ => { 0 } }; if value == 41 { "matched" -> ./result; };',
+        'let target = if exists ./input { Number } else { String }; let value = match target { Number => { "41" as Number }, _ => { 0 } }; if value == 41 { "matched" -> ./result; };',
         b"matched",
     ),
     Example(
@@ -427,8 +427,8 @@ INVALID: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ),
     (
         "physical-endpoint-store",
-        '$local::./input = "not a lexical field";',
-        ("Scope",),
+        '(./input @ $local) = "not a lexical field";',
+        ("E0211", "not writable", "Scope member"),
     ),
 )
 

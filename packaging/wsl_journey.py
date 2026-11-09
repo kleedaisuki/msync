@@ -122,20 +122,20 @@ let home = ~/.codex/config.toml;
 let relative = ./dir/file;
 let large = ~/.codex/large.bin;
 let empty = ~/.codex/empty;
-let home_text: String = remote::home;
-let relative_text: String = remote::relative;
+let home_text: String = home @ remote;
+let relative_text: String = relative @ remote;
 home_text -> raw-home.txt;
 relative_text -> raw-relative.txt;
-home -> remote::home;
-relative -> remote::relative;
-large -> remote::large;
-empty -> remote::empty;
-remote::home -> downloaded-home-after.txt;
-remote::~/.codex/config.toml -> downloaded-home-before.txt;
-remote::relative -> downloaded-relative-after.txt;
-remote::./dir/file -> downloaded-relative-before.txt;
-remote::large -> downloaded-large.bin;
-remote::empty -> downloaded-empty;
+home -> home @ remote;
+relative -> relative @ remote;
+large -> large @ remote;
+empty -> empty @ remote;
+home @ remote -> downloaded-home-after.txt;
+~/.codex/config.toml @ remote -> downloaded-home-before.txt;
+relative @ remote -> downloaded-relative-after.txt;
+./dir/file @ remote -> downloaded-relative-before.txt;
+large @ remote -> downloaded-large.bin;
+empty @ remote -> downloaded-empty;
 """
 
 

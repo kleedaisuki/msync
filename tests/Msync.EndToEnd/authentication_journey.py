@@ -44,7 +44,7 @@ def completion(
             "textDocument": {"uri": uri},
             "position": {
                 "line": source.count("\n"),
-                "character": len(source.rsplit("\n", 1)[-1]),
+                "character": source.rsplit("\n", 1)[-1].rindex('"'),
             },
         },
         identifier,
@@ -126,7 +126,7 @@ def exercise(
 ) -> dict[str, Any]:
     write_remote("native.txt", "remote only")
     literal: str = '"' + (remote + "/").replace('"', '""') + '"'
-    source: str = f"let remote = ssh://Perf_Fixture;\nremote::{literal}"
+    source: str = f"let remote = ssh://Perf_Fixture;\n{literal} @ remote"
     checked: subprocess.CompletedProcess[bytes] = subprocess.run(
         [str(binary), "--no-config", "--no-telemetry", "check", "-"],
         input=source.encode("utf-8"),

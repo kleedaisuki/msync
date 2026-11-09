@@ -48,7 +48,7 @@ def journey(binary: Path, root: Path) -> int:
         ),
         (
             "qualified-fallback",
-            '"qualified" -> $local::./target;',
+            '"qualified" -> ./target @ $local;',
             {"target": b"qualified"},
         ),
     ]
