@@ -8,6 +8,19 @@ if (args.FirstOrDefault() == "--echo")
     return;
 }
 
+if (args.FirstOrDefault() == "--fail")
+{
+    Console.Write("out:failure");
+    Console.Error.Write("err:failure");
+    Environment.ExitCode = 7;
+    return;
+}
+if (args.FirstOrDefault() == "--command-policies")
+{
+    await CommandPolicyChecks.RunAsync();
+    return;
+}
+
 string root = Path.Combine(Environment.CurrentDirectory, ".temp", "native-services-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);
 int checks = 0;
@@ -16,8 +29,8 @@ try
     foreach (int level in new[] { 0, 2, 3 })
     {
         const string files = """
-            let file = $std::io::File;
-            let directory = $std::io::Directory;
+            let file = $std::files::File;
+            let directory = $std::files::Directory;
             let folder = directory::new(./work);
             directory::create(folder);
             let first = directory::file(folder, "first.txt");
@@ -75,7 +88,7 @@ try
                     state::text = $std::string::concat(state::text, value);
                 },
             };
-            let file = $std::io::File;
+            let file = $std::files::File;
             let record = file::with_policy(./never-opened.txt, memory);
             let untouched = state::reads == 0 and state::writes == 0;
             file::write(record, "custom");
@@ -105,8 +118,8 @@ try
 
         string executable = Environment.ProcessPath!.Replace("\"", "\"\"", StringComparison.Ordinal);
         string command = $$"""
-            let command = $std::process::Command;
-            let completed = $std::process::Completed;
+            let command = $std::commands::Command;
+            let completed = $std::commands::Completed;
             let original = command::new("{{executable}}", ["--echo"]);
             let extended = command::append_args(original, ["extra"]);
             let local = command::on(extended, $local);
@@ -131,9 +144,9 @@ try
             Require(((ScopeValue)value["result"]).Members.Values.All(member => member is not FunctionValue), "Completed data owns object methods");
             Require(await File.ReadAllTextAsync(Path.Combine(root, "command-output")) == "echo:hello 星", "Completed output publication");
         }
-        Reject("$std::io::File::with_policy(./x, scope { read: fn(path:Path) { 1 }, lines: fn(path:Path) { [path as String] }, write: fn(path:Path,text:String) {}, append: fn(path:Path,text:String) {} })", "read", level);
-        Reject("let value = $std::io::File::new(./x); value::path = 1;", "Path", level);
-        Reject("$std::process::Command::run(scope { executable: ./x, arguments: true })", "arguments", level);
+        Reject("$std::files::File::with_policy(./x, scope { read: fn(path:Path) { 1 }, lines: fn(path:Path) { [path as String] }, write: fn(path:Path,text:String) {}, append: fn(path:Path,text:String) {} })", "read", level);
+        Reject("let value = $std::files::File::new(./x); value::path = 1;", "Path", level);
+        Reject("$std::commands::Command::run(scope { executable: ./x, arguments: true, runner: $std::commands::NativeProcess })", "arguments", level);
     }
     Console.WriteLine($"PASS {checks} canonical native service contracts");
 }
