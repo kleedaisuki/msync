@@ -48,8 +48,11 @@ foreach (int level in new[] { 0, 2, 3 })
     await Check("let b = $std::text::Builder(); let c = $std::text::Builder(); b::append(\"a\"); c::empty()", "true", level);
     await Check("let b = $std::text::Builder(); b::append(\"a\"); let snapshot = b::build(); b::append(\"b\"); snapshot", "a", level);
     await Check("let b = $std::text::Builder(); b::append_all([\"a\", \"b\", \"c\"]); b::clear(); b::append(\"z\"); b::build()", "z", level);
+    await Check("let chunks = [\"a\"]; let snapshot = chunks; chunks = $std::text::append_chunk(chunks, \"b\"); $std::string::join(snapshot, \"\")", "a", level);
+    await Check("let calls = 0; let inputs = $std::ranges::map([\"a\", \"b\"], fn(value: String) { calls = calls + 1; value }); let chunks = $std::text::append_chunk(inputs, \"c\"); calls", "2", level);
     await Check("let b = $std::text::Builder(); for x in $std::ranges::iota(0, 129) { b::append(\"x\"); }; $std::string::length(b::build())", "129", level);
     await Check("let pattern = $std::regex::compile(\"[0-9]+\"); pattern::replace(\"a12b\", \"x\")", "axb", level);
+    await Check("let pattern = $std::regex::compile(\"[0-9]+\"); pattern::pattern()", "[0-9]+", level);
     await Check("let item = $std::ranges::first($std::regex::matches(\"A😀abc\", \"(?<part>abc)(?<missing>z)?\")); let group = $std::ranges::last(item::groups); group::success", "false", level);
     await Check("let item = $std::ranges::first($std::regex::matches(\"A😀abc\", \"(?<part>abc)\")); let group = $std::ranges::last(item::groups); group::index", "2", level);
     await Check("let matches = $std::regex::matches(\"abc\", \"abc\"); let first = $std::ranges::first(matches); first::value = \"changed\"; $std::ranges::first(matches)::value", "abc", level);
