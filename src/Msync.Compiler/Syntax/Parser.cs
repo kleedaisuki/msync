@@ -178,12 +178,20 @@ public sealed class Parser
         if (!discarded && !At(end) && !At(TokenKind.End)) Fail("Expected ';' between expressions.");
         return new ExpressionStatement(expression, discarded, SourceSpan.Cover(start, Previous.Span));
     }
+    private List<ConceptAssociatedType>? conceptTypes;
     private ConceptDeclaration Concept(SourceSpan start)
+    {
+        var previous = conceptTypes;
+        conceptTypes = [];
+        try { return ConceptBody(start); }
+        finally { conceptTypes = previous; }
+    }
+    private ConceptDeclaration ConceptBody(SourceSpan start)
     {
         Token name = Require(TokenKind.Atom, "Expected a concept name.");
         Require(TokenKind.LeftBrace, "Expected '{' after the concept name.");
         List<TypeSyntax> bases = [];
-        List<ConceptAssociatedType> types = [];
+        List<ConceptAssociatedType> types = conceptTypes!;
         List<ConceptMember> members = [];
         while (!At(TokenKind.RightBrace) && !At(TokenKind.End))
         {
@@ -560,8 +568,17 @@ public sealed class Parser
     private TypeSyntax ParseType(bool union = true)
     {
         var start = Current.Span;
+        bool declares = TakeWord("typename");
+        if (declares && conceptTypes is null)
+            Fail("An inline 'typename' declaration belongs in a concept requirement.");
         bool reference = Take(TokenKind.Dollar);
         var name = Require(TokenKind.Atom, "Expected a type name.");
+        if (declares)
+        {
+            if (reference || At(TokenKind.Select) || LanguageTypes.Contains(name.Text))
+                Fail("Declare an associated type with a new unqualified name after 'typename'.");
+            conceptTypes!.Add(new(name.Text, SourceSpan.Cover(start, name.Span)) { NameSpan = name.Span });
+        }
         string qualified = (reference ? "$" : "") + name.Text;
         while (Take(TokenKind.Select))
             qualified += "::" + Require(TokenKind.Atom, "Expected a type or concept name after '::'.").Text;
@@ -574,7 +591,7 @@ public sealed class Parser
         bool nullable = Take(TokenKind.Question);
         if (union) while (Take(TokenKind.Pipe)) alternatives.Add(ParseType(false));
         return new(qualified, arguments, alternatives, nullable,
-            new(start.Start, Math.Max(name.Span.End, Previous.Span.End) - start.Start));
+            new(start.Start, Math.Max(name.Span.End, Previous.Span.End) - start.Start)) { DeclaresAssociatedType = declares };
     }
     private bool ContinuesBarePath() => source[Previous.Span.End..Current.Span.Start].All(c => c is ' ' or '\t');
     private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "**" or "%" or "as" or "concept" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "loop" or "native" or "release" or "acquire" or "acqrel") && !LanguageTypes.Contains(text);

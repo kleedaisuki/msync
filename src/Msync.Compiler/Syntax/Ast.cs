@@ -94,7 +94,10 @@ public sealed record LiteralPattern(Expr Value, SourceSpan Span) : Pattern(Span)
 public sealed record TypePattern(TypeSyntax Type, SourceSpan Span) : Pattern(Span);
 public sealed record RegexPattern(string Pattern, SourceSpan Span) : Pattern(Span);
 public sealed record TuplePattern(IReadOnlyList<Pattern> Items, SourceSpan Span) : Pattern(Span);
-public sealed record TypeSyntax(string Name, IReadOnlyList<TypeSyntax> Arguments, IReadOnlyList<TypeSyntax> Alternatives, bool Nullable, SourceSpan Span) : Node(Span);
+public sealed record TypeSyntax(string Name, IReadOnlyList<TypeSyntax> Arguments, IReadOnlyList<TypeSyntax> Alternatives, bool Nullable, SourceSpan Span) : Node(Span)
+{
+    public bool DeclaresAssociatedType { get; init; }
+}
 
 public sealed class SyntaxException : Exception
 {

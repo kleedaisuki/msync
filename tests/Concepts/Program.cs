@@ -116,6 +116,27 @@ foreach (int level in new[] { 0, 2, 3 })
     Reject("fn invalid() -> Number { ./path }; invalid()", "return type Number", level);
     Reject("fn invalid() -> Number { return ./path; }; invalid()", "return type Number", level);
     Reject("concept C { item: Number }; let value?: C = null; value = 3;", "Expected Scope?", level);
+    const string inline = """
+        concept Equal {
+            equal: fn(left: typename Item, right: Item) -> Bool,
+        };
+        concept Sequence { items: Range<typename Element>, };
+        concept Factory { make: fn() -> typename Item, };
+        fn checked(value: Equal) { value::equal(2, 2) };
+        fn sequence(value: Sequence) { $std::ranges::size(value::items) };
+        fn made(value: Factory) { value::make() };
+        checked(scope {
+            equal: fn(left: Number, right: Number) { left == right },
+        }) and sequence(scope { items: [1, 2] }) == 2
+            and made(scope { make: fn { 3 } }) == 3
+        """;
+    var inlineConcept = Compiler.Compile(inline, "inline-associated-types.msync", level);
+    using MemoryStream inlineBytes = new();
+    Artifact.Write(inlineConcept, inlineBytes);
+    inlineBytes.Position = 0;
+    foreach (Module image in new[] { inlineConcept, Artifact.Read(inlineBytes), Binding.Bind(inlineConcept, new(Environment.CurrentDirectory, Environment.CurrentDirectory)) })
+        Require(await Interpreter.ExecuteAsync(image) is BoolValue { Data: true }, "Inline associated types compose across parameter, Range and operation result");
+    Reject("concept C { item: typename Item, other: typename Item, };", "declared twice", level);
 }
 CompilerSession session = new();
 session.Compile("concept Named { item: Number, };");

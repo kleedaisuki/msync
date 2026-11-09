@@ -163,7 +163,7 @@ internal sealed partial class Compilation
             foreach (var requirement in definition.Syntax.Members)
             {
                 var actual = RequiredMember(frame, value, definition, requirement, span);
-                CheckConceptMember(frame, actual, definition, requirement, associated, span);
+                CheckConceptMember(frame, actual, definition, requirement, associated, span, associated);
                 if (attachConceptContracts && scope.Storage.TryGetValue(requirement.Name, out var storage))
                 {
                     RememberConceptStorage(storage);
@@ -177,7 +177,7 @@ internal sealed partial class Compilation
     }
 
     private void CheckConceptMember(Frame frame, Info actual, ConceptDefinition definition, ConceptMember requirement,
-        IReadOnlyDictionary<string, Info> associated, SourceSpan span)
+        IReadOnlyDictionary<string, Info> associated, SourceSpan span, Dictionary<string, Info>? inference = null)
     {
         if (requirement.Type is { } type)
         {
@@ -204,6 +204,7 @@ internal sealed partial class Compilation
             failure.Diagnostic.Related.Add(new(definition.SourceName, definition.Source, requirement.Span, "required operation declared here"));
             throw failure;
         }
+        if (inference is not null) InferAssociated(definition, requirement.ReturnType!, result, inference);
         CheckRequirementType(frame, definition, result, requirement.ReturnType!, associated, span, requirement.Name + " return");
     }
 

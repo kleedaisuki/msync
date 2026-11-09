@@ -8,8 +8,7 @@ are constraints over existing Scope values, not additional runtime types.
 
 ```msync
 concept Semigroup {
-    type Self;
-    combine: fn(left: Self, right: Self) -> Self,
+    combine: fn(left: typename Self, right: Self) -> Self,
 };
 concept Monoid {
     Semigroup,
@@ -29,9 +28,13 @@ combine_identity(scope {
 
 Concept names have lexical definition-time ownership, including closures and
 REPL submissions. A concept body contains required fields, required operation
-signatures, associated type declarations (`type Self;`), and previously declared
-base concepts. Associated types are inferred from fields and operation parameter
-annotations; a matching Type-valued member may provide their carrier explicitly.
+signatures, inline associated type binders (`typename Self`), and previously
+declared base concepts. Bind an associated name at its first use, including
+`Range<typename Item>` or an operation parameter/result, then reuse the bare
+name. The old standalone `type Self;` spelling remains accepted input, but
+standard sources use inline binders. Associated types are inferred from fields,
+operation annotations and checked operation results; a matching Type-valued
+member may provide their carrier explicitly.
 A concrete associated Scope identity refines a broad Scope carrier and retains
 its recursively checked field schema. Inherited associated names are available
 to derived requirements. Operation parameters require an explicit builtin,
