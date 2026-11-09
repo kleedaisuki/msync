@@ -12,98 +12,23 @@ native fn stderr(process: Process) -> String;
 native fn success(process: Process) -> Bool;
 native fn exit_code(process: Process) -> Number;
 
-fn failed(process: Process) { not success(process) };
+fn failed(process: Process) {
+    not success(process)
+};
+
 fn communicate(process: Process, input: String) {
     write_stdin(process, input);
     close_stdin(process);
     wait(process)
 };
+
 fn run(executable: Path | String, arguments: Range) {
     let process = spawn(executable, arguments);
     close_stdin(process);
     wait(process)
 };
+
 fn run_input(executable: Path | String, arguments: Range, input: String) {
     let process = spawn(executable, arguments);
     communicate(process, input)
-};
-
-# The reusable operation dictionary captures the native/source primitives once.
-scope NativeProcess {
-    wait: wait,
-    stdout: stdout,
-    stderr: stderr,
-    exit_code: exit_code,
-    success: success,
-    spawn: spawn,
-    run: run,
-    run_input: run_input,
-};
-
-# Completed data retains the actual Process and owns its captured output strings.
-scope Completed {
-    new: fn(process: Process) {
-        let value = NativeProcess::wait(process);
-        scope {
-            process: value,
-            output: NativeProcess::stdout(value),
-            error: NativeProcess::stderr(value),
-            code: NativeProcess::exit_code(value),
-            success: NativeProcess::success(value),
-        }
-    },
-    lines: fn(self: $std::concepts::CompletedProcess) {
-        $std::string::lines(self::output)
-    },
-    error_lines: fn(self: $std::concepts::CompletedProcess) {
-        $std::string::lines(self::error)
-    },
-    write_to: fn(self: $std::concepts::CompletedProcess,
-        destination: Path | String) {
-        $std::io::write_text(destination, self::output)
-    },
-};
-
-# Construction snapshots argument data without starting or observing a process.
-scope Command {
-    new: fn(executable: Path | String, arguments: Range) {
-        scope {
-            executable: executable as Path,
-            arguments: $std::ranges::materialize(arguments),
-        }
-    },
-    with_args: fn(self: $std::concepts::CommandSpec, values: Range) {
-        new(self::executable, values)
-    },
-    append_args: fn(self: $std::concepts::CommandSpec, values: Range) {
-        new(self::executable,
-            $std::ranges::concat(self::arguments, values))
-    },
-    on: fn(self: $std::concepts::CommandSpec, connection: Connection) {
-        new(self::executable @ connection, self::arguments)
-    },
-    spawn: fn(self: $std::concepts::CommandSpec) {
-        NativeProcess::spawn(self::executable, self::arguments)
-    },
-    run: fn(self: $std::concepts::CommandSpec) {
-        NativeProcess::run(self::executable, self::arguments)
-    },
-    run_input: fn(self: $std::concepts::CommandSpec, input: String) {
-        NativeProcess::run_input(self::executable, self::arguments, input)
-    },
-    capture: fn(self: $std::concepts::CommandSpec) {
-        Completed::new(NativeProcess::run(self::executable, self::arguments))
-    },
-    capture_input: fn(self: $std::concepts::CommandSpec, input: String) {
-        Completed::new(NativeProcess::run_input(
-            self::executable, self::arguments, input))
-    },
-    output: fn(self: $std::concepts::CommandSpec) {
-        NativeProcess::stdout(
-            NativeProcess::run(self::executable, self::arguments))
-    },
-    lines: fn(self: $std::concepts::CommandSpec) {
-        $std::string::lines(NativeProcess::stdout(
-            NativeProcess::run(self::executable, self::arguments)))
-    },
 };

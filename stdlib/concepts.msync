@@ -67,10 +67,19 @@ concept PathRecord {
     path: Path,
 };
 
-# Data-only process specification, with materialized argument membership.
+# A selected process-launch policy returns real Process values and owns the
+# distinction between a live spawn, a completed run and input-fed completion.
+concept ProcessRunner {
+    spawn: fn(executable: Path, arguments: Range) -> Process,
+    run: fn(executable: Path, arguments: Range) -> Process,
+    run_input: fn(executable: Path, arguments: Range, input: String) -> Process,
+};
+
+# Data-only process specification, with materialized arguments and launch policy.
 concept CommandSpec {
     executable: Path,
     arguments: Range,
+    runner: ProcessRunner,
 };
 
 # Captured process completion, retaining the process identity and its outputs.
@@ -151,4 +160,14 @@ concept Semigroup {
 concept Monoid {
     Semigroup,
     identity: Self,
+};
+
+# Exit classification is separate from launching and retains all completed data.
+concept ExitPolicy {
+    accept: fn(result: CompletedProcess) -> Bool,
+};
+
+concept CheckedCommand {
+    command: CommandSpec,
+    exit_policy: ExitPolicy,
 };
