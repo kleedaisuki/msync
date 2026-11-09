@@ -272,6 +272,46 @@ Compiler mirror SHA256
 It stopped intentionally in about 1.70 seconds at fan-out greater than eight;
 no public CLI or 24-insert run was repeated to obtain this diagnosis.
 
+### Captured-environment comparer differential
+
+Only the new `SemanticCallableIdentity` and the two Join/Choices comparer
+replacement hunks were then copied into the existing exact-input mirror.
+Source captures are compared by template/runtime identity, capture mode and
+location; a by-location capture's stored Value is a flow hint rather than a
+second identity. By-value captures still compare their snapshot/schema. The
+raw source binding IDs in the demonstrated 384-way set were already identical,
+so this experiment does not require guessing equality between different cells.
+
+At source offset 18484, all thirteen observed calls after the change reported
+`raw=1 choices=1` instead of 384. The same exact three-line default Compile(O2)
+then completed every stage under the existing guards:
+
+| Stage boundary | Elapsed ms | Function count |
+|---|---:|---:|
+| Analyze exit | 1978.881 | 33 |
+| Lower exit | 2030.764 | 82 |
+| Optimizer exit | 2579.166 | 66 |
+| Host complete | 2599.414 | 66 |
+
+Supervisor wall time was 2.671 seconds, with Linux child peak RSS 93,228 KiB.
+These are cold managed, instrumented values, not a Native AOT benchmark. No
+event/key/append/time/heap guard fired. The program's transfer was compiled,
+never executed, so this is a complete default compilation result rather than
+evidence about `result.txt` contents.
+
+The before/after comparison isolates callable-domain representation: keys were
+already cache hits, but the duplicate captured environments kept asking for the
+same instance and repeatedly joining/projecting its effects. Removing that
+fan-out allowed the frontend to finish and both subsequent stages to run.
+
+The successful exact Compile trace SHA256 is
+`91e3352a3c4e7816fe67e12864075fc41471f52a24c93bc1b4e33580361a8ffa`,
+Compiler mirror SHA256
+`48812c5c59ae8ce8bbeb041fc6f14f6c7e2839cce3536f154fd12bec183065bc`.
+`exact13-fanout-before/` preserves the uncorrected trace/receipt/source Types
+file, and `callable-patch-receipt.json` records precisely the two patched source
+files and the mirror-only witness hook.
+
 ## Receipts and reproduction
 
 The workspace retains:
