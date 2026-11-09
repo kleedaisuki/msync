@@ -84,6 +84,36 @@ catch (MsyncException) { failed = true; }
 Require(failed, "The invalid Number initializer did not fail");
 Require(!failedSession.IsLocalInitialized(failedImage.Layout.Slot(new(0), broken)),
     "A failed root initializer published a placeholder Null");
+Example sites = New();
+var firstObject = sites.Location("FirstSite", sites.ScopeType);
+var firstValue = sites.Location("value", sites.NumberType, kind: HirLocationKind.Field);
+sites.Hir.ScopeLayouts.Add(new([new("value", sites.NumberType)]));
+int firstConstruction = sites.Hir.AddScope(new(0, [firstValue], Singleton: 0));
+sites.Hir.SetExports([new("FirstSite", firstObject)]);
+sites.Hir.SetFunction(new(0), sites.Hir.Functions[0] with { Result = sites.NullType,
+    Body = sites.Declare(firstObject, sites.Node(HirKind.Scope, sites.ScopeType,
+        [sites.Declare(firstValue, sites.Number(1))], firstConstruction)) });
+HirLoweringSession siteLayout = new();
+await using ExecutionSession siteRuntime = new();
+await siteRuntime.ExecuteAsync(siteLayout.Lower(HirSealer.Seal(sites.Hir.Freeze(new(0), isSession: true))).Module);
+var secondObject = sites.Location("SecondSite", sites.ScopeType);
+var stringType = sites.Hir.Type(TypeRef.String);
+var secondValue = sites.Location("value", stringType, kind: HirLocationKind.Field);
+sites.Hir.ScopeLayouts.Add(new([new("value", stringType)]));
+int secondConstruction = sites.Hir.AddScope(new(1, [secondValue], Singleton: 1));
+sites.Hir.SetExports([.. sites.Hir.Exports, new("SecondSite", secondObject)]);
+var secondText = sites.Hir.Literal(new(HirLiteralKind.String, Text: "second"), stringType, sites.Source);
+sites.Hir.SetFunction(new(0), sites.Hir.Functions[0] with { Body = sites.Declare(secondObject,
+    sites.Node(HirKind.Scope, sites.ScopeType, [sites.Declare(secondValue, secondText)], secondConstruction)) });
+var compactSites = HirSealer.Seal(sites.Hir.Freeze(new(0), isSession: true));
+Require(compactSites.Scopes.Length == 1 && compactSites.Scopes[0].Site == sites.Hir.Scopes[secondConstruction].Site,
+    "Sealing lost a constructor's logical allocation identity");
+var siteImage = siteLayout.Lower(compactSites);
+await siteRuntime.ExecuteAsync(siteImage.Module);
+Require(siteRuntime.GetLocalValue(siteImage.Layout.Slot(new(0), firstObject)) is ScopeValue oldScope
+    && oldScope["value"] is NumberValue { Data: 1 }, "A later compacted constructor replaced an earlier singleton");
+Require(siteRuntime.GetLocalValue(siteImage.Layout.Slot(new(0), secondObject)) is ScopeValue newScope
+    && newScope["value"] is StringValue { Data: "second" }, "A compacted constructor reused another allocation site");
 Console.WriteLine($"PASS {checks} pure HIR lowering/source-free execution contracts");
 
 void Require(bool condition, string message)

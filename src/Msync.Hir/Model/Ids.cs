@@ -18,3 +18,5 @@ public readonly record struct HirNodeId(int Value)
 public readonly record struct HirLoopId(int Value);
 public readonly record struct HirSourceRange(HirSourceId Source, int Start, int Length);
 public readonly record struct HirEdgeRange(int Start, int Count);
+
+public readonly record struct HirAllocationSiteId(int Value);

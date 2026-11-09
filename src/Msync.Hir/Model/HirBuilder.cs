@@ -71,7 +71,10 @@ public sealed partial class HirBuilder
         int index = Literals.Count; Literals.Add(value);
         return Add(HirKind.Literal, type, source, data: index);
     }
-    public HirModule Freeze(HirFunctionId entry, bool isSession = false) => new(
+    public HirModule Freeze(HirFunctionId entry, bool isSession = false)
+    {
+        PrepareScopeSites();
+        return new(
         Sources.ToImmutableArray(), Types.ToImmutableArray(), Locations.ToImmutableArray(),
         Functions.ToImmutableArray(), Templates.ToImmutableArray(), Nodes.ToImmutableArray(),
         Edges.ToImmutableArray(), Literals.ToImmutableArray(), ScopeLayouts.ToImmutableArray(),
@@ -79,4 +82,5 @@ public sealed partial class HirBuilder
         Scopes.ToImmutableArray(), Fors.ToImmutableArray(), Matches.ToImmutableArray(),
         Barriers.ToImmutableArray(), Ranges.ToImmutableArray(), Adaptations.ToImmutableArray(), entry, Exports.ToImmutableArray(), isSession, TemplateClosures.ToImmutableArray(), Concepts.ToImmutableArray())
     { UnresolvedImports = UnresolvedImports.ToImmutableArray() };
+    }
 }

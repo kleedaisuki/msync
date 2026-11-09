@@ -180,7 +180,7 @@ internal sealed partial class SourceBinder
             int layout = hir.ScopeLayouts.Count;
             hir.ScopeLayouts.Add(new(shape.ToImmutableArray()));
             int construction = hir.Scopes.Count;
-            hir.Scopes.Add(new(layout, fields.ToImmutableArray(), named || expression.Name is not null ? program.NextSingleton++ : -1, self));
+            hir.AddScope(new(layout, fields.ToImmutableArray(), named || expression.Name is not null ? program.NextSingleton++ : -1, self));
             var result = Node(HirKind.Scope, hir.Type(new HirType(TypeRef.Scope, Shape: layout)), expression.Span,
                 System.Runtime.InteropServices.CollectionsMarshal.AsSpan(initializers), construction);
             if (startContext >= 0) program.Visibility[startContext] = program.Visibility[startContext] with { Anchor = result };

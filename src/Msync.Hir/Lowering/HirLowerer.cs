@@ -93,14 +93,16 @@ public static class HirLowerer
         internal bool SessionRoot(HirLocationId location) => sessionRoots?.Contains(location) == true;
         internal int Site(int construction)
         {
-            if (layout.AllocationSites.TryGetValue(construction, out int site)) return site;
-            int singleton = hir.Scopes[construction].Singleton;
+            var definition = hir.Scopes[construction];
+            var identity = definition.Site ?? throw new InvalidOperationException("A finalized Scope constructor requires an allocation-site identity.");
+            if (layout.AllocationSites.TryGetValue(identity, out int site)) return site;
+            int singleton = definition.Singleton;
             if (singleton < 0 || !layout.SingletonSites.TryGetValue(singleton, out site))
             {
                 site = layout.NextAllocation++;
                 if (singleton >= 0) layout.SingletonSites.Add(singleton, site);
             }
-            layout.AllocationSites.Add(construction, site); return site;
+            layout.AllocationSites.Add(identity, site); return site;
         }
         internal Core.SourceSpan? Source(HirSourceRange range) => range.Source.Value < 0 ? null
             : new(hir.Sources[range.Source.Value].Name, range.Start, range.Length);

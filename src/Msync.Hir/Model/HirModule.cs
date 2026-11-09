@@ -26,7 +26,7 @@ public sealed record HirCall(HirCallKind Kind, HirFunctionId Function,
     string? NativeName = null, ImmutableArray<HirDispatchTarget> Targets = default,
     int Scheduling = 0);
 public sealed record HirScopeConstruction(int Layout, ImmutableArray<HirLocationId> Fields,
-    int Singleton = -1, HirLocationId? Self = null);
+    int Singleton = -1, HirLocationId? Self = null, HirAllocationSiteId? Site = null);
 public sealed record HirFor(HirLoopId Loop, HirLocationId Item);
 public sealed record HirRange(ImmutableArray<bool> Deferred);
 public sealed record HirFunctionAdaptation(ImmutableArray<HirDispatchTarget> Targets);

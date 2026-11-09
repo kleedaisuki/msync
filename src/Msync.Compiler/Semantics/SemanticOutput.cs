@@ -40,7 +40,7 @@ internal sealed class SemanticOutput(HirBuilder builder)
     public int AddScope(HirScopeConstruction value)
     {
         int index = builder.Scopes.Count;
-        builder.Scopes.Add(value);
+        builder.AddScope(value);
         return index;
     }
     public int AddFor(HirFor value)

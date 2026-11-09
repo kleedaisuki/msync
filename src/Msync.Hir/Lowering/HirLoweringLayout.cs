@@ -13,7 +13,7 @@ public sealed record HirLoweringLayout(
     ImmutableDictionary<HirTemplateId, int> Templates,
     ImmutableDictionary<int, HirCallableId> Callables,
     ImmutableDictionary<HirLocationSlot, int> Locations,
-    ImmutableDictionary<int, int> AllocationSites,
+    ImmutableDictionary<HirAllocationSiteId, int> AllocationSites,
     ImmutableDictionary<HirPhysicalSlot, HirLocationId> ReverseLocations)
 {
     public int Slot(HirFunctionId function, HirLocationId location) => Locations[new(function, location)];
@@ -23,7 +23,7 @@ public sealed record HirLoweringLayout(
     public static HirLoweringLayout Empty { get; } = new(
         ImmutableDictionary<HirFunctionId, int>.Empty, ImmutableDictionary<HirTemplateId, int>.Empty,
         ImmutableDictionary<int, HirCallableId>.Empty, ImmutableDictionary<HirLocationSlot, int>.Empty,
-        ImmutableDictionary<int, int>.Empty, ImmutableDictionary<HirPhysicalSlot, HirLocationId>.Empty);
+        ImmutableDictionary<HirAllocationSiteId, int>.Empty, ImmutableDictionary<HirPhysicalSlot, HirLocationId>.Empty);
 }
 
 // This is backend layout state, not a semantic environment or a type-inference cache.
@@ -33,7 +33,7 @@ public sealed class HirLoweringSession
     internal Dictionary<HirTemplateId, int> Templates { get; } = [];
     internal Dictionary<int, HirCallableId> Callables { get; } = [];
     internal Dictionary<HirLocationSlot, int> Locations { get; } = [];
-    internal Dictionary<int, int> AllocationSites { get; } = [];
+    internal Dictionary<HirAllocationSiteId, int> AllocationSites { get; } = [];
     internal Dictionary<int, int> SingletonSites { get; } = [];
     internal Dictionary<HirFunctionId, int> LocalCounts { get; } = [];
     internal int NextCallable;
