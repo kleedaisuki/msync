@@ -33,7 +33,7 @@ maintaining another authoritative signature table.
 | `$std::process` | Completed values and live process operations | Runtime-owned process lifetime/control, never a fabricated portable PID |
 | `$std::bool` | Boolean expression tools | Existing source composition remains valid |
 | `$std::collections` | Mutable ordered List, Map, Set, Stack and Queue objects | Source factories retain fixed-schema materialized Ranges and share captured storage through aliases |
-| `$std::text` | Incremental text construction and layout | Source Builder uses a balanced Range forest instead of repeatedly copying prior text |
+| `$std::text` | Incremental text construction and layout | Source Builder uses one native persistent-chunk primitive instead of repeatedly copying prior text |
 | `$std::regex` | Pattern matching, replacement and match/group records | Native regular-expression engine; Unicode scalar indexes, source pattern-bound service objects |
 | `$std::files` | File and Directory service objects | Source composition over established IO, Path and filesystem primitives; construction performs no IO |
 | `$std::commands` | Reusable command specifications and captured results | Source composition over Process, with explicit materialized argument snapshots and selected effects |
@@ -133,6 +133,13 @@ not eternal snapshots. Count/index arguments use Number but require the exact
 integral values implied by that operation; this does not create an integer type
 or permit floating-point reassociation.
 
+`ranges.materialize` is an explicit eager boundary: the selected call consumes
+its input once before returning an owned, replayable Range. The EagerRange
+effect propagates through source functions, so a collection's `snapshot()`
+method can freeze membership before a later mutation. Ordinary Range-producing
+source calls remain on-demand. `environment.variables()` similarly snapshots
+the process environment at the selected call, not at a later enumeration.
+
 ### IO and process ownership
 
 Reads, writes and link operations are selected runtime effects. Ordinary file
@@ -170,24 +177,29 @@ here as the independent module lanes freeze their interfaces.
 
 ### Executable source inventory
 
-The expansion's source snapshot has 357 named exports, comprising 166 ordinary
-source functions and 191 native declarations. The latter include the existing
-filesystem/native compatibility surface; they are not 191 newly introduced OS
-operations. Counts describe executable declarations, not overload padding or a
-second Array library.
+The current 15 public modules have 421 top-level exports: 206 ordinary source
+functions, 208 native declarations and seven source values. Object methods are
+not separately counted as top-level exports. Native declarations include the
+established filesystem surface, not 208 newly introduced OS operations. The
+private, comment-only `_core` source contributes no public export.
 
-| Source module | Native declarations | Source functions | Public exports |
-| --- | ---: | ---: | ---: |
-| Root `_core` prelude | 1 | 0 | 1 (`cast`, not a `_core` module) |
-| `bool` | 0 | 6 | 6 |
-| `fs` | 66 | 5 | 71 |
-| `functional` | 0 | 14 | 14 |
-| `io` | 8 | 6 | 14 |
-| `math` | 43 | 13 | 56 |
-| `path` | 0 | 40 | 40 |
-| `process` | 12 | 4 | 16 |
-| `ranges` | 37 | 51 | 88 |
-| `string` | 24 | 27 | 51 |
+| Source module | Native declarations | Source functions | Source values | Top-level exports |
+| --- | ---: | ---: | ---: | ---: |
+| `bool` | 0 | 6 | 0 | 6 |
+| `collections` | 0 | 7 | 0 | 7 |
+| `commands` | 0 | 2 | 0 | 2 |
+| `environment` | 9 | 4 | 0 | 13 |
+| `files` | 0 | 2 | 0 | 2 |
+| `fs` | 66 | 5 | 0 | 71 |
+| `functional` | 0 | 14 | 0 | 14 |
+| `io` | 8 | 23 | 0 | 31 |
+| `math` | 45 | 13 | 6 | 64 |
+| `path` | 0 | 40 | 0 | 40 |
+| `process` | 12 | 4 | 0 | 16 |
+| `ranges` | 37 | 51 | 0 | 88 |
+| `regex` | 6 | 4 | 0 | 10 |
+| `string` | 24 | 27 | 0 | 51 |
+| `text` | 1 | 4 | 1 | 6 |
 
 The focused domain contracts remain with their implementations:
 [Range demand, ordering and buffering](ranges-v080.md),
@@ -196,7 +208,13 @@ text/path owner journeys. Source-only Path, Bool and functional modules illustra
 the intended layer boundary; elementary mathematics and stream iteration are
 host capabilities rather than reimplementations in user source.
 
-### Cross-module experience acceptance
+### Earlier library-only expansion evidence
+
+The following acceptance record belongs to the earlier `71828ca` library
+expansion, before the language upgrade replaced public cast calls and Connection
+qualification. It is retained as provenance, not as a claim that its old source
+syntax remains current. Current upgrade journeys and the exact tested image
+identities are recorded in [stdlib-upgrade-validation-v080.md](stdlib-upgrade-validation-v080.md).
 
 `tests/Msync.EndToEnd/stdlib_experience_journey.py --binary PATH` runs eight composed
 programs at O0/O2/O3 through source, relocatable and context-bound execution:
@@ -228,7 +246,7 @@ module use. O0 and actual source modules were correct. The optimizer owner fixed
 the captured-Cell epoch case rather than rewriting the user pipeline or disabling
 selective loading. The cross-module program remains a regression discriminator.
 
-## Native library-load observations
+## Earlier native library-load observations
 
 The Linux component comparison uses exact scheduler baseline
 `a8c71875e5f7bd2b5a628a8bcdece3f8b72ec4d1` and stdlib candidate
