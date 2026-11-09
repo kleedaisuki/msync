@@ -154,6 +154,61 @@ despite the same exposed argument/capture types. The next change therefore
 belongs in finite resource provenance and summary projection, not a higher key
 limit. A successful complete insertion remains the acceptance criterion.
 
+## Finite-role candidate: SCC hit and complete analysis
+
+The next candidate refreshed the complete Compiler source mirror with the
+finite resource/view-role implementation and shared `CodeSchema` normalization
+before non-scalar instance-key encoding. HIR and Optimization stayed on their
+frozen9 DLLs. Core was copied into a separate private mirror project because the
+candidate uses the new `NativeBehavior.PreservesIdentity` member; neither the
+product Core project nor the CLI was built. Four source-owner-supplied explicit
+`SelectMany` lambdas corrected method-group/ImmutableArray compilation errors in
+the copied projection file. The resulting mirror build had zero warnings/errors.
+
+This is a combined candidate, not a claim that a single-line change caused its
+whole effect. Its first 120-entry run already showed the required recursive
+cache behavior:
+
+| insert_nonfull query | Depth | Caller objects | Indexed resources | Key |
+|---|---:|---:|---:|---|
+| Entry 60 | 4 | 18 | 8 | 2339, `FC542F6B79C4` |
+| Entry 66 | 5 | 17 | 8 | 2339, `FC542F6B79C4` |
+
+Entry 66 returned without a `MISS`: it reused the reserved recursive instance.
+The earlier doubling of objects/resources did not recur. Analysis progressed
+to publishing executable functions rather than staying in signature queries.
+
+At 300 permitted entries the old **global** 20,000-append guard stopped an
+otherwise bounded-looking run at entry 136, with a key prefix of just 26 code
+units. That guard was a cumulative experimental work limit, not a per-key cost
+or another resource-growth observation. It was therefore raised once to
+100,000, keeping the 300-entry, 16-Ki per-key, 20-second and managed-heap guards.
+Per-key append deltas were added to distinguish them from global visits.
+
+The unchanged one-insert input then completed `Compiler.Analyze`:
+
+| Complete guarded candidate | Observation |
+|---|---:|
+| Instance-key entries | 159: 43 publish, 116 query |
+| Cache misses | 84 |
+| Maximum caller objects / indexed resources | 19 / 11 |
+| Maximum complete key / per-key append visits | 3214 / 137 |
+| Finalized functions | 31 |
+| Host Analyze elapsed | 1404.451 ms |
+| Supervisor wall time | 1.460 s |
+| Linux child peak RSS | 74,184 KiB |
+
+No experimental limit was reached. The actual publish recursion also reused
+code: entries 117 and 159 had the same 1905-unit key, hash `AA6605697C58`, and
+entry 159 had no miss. Its key took 98 append visits. These timings include
+managed cold-start/JIT and tracing, not a Native AOT performance benchmark.
+Completion here means source-to-finalized-HIR analysis only; BTree runtime
+behavior and larger workloads belong to subsequent acceptance runs.
+
+The source supervisor now requires a matching successful-build fingerprint
+before running the host. An incidental stale-output launch after the initial
+failed mirror build was quarantined and excluded; it is not candidate evidence.
+
 ## Receipts and reproduction
 
 The workspace retains:
@@ -164,6 +219,11 @@ The workspace retains:
 - `key-patch-receipt.json`: the exact product-tail hash and old/new mirror hashes;
 - `trace.log` and `run-receipt.json`: the graph-key run;
 - `graph40/`: the earlier 40-entry graph-key trace and its original receipt;
+- `graph120/`: the old memo-only candidate's full Compiler mirror and bounded
+  resource-growth trace;
+- `roles120/` and `roles300/`: the finite-role event/append-limited traces;
+- `successful-build.json`, `summary.json`, and `snapshot-manifest.json`: the
+  exact successful source fingerprint, aggregate counts and complete file hashes;
 - the complete source mirror and separately built host.
 
 The original and graph-key Compiler DLL hashes were respectively
@@ -180,12 +240,19 @@ with Compiler DLL
 The instrumented Instantiation source remained
 `6f7d2f0b529621855d143c52757f3c11352a1ebc957c91b8abb63f414b6a9cec`;
 only the trace helper's event limit changed.
+The complete finite-role candidate's trace SHA256 was
+`a8e6d94aff3f53e6170e555686e8b2d75d392c96c74e8b590998f81a1ca2db4b`;
+its Compiler DLL SHA256 was
+`32caec857fc1488cebd3876765b65728c1d8f3628bf96058f48fba773184cb43`.
+Its private Core DLL was
+`830b0b93e537afc4574ae4e1ab8d7df684cf2d5faf8647fd46e9c6d8fa6eed59`.
+The exact input bytes have SHA256
+`7098218d249fdcb8d326f1803bc62734f080f03a51d8c0d4bf12fcdcd1491fa7`.
 
 Build only the mirror host:
 
 ```text
-dotnet build .temp/hir-finite-trace/TraceHost.csproj -c Release \
-  --artifacts-path .temp/hir-finite-trace/build --no-restore
+python3 .temp/hir-finite-trace/build.py
 python3 .temp/hir-finite-trace/run.py
 ```
 
