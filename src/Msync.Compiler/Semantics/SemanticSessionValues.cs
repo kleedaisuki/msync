@@ -7,7 +7,7 @@ namespace Msync.Compiler.Semantics;
 // A projection borrows runtime values only for the duration of acceptance. Its
 // result contains semantic facts, never live Processes, ranges or credentials.
 internal sealed class SemanticSessionValues(BoundProgram program, HirLoweringLayout layout,
-    SemanticContext facts)
+    SemanticContext facts, SemanticSessionSites sites)
 {
     private readonly Dictionary<Value, SemanticValue> observed = new(ReferenceEqualityComparer.Instance);
     private readonly Dictionary<CellValue, HashSet<HirLocationId>> cells = new(ReferenceEqualityComparer.Instance);
@@ -71,14 +71,10 @@ internal sealed class SemanticSessionValues(BoundProgram program, HirLoweringLay
         if (previous is not null) previous = facts.Objects.GetValueOrDefault(previous.Region, previous);
         int region = previous?.Region ?? ++nextRegion;
         var locations = previous?.Locations ?? ImmutableDictionary<string, HirLocationId>.Empty;
-        if (locations.Count == 0 && actual.AllocationSite != 0)
-            foreach (var (construction, site) in layout.AllocationSites)
-                if (site == actual.AllocationSite)
-                {
-                    locations = program.Hir.Scopes[construction].Fields.ToImmutableDictionary(
-                        field => program.Hir.Locations[field.Value].Name, field => field, StringComparer.Ordinal);
-                    break;
-                }
+        if (locations.Count == 0 && actual.AllocationSite != 0
+            && sites.Find(actual.AllocationSite) is { } construction)
+            locations = construction.Fields.ToImmutableDictionary(
+                field => program.Hir.Locations[field.Value].Name, field => field, StringComparer.Ordinal);
         SemanticScope scope = new(region, previous?.Layout ?? -1,
             ImmutableDictionary<string, SemanticValue>.Empty, locations, previous?.Named == true);
         SemanticValue result = new(program.Hir.Type(TypeRef.Scope), HirNodeId.None, Scope: scope);

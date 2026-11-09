@@ -17,6 +17,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
     private PendingSubmission? pending;
     private HirLoweringLayout acceptedLayout = HirLoweringLayout.Empty;
     private SemanticObservationView? descriptions;
+    private SemanticSessionSites? acceptedSites;
 
     private sealed record PendingSubmission(BoundProgram Program, SemanticContext Facts,
         HirLoweringLayout Layout);
@@ -43,7 +44,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         if (resolveAcceptedValue is not null && accepted is not null && facts is not null)
         {
             seed = facts.QueryFork();
-            new SemanticSessionValues(accepted, acceptedLayout, seed)
+            new SemanticSessionValues(accepted, acceptedLayout, seed, acceptedSites!)
                 .Refresh(accepted.Exports.Values, resolveAcceptedValue);
         }
         BoundProgram bound = Binder(observations: true, editorMode: true).Bind(source, sourceName, document);
@@ -77,6 +78,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         if (pending is not { } submission) return;
         accepted = submission.Program;
         acceptedLayout = submission.Layout;
+        acceptedSites = new(accepted, acceptedLayout);
         facts = submission.Facts.QueryFork();
         if (resolve is not null) Refresh(submission.Layout, resolve);
         pending = null;
@@ -96,6 +98,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
         accepted = submission.Program;
         accepted.Exports = exports;
         acceptedLayout = submission.Layout;
+        acceptedSites = new(accepted, acceptedLayout);
         facts = submission.Facts.QueryFork();
         if (resolve is not null) Refresh(submission.Layout, resolve);
         pending = null;
@@ -103,7 +106,7 @@ internal sealed class SemanticSession(string sourceName, int optimization)
     }
 
     private void Refresh(HirLoweringLayout layout, Func<int, Value?> resolve) =>
-        new SemanticSessionValues(accepted!, layout, facts!).Refresh(accepted!.Exports.Values, resolve);
+        new SemanticSessionValues(accepted!, layout, facts!, acceptedSites!).Refresh(accepted!.Exports.Values, resolve);
 
     private SourceBinder Binder(bool observations = false, bool editorMode = false) => accepted is null
         ? new(workspace, observations: observations, editorMode: editorMode, isSession: true)

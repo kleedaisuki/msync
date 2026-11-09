@@ -43,14 +43,17 @@ and lowering boundaries are connected.
 
 ## Typed HIR bridge acceptance
 
-The first integrated bridge passed **99 contracts** at O0/O2/O3 against the
+The integrated bridge passed **105 contracts** at O0/O2/O3 against the
 immutable managed product snapshot with Compiler SHA-256
-`824b4b9b8a779bbc3d3a40db76dffe1f5d02b9e361ca3ab76fac574d26da6a83`.
+`3296ff6984adfbb10360c836568b90c9ac7c24bd48b503cdf5b87385d3592b42`.
 Additional journeys retain generic definitions across later argument types,
 reject a bad specialization without publishing its declaration prefix, and
 execute a returned private recursive closure in another submission. A live
 runtime Scope update is visible through an explicit editor feedback resolver,
-while that query leaves accepted semantic facts unchanged.
+while that query leaves accepted semantic facts unchanged. Distinct named Scopes
+retain their own singleton allocations across generations even when sealing
+compacts their construction tables; the runtime receipt uses stable allocation
+site identities rather than dense construction indices.
 
 The bridge itself no longer owns an emission-oriented `Compilation` instance.
 Analysis produces a temporary semantic generation and a read-only observation

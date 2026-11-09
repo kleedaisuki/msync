@@ -148,6 +148,13 @@ try
         Check(await Submit("retained") is StringValue { Data: "accepted prefix" },
             "the accepted prefix remains usable after a failed submission");
 
+        await Submit("scope FirstSite { value: 1 };");
+        await Submit("scope SecondSite { value: \"second\" };");
+        Check(await Submit("FirstSite::value") is NumberValue { Data: 1 },
+            "a prior named Scope retains its own singleton allocation site");
+        Check(await Submit("SecondSite::value") is StringValue { Data: "second" },
+            "a later named Scope does not reuse another generation's compacted constructor index");
+
         await Submit("let saved = ./value;");
         execution.ChangeWorkingDirectory(next);
         ScopeValue paths = (ScopeValue)await Submit("scope { saved: saved, current: ./value }");
