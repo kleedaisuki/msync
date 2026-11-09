@@ -31,14 +31,16 @@ internal sealed partial class SemanticObservationBuilder
         return state.Capture();
     }
 
+    private readonly record struct ResourceDependency(int Region, bool Indexed = false);
+
     private sealed class ObservationState
     {
         private readonly SemanticObservationBuilder owner;
         private readonly SemanticContext context;
         private readonly HashSet<HirLocationId> dirty = [];
-        private readonly HashSet<int> dirtyRegions = [];
-        private readonly Dictionary<int, HashSet<HirLocationId>> dependents = [];
-        private readonly Dictionary<HirLocationId, HashSet<int>> dependencies = [];
+        private readonly HashSet<ResourceDependency> dirtyRegions = [];
+        private readonly Dictionary<ResourceDependency, HashSet<HirLocationId>> dependents = [];
+        private readonly Dictionary<HirLocationId, HashSet<ResourceDependency>> dependencies = [];
         private ImmutableDictionary<HirLocationId, SemanticValueId> values
             = ImmutableDictionary<HirLocationId, SemanticValueId>.Empty;
         private ImmutableDictionary<HirLocationId, HirLocationId> locations;
@@ -52,11 +54,12 @@ internal sealed partial class SemanticObservationBuilder
             owner.valueIds.Clear();
             foreach (var pair in context.Values) Project(pair.Key, pair.Value);
             context.Values.ObserveChanges((location, _) => dirty.Add(location));
-            context.Objects.ObserveChanges((region, _) => ChangedRegion(region));
+            context.Objects.ObserveChanges((region, _) => ChangedRegion(new(region)));
+            context.Indexed.ObserveChanges((region, _) => ChangedRegion(new(region, Indexed: true)));
             context.Locations.ObserveChanges((source, target) => locations = locations.SetItem(source, target));
         }
 
-        private void ChangedRegion(int region)
+        private void ChangedRegion(ResourceDependency region)
         {
             dirtyRegions.Add(region);
             // A nested object can change while its enclosing immutable row stays
@@ -66,7 +69,7 @@ internal sealed partial class SemanticObservationBuilder
 
         public ProjectedFacts Capture()
         {
-            foreach (int region in dirtyRegions)
+            foreach (var region in dirtyRegions)
                 if (dependents.TryGetValue(region, out var affected)) dirty.UnionWith(affected);
             foreach (var location in dirty)
                 if (context.Values.TryGetValue(location, out var value)) Project(location, value);
@@ -79,42 +82,48 @@ internal sealed partial class SemanticObservationBuilder
         {
             values = values.SetItem(location, owner.Value(value, context));
             if (dependencies.TryGetValue(location, out var previous))
-                foreach (int region in previous) dependents[region].Remove(location);
-            if (value.Scope is null && value.Element is null && value.Alternatives.IsDefaultOrEmpty
+                foreach (var region in previous) dependents[region].Remove(location);
+            if (IndexedResourceCount(value) == 0 && value.Scope is null && value.Element is null && value.Alternatives.IsDefaultOrEmpty
                 && (value.Callables.IsDefaultOrEmpty || value.Callables.All(callable => callable.Captures.IsDefaultOrEmpty)))
             {
                 dependencies.Remove(location);
                 return;
             }
-            HashSet<int> regions = [];
+            HashSet<ResourceDependency> regions = [];
             HashSet<SemanticValue> visited = new(ReferenceEqualityComparer.Instance);
             Collect(value, regions, visited);
             if (regions.Count == 0) { dependencies.Remove(location); return; }
             dependencies[location] = regions;
-            foreach (int region in regions)
+            foreach (var region in regions)
             {
                 if (!dependents.TryGetValue(region, out var affected)) dependents.Add(region, affected = []);
                 affected.Add(location);
             }
         }
 
-        private void Collect(SemanticValue value, HashSet<int> regions, HashSet<SemanticValue> visited)
+        private void Collect(SemanticValue value, HashSet<ResourceDependency> regions, HashSet<SemanticValue> visited)
         {
             if (!visited.Add(value)) return;
             if (value.Scope is { } scope)
             {
-                if (scope.Region >= 0 && !regions.Add(scope.Region)) return;
+                if (scope.Region >= 0 && !regions.Add(new(scope.Region))) return;
                 scope = context.Objects.GetValueOrDefault(scope.Region, scope);
                 foreach (var member in scope.Fields.Values) Collect(member, regions, visited);
             }
-            if (value.Element is { } element) Collect(element, regions, visited);
+            int indexed = IndexedResourceCount(value);
+            for (int index = 0; index < indexed; index++)
+            {
+                int region = IndexedResourceAt(value, index);
+                if (regions.Add(new(region, Indexed: true))) Collect(context.Indexed[region].Element, regions, visited);
+            }
+            if (indexed == 0 && value.Element is { } element) Collect(element, regions, visited);
             if (!value.Alternatives.IsDefault)
                 foreach (var alternative in value.Alternatives) Collect(alternative, regions, visited);
             CollectCaptures(value.Callables, regions, visited);
         }
 
         private void CollectCaptures(ImmutableArray<SemanticCallable> callables,
-            HashSet<int> regions, HashSet<SemanticValue> visited)
+            HashSet<ResourceDependency> regions, HashSet<SemanticValue> visited)
         {
             if (callables.IsDefaultOrEmpty) return;
             foreach (var callable in callables)
@@ -128,6 +137,7 @@ internal sealed partial class SemanticObservationBuilder
         {
             context.Values.ObserveChanges(null);
             context.Objects.ObserveChanges(null);
+            context.Indexed.ObserveChanges(null);
             context.Locations.ObserveChanges(null);
         }
     }

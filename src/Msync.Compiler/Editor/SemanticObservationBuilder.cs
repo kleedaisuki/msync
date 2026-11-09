@@ -231,12 +231,15 @@ internal sealed partial class SemanticObservationBuilder
         SemanticPathView? path = KnownPath(value, context);
         BoundNativeSignature? nativeSignature = native is not null
             ? program.NativeSignatures.GetValueOrDefault(native) : null;
+        SemanticValueId? element = Element(value, context);
+        TypeRef? currentType = IndexedResourceCount(value) == 0 ? null
+            : program.Hir.Types[value.Type.Value].RuntimeType with { Element = RuntimeType(element!.Value) };
         values[id.Value] = new(value.Type, Template: template, TypeValue: value.DenotedType,
             NativeName: native, IsNamedScope: scope?.Named == true, IsUnknown: unknown,
             Members: fields,
             Alternatives: value.Alternatives.IsDefaultOrEmpty ? default
                 : value.Alternatives.Select(item => Value(item, context)).ToImmutableArray(),
-            Element: value.Element is null ? null : Value(value.Element, context),
+            Element: element, CurrentType: currentType,
             Connection: connection, Path: path,
             Text: value.Observation?.Text
                 ?? (value.Literal is { Kind: HirLiteralKind.String } text ? text.Text : null),
@@ -244,6 +247,34 @@ internal sealed partial class SemanticObservationBuilder
             Documentation: nativeSignature is null ? null : Documentation(nativeSignature.Source));
         return id;
     }
+
+    private static int IndexedResourceCount(SemanticValue value) => value.IndexedRegion is not null ? 1
+        : value.IndexedAliases.IsDefault ? 0 : value.IndexedAliases.Length;
+
+    private static int IndexedResourceAt(SemanticValue value, int index) => value.IndexedRegion ?? value.IndexedAliases[index];
+
+    private SemanticValueId? Element(SemanticValue value, SemanticContext context)
+    {
+        int count = IndexedResourceCount(value);
+        if (count == 0) return value.Element is null ? null : Value(value.Element, context);
+        SemanticValueId first = Value(context.Indexed[IndexedResourceAt(value, 0)].Element, context);
+        if (count == 1) return first;
+        var alternatives = ImmutableArray.CreateBuilder<SemanticValueId>(count);
+        alternatives.Add(first);
+        TypeRef type = RuntimeType(first);
+        for (int index = 1; index < count; index++)
+        {
+            var element = Value(context.Indexed[IndexedResourceAt(value, index)].Element, context);
+            alternatives.Add(element);
+            type = TypeRef.Union(type, RuntimeType(element));
+        }
+        SemanticValueId joined = new(values.Count);
+        values.Add(new(values[first.Value].Type, Alternatives: alternatives.MoveToImmutable(), CurrentType: type));
+        return joined;
+    }
+
+    private TypeRef RuntimeType(SemanticValueId value) => values[value.Value].CurrentType
+        ?? program.Hir.Types[values[value.Value].Type.Value].RuntimeType;
 
     private SemanticPathView? KnownPath(SemanticValue value, SemanticContext context)
     {

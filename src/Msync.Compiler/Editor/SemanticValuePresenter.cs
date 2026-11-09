@@ -191,7 +191,8 @@ internal sealed class SemanticValuePresenter(SemanticObservationView view,
             return $"fn {name}({string.Join(", ", parameters)}) -> {TypeName(signature.Result)}";
         }
         string typeName = value?.IsUnknown == true || IsTypeParameter(key) ? "unknown" : value?.TypeValue is { } target
-            ? $"Type ({TypeName(target)})" : key.Kind == ValueKind.RuntimeType ? RuntimeType(key).ToString() : TypeName(TypeId(key), key.Nullable);
+            ? $"Type ({TypeName(target)})" : key.Kind == ValueKind.RuntimeType || value?.CurrentType is not null
+                ? RuntimeType(key).ToString() : TypeName(TypeId(key), key.Nullable);
         return name.Length == 0 ? typeName : $"{name}: {typeName}";
     }
 
@@ -210,7 +211,9 @@ internal sealed class SemanticValuePresenter(SemanticObservationView view,
 
     private TypeRef RuntimeType(ValueKey key)
     {
-        TypeRef type = key.Kind == ValueKind.RuntimeType ? key.RuntimeType! : view.Module.RuntimeType(TypeId(key));
+        TypeRef type = key.Kind == ValueKind.RuntimeType ? key.RuntimeType!
+            : key.Kind == ValueKind.Value && view.Value(new(key.Id)).CurrentType is { } current ? current
+                : view.Module.RuntimeType(TypeId(key));
         return key.Nullable ? type.WithNull : type;
     }
 

@@ -35,4 +35,5 @@ EditorAnalysis recovery = EditorCompiler.Analyze(invalid, "recovery-editor.msync
 Require(recovery.Diagnostic is not null, "Invalid annotation diagnostic");
 Require(recovery.Resolve(invalid.Length, "kept")?.Type == "Number", "Semantic error retains earlier bindings");
 ObservationChecks.Run(Require);
+IndexedObservationChecks.Run(Require);
 Console.WriteLine($"PASS {checks} typed semantic editor contracts");

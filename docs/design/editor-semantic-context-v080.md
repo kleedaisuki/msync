@@ -110,6 +110,33 @@ include incomplete generic bodies, nested Scope aliases before/after mutation,
 shadowed lexical identities and concurrent completion/resolution. The linked
 immutable projection checks remain at 42, including release of HIR body arenas.
 
+Indexed resources are a separate dependency family from object regions. A Buffer
+write intentionally updates `SemanticContext.Indexed`, not every alias's Range
+value or every containing Scope row. Observation therefore subscribes to indexed
+fact changes and follows the singleton `IndexedRegion` or joined `IndexedAliases`
+through fields, elements and captures. It refreshes only dependent roots. The
+current element is read from each live resource description; an old embedded
+`SemanticValue.Element` is not a fallback when resource identities are present.
+
+The projected `CurrentType` is read-only presentation metadata. It can express a
+fresh Range element or the union of several resource elements without interning
+a type into a sealed HIR module or re-entering semantic analysis. Stable HIR type
+IDs and fixed storage constraints are unchanged. Membership snapshots have no
+live indexed identity, so they retain their original element metadata, and old
+source points keep their earlier immutable projected IDs.
+
+The published 0.8.0 Native baseline displays `Range<Number>` for a Buffer and its
+ordinary alias after the first Number write, and `Range<Never>` for an earlier
+empty membership snapshot. Its nested Scope hover incorrectly retained
+`Range<Never>` for the same live Buffer; the new dependency projection corrects
+that stale member too. A focused actual baseline report is kept under
+`.temp/hir-editor-indexed-baseline/report.json`. Against managed Compiler
+`1dcbaba83cf2b92fd144a8c813c224f2a2f87784f44efcf490a7c30a658ba5c2`,
+the direct editor checks now pass 29 assertions: the previous 18 plus live
+carrier inference, aliases, nested Scopes, old source points, snapshots, joined
+resource identities and a Buffer returned from a source function. The strict
+frozen host's loaded Compiler hash matched that image.
+
 This is the implementation contract for completing names and members inside
 functions and Scopes in 0.8. It extends the original top-level prefix recovery;
 the focused acceptance results belong beside the implementation as they land.

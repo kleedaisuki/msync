@@ -24,7 +24,7 @@ internal sealed record SemanticValueView(HirTypeId Type,
     ImmutableArray<SemanticValueId> Alternatives = default,
     SemanticValueId? Element = null, SemanticConnectionView? Connection = null,
     SemanticPathView? Path = null, string? Text = null,
-    string? Signature = null, string? Documentation = null);
+    string? Signature = null, string? Documentation = null, TypeRef? CurrentType = null);
 
 internal sealed record SemanticFieldView(string Name, SemanticValueId Value,
     ImmutableArray<HirSourceRange> Definitions = default, bool AdmitsNull = false);
