@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup Condition="'$(FrozenAssemblies)' == ''">
+    <ProjectReference Include="../../src/Msync.Core/Msync.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(FrozenAssemblies)' != ''">
+    <Reference Include="Msync.Core"><HintPath>$(FrozenAssemblies)/Msync.Core.dll</HintPath></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Msync.Compiler/Editor/EditorSyntaxIndex.cs" Link="Product/EditorSyntaxIndex.cs" />
+    <Compile Include="../../src/Msync.Compiler/Editor/EditorTypeNames.cs" Link="Product/EditorTypeNames.cs" />
+    <Compile Include="../../src/Msync.Compiler/Editor/EditorSymbols.cs" Link="Product/EditorSymbols.cs" />
+    <Compile Include="../../src/Msync.Compiler/Editor/SemanticSymbols.cs" Link="Product/SemanticSymbols.cs" />
+    <Compile Include="../../src/Msync.Compiler/Syntax/*.cs" Link="Product/Syntax/%(Filename)%(Extension)" />
+    <Compile Include="../../src/Msync.Compiler/Diagnostics/Diagnostics.cs" Link="Product/Diagnostics.cs" />
+  </ItemGroup>
+</Project>
