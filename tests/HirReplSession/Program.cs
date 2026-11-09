@@ -69,6 +69,14 @@ try
         Check(compiler.AnalyzeEditor("let invalid: Number = true;", execution.GetLocalValue).Diagnostic is not null,
             "failed analysis returns a diagnostic");
         Check(!compiler.BindingNames.Contains("invalid"), "failed analysis does not publish a binding");
+        const string memberPrefix = "counter::";
+        EditorAnalysis incomplete = compiler.AnalyzeEditor(memberPrefix, execution.GetLocalValue);
+        Check(incomplete.At(memberPrefix.Length).Receiver?.Members?.Select(member => member.Name)
+            .Order(StringComparer.Ordinal).SequenceEqual(["get", "inc"]) == true,
+            "an incomplete member access retains the accepted receiver shape");
+        _ = compiler.AnalyzeEditor("let unfinished = {", execution.GetLocalValue);
+        Check(!compiler.BindingNames.Contains("unfinished"),
+            "an unfinished editor declaration does not reserve a session name");
         Check(await Submit("let alias = counter; alias::inc(); counter::get()") is NumberValue { Data: 1 },
             "accepted feedback preserves Scope and captured-cell identity");
 

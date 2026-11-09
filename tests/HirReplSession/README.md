@@ -5,6 +5,8 @@ not a mock REPL. It fixes the consumer contract while semantic analysis moves to
 Typed HIR: repeated editor analysis must not publish declarations, invoke a
 captured function or perform file effects. Accepted execution must still retain
 Scope aliases, definition-time `global` locations and late Range reads.
+Incomplete member access must retain the accepted receiver shape without
+reserving unfinished declarations in the persistent namespace.
 
 The same session crosses successful compilation/execution, failed analysis,
 partial runtime failure and a Unicode/spaced working-directory change. Binding
@@ -30,7 +32,7 @@ semantic implementation has stopped emitting bytecode during analysis.
 
 ## Accepted baseline
 
-The frozen five-project 0.8.0 managed Release snapshot passed **69 contracts**.
+The frozen five-project 0.8.0 managed Release snapshot passed **75 contracts**.
 Only this test executable was built. Its Compiler SHA-256 is
 `8c4cd638db974d29f60674804536d245af629554a74228df9201014072e3dc2f`;
 Runtime SHA-256 is
