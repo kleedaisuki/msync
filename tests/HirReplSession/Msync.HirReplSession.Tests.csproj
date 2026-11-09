@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup Condition="'$(FrozenAssemblies)' == ''">
+    <ProjectReference Include="../../src/Msync.Compiler/Msync.Compiler.csproj" />
+    <ProjectReference Include="../../src/Msync.Runtime/Msync.Runtime.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(FrozenAssemblies)' != ''">
+    <Reference Include="Msync.Compiler" HintPath="$(FrozenAssemblies)/Msync.Compiler.dll" />
+    <Reference Include="Msync.Core" HintPath="$(FrozenAssemblies)/Msync.Core.dll" />
+    <Reference Include="Msync.Runtime" HintPath="$(FrozenAssemblies)/Msync.Runtime.dll" />
+    <Reference Include="Msync.Optimization" HintPath="$(FrozenAssemblies)/Msync.Optimization.dll" />
+    <Reference Include="Msync.Hir" HintPath="$(FrozenAssemblies)/Msync.Hir.dll" Condition="Exists('$(FrozenAssemblies)/Msync.Hir.dll')" />
+    <Reference Include="Microsoft.Data.Sqlite" HintPath="$(FrozenAssemblies)/Microsoft.Data.Sqlite.dll" Condition="Exists('$(FrozenAssemblies)/Microsoft.Data.Sqlite.dll')" />
+    <Reference Include="Microsoft.Extensions.DependencyInjection.Abstractions" HintPath="$(FrozenAssemblies)/Microsoft.Extensions.DependencyInjection.Abstractions.dll" Condition="Exists('$(FrozenAssemblies)/Microsoft.Extensions.DependencyInjection.Abstractions.dll')" />
+  </ItemGroup>
+</Project>
