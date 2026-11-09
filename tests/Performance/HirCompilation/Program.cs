@@ -8,13 +8,20 @@ using Module = Msync.Core.Module;
 using SourceCompiler = Msync.Compiler.Compiler;
 
 if (args.Length < 2)
-    throw new ArgumentException("Usage: msync-hir-compilation SOURCE LEVEL [SAMPLES]");
+    throw new ArgumentException("Usage: msync-hir-compilation SOURCE LEVEL [SAMPLES] [--retention-only]");
 
 string sourcePath = Path.GetFullPath(args[0]);
 string source = File.ReadAllText(sourcePath);
 int level = int.Parse(args[1], CultureInfo.InvariantCulture);
-int samples = args.Length > 2 ? int.Parse(args[2], CultureInfo.InvariantCulture) : 9;
+int samples = args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordinal)
+    ? int.Parse(args[2], CultureInfo.InvariantCulture) : 9;
 const string sourceName = "hir-compilation.msync";
+
+if (args.Contains("--retention-only", StringComparer.Ordinal))
+{
+    Console.WriteLine(RetentionObservation.Compile(source, sourceName, level).ToJsonString());
+    return;
+}
 
 long startBytes = GC.GetAllocatedBytesForCurrentThread();
 long started = Stopwatch.GetTimestamp();

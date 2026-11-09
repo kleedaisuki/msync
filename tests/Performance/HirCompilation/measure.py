@@ -74,10 +74,13 @@ def main() -> None:
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--samples", type=int, default=7)
+    parser.add_argument("--retention-only", action="store_true")
     parser.add_argument("--case", action="append", choices=tuple(SOURCES))
     args = parser.parse_args()
     binary: Path | None = args.binary.resolve() if args.binary else None
     component: Path | None = args.component.resolve() if args.component else None
+    if args.retention_only and component is None:
+        parser.error("--retention-only requires --component")
     work: Path = args.work.resolve()
     output: Path = args.output.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -113,7 +116,7 @@ def main() -> None:
                 "source": SOURCES[name],
                 "source_sha256": sha256(source),
             }
-            if binary is not None:
+            if binary is not None and not args.retention_only:
                 command = [
                     str(binary),
                     "--no-config",
@@ -129,14 +132,21 @@ def main() -> None:
                     timings.append((time.perf_counter_ns() - began) / 1_000_000)
                 record["native_fresh_process_ms"] = distribution(timings)
             if component is not None:
-                report = execute(
-                    [str(component), str(source), str(level), str(args.samples)], work
-                )
+                component_args: list[str] = [
+                    str(component),
+                    str(source),
+                    str(level),
+                    str(args.samples),
+                ]
+                if args.retention_only:
+                    component_args.append("--retention-only")
+                report = execute(component_args, work)
                 parsed: dict[str, Any] = json.loads(report.stdout)
-                parsed["warm_ms_summary"] = distribution(parsed["warm_ms"])
-                parsed["warm_allocation_summary"] = distribution(
-                    parsed["warm_allocated_bytes"]
-                )
+                if not args.retention_only:
+                    parsed["warm_ms_summary"] = distribution(parsed["warm_ms"])
+                    parsed["warm_allocation_summary"] = distribution(
+                        parsed["warm_allocated_bytes"]
+                    )
                 record["managed_component"] = parsed
             records.append(record)
             output.write_text(json.dumps(image, indent=2) + "\n", encoding="utf-8")

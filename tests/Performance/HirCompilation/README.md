@@ -94,3 +94,66 @@ This is a useful expensive semantic-construction case, not a requirement to run
 the historical large mutation matrix during every compiler iteration. Allocation
 is especially discriminating here; the concurrent development host's wall-clock
 measurements require a fresh matched comparison before attributing a speedup.
+
+## Retention and observed heap peak
+
+Allocation traffic alone does not answer whether typed bodies stay live longer
+than needed. Run a separate instrumented process, not the timing samples:
+
+```sh
+python3 tests/Performance/HirCompilation/measure.py \
+  --component /absolute/frozen/probe/msync-hir-compilation \
+  --source-revision COMMIT --retention-only \
+  --case none --case list --case tree \
+  --work .temp/hir-retention/inputs --output .temp/hir-retention/report.json
+```
+
+After three cache-warming compiles, this mode records collected managed-heap,
+GC committed/heap-size, current process RSS and process-lifetime peak RSS at
+three boundaries: before compilation, with the returned Module deliberately
+held, and after releasing it. A non-inlined helper owns the strong result
+reference; a weak reference reports whether the Module is alive at the held and
+released boundaries. The snapshots themselves have a small, explicit diagnostic
+footprint, so differences are observations rather than exact transitive object
+sizes. A remaining cache delta is not mislabeled as a retained Module.
+
+A background observer requests a 1 ms interval and retains the largest
+`GC.GetTotalMemory(false)` observation during compile/held-result collection.
+This is a sampled lower bound on managed-heap occupancy, including uncollected
+garbage, not an exact live-object peak. Scheduler resolution and short phases
+can miss higher values. Process peak RSS is a separate lifetime high-water mark
+that includes warmups, JIT code and native memory; it cannot be reset or equated
+with managed retained size. No observer or forced collection runs inside the
+ordinary timing path.
+
+The ownership motivation follows the Rust compiler's
+[THIR body lifecycle](https://rustc-dev-guide.rust-lang.org/thir.html): typed
+body arenas need not survive the whole compilation. When candidate APIs settle,
+the probe will observe these modes separately:
+
+| Candidate mode | Deliberately held output | Release question |
+| --- | --- | --- |
+| Normal compile | Bytecode Module | Can transient typed body arenas be reclaimed after lowering? |
+| Analyze/editor | Semantic result | Which declaration/type/source facts intentionally remain available? |
+| Export | HIR semantic result and export operation | Are body and serialization buffers consumed without retaining duplicate whole-program images? |
+
+This is an explicit integration TODO, not a claim that the old compiler exposes
+those phase APIs. The baseline has only the compile-total/held-Module path.
+
+The initial retention observation is
+`.temp/typed-hir-baseline/retention.json`. Every tested Module was alive while
+deliberately held and collectible after the helper released it. These separate
+instrumented runs do not replace the timing observations above.
+
+| Managed baseline | Collected before / held / released bytes | Observed heap peak bytes |
+| --- | ---: | ---: |
+| List O0 | 1,499,000 / 1,557,640 / 1,499,000 | 2,378,328 |
+| List O2 | 1,525,760 / 1,581,696 / 1,525,760 | 5,925,808 |
+| B-tree O0 | 2,023,624 / 6,053,736 / 2,021,064 | 28,522,432 |
+| B-tree O2 | 2,084,232 / 5,710,456 / 2,081,672 | 32,562,456 |
+
+The B-tree peak observations contain 1,054 and 1,636 samples respectively. Its
+146/379 MB allocation traffic is much larger than its collected held Module or
+sampled heap occupancy: these metrics answer different questions. A Typed HIR
+design should not convert short-lived inference traffic into permanently
+retained whole-program bodies merely to reduce its reported allocation count.
