@@ -354,8 +354,11 @@ internal sealed partial class Compilation
         }
         var callee = Expression(frame, call.Callee);
         if (TryMetaQuery(frame, callee, call, out var query)) return query;
+        int boundary = BeginCallBoundary(frame, callee, call.Callee.Span);
         var arguments = call.Arguments.Select(argument => Expression(frame, argument)).ToArray();
-        return Invoke(frame, callee, arguments, call.Span, call.Arguments);
+        var result = Invoke(frame, callee, arguments, call.Span, call.Arguments);
+        if (boundary >= 0) RecordCallBoundary(frame, boundary);
+        return result;
     }
     private Info Invoke(Frame frame, Info callee, IReadOnlyList<Info> arguments, SourceSpan span,
         IReadOnlyList<Expr>? argumentExpressions = null)

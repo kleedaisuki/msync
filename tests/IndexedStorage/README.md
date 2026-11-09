@@ -34,3 +34,9 @@ They cover first-write insertion/push, retained Range aliases across actual REPL
 submissions, before/after snapshots, fixed carriers after clear, ordinary
 Range equality and hashed-key stability. The `ItemType` getter remains a field
 load; the immutable-origin protocol is confined to equality and hashing.
+
+The owned-Range Buffer representation passed the same 191 focused assertions
+against the frozen GCC/indexed-memory candidate assemblies. This incremental
+run rebuilt only the test entrypoint; it did not rebuild the product or repeat
+the unrelated ordered-container property matrices. Introspection observes the
+Buffer value directly rather than an implementation-only `items` Scope field.

@@ -55,7 +55,7 @@ internal static class RuntimeCarrierChecks
             let alias = buffer;
             $std::storage::Buffer::push(alias, 4);
             scope {
-                items: buffer::items,
+                items: buffer,
                 before: before,
                 after: $std::storage::Buffer::snapshot(buffer),
             }
@@ -84,9 +84,9 @@ internal static class RuntimeCarrierChecks
                 compiler.AcceptSubmission(execution.GetLocalValue);
                 return result;
             }
-            RangeValue live = (RangeValue)await Submit("let buffer = $std::storage::Buffer::new([]); buffer::items");
+            RangeValue live = (RangeValue)await Submit("let buffer = $std::storage::Buffer::new([]); buffer");
             RangeValue priorSubmission = (RangeValue)await Submit("let saved = $std::storage::Buffer::snapshot(buffer); saved");
-            RangeValue afterSubmission = (RangeValue)await Submit("let alias = buffer; $std::storage::Buffer::push(alias, 8); buffer::items");
+            RangeValue afterSubmission = (RangeValue)await Submit("let alias = buffer; $std::storage::Buffer::push(alias, 8); buffer");
             Check(ReferenceEquals(live, afterSubmission) && live.ItemType == TypeRef.Number,
                 $"An already created REPL Range receives its carrier O{level}");
             Check(priorSubmission.ItemType == never && await Count(priorSubmission) == 0,

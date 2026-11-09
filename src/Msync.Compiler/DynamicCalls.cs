@@ -19,10 +19,13 @@ internal sealed partial class Compilation
         public int Revision { get; set; } = -1;
         public string? Dispatch { get; set; }
         public int? DirectTarget { get; set; }
+        public int Boundary { get; set; } = -1;
     }
     // Retained compiler-pool sites let later submissions relink live closures.
     // Artifacts and interpreters receive only rendered bytecode dispatch.
     private const string MutableCallPrefix = "@msync-cell:";
+    private const string CallBoundaryPrefix = "@msync-callee:";
+    private int nextCallBoundary;
     private readonly List<MutableCall?> mutableCalls = [];
     private readonly Queue<int> freeMutableCalls = [];
     private readonly List<int> newMutableCalls = [];
@@ -137,17 +140,110 @@ internal sealed partial class Compilation
             }
             active = ActiveMutableCalls();
         } while (changed && (revision != callableRevision || active.Any(index => mutableCalls[index] is { } call && call.Revision != call.Storage.Revision)));
-        return functions.Select(RenderMutableFunction).ToArray();
+        Dictionary<StorageConstraint, string?>? nativeTargets = null;
+        FunctionCode[] rendered = new FunctionCode[functions.Count];
+        for (int index = 0; index < functions.Count; index++) rendered[index] = RenderMutableFunction(functions[index], ref nativeTargets);
+        return rendered;
     }
 
-    private FunctionCode RenderMutableFunction(FunctionCode function) =>
-        function.Instructions.Any(instruction => instruction.Op == OpCode.Call && instruction.Text?.StartsWith(MutableCallPrefix, StringComparison.Ordinal) == true)
-            ? function with { Instructions = function.Instructions.Select(RenderMutableCall).ToArray() } : function;
+    private int BeginCallBoundary(Frame frame, Info callee, SourceSpan span)
+    {
+        // Callable domains only grow. A source-only site cannot later become
+        // a singleton native site, so ordinary calls need no boundary marker.
+        if (optimization < 2 || submittedBindings is not null || observe is not null
+            || callee.Storage?.Callables is not { NativeName: not null, Function: null, Alternatives: null }) return -1;
+        int boundary = nextCallBoundary++;
+        frame.Emit(OpCode.Nop, text: CallBoundaryPrefix + boundary, span: span);
+        return boundary;
+    }
+
+    private void RecordCallBoundary(Frame frame, int boundary)
+    {
+        var instruction = frame.Code[^1];
+        if (instruction.Op != OpCode.Call || instruction.Text?.StartsWith(MutableCallPrefix, StringComparison.Ordinal) != true) return;
+        MutableSite(instruction).Boundary = boundary;
+    }
+
+    private FunctionCode RenderMutableFunction(FunctionCode function, ref Dictionary<StorageConstraint, string?>? nativeTargets)
+    {
+        var source = function.Instructions;
+        if (!source.Any(instruction => instruction.Op == OpCode.Nop && instruction.Text?.StartsWith(CallBoundaryPrefix, StringComparison.Ordinal) == true))
+            return source.Any(instruction => instruction.Op == OpCode.Call && instruction.Text?.StartsWith(MutableCallPrefix, StringComparison.Ordinal) == true)
+                ? function with { Instructions = source.Select(RenderMutableCall).ToArray() } : function;
+        Dictionary<int, string>? native = null;
+        HashSet<int>? boundaries = null;
+        if (optimization >= 2 && submittedBindings is null && observe is null)
+            for (int pc = 0; pc < source.Count; pc++)
+            {
+                var instruction = source[pc];
+                if (instruction.Op != OpCode.Call || instruction.Text?.StartsWith(MutableCallPrefix, StringComparison.Ordinal) != true) continue;
+                var call = MutableSite(instruction);
+                if (call.Boundary < 0 || NativeTarget(call.Storage, ref nativeTargets) is not { } target) continue;
+                (native ??= []).Add(pc, target);
+                (boundaries ??= []).Add(call.Boundary);
+            }
+        List<Instruction> output = [];
+        List<int> branches = [];
+        int[] positions = new int[source.Count + 1];
+        for (int pc = 0; pc < source.Count; pc++)
+        {
+            positions[pc] = output.Count;
+            var instruction = source[pc];
+            if (instruction.Op == OpCode.Nop && instruction.Text?.StartsWith(CallBoundaryPrefix, StringComparison.Ordinal) == true)
+            {
+                int boundary = int.Parse(instruction.Text.AsSpan(CallBoundaryPrefix.Length), System.Globalization.CultureInfo.InvariantCulture);
+                // The selected native value is already evaluated; discard it
+                // before the untouched argument code rather than spill arguments.
+                if (boundaries?.Contains(boundary) == true) output.Add(new(OpCode.Pop, Span: instruction.Span));
+                continue;
+            }
+            if (instruction.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.IteratorNext) branches.Add(output.Count);
+            output.Add(native is not null && native.TryGetValue(pc, out var target) ? new(OpCode.NativeCall, instruction.A, Text: target, Span: instruction.Span)
+                : RenderMutableCall(instruction));
+        }
+        positions[^1] = output.Count;
+        foreach (int position in branches)
+        {
+            var instruction = output[position];
+            output[position] = instruction.Op == OpCode.IteratorNext ? instruction with { B = positions[instruction.B] }
+                : instruction with { A = positions[instruction.A] };
+        }
+        return function with { Instructions = output };
+    }
+
+    private FunctionCode RenderMutableFunction(FunctionCode function)
+    {
+        Dictionary<StorageConstraint, string?>? nativeTargets = null;
+        return RenderMutableFunction(function, ref nativeTargets);
+    }
+
+    private static string? NativeTarget(StorageConstraint storage, ref Dictionary<StorageConstraint, string?>? cache)
+    {
+        cache ??= [];
+        if (cache.TryGetValue(storage, out var saved)) return saved;
+        string? target = storage.Callables?.NativeName;
+        if (target is not null && !Closed(storage, target, [])) target = null;
+        cache.Add(storage, target);
+        return target;
+
+        static bool Closed(StorageConstraint storage, string target, HashSet<StorageConstraint> visited)
+        {
+            var value = storage.Callables;
+            if (value is null || value.EditorUnknown || value.Function is not null || value.NativeName != target || value.Alternatives is not null) return false;
+            if (!visited.Add(storage)) return true;
+            foreach (var source in storage.Sources)
+                if (!Closed(source, target, visited)) return false;
+            return true;
+        }
+    }
+
+    private MutableCall MutableSite(Instruction instruction) => mutableCalls[int.Parse(instruction.Text!.AsSpan(MutableCallPrefix.Length),
+        System.Globalization.CultureInfo.InvariantCulture)]!;
 
     private Instruction RenderMutableCall(Instruction instruction)
     {
         if (instruction.Op != OpCode.Call || instruction.Text?.StartsWith(MutableCallPrefix, StringComparison.Ordinal) != true) return instruction;
-        var call = mutableCalls[int.Parse(instruction.Text.AsSpan(MutableCallPrefix.Length), System.Globalization.CultureInfo.InvariantCulture)]!;
+        var call = MutableSite(instruction);
         return call.DirectTarget is { } direct ? instruction with { B = direct + 1, Text = null } : instruction with { B = 0, Text = call.Dispatch };
     }
 

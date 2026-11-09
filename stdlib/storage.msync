@@ -16,45 +16,21 @@ native fn buffer_clear(items: Range) -> Null;
 native fn buffer_snapshot(items: Range) -> Range;
 
 scope Buffer {
-    new: fn(initial: Range) {
-        scope {
-            items: buffer_new(initial)
-        }
-    },
+    new: buffer_new,
     empty: fn(prototype?) {
-        Buffer::new($std::ranges::take([prototype], 0))
+        buffer_new($std::ranges::take([prototype], 0))
     },
-    size: fn(self) {
-        buffer_size(self::items)
-    },
+    size: buffer_size,
     is_empty: fn(self) {
         Buffer::size(self) == 0
     },
-    get: fn(self, index: Number) {
-        buffer_get(self::items, index)
-    },
-    set: fn(self, index: Number, value?) {
-        buffer_set(self::items, index, value)
-    },
-    push: fn(self, value?) {
-        buffer_push(self::items, value)
-    },
-    pop: fn(self) {
-        buffer_pop(self::items)
-    },
-    insert: fn(self, index: Number, value?) {
-        buffer_insert(self::items, index, value)
-    },
-    remove: fn(self, index: Number) {
-        buffer_remove(self::items, index)
-    },
-    swap: fn(self, first: Number, second: Number) {
-        buffer_swap(self::items, first, second)
-    },
-    clear: fn(self) {
-        buffer_clear(self::items)
-    },
-    snapshot: fn(self) {
-        buffer_snapshot(self::items)
-    },
+    get: buffer_get,
+    set: buffer_set,
+    push: buffer_push,
+    pop: buffer_pop,
+    insert: buffer_insert,
+    remove: buffer_remove,
+    swap: buffer_swap,
+    clear: buffer_clear,
+    snapshot: buffer_snapshot,
 };

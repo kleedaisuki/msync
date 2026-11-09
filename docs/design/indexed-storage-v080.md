@@ -3,9 +3,12 @@
 The ordered containers need constant-time indexed reads and writes. Repeatedly
 materializing or enumerating an ordinary Range would hide a linear factor in
 heap operations and tree arena access. `storage::Buffer` therefore owns an
-explicit mutable Range backing store; it does not introduce another language
-value kind or a process-wide handle registry. Source containers own the
-algorithms, layouts, policies and node indices. The native storage operations own
+explicit mutable Range backing store. A Buffer instance is that owned Range
+itself, not a Scope wrapping an `items` field. The named Buffer family exposes
+native operations as function values, avoiding per-access source wrapper frames.
+It does not introduce another language value kind or a process-wide handle
+registry. Source containers own the algorithms, layouts, policies and node
+indices. The native storage operations own
 only backing-list access, mutation and snapshot publication.
 
 A snapshot copies membership, not the objects referenced by that membership.

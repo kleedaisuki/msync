@@ -47,8 +47,9 @@ not deep-copy keys or repeatedly validate this contract on ordinary operations.
 
 `storage::Buffer` supplies the small host-only capability needed by source
 algorithms: indexed get/set, append/pop, bounded page insertion/removal, swap,
-size, clear, and an eager membership snapshot. The object is an ordinary Scope
-whose `items` field is a Range backed by an owned `List<Value>`. It has no global
+size, clear, and an eager membership snapshot. A Buffer instance is the owned
+Range backed by `List<Value>`, not a Scope wrapping an `items` field. Its named
+family exposes native function values without per-access wrapper frames. It has no global
 handle table, manual lifetime protocol, or additional user-visible type kind.
 Ordinary materialized Ranges do not become mutable.
 
