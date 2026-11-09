@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>msync-number-probe</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(FrozenAssemblies)' == ''">
+    <ProjectReference Include="../../../src/Msync.Compiler/Msync.Compiler.csproj" />
+    <ProjectReference Include="../../../src/Msync.Runtime/Msync.Runtime.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(FrozenAssemblies)' != ''">
+    <Reference Include="Msync.Core"><HintPath>$(FrozenAssemblies)/Msync.Core.dll</HintPath></Reference>
+    <Reference Include="Msync.Compiler"><HintPath>$(FrozenAssemblies)/Msync.Compiler.dll</HintPath></Reference>
+    <Reference Include="Msync.Runtime"><HintPath>$(FrozenAssemblies)/Msync.Runtime.dll</HintPath></Reference>
+  </ItemGroup>
+</Project>
