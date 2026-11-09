@@ -2,6 +2,12 @@ using Msync.Compiler;
 using Msync.Core;
 using Msync.Runtime;
 
+if (args.Contains("--optimization", StringComparer.Ordinal))
+{
+    await SessionOptimizationChecks.Run();
+    return;
+}
+
 int checks = 0;
 string root = Path.Combine(Environment.CurrentDirectory, ".temp", "hir-repl-session", Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(root);

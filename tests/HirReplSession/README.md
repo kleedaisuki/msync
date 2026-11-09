@@ -59,3 +59,19 @@ The bridge itself no longer owns an emission-oriented `Compilation` instance.
 Analysis produces a temporary semantic generation and a read-only observation
 projection without invoking the bytecode lowerer. This managed acceptance does
 not replace the final Native AOT, actual terminal and installed editor journeys.
+
+## Focused optimization and specialization reuse
+
+Run `dotnet run --project tests/HirReplSession -c Release -- --optimization`
+for the bounded session-cost journey instead of the complete session suite.
+It checks optimized typed function bodies, repeated specialization reuse,
+rejected-generation cache rollback, a second argument type, shared captured
+Scope state and partial runtime failure at O0/O2/O3.
+
+The frozen managed candidate with Compiler SHA-256
+`1dcbaba83cf2b92fd144a8c813c224f2a2f87784f44efcf490a7c30a658ba5c2`
+passed this journey. `value + 2 * 3` retained six typed-function bytecode
+instructions at O0 and four at O2/O3, with the same result. Across eight repeated
+calls, typed function count grew by seven before the session cache and by zero
+afterward. The session entry itself remains unoptimized under the existing
+`PreserveLocals` contract; this probe intentionally measures a non-entry body.

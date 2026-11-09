@@ -220,3 +220,19 @@ facts overlay without changing the accepted generation. This avoids redundant
 exported-object traversal on every normal prompt keystroke while preserving
 live-feedback queries for other consumers. Existing Paths retain their captured
 origin across `cd`; the host process working directory is never changed.
+
+Completed generic function instances are retained in a session code cache keyed
+by semantic types, callable definitions and input topology. Their summaries use
+formal locations and regions, not an earlier caller's runtime resources. A
+source-generation addition lease commits newly completed promises only after
+lowering and optimization succeed; rejected compilation and editor generations
+drop their additions alongside the HIR arena rollback. Generic inference
+workspaces have independent caches. Repeated submissions therefore reuse the
+same typed body without copying accepted semantic state or allocating another
+function identity for each call.
+
+Persistent compilation runs the existing optimizer after lowering, preserving
+runtime-local and callable layout receipts. The established `PreserveLocals`
+policy leaves the session entry intact while optimizing retained non-entry
+functions at the selected level. Cache reuse does not independently renumber
+constants or callable indices: the backend still publishes one coherent image.
