@@ -57,6 +57,11 @@ COMPATIBILITY_CONTRACTS = (
         ("--namespace-only",),
     ),
 )
+MEMORY_CONTRACTS = (
+    Contract("cross-block-memory", "CrossBlockMemory"),
+    Contract("memory-effects", "MemoryEffects"),
+    Contract("scope-layout", "ScopeLayout"),
+)
 
 
 def main() -> int:
@@ -69,7 +74,11 @@ def main() -> int:
         action="append",
         choices=[
             contract.name
-            for contract in (*OPTIMIZER_CONTRACTS, *COMPATIBILITY_CONTRACTS)
+            for contract in (
+                *OPTIMIZER_CONTRACTS,
+                *COMPATIBILITY_CONTRACTS,
+                *MEMORY_CONTRACTS,
+            )
         ],
     )
     arguments = parser.parse_args()
@@ -83,7 +92,22 @@ def main() -> int:
     contracts = [*available, *COMPATIBILITY_CONTRACTS]
     if arguments.contract:
         selected: set[str] = set(arguments.contract)
-        contracts = [contract for contract in contracts if contract.name in selected]
+        contracts = [
+            contract
+            for contract in (
+                *OPTIMIZER_CONTRACTS,
+                *COMPATIBILITY_CONTRACTS,
+                *MEMORY_CONTRACTS,
+            )
+            if contract.name in selected
+        ]
+        missing: list[str] = [
+            contract.project
+            for contract in contracts
+            if not (ROOT / "tests" / contract.project).exists()
+        ]
+        if missing:
+            parser.error(f"Selected contract projects are unavailable: {missing}")
     phases: list[Phase] = []
     report: dict[str, object] = {
         "platform": platform.platform(),
