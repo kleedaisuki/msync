@@ -29,7 +29,7 @@ public static class ExplicitConversions
         if (target.Accepts(source)) return true;
         if (target.WithoutNull.Kind == TypeKind.Range && source.WithoutNull.Kind == TypeKind.Range)
             return target.Element is null || source.Element is null || Possible(source.Element, target.Element);
-        return (source.WithoutNull.Kind & Sources(target.WithoutNull.Kind)) != 0;
+        return (source.WithoutNull.Kind & ~Sources(target.WithoutNull.Kind)) == 0;
     }
 
     private static TypeKind Sources(TypeKind target) => target switch

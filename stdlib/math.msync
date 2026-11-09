@@ -41,7 +41,15 @@ native fn clamp(value: Number, lower: Number, upper: Number) -> Number;
 native fn is_finite(value: Number) -> Bool;
 native fn is_nan(value: Number) -> Bool;
 native fn is_infinite(value: Number) -> Bool;
+native fn is_integer(value: Number) -> Bool;
+native fn is_safe_integer(value: Number) -> Bool;
 native fn signbit(value: Number) -> Bool;
+let nan = 0 / 0;
+let infinity = 1 / 0;
+let epsilon = 2.220446049250313e-16;
+let max_safe_integer = 9007199254740991;
+let min_positive = 5e-324;
+let max_value = 1.7976931348623157e308;
 fn square(value: Number) {
     value * value
 };

@@ -1,21 +1,61 @@
 # Number completeness and algebra domains
 
-## Question and decision
+## Implemented language contract (November 2026 upgrade)
 
-The November 9, 2026 request is research, not an instruction to change numeric
-semantics immediately. The source type universe should remain closed; `scope`
-and `fn` should express reusable algebraic structures. That does not require
-Number to remain an accidental collection of partially exposed host features.
+Number remains the single closed IEEE binary64 carrier. Ordinary automation does
+not need a public hierarchy of integer widths or an allocating arbitrary-precision
+number representation. Decimal fractions, scientific notation, leading/trailing
+decimal points, digit separators and binary/octal/hex integer spellings are
+accepted by the shared `NumberSyntax` parser. Signed zero is preserved by unary
+negation. Explicit Path spelling (`./1.5`, `~/1+2`) remains path data.
 
-**Recommendation:** first complete and specify the existing binary64 Number
-surface, unify discrete-domain contracts, and distinguish numerical equality,
-ordering and representation identity. Do not claim that binary64 arithmetic is
-a mathematical field or authorize reassociation from a user-written law flag.
-If exact large integral metadata becomes a required public contract, evaluate a
-closed, internally tagged integer/float Number as a separate semantic change.
+Source arithmetic follows the familiar ECMAScript binary64 model: numeric `/`
+performs IEEE division, including infinity/NaN; `%` is truncating remainder with
+the dividend's sign, not Python's divisor-sign modulo or IEEE nearest-quotient
+remainder. `$std::math::remainder` remains the distinct IEEE remainder operation.
+Multiplicative operators have equal precedence and associate left to right.
+This follows the [ECMAScript Number operations](https://262.ecma-international.org/16.0/index.html#sec-ecmascript-language-types-number-type),
+while literal grouping/base spellings follow the
+[Python lexical grammar](https://docs.python.org/3/reference/lexical_analysis.html#numeric-literals).
 
-This investigation does not modify product code, execute an unbounded range,
-or repeat the product's acceptance matrix.
+Source numerical equality and ordered comparison now use IEEE semantics:
+NaN is unequal to every Number, including itself; all ordered comparisons with
+NaN are false; positive and negative zero compare equal. Runtime and optimizer
+constant folding share `NumberSemantics.Compare`. This is not bit identity:
+constant interning and dataflow still preserve exact bits. Range sorting retains
+a total ordering that positions NaN before ordinary numbers; hash-based unique
+and membership retain value/container identity semantics rather than claiming
+to be source `==` operators. Concepts do not prove associativity or permit
+binary64 reassociation.
+
+Explicit `as Number` accepts invariant numeric text, including the same bases
+and separators as literals, with optional sign and surrounding whitespace.
+`NaN`/`Infinity` text retains the existing host parsing behavior. Explicit
+`as Bool` maps zero and NaN to false and other Numbers to true; strings still
+require the text `true` or `false` rather than implicit nonempty truthiness.
+Only Path/String conversion is implicit.
+
+`$std::math::is_integer` tests finite integral Numbers; `is_safe_integer` also
+requires magnitude at most 2^53-1. The named values `nan`, `infinity`, `epsilon`
+(distance from 1 to the next greater binary64 value), `max_safe_integer`,
+`min_positive` (smallest positive subnormal), and `max_value` make the carrier's
+bounds discoverable without requiring users to construct host-specific text.
+
+Lazy range counts and indices (`take`, `drop`, `stride`, `step`, `repeat`, `at`,
+`chunk`, `slide`) use one finite, integral, nonnegative Int64-domain contract;
+stride/chunk/slide require positive counts. Actual representable Number values
+below 2^63 are admitted; there is no arbitrary Int32 collection quota. String
+counts are not silently parsed. Materializing collections retain their actual
+CLR storage limits. `take`/`drop`/`stride` keep a remaining counter rather than an
+ever-growing index, avoiding overflow on long streams without adding per-item
+validation. Numeric sequence labels retain finite-number/progress semantics;
+`enumerate_from` is not silently restricted to integral starts.
+
+`tests/NumberSemantics` covers source and artifact execution at O0/O2/O3,
+NaN/signed-zero distinctions, casts, wide lazy counts, invalid discrete inputs
+and generated finite sequence models. The historical investigation below records
+the baseline defects that motivated this change; its observations are not the
+new language contract.
 
 ## Current implementation: evidence rather than inferred intent
 

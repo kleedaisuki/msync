@@ -73,7 +73,7 @@ internal static class CompileTimeEvaluation
         or OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse or OpCode.Return or OpCode.MakeRange
         or OpCode.GetIterator or OpCode.IteratorNext or OpCode.Not or OpCode.IsNull or OpCode.IsType
         or OpCode.Equal or OpCode.NotEqual or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual
-        or OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Negate or OpCode.Convert
+        or OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Remainder or OpCode.Negate or OpCode.Convert
         or OpCode.PathJoin or OpCode.Qualify or OpCode.NativeCall or OpCode.Nop;
 
     private static Value? Evaluate(Module module, FunctionCode function, IReadOnlyList<Value> constants)
@@ -173,13 +173,14 @@ internal static class CompileTimeEvaluation
         Value Bool(bool value) => value ? Value.True : Value.False;
         if (left is NumberValue a && right is NumberValue b)
         {
-            var comparison = a.Data.CompareTo(b.Data);
+            var comparison = NumberSemantics.Compare(a.Data, b.Data);
             return op switch
             {
                 OpCode.Add => new NumberValue(a.Data + b.Data),
                 OpCode.Subtract => new NumberValue(a.Data - b.Data),
                 OpCode.Multiply => new NumberValue(a.Data * b.Data),
                 OpCode.Divide => new NumberValue(a.Data / b.Data),
+                OpCode.Remainder => new NumberValue(a.Data % b.Data),
                 _ => Compare(op, comparison)
             };
         }
@@ -200,7 +201,7 @@ internal static class CompileTimeEvaluation
         }
         return null;
 
-        Value? Compare(OpCode comparison, int result) => comparison switch
+        Value? Compare(OpCode comparison, int? result) => comparison switch
         {
             OpCode.Equal => Bool(result == 0),
             OpCode.NotEqual => Bool(result != 0),

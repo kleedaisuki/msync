@@ -38,13 +38,24 @@ public static partial class NativeRegistry
     {
         if (value is BoolValue boolean) return new(boolean.Data ? 1 : 0);
         if (value is StringValue or PathValue
-            && double.TryParse(Text(value), NumberStyles.Float, CultureInfo.InvariantCulture, out double number)) return new(number);
+            && TryNumberText(Text(value), out double number)) return new(number);
         throw CastFailure(value, TypeRef.Number, "Use invariant numeric text, such as '12.5' or '1e3'.");
+    }
+
+    private static bool TryNumberText(string text, out double number)
+    {
+        if (double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out number)) return true;
+        string literal = text.Trim();
+        bool negative = literal.StartsWith('-');
+        if (literal.StartsWith('+') || negative) literal = literal[1..];
+        if (!NumberSyntax.TryParse(literal, out number)) return false;
+        if (negative) number = -number;
+        return true;
     }
 
     private static Value CastBoolean(Value value)
     {
-        if (value is NumberValue number) return Bool(number.Data != 0);
+        if (value is NumberValue number) return Bool(number.Data != 0 && !double.IsNaN(number.Data));
         if (value is StringValue or PathValue && bool.TryParse(Text(value), out bool boolean)) return Bool(boolean);
         throw CastFailure(value, TypeRef.Bool, "Use Number or the text 'true' or 'false'; strings are not tested for nonemptiness.");
     }

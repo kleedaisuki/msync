@@ -7,12 +7,14 @@ public static partial class NativeRegistry
     private static Value MathOperation(string operation, IReadOnlyList<Value> args)
     {
         double first = MathNumber(args[0]);
-        if (operation is "is_finite" or "is_nan" or "is_infinite" or "signbit")
+        if (operation is "is_finite" or "is_nan" or "is_infinite" or "is_integer" or "is_safe_integer" or "signbit")
             return Bool(operation switch
             {
                 "is_finite" => double.IsFinite(first),
                 "is_nan" => double.IsNaN(first),
                 "is_infinite" => double.IsInfinity(first),
+                "is_integer" => double.IsFinite(first) && first == Math.Truncate(first),
+                "is_safe_integer" => double.IsFinite(first) && first == Math.Truncate(first) && Math.Abs(first) <= 9007199254740991d,
                 _ => double.IsNegative(first)
             });
         double second = args.Count > 1 ? MathNumber(args[1]) : 0;

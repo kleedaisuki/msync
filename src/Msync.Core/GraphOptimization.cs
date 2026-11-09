@@ -135,7 +135,7 @@ internal static class GraphOptimization
                     switch (instruction.Op)
                     {
                         case OpCode.Nop: break;
-                        case OpCode.Constant: case OpCode.Null: case OpCode.True: case OpCode.False: case OpCode.LoadBuiltin: Push(); break;
+                        case OpCode.Constant: case OpCode.Null: case OpCode.True: case OpCode.False: case OpCode.LoadBuiltin: case OpCode.GetSingleton: Push(); break;
                         case OpCode.LoadLocal:
                         case OpCode.LoadCell:
                         case OpCode.LoadStorage:
@@ -145,6 +145,7 @@ internal static class GraphOptimization
                             Consume(1); node.TargetDefinitions = node.TargetDefinitions.Union(state.Locals[instruction.A]); state.Locals[instruction.A] = new(pc * 2); break;
                         case OpCode.Dup: Consume(1); Push(); Push(1); break;
                         case OpCode.Pop: Consume(1); break;
+                        case OpCode.SetSingleton: Consume(1); Push(); break;
                         case OpCode.Jump: break;
                         case OpCode.JumpIfFalse: case OpCode.JumpIfTrue: Consume(1); break;
                         case OpCode.Return: if (state.Stack.Count != 0) Consume(1); break;
@@ -256,6 +257,7 @@ internal static class GraphOptimization
                 OpCode.Subtract when left is NumberValue a && right is NumberValue b => new NumberValue(a.Data - b.Data),
                 OpCode.Multiply when left is NumberValue a && right is NumberValue b => new NumberValue(a.Data * b.Data),
                 OpCode.Divide when left is NumberValue a && right is NumberValue b => new NumberValue(a.Data / b.Data),
+                OpCode.Remainder when left is NumberValue a && right is NumberValue b => new NumberValue(a.Data % b.Data),
                 OpCode.Equal when Comparable(left, right) => Bool(Compare(left!, right!) == 0),
                 OpCode.NotEqual when Comparable(left, right) => Bool(Compare(left!, right!) != 0),
                 OpCode.Less when Comparable(left, right) => Bool(Compare(left!, right!) < 0),
@@ -324,10 +326,10 @@ internal static class GraphOptimization
 
         private static Value Bool(bool value) => value ? Value.True : Value.False;
         private static bool Comparable(Value? left, Value? right) => left is BoolValue && right is BoolValue || left is NumberValue && right is NumberValue || left is StringValue && right is StringValue;
-        private static int Compare(Value left, Value right) => (left, right) switch
+        private static int? Compare(Value left, Value right) => (left, right) switch
         {
             (BoolValue a, BoolValue b) => a.Data.CompareTo(b.Data),
-            (NumberValue a, NumberValue b) => a.Data.CompareTo(b.Data),
+            (NumberValue a, NumberValue b) => NumberSemantics.Compare(a.Data, b.Data),
             (StringValue a, StringValue b) => TextSemantics.CompareOrdinal(a.Data, b.Data),
             _ => throw new InvalidOperationException()
         };
@@ -452,7 +454,7 @@ internal static class GraphOptimization
                 }
                 foreach (var input in node.Inputs) foreach (var dependency in input) Visit(dependency);
             }
-            foreach (var node in nodes.Where(node => node.Reachable && node.Instruction.Op is OpCode.Call or OpCode.ProcessCall or OpCode.NativeCall or OpCode.LoadCell))
+            foreach (var node in nodes.Where(node => node.Reachable && node.Instruction.Op is OpCode.Call or OpCode.ProcessCall or OpCode.NativeCall or OpCode.LoadCell or OpCode.SetSingleton))
                 foreach (var input in node.Inputs) foreach (var token in input) Visit(token);
         }
 
@@ -520,7 +522,7 @@ internal static class GraphOptimization
                     && (callee.Captures?.Count ?? 0) <= module.Functions[node.Instruction.B - 1].LocalCount =>
                     (summaries[node.Instruction.B - 1] & ~InstructionEffect.Capture) != InstructionEffect.None,
                 OpCode.GetMember => !HasDeclaredMember(node),
-                OpCode.LoadBuiltin => node.Instruction.Text?.TrimStart('$') is not ("std" or "local" or "pwd" or "file" or "env" or "path" or "wsl" or "view" or "views" or "ranges"),
+                OpCode.LoadBuiltin => node.Instruction.Text?.TrimStart('$') is not ("std" or "local" or "pwd" or "file" or "env" or "path" or "wsl"),
                 _ => true
             };
         }

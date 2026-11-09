@@ -19,7 +19,7 @@ public static partial class NativeRegistry
                 (range, cancellation) => CallbackRange(range, name, args[1], invoke, cancellation), token);
         if (name is "take" or "drop" or "stride" or "step")
         {
-            int count = Count(args[1], name);
+            long count = Ordinal(args[1], name, name is "stride" or "step");
             if (name == "take" && count == 0) return new RangeValue(Array.Empty<Value>(), source.ItemType);
             return Adapt(source, source.ItemType, (range, cancellation) => CountedRange(range, name, count, cancellation), token);
         }
@@ -41,25 +41,27 @@ public static partial class NativeRegistry
             source.Resolve is null ? null : async cancellation => Adapt(await source.Resolve(cancellation), itemType, operation, cancellation));
     }
 
-    private static int Count(Value value, string operation)
-    {
-        double number = value switch { NumberValue count => count.Data, StringValue text when double.TryParse(text.Data, System.Globalization.CultureInfo.InvariantCulture, out double parsed) => parsed, _ => double.NaN };
-        if (number != Math.Truncate(number) || number < 0 || number > int.MaxValue || operation is "stride" or "step" && number == 0)
-            throw new MsyncException($"ranges.{operation} requires {(operation is "stride" or "step" ? "a positive" : "a nonnegative")} integer count");
-        return (int)number;
-    }
-
-    private static async IAsyncEnumerable<Value> CountedRange(RangeValue source, string operation, int count,
+    private static async IAsyncEnumerable<Value> CountedRange(RangeValue source, string operation, long count,
         [EnumeratorCancellation] CancellationToken token)
     {
         if (operation == "take" && count == 0) yield break;
-        int index = 0;
+        long remaining = count;
         await foreach (Value value in source.Items.WithCancellation(token))
         {
-            bool selected = operation switch { "take" => index < count, "drop" => index >= count, _ => index % count == 0 };
-            ++index;
-            if (selected) yield return value;
-            if (operation == "take" && index == count) yield break;
+            if (operation == "take")
+            {
+                yield return value;
+                if (--remaining == 0) yield break;
+                continue;
+            }
+            if (operation == "drop")
+            {
+                if (remaining == 0) yield return value;
+                else --remaining;
+                continue;
+            }
+            if (remaining == count) yield return value;
+            if (--remaining == 0) remaining = count;
         }
     }
 

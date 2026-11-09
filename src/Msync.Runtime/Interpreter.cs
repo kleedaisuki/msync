@@ -260,6 +260,7 @@ public sealed partial class Interpreter
                     case OpCode.Subtract:
                     case OpCode.Multiply:
                     case OpCode.Divide:
+                    case OpCode.Remainder:
                         {
                             var right = Pop(); var left = Pop();
                             var type = left.Type == TypeRef.String ? TypeRef.String : TypeRef.Number;
@@ -267,7 +268,7 @@ public sealed partial class Interpreter
                             {
                                 if (instruction.Op == OpCode.Add && a is StringValue sa && b is StringValue sb) return new StringValue(sa.Data + sb.Data);
                                 var l = ((NumberValue)a).Data; var r = ((NumberValue)b).Data;
-                                return new NumberValue(instruction.Op switch { OpCode.Add => l + r, OpCode.Subtract => l - r, OpCode.Multiply => l * r, _ => l / r });
+                                return new NumberValue(instruction.Op switch { OpCode.Add => l + r, OpCode.Subtract => l - r, OpCode.Multiply => l * r, OpCode.Remainder => l % r, _ => l / r });
                             })); break;
                         }
                     case OpCode.Negate: stack.Add(MapValue(Pop(), TypeRef.Number, value => new NumberValue(-((NumberValue)value).Data))); break;
@@ -316,8 +317,6 @@ public sealed partial class Interpreter
             "env" => new ConnectionValue(ConnectionKind.Environment),
             "path" => new ConnectionValue(ConnectionKind.SearchPath),
             "std" => new ScopeValue(new[] { "fs", "path", "bool", "string", "ranges", "process" }.ToDictionary(n => n, n => NativeScope(n))),
-            // Existing objects retain their builtin identities; current source exposes only $std::ranges.
-            "view" or "views" or "ranges" => NativeScope("ranges"),
             _ => throw new MsyncException($"Unknown builtin '${name}'")
         };
     }
@@ -469,9 +468,9 @@ public sealed partial class Interpreter
     private static string SourceLabel(Value value) => value is StringValue text ? $"literal ({Encoding.UTF8.GetByteCount(text.Data)} UTF-8 bytes)" : value.ToString()!;
     private static bool AsBool(Value value) => value is BoolValue boolean ? boolean.Data : throw new MsyncException($"Condition requires Bool, received {value.Type}");
     private static string Text(Value value) => value switch { StringValue s => s.Data, PathValue p => p.NativeText, NumberValue n => n.ToString(), BoolValue b => b.ToString(), _ => throw new MsyncException($"Cannot convert {value.Type} to String") };
-    private static int Compare(Value left, Value right) => (left, right) switch
+    private static int? Compare(Value left, Value right) => (left, right) switch
     {
-        (NumberValue l, NumberValue r) => l.Data.CompareTo(r.Data),
+        (NumberValue l, NumberValue r) => NumberSemantics.Compare(l.Data, r.Data),
         (BoolValue l, BoolValue r) => l.Data.CompareTo(r.Data),
         (TypeValue l, TypeValue r) => l.Data == r.Data ? 0 : 1,
         (StringValue or PathValue, StringValue or PathValue) => TextSemantics.CompareOrdinal(Text(left), Text(right)),

@@ -149,8 +149,10 @@ internal static class PredicateOptimization
                             var result = arguments.All(argument => argument.Constant is not null)
                                 ? PureEvaluation.Native(instruction.Text, arguments.Select(argument => argument.Constant!).ToArray(), module) : null;
                             Push(new(NativeSignatures.TryGet(instruction.Text!, out var native) ? native.Result : TypeRef.Any, identity, result)); break;
+                        case OpCode.GetSingleton: Push(Unknown(new(TypeKind.Scope | TypeKind.Null))); break;
+                        case OpCode.SetSingleton: Pop(); Push(Unknown(TypeRef.Scope)); break;
                         case OpCode.LoadBuiltin:
-                            Push(Unknown(instruction.Text?.TrimStart('$') is "std" or "view" or "views" or "ranges" ? TypeRef.Scope : TypeRef.Connection)); break;
+                            Push(Unknown(instruction.Text?.TrimStart('$') is "std" ? TypeRef.Scope : TypeRef.Connection)); break;
                         case OpCode.MakeRange:
                             var items = PopMany(instruction.A);
                             Push(Unknown(new(TypeKind.Range, items.Select(item => item.Type).Aggregate(new TypeRef(TypeKind.Never), TypeRef.Union)))); break;
@@ -307,6 +309,7 @@ internal static class PredicateOptimization
                 (OpCode.Subtract, NumberValue a, NumberValue b) => new NumberValue(a.Data - b.Data),
                 (OpCode.Multiply, NumberValue a, NumberValue b) => new NumberValue(a.Data * b.Data),
                 (OpCode.Divide, NumberValue a, NumberValue b) => new NumberValue(a.Data / b.Data),
+                (OpCode.Remainder, NumberValue a, NumberValue b) => new NumberValue(a.Data % b.Data),
                 (OpCode.Add, StringValue a, StringValue b) => new StringValue(a.Data + b.Data),
                 _ => null
             };
@@ -334,7 +337,7 @@ internal static class PredicateOptimization
 
         private static int? Compare(Value? left, Value? right) => (left, right) switch
         {
-            (NumberValue a, NumberValue b) => a.Data.CompareTo(b.Data),
+            (NumberValue a, NumberValue b) => NumberSemantics.Compare(a.Data, b.Data),
             (BoolValue a, BoolValue b) => a.Data.CompareTo(b.Data),
             (StringValue a, StringValue b) => TextSemantics.CompareOrdinal(a.Data, b.Data),
             (TypeValue a, TypeValue b) => a.Data == b.Data ? 0 : 1,
@@ -348,7 +351,7 @@ internal static class PredicateOptimization
                 OpCode.LoadLocal => 0,
                 OpCode.Not or OpCode.IsNull or OpCode.Negate or OpCode.Convert => 1,
                 OpCode.Equal or OpCode.NotEqual or OpCode.Less or OpCode.LessEqual or OpCode.Greater or OpCode.GreaterEqual
-                    or OpCode.IsType or OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide => 2,
+                    or OpCode.IsType or OpCode.Add or OpCode.Subtract or OpCode.Multiply or OpCode.Divide or OpCode.Remainder => 2,
                 OpCode.NativeCall => instruction.A,
                 _ => -1
             };
@@ -384,7 +387,8 @@ internal static class PredicateOptimization
                 case OpCode.Nop: case OpCode.Barrier: break;
                 case OpCode.LoadCell: case OpCode.LoadStorage: aliases.Add(instruction.A); stack.Add(true); break;
                 case OpCode.GetCapture: Pop(); stack.Add(true); break;
-                case OpCode.LoadLocal: case OpCode.LoadBuiltin: case OpCode.Constant: case OpCode.Null: case OpCode.True: case OpCode.False: stack.Add(false); break;
+                case OpCode.SetSingleton: Pop(); stack.Add(false); break;
+                case OpCode.GetSingleton: case OpCode.LoadLocal: case OpCode.LoadBuiltin: case OpCode.Constant: case OpCode.Null: case OpCode.True: case OpCode.False: stack.Add(false); break;
                 case OpCode.StoreLocal: case OpCode.InitializeLocal: if (Pop()) aliases.Add(instruction.A); break;
                 case OpCode.Pop: Pop(); break;
                 case OpCode.Dup: var duplicate = Pop(); stack.Add(duplicate); stack.Add(duplicate); break;
