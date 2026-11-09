@@ -41,7 +41,7 @@ on:
         type: boolean
         default: true
       polish_phases:
-        description: Optional polish groups portable,editor,editing,identifiers,state,closing,linear,completion,authentication,presentation_console,hints_console,wsl
+        description: Optional polish groups portable,editor,editing,identifiers,state,closing,linear,memory,artifacts,completion,authentication,presentation_console,hints_console,wsl
         type: string
         default: ''
       polish_only:
@@ -85,7 +85,7 @@ jobs:
           POLISH_PHASES: ${{ inputs.polish_phases }}
         run: |
           import os
-          groups: set[str] = {'portable', 'editor', 'editing', 'identifiers', 'state', 'closing', 'linear', 'completion', 'authentication', 'presentation_console', 'hints_console', 'wsl'}
+          groups: set[str] = {'portable', 'editor', 'editing', 'identifiers', 'state', 'closing', 'linear', 'memory', 'artifacts', 'completion', 'authentication', 'presentation_console', 'hints_console', 'wsl'}
           requested: str = os.environ['POLISH_PHASES']
           selected: set[str] = {part.strip() for part in requested.split(',')} if requested else groups
           unknown: set[str] = selected - groups
@@ -136,7 +136,7 @@ jobs:
         run: |
           python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
       - name: Exercise changed terminal, compiler insight and formatter user journeys
-        if: inputs.polish_only && (steps.polish.outputs.portable == 'true' || steps.polish.outputs.editor == 'true' || steps.polish.outputs.editing == 'true' || steps.polish.outputs.identifiers == 'true' || steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true' || steps.polish.outputs.linear == 'true' || steps.polish.outputs.completion == 'true' || (steps.polish.outputs.authentication == 'true' && runner.os == 'Linux')) && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
+        if: inputs.polish_only && (steps.polish.outputs.portable == 'true' || steps.polish.outputs.editor == 'true' || steps.polish.outputs.editing == 'true' || steps.polish.outputs.identifiers == 'true' || steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true' || steps.polish.outputs.linear == 'true' || steps.polish.outputs.memory == 'true' || steps.polish.outputs.artifacts == 'true' || steps.polish.outputs.completion == 'true' || (steps.polish.outputs.authentication == 'true' && runner.os == 'Linux')) && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
         shell: python
         env:
           PACKAGE_RID: ${{ matrix.rid }}
@@ -149,6 +149,8 @@ jobs:
           POLISH_STATE: ${{ steps.polish.outputs.state }}
           POLISH_CLOSING: ${{ steps.polish.outputs.closing }}
           POLISH_LINEAR: ${{ steps.polish.outputs.linear }}
+          POLISH_MEMORY: ${{ steps.polish.outputs.memory }}
+          POLISH_ARTIFACTS: ${{ steps.polish.outputs.artifacts }}
           POLISH_AUTHENTICATION: ${{ steps.polish.outputs.authentication }}
         run: |
           import os
@@ -173,6 +175,10 @@ jobs:
                       arguments.extend(['--phase', phase])
               if os.environ['POLISH_LINEAR'] == 'true':
                   arguments.extend(['--phase', 'linear-effect'])
+              if os.environ['POLISH_MEMORY'] == 'true':
+                  arguments.extend(['--phase', 'memory-layout'])
+              if os.environ['POLISH_ARTIFACTS'] == 'true':
+                  arguments.extend(['--phase', 'artifact-view'])
               if os.environ['POLISH_IDENTIFIERS'] == 'true':
                   arguments.extend(['--phase', 'identifier-return'])
               if os.environ['POLISH_COMPLETION'] == 'true':
@@ -198,6 +204,16 @@ jobs:
       - name: Verify only changed linear normalization and constant interning
         if: ${{ !cancelled() && inputs.polish_only && inputs.reuse_run == '' && steps.polish.outputs.linear == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: python packaging/state_contracts.py --output .temp/platform-results/state-contracts --contract constant-interner
+      - name: Exercise selected cross-block memory and compact layout contracts
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.memory == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: python packaging/state_contracts.py --output .temp/platform-results/memory-contracts --contract cross-block-memory --contract memory-effects --contract scope-layout
+      - name: Publish native memory optimizer component observation image
+        id: memory-components
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.memory == 'true' && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        run: dotnet publish tests/Performance/Components/Msync.Components.csproj -c Release -r win-x64 -p:RestoreLockedMode=true -p:SourceRevisionId=${{ github.sha }} --artifacts-path artifacts/memory-component-build -o artifacts/memory-components -m:1 -nr:false
+      - name: Record native Windows cross-block memory and layout costs
+        if: ${{ !cancelled() && steps.memory-components.outcome == 'success' }}
+        run: artifacts/memory-components/msync-components.exe --optimizer-pipeline --cases memory_branches,memory_loop,layout_factory --sizes 1,32,128 --levels 2 --samples 7 --warmups 3 --output .temp/platform-results/memory-components.json
       - name: Publish the native Windows optimizer component observation image
         id: state-components
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.state == 'true' && runner.os == 'Windows' && steps.package.outcome == 'success' }}

@@ -42,6 +42,8 @@ def main() -> int:
             "scheduling",
             "repl-state",
             "linear-effect",
+            "memory-layout",
+            "artifact-view",
             "navigation",
             "repl-palette",
             "terminal-detail",
@@ -94,6 +96,8 @@ def main() -> int:
         ("scheduling", "scheduling_journey.py"),
         ("repl-state", "repl_state_journey.py"),
         ("linear-effect", "linear_effect_journey.py"),
+        ("memory-layout", "memory_layout_journey.py"),
+        ("artifact-view", "artifact_view_journey.py"),
         ("navigation", "navigation_journey.py"),
         ("repl-palette", "repl_palette_journey.py"),
     ]
