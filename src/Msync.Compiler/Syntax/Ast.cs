@@ -13,6 +13,7 @@ public sealed record Document(IReadOnlyList<Statement> Statements, SourceSpan Sp
 public abstract record Node(SourceSpan Span);
 public abstract record Statement(SourceSpan Span) : Node(Span);
 public sealed record LetStatement(Pattern Pattern, bool Nullable, TypeSyntax? Type, Expr Value, SourceSpan Span) : Statement(Span);
+public sealed record GlobalStatement(IReadOnlyList<NameExpr> Names, SourceSpan Span) : Statement(Span);
 public sealed record FunctionDeclaration(string Name, FunctionExpr Function, SourceSpan Span) : Statement(Span);
 public sealed record NativeDeclaration(string Name, IReadOnlyList<Parameter> Parameters, TypeSyntax ReturnType, SourceSpan Span) : Statement(Span)
 {

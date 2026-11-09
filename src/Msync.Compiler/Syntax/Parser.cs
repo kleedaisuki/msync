@@ -131,6 +131,7 @@ public sealed class Parser
     private Statement Statement(TokenKind end)
     {
         var start = Current.Span;
+        if (TakeWord("global")) return Global(start);
         if (TakeWord("let"))
         {
             var pattern = ParsePattern(false);
@@ -159,6 +160,25 @@ public sealed class Parser
         bool discarded = Take(TokenKind.Semicolon);
         if (!discarded && !At(end) && !At(TokenKind.End)) Fail("Expected ';' between expressions.");
         return new ExpressionStatement(expression, discarded, SourceSpan.Cover(start, Previous.Span));
+    }
+    private GlobalStatement Global(SourceSpan start)
+    {
+        List<NameExpr> names = [];
+        while (true)
+        {
+            if (!At(TokenKind.Atom))
+            {
+                Fail("Expected a binding name after 'global' or ','.");
+                break;
+            }
+            var name = Next();
+            names.Add(new(name.Text, name.Span));
+            if (Take(TokenKind.Comma)) continue;
+            if (!At(TokenKind.Atom)) break;
+            Fail("Expected ',' between global binding names.");
+        }
+        Require(TokenKind.Semicolon, "Expected ';' after the global import.");
+        return new(names, SourceSpan.Cover(start, Previous.Span));
     }
     private NativeDeclaration Native()
     {

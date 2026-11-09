@@ -31,6 +31,33 @@ var incomplete = Parser.ParseForEditor("scope SomeType { field?: null, new: fn {
 Require(incomplete.Error is not null && incomplete.Document.Statements.Count == 1, "incomplete nullable scope recovery");
 Console.WriteLine("Mutable assignment and nullable field syntax: 15 contracts passed.");
 
+const string globalSource = "global .codex, copy-config, 值;";
+var imported = (GlobalStatement)Parser.Parse(globalSource).Statements.Single();
+Require(imported.Names.Select(name => name.Name).SequenceEqual([".codex", "copy-config", "值"]), "global import preserves legal atom names");
+Require(imported.Names.All(name => globalSource[name.Span.Start..name.Span.End] == name.Name), "global names own exact source spans");
+Require(imported.Span == new SourceSpan(0, globalSource.Length), "global statement owns its terminating semicolon");
+var nestedGlobal = (FunctionDeclaration)Parser.Parse("fn run() { global root, operation; root }").Statements.Single();
+Require(nestedGlobal.Function.Body.Statements[0] is GlobalStatement { Names.Count: 2 }, "global parses in function bodies");
+string globalFormatting = Formatter.Format("fn run() { global root, operation; root }");
+Require(globalFormatting.Contains("global root, operation;", StringComparison.Ordinal), "short global lists remain on one line");
+Require(Formatter.Format(globalFormatting) == globalFormatting, "global formatting is idempotent");
+string longGlobal = "fn run() { global " + string.Join(", ", Enumerable.Range(0, 12).Select(index => $"binding_{index:D2}")) + "; root }";
+string wrappedGlobal = Formatter.Format(longGlobal);
+Require(wrappedGlobal.Split('\n').All(line => line.Length <= 80), "long global import wraps at names rather than exceeding print width");
+Require(Formatter.Format(wrappedGlobal) == wrappedGlobal, "wrapped global formatting is idempotent");
+Require(Parser.Parse("scope Item { global: true, other: false }").Statements.Single() is ScopeDeclaration,
+    "a Scope field named global is not an import statement");
+foreach (string invalidGlobal in new[] { "global;", "global root,;", "global root other;", "global root" })
+{
+    try { Parser.Parse(invalidGlobal); throw new InvalidOperationException("Accepted malformed import: " + invalidGlobal); }
+    catch (SyntaxException syntax) { Require(syntax.Diagnostic.Message.Contains("global", StringComparison.Ordinal), "global syntax error explains its grammatical owner"); }
+}
+var unfinishedGlobal = Parser.ParseForEditor("fn run() { global root,");
+Require(unfinishedGlobal.Error is { IsIncomplete: true }
+    && ((FunctionDeclaration)unfinishedGlobal.Document.Statements.Single()).Function.Body.Statements[0] is GlobalStatement { Names.Count: 1 },
+    "unfinished import retains completed names and original incomplete diagnostic");
+Console.WriteLine("Global import syntax: 14 contracts passed.");
+
 Require(ParseExpression("release") is BarrierExpr { Release: true, Acquire: false, Value: null }, "standalone release");
 Require(ParseExpression("acquire;") is BarrierExpr { Release: false, Acquire: true, Value: null }, "standalone acquire");
 Require(ParseExpression("release acquire ./tool()") is BarrierExpr { Release: true, Acquire: true, Value: CallExpr }, "combined scheduling modifiers");

@@ -33,6 +33,7 @@ public static class Formatter
         private int indent;
         private Token? previous;
         private int tokenIndex;
+        private bool globalList;
         public string Write()
         {
             for (tokenIndex = 0; tokenIndex < tokens.Count; tokenIndex++)
@@ -65,9 +66,17 @@ public static class Formatter
                 case TokenKind.RightBracket:
                     Close(token); break;
                 case TokenKind.Semicolon:
+                    globalList = false;
                     Trim(); Text(";"); Newline(); break;
                 case TokenKind.Comma:
                     Trim(); Text(",");
+                    if (globalList)
+                    {
+                        if (wrap && Column + 1 + tokens[tokenIndex + 1].Text.Length > PrintWidth)
+                        { Newline(); continuation = 4; }
+                        else Space();
+                        break;
+                    }
                     if (nesting.TryPeek(out var kind) && (kind.Kind == TokenKind.LeftBrace || kind.Expanded)) Newline(); else Space();
                     break;
                 case TokenKind.Colon:
@@ -97,6 +106,8 @@ public static class Formatter
                     else Space();
                     break;
                 default:
+                    if (token.Kind == TokenKind.Atom && token.Text == "global" && tokens[tokenIndex + 1].Kind == TokenKind.Atom)
+                        globalList = true;
                     if (wrap && IsWordOperator(token) && NeedsOperatorBreak(token))
                     { Newline(); continuation = 4; }
                     WordGap(token);
