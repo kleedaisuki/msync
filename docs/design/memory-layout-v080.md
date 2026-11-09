@@ -115,6 +115,46 @@ path. Constant pools retain indexed interning and exact floating representation.
 Benchmarks compare compiler and prepared-VM time/allocation, with no-Scope
 scripts as a negative control; a smaller artifact alone is not a latency result.
 
-This note records the invariants and interfaces for the implementation work.
-The owning test notes and [performance record](performance-v080.md) record which
-mechanisms and measured cases have actually completed.
+## Integrated implementation
+
+The O2/O3 pipeline now uses the following concrete mechanisms:
+
+* `CrossBlockMemoryOptimization` promotes private, noncyclic allocations across
+  blocks before block-local SRA. Field slots carry branch and loop joins; nested
+  containment propagates escape. A cyclic allocation site retains its physical
+  generations rather than being assigned one concrete object identity.
+* After preparation, relevant functions share one `MemoryEffects.Analyze`
+  result. Physical field caches use must-valid joins and actual closure origins;
+  parameter/capture access paths invalidate only the fields they can modify.
+  A capture rebind and raw shared field cells remain distinct alias events.
+  Creation of a lazy adapter is not its callback execution: actual enumeration
+  applies latent effects, while proved callback-free Path work does not become
+  a lexical-memory clobber.
+* `AggregateArgumentSpecialization` handles known direct, readonly Scope helper
+  inputs even when I/O ownership prevents ordinary inlining. It stages every
+  original argument before extracting proved fields, then calls a private
+  scalar-argument clone with the original capture/return ownership. Unknown
+  shapes, aggregate escapes, writes and potentially effectful enumeration keep
+  the original path. Existing escaping callable signatures are not rewritten.
+* Physical Scope objects use shared `ScopeLayout` metadata and fresh Value
+  arrays. The compiler emits guarded member-slot hints using existing operands;
+  constant cloning and binding share the layout but create fresh owned payloads.
+
+The preparation cache does not cache the module-dependent physical forwarding
+result under only a coarse effect flag. That analysis runs after preparation
+against the current precise summaries. Functions without lexical field clients
+do not request the new module analysis. Ordinary transfer-only functions retain
+their existing linear normal-form path.
+
+Physical escaped-object stores remain in this implementation: a called function
+can fail after an earlier store, exposing the prefix. Private scalarized field
+stores instead use the existing graph's cross-block demand/DSE. General
+escaped-memory SSA store deletion, arbitrary aggregate ABI splitting and an
+unmanaged region allocator are not claimed.
+
+Accepted local mechanisms are recorded in `tests/CrossBlockMemory` (728 focused
+contracts), `tests/MemoryEffects` (69, including recursive/loop widening and actual
+bytes), `tests/AggregateArguments` (173), and `tests/ScopeLayout`. Those are separate
+focused records, not a fabricated single cross-platform test total. The native
+delivery lane owns platform acceptance; the [performance record](performance-v080.md)
+owns actual before/after measurements and workload applicability.
