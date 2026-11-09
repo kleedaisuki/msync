@@ -43,6 +43,19 @@ internal static class TransactionChecks
         Check(builder.Locations[0].Name == "committed");
         long small = Allocation(10), large = Allocation(100_000);
         Check(small == large);
+        HirBuilder sites = new();
+        sites.Scopes.Add(new(0, []));
+        _ = sites.Freeze(new(0));
+        HirAllocationSiteId? discarded;
+        using (sites.BeginTransaction())
+        {
+            sites.Scopes.Add(new(0, []));
+            _ = sites.Freeze(new(0));
+            discarded = sites.Scopes[1].Site;
+        }
+        sites.Scopes.Add(new(0, []));
+        _ = sites.Freeze(new(0));
+        Check(sites.Scopes[1].Site is { } renewed && renewed != discarded);
         return checks;
 
         void Check(bool condition)

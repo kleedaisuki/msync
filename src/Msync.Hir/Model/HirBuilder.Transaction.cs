@@ -130,6 +130,7 @@ public sealed partial class HirBuilder
             owner.Calls.RemoveRange(calls, owner.Calls.Count - calls);
             owner.Closures.RemoveRange(closures, owner.Closures.Count - closures);
             owner.Scopes.RemoveRange(scopes, owner.Scopes.Count - scopes);
+            owner.checkedScopeSites = Math.Min(owner.checkedScopeSites, owner.Scopes.Count);
             owner.Fors.RemoveRange(fors, owner.Fors.Count - fors);
             owner.Matches.RemoveRange(matches, owner.Matches.Count - matches);
             owner.Barriers.RemoveRange(barriers, owner.Barriers.Count - barriers);
