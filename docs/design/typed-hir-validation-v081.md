@@ -39,6 +39,24 @@ metadata; the forbidden dependency is generating or repairing executable layout
 while deciding meaning. Persistent-session commit/rollback is a separate
 transaction boundary, not permission to retain speculative emission snapshots.
 
+The post-cutover source inspection establishes the concrete boundary:
+`Msync.Hir` references only Core, and its immutable module contains structured
+nodes and typed identities, not compiler frames, syntax ASTs or instructions.
+`SourceBinder` binds lexical bodies into that semantic vocabulary; the analyzer
+does not construct bytecode operations, local-slot layouts or patched jumps.
+`Compiler.Compile` calls Analyze → pure Lower (without retained layout) →
+Optimizer. The lowerer alone translates the immutable module into bytecode.
+EditorCompiler instead consumes SemanticEditorCompiler's lightweight observation
+view and never invokes that lowerer.
+
+Query isolation is enforced before sealing: `SemanticOutput` owns executable
+table append/reservation, while the query's `SemanticArena` exposes read-only
+tables and metadata interning. Query contexts have no output capability.
+Ordinary branch flow maps, bounded generic workspaces and session transactions
+remain distinct mechanisms; their existence is not evidence of the old emitting
+compiler snapshot architecture. These source findings complement, rather than
+replace, the query-ownership, editor-lifetime and source-free artifact journeys.
+
 ## Real user journeys
 
 The focused `tests/Msync.EndToEnd/hir_semantic_journey.py` composes the previously
