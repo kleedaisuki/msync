@@ -23,7 +23,8 @@ public static partial class NativeSignatures
         void Range(string names, TypeRef output, NativeResultRule rule, params TypeRef[] inputs)
         {
             foreach (string name in names.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-                result.Add($"ranges.{name}", new($"ranges.{name}", inputs, output, ResultRule: rule));
+                result.Add($"ranges.{name}", new($"ranges.{name}", inputs, output, ResultRule: rule,
+                    Behavior: name is "identity" or "all" ? NativeBehavior.Deferred | NativeBehavior.PreservesIdentity : null));
         }
         Add("fs", "exists is_regular_file is_directory is_symlink is_block_file is_character_file is_fifo is_socket is_other is_empty is_readonly", TypeRef.Bool, NativeEffect.Read, path);
         Add("fs", "status symlink_status", TypeRef.String, NativeEffect.Read, path);
@@ -84,12 +85,23 @@ public static partial class NativeSignatures
         RegisterShell(result);
         foreach (var (name, signature) in result.ToArray())
         {
-            if (!name.StartsWith("ranges.", StringComparison.Ordinal) || signature.Behavior is not null) continue;
-            bool deferred = signature.Result.WithoutNull.Kind == TypeKind.Range;
-            NativeBehavior behavior = deferred ? NativeBehavior.Deferred
-                : NativeBehavior.Enumerates | NativeBehavior.MayFail;
-            if (name is "ranges.take" or "ranges.drop" or "ranges.stride" or "ranges.step") behavior |= NativeBehavior.MayFail;
-            result[name] = signature with { Behavior = behavior };
+            if (signature.Behavior is not null) continue;
+            NativeBehavior behavior = NativeBehavior.None;
+            NativeEffect effect = signature.Effect;
+            if (name.StartsWith("ranges.", StringComparison.Ordinal))
+            {
+                behavior = signature.Result.WithoutNull.Kind == TypeKind.Range ? NativeBehavior.Deferred
+                    : NativeBehavior.Enumerates | NativeBehavior.MayFail;
+                if (name is "ranges.take" or "ranges.drop" or "ranges.stride" or "ranges.step") behavior |= NativeBehavior.MayFail;
+            }
+            else if (name.StartsWith("process.", StringComparison.Ordinal))
+            {
+                behavior = NativeBehavior.Invokes | NativeBehavior.MayFail;
+                if (effect == NativeEffect.Pure) effect = NativeEffect.Read;
+            }
+            else if (name == "string.replace" || name.StartsWith("fs.", StringComparison.Ordinal)
+                || name.StartsWith("path.", StringComparison.Ordinal)) behavior = NativeBehavior.MayFail;
+            result[name] = signature with { Behavior = behavior, Effect = effect };
         }
         return result;
     }
