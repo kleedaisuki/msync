@@ -128,6 +128,17 @@ keeps its cells alive; returning a Scope keeps its identity and field locations
 alive. Across REPL submissions, live slots and accepted storage contracts are
 authoritative; invalidate assumptions when a later submission updates them.
 
+A call evaluates its callee value before evaluating its arguments. If an
+argument replaces the callee's captured storage location, the already loaded
+value still selects the old function; a subsequent load selects the new one.
+For `first = action(change()); second = action(false)`, where change replaces A
+with B, the required result is AB, not AA or BB. An inliner's storage-location
+proof must therefore notice `GetCapture` aliases and inlined `StoreLocal`
+writes without invalidating value snapshots already on the operand stack.
+`call_order_journey.py` exercises this contract through file execution and both
+binary stages at every optimization level. REPL-only validation is insufficient:
+session entry points deliberately retain locals and skip some main-body passes.
+
 An inferred callable return contract must not freeze a transient read fact.
 For example, after a nullable String field is set to Null, `fn { field }` still
 has the admitted String? getter contract; its immediate call can separately be
