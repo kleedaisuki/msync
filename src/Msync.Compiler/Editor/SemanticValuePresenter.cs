@@ -166,14 +166,13 @@ internal sealed class SemanticValuePresenter(SemanticObservationView view,
         if ((value?.Signature ?? native?.Signature) is { } written) return Rename(name, written);
         if (value?.Function is { } function)
         {
-            HirFunction callable = view.Module.Functions[function.Value];
+            SemanticFunctionSignature callable = view.Module.Functions[function.Value];
             return FunctionSignature(name.Length == 0 ? callable.Name : name, callable.Parameters, TypeName(callable.Result));
         }
         if (value?.Template is { } template)
         {
-            HirTemplate callable = view.Module.Templates[template.Value];
-            string result = callable.ResultAnnotation is { } annotation ? TypeName(annotation)
-                : callable.Body.IsNone ? "inferred at call" : TypeName(view.Module.Node(callable.Body).Type);
+            SemanticTemplateSignature callable = view.Module.Templates[template.Value];
+            string result = callable.Result is { } inferred ? TypeName(inferred) : "inferred at call";
             return FunctionSignature(name.Length == 0 ? callable.Name : name, callable.Parameters, result);
         }
         if (value?.NativeName is { } nativeName)

@@ -28,7 +28,10 @@ dotnet run --project tests/HirEditorProjection -c Release \
 For a test-only build against an owner's frozen matching Core/HIR DLL pair,
 set `-p:HirReferencePath=/absolute/reference/directory`; this avoids rebuilding
 the shared product during parallel work. The initial isolated run passed 37
-contracts with zero warnings. Its dependency hashes are recorded under
+contracts with zero warnings. The subsequent four retention checks keep the
+editor view alive while verifying that the original module and its 8,192-node
+arena can be reclaimed; generic result types remain available after their bodies
+are released. The total is 41 contracts. Dependency hashes are recorded under
 `.temp/hir-editor-projection/reference/SHA256SUMS`.
 
 `tests/Msync.EndToEnd/hir_editor_journey.py` separately checks the real LSP

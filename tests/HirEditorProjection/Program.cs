@@ -121,6 +121,7 @@ Require(definition.SourceName.StartsWith("msync-stdlib:", StringComparison.Ordin
 Require(definition.Span.Start == 3, "Definition offset remains UTF-16 after a surrogate pair");
 Require(index.DefinitionsAt(82).Count == 1, "Definition lookup permits token end caret");
 Require(index.DefinitionsAt(90).Count == 0, "Unrelated source has no stale definition");
+ProjectionRetention.Run(Require);
 Console.WriteLine($"PASS {checks} immutable HIR editor projection contracts");
 
 void Require(bool condition, string name)

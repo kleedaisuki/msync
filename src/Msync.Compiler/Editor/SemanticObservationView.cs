@@ -54,7 +54,30 @@ internal sealed record SemanticImport(SourceSpan Span,
 internal readonly record struct SemanticReference(SourceSpan Span,
     ImmutableArray<HirSourceRange> Definitions, bool Concrete = true);
 
-internal sealed record SemanticObservationView(HirModule Module, HirSourceId Source,
+internal sealed record SemanticFunctionSignature(string Name,
+    ImmutableArray<HirLocationId> Parameters, HirTypeId Result);
+
+internal sealed record SemanticTemplateSignature(string Name,
+    ImmutableArray<HirLocationId> Parameters, HirTypeId? Result);
+
+internal sealed record SemanticTypeTables(ImmutableArray<HirSource> Sources,
+    ImmutableArray<HirType> Types, ImmutableArray<HirLocation> Locations,
+    ImmutableArray<HirScopeLayout> ScopeLayouts, ImmutableArray<HirSignature> Signatures,
+    ImmutableArray<SemanticFunctionSignature> Functions,
+    ImmutableArray<SemanticTemplateSignature> Templates)
+{
+    public static SemanticTypeTables From(HirModule module) => new(module.Sources,
+        module.Types, module.Locations, module.ScopeLayouts, module.Signatures,
+        module.Functions.Select(function => new SemanticFunctionSignature(function.Name,
+            function.Parameters, function.Result)).ToImmutableArray(),
+        module.Templates.Select(template => new SemanticTemplateSignature(template.Name,
+            template.Parameters, template.ResultAnnotation
+                ?? (template.Body.IsNone ? null : module.Node(template.Body).Type))).ToImmutableArray());
+
+    public TypeRef RuntimeType(HirTypeId type) => Types[type.Value].RuntimeType;
+}
+
+internal sealed record SemanticObservationView(SemanticTypeTables Module, HirSourceId Source,
     ImmutableArray<SemanticValueView> Values,
     ImmutableArray<SemanticObservation> Observations,
     ImmutableArray<SemanticVisibility> Contexts,
@@ -63,5 +86,15 @@ internal sealed record SemanticObservationView(HirModule Module, HirSourceId Sou
     ImmutableArray<SemanticImport> Imports,
     ImmutableArray<SemanticReference> References)
 {
+    public SemanticObservationView(HirModule module, HirSourceId source,
+        ImmutableArray<SemanticValueView> values,
+        ImmutableArray<SemanticObservation> observations,
+        ImmutableArray<SemanticVisibility> contexts,
+        ImmutableArray<SemanticReceiver> receivers,
+        ImmutableArray<SemanticPathOwner> pathOwners,
+        ImmutableArray<SemanticImport> imports,
+        ImmutableArray<SemanticReference> references) : this(SemanticTypeTables.From(module),
+            source, values, observations, contexts, receivers, pathOwners, imports, references) { }
+
     public SemanticValueView Value(SemanticValueId id) => Values[id.Value];
 }
