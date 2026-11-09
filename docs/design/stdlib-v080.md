@@ -52,6 +52,26 @@ root must observe the same module object and permitted field assignments.
 Parsing may be cached; a first caller's live Scope, captured binding slots,
 working directory or home directory must not become process-global cache data.
 
+The object services are ordinary structural values. For example, the compiler
+checks a File service against a user-defined concept without a trait registry,
+an implementation declaration, or an additional host object kind:
+
+```msync
+concept WritableText {
+    write: fn(value: String) -> Null,
+};
+fn save(destination: WritableText, text: String) {
+    destination::write(text)
+};
+let report = $std::files::File(./report.txt);
+save(report, "completed");
+```
+
+File and Command factories capture specifications; they do not open files,
+start processes or authenticate remote endpoints until a selected method does
+that work. Qualify a physical path with `path @ connection`; `::` selects the
+object's lexical methods and fields.
+
 Direct module selection instantiates only that module and its executable source
 dependencies. A function captures the internal module location, not a detached
 module snapshot. If later code materializes the whole `$std` root, its fields
