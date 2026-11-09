@@ -559,7 +559,12 @@ public sealed class Parser
     }
     private TypeSyntax ParseType(bool union = true)
     {
+        var start = Current.Span;
+        bool reference = Take(TokenKind.Dollar);
         var name = Require(TokenKind.Atom, "Expected a type name.");
+        string qualified = (reference ? "$" : "") + name.Text;
+        while (Take(TokenKind.Select))
+            qualified += "::" + Require(TokenKind.Atom, "Expected a type or concept name after '::'.").Text;
         List<TypeSyntax> arguments = [], alternatives = [];
         if (Take(TokenKind.Less))
         {
@@ -568,8 +573,8 @@ public sealed class Parser
         }
         bool nullable = Take(TokenKind.Question);
         if (union) while (Take(TokenKind.Pipe)) alternatives.Add(ParseType(false));
-        return new(name.Text, arguments, alternatives, nullable,
-            new(name.Span.Start, Math.Max(name.Span.End, Previous.Span.End) - name.Span.Start));
+        return new(qualified, arguments, alternatives, nullable,
+            new(start.Start, Math.Max(name.Span.End, Previous.Span.End) - start.Start));
     }
     private bool ContinuesBarePath() => source[Previous.Span.End..Current.Span.Start].All(c => c is ' ' or '\t');
     private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "**" or "%" or "as" or "concept" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "loop" or "native" or "release" or "acquire" or "acqrel") && !LanguageTypes.Contains(text);

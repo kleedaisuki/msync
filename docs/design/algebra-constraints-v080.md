@@ -52,6 +52,26 @@ reorderings. `tests/Concepts` exercises source, serialized relocatable bytecode,
 context-bound executable bytecode, mutation, nested Scope carriers and sessions
 at O0/O2/O3.
 
+### Source-backed standard concepts
+
+Standard concepts are exported as compile-time declarations, for example
+`$std::concepts::Equality`. Qualified references are accepted in parameter,
+return and storage annotations, concept bases, unions and `Range<T>` elements.
+They use the same structural checker as lexical concepts; an annotation loads
+only immutable declaration metadata from the embedded source module, not its
+runtime Scope, functions or effects. Source modules may also export ordinary
+named Scope dictionaries, preserving their program/session singleton identity.
+
+Concept and value exports are deliberately distinct. A concept is not a field
+of a runtime `$std::concepts` object, and replacing a mutable standard value does
+not replace a declaration. A lexical `std` binding shadows the builtin reference
+in a new type annotation, just as in a value expression. Function signatures
+and previously admitted storage contracts retain their definition-time namespace
+instead of being reinterpreted under a later caller's `std` binding. Parsed
+documents are reusable; metadata caches never retain user binding Cells,
+working directories or endpoint observations. Editor definition locations refer
+to the same `msync-stdlib` source bytes used by compilation.
+
 ## Original investigation and rationale
 
 The November 9, 2026 question is how to express concept/trait-like algebraic

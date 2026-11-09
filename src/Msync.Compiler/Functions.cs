@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
@@ -31,6 +32,8 @@ internal sealed partial class Compilation
     {
         if (!frame.EditorRecovery) ValidateGlobalImports(frame, function);
         var usedNames = Names(function.Body).ToHashSet(StringComparer.Ordinal);
+        if (function.Parameters.Any(parameter => ReferencesStandardConcept(parameter.Type)) || ReferencesStandardConcept(function.ReturnType))
+            usedNames.Add("std");
         CaptureStandardDependencies(frame, function.Body, usedNames);
         var captures = Captures(frame, usedNames, declaration is null ? function.Name : null);
         if (functionSites.TryGetValue(function, out var atSite))
@@ -126,6 +129,8 @@ internal sealed partial class Compilation
         if (id == functions.Count) functions.Add(functions[template.Id]);
         var annotationFrame = CloneFrame(caller);
         annotationFrame.Concepts = template.Concepts;
+        if (ReferencesStandardConcept(template.Syntax.ReturnType))
+            annotationFrame.Environment = template.Captures.ToImmutableDictionary(StringComparer.Ordinal);
         var asserted = template.Syntax.ReturnType is null ? null : ResolveType(annotationFrame, template.Syntax.ReturnType);
         Specialization specialization = new(id, new(asserted ?? new TypeRef(TypeKind.Never)), arguments.Select(info => info.Type).ToArray());
         specializations[key] = specialization;

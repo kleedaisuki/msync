@@ -8,6 +8,60 @@ namespace Msync.Compiler;
 internal sealed partial class Compilation
 {
     private const string StandardCachePrefix = "$std::";
+    private readonly Dictionary<string, ImmutableDictionary<string, ConceptDefinition>> standardConcepts = new(StringComparer.Ordinal);
+
+    private ImmutableDictionary<string, ConceptDefinition> StandardConcepts(string moduleName)
+    {
+        if (standardConcepts.TryGetValue(moduleName, out var saved)) return saved;
+        var definitions = ImmutableDictionary<string, ConceptDefinition>.Empty;
+        standardConcepts[moduleName] = definitions;
+        if (!libraries.Value.TryGetValue(moduleName, out var library)) return definitions;
+        Frame module = new(library.Source, $"msync-stdlib:///0.8.0/{moduleName}.msync");
+        try
+        {
+            foreach (var declaration in library.Document.Statements.OfType<ConceptDeclaration>())
+            {
+                RegisterConcept(module, declaration);
+                standardConcepts[moduleName] = module.Concepts;
+            }
+            return module.Concepts;
+        }
+        catch
+        {
+            standardConcepts.Remove(moduleName);
+            throw;
+        }
+    }
+
+    private bool TryConcept(Frame frame, string name, out ConceptDefinition definition)
+    {
+        if (name.StartsWith(StandardCachePrefix, StringComparison.Ordinal) && frame.Environment.ContainsKey("std"))
+        {
+            definition = null!;
+            return false;
+        }
+        if (frame.Concepts.TryGetValue(name, out definition!)) return true;
+        if (!name.StartsWith(StandardCachePrefix, StringComparison.Ordinal))
+            return false;
+        string[] path = name[StandardCachePrefix.Length..].Split("::", StringSplitOptions.None);
+        if (path.Length != 2 || !StandardConcepts(path[0]).TryGetValue(path[1], out definition!)) return false;
+        frame.Concepts = frame.Concepts.SetItem(name, definition);
+        return true;
+    }
+
+    internal IReadOnlyDictionary<string, ConceptDefinition> StandardConceptDefinitions()
+    {
+        Dictionary<string, ConceptDefinition> definitions = new(StringComparer.Ordinal);
+        foreach (string module in StandardNames())
+            foreach (var (name, definition) in StandardConcepts(module))
+                if (!name.Contains("::", StringComparison.Ordinal) && definition.SourceName == $"msync-stdlib:///0.8.0/{module}.msync")
+                    definitions[$"{StandardCachePrefix}{module}::{name}"] = definition;
+        return definitions;
+    }
+
+    private static bool ReferencesStandardConcept(TypeSyntax? type) => type is not null &&
+        (type.Name.StartsWith(StandardCachePrefix, StringComparison.Ordinal) ||
+            type.Arguments.Any(ReferencesStandardConcept) || type.Alternatives.Any(ReferencesStandardConcept));
 
     private static readonly Lazy<string[]> standardNames = new(() => libraries.Value.Keys.Where(name => !name.StartsWith('_'))
         .Concat(libraries.Value.TryGetValue("_core", out var prelude) ? prelude.Document.Statements.OfType<NativeDeclaration>().Select(item => item.Name) : [])

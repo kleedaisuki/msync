@@ -45,7 +45,7 @@ internal sealed partial class Compilation
     }
     private TypeRef ResolveType(Frame frame, TypeSyntax syntax)
     {
-        if (frame.Concepts.ContainsKey(syntax.Name))
+        if (TryConcept(frame, syntax.Name, out _))
         {
             CaptureConceptDefinition(frame, syntax);
             return ConceptType(frame, syntax);

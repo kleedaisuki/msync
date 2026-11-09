@@ -63,17 +63,19 @@ internal sealed partial class Compilation
     {
         if (!libraries.Value.TryGetValue(name, out var library)) return StandardNativeModule(frame, name, span);
         Frame module = new(library.Source, $"msync-stdlib:///0.8.0/{name}.msync", StandardEnvironment(frame))
-        { Locals = frame.Locals, Facts = frame.Facts };
+        { Locals = frame.Locals, Facts = frame.Facts, Concepts = StandardConcepts(name) };
         List<string> keys = []; Dictionary<string, Info> members = [];
         Dictionary<string, Binding> bindings = [];
         Dictionary<string, IReadOnlyList<EditorLocation>>? origins = editorContexts is null ? null : new(StringComparer.Ordinal);
         foreach (var statement in library.Document.Statements)
         {
+            if (statement is ConceptDeclaration) continue;
             string? memberName = null; Info? info = null;
             switch (statement)
             {
                 case NativeDeclaration native: memberName = native.Name; info = Native(module, native, name); break;
                 case FunctionDeclaration function: memberName = function.Name; info = Function(module, function.Function); break;
+                case ScopeDeclaration scope: memberName = scope.Name; info = Scope(module, scope.Scope, named: true); break;
                 case LetStatement { Pattern: NamePattern bound } let: memberName = bound.Name; info = Expression(module, let.Value); break;
             }
             if (memberName is null || info is null) throw Error(module, "A standard module contains only named declarations.", statement.Span);
@@ -81,6 +83,7 @@ internal sealed partial class Compilation
             {
                 NativeDeclaration declaration => declaration.NameSpan,
                 FunctionDeclaration declaration => declaration.Function.NameSpan,
+                ScopeDeclaration declaration => declaration.NameSpan,
                 LetStatement { Pattern: NamePattern namePattern } => namePattern.Span,
                 _ => null
             };

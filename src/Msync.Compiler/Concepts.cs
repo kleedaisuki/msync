@@ -6,7 +6,10 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 namespace Msync.Compiler;
 
 internal sealed record ConceptDefinition(ConceptDeclaration Syntax, string Source, string SourceName,
-    ImmutableDictionary<string, ConceptDefinition> Environment);
+    ImmutableDictionary<string, ConceptDefinition> Environment)
+{
+    public bool StandardShadowed { get; init; }
+}
 internal sealed record ConceptContract(ConceptDefinition Definition, TypeSyntax Annotation, ImmutableDictionary<string, ConceptDefinition> Environment);
 internal sealed record ConceptMemberContract(ConceptDefinition Definition, ConceptMember Requirement, IReadOnlyDictionary<string, Info> Associated);
 
@@ -32,6 +35,13 @@ internal sealed partial class Compilation
 
     private Info DeclareConcept(Frame frame, ConceptDeclaration declaration)
     {
+        RegisterConcept(frame, declaration);
+        frame.Emit(OpCode.Null);
+        return new(TypeRef.Null);
+    }
+
+    private void RegisterConcept(Frame frame, ConceptDeclaration declaration)
+    {
         HashSet<string> names = new(StringComparer.Ordinal);
         foreach (var associated in declaration.Types)
             if (!names.Add(associated.Name)) throw ConceptError(frame, $"Associated type '{associated.Name}' is declared twice.", associated.Span);
@@ -45,12 +55,11 @@ internal sealed partial class Compilation
                         $"Required operation parameter '{parameter.Name}' needs an explicit type or associated type.", parameter.Span);
         }
         foreach (var parent in declaration.Bases)
-            if (!frame.Concepts.ContainsKey(parent.Name))
+            if (!TryConcept(frame, parent.Name, out _))
                 throw ConceptError(frame, $"Unknown base concept '{parent.Name}'.", parent.Span);
-        ConceptDefinition definition = new(declaration, frame.Source, frame.SourceName, frame.Concepts);
+        ConceptDefinition definition = new(declaration, frame.Source, frame.SourceName, frame.Concepts)
+        { StandardShadowed = frame.Environment.ContainsKey("std") };
         frame.Concepts = frame.Concepts.SetItem(declaration.Name, definition);
-        frame.Emit(OpCode.Null);
-        return new(TypeRef.Null);
     }
 
     private TypeRef ConceptType(Frame frame, TypeSyntax syntax)
@@ -68,13 +77,13 @@ internal sealed partial class Compilation
             var alternatives = new[] { annotation with { Alternatives = [] } }.Concat(annotation.Alternatives).ToArray();
             TypeRef ordinary = new(TypeKind.Never);
             foreach (var alternative in alternatives)
-                if (!frame.Concepts.ContainsKey(alternative.Name)) ordinary = TypeRef.Union(ordinary, ResolveType(frame, alternative));
+                if (!TryConcept(frame, alternative.Name, out _)) ordinary = TypeRef.Union(ordinary, ResolveType(frame, alternative));
             TypeKind required = value.Type.Kind & ~ordinary.Kind;
             if (required == TypeKind.Never) return;
             CompileException? mismatch = null;
             foreach (var alternative in alternatives)
             {
-                if (!frame.Concepts.ContainsKey(alternative.Name)) continue;
+                if (!TryConcept(frame, alternative.Name, out _)) continue;
                 bool attach = attachConceptContracts;
                 try
                 {
@@ -89,7 +98,7 @@ internal sealed partial class Compilation
             if (mismatch is not null) throw mismatch;
             return;
         }
-        if (frame.Concepts.TryGetValue(annotation.Name, out var definition))
+        if (TryConcept(frame, annotation.Name, out var definition))
             CheckConceptDefinition(frame, Current(frame, value), definition, annotation.Nullable, span);
         else if (annotation.Name == "Range" && annotation.Arguments.Count == 1 && value.Element is { } element)
             CheckConcept(frame, element, annotation.Arguments[0], span);
@@ -104,9 +113,9 @@ internal sealed partial class Compilation
             new(definition, annotation, frame.Concepts));
     }
 
-    private static ConceptDefinition? ReferencedConcept(Frame frame, TypeSyntax annotation)
+    private ConceptDefinition? ReferencedConcept(Frame frame, TypeSyntax annotation)
     {
-        if (frame.Concepts.TryGetValue(annotation.Name, out var definition)) return definition;
+        if (TryConcept(frame, annotation.Name, out var definition)) return definition;
         foreach (var nested in annotation.Arguments.Concat(annotation.Alternatives))
             if (ReferencedConcept(frame, nested) is { } found) return found;
         return null;
@@ -117,6 +126,7 @@ internal sealed partial class Compilation
         foreach (var contract in storage.ConceptContracts.Values)
         {
             Frame lexical = CloneFrame(frame); lexical.Concepts = contract.Environment;
+            if (ReferencesStandardConcept(contract.Annotation)) lexical.Environment = lexical.Environment.Remove("std");
             CheckConcept(lexical, Current(frame, value), contract.Annotation, span);
         }
         foreach (var contract in storage.ConceptMemberContracts.Values)
@@ -240,8 +250,8 @@ internal sealed partial class Compilation
             throw RequirementError(frame, definition, span, $"associated type '{syntax.Name}' inferable from a field, operation annotation, or Type member", "unresolved associated type");
         else
         {
-            Frame lexical = CloneFrame(frame); lexical.Concepts = definition.Environment;
-            info = definition.Environment.ContainsKey(syntax.Name) ? ConceptInfo(lexical, syntax) : new(ResolveType(lexical, syntax with { Alternatives = [] }));
+            Frame lexical = ConceptFrame(frame, definition);
+            info = TryConcept(lexical, syntax.Name, out _) ? ConceptInfo(lexical, syntax) : new(ResolveType(lexical, syntax with { Alternatives = [] }));
         }
         foreach (var alternative in syntax.Alternatives)
             info = Join(info, RequirementInfo(frame, definition, alternative, associated, span));
@@ -251,8 +261,8 @@ internal sealed partial class Compilation
     private void CheckRequirementType(Frame frame, ConceptDefinition definition, Info actual, TypeSyntax syntax,
         IReadOnlyDictionary<string, Info> associated, SourceSpan span, string member)
     {
-        Frame lexical = CloneFrame(frame); lexical.Concepts = definition.Environment;
-        if (definition.Environment.ContainsKey(syntax.Name))
+        Frame lexical = ConceptFrame(frame, definition);
+        if (TryConcept(lexical, syntax.Name, out _))
         {
             CheckConcept(lexical, actual, syntax, span);
             return;
@@ -287,22 +297,31 @@ internal sealed partial class Compilation
 
     private Info ConceptInfo(Frame frame, TypeSyntax annotation)
     {
-        if (!frame.Concepts.TryGetValue(annotation.Name, out var definition)) return new(ResolveType(frame, annotation));
+        if (!TryConcept(frame, annotation.Name, out var definition)) return new(ResolveType(frame, annotation));
         Dictionary<string, Info> members = new(StringComparer.Ordinal);
-        Frame lexical = CloneFrame(frame); lexical.Concepts = definition.Environment;
+        Frame lexical = ConceptFrame(frame, definition);
         foreach (var parent in definition.Syntax.Bases)
             foreach (var member in ConceptInfo(lexical, parent).Scope!.Members) members[member.Key] = member.Value;
         foreach (var requirement in definition.Syntax.Members)
         {
             var type = requirement.Type;
             Info info = requirement.Parameters is not null ? new(TypeRef.Function) : type is not null && LanguageTypes.TryResolve(type.Name, out var known)
-                ? new(type.Nullable ? known.WithNull : known) : type is not null && definition.Environment.ContainsKey(type.Name)
+                ? new(type.Nullable ? known.WithNull : known) : type is not null && TryConcept(lexical, type.Name, out _)
                     ? ConceptInfo(lexical, type) : new(TypeRef.Any, EditorUnknown: true);
             if (requirement.Nullable) info = info with { Type = info.Type.WithNull };
             DescribeConceptRequirement(info, definition, requirement);
             members[requirement.Name] = info;
         }
         return new(annotation.Nullable ? TypeRef.Scope.WithNull : TypeRef.Scope, Scope: new(members));
+    }
+
+    private static Frame ConceptFrame(Frame frame, ConceptDefinition definition)
+    {
+        Frame lexical = CloneFrame(frame);
+        lexical.Concepts = definition.Environment;
+        lexical.Environment = definition.StandardShadowed
+            ? lexical.Environment.SetItem("std", new(-1, UnknownInfo)) : lexical.Environment.Remove("std");
+        return lexical;
     }
 
     private static CompileException ConceptError(Frame frame, string message, SourceSpan span) => Error(frame, message, span,
