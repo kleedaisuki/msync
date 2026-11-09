@@ -71,6 +71,7 @@ CONTRACTS = (
     *COMPATIBILITY_CONTRACTS,
     *MEMORY_CONTRACTS,
     *SCHEDULER_CONTRACTS,
+    Contract("stdlib-loading", "StdlibLoading"),
 )
 
 

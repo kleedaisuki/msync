@@ -48,6 +48,7 @@ def main() -> int:
             "global-import",
             "global-terminal",
             "call-order",
+            "stdlib-experience",
             "scheduler-frontier-source",
             "scheduler-frontier-executable",
             "artifact-view",
@@ -79,9 +80,9 @@ def main() -> int:
         origin: dict[str, object] = json.loads(
             arguments.native_origin.read_text(encoding="utf-8")
         )
-        assert origin["binary_sha256"] == report["binary_sha256"], (
-            "Reused native image does not match its artifact identity"
-        )
+        assert (
+            origin["binary_sha256"] == report["binary_sha256"]
+        ), "Reused native image does not match its artifact identity"
         report["native_origin"] = origin
         report["native_source_revision"] = str(origin["artifact_name"]).rsplit("-", 1)[
             -1
@@ -109,6 +110,7 @@ def main() -> int:
         ("nullable-scope-user", "nullable_scope_journey.py"),
         ("global-import", "global_journey.py"),
         ("call-order", "call_order_journey.py"),
+        ("stdlib-experience", "stdlib_experience_journey.py"),
         ("scheduler-frontier-source", "scheduling_journey.py"),
         ("scheduler-frontier-executable", "scheduling_journey.py"),
         ("artifact-view", "artifact_view_journey.py"),
