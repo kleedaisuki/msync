@@ -78,6 +78,7 @@ def main() -> None:
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--producer-receipt", type=Path)
     parser.add_argument("--samples", type=int, default=7)
+    parser.add_argument("--level", action="append", type=int, choices=(0, 1, 2, 3))
     parser.add_argument("--retention-only", action="store_true")
     parser.add_argument("--world-scaling", action="store_true")
     parser.add_argument("--case", action="append", choices=(*SOURCES, *EXTRA_SOURCES))
@@ -134,7 +135,7 @@ def main() -> None:
     for name in selected:
         source = work / f"{name}.msync"
         source.write_text(sources[name], encoding="utf-8", newline="\n")
-        for level in (0, 2):
+        for level in args.level or (0, 2):
             record: dict[str, Any] = {
                 "case": name,
                 "optimization": level,

@@ -271,3 +271,35 @@ The input HIR intentionally remains live for the latter two operations. This
 does **not** demonstrate streaming compilation, body-at-a-time arena disposal,
 editor-only retained projections, or their future peak-memory benefits. Those
 ownership modes remain to be measured when their product APIs exist.
+
+### Connected candidate snapshot
+
+The same probe ran against the subsequent connected-CLI producer at
+`.temp/hir-editor-cli/frozen/snapshot-receipt.json`, source head
+`7a6230e09ef23ec6dfe0dbbdd2d849b9b263062b`, Compiler
+`1f6af0107fecce36009bec27d2d00069aa0472a7df9f2924b0356b6c65a52de7`, HIR
+`85875220b77cd104428b5d4cee63d916b3c4b359ae8fd0e81e87af0151863d0b`.
+All six producer hashes were verified; only the test probe was built, with zero
+warnings. No product rebuild or released-baseline remeasurement was performed.
+Use `--level 0` to select just one lowering metadata level; repeated `--level`
+options select other explicit levels, while the established default stays O0/O2.
+The two no-standard-library source strings are unchanged and their hashes
+remain in `.temp/hir-second-phase/{timing,retention}.json`.
+
+| Connected candidate, level 0 metadata | Analyze allocated B | Lower allocated B | HIR write allocated B |
+| --- | ---: | ---: | ---: |
+| Scalar binding | 12,416 | 2,944 | 2,896 |
+| `1 + 2` | 12,448 | 2,608 | 2,960 |
+
+Both inputs finalize one HIR function and four nodes. Independent retention
+observations again found every phase result alive while deliberately held and
+collectible afterward. For scalar analysis the collected heap was
+77,784 → 78,928 → 77,880 bytes; lowering with HIR input retained was
+84,064 → 84,792 → 84,096; serialization with HIR input retained was
+87,832 → 88,392 → 87,864. These boundaries retain the same limited ownership
+meaning described above; none proves body-streaming disposal.
+
+Raw timings were recorded for reproducibility, but concurrent shared build work
+still prevents a causal timing trend claim. This continuation establishes actual
+phase-call allocation and held/released stability after semantic model changes,
+not complete workload acceptance or a final migration performance comparison.
