@@ -197,7 +197,7 @@ here as the independent module lanes freeze their interfaces.
 
 ### Executable source inventory
 
-The current 15 public modules have 421 top-level exports: 206 ordinary source
+The current 15 public modules have 429 top-level exports: 214 ordinary source
 functions, 208 native declarations and seven source values. Object methods are
 not separately counted as top-level exports. Native declarations include the
 established filesystem surface, not 208 newly introduced OS operations. The
@@ -206,7 +206,7 @@ private, comment-only `_core` source contributes no public export.
 | Source module | Native declarations | Source functions | Source values | Top-level exports |
 | --- | ---: | ---: | ---: | ---: |
 | `bool` | 0 | 6 | 0 | 6 |
-| `collections` | 0 | 7 | 0 | 7 |
+| `collections` | 0 | 15 | 0 | 15 |
 | `commands` | 0 | 2 | 0 | 2 |
 | `environment` | 9 | 4 | 0 | 13 |
 | `files` | 0 | 2 | 0 | 2 |
