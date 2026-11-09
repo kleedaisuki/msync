@@ -28,9 +28,11 @@ let copied = copy(./input.txt, ./backup.txt);
 - Assignment changes binding and Scope field values, never their inferred types.
 - Later `let` declarations shadow earlier locations; closures retain locations.
 - A Path reads file content in `->`; a String writes its literal text.
-- `Scope::member` selects a lexical value; `Connection::path` selects an endpoint.
+- `Scope::member` selects a lexical value; `path @ connection` selects an endpoint.
 - Admit Null explicitly, then handle it. `value?` means **is null**.
 - Functions are generic by default; parameters specialize from each call.
+- Named Scopes are shared singletons; anonymous Scopes construct fresh values.
+- Concepts constrain structure without adding runtime types; `as` converts.
 - Checking, formatting and reading this skill never execute the program.
 
 Read only the relevant child topic rather than requesting every detail at once.

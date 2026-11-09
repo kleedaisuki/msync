@@ -6,31 +6,35 @@ internal static class SkillReference
 {
     private sealed record Topic(string Path, string Title, string Resource, string? Module = null);
 
-    private static readonly Topic[] Topics =
+    private static readonly Topic[] Topics = BuildTopics();
+
+    private static Topic[] BuildTopics() =>
     [
         new("", "Use msync 0.8", "overview"),
         new("language", "Bindings, values and expression syntax", "language"),
         new("language/functions", "Generic functions, callbacks and recursion", "functions"),
         new("language/scopes", "Lexical scopes and member access", "scopes"),
         new("language/types", "Types, Null admission and branch refinement", "types"),
+        new("language/numbers", "Number literals, arithmetic and discrete counts", "numbers"),
+        new("language/conversions", "Explicit conversion with as", "conversions"),
+        new("language/concepts", "Named structural and algebraic requirements", "concepts"),
         new("language/match", "Exhaustive value, regex and type matching", "match"),
         new("paths", "Path values, literal text and file transfers", "paths"),
         new("paths/connections", "Native SSH and WSL endpoint qualification", "connections"),
         new("library", "Source-backed standard library", "library"),
-        new("library/cast", "Explicit typed conversions", "cast", "_core"),
-        new("library/functional", "Function and predicate composition", "module", "functional"),
-        new("library/io", "File content and Range-based IO", "module", "io"),
-        new("library/math", "Number arithmetic and floating-point tools", "module", "math"),
-        new("library/fs", "Filesystem queries and mutations", "module", "fs"),
-        new("library/path", "Path composition and qualification", "module", "path"),
-        new("library/string", "Unicode text operations", "module", "string"),
-        new("library/bool", "Boolean composition", "module", "bool"),
-        new("library/ranges", "Lazy ranges and typed callbacks", "module", "ranges"),
-        new("library/process", "Process values and live control", "module", "process"),
+        .. StandardModules().Select(module => new Topic("library/" + module,
+            $"Executable {module} declarations and operations", "module", module)),
         new("workflow", "Check, inspect, format and execute", "workflow"),
         new("workflow/artifacts", "Compile .mso and bind .mexe", "artifacts"),
         new("troubleshooting", "Read and repair source diagnostics", "troubleshooting")
     ];
+
+    private static IEnumerable<string> StandardModules() => typeof(SkillReference).Assembly
+        .GetManifestResourceNames()
+        .Where(name => name.EndsWith(".msync", StringComparison.Ordinal))
+        .Select(name => name[..^6].Split('.').Last())
+        .Where(name => !name.StartsWith('_'))
+        .Order(StringComparer.Ordinal);
 
     public static string Render(IReadOnlyList<string> topics)
     {

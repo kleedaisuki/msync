@@ -13,7 +13,6 @@ let combined = $std::bool::both(available, true);
 ```
 
 - `fs`: metadata, filesystem queries, iteration and explicit mutations.
-- `cast`: explicit conversion with a Type value as its target.
 - `functional`: function and predicate composition using ordinary closures.
 - `io`: UTF-8 text, line and byte Ranges, replacement and append operations.
 - `math`: Number arithmetic, floating-point classification and source utilities.
@@ -22,6 +21,15 @@ let combined = $std::bool::both(available, true);
 - `bool`: Bool composition as ordinary source functions.
 - `ranges`: lazy adapters, structured elements, searches, folds and sorting.
 - `process`: Process inspection, explicit waiting and live process control.
+- `collections`: Range-backed List, Map, Set, Stack and Queue objects.
+- `text`: reusable text builders and composition helpers.
+- `regex`: typed match and group records.
+- `files`: File and Directory service objects.
+- `commands`: reusable process commands with captured argument values.
+- `environment`: local environment and execution-context tools.
+
+Explicit conversion is language syntax: `"42" as Number`. Read
+`msync skill language conversions`; it is not a root `$std` function.
 
 The two layers serve different purposes: a small primitive layer supplies host
 and iteration capabilities, while source functions provide a broad expression
@@ -41,8 +49,8 @@ than cloning Scope instances. String positions count Unicode scalar values,
 not UTF-16 code units or displayed grapheme clusters.
 
 ```msync
-let number = $std::cast("42", Number);
-let name = $std::cast("./report.txt", Path);
+let number = "42" as Number;
+let name = "./report.txt" as Path;
 let normalize = $std::functional::compose(
     $std::string::to_uppercase, $std::string::trim
 );

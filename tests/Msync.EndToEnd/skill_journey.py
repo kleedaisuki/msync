@@ -85,12 +85,28 @@ def run(binary: Path, directory: Path) -> dict[str, int]:
             examples += len(snippets)
     assert ("language", "functions") in pages and ("workflow", "artifacts") in pages
     assert ("paths", "connections") in pages and ("library", "fs") in pages
+    for topic in ("numbers", "conversions", "concepts"):
+        assert ("language", topic) in pages, topic
+    assert ("library", "cast") not in pages
     root = pages[()]
     assert "name: msync" in root and "description:" in root
     assert "msync skill language" in root and len(root.splitlines()) < 80, root
     assert "Null" in pages[("language", "types")]
     assert "means **file is null**" in pages[("language", "types")]
     assert "Scope" in pages[("language", "scopes")]
+    assert "singleton" in pages[("language", "scopes")]
+    assert "path @ connection" in pages[("paths", "connections")]
+    assert " as Number" in pages[("language", "conversions")]
+    assert "type Self;" in pages[("language", "concepts")]
+    for module in ("collections", "text", "regex", "files", "commands", "environment"):
+        assert ("library", module) in pages, module
+
+    syntax = invoke(
+        binary, ["--color", "never", "help", "syntax"], directory, environment
+    )
+    assert syntax.returncode == 0, syntax.stderr
+    assert " as Number" in syntax.stdout and "concept Named" in syntax.stdout
+    assert "path @ connection" in syntax.stdout and "Connection::" not in syntax.stdout
 
     fs = pages[("library", "fs")]
     assert "native fn exists(path: Path | String) -> Bool;" in fs

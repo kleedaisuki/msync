@@ -8,7 +8,8 @@ when a specific insertion or replacement is known.
 ## A Path was used as a Scope or Connection
 
 An unbound bare name is a Path. For `value::member`, pass the lexical Scope
-instance that owns `member`; for `value::path`, use a Connection endpoint.
+instance that owns `member`; for `path @ endpoint`, use a Connection on the
+right and a Path or String on the left.
 A constructor's `::x` member may already be a Path, not the original instance.
 Read `msync skill language scopes` for the constructor/accessor example.
 

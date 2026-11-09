@@ -40,6 +40,8 @@ available even when configuration is invalid:
 msync skill
 msync skill language functions
 msync skill language scopes
+msync skill language numbers
+msync skill language concepts
 msync skill library fs
 msync skill workflow artifacts
 msync skill > SKILL.md
@@ -109,7 +111,36 @@ directory name or append a separator.
 Type names include `Bool`, `String`, `Path`, `Range`, `Function`, `Scope`,
 `Process`, `Connection`, `Null`, and `Type`. `Range<T>` specifies an item type, `|`
 specifies a union, and `?` explicitly permits null. Numeric literals and `Number`
-support range counts and arithmetic. `Any` admits the full value-type union.
+use IEEE 754 binary64. Decimal (`1_024.5`), exponent (`1e3`), hexadecimal
+(`0xff`), binary (`0b1010`) and octal (`0o17`) literals are supported, along with
+`+`, `-`, `*`, `/`, `%`, `**` and unary signs. Only Path/String convert implicitly;
+write `"42" as Number` for other explicit conversions. `Any` admits the full
+value-type union.
+
+Named structural concepts express required members and operation signatures
+without introducing user-defined runtime types or an `impl` registry:
+
+```rust
+concept Named {
+    name: String,
+};
+concept NamedAction {
+    Named,
+    run: fn(value: String) -> String,
+};
+fn apply(action: NamedAction, value: String) -> String {
+    action::run(value)
+};
+scope Echo {
+    name: "echo",
+    run: fn(value: String) -> String { value },
+};
+let message = apply(Echo, "hello");
+```
+
+Requirements are checked against concrete structure at specialization. Associated
+types relate an algebra's carrier, identity and operations; they do not prove
+mathematical laws such as associativity. See `msync skill language concepts`.
 
 Unmarked process calls launch and wait. `let process = release ./tool();`
 keeps that Process live; `acquire process;` joins only it. `release` is a before
@@ -186,12 +217,14 @@ tools, not dependencies of local-only copying or the installed .NET AOT runtime.
 ```rust
 let remote = ssh://forge;
 for file in ~/.codex/<.+> {
-    file -> remote::file
+    file -> file @ remote
 };
 ```
 
 A lexical Scope selects declared members instead of qualifying physical paths.
-Both functions and scopes can be anonymous:
+Write `path @ connection` to select a physical endpoint; `::` selects lexical
+Scope members only. Named Scopes are shared singletons; anonymous `scope { ... }`
+expressions construct fresh instances. Both functions and scopes can be anonymous:
 
 ```rust
 scope package {
@@ -211,9 +244,12 @@ rather than reparsing a shell command, returning a `Process` value. The
 ## Standard library and native functions
 
 `stdlib/*.msync` files are executable compiler input embedded in the binary.
-Their namespaces are `$std::fs`, `$std::path`, `$std::string`, `$std::bool`,
-`$std::ranges`, and `$std::process`. Pure compositions use ordinary functions;
-host-only operations use explicitly typed native declarations:
+The modules include filesystem/IO, Path/String/Number operations, Range
+algorithms, functions, live processes, collections, text builders, regex, file
+services, command objects and environment tools. `msync skill library` lists
+the embedded modules and progressively displays their actual declarations.
+Pure compositions use ordinary functions; host-only operations use explicitly
+typed native declarations:
 
 ```rust
 let fs = $std::fs;

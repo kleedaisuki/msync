@@ -42,3 +42,7 @@ let is_path = if kind is Path { true } else { false };
 It can select type-dependent branches during generic specialization. An
 annotation does not grant unrelated capabilities: Path/String conversion is
 supported, while Scope and Connection remain distinct semantic types.
+
+Use `value as Type` for other explicit conversions. Named concepts can constrain
+structural members and callable signatures without opening the runtime type
+universe. Read `msync skill language concepts` for composable requirements.

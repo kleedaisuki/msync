@@ -16,8 +16,10 @@ The return value of `new()` is a Scope, so `get(instance)` can select `x`.
 `MyClass::new()::x` is already a Path: passing it to `get` would make `some::x`
 invalid. Pass the instance, or make a separate function that accepts a Path.
 
-Scopes and functions can be anonymous and assigned to mutable bindings. Their
-values may change, but their inferred or declared storage types remain fixed.
+Named Scope declarations describe shared singletons. Reaching the declaration
+again reuses that named instance. Anonymous `scope { ... }` expressions create
+fresh instances each time they execute, including in a constructor function.
+Both forms can be assigned to mutable bindings; storage types remain fixed.
 
 ```msync
 let settings = scope { root: ~/.codex, enabled: true };
@@ -27,7 +29,7 @@ let alias = settings;
 
 A Scope is lexical, not a machine or remote connection. `$wsl`, `$local` and
 `ssh://forge` have type Connection. Read `msync skill paths connections` before
-using the same `::` spelling to qualify a physical endpoint.
+using `path @ connection` to select a physical endpoint.
 
 ## Mutable fields and aliases
 

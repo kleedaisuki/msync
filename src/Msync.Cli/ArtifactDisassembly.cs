@@ -202,6 +202,7 @@ internal static class ArtifactDisassembly
                 OpCode.MakeRange => "items " + instruction.A,
                 OpCode.MakeLazyRange => $"items {instruction.A}, deferred-mask {Text()}" + (instruction.B > 0 ? $", item-type @c{instruction.B - 1}" : ""),
                 OpCode.MakeScope => $"fields [{string.Join(", ", (instruction.Text ?? "").Split('\0', StringSplitOptions.RemoveEmptyEntries).Select(Quote))}], allocation-site {instruction.B}",
+                OpCode.GetSingleton or OpCode.SetSingleton => "declaration #" + instruction.A,
                 OpCode.GetMember or OpCode.SetMember => Text() + (instruction.A > 0 ? $", slot #{instruction.A - 1} (layout-checked hint)" : ""),
                 OpCode.GetCapture => "capture " + instruction.A,
                 OpCode.SpecializeClosure when instruction.Text is not null => "dispatch {" + Dispatch(instruction.Text) + "}",
@@ -294,6 +295,8 @@ internal static class ArtifactDisassembly
             OpCode.Call => "Pop arguments and the callable, invoke its selected typed specialization, and push the result. Invocation-owned jobs join at its return.",
             OpCode.ProcessCall => "Pop arguments and executable, launch the native process, and push Process. The release flag controls whether launch waits for completion.",
             OpCode.MakeScope => "Pop declared field values and create a fresh lexical Scope. Raw captured cells retain their shared identities.",
+            OpCode.GetSingleton => "Push this named Scope declaration's shared instance, or Null before its first selected initialization. Anonymous Scopes do not use this table.",
+            OpCode.SetSingleton => "Replace the initializer Scope with this declaration's canonical session-owned singleton. The first published instance wins, including recursive initialization; later declarations reuse that identity.",
             OpCode.GetMember => "Pop a receiver and push its named member value.",
             OpCode.SetMember => "Pop assigned value and receiver, update the existing Scope field, and push Null.",
             OpCode.MakeClosure => "Pop captured locations and create a callable with the indicated bytecode identity.",
@@ -304,6 +307,8 @@ internal static class ArtifactDisassembly
             OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse => "Transfer control to the block label; conditional branches consume a Bool.",
             OpCode.NativeCall => "Invoke the named registered host operation with the indicated argument count.",
             OpCode.Pop => "Discard the top value without removing its producer's observable effects.",
+            OpCode.Divide => "Pop the right and left Numbers and push their IEEE 754 quotient, including signed zero, infinities and NaN.",
+            OpCode.Remainder => "Pop the right and left Numbers and push the truncating remainder; its sign follows the dividend. This is not IEEE remainder or mathematical modulo.",
             _ => "Typed stack operation. Operands name the bytecode's actual locations and targets; no source expression is reconstructed."
         };
 

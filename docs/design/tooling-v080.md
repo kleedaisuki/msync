@@ -4,8 +4,9 @@ The product entrypoint is `src/Msync.Cli/Program.cs`. Help/version/LSP dispatch
 before configuration or telemetry initialization. Global options can precede a
 subcommand, preserving established `--no-config run FILE` invocations. The
 `config` command prints effective TOML and per-value origins without state
-creation. Old explicit source versions and object extensions use explicit
-baseline dispatch; the C# runtime never replays Rust debug source.
+creation. Explicit legacy source dispatch remains separate; the C# runtime never
+replays Rust debug source. Current 0.8 bytecode is format 4 only: old binary
+formats produce a source-recompilation diagnostic, not a compatibility decoder.
 
 `compile`/`emit-ir` write the binary `Artifact` contract from Core. A named
 artifact uses staged publication; stdout output contains bytecode only.
@@ -30,6 +31,45 @@ Formatting calls the shared syntax `Formatter`, not a second grammar.
 Completion/navigation index declarations and the embedded source modules;
 standard definitions use `msync-stdlib:///0.8.0/MODULE.msync` virtual documents.
 The client requests those exact bytes through `msync/stdlibSource`.
+
+## Language upgrade presentation
+
+The source UI distinguishes syntax from inferred declaration roles. `scope` and
+`fn` remain keywords; named Scope declarations and named standard modules use
+the type role, callable names use function, and anonymous Scope bindings use
+variable. Concepts and their constraint references use type. `as` shares the
+control-keyword role with `if`, `else`, `match`, postfix `?` and ordering fences;
+`@` is an operator. `global` remains a keyword with lexical-ancestor completion.
+Semantic roles augment rather than replace the source grammar, following the
+[VS Code semantic-highlighting model][semantic-highlighting].
+
+Physical qualification is `path @ connection`; lexical member access remains
+`scope::member`. All prompt, source-LSP, syntax-reference and snippet examples
+must use the same contract. Number token presentation consumes the source
+numeric grammar rather than reclassifying arbitrary digit-prefixed paths.
+
+The progressive reference exposes Number, `as` and concepts below `language`.
+Library topics derive their module set from the embedded executable source
+resources, excluding private underscore-prefixed modules. New source modules
+therefore appear in the skill without a second manually maintained module list.
+The removed public cast function is not advertised as a module or root export.
+
+Formatting borrows readability mechanisms, not grammar, from
+[PEP 8][pep8] and [Black][black-style]: a soft 80-column target, consistent
+leading binary operators when an expression wraps, hanging indentation, and
+paragraph separation around declarations. Braces and semicolons retain their
+language semantics. Indivisible String/Path/regex data and comments take priority
+over a hard line budget; deeply nested literals are not rewritten to fit.
+The formatter uses parsed source spans to distinguish numeric division from
+path joins and maintains its output column incrementally; it does not rescan
+the accumulated output for each token. `tests/Formatting` isolates the real
+syntax implementation for numeric/cast/concept/operator layouts, nested
+80-column behavior and 1,000 arbitrary UTF-16 literal round trips. The real
+`formatter_journey.py` exercises the installed command and REPL-facing grammar.
+
+[semantic-highlighting]: https://code.visualstudio.com/api/language-extensions/semantic-highlight-guide
+[pep8]: https://peps.python.org/pep-0008/
+[black-style]: https://black.readthedocs.io/en/stable/the_black_code_style/current_style.html
 
 ## Read-only binary artifact documents
 
