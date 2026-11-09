@@ -49,6 +49,7 @@ def main() -> int:
             "global-terminal",
             "call-order",
             "stdlib-experience",
+            "stdlib-control",
             "scheduler-frontier-source",
             "scheduler-frontier-executable",
             "artifact-view",
@@ -111,6 +112,7 @@ def main() -> int:
         ("global-import", "global_journey.py"),
         ("call-order", "call_order_journey.py"),
         ("stdlib-experience", "stdlib_experience_journey.py"),
+        ("stdlib-control", "mutable_state_journey.py"),
         ("scheduler-frontier-source", "scheduling_journey.py"),
         ("scheduler-frontier-executable", "scheduling_journey.py"),
         ("artifact-view", "artifact_view_journey.py"),
@@ -155,6 +157,18 @@ def main() -> int:
             extra.append("--reference-only")
         if name == "global-terminal":
             extra.extend(["--case", "global"])
+        if name == "stdlib-control":
+            for case in (
+                "for-break-null",
+                "nested-for-break",
+                "tuple-prefix-once",
+                "tuple-bounded-repeat",
+                "type-value-present",
+                "type-value-absent",
+                "type-value-match",
+            ):
+                extra.extend(["--case", case])
+            extra.extend(["--properties", "0"])
         if name == "mutable-getters":
             for case in (
                 "constructor-captured-holes",

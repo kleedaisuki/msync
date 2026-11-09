@@ -195,7 +195,8 @@ jobs:
                   for phase in ('scheduler-frontier-source', 'scheduler-frontier-executable'):
                       arguments.extend(['--phase', phase])
               if os.environ['POLISH_STDLIB'] == 'true':
-                  arguments.extend(['--phase', 'stdlib-experience'])
+                  for phase in ('stdlib-experience', 'stdlib-control'):
+                      arguments.extend(['--phase', phase])
               if os.environ['POLISH_IDENTIFIERS'] == 'true':
                   arguments.extend(['--phase', 'identifier-return'])
               if os.environ['POLISH_COMPLETION'] == 'true':
