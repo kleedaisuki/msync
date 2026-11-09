@@ -33,7 +33,8 @@ internal static class ScopeScalarization
     internal static FunctionCode Optimize(Module module, FunctionCode function, List<Value> constants)
     {
         _ = constants;
-        if (!module.Semantics.HasFlag(ModuleSemantics.MutableLocations) || module.PreserveLocals) return function;
+        if (!module.Semantics.HasFlag(ModuleSemantics.MutableLocations) || module.PreserveLocals
+            || !function.Instructions.Any(instruction => instruction.Op == OpCode.MakeScope)) return function;
         // A scalar slot represents one instance only while its allocation stays
         // within this CFG region. Live-out aliases keep the physical instance.
         var blocks = Blocks(function.Instructions);

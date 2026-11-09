@@ -28,3 +28,9 @@ and is not evidence of proportional latency or Native AOT performance.
 The generated alias oracle also executes 24 reproducible 64-step programs with
 rebindings and interleaved writes/reads. Its expected result comes from an
 independent pair of scalar cells, not the unoptimized interpreter alone.
+
+Cross-block scalarization may remove every allocation after the driver's feature
+summary was computed. This pass independently checks for a remaining MakeScope
+before constructing CFG/liveness. The scope-free regression observes exactly one
+applicability enumeration and no indexed CFG access, rather than enforcing an
+environment-dependent timing threshold.

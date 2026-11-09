@@ -111,6 +111,13 @@ try
     Module duplicate = new([new NumberValue(1), new NumberValue(2)], [new("duplicate", 0, 0,
         [new(OpCode.Constant, 0), new(OpCode.Constant, 1), new(OpCode.MakeScope, 2, Text: "item\0item"), new(OpCode.Pop), new(OpCode.Null), new(OpCode.Return)], TypeRef.Null)], OptimizationLevel: 0);
     Require(await Execute(Scalarize(duplicate)) == await Execute(duplicate), "duplicate field construction diagnostic was removed");
+    Module fieldSlots = Compiler.Compile("let field = 0; if exists ./flag { field = 1; } else { field = 2; }; field", optimization: 0);
+    var applicabilityScan = new ObservedInstructions(fieldSlots.Functions[0].Instructions);
+    FunctionCode noAllocation = fieldSlots.Functions[0] with { Instructions = applicabilityScan };
+    Module noWork = fieldSlots with { Functions = [noAllocation] };
+    Require(ReferenceEquals(Scalarize(noWork).Functions[0], noAllocation), "Scope-free preparation changed the function");
+    Require(applicabilityScan.Enumerations == 1 && applicabilityScan.IndexerReads == 0,
+        "Scope-free preparation constructed CFG/liveness after its allocation applicability scan");
     Random random = new(80119);
     for (int sample = 0; sample < 24; sample++)
     {
@@ -162,3 +169,17 @@ try
     Console.WriteLine($"Scope scalarization: {assertions} contracts passed.");
 }
 finally { Directory.Delete(root, recursive: true); }
+
+internal sealed class ObservedInstructions(IReadOnlyList<Instruction> instructions) : IReadOnlyList<Instruction>
+{
+    public int Enumerations { get; private set; }
+    public int IndexerReads { get; private set; }
+    public int Count => instructions.Count;
+    public Instruction this[int index] { get { IndexerReads++; return instructions[index]; } }
+    public IEnumerator<Instruction> GetEnumerator()
+    {
+        Enumerations++;
+        return instructions.GetEnumerator();
+    }
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+}
