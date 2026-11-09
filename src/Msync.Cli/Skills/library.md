@@ -32,6 +32,7 @@ let combined = $std::bool::both(available, true);
 - `concepts`: reusable product, sum, capability and algebraic constraints.
 - `meta`: closed-type traits and unevaluated callable/member queries.
 - `shell`: typed Unix-style terminal functions and explicit filesystem effects.
+- `storage`: typed backing-storage primitives used by generic containers.
 
 ```msync
 fn preserve(value: $std::concepts::Option?) -> $std::concepts::Option? {
@@ -106,6 +107,21 @@ let joined = $std::string::join(labels, ", ");
 An explicit cast changes the actual value, not only its inferred type. This
 matters for transfers: String writes text, whereas Path copies file content.
 Null still requires an admitted nullable type; it does not gain truthiness.
+
+## Typed terminal tools
+
+The REPL imports the public `$std::shell` functions as ordinary, shadowable
+bindings. Enter `ls()` to list Paths, `cat(./report.txt)` to read text, or
+`cd(./project)` to change that session's working directory. Ranges stream their
+items to the terminal; dropping a result with `;` still discards it.
+
+```msync
+head(sort(uniq(["beta", "alpha", "beta"])), 2)
+```
+
+These are normal typed function calls, not a second shell grammar. In scripts,
+select the same functions through `$std::shell::operation`. Read
+`msync skill library shell` for their actual signatures and effect semantics.
 
 The editor can navigate to these same embedded sources through versioned
 `msync-stdlib` documents. For command options rather than language APIs, run
