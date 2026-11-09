@@ -464,3 +464,49 @@ check. No published asset or tag was modified. The Ubuntu 22.04 package job
 passed independently, and the editor job exercised the downloaded installed
 Linux archive rather than a separately rebuilt server. Publication was skipped
 on the development branch.
+
+
+## Cross-block memory and compiled-artifact delivery (2026-11-09)
+
+The current unpublished 0.8.0 payload was built from
+`ff265450b7180e0414cfb1f9675c7337761daa00` in
+[Native run 42582869154](https://github.com/kleedaisuki/msync/actions/runs/42582869154).
+The Linux job `129045576609` passed all selected new contracts. Windows job
+`129045576853` passed memory/layout, nullable callables, the user's exact Scope
+CLI/LSP sources, global imports, disassembly, four managed memory projects and
+native component observations. Its protocol fixture completed its assertions
+then failed printing Unicode JSON to CP1252. Fixture-only `48f46ad` preserved the
+Unicode inputs and UTF-8 report, emitting escaped JSON on stdout instead.
+[Windows protocol-only run 42583702434](https://github.com/kleedaisuki/msync/actions/runs/42583702434)
+then passed against the exact original Windows native payload; no AOT build or
+already accepted contracts were repeated.
+
+| Image | Executable SHA-256 |
+| --- | --- |
+| Linux | `ca27463e899595a838b27861ef1328ac2f33b413b0d628ae00e58aaf60741d46` |
+| Windows | `c10d05c8c5ccf682d1a34002b5758da4c3ea0b6fbc9e24359d9347ea6174ced9` |
+
+Both package manifests verify all 226 entries. All 59 modified PrettyPrompt
+source files are present; five Windows text files have the exact Git-checkout
+CRLF transformation while package digests cover their actual bytes.
+
+The final real VS Code 1.144 artifact-only host used the exact Linux image above,
+not a Debug build or PATH fallback. Initial host `C91uM3` exposed a genuine initial
+VS Code watch-registration race. UI `fdb29c3` uses synchronously registered,
+shared parent-directory watchers for file URIs and retains provider watching for
+other schemes. Independent host `R5GyqX` passed first atomic recompilation,
+automatic regular-write corruption/repair, read-only views, symbols/navigation,
+restart, inert debug data and byte preservation. Test-only `81ad4ef` requires these
+automatic transitions; no manual refresh or longer timeout masks the defect.
+Native program bytes were unchanged by this UI repair.
+
+The tested bundle is packaged as `dist/msync-language-0.8.0.vsix`. Its nine
+payload files, including both TextMate grammars, manifest, bundled language
+client/viewer and notices, match the current sources/build bytes. All four
+current delivery assets are covered by `dist/SHA256SUMS`; exact package hashes and
+sizes are recorded in `.temp/final-memory-artifact-delivery-v080.json`.
+Same-version replacement must update both Native AOT and VSIX, reload the window,
+and restart the intended absolute `msync.serverPath`; see
+[the deployment instructions](../releases/0.8.0.md#replacing-a-same-version-development-build).
+No public release, tag or asset was changed. Performance evidence is retained
+separately in `performance-v080.md` rather than inferred from acceptance counts.
