@@ -1243,3 +1243,50 @@ deferred callback mutation, selected errors and a different launch cwd. Its
 default includes two newly fixed frontend regressions; the frozen previous
 product is exercised with `--baseline-compatible` instead of being credited
 with syntax/metadata behavior it did not support.
+
+## Source-backed standard library expansion and selective loading
+
+The stdlib expansion keeps pure source composition and module/capture identity,
+while instantiating only the requested modules and their source dependencies.
+The comparison deliberately uses O0 so DCE cannot hide unwanted module work.
+`tests/Performance/stdlib_load.py` alternates seven fresh Native processes per
+image/common case; each records a cold compilation, three warmups and three
+warm observations. Times exclude process startup and filesystem IO. Allocation
+is managed traffic, not live heap, and no threshold is a CI gate.
+
+Both images use SDK 10.0.403 and exactly the same StdlibLoad measurement source
+(`40a1ba5f70b782266cf679daeb2ef3150fe4a0249f6aac37ee01ea65ea26575d`).
+Baseline source is `a8c71875e5f7bd2b5a628a8bcdece3f8b72ec4d1`, Native SHA
+`c0decade49374bd7232f3e7e53d4f394fb3de563a3cf4d924ddfb78bb99510c2`.
+Candidate source is `b3c0f9f875e3d0f022f5f853a9f8f6b5e197ac65`, Native SHA
+`6be44d30bdb34dcafdcf32da41fca4fe3a33191c724705ab3f08d2572e41e973`.
+
+| Common source | Cold p50/p95 before → after (ms) | Warm p50/p95 before → after (ms) | Warm bytes before → after | Raw functions before → after |
+| --- | --- | --- | ---: | ---: |
+| No stdlib reference | .381/.442 → .415/.496 | .021/.036 → .026/.045 | 7,336 → 7,328 | 1 → 1 |
+| `bool::both(true, false)` | 3.449/4.069 → 1.550/1.804 | 1.411/1.897 → .266/.326 | 442,256 → 72,104 | 23 → 7 |
+| `ranges::first(ranges::take([1, 2, 3], 2))` | 3.863/5.828 → 4.946/5.328 | 1.596/2.043 → 2.247/3.161 | 442,360 → 616,384 | 24 → 53 |
+
+The library is not universally cheaper to initialize: the expanded Range module
+itself costs about 0.65 ms and 174 KB more for this warm unoptimized compilation.
+That tradeoff is accepted for its substantially larger source expression layer.
+The unrelated Bool path gets a large reduction, proving that library growth no
+longer requires instantiating all other modules. The no-stdlib shape and
+allocation are unchanged; its few-microsecond timing delta is not evidence of a
+meaningful product win or regression. Per-export lazy construction is not added
+at the last minute: mutable namespace fields, whole-root construction and shared
+module capture locations require a coherent identity model, not independent
+detached function caches.
+
+Candidate-only new APIs have separate costs, not invented old equivalents:
+root cast has cold p50/p95 **1.372/3.543 ms**, warm **.086/.123 ms**, **22,760 B**;
+a composed trim/case closure has cold **4.536/7.435 ms**, warm **1.891/2.886 ms**,
+**505,960 B**. Source `size(take(...))` costs cold **5.442/6.236 ms**, warm
+**2.220/3.063 ms**, **641,024 B**.
+
+Complete raw observations and native/source manifests are in
+`.temp/stdlib-load/paired-final.json`, `baseline-a8-fixed/build.json` and
+`candidate-b3/build.json`. The [stdlib contract](stdlib-v080.md) contains the
+executable inventory, additional raw-shape fields and composed CLI/editor
+acceptance. Functional platform acceptance is recorded independently by the
+native delivery owner; a managed CLI journey is not relabeled as Native AOT.

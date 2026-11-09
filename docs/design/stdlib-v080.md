@@ -221,3 +221,50 @@ An early O2 composition failure made `$std::string` become Null after captured
 module use. O0 and actual source modules were correct. The optimizer owner fixed
 the captured-Cell epoch case rather than rewriting the user pipeline or disabling
 selective loading. The cross-module program remains a regression discriminator.
+
+## Native library-load observations
+
+The Linux component comparison uses exact scheduler baseline
+`a8c71875e5f7bd2b5a628a8bcdece3f8b72ec4d1` and stdlib candidate
+`b3c0f9f875e3d0f022f5f853a9f8f6b5e197ac65`. Both embed the identical
+`tests/Performance/StdlibLoad/Program.cs` measurement source
+(`40a1ba5f70b782266cf679daeb2ef3150fe4a0249f6aac37ee01ea65ea26575d`),
+built using .NET SDK 10.0.403. Native executable SHA-256 values are:
+
+* Baseline: `c0decade49374bd7232f3e7e53d4f394fb3de563a3cf4d924ddfb78bb99510c2`.
+* Candidate: `6be44d30bdb34dcafdcf32da41fca4fe3a33191c724705ab3f08d2572e41e973`.
+
+`tests/Performance/stdlib_load.py` alternates AB/BA across seven fresh processes
+per common case/image. Each process records one cold compilation, performs three
+untimed warmups, then records three warm O0 compilations. O0 is intentional:
+unrelated source declarations must not disappear through DCE before their load
+cost is observed. Times are compiler component milliseconds, excluding process
+startup and IO; allocated bytes are managed allocation traffic, not live heap.
+No measurement is a CI threshold.
+
+| Shared source | Cold p50 / p95, before → after (ms) | Warm p50 / p95, before → after (ms) | Warm bytes, before → after | Raw functions, before → after |
+| --- | --- | --- | ---: | ---: |
+| No standard-library reference | 0.381 / 0.442 → 0.415 / 0.496 | 0.021 / 0.036 → 0.026 / 0.045 | 7,336 → 7,328 | 1 → 1 |
+| `bool::both(true, false)` | 3.449 / 4.069 → 1.550 / 1.804 | 1.411 / 1.897 → 0.266 / 0.326 | 442,256 → 72,104 | 23 → 7 |
+| `ranges::first(ranges::take([1, 2, 3], 2))` | 3.863 / 5.828 → 4.946 / 5.328 | 1.596 / 2.043 → 2.247 / 3.161 | 442,360 → 616,384 | 24 → 53 |
+
+Selective loading substantially reduces unrelated-module work for Bool. The
+no-library control has unchanged raw shape and approximately unchanged allocation;
+its few-microsecond timing difference does not establish a meaningful product
+regression or improvement. The expanded Range module itself costs about 0.65 ms
+more per warm unoptimized compilation in this workload: its source-function
+surface has grown, so it cannot be described as free or as a universal speedup.
+
+Candidate-only capabilities are costs, not comparisons against nonexistent old
+APIs:
+
+| Source | Cold p50 / p95 (ms) | Warm p50 / p95 (ms) | Warm bytes |
+| --- | ---: | ---: | ---: |
+| Source `ranges::size(take(...))` | 5.442 / 6.236 | 2.220 / 3.063 | 641,024 |
+| Root `cast("42", Number)` | 1.372 / 3.543 | 0.086 / 0.123 | 22,760 |
+| Composed String trim/case closure | 4.536 / 7.435 | 1.891 / 2.886 | 505,960 |
+
+Complete raw results are under `.temp/stdlib-load/paired-final.json`, with both
+exact source archives, probe hashes and SDK in the adjacent baseline/candidate
+`build.json` manifests. The reusable experiment implementation is committed
+under `tests/Performance/StdlibLoad` and `tests/Performance/stdlib_load.py`.
