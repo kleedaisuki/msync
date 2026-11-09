@@ -370,6 +370,7 @@ internal sealed partial class SemanticAnalyzer
     {
         if (branches.Length == 0) return;
         MergeSingletonFlow(destination, branches);
+        MergeIndexedContexts(destination, branches);
         if (!destination.Publish) { MergeQueryContexts(destination, branches); return; }
         foreach (var pair in branches[0].Values) destination.Values[pair.Key] = pair.Value;
         foreach (var pair in branches[0].Storage) destination.Storage[pair.Key] = pair.Value;
@@ -388,6 +389,29 @@ internal sealed partial class SemanticAnalyzer
                 destination.Objects[region] = previous with { Fields = fields };
             }
         }
+    }
+
+    private void MergeIndexedContexts(SemanticContext destination, SemanticContext[] branches)
+    {
+        HashSet<int>? changed = null;
+        foreach (SemanticContext branch in branches)
+        {
+            destination.IndexedWrites.UnionWith(branch.IndexedWrites);
+            foreach (var (region, value) in branch.Indexed.LocalEntries)
+                if (!destination.Indexed.TryGetValue(region, out var previous) || !ReferenceEquals(previous, value))
+                    (changed ??= []).Add(region);
+        }
+        if (changed is null) return;
+        Dictionary<int, SemanticIndexed> merged = new(changed.Count);
+        foreach (int region in changed)
+        {
+            SemanticIndexed? resource = null;
+            foreach (SemanticContext branch in branches)
+                if (branch.Indexed.TryGetValue(region, out var value))
+                    resource = resource is null ? value : JoinIndexed(resource, value);
+            if (resource is not null) merged.Add(region, resource);
+        }
+        foreach (var (region, resource) in merged) destination.Indexed[region] = resource;
     }
 
     private void MergeQueryContexts(SemanticContext destination, SemanticContext[] branches)

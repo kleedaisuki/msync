@@ -30,6 +30,10 @@ await Number("fn invoke(state) { state::operation() }; let state = scope { opera
 const string buffer = "native fn buffer_new(values: Range) -> Range; native fn buffer_get(values: Range, index: Number) -> Number;";
 await Number(buffer + "let changed = false; let value: Scope = scope { items: buffer_new([4]), first: true }; loop { if changed { break buffer_get(value::items, 0); } else { value = scope { items: value::items, second: false }; changed = true; } }", 4);
 await Number(buffer + "let old = buffer_new([1]); let changed = false; let value: Scope = scope { items: old, first: true }; loop { if changed { break buffer_get(value::items, 0) + buffer_get(old, 0); } else { value = scope { items: buffer_new([7]), second: false }; changed = true; } }", 8);
+const string indexedBranch = "native fn buffer_new(values: Range) -> Range; native fn buffer_get(values: Range, index: Number) -> Number; native fn buffer_push(values: Range, value?) -> Number; native fn is_nan(value: Number) -> Bool;";
+await Number(indexedBranch + "let items = buffer_new([]); if is_nan(0) { buffer_push(items, 1); } else { buffer_push(items, 2); }; buffer_get(items, 0)", 2);
+await Number(indexedBranch + "if decltype({ let items = buffer_new([]); if is_nan(0) { buffer_push(items, 1); } else { buffer_push(items, 2); }; buffer_get(items, 0) }) is Number { 7 } else { 1 }", 7);
+Reject(indexedBranch + "let items = buffer_new([]); if is_nan(0) { buffer_push(items, 1); } else { buffer_push(items, true); }; buffer_push(items, 2)", "E0203");
 Console.WriteLine($"PASS {checks} structured-flow artifact journeys");
 
 async Task Number(string source, double expected)
@@ -60,4 +64,17 @@ async Task Text(string source, string expected)
         if (value is not StringValue actual || actual.Data != expected)
             throw new InvalidOperationException($"Expected '{expected}', got {value}");
     }
+}
+
+void Reject(string source, string code)
+{
+    if (filter is not null && !source.Contains(filter, StringComparison.Ordinal)) return;
+    try { Compiler.Analyze(source, "flow-rejection.msync"); }
+    catch (CompileException error)
+    {
+        checks++;
+        if (error.Diagnostic.Code != code) throw new InvalidOperationException(error.Diagnostic.Message);
+        return;
+    }
+    throw new InvalidOperationException("Expected " + code + ": " + source);
 }

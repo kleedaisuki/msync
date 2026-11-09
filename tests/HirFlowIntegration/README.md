@@ -33,6 +33,14 @@ to reference a Scope. Unknown calls conservatively invalidate mutable captured
 cells and memory regions. Neither a branch nor a type query clones a live
 compiler graph, emits speculative instructions, or rebinds syntax.
 
+Indexed-resource joins are separate from ordinary binding-type joins. Element
+reads join possible values; writes must satisfy every surviving carrier
+constraint. The focused cases use a runtime-unknown pure Boolean to exercise
+both branches, including through `decltype`, and reject a write accepted by
+only one possible carrier. Branch-local overlays are gathered before updating
+the destination, so an untouched branch cannot accidentally read an already
+merged parent value.
+
 Repeated allocation can describe an unbounded nested structural row even though
 the declared storage contract is finite (`value = scope { item: value }`). The
 projector recognizes this recurrence at the same bound construction site. Only
