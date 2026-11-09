@@ -1,0 +1,567 @@
+# Canonical families keep instance data separate from shared operations.
+# A storage policy may choose buffering, but retained state is always a snapshot.
+scope SnapshotStorage {
+    snapshot: fn(values: Range) -> Range {
+        $std::ranges::materialize(values)
+    },
+};
+
+scope List {
+    new: fn(initial: Range) {
+        List::with-storage(initial, SnapshotStorage)
+    },
+    with-storage: fn(initial: Range, storage: $std::concepts::RangeStorage) {
+        scope {
+            items: $std::ranges::materialize(storage::snapshot(initial)),
+            storage: storage,
+        }
+    },
+    empty: fn(prototype?) {
+        List::new($std::ranges::take([prototype], 0))
+    },
+    snapshot: fn(self) {
+        $std::ranges::materialize(self::items)
+    },
+    size: fn(self) {
+        $std::ranges::size(self::items)
+    },
+    is-empty: fn(self) {
+        $std::ranges::empty(self::items)
+    },
+    clear: fn(self) {
+        self::items = $std::ranges::materialize(
+            self::storage::snapshot($std::ranges::take(self::items, 0))
+        );
+    },
+    get: fn(self, index: Number) {
+        $std::ranges::at_or(self::items, index, null)
+    },
+    get-or: fn(self, index: Number, fallback?) {
+        $std::ranges::at_or(self::items, index, fallback)
+    },
+    push: fn(self, value?) {
+        self::items = $std::ranges::materialize(
+            self::storage::snapshot($std::ranges::concat(self::items, [value]))
+        );
+    },
+    extend: fn(self, values: Range) {
+        self::items = $std::ranges::materialize(
+            self::storage::snapshot($std::ranges::concat(self::items, values))
+        );
+    },
+    insert: fn(self, index: Number, value?) {
+        if index < 0 or index > List::size(self) {
+            return false;
+        };
+        self::items = $std::ranges::materialize(
+            self::storage::snapshot(
+                $std::ranges::concat(
+                    $std::ranges::take(self::items, index),
+                    $std::ranges::concat(
+                        [value],
+                        $std::ranges::drop(self::items, index)
+                    )
+                )
+            )
+        );
+        true
+    },
+    set: fn(self, index: Number, value?) {
+        if index < 0 or index >= List::size(self) {
+            return false;
+        };
+        self::items = $std::ranges::materialize(
+            self::storage::snapshot(
+                $std::ranges::concat(
+                    $std::ranges::take(self::items, index),
+                    $std::ranges::concat(
+                        [value],
+                        $std::ranges::drop(self::items, index + 1)
+                    )
+                )
+            )
+        );
+        true
+    },
+    remove: fn(self, index: Number) {
+        if index < 0 or index >= List::size(self) {
+            return false;
+        };
+        self::items = $std::ranges::materialize(
+            self::storage::snapshot(
+                $std::ranges::concat(
+                    $std::ranges::take(self::items, index),
+                    $std::ranges::drop(self::items, index + 1)
+                )
+            )
+        );
+        true
+    },
+    remove-where: fn(self, predicate: Function) {
+        let previous = List::size(self);
+        self::items = $std::ranges::materialize(
+            self::storage::snapshot(
+                $std::ranges::reject(self::items, predicate)
+            )
+        );
+        previous - List::size(self)
+    },
+    contains: fn(self, value?) {
+        $std::ranges::contains(self::items, value)
+    },
+    index-of: fn(self, value?) {
+        $std::ranges::index_of(self::items, value)
+    },
+    slice: fn(self, start: Number, count: Number) {
+        $std::ranges::materialize(
+            $std::ranges::slice(self::items, start, count)
+        )
+    },
+    reverse: fn(self) {
+        self::items = $std::ranges::materialize(
+            self::storage::snapshot($std::ranges::reverse(self::items))
+        );
+    },
+    sort-with: fn(self, less: Function) {
+        self::items = $std::ranges::materialize(
+            self::storage::snapshot($std::ranges::sort_with(self::items, less))
+        );
+    },
+};
+
+# Null is the absent alternative, outside a concrete comparison carrier.
+scope Equivalence {
+    same: fn(left?, right?) {
+        if left is null {
+            right is null
+        } else {
+            if right is null {
+                false
+            } else {
+                left == right
+            }
+        }
+    },
+    test: fn(policy: $std::concepts::Equality, left?, right?) {
+        if left is null {
+            right is null
+        } else {
+            if right is null {
+                false
+            } else {
+                policy::equal(left, right)
+            }
+        }
+    },
+};
+
+scope Set {
+    new: fn(initial: Range) {
+        Set::with-policy(
+            initial,
+            scope {
+                Self: decltype($std::ranges::front(initial)),
+                equal: Equivalence::same,
+            },
+            SnapshotStorage
+        )
+    },
+    with-equality: fn(initial: Range, equality: $std::concepts::Equality) {
+        Set::with-policy(initial, equality, SnapshotStorage)
+    },
+    with-policy: fn(
+        initial: Range,
+        equality: $std::concepts::Equality,
+        storage: $std::concepts::RangeStorage
+    ) {
+        let source = $std::ranges::materialize(initial);
+        let self = scope {
+            items: $std::ranges::materialize($std::ranges::take(source, 0)),
+            equality: equality,
+            storage: storage,
+        };
+        for value in source {
+            Set::insert(self, value);
+        };
+        self
+    },
+    empty: fn(prototype?) {
+        Set::new($std::ranges::take([prototype], 0))
+    },
+    snapshot: fn(self) {
+        $std::ranges::materialize(self::items)
+    },
+    size: fn(self) {
+        $std::ranges::size(self::items)
+    },
+    is-empty: fn(self) {
+        $std::ranges::empty(self::items)
+    },
+    clear: fn(self) {
+        List::clear(self)
+    },
+    contains: fn(self, value?) {
+        $std::ranges::any(
+            self::items,
+            fn(item?) {
+                Equivalence::test(self::equality, item, value)
+            }
+        )
+    },
+    insert: fn(self, value?) {
+        if Set::contains(self, value) {
+            return false;
+        };
+        List::push(self, value);
+        true
+    },
+    remove: fn(self, value?) {
+        let previous = Set::size(self);
+        self::items = $std::ranges::materialize(
+            self::storage::snapshot(
+                $std::ranges::reject(
+                    self::items,
+                    fn(item?) {
+                        Equivalence::test(self::equality, item, value)
+                    }
+                )
+            )
+        );
+        previous != Set::size(self)
+    },
+    union-with: fn(self, other: Range) {
+        for value in other {
+            Set::insert(self, value);
+        };
+    },
+    intersect-with: fn(self, other: Range) {
+        let values = $std::ranges::materialize(other);
+        self::items = $std::ranges::materialize(
+            self::storage::snapshot(
+                $std::ranges::filter(
+                    self::items,
+                    fn(item?) {
+                        $std::ranges::any(
+                            values,
+                            fn(value?) {
+                                Equivalence::test(self::equality, item, value)
+                            }
+                        )
+                    }
+                )
+            )
+        );
+    },
+    except-with: fn(self, other: Range) {
+        let values = $std::ranges::materialize(other);
+        self::items = $std::ranges::materialize(
+            self::storage::snapshot(
+                $std::ranges::reject(
+                    self::items,
+                    fn(item?) {
+                        $std::ranges::any(
+                            values,
+                            fn(value?) {
+                                Equivalence::test(self::equality, item, value)
+                            }
+                        )
+                    }
+                )
+            )
+        );
+    },
+    is-subset-of: fn(self, other: Range) {
+        let values = $std::ranges::materialize(other);
+        $std::ranges::all_of(
+            self::items,
+            fn(item?) {
+                $std::ranges::any(
+                    values,
+                    fn(value?) {
+                        Equivalence::test(self::equality, item, value)
+                    }
+                )
+            }
+        )
+    },
+    overlaps: fn(self, other: Range) {
+        $std::ranges::any(
+            other,
+            fn(value?) {
+                Set::contains(self, value)
+            }
+        )
+    },
+};
+
+scope Map {
+    new: fn(initial: Range) {
+        Map::with-policy(
+            initial,
+            scope {
+                Self: decltype($std::ranges::front(initial)::key),
+                equal: Equivalence::same,
+            },
+            SnapshotStorage
+        )
+    },
+    with-equality: fn(initial: Range, equality: $std::concepts::Equality) {
+        Map::with-policy(initial, equality, SnapshotStorage)
+    },
+    with-policy: fn(
+        initial: Range,
+        equality: $std::concepts::Equality,
+        storage: $std::concepts::RangeStorage
+    ) {
+        let source = $std::ranges::materialize(initial);
+        let self = scope {
+            keys: $std::ranges::materialize(
+                $std::ranges::transform(
+                    $std::ranges::take(source, 0),
+                    fn(entry) {
+                        entry::key
+                    }
+                )
+            ),
+            values: $std::ranges::materialize(
+                $std::ranges::transform(
+                    $std::ranges::take(source, 0),
+                    fn(entry) {
+                        entry::value
+                    }
+                )
+            ),
+            equality: equality,
+            storage: storage,
+        };
+        for entry in source {
+            Map::insert(self, entry::key, entry::value);
+        };
+        self
+    },
+    empty: fn(key_prototype?, value_prototype?) {
+        Map::new(
+            $std::ranges::take(
+                [
+                    scope {
+                        key?: key_prototype,
+                        value?: value_prototype
+                    }
+                ],
+                0
+            )
+        )
+    },
+    empty-nullable: fn(key_prototype?, value_prototype?) {
+        Map::new(
+            $std::ranges::take(
+                [
+                    scope {
+                        key?: key_prototype,
+                        value?: value_prototype
+                    },
+                    scope {
+                        key?: key_prototype,
+                        value?: null
+                    }
+                ],
+                0
+            )
+        )
+    },
+    entries: fn(self) {
+        $std::ranges::materialize(
+            $std::ranges::transform(
+                $std::ranges::zip(self::keys, self::values),
+                fn(pair) {
+                    scope {
+                        key?: pair::first,
+                        value?: pair::second
+                    }
+                }
+            )
+        )
+    },
+    keys: fn(self) {
+        $std::ranges::materialize(self::keys)
+    },
+    values: fn(self) {
+        $std::ranges::materialize(self::values)
+    },
+    size: fn(self) {
+        $std::ranges::size(self::keys)
+    },
+    is-empty: fn(self) {
+        $std::ranges::empty(self::keys)
+    },
+    clear: fn(self) {
+        self::keys = $std::ranges::materialize(
+            self::storage::snapshot($std::ranges::take(self::keys, 0))
+        );
+        self::values = $std::ranges::materialize(
+            self::storage::snapshot($std::ranges::take(self::values, 0))
+        );
+    },
+    locate: fn(self, key?) {
+        $std::ranges::index_if(
+            self::keys,
+            fn(item?) {
+                Equivalence::test(self::equality, item, key)
+            }
+        )
+    },
+    contains-key: fn(self, key?) {
+        Map::locate(self, key) is not null
+    },
+    get: fn(self, key?) {
+        Map::get-or(self, key, null)
+    },
+    get-or: fn(self, key?, fallback?) {
+        let index? = Map::locate(self, key);
+        if index is null {
+            fallback
+        } else {
+            $std::ranges::at(self::values, index)
+        }
+    },
+    insert: fn(self, key?, value?) {
+        let index? = Map::locate(self, key);
+        if index is null {
+            self::keys = $std::ranges::materialize(
+                self::storage::snapshot(
+                    $std::ranges::concat(self::keys, [key])
+                )
+            );
+            self::values = $std::ranges::materialize(
+                self::storage::snapshot(
+                    $std::ranges::concat(self::values, [value])
+                )
+            );
+            true
+        } else {
+            self::values = $std::ranges::materialize(
+                self::storage::snapshot(
+                    $std::ranges::concat(
+                        $std::ranges::take(self::values, index),
+                        $std::ranges::concat(
+                            [value],
+                            $std::ranges::drop(self::values, index + 1)
+                        )
+                    )
+                )
+            );
+            false
+        }
+    },
+    try-insert: fn(self, key?, value?) {
+        if Map::contains-key(self, key) {
+            false
+        } else {
+            Map::insert(self, key, value)
+        }
+    },
+    remove: fn(self, key?) {
+        let index? = Map::locate(self, key);
+        if index is null {
+            return false;
+        };
+        self::keys = $std::ranges::materialize(
+            self::storage::snapshot(
+                $std::ranges::concat(
+                    $std::ranges::take(self::keys, index),
+                    $std::ranges::drop(self::keys, index + 1)
+                )
+            )
+        );
+        self::values = $std::ranges::materialize(
+            self::storage::snapshot(
+                $std::ranges::concat(
+                    $std::ranges::take(self::values, index),
+                    $std::ranges::drop(self::values, index + 1)
+                )
+            )
+        );
+        true
+    },
+};
+
+scope Stack {
+    new: fn(initial: Range) {
+        List::new(initial)
+    },
+    with-storage: fn(initial: Range, storage: $std::concepts::RangeStorage) {
+        List::with-storage(initial, storage)
+    },
+    empty: fn(prototype?) {
+        List::empty(prototype)
+    },
+    snapshot: fn(self) {
+        List::snapshot(self)
+    },
+    size: fn(self) {
+        List::size(self)
+    },
+    is-empty: fn(self) {
+        List::is-empty(self)
+    },
+    clear: fn(self) {
+        List::clear(self)
+    },
+    push: fn(self, value?) {
+        List::push(self, value)
+    },
+    peek: fn(self) {
+        if List::is-empty(self) {
+            null
+        } else {
+            List::get(self, List::size(self) - 1)
+        }
+    },
+    pop: fn(self) {
+        if List::is-empty(self) {
+            return null;
+        };
+        let index = List::size(self) - 1;
+        let value? = List::get(self, index);
+        List::remove(self, index);
+        value
+    },
+};
+
+scope Queue {
+    new: fn(initial: Range) {
+        List::new(initial)
+    },
+    with-storage: fn(initial: Range, storage: $std::concepts::RangeStorage) {
+        List::with-storage(initial, storage)
+    },
+    empty: fn(prototype?) {
+        List::empty(prototype)
+    },
+    snapshot: fn(self) {
+        List::snapshot(self)
+    },
+    size: fn(self) {
+        List::size(self)
+    },
+    is-empty: fn(self) {
+        List::is-empty(self)
+    },
+    clear: fn(self) {
+        List::clear(self)
+    },
+    push: fn(self, value?) {
+        List::push(self, value)
+    },
+    peek: fn(self) {
+        List::get(self, 0)
+    },
+    pop: fn(self) {
+        if List::is-empty(self) {
+            return null;
+        };
+        let value? = List::get(self, 0);
+        List::remove(self, 0);
+        value
+    },
+};
