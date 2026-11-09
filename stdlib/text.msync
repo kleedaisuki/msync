@@ -15,7 +15,7 @@ scope ChunkStorage {
 
 # Instances contain data and one shared policy, not captured accessor functions.
 scope StringBuilder {
-    with-policy: fn(policy: $std::concepts::TextChunks) {
+    with_policy: fn(policy: $std::concepts::TextChunks) {
         scope { chunks: [""], length: 0, policy: policy }
     },
     new: fn {
@@ -25,12 +25,12 @@ scope StringBuilder {
         self::chunks = self::policy::append(self::chunks, text);
         self::length = self::length + $std::string::length(text);
     },
-    append-line: fn(self: $std::concepts::TextBuffer, text: String) {
+    append_line: fn(self: $std::concepts::TextBuffer, text: String) {
         self::chunks = self::policy::append(self::chunks, text);
         self::chunks = self::policy::append(self::chunks, newline);
         self::length = self::length + $std::string::length(text) + 1;
     },
-    append-all: fn(self: $std::concepts::TextBuffer, values: Range<String>) {
+    append_all: fn(self: $std::concepts::TextBuffer, values: Range<String>) {
         for text in values {
             self::chunks = self::policy::append(self::chunks, text);
             self::length = self::length + $std::string::length(text);
@@ -44,7 +44,7 @@ scope StringBuilder {
         self::policy::build(self::chunks)
     },
     len: fn(self: $std::concepts::TextBuffer) -> Number { self::length },
-    is-empty: fn(self: $std::concepts::TextBuffer) -> Bool {
+    is_empty: fn(self: $std::concepts::TextBuffer) -> Bool {
         self::length == 0
     },
     snapshot: fn(self: $std::concepts::TextBuffer) -> String {
@@ -57,9 +57,9 @@ fn Builder() {
     let self = StringBuilder::new();
     scope {
         append: fn(value: String) { StringBuilder::append(self, value) },
-        append_line: fn(value: String) { StringBuilder::append-line(self, value) },
+        append_line: fn(value: String) { StringBuilder::append_line(self, value) },
         append_all: fn(values: Range<String>) {
-            StringBuilder::append-all(self, values)
+            StringBuilder::append_all(self, values)
         },
         clear: fn { StringBuilder::clear(self) },
         build: fn { StringBuilder::build(self) },
