@@ -251,7 +251,13 @@ candidate. Raw observations are `.temp/hir-first-phase/{timing,retention}.json`.
 
 These tiny observations establish that the actual stage boundaries are
 measurable; they are not evidence of overall migration speedup. In particular,
-serialization is not part of the ordinary compile-total control.
+serialization is not part of the ordinary compile-total control. The shared
+host had an active compiler server and parallel MSBuild work during this first
+slice. Treat its timings as API/measurement smoke observations, not causal
+before/after evidence. Per-thread allocated-byte counts describe these real
+phase calls independently of host scheduling, although they do not establish
+retained size. Final matched warm timing needs a coordinated quiet window;
+other owners' builds must not be terminated to manufacture one.
 
 Add `--retention-only` for separately instrumented candidate lifetimes. The
 analysis mode deliberately holds the complete returned HIR graph. The lowering
