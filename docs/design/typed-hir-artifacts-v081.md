@@ -58,6 +58,14 @@ source identities and spans; they are not raw offsets paired with whichever
 source document happens to be current. Absence of the original file must not
 cause source replay or erase semantic definitions.
 
+Allocation sites also have semantic identities independent of a compacted
+payload table's dense index. A typed construction publishes one site, retained
+by sealing and serialization; backend receipts map that site to a physical
+runtime allocation marker. Generic specializations with different field
+contracts have different typed sites. Repeated execution still creates fresh
+anonymous objects: sharing a site does not merge their instance identity.
+Named singleton declaration identity is a separate relationship.
+
 Live cells, Process controls, pending tasks, credentials and authenticated
 connections do not belong in an HIR artifact. A session export with unresolved
 locations must declare its imports; it is not a serialized REPL heap. A

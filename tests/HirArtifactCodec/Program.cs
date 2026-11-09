@@ -41,6 +41,8 @@ Check(read.Literals.Single(value => value.Kind == HirLiteralKind.String).Text ==
 Check(read.Literals.Single(value => value.Kind == HirLiteralKind.Path).Text == "~/two words/\\file", "Raw path provenance");
 Check(read.Literals.Single(value => value.Kind == HirLiteralKind.Type).Type == new TypeRef(TypeKind.Range, new(TypeKind.Range, TypeRef.String.WithNull)), "Nested runtime type descriptor");
 Check(read.IsSession && read.Exports[0].Name == "shared", "Explicit session export metadata");
+Check(read.Scopes.All(scope => scope.Site is not null) && read.Scopes.Select(scope => scope.Site).Distinct().Count() == read.Scopes.Length,
+    "Allocation-site identities survive payload tables independently");
 HirModule external = Decode(Encode(read with { UnresolvedImports = [new(0)] }));
 Check(external.UnresolvedImports.SequenceEqual([new HirLocationId(0)]), "Unresolved external locations are explicit semantic imports");
 Check(HirPrinter.Print(rich) == HirPrinter.Print(read), "Printed semantic structure survives persistence");

@@ -81,7 +81,7 @@ public static class HirPrinter
             for (int index = 0; index < module.Scopes.Length; index++)
             {
                 var scope = module.Scopes[index];
-                Define($"scope @o{index} shape @h{scope.Layout} fields [{Locations(scope.Fields)}] singleton {scope.Singleton}{(scope.Self is { } self ? " self @l" + self.Value : "")}",
+                Define($"scope @o{index} shape @h{scope.Layout} fields [{Locations(scope.Fields)}] site {scope.Site?.Value} singleton {scope.Singleton}{(scope.Self is { } self ? " self @l" + self.Value : "")}",
                     "@o" + index, "Scope construction " + index, "Logical field locations; no bytecode layout is assigned.", HirTextCategory.Table);
             }
             for (int index = 0; index < module.Fors.Length; index++)

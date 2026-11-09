@@ -140,6 +140,7 @@ internal sealed class HirBinaryWriter(BinaryWriter writer)
     {
         writer.Write(scope.Layout); Array(scope.Fields, value => writer.Write(value.Value));
         writer.Write(scope.Singleton); writer.Write(scope.Self?.Value ?? -1);
+        writer.Write(scope.Site!.Value.Value);
     }
 
     private void Pattern(HirPattern pattern)

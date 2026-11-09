@@ -41,7 +41,7 @@ internal sealed class HirBinaryReader(BinaryReader reader)
             Array("signatures", 9, Signature),
             Array("calls", 14, Call),
             Array("closures", 8, () => new HirClosure(new(reader.ReadInt32()), Array("captures", 13, Capture))),
-            Array("scope constructions", 16, Scope),
+            Array("scope constructions", 20, Scope),
             Array("for loops", 8, () => new HirFor(new(reader.ReadInt32()), new(reader.ReadInt32()))),
             Array("matches", 4, () => new HirMatch(Array("match arms", 14, () => new HirMatchArm(Pattern(), new(reader.ReadInt32()))))),
             Array("barriers", 2, () => new HirBarrier(Boolean(), Boolean())),
@@ -190,7 +190,7 @@ internal sealed class HirBinaryReader(BinaryReader reader)
         var fields = Array("scope fields", 4, () => new HirLocationId(reader.ReadInt32()));
         int singleton = reader.ReadInt32();
         int self = reader.ReadInt32();
-        return new(layout, fields, singleton, self == -1 ? null : new HirLocationId(self));
+        return new(layout, fields, singleton, self == -1 ? null : new HirLocationId(self), new(reader.ReadInt32()));
     }
     private HirPattern Pattern()
     {

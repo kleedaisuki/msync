@@ -78,8 +78,11 @@ public static class HirValidation
             Id(closure.Template.Value, module.Templates.Length, "closure template");
             Captures(module, closure.Captures);
         }
+        HashSet<HirAllocationSiteId> sites = [];
         foreach (var scope in module.Scopes)
         {
+            if (scope.Site is not { Value: >= 0 } site || !sites.Add(site))
+                Fail("scope construction has a missing or duplicate allocation-site identity");
             Id(scope.Layout, module.ScopeLayouts.Length, "constructed scope layout");
             if (scope.Fields.Length != module.ScopeLayouts[scope.Layout].Fields.Length) Fail("scope field locations disagree with its layout");
             foreach (var field in scope.Fields) Id(field.Value, module.Locations.Length, "scope field location");
