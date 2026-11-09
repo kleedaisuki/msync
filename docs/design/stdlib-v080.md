@@ -228,6 +228,14 @@ text/path owner journeys. Source-only Path, Bool and functional modules illustra
 the intended layer boundary; elementary mathematics and stream iteration are
 host capabilities rather than reimplementations in user source.
 
+Source object composition also supplied a compiler convergence discriminator:
+the first row-based Map exposed a loop analysis comparing freshly joined Scope
+metadata by reference instead of semantic state. That defect is fixed; the
+retained column-based source representation is independently simpler and
+cheaper, not a substitute for compiler convergence. The measurements and
+original-row regression are recorded in
+[performance-components-v080.md](performance-components-v080.md).
+
 ### Earlier library-only expansion evidence
 
 The following acceptance record belongs to the earlier `71828ca` library
