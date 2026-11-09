@@ -148,3 +148,16 @@ The source, process observation and exact assembly hashes are under
 `.temp/hir-stage-trace/`. This is a semantic-instantiation resource-growth defect,
 not a completed cost measurement or an optimizer/runtime regression. Counts
 available only on a completed HIR result cannot be inferred from this run.
+
+A later source-version check matters here: successful analysis of an insert-only
+mirror does not imply completion of the actual output-producing input. The
+165-byte one-insert input also calls `BTree::size`, casts its result to String
+and transfers it to `result.txt`; its SHA-256 is
+`1c02eee6f28d1454c1f72e10e5b8dc56b0a10b8da42816ffb442d8e821e44fcb`.
+On frozen13 (Compiler `9af6c5241cb9fd4221b2a8e812dca9e8581c93058e4595b90a91ec2125884844`),
+a single direct-reference `--trace-once` observation prints only Analyze/start,
+not Analyze/end. Its externally bounded five-second observation therefore
+localizes the remaining growth before bytecode lowering or optimization. The
+record is `.temp/hir-stage-trace/frozen13-exact1-stage.*`; it is not a completed
+performance sample. Subsequent causal traces must use that exact source rather
+than silently reverting to the shorter insert-only input.
