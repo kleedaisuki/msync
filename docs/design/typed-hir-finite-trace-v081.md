@@ -120,6 +120,40 @@ Allocation-site abstraction and alias partitions must preserve separate
 instances and write constraints; equal carrier types alone do not establish
 object identity. A full insert is not claimed complete by these stopped runs.
 
+## Progressive 120-entry run: the next growth point
+
+The same patched mirror and exact input were then allowed 120 key entries,
+retaining the 16-Ki key, 20,000-append, 20-second and managed-heap guards. It
+stopped at append visit 20,001 after entry 108, not at the event-count limit.
+The unfinished key at that stop was only 628 code units. Wall time was 1.600
+seconds and Linux child peak RSS was 88,388 KiB. No 300-entry or unguarded run
+was needed to locate the next mechanism.
+
+Repeated query instantiations of template 14 (`BTree::insert_nonfull`) had the
+same argument type IDs `(1152, 4, 4, 5)` and capture type IDs `(1054, 1153)`.
+Every row below was a cache miss:
+
+| Entry | Nesting depth | Caller objects | Indexed resources | Key length |
+|---|---:|---:|---:|---:|
+| 45 | 3 | 23 | 17 | 2454 |
+| 60 | 4 | 37 | 32 | 2518 |
+| 75 | 5 | 72 | 74 | 2692 |
+| 90 | 6 | 144 | 155 | 3085 |
+| 105 | 7 | 288 | 317 | 3917 |
+
+Throughout entries 60–108 the type/layout/code counts stayed at 1169 types,
+35 layouts, 9 functions and 32 Scope constructions. Entry 107, the nested
+`lower` query, had a node argument with 127 Scope aliases, and a caller with
+321 objects and 356 indexed resources. This distinguishes continuing abstract
+resource/view growth from growth in the code or ordinary carrier schemas.
+
+Graph key memoization removes repeated serialization of an existing graph.
+The second observation identifies a separate non-converging specialization
+state: successive recursive queries create larger resource/view alias graphs
+despite the same exposed argument/capture types. The next change therefore
+belongs in finite resource provenance and summary projection, not a higher key
+limit. A successful complete insertion remains the acceptance criterion.
+
 ## Receipts and reproduction
 
 The workspace retains:
@@ -129,6 +163,7 @@ The workspace retains:
   and run receipt;
 - `key-patch-receipt.json`: the exact product-tail hash and old/new mirror hashes;
 - `trace.log` and `run-receipt.json`: the graph-key run;
+- `graph40/`: the earlier 40-entry graph-key trace and its original receipt;
 - the complete source mirror and separately built host.
 
 The original and graph-key Compiler DLL hashes were respectively
@@ -138,6 +173,13 @@ The original trace SHA256 was
 `936630f463676649e024a20f18f5783dc8d3357591ca8e70118fbccaf7622083`;
 the graph-key trace SHA256 was
 `e432545ea90e9afcb9bd8df8ad8a6d27663f8d511823320502633ad9e57b675d`.
+The progressive 120-entry trace SHA256 was
+`378d5f762953b7e9728bb2f0e0bc713295cc27d783a1077a86713c0fbf3f6c43`,
+with Compiler DLL
+`9855606573ae05487f318b84d43e3a3903e84ea91a9fcdd7f98b9c37ca23b3c4`.
+The instrumented Instantiation source remained
+`6f7d2f0b529621855d143c52757f3c11352a1ebc957c91b8abb63f414b6a9cec`;
+only the trace helper's event limit changed.
 
 Build only the mirror host:
 
