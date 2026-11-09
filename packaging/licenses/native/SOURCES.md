@@ -1,7 +1,7 @@
 # Native product dependency attribution
 
-These notices accompany dependencies of the Native AOT product, distinct from
-the preserved Rust baseline and the editor extension's separate dependency set.
+These notices accompany dependencies of the Native AOT product. The editor
+extension has its own corresponding dependency notices.
 
 - Tomlyn 2.10.1: [license at the package's recorded source commit](https://github.com/xoofx/Tomlyn/blob/6cc82dd23a2c0aefb858f92a51c1b184e2812103/license.txt).
 - PrettyPrompt 6.0.5: MPL-2.0 [license and corresponding source at the package's recorded commit](https://github.com/waf/PrettyPrompt/tree/b7bbd3da5fbc1af53d1e0e6977ce43760a138ca1).

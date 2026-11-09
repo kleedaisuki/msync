@@ -41,6 +41,5 @@ not publisher identity: an unsigned installer may trigger Windows SmartScreen.
 Building packages (not using them) requires a Git checkout, the .NET 10 SDK,
 Visual Studio's native C++ toolchain and Windows SDK, and Python 3. Inno Setup 6
 is needed to build the installer; it is not needed for the portable ZIP.
-The retained Rust baseline under legacy is independent of the new product.
 Complete project sources are available at https://github.com/kleedaisuki/msync;
 use the source archive for the same version tag as the distributed executable.
