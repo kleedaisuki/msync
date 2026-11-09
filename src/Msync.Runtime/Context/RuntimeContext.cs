@@ -2,16 +2,6 @@ using Msync.Core;
 
 namespace Msync.Runtime;
 
-public sealed record ExecutionOptions(string? WorkingDirectory = null, string? SourceFile = null, bool DryRun = false,
-    TextWriter? Output = null, TextWriter? Error = null, int Jobs = 4, int BufferSize = 65536, long MemoryLimit = 67108864,
-    long? SpoolLimit = null, Action<RuntimeObservation>? Observe = null)
-{
-    public Action<MsyncException>? ReportError { get; init; }
-    public Action<string>? WorkingDirectoryChanged { get; init; }
-}
-
-public sealed record RuntimeObservation(string Phase, string Outcome, string? Source = null, string? Destination = null, string? Detail = null, long DurationNanoseconds = 0);
-
 public sealed class RuntimeContext
 {
     public string WorkingDirectory { get; private set; }

@@ -2,9 +2,9 @@ using Msync.Core;
 
 namespace Msync.Runtime;
 
-public static partial class NativeRegistry
+internal static class TextBuilderOperations
 {
-    private static ValueTask<Value> TextBuilderOperationAsync(string operation, IReadOnlyList<Value> args, CancellationToken token)
+    internal static ValueTask<Value> InvokeAsync(string operation, IReadOnlyList<Value> args, CancellationToken token)
     {
         if (operation != "append_chunk") throw new MsyncException($"Unknown text native '{operation}'");
         RangeValue source = (RangeValue)args[0];

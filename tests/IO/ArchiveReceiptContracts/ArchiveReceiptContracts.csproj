@@ -2,7 +2,7 @@
   <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../../src/Msync.Core/Msync.Core.csproj" />
-    <Compile Include="../../../src/Msync.Runtime/TransferArchive.cs" Link="TransferArchive.cs" />
-    <Compile Include="../../../src/Msync.Runtime/ShellProgram.cs" Link="ShellProgram.cs" />
+    <Compile Include="../../../src/Msync.Runtime/Transfers/TransferArchive.cs" Link="TransferArchive.cs" />
+    <Compile Include="../../../src/Msync.Runtime/Transfers/ShellProgram.cs" Link="ShellProgram.cs" />
   </ItemGroup>
 </Project>

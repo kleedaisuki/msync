@@ -82,4 +82,14 @@ public sealed partial class Interpreter
     private static Value ArithmeticDeferred(Value left, Value right, OpCode operation) => CombineValues(left, right,
         left.Type == TypeRef.String ? TypeRef.String : TypeRef.Number,
         (first, second) => ArithmeticScalars(first, second, operation));
+    private static bool AsBool(Value value) => value is BoolValue boolean ? boolean.Data : throw new MsyncException($"Condition requires Bool, received {value.Type}");
+    private static string Text(Value value) => value switch { StringValue s => s.Data, PathValue p => p.NativeText, NumberValue n => n.ToString(), BoolValue b => b.ToString(), _ => throw new MsyncException($"Cannot convert {value.Type} to String") };
+    private static int? Compare(Value left, Value right) => (left, right) switch
+    {
+        (NumberValue l, NumberValue r) => NumberSemantics.Compare(l.Data, r.Data),
+        (BoolValue l, BoolValue r) => l.Data.CompareTo(r.Data),
+        (TypeValue l, TypeValue r) => l.Data == r.Data ? 0 : 1,
+        (StringValue or PathValue, StringValue or PathValue) => TextSemantics.CompareOrdinal(Text(left), Text(right)),
+        _ => throw new MsyncException($"Cannot compare {left.Type} and {right.Type}; null supports only 'is' and 'is not'")
+    };
 }

@@ -1,3 +1,4 @@
+using Msync.Optimization;
 using System.Text;
 using System.Reflection;
 using Msync.Compiler;
@@ -23,8 +24,8 @@ internal static class FrontierRetirementChecks
 
     private static void StaleLease(string root)
     {
-        var indexType = typeof(Interpreter).GetNestedType("ResourceIndex", BindingFlags.NonPublic)!;
-        var keyType = typeof(Interpreter).GetNestedType("ResourceKey", BindingFlags.NonPublic)!;
+        var indexType = typeof(Interpreter).Assembly.GetType("Msync.Runtime.ResourceIndex", throwOnError: true)!;
+        var keyType = typeof(Interpreter).Assembly.GetType("Msync.Runtime.ResourceKey", throwOnError: true)!;
         var index = Activator.CreateInstance(indexType, nonPublic: true)!;
         var key = Activator.CreateInstance(keyType, ["local", Path.Combine(root, "lease-target")])!;
         var add = indexType.GetMethod("Add")!;

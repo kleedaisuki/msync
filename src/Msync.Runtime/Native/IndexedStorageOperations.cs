@@ -2,9 +2,9 @@ using Msync.Core;
 
 namespace Msync.Runtime;
 
-public static partial class NativeRegistry
+internal static class IndexedStorageOperations
 {
-    private static async ValueTask<Value> StorageOperationAsync(string operation, IReadOnlyList<Value> args,
+    internal static async ValueTask<Value> InvokeAsync(string operation, IReadOnlyList<Value> args,
         CancellationToken token)
     {
         RangeValue range = (RangeValue)args[0];

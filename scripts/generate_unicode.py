@@ -10,7 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "vendor/unicode/17.0.0"
-OUTPUT = ROOT / "src/Msync.Runtime/UnicodeCasingData.cs"
+OUTPUT = ROOT / "src/Msync.Runtime/Generated/UnicodeCasingData.cs"
 Mapping = dict[int, tuple[int, ...]]
 Interval = tuple[int, int]
 

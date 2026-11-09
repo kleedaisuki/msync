@@ -133,4 +133,28 @@ public sealed partial class Interpreter
         var type = name switch { "stdout" or "stderr" => TypeRef.String, "exit_code" => TypeRef.Number, "success" => TypeRef.Bool, _ => throw new MsyncException($"Process has no member '{name}'") };
         return new DeferredValue(Resolve(), type, [process]);
     }
+    private sealed class SpoolBudget(long? limit)
+    {
+        private long used;
+        public void Account(int count)
+        {
+            var total = Interlocked.Add(ref used, count);
+            if (limit is { } maximum && total > maximum) throw new IOException($"Process output exceeded configured spool limit of {maximum} bytes (observed {total})");
+        }
+    }
+    private static async Task<string> ReadProcessStreamAsync(Stream stream, SpoolBudget budget, CancellationToken cancellationToken)
+    {
+        using var output = new MemoryStream();
+        var buffer = new byte[8192];
+        Exception? failure = null;
+        int count;
+        while ((count = await stream.ReadAsync(buffer, cancellationToken)) != 0)
+        {
+            if (failure is not null) continue;
+            try { budget.Account(count); await output.WriteAsync(buffer.AsMemory(0, count), cancellationToken); }
+            catch (IOException error) { failure = error; }
+        }
+        if (failure is not null) throw failure;
+        return Encoding.UTF8.GetString(output.GetBuffer(), 0, checked((int)output.Length));
+    }
 }

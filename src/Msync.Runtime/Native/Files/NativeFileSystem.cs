@@ -306,4 +306,5 @@ public static partial class NativeRegistry
             await foreach (Value value in EnumerateDirectory(child, entry, true, token)) yield return value;
         }
     }
+    private static bool LocalWindows(PathValue path) => OperatingSystem.IsWindows() && path.Connection?.Kind is not (ConnectionKind.Ssh or ConnectionKind.Wsl);
 }
