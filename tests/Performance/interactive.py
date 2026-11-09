@@ -191,9 +191,7 @@ def repl_pair(
     samples: int,
     warmups: int,
 ) -> list[Measurement]:
-    selected = [
-        image for image in images if case != "repl-scalar" or image.name != "rust"
-    ]
+    selected = list(images)
     clients = {image.name: Repl(image, directories[image.name]) for image in selected}
     values: dict[str, list[float]] = {image.name: [] for image in selected}
     try:
@@ -211,11 +209,7 @@ def repl_pair(
                 if case == "repl-scalar":
                     assert reply == payload.encode(), reply
                 else:
-                    assert (
-                        reply.startswith(b"done:")
-                        if image.name == "rust"
-                        else reply == b"true"
-                    ), reply
+                    assert reply == b"true", reply
                     assert (
                         directories[image.name] / "roundtrip.txt"
                     ).read_bytes() == payload.encode()
@@ -262,11 +256,7 @@ def lsp_requests(
         for image in images:
             client = clients[image.name]
             client.initialize()
-            declaration = (
-                "value{0} := ./input{0}.txt"
-                if image.name == "rust"
-                else "let value{0} = ./input{0}.txt;"
-            )
+            declaration = "let value{0} = ./input{0}.txt;"
             source = (
                 "\n".join(declaration.format(index) for index in range(bindings)) + "\n"
             )
@@ -287,7 +277,7 @@ def lsp_requests(
                     "textDocument": {"uri": uri},
                     "position": {
                         "line": 0,
-                        "character": 2 if image.name == "rust" else 6,
+                        "character": 6,
                     },
                 },
             )
@@ -305,7 +295,7 @@ def lsp_requests(
                     if case == "lsp-hover":
                         parameters["position"] = {
                             "line": bindings // 2,
-                            "character": 2 if image.name == "rust" else 6,
+                            "character": 6,
                         }
                     elapsed, result = clients[image.name].request(method, parameters)
                     assert result is not None, (image.name, method)
@@ -328,9 +318,7 @@ def lsp_requests(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    previous = parser.add_mutually_exclusive_group(required=True)
-    previous.add_argument("--rust", type=Path)
-    previous.add_argument("--previous-aot", type=Path)
+    parser.add_argument("--previous-aot", type=Path, required=True)
     parser.add_argument("--aot", type=Path, required=True)
     parser.add_argument("--case", choices=CASES, action="append")
     parser.add_argument("--samples", type=int, default=31)
@@ -344,11 +332,7 @@ def main() -> None:
     options = parser.parse_args()
     output = options.output.resolve()
     root = output.parent / f"interactive-{time.time_ns()}"
-    before = (
-        freeze(options.rust.resolve(), "rust", root)
-        if options.rust
-        else freeze(options.previous_aot.resolve(), "before", root)
-    )
+    before = freeze(options.previous_aot.resolve(), "before", root)
     images = [before, freeze(options.aot.resolve(), "aot", root)]
     directories = {image.name: root / image.name for image in images}
     for directory in directories.values():
@@ -387,7 +371,7 @@ def main() -> None:
                     "roundtrip": "client write/flush to parsed server response; persistent native process; AB/BA order",
                     "startup": "LSP initialization includes process creation; other requests exclude startup",
                     "repl_copy": "same literal overwrite with actual atomic publication; bytes checked after response",
-                    "repl_scalar": "0.8-only expression result capability, not a legacy comparison",
+                    "repl_scalar": "expression result bytes checked for both frozen Native AOT images",
                 },
                 "measurements": [asdict(item) for item in measurements],
             },

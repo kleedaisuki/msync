@@ -1,88 +1,76 @@
 # Native end-to-end performance comparison
 
-`journeys.py` compares the preserved optimized Rust 0.7.3 CLI with the new Native
-AOT 0.8 CLI. It does not compare Rust release against managed/debug C#.
+`journeys.py` compares frozen Native AOT 0.8 images on the same execution host.
+Both images use the current language and binary formats; no Rust toolchain or
+historical-language checkout is required.
 
 ```sh
-cargo build --release --locked --manifest-path legacy/Cargo.toml --bin msync --target-dir target
-dotnet publish src/Msync.Cli/Msync.Cli.csproj -c Release -r linux-x64 -o .temp/performance-v080/aot
+dotnet publish src/Msync.Cli/Msync.Cli.csproj -c Release -r linux-x64 -o .temp/performance-v080/after
 python3 tests/Performance/journeys.py \
-  --rust target/release/msync --aot .temp/performance-v080/aot/msync
+  --previous-aot /absolute/path/to/before/msync \
+  --aot .temp/performance-v080/after/msync
 ```
 
-The harness freezes both binaries and their adjacent native dependencies, records
-versions and SHA-256, and generates equivalent old/new syntax. The default is
-three warmups and 31 measurements per image per case, alternating AB/BA order.
-It reports p50, linearly interpolated p95, all raw samples and min/max. Cases cover process startup, small and
-128-operation checks, ordinary 4 KiB file replacement, and a 256-file tree of
-4 KiB files. Transfers are measured both from source and source-free compiled
-objects (`.mobj` versus `.mso`). Compilation of those objects is outside timing.
+The harness freezes each binary with its adjacent native dependencies, records
+versions and SHA-256, and prepares the same source for each image. The default
+is three warmups and 31 measurements per image per case in alternating AB/BA
+order. Reports retain p50, interpolated p95, all raw samples and min/max. Cases
+cover process startup, small and 128-operation checks, ordinary 4 KiB file
+replacement, and a 256-file tree of 4 KiB files. Transfers run from source and
+source-free `.mso` artifacts; artifact preparation is outside timing.
+
 Exact copied bytes, file count, modification times and native Unix modes are
-checked outside timing. There is no page-cache eviction, so this is a warm-cache
-interactive-use comparison, not storage bandwidth or WAN performance.
+checked outside timing. There is no page-cache eviction, so the comparison
+measures warm-cache interactive use, not storage bandwidth or WAN performance.
+Use `--case NAME` to measure only changed contracts and avoid concurrent builds
+or benchmarks. Keep raw results under repository-root `.temp` and reusable
+findings in [the performance record](../../docs/design/performance-v080.md).
+Timing thresholds are not CI quality gates.
 
-Use `--case NAME` to rerun only the contract affected by a change. Avoid building
-or running another benchmark while collecting measurements. Retain raw results
-under the repository-root `.temp`; reusable conclusions belong in
-[`docs/design/performance-v080.md`](../../docs/design/performance-v080.md).
-No benchmark thresholds are CI quality gates.
+The CLI report checkpoints completed cases outside timing. A later failure
+retains earlier samples, the failing command and cwd, exit status, full stderr,
+and partial samples. Its status is `running`, `complete` or `failed`; failure
+does not erase earlier observations or imply complete acceptance.
 
-The CLI report is checkpointed after each completed case, outside timing. If a
-later native operation fails, the JSON retains all earlier raw samples plus the
-failed command, cwd, exit status, full stderr and partial samples for that case.
-The report's `status` is `running`, `complete` or `failed`; a failed run does not
-erase accepted observations or turn a partial distribution into a completed one.
+The same command runs on Windows with Native `msync.exe` images. Unix modes are
+checked only on Unix; exact bytes and native modification timestamps are checked
+on both. `--files` sets the tree size, `--bytes` its member size, `--file-bytes`
+the independent ordinary-file size, and `--statements` the batch source size.
 
-The same command runs on native Windows with optimized `msync.exe` images and
-Python 3.11+. Unix modes are checked only on Unix; byte counts, exact payloads and
-native modification timestamps are checked on both. `--files` selects the tree
-size and `--bytes` its member size. `--file-bytes` independently selects the single
-file size; `--statements` selects the batch-check source size. Use `--case` to
-avoid repeating unaffected work when changing one component.
+For retained-local and function costs, select `check-values`, `values-source`,
+`values-object` or `values-bound` with `--statements 1024`. Each image evaluates
+one generic function over 1,024 bindings and publishes the final String as file
+bytes. These cases use `.msync`, `.mso` and `.mexe`, with preparation outside
+measured intervals. The default seven cases remain focused on the base CLI and
+copy journeys.
 
-To expose retained-local/function costs rather than only zero-local transfer
-lists, select `--case check-values`, `values-source`, `values-object` or
-`values-bound` with `--statements 1024`. Both versions define a generic identity
-function and 1,024 bindings, then publish the last String as actual file bytes.
-The old version uses symbol/typed aliases and its own object/contextual IR;
-0.8 uses typed functions, `.mso` and `.mexe`. The default seven cases are unchanged.
-These optional cases construct their artifacts once outside measured intervals.
-
-For a controlled optimization within 0.8, replace `--rust OLD` with
-`--previous-aot BEFORE` and keep `--aot AFTER`. Both images then use the same
-0.8 source and `.mso` format; only the changed runtime contract needs measuring.
-
-To compare legacy Rust, the accepted C# product and a new candidate in the same
-measurement window, add `--control-aot CURRENT_CS` beside `--rust RUST --aot NEW`.
-The optional three-image mode rotates `ABC/BCA/CAB/CBA/ACB/BAC`, balancing every
-image's position and both order directions. The default two-image AB/BA behavior
-is unchanged. Source/object preparation still uses each image's real syntax and
-artifact format; exact-byte and metadata checks run independently for all three.
-
-For actual CLI optimization-level decisions, use the same native binary for all
-three roles with `--previous-aot-level 1 --control-aot-level 2 --aot-level 3`.
-The driver passes each recorded level directly to the native product during
-source/object preparation and timed commands; there is no script-wrapper launch
-inside the measured interval. Existing calls without these options retain the
-product's default. Component phase and residual-IR comparisons remain separate
-from these whole-process source/object/bound timings.
+Add `--control-aot CURRENT` for a three-image before/control/candidate comparison.
+The order rotates `ABC/BCA/CAB/CBA/ACB/BAC`, balancing both direction and position;
+bytes and metadata are verified separately for every image. To compare
+optimization levels, use the same binary in all three roles and select
+`--previous-aot-level 1 --control-aot-level 2 --aot-level 3`. Each recorded level
+is passed directly to the product, without a script wrapper inside timing.
+Component and residual-IR measurements remain distinct from whole-process
+source/object/bound timings.
 
 ## Persistent interactive requests
 
 ```sh
 python3 tests/Performance/interactive.py \
-  --rust /absolute/path/to/legacy-release/msync \
-  --aot /absolute/path/to/native/msync --samples 31 --warmups 3
+  --previous-aot /absolute/path/to/before/msync \
+  --aot /absolute/path/to/after/msync --samples 31 --warmups 3
 ```
 
 This portable harness measures native stdio LSP initialization, steady hover and
-semantic-token requests over 128 real bindings, plus persistent REPL literal
-overwrites with exact output bytes checked after each response. Both language
-versions use their actual syntax and protocol responses. The 0.8-only scalar REPL
-response is measured separately, not represented as a capability of 0.7.
-Only LSP initialization includes process creation; other requests use live
-sessions. Native stdout is parsed as the real protocol, never a timing stub.
-Use `--case`, `--bindings` and `--previous-aot` for affected-contract comparisons.
+semantic-token requests over 128 bindings, plus persistent REPL literal copies
+and scalar responses. Actual output bytes are checked after every response.
+Only LSP initialization includes process creation; the other requests use live
+sessions and parse the real protocol. Use `--case` and `--bindings` to select the
+affected request contract.
+
+Historical Rust-versus-C# observations remain in the dated design records.
+They are evidence about those original images, not a requirement to keep the
+retired implementation or a second source-language path in the current runner.
 
 ## First source-file read
 

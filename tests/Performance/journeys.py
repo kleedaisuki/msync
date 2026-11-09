@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare optimized 0.7 and Native AOT 0.8 through equivalent CLI journeys."""
+"""Compare frozen Native AOT images through equivalent CLI journeys."""
 
 from __future__ import annotations
 
@@ -134,7 +134,7 @@ def freeze(
     version = subprocess.check_output(
         [str(destination), "--version"], text=True, encoding="utf-8"
     ).strip()
-    expected = "msync 0.7.3" if name == "rust" else "msync 0.8.0"
+    expected = "msync 0.8.0"
     if version != expected:
         raise ValueError(f"Expected {expected}, found {version} at {path}")
     return Image(
@@ -152,19 +152,11 @@ def freeze(
     )
 
 
-def source(image: Image, text: str) -> str:
-    suffix = "" if image.name == "rust" else ";"
-    return "\n".join(line + suffix for line in text.splitlines()) + "\n"
+def source(text: str) -> str:
+    return "\n".join(line + ";" for line in text.splitlines()) + "\n"
 
 
-def values_source(image: Image, statements: int) -> str:
-    if image.name == "rust":
-        function = "symbol route(value):\n    return value\n\n"
-        bindings = "".join(
-            f'value_{index} := route("payload_{index}")\n'
-            for index in range(statements)
-        )
-        return function + bindings + f"value_{statements - 1} -> values-result.txt\n"
+def values_source(statements: int) -> str:
     function = "fn route(value: String) { value };\n"
     bindings = "".join(
         f'let value_{index} = route("payload_{index}");\n'
@@ -205,10 +197,10 @@ def prepare(
             f"source-{i}.bin -> destination-{i}.bin" for i in range(statements)
         ),
     }
-    extension = "mobj" if image.name == "rust" else "mso"
+    extension = "mso"
     for name, text in scripts.items():
         script = workspace / f"{name}.msync"
-        script.write_text(source(image, text), encoding="utf-8")
+        script.write_text(source(text), encoding="utf-8")
         invoke(
             image,
             [
@@ -222,7 +214,7 @@ def prepare(
         )
     if include_values:
         script = workspace / "values.msync"
-        script.write_text(values_source(image, statements), encoding="utf-8")
+        script.write_text(values_source(statements), encoding="utf-8")
         invoke(
             image,
             [
@@ -234,26 +226,15 @@ def prepare(
             ],
             workspace,
         )
-        binding = (
-            [
-                "emit-ir",
-                str(script),
-                "--ir-stage",
-                "contextual",
-                "-o",
-                str(workspace / "values.json"),
-            ]
-            if image.name == "rust"
-            else [
-                "bind-ir",
-                str(workspace / "values.mso"),
-                "-o",
-                str(workspace / "values.mexe"),
-            ]
-        )
+        binding = [
+            "bind-ir",
+            str(workspace / "values.mso"),
+            "-o",
+            str(workspace / "values.mexe"),
+        ]
         invoke(image, ["--no-config", *binding], workspace)
     if include_sources:
-        statement = source(image, scripts["small"]).encode()
+        statement = source(scripts["small"]).encode()
         unit = "可莉𐐀 source text ".encode()
         for count in SOURCE_CASES.values():
             remaining = count - len(statement) - 3
@@ -264,7 +245,7 @@ def prepare(
     return workspace
 
 
-def arguments(image: Image, case: str, workspace: Path) -> list[str]:
+def arguments(case: str, workspace: Path) -> list[str]:
     if case == "startup":
         return ["--version"]
     if case in SOURCE_CASES:
@@ -277,8 +258,8 @@ def arguments(image: Image, case: str, workspace: Path) -> list[str]:
         command, kind = VALUE_CASES[case]
         extensions = {
             "msync": "msync",
-            "object": "mobj" if image.name == "rust" else "mso",
-            "bound": "json" if image.name == "rust" else "mexe",
+            "object": "mso",
+            "bound": "mexe",
         }
         extension = extensions[kind]
         return ["--no-config", command, str(workspace / f"values.{extension}")]
@@ -286,13 +267,7 @@ def arguments(image: Image, case: str, workspace: Path) -> list[str]:
         name = "small" if case == "check-small" else "batch"
         return ["--no-config", "check", str(workspace / f"{name}.msync")]
     name = "tree" if case.startswith("copy-tree") else "small"
-    extension = (
-        "msync"
-        if case.endswith("source")
-        else "mobj"
-        if image.name == "rust"
-        else "mso"
-    )
+    extension = "msync" if case.endswith("source") else "mso"
     return ["--no-config", "run", str(workspace / f"{name}.{extension}")]
 
 
@@ -385,7 +360,7 @@ def sample_case(
         for image in order:
             workspace = workspaces[image.name]
             try:
-                elapsed = invoke(image, arguments(image, case, workspace), workspace)
+                elapsed = invoke(image, arguments(case, workspace), workspace)
                 verify(case, workspace, file_count, statements)
             except (InvocationFailure, AssertionError, OSError) as error:
                 details: dict[str, object] = (
@@ -418,10 +393,11 @@ def sample_order(images: Sequence[Image], iteration: int) -> list[Image]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    previous = parser.add_mutually_exclusive_group(required=True)
-    previous.add_argument("--rust", type=Path, help="Optimized Rust 0.7.3 executable")
-    previous.add_argument(
-        "--previous-aot", type=Path, help="Previous Native AOT 0.8.0 executable"
+    parser.add_argument(
+        "--previous-aot",
+        type=Path,
+        required=True,
+        help="Previous Native AOT 0.8.0 executable",
     )
     parser.add_argument(
         "--aot", type=Path, required=True, help="Native AOT 0.8.0 executable"
@@ -453,12 +429,8 @@ def main() -> None:
     options = parser.parse_args()
     options.output = options.output.resolve()
     root = options.output.parent / f"fixture-{time.time_ns()}"
-    previous_image = (
-        freeze(options.rust.resolve(), "rust", root)
-        if options.rust
-        else freeze(
-            options.previous_aot.resolve(), "before", root, options.previous_aot_level
-        )
+    previous_image = freeze(
+        options.previous_aot.resolve(), "before", root, options.previous_aot_level
     )
     images = [previous_image]
     if options.control_aot is not None:
@@ -521,7 +493,7 @@ def main() -> None:
                 .st_size,
             }
             for image in images
-            for extension in ("mobj" if image.name == "rust" else "mso",)
+            for extension in ("mso",)
             for name in ("small", "tree", "batch")
         ],
         "measurements": [],

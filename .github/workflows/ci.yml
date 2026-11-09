@@ -13,7 +13,7 @@ on:
         options: [both, windows, linux]
         default: both
       benchmark:
-        description: Compare optimized Rust and Native AOT on each native runner
+        description: Observe Native AOT costs and optionally compare a previous C# image
         type: boolean
         default: true
       baseline_run:
@@ -341,11 +341,6 @@ jobs:
       - name: Record native Windows ordinary-transfer compilation cost
         if: ${{ !cancelled() && steps.state-components.outcome == 'success' }}
         run: artifacts/state-components/msync-components.exe --optimizer-pipeline --cases transfers --sizes 128,1024 --levels 1 --samples 7 --warmups 3 --output .temp/platform-results/optimizer-transfer-components.json
-      - name: Compare selected Windows Rust, editing-control and current native journeys
-        if: ${{ !cancelled() && inputs.polish_only && (steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true' || steps.polish.outputs.linear == 'true') && runner.os == 'Windows' && steps.package.outcome == 'success' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python packaging/windows_threeway.py --binary artifacts/publish/win-x64/msync.exe --output .temp/platform-results/final-threeway.json
       - name: Verify captured Windows root and incomplete UNC path semantics
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.editing == 'true' && runner.os == 'Windows' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: dotnet run --project tests/PathProjection/Msync.PathProjection.Tests.csproj -c Release --artifacts-path artifacts/editing-roots -p:RestoreLockedMode=true -- --windows-rooted
@@ -434,27 +429,6 @@ jobs:
           if os.environ['PROCESS_PROBE']:
               arguments.extend(['--process-probe', os.environ['PROCESS_PROBE']])
           subprocess.run(arguments, check=True)
-      - name: Build the preserved optimized Rust baseline on this same runner
-        id: rust
-        if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && !inputs.polish_only && inputs.benchmark && steps.package.outcome == 'success' }}
-        run: cargo build --release --locked --manifest-path legacy/Cargo.toml --bin msync --target-dir artifacts/legacy-target
-      - name: Measure paired native product journeys without a timing quality gate
-        if: ${{ !cancelled() && steps.rust.outcome == 'success' }}
-        shell: python
-        env:
-          PACKAGE_RID: ${{ matrix.rid }}
-        run: |
-          import os
-          import subprocess
-          from pathlib import Path
-          suffix: str = '.exe' if os.name == 'nt' else ''
-          aot: Path = Path('artifacts/publish') / os.environ['PACKAGE_RID'] / ('msync' + suffix)
-          rust: Path = Path('artifacts/legacy-target/release') / ('msync' + suffix)
-          common: list[str] = ['python', 'tests/Performance/journeys.py', '--rust', str(rust), '--aot', str(aot), '--warmups', '3']
-          subprocess.run([*common, '--samples', '31', '--files', '256', '--bytes', '4096', '--output', '.temp/platform-results/paired-cli.json'], check=True)
-          subprocess.run([*common, '--samples', '31', '--case', 'check-batch', '--statements', '1024', '--output', '.temp/platform-results/paired-compiler-1024.json'], check=True)
-          subprocess.run([*common, '--samples', '9', '--case', 'check-values', '--case', 'values-object', '--case', 'values-bound', '--statements', '1024', '--output', '.temp/platform-results/paired-values-1024.json'], check=True)
-          subprocess.run(['python', 'tests/Performance/interactive.py', '--rust', str(rust), '--aot', str(aot), '--samples', '31', '--warmups', '3', '--bindings', '128', '--output', '.temp/platform-results/paired-interactive.json'], check=True)
       - name: Fetch the recorded previous C# image for this native platform
         id: previous
         if: ${{ !cancelled() && steps.package.outcome == 'success' && !inputs.polish_only && inputs.benchmark && inputs.baseline_run != '' }}
