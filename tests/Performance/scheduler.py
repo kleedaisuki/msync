@@ -93,11 +93,19 @@ def invoke(
     destinations: Sequence[Path],
     jobs: int,
     generation: int,
+    stage: str = "source",
 ) -> Sample:
     token = f"{generation:064x}"
     payload = token.encode("ascii")
     (script.parent / "input.bin").write_bytes(payload)
-    command = [selected.path, "run", str(script), "--jobs", str(jobs)]
+    command = [
+        selected.path,
+        "--no-config",
+        "run" if stage == "source" else "run-ir",
+        str(script),
+        "--jobs",
+        str(jobs),
+    ]
     started = time.perf_counter_ns()
     result = subprocess.run(
         command,
@@ -123,6 +131,36 @@ def invoke(
     return Sample(
         selected.name, case, size, iteration, warmup, elapsed, token, stdout, stderr
     )
+
+
+def prepare_stage(selected: Image, source: Path, stage: str) -> tuple[Path, str]:
+    """Compile outside timing, using each image's own binary artifact contract."""
+    if stage == "source":
+        return source, hashlib.sha256(source.read_bytes()).hexdigest()
+    relocatable = source.with_name(f"{source.stem}-{selected.name}.mso")
+    subprocess.run(
+        [selected.path, "--no-config", "compile", str(source), "-o", str(relocatable)],
+        cwd=source.parent,
+        capture_output=True,
+        check=True,
+    )
+    if stage == "object":
+        return relocatable, hashlib.sha256(relocatable.read_bytes()).hexdigest()
+    executable = relocatable.with_suffix(".mexe")
+    subprocess.run(
+        [
+            selected.path,
+            "--no-config",
+            "bind-ir",
+            str(relocatable),
+            "-o",
+            str(executable),
+        ],
+        cwd=source.parent,
+        capture_output=True,
+        check=True,
+    )
+    return executable, hashlib.sha256(executable.read_bytes()).hexdigest()
 
 
 def percentile(values: Sequence[float], quantile: float) -> float:
@@ -172,6 +210,12 @@ def main() -> None:
     parser.add_argument("--samples", type=int, default=7)
     parser.add_argument("--warmups", type=int, default=2)
     parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument(
+        "--stage",
+        choices=["source", "object", "executable"],
+        default="source",
+        help="Prepare each image's own .mso/.mexe outside timing, or include source compilation",
+    )
     parser.add_argument("--case", choices=["independent", "chain"], action="append")
     parser.add_argument(
         "--output",
@@ -191,18 +235,22 @@ def main() -> None:
         images.append(image("before", options.before))
     images.append(image("after", options.after))
     samples: list[Sample] = []
+    prepared_records: list[dict[str, object]] = []
     report: dict[str, object] = {
         "status": "running",
         "platform": platform.platform(),
         "python": {"executable": sys.executable, "version": sys.version},
         "images": [asdict(selected) for selected in images],
         "jobs": options.jobs,
+        "stage": options.stage,
         "warmups": options.warmups,
         "measurement_samples": options.samples,
         "percentile_method": "type 7: linear interpolation at sorted index (n - 1) * p; "
         "small sample tails are coarse estimates",
-        "method": "fresh 64-byte source per invocation; warm overwrite; AB/BA; "
-        "all output bytes verified outside timing; captured CLI output",
+        "method": "fresh 64-byte input per invocation; warm overwrite; AB/BA; "
+        "all output bytes verified outside timing; captured CLI output; "
+        "non-source stages prepared outside timing by each measured image",
+        "prepared_artifacts": prepared_records,
     }
     save(output, report, samples)
     generation = time.time_ns()
@@ -211,6 +259,27 @@ def main() -> None:
             for size in options.sizes:
                 directory = output.parent / f"{output.stem}-fixtures" / case / str(size)
                 script, destinations = prepare(directory, case, size)
+                prepared: dict[str, Path] = {}
+                artifact_records: list[dict[str, object]] = []
+                for selected in images:
+                    artifact, artifact_hash = prepare_stage(
+                        selected, script, options.stage
+                    )
+                    prepared[selected.name] = artifact
+                    artifact_records.append(
+                        {
+                            "image": selected.name,
+                            "case": case,
+                            "size": size,
+                            "stage": options.stage,
+                            "path": str(artifact),
+                            "sha256": artifact_hash,
+                            "source_sha256": hashlib.sha256(
+                                script.read_bytes()
+                            ).hexdigest(),
+                        }
+                    )
+                prepared_records.extend(artifact_records)
                 for iteration in range(options.warmups + options.samples):
                     order = images if iteration % 2 == 0 else list(reversed(images))
                     for selected in order:
@@ -221,10 +290,11 @@ def main() -> None:
                             size,
                             iteration,
                             iteration < options.warmups,
-                            script,
+                            prepared[selected.name],
                             destinations,
                             options.jobs,
                             generation,
+                            options.stage,
                         )
                         samples.append(sample)
                         print(

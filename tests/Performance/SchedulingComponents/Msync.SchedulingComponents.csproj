@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <AssemblyName>msync-scheduling-components</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../../src/Msync.Runtime/Msync.Runtime.csproj" /></ItemGroup>
+</Project>
