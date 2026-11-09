@@ -181,6 +181,8 @@ public sealed partial class Interpreter
                         }
                     case OpCode.DeferRange:
                         stack.Add(CreateDeferredRange(Pop())); break;
+                    case OpCode.GetSingleton: stack.Add(GetSingleton(instruction.A)); break;
+                    case OpCode.SetSingleton: stack.Add(SetSingleton(instruction.A, Pop())); break;
                     case OpCode.MakeScope:
                         stack.Add(MakeScope(instruction, PopMany(instruction.A))); break;
                     case OpCode.GetMember: stack.Add(Member(Pop(), instruction.Text!, instruction.A)); break;
