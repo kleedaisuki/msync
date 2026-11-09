@@ -42,7 +42,7 @@ internal sealed partial class LanguageServer
         if (shuttingDown || request.Cancellation.IsCancellationRequested) { request.Completion.TrySetResult(null); return; }
         if (!sshPromptSupported)
         {
-            Write(new JsonObject
+            transport.Write(new JsonObject
             {
                 ["jsonrpc"] = "2.0",
                 ["method"] = "window/showMessage",
@@ -57,7 +57,7 @@ internal sealed partial class LanguageServer
         }
         string id = "msync-auth-" + request.Prompt.Id;
         authentication[id] = new(request.Prompt, request.Completion);
-        Write(new JsonObject
+        transport.Write(new JsonObject
         {
             ["jsonrpc"] = "2.0",
             ["id"] = id,
@@ -92,7 +92,7 @@ internal sealed partial class LanguageServer
         authentication.Clear();
     }
 
-    private void CancelAuthenticationUi(string id) => Write(new JsonObject
+    private void CancelAuthenticationUi(string id) => transport.Write(new JsonObject
     {
         ["jsonrpc"] = "2.0",
         ["method"] = "msync/sshPromptCancel",

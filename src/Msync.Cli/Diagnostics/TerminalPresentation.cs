@@ -8,8 +8,6 @@ using PrettyPrompt.Rendering;
 
 namespace Msync.Cli;
 
-internal readonly record struct SourceSnapshot(string Name, string Text);
-
 internal static partial class TerminalPresentation
 {
     private static readonly object DiagnosticGate = new();

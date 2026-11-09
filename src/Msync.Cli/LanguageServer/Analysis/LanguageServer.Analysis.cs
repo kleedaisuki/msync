@@ -7,12 +7,6 @@ namespace Msync.Cli;
 
 internal sealed partial class LanguageServer
 {
-    private sealed record EditorDocument(SourceText Source, int Version, long Generation)
-    {
-        public EditorAnalysis? Analysis { get; set; }
-        public JsonElement? SemanticTokenData { get; set; }
-        public EditorDocument(string text, int version, long generation) : this(new SourceText(text), version, generation) { }
-    }
     private abstract record ServerEvent;
     private sealed record MessageEvent(JsonDocument Message) : ServerEvent;
     private sealed record InputClosed : ServerEvent;
@@ -69,7 +63,7 @@ internal sealed partial class LanguageServer
     {
         try
         {
-            while (Read() is { } message)
+            while (transport.Read() is { } message)
                 if (!events.Writer.TryWrite(new MessageEvent(message))) { message.Dispose(); return; }
             events.Writer.TryWrite(new InputClosed());
         }
@@ -119,12 +113,12 @@ internal sealed partial class LanguageServer
                 BeginCompletion(id, parameters, completionDocument);
                 return false;
             }
-            if (id is not null) Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = Handle(method, parameters) });
+            if (id is not null) transport.Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = Handle(method, parameters) });
             else if (!shuttingDown) Notify(method, parameters);
         }
         catch (Exception error) when (error is JsonException or KeyNotFoundException or ArgumentException or InvalidOperationException)
         {
-            if (id is not null) Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id.DeepClone(), ["error"] = new JsonObject { ["code"] = -32602, ["message"] = error.Message } });
+            if (id is not null) transport.Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id.DeepClone(), ["error"] = new JsonObject { ["code"] = -32602, ["message"] = error.Message } });
             else Console.Error.WriteLine($"LSP {method}: {error.Message}");
         }
         return false;
@@ -140,7 +134,7 @@ internal sealed partial class LanguageServer
             for (int index = pendingInsights.Count - 1; index >= 0; index--)
                 if (pendingInsights[index].Id.ToJsonString() == requested)
                 {
-                    Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = pendingInsights[index].Id, ["error"] = new JsonObject { ["code"] = -32800, ["message"] = "Editor request cancelled." } });
+                    transport.Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = pendingInsights[index].Id, ["error"] = new JsonObject { ["code"] = -32800, ["message"] = "Editor request cancelled." } });
                     pendingInsights.RemoveAt(index);
                 }
             return;
@@ -243,14 +237,14 @@ internal sealed partial class LanguageServer
         if (!semanticRefreshSupported || semanticRefreshPending || !semanticRefreshDirty || shuttingDown) return;
         semanticRefreshDirty = false;
         semanticRefreshPending = true;
-        Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = $"msync-refresh-{++serverRequest}", ["method"] = "workspace/semanticTokens/refresh" });
+        transport.Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = $"msync-refresh-{++serverRequest}", ["method"] = "workspace/semanticTokens/refresh" });
     }
 
     private static string DocumentUri(string sourceName) =>
         Uri.TryCreate(sourceName, UriKind.Absolute, out var uri) ? uri.AbsoluteUri : new Uri(Path.GetFullPath(sourceName)).AbsoluteUri;
 
     private void PublishDiagnostics(string uri, int? version, JsonArray diagnostics) =>
-        Write(new JsonObject { ["jsonrpc"] = "2.0", ["method"] = "textDocument/publishDiagnostics", ["params"] = new JsonObject { ["uri"] = uri, ["version"] = version, ["diagnostics"] = diagnostics } });
+        transport.Write(new JsonObject { ["jsonrpc"] = "2.0", ["method"] = "textDocument/publishDiagnostics", ["params"] = new JsonObject { ["uri"] = uri, ["version"] = version, ["diagnostics"] = diagnostics } });
 
     private void StopAnalysis()
     {
@@ -259,7 +253,7 @@ internal sealed partial class LanguageServer
         CancelArtifacts();
         StopAuthentication();
         foreach (var request in pendingInsights)
-            Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = null });
+            transport.Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = null });
         pendingInsights.Clear();
         lock (analysisGate) pendingAnalysis.Clear();
         analysisReady.Writer.TryComplete();
@@ -278,7 +272,7 @@ internal sealed partial class LanguageServer
                 continue;
             }
             JsonNode? result = document?.Generation == request.Generation ? Handle(request.Method, request.Parameters) : null;
-            Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = result });
+            transport.Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = result });
         }
     }
 

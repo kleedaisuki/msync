@@ -9,10 +9,6 @@ using PrettyPrompt.Highlighting;
 
 namespace Msync.Cli;
 
-internal enum TerminalInputKind { Text, Cancelled, EndOfInput }
-
-internal readonly record struct TerminalInput(TerminalInputKind Kind, string Text, CancellationToken CancellationToken);
-
 internal sealed partial class InteractivePrompt : IAsyncDisposable
 {
     private readonly Prompt prompt;

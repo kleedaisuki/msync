@@ -7,8 +7,6 @@ using Tomlyn.Serialization;
 
 namespace Msync.Cli;
 
-internal sealed record Setting(object Value, string Origin);
-
 internal sealed class Configuration
 {
     private readonly Dictionary<string, Setting> settings = Defaults();
@@ -218,11 +216,4 @@ internal sealed class Configuration
             result.Append(c switch { '\\' => "\\\\", '"' => "\\\"", '\n' => "\\n", '\r' => "\\r", '\t' => "\\t", < ' ' => $"\\u{(int)c:x4}", _ => c.ToString() });
         return result.Append('"').ToString();
     }
-}
-
-[TomlSerializable(typeof(TomlTable))]
-internal partial class ConfigurationTomlContext : TomlSerializerContext
-{
-    public ConfigurationTomlContext() { }
-    public ConfigurationTomlContext(TomlSerializerOptions options) : base(options) { }
 }

@@ -98,6 +98,6 @@ internal sealed partial class LanguageServer
         JsonObject reply = new() { ["jsonrpc"] = "2.0", ["id"] = work.Id };
         if (code is { } number) reply["error"] = new JsonObject { ["code"] = number, ["message"] = message };
         else reply["result"] = result;
-        Write(reply);
+        transport.Write(reply);
     }
 }

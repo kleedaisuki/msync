@@ -3,6 +3,6 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Msync.Compiler/Msync.Compiler.csproj" />
     <ProjectReference Include="../../vendor/PrettyPrompt/PrettyPrompt.csproj" />
-    <Compile Include="../../src/Msync.Cli/PromptSyntax.cs" Link="PromptSyntax.cs" />
+    <Compile Include="../../src/Msync.Cli/Terminal/Presentation/PromptSyntax.cs" Link="PromptSyntax.cs" />
   </ItemGroup>
 </Project>

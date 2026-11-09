@@ -2,6 +2,6 @@
   <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/Msync.Compiler/Msync.Compiler.csproj" />
-    <Compile Include="../../src/Msync.Cli/TypeCompletion.cs" Link="TypeCompletion.cs" />
+    <Compile Include="../../src/Msync.Cli/Terminal/Completion/TypeCompletion.cs" Link="TypeCompletion.cs" />
   </ItemGroup>
 </Project>
