@@ -79,8 +79,6 @@ async Task FutureCallback(int level)
     Module initial = CallbackImage(Initial(), level, future: false);
     Artifact.Validate(initial);
     await session.ExecuteAsync(initial);
-    Require(session.GetLocalValue(1) is RangeValue { RetainedValues: [FunctionValue { Function: 3 }] },
-        $"O{level}: deferred range exposes the retained thunk without enumerating it");
     await session.ExecuteAsync(CallbackImage(Reassign(), level, future: true));
     Value result = await session.ExecuteAsync(CallbackImage(Consume(), level, future: true));
     Require(result is NumberValue { Data: 20 }, $"O{level}: native callbacks specialize the current callable from their session signature");

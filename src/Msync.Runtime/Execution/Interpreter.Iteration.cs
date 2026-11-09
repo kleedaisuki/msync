@@ -30,7 +30,7 @@ public sealed partial class Interpreter
             ?? throw new MsyncException("Deferred range function did not return Range");
         ValueTask<RangeValue> Resolve(CancellationToken cancellationToken) => new(resolved ??= Evaluate(cancellationToken));
         return new RangeValue(EnumerateDeferredRangeAsync(Resolve), itemType, Resolve: Resolve)
-        { RetainedValues = [thunk] };
+        { RetainedValues = (thunk as FunctionValue)?.Captures };
     }
     private static async IAsyncEnumerable<Value> EnumerateDeferredRangeAsync(Func<CancellationToken, ValueTask<RangeValue>> resolve,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
