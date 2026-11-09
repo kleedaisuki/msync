@@ -1,82 +1,140 @@
-# Service objects capture a Path, not an open file or cached filesystem metadata.
-fn File(path: Path | String) {
-    let location = path as Path;
-    scope {
-        path: fn { location },
-        name: fn { $std::path::filename(location) },
-        extension: fn { $std::path::extension(location) },
-        parent: fn { $std::path::parent_path(location) },
-        exists: fn { $std::fs::exists(location) },
-        status: fn { $std::fs::status(location) },
-        size: fn { $std::io::file_size(location) },
-        read_text: fn { $std::io::read_text(location) },
-        read_lines: fn { $std::io::read_lines(location) },
-        read_bytes: fn { $std::io::read_bytes(location) },
-        write: fn(text: String) { $std::io::write_text(location, text) },
-        append: fn(text: String) { $std::io::append_text(location, text) },
-        write_bytes: fn(bytes: Range<Number>) {
-            $std::io::write_bytes(location, bytes)
-        },
-        append_bytes: fn(bytes: Range<Number>) {
-            $std::io::append_bytes(location, bytes)
-        },
-        copy_to: fn(destination: Path | String) { location -> destination },
-        move_to: fn(destination: Path | String) {
-            let target = destination as Path;
-            $std::fs::rename(location, target);
-            location = target;
-        },
-        remove: fn { $std::fs::remove(location) },
-        readonly: fn { $std::fs::is_readonly(location) },
-        set_readonly: fn(value: Bool) {
-            $std::fs::set_readonly(location, value)
-        },
-        hard_link: fn(destination: Path | String) {
-            $std::fs::create_hard_link(location, destination)
-        },
-        symbolic_link: fn(destination: Path | String) {
-            $std::fs::create_symlink(location, destination)
-        },
-    }
+# Named operation families share code; instances contain data and explicit policy.
+scope NativeText {
+    read: $std::io::read_text,
+    lines: $std::io::read_lines,
+    write: $std::io::write_text,
+    append: $std::io::append_text,
 };
 
-# Each enumeration observes the selected directory anew; callers choose caching.
-fn Directory(path: Path | String) {
-    let location = path as Path;
-    scope {
-        path: fn { location },
-        name: fn { $std::path::filename(location) },
-        parent: fn { $std::path::parent_path(location) },
-        child: fn(name: Path | String) { $std::path::join(location, name) },
-        file: fn(name: Path | String) {
-            File($std::path::join(location, name))
-        },
-        exists: fn { $std::fs::is_directory(location) },
-        create: fn { $std::fs::create_directories(location) },
-        entries: fn { $std::fs::directory_iterator(location) },
-        walk: fn { $std::fs::recursive_directory_iterator(location) },
-        files: fn {
-            $std::ranges::filter($std::fs::directory_iterator(location),
-                fn(entry: Path) { $std::fs::is_regular_file(entry) })
-        },
-        directories: fn {
-            $std::ranges::filter($std::fs::directory_iterator(location),
-                fn(entry: Path) { $std::fs::is_directory(entry) })
-        },
-        matching: fn(predicate: Function) {
-            $std::ranges::filter($std::fs::directory_iterator(location),
-                predicate)
-        },
-        snapshot: fn {
-            $std::ranges::materialize($std::fs::directory_iterator(location))
-        },
-        copy_to: fn(destination: Path | String) { location -> destination },
-        move_to: fn(destination: Path | String) {
-            let target = destination as Path;
-            $std::fs::rename(location, target);
-            location = target;
-        },
-        remove: fn { $std::fs::remove(location) },
-        remove_all: fn { $std::fs::remove_all(location) },
-    }
+scope File {
+    with_policy: fn(path: Path | String,
+        policy: $std::concepts::TextIOPolicy) {
+        scope { path: path as Path, policy: policy }
+    },
+    new: fn(path: Path | String) { with_policy(path, NativeText) },
+    name: fn(self: $std::concepts::PathRecord) {
+        $std::path::filename(self::path)
+    },
+    extension: fn(self: $std::concepts::PathRecord) {
+        $std::path::extension(self::path)
+    },
+    parent: fn(self: $std::concepts::PathRecord) {
+        $std::path::parent_path(self::path)
+    },
+    exists: fn(self: $std::concepts::PathRecord) {
+        $std::fs::exists(self::path)
+    },
+    status: fn(self: $std::concepts::PathRecord) {
+        $std::fs::status(self::path)
+    },
+    size: fn(self: $std::concepts::PathRecord) {
+        $std::io::file_size(self::path)
+    },
+    read_text: fn(self: $std::concepts::TextFile) {
+        self::policy::read(self::path)
+    },
+    write: fn(self: $std::concepts::TextFile, text: String) {
+        self::policy::write(self::path, text)
+    },
+    append: fn(self: $std::concepts::TextFile, text: String) {
+        self::policy::append(self::path, text)
+    },
+    read_lines: fn(self: $std::concepts::TextFile) {
+        self::policy::lines(self::path)
+    },
+    read_bytes: fn(self: $std::concepts::PathRecord) {
+        $std::io::read_bytes(self::path)
+    },
+    write_bytes: fn(self: $std::concepts::PathRecord, bytes: Range<Number>) {
+        $std::io::write_bytes(self::path, bytes)
+    },
+    append_bytes: fn(self: $std::concepts::PathRecord, bytes: Range<Number>) {
+        $std::io::append_bytes(self::path, bytes)
+    },
+    copy_to: fn(self: $std::concepts::PathRecord,
+        destination: Path | String) {
+        self::path -> destination
+    },
+    move_to: fn(self: $std::concepts::PathRecord,
+        destination: Path | String) {
+        let target = destination as Path;
+        $std::fs::rename(self::path, target);
+        self::path = target;
+    },
+    remove: fn(self: $std::concepts::PathRecord) {
+        $std::fs::remove(self::path)
+    },
+    readonly: fn(self: $std::concepts::PathRecord) {
+        $std::fs::is_readonly(self::path)
+    },
+    set_readonly: fn(self: $std::concepts::PathRecord, value: Bool) {
+        $std::fs::set_readonly(self::path, value)
+    },
+    hard_link: fn(self: $std::concepts::PathRecord,
+        destination: Path | String) {
+        $std::fs::create_hard_link(self::path, destination)
+    },
+    symbolic_link: fn(self: $std::concepts::PathRecord,
+        destination: Path | String) {
+        $std::fs::create_symlink(self::path, destination)
+    },
+};
+
+scope Directory {
+    new: fn(path: Path | String) { scope { path: path as Path } },
+    name: fn(self: $std::concepts::PathRecord) {
+        $std::path::filename(self::path)
+    },
+    parent: fn(self: $std::concepts::PathRecord) {
+        $std::path::parent_path(self::path)
+    },
+    child: fn(self: $std::concepts::PathRecord, name: Path | String) {
+        $std::path::join(self::path, name)
+    },
+    file: fn(self: $std::concepts::PathRecord, name: Path | String) {
+        File::new($std::path::join(self::path, name))
+    },
+    exists: fn(self: $std::concepts::PathRecord) {
+        $std::fs::is_directory(self::path)
+    },
+    create: fn(self: $std::concepts::PathRecord) {
+        $std::fs::create_directories(self::path)
+    },
+    entries: fn(self: $std::concepts::PathRecord) {
+        $std::fs::directory_iterator(self::path)
+    },
+    walk: fn(self: $std::concepts::PathRecord) {
+        $std::fs::recursive_directory_iterator(self::path)
+    },
+    files: fn(self: $std::concepts::PathRecord) {
+        $std::ranges::filter($std::fs::directory_iterator(self::path),
+            fn(entry: Path) { $std::fs::is_regular_file(entry) })
+    },
+    directories: fn(self: $std::concepts::PathRecord) {
+        $std::ranges::filter($std::fs::directory_iterator(self::path),
+            fn(entry: Path) { $std::fs::is_directory(entry) })
+    },
+    matching: fn(self: $std::concepts::PathRecord, predicate: Function) {
+        $std::ranges::filter($std::fs::directory_iterator(self::path),
+            predicate)
+    },
+    snapshot: fn(self: $std::concepts::PathRecord) {
+        $std::ranges::materialize($std::fs::directory_iterator(self::path))
+    },
+    copy_to: fn(self: $std::concepts::PathRecord,
+        destination: Path | String) {
+        self::path -> destination
+    },
+    move_to: fn(self: $std::concepts::PathRecord,
+        destination: Path | String) {
+        let target = destination as Path;
+        $std::fs::rename(self::path, target);
+        self::path = target;
+    },
+    remove: fn(self: $std::concepts::PathRecord) {
+        $std::fs::remove(self::path)
+    },
+    remove_all: fn(self: $std::concepts::PathRecord) {
+        $std::fs::remove_all(self::path)
+    },
 };
