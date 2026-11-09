@@ -16,6 +16,12 @@ string source = workload switch
     "ranges" => "$std::ranges::size($std::ranges::take([1, 2, 3], 2))",
     "cast" => "\"42\" as Number",
     "functional" => "let op = $std::functional::compose($std::string::to_uppercase, $std::string::trim); op(\" hello \")",
+    "legacy_list" => "let list = $std::collections::List([1, 2, 3]); list::size()",
+    "container_list" => "let list = $std::containers::List::new([1, 2, 3]); $std::containers::List::size(list)",
+    "container_module" => "let module = $std::containers; let list = module::List::new([1, 2, 3]); module::List::size(list)",
+    "meta" => "$std::meta::is_convertible(Path, String)",
+    "shell" => "$std::shell::pwd()",
+    "shell_prelude" => ShellPrelude(),
     _ => throw new ArgumentException($"Unknown workload '{workload}'")
 };
 
@@ -54,6 +60,9 @@ var report = new JsonObject
     ["sha256"] = Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(executable))),
     ["compiler_build"] = typeof(SourceCompiler).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
     ["core_build"] = typeof(Optimizer).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion,
+    ["compiler_configuration"] = typeof(SourceCompiler).Assembly.GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration,
+    ["compiler_sha256"] = File.Exists(Path.Combine(AppContext.BaseDirectory, "Msync.Compiler.dll"))
+        ? Convert.ToHexStringLower(SHA256.HashData(File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "Msync.Compiler.dll")))) : null,
     ["runtime"] = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription,
     ["cold_o0_milliseconds"] = coldMilliseconds,
     ["cold_o0_allocated_bytes"] = coldBytes,
@@ -70,3 +79,20 @@ var report = new JsonObject
 };
 Console.WriteLine(report.ToJsonString());
 GC.KeepAlive(retained);
+
+static string ShellPrelude()
+{
+    var assembly = typeof(SourceCompiler).Assembly;
+    string resource = assembly.GetManifestResourceNames().Single(name => name.EndsWith(".shell.msync", StringComparison.Ordinal));
+    using Stream stream = assembly.GetManifestResourceStream(resource)!;
+    using StreamReader reader = new(stream);
+    var document = Msync.Compiler.Syntax.Parser.Parse(reader.ReadToEnd(), "msync-stdlib:///0.8.0/shell.msync");
+    return string.Join('\n', document.Statements.Select(statement => statement switch
+    {
+        Msync.Compiler.Syntax.FunctionDeclaration function => function.Name,
+        Msync.Compiler.Syntax.NativeDeclaration native => native.Name,
+        Msync.Compiler.Syntax.ScopeDeclaration scope => scope.Name,
+        Msync.Compiler.Syntax.LetStatement { Pattern: Msync.Compiler.Syntax.NamePattern binding } => binding.Name,
+        _ => null
+    }).OfType<string>().Select(name => $"let {name} = $std::shell::{name};"));
+}

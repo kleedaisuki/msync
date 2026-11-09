@@ -4,5 +4,9 @@
     <AssemblyName>msync-stdlib-load</AssemblyName>
     <PublishAot>true</PublishAot>
   </PropertyGroup>
-  <ItemGroup><ProjectReference Include="../../../src/Msync.Compiler/Msync.Compiler.csproj" /></ItemGroup>
+  <ItemGroup Condition="'$(FrozenAssemblies)' == ''"><ProjectReference Include="../../../src/Msync.Compiler/Msync.Compiler.csproj" /></ItemGroup>
+  <ItemGroup Condition="'$(FrozenAssemblies)' != ''">
+    <Reference Include="Msync.Core"><HintPath>$(FrozenAssemblies)/Msync.Core.dll</HintPath></Reference>
+    <Reference Include="Msync.Compiler"><HintPath>$(FrozenAssemblies)/Msync.Compiler.dll</HintPath></Reference>
+  </ItemGroup>
 </Project>
