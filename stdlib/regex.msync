@@ -1,0 +1,28 @@
+# .NET regular expressions; record offsets and lengths count Unicode scalars.
+# Inline options such as (?im) select case and multiline behavior.
+native fn is_match(text: String, pattern: String) -> Bool;
+native fn find(text: String, pattern: String) -> Scope?;
+native fn matches(text: String, pattern: String) -> Range<Scope>;
+native fn replace(text: String, pattern: String, replacement: String) -> String;
+native fn split(text: String, pattern: String) -> Range<String>;
+native fn escape(text: String) -> String;
+
+fn compile(pattern: String) {
+    scope {
+        pattern: pattern,
+        is_match: fn(text: String) { is_match(text, pattern) },
+        find: fn(text: String) { find(text, pattern) },
+        matches: fn(text: String) { matches(text, pattern) },
+        replace: fn(text: String, replacement: String) {
+            replace(text, pattern, replacement)
+        },
+        split: fn(text: String) { split(text, pattern) }
+    }
+};
+fn values(text: String, pattern: String) {
+    $std::ranges::map(matches(text, pattern), fn(matched) { matched::value })
+};
+fn count(text: String, pattern: String) {
+    $std::ranges::size(matches(text, pattern))
+};
+fn remove(text: String, pattern: String) { replace(text, pattern, "") };

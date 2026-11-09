@@ -1,0 +1,59 @@
+# Builders keep a binary forest of chunks: append avoids copying prior text.
+fn Builder() {
+    let merge = fn(left: Range<String>, right: Range<String>) {
+        $std::ranges::concat(left, right)
+    };
+    let tail = fn(values: Range<Scope>) { $std::ranges::drop(values, 1) };
+    let blocks = [scope { size: 1, chunks: [""] }];
+    let characters = 0;
+    let append = fn(value: String) {
+        let chunks = [value];
+        let size = 1;
+        let remaining = blocks;
+        for block in blocks {
+            if block::size != size { break; };
+            chunks = merge(block::chunks, chunks);
+            size = size * 2;
+            remaining = tail(remaining);
+        };
+        blocks = $std::ranges::materialize($std::ranges::concat(
+            [scope { size: size, chunks: chunks }], remaining
+        ));
+        characters = characters + $std::string::length(value);
+    };
+    scope {
+        append: append,
+        append_line: fn(value: String) { append(value); append("\n"); },
+        append_all: fn(values: Range<String>) {
+            for value in values { append(value); };
+        },
+        clear: fn {
+            blocks = [scope { size: 1, chunks: [""] }];
+            characters = 0;
+        },
+        build: fn {
+            let chunks = $std::ranges::flat_map(
+                $std::ranges::reverse(blocks), fn(block) { block::chunks }
+            );
+            $std::string::join(chunks, "")
+        },
+        length: fn { characters },
+        empty: fn { characters == 0 }
+    }
+};
+
+fn join_lines(lines: Range<String>) { $std::string::join(lines, "\n") };
+fn indent(text: String, prefix: String) {
+    $std::string::join($std::ranges::map(
+        $std::string::lines(text), fn(line: String) {
+            $std::string::concat(prefix, line)
+        }
+    ), "\n")
+};
+fn unindent(text: String, prefix: String) {
+    $std::string::join($std::ranges::map(
+        $std::string::lines(text), fn(line: String) {
+            $std::string::remove_prefix(line, prefix)
+        }
+    ), "\n")
+};
