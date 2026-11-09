@@ -31,8 +31,16 @@ enumerates values or performs I/O to establish these facts.
 
 ```text
 dotnet run --project tests/HirSemanticTyping -c Release
+dotnet run --project tests/HirSemanticTyping -c Release -- --meta
 ```
 
 Use an isolated artifacts path while other implementation lanes build the shared
 workspace. The fixture is an incremental semantic-boundary check, not a full
 product regression or a replacement for the interactive/native acceptance lanes.
+
+The metadata-only slice covers invocation/result queries, declaration arity and
+parameter types, structural member queries, recursive and invalid unused generic
+bodies, and non-execution of metadata operands. It round-trips the semantic
+graph through `.mhir` before lowering, and checks that dependent queries are
+resolved rather than emitted as runtime native calls. This slice can run alone
+when only metadata analysis changes.

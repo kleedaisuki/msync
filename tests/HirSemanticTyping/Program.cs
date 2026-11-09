@@ -4,6 +4,30 @@ using Msync.Hir;
 using Msync.Runtime;
 
 int checks = 0;
+bool metadataOnly = args.Contains("--meta", StringComparer.Ordinal);
+if (metadataOnly)
+{
+    await Boolean("$std::meta::is_invocable(fn(value) { value + 1 }, Number)", true);
+    await Boolean("$std::meta::is_invocable(fn(value) { value + 1 }, Bool)", false);
+    await Boolean("fn bad(value) { 1 + true }; $std::meta::is_invocable(bad, Number)", false);
+    await Boolean("fn recur(value: Number) -> Number { if value > 0 { recur(value - 1) } else { 0 } }; $std::meta::is_invocable(recur, Number)", true);
+    await Boolean("$std::meta::is_invocable_r(String, fn(value) { value }, Path)", true);
+    await Boolean("$std::meta::is_invocable_r(Number, fn(value) { value }, Path)", false);
+    await Boolean("$std::meta::is_same($std::meta::invoke_result(fn(value) { scope { item: value } }, Number), Scope)", true);
+    await Number("$std::meta::parameter_count(fn(first, second: Number) { first })", 2);
+    await Boolean("native fn first(values: Range) -> Type; first($std::meta::parameter_types(fn(value: Number) { value })) == Number", true);
+    await Boolean("$std::meta::is_variadic(./command)", true);
+    await Boolean("$std::meta::has_member(scope { item: 3 }, \"item\")", true);
+    await Number("$std::meta::member_count(scope { first: 3, second: true })", 2);
+    await Text("native fn first(values: Range) -> String; first($std::meta::member_names(scope { z: 3, a: true }))", "a");
+    await Boolean("$std::meta::is_same($std::meta::member_type(scope { item: 3 }, \"item\"), Number)", true);
+    await Number("let count = 0; fn effect() { count = 1; 3 }; $std::meta::is_invocable(effect); count", 0);
+    await Boolean("let count = 0; $std::meta::has_member({ count = 1; scope { item: true } }, \"item\"); count == 0", true);
+    await Number("let count = 0; fn choose() { count = 1; $std::meta::is_invocable }; choose()(fn(value) { value }, Number); count", 1);
+    Reject("fn bad(value) { 1 + true }; $std::meta::invoke_result(bad, Number)", "E0222");
+    Console.WriteLine($"PASS {checks} dependent metadata HIR journeys");
+    return;
+}
 await Number("1 + 2 * 3", 7);
 await Number("-2 ** 2", -4);
 await Number("\"2.5\" as Number", 2.5);
@@ -54,6 +78,15 @@ Console.WriteLine($"PASS {checks} typed HIR type/operator/native contracts");
 async Task<Value> Execute(string source, ArtifactStage stage)
 {
     HirModule hir = Compiler.Analyze(source, "hir-typing.msync");
+    if (metadataOnly)
+    {
+        Check(!hir.Calls.Any(call => call.NativeName is { } name && name.StartsWith("meta.", StringComparison.Ordinal)
+            && name is not "meta.is_same"), "Dependent metadata must not survive as a runtime native call");
+        using MemoryStream graph = new();
+        HirArtifact.Write(hir, graph);
+        graph.Position = 0;
+        hir = HirArtifact.Read(graph);
+    }
     Module code = HirLowerer.Lower(hir, new(OptimizationLevel: 0)).Module;
     if (stage == ArtifactStage.Executable)
         code = Msync.Optimization.Binding.Bind(code, new(Environment.CurrentDirectory, Environment.CurrentDirectory));

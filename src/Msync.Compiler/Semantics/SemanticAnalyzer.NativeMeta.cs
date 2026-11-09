@@ -6,6 +6,10 @@ namespace Msync.Compiler.Semantics;
 
 internal sealed partial class SemanticAnalyzer
 {
+    private sealed record MetaQueryResult(SemanticValue Value, ImmutableArray<SemanticValue> Items = default)
+    {
+        public static implicit operator MetaQueryResult(SemanticValue value) => new(value);
+    }
     private static bool IsDependentMeta(string? name) => name is
         "meta.is_invocable" or "meta.is_invocable_r" or "meta.invoke_result" or
         "meta.parameter_count" or "meta.parameter_types" or "meta.is_variadic" or
@@ -18,14 +22,47 @@ internal sealed partial class SemanticAnalyzer
         string? name = hir.Calls[node.Data].NativeName;
         if (name is null)
         {
-            foreach (var choice in BoundCallables(children[0], context))
-            {
-                if (!IsDependentMeta(choice.NativeName)) return false;
-                if (name is not null && name != choice.NativeName) return false;
-                name = choice.NativeName;
-            }
+            HirNode callee = program.Node(children[0]);
+            if (callee.Kind == HirKind.NativeFunction) name = callee.Text;
+            else if (BoundValue(children[0], context) is { } known) name = UniqueMetaName(known);
+            if (name is null && BoundLocation(children[0]) is { } location)
+                program.NativeLocations.TryGetValue(location, out name);
         }
         if (!IsDependentMeta(name)) return false;
+        result = EvaluateMetaCall(name!, node, children, context);
+        return true;
+    }
+
+    private bool TryMetaCall(SemanticValue callee, HirNode node, ReadOnlySpan<HirNodeId> children,
+        SemanticContext context, out SemanticValue result)
+    {
+        result = null!;
+        string? name = UniqueMetaName(callee);
+        if (name is null) return false;
+        result = EvaluateMetaCall(name, node, children, context);
+        if (context.Publish)
+        {
+            var discard = context.Output!.Add(HirKind.Discard, hir.Type(TypeRef.Null), node.Source, [callee.Node]);
+            result = result with { Node = context.Output.Add(HirKind.Block, result.Type, node.Source, [discard, result.Node]) };
+        }
+        return true;
+    }
+
+    private static string? UniqueMetaName(SemanticValue callee)
+    {
+        if (callee.Callables.IsDefaultOrEmpty) return null;
+        string? name = null;
+        foreach (var choice in callee.Callables)
+        {
+            if (!IsDependentMeta(choice.NativeName) || name is not null && name != choice.NativeName) return null;
+            name = choice.NativeName;
+        }
+        return name;
+    }
+
+    private SemanticValue EvaluateMetaCall(string name, HirNode node, ReadOnlySpan<HirNodeId> children,
+        SemanticContext context)
+    {
         NativeSignature signature = NativeSignatures.Get(name!);
         int count = children.Length - 1;
         if (count < signature.Parameters.Count || !signature.Variadic && count != signature.Parameters.Count)
@@ -33,12 +70,11 @@ internal sealed partial class SemanticAnalyzer
         SemanticContext query = context.QueryFork();
         SemanticValue[] arguments = new SemanticValue[count];
         for (int index = 0; index < count; index++) arguments[index] = Analyze(children[index + 1], query);
-        result = DependentMetaResult(name![5..], arguments, node.Source, query);
-        result = EmitMetaResult(result, node.Source, context);
-        return true;
+        var answer = DependentMetaResult(name![5..], arguments, node.Source, query);
+        return EmitMetaResult(answer, node.Source, context);
     }
 
-    private SemanticValue DependentMetaResult(string operation, SemanticValue[] arguments,
+    private MetaQueryResult DependentMetaResult(string operation, SemanticValue[] arguments,
         HirSourceRange source, SemanticContext context)
     {
         if (operation is "is_invocable" or "is_invocable_r" or "invoke_result")
@@ -80,7 +116,7 @@ internal sealed partial class SemanticAnalyzer
 
     private SemanticValue MetaWitness(SemanticValue value) => value.DenotedType is { } type ? ValueForType(type) : value;
 
-    private SemanticValue MetaSignature(string operation, SemanticValue value)
+    private MetaQueryResult MetaSignature(string operation, SemanticValue value)
     {
         value = MetaWitness(value);
         if (Runtime(value) is { Nullable: false, Kind: TypeKind.Path or TypeKind.String })
@@ -138,18 +174,21 @@ internal sealed partial class SemanticAnalyzer
     private SemanticValue MetaNull() => MetaLiteral(TypeRef.Null, new(HirLiteralKind.Null));
     private SemanticValue MetaType(HirTypeId type) => new(hir.Type(TypeRef.Type), HirNodeId.None,
         new(HirLiteralKind.Type, Type: hir.Types[type.Value].RuntimeType), DenotedType: type);
-    private SemanticValue MetaRange(IEnumerable<SemanticValue> values, HirTypeId element)
+    private MetaQueryResult MetaRange(IEnumerable<SemanticValue> values, HirTypeId element)
     {
         var items = values.ToImmutableArray();
-        return new(RangeType(element), HirNodeId.None, Element: ValueForType(element), EagerRange: true, Alternatives: items);
+        return new(new(RangeType(element), HirNodeId.None, Element: ValueForType(element), EagerRange: true), items);
     }
 
-    private SemanticValue EmitMetaResult(SemanticValue value, HirSourceRange source, SemanticContext context)
+    private SemanticValue EmitMetaResult(MetaQueryResult answer, HirSourceRange source, SemanticContext context)
     {
+        SemanticValue value = answer.Value;
         if (!context.Publish) return value;
         if (value.Literal is { } literal) return value with { Node = context.Output!.Literal(literal, value.Type, source) };
-        HirNodeId[] children = new HirNodeId[value.Alternatives.Length];
-        for (int index = 0; index < children.Length; index++) children[index] = EmitMetaResult(value.Alternatives[index], source, context).Node;
-        return value with { Node = context.Output!.Add(HirKind.Range, value.Type, source, children) };
+        HirNodeId[] children = new HirNodeId[answer.Items.Length];
+        for (int index = 0; index < children.Length; index++) children[index] = EmitMetaResult(answer.Items[index], source, context).Node;
+        int range = hir.Ranges.Count;
+        context.Output!.AddRange(new(ImmutableArray.Create(new bool[children.Length])));
+        return value with { Node = context.Output!.Add(HirKind.Range, value.Type, source, children, range) };
     }
 }
