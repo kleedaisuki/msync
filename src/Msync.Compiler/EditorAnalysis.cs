@@ -36,7 +36,9 @@ public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrence
             IsTypePosition = true,
             Bindings = AssociatedTypes.Where(scope => scope.Span.Start <= offset && offset <= scope.Span.End)
                 .OrderBy(scope => scope.Span.Length).SelectMany(scope => scope.Types)
-                .Concat(Contexts?.ConceptsAt(offset) ?? []).Concat(context.Bindings)
+                .Concat(Contexts?.ConceptsAt(offset) ?? [])
+                .Concat(context.Bindings.Any(member => member.Name == "std") ? [] : EditorCompiler.StandardConceptBindings)
+                .Concat(context.Bindings)
                 .DistinctBy(member => member.Name).ToArray()
         } : context;
     }
@@ -47,6 +49,10 @@ public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrence
 public static class EditorCompiler
 {
     private static readonly Lazy<IReadOnlyList<SemanticMember>> builtins = new(CreateBuiltinBindings);
+    private static readonly Lazy<IReadOnlyList<SemanticMember>> standardConcepts = new(() =>
+        new Compilation("", "<standard-concepts>", 0).StandardConceptDefinitions()
+            .Select(pair => EditorContextCollector.DescribeConcept(pair.Value) with { Name = pair.Key })
+            .ToArray());
     private static readonly Lazy<SemanticMember[]> processMembers = new(() => ProcessCapabilities.Members.Select(pair =>
         new SemanticMember(pair.Key, pair.Value.ToString(), $"{pair.Key}: {pair.Value}", pair.Key switch
         {
@@ -56,6 +62,7 @@ public static class EditorCompiler
             _ => "True when the process exit status is zero."
         })).ToArray());
     public static IReadOnlyList<SemanticMember> BuiltinBindings => builtins.Value;
+    public static IReadOnlyList<SemanticMember> StandardConceptBindings => standardConcepts.Value;
 
     private static IReadOnlyList<SemanticMember> CreateBuiltinBindings()
     {
@@ -192,7 +199,8 @@ public static class EditorCompiler
             {
                 if (occurrence.Type != "Type" || occurrence.SemanticRole != "type"
                     || LanguageTypes.TryResolve(occurrence.Signature, out _)) continue;
-                SemanticMember? concept = contexts.ConceptsAt(span.Start).FirstOrDefault(item => item.Name == occurrence.Signature);
+                SemanticMember? concept = contexts.ConceptsAt(span.Start).Concat(StandardConceptBindings)
+                    .FirstOrDefault(item => item.Name == occurrence.Signature);
                 if (concept is not null) syntax[span] = occurrence with
                 {
                     Signature = concept.Signature, Description = concept.Description, Members = concept.Members
@@ -460,9 +468,14 @@ public static class EditorCompiler
             int start = type.Span.Start;
             while (start > 0 && char.IsWhiteSpace(source[start - 1])) start--;
             typeSpans.Add(new(start, type.Span.End - start));
-            SourceSpan name = new(type.Span.Start, type.Name.Length);
-            occurrences[name] = new(name, "Type", type.Name,
-                "A type or structural concept constraint. It is checked without executing the expression.", SemanticRole: "type");
+            string prefix = "";
+            foreach (var (part, name) in EditorTypeNames.Parts(source, type))
+            {
+                prefix += prefix.Length == 0 ? part : "::" + part;
+                occurrences[name] = new(name, "Type", prefix,
+                    prefix == type.Name ? "A type or structural concept constraint. It is checked without executing the expression."
+                        : "A compile-time standard-library namespace. Select a concept with `::`.", SemanticRole: "type");
+            }
             foreach (TypeSyntax argument in type.Arguments) AddType(argument);
             foreach (TypeSyntax alternative in type.Alternatives) AddType(alternative);
         }

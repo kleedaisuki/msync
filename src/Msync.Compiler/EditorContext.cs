@@ -49,7 +49,7 @@ internal sealed partial class EditorContextCollector
         Snapshot[] latest = inner.Where(item => item.Point == point).ToArray();
         if (latest.Any(item => item.Concrete)) latest = latest.Where(item => item.Concrete).ToArray();
         return latest[0].Concepts.Keys.Where(name => latest.All(item => item.Concepts.ContainsKey(name)))
-            .Select(name => DescribeConcept(latest[0].Concepts[name]))
+            .Select(name => DescribeConcept(latest[0].Concepts[name]) with { Name = name })
             .ToArray();
     }
 
@@ -60,6 +60,8 @@ internal sealed partial class EditorContextCollector
             definition.Source[member.Span.Start..member.Span.End],
             "A required member of this structural concept.", SemanticRole: member.Parameters is null ? "variable" : "function")).ToArray();
         string description = "A named structural constraint. Required fields and callable signatures are checked at specialization.";
+        string documentation = ConceptDocumentation(definition);
+        if (documentation.Length != 0) description = documentation + "\n\n" + description;
         if (definition.Syntax.Bases.Count != 0)
             description += "\n\nIncludes: " + string.Join(", ", definition.Syntax.Bases.Select(type => $"`{type.Name}`")) + ".";
         if (members.Length != 0)
@@ -68,6 +70,26 @@ internal sealed partial class EditorContextCollector
         {
             IsConstraint = true
         };
+    }
+
+    private static string ConceptDocumentation(ConceptDefinition definition)
+    {
+        int end = definition.Syntax.Span.Start;
+        while (end > 0 && definition.Source[end - 1] is ' ' or '\t') end--;
+        if (end > 0 && definition.Source[end - 1] == '\n') end--;
+        if (end > 0 && definition.Source[end - 1] == '\r') end--;
+        List<string> lines = [];
+        while (end > 0)
+        {
+            int start = definition.Source.LastIndexOf('\n', end - 1) + 1;
+            ReadOnlySpan<char> line = definition.Source.AsSpan(start, end - start).Trim();
+            if (!line.StartsWith("#", StringComparison.Ordinal)) break;
+            lines.Add(line[1..].TrimStart().ToString());
+            end = start > 0 ? start - 1 : 0;
+            if (end > 0 && definition.Source[end - 1] == '\r') end--;
+        }
+        lines.Reverse();
+        return string.Join("\n", lines);
     }
     public void Import(Frame frame, GlobalStatement statement)
     {
@@ -217,8 +239,8 @@ internal sealed partial class Compilation
         foreach (string name in new[] { "local", "wsl", "pwd", "file", "env", "path" }) values["$" + name] = Name(frame, name, new(0, 0), reference: true);
         return values;
     }
-    internal IReadOnlyList<SemanticMember> DescribeConcepts() => sessionConcepts.Values
-        .Select(EditorContextCollector.DescribeConcept).ToArray();
+    internal IReadOnlyList<SemanticMember> DescribeConcepts() => sessionConcepts
+        .Select(pair => EditorContextCollector.DescribeConcept(pair.Value) with { Name = pair.Key }).ToArray();
     internal EditorContextCollector? EditorContexts => editorContexts;
     internal SourceDiagnostic? EditorDiagnostic => editorDiagnostic;
     internal string EditorSourceName => sourceName;
@@ -308,7 +330,7 @@ internal sealed partial class Compilation
                 {
                     frame.ExpectedReturn = ResolveType(frame, returnType);
                     frame.ExpectedReturnSpan = returnType.Span;
-                    frame.ExpectedConceptReturn = frame.Concepts.ContainsKey(returnType.Name) ? returnType : null;
+                    frame.ExpectedConceptReturn = TryConcept(frame, returnType.Name, out _) ? returnType : null;
                 }
                 catch (CompileException) { }
             }
@@ -321,7 +343,7 @@ internal sealed partial class Compilation
                     try
                     {
                         CaptureConceptDefinition(frame, parameter.Type);
-                        info = frame.Concepts.ContainsKey(parameter.Type.Name)
+                        info = TryConcept(frame, parameter.Type.Name, out _)
                             ? ConceptInfo(frame, parameter.Type) : new(ResolveType(frame, parameter.Type));
                     }
                     catch (CompileException) { }

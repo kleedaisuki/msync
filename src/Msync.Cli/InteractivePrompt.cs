@@ -160,6 +160,11 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
 
         protected override Task<TextSpan> GetSpanToReplaceByCompletionAsync(string text, int caret, CancellationToken cancellationToken)
         {
+            if (insight?.IsTypePosition == true)
+            {
+                var selected = TypeCompletion.Find(text, caret);
+                return Task.FromResult(new TextSpan(selected.Span.Start, selected.Span.Length));
+            }
             if (insight?.IsGlobalImport == true)
             {
                 var name = NameSyntax.SpanAt(text, caret);
@@ -170,11 +175,6 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
                 if (BuiltinCompletion.IncludesDirectoryEntries(builtin) && FindSource(text, caret) is { } physical)
                     return Task.FromResult(new TextSpan(physical.Start, physical.Length));
                 return Task.FromResult(new TextSpan(builtin.Start, builtin.Length));
-            }
-            if (insight?.IsTypePosition == true)
-            {
-                var name = NameSyntax.SpanAt(text, caret);
-                return Task.FromResult(new TextSpan(name.Start, name.Length));
             }
             if (FindSource(text, caret) is { } context)
                 return Task.FromResult(new TextSpan(context.Start, context.Length));
@@ -200,6 +200,11 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
 
         protected override async Task<IReadOnlyList<CompletionItem>> GetCompletionItemsAsync(string text, int caret, TextSpan spanToBeReplaced, CancellationToken cancellationToken)
         {
+            if (insight?.IsTypePosition == true)
+                return TypeCompletion.Candidates(TypeCompletion.Find(text, caret), insight)
+                    .Select(member => new CaretCompletionItem(member.Name,
+                        getExtendedDescription: _ => Task.FromResult<FormattedString>(member.Signature + "\n" + member.Description)))
+                    .ToArray();
             if (insight?.IsGlobalImport == true)
             {
                 string importPrefix = text[spanToBeReplaced.Start..caret];
@@ -225,12 +230,6 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
                 return builtinItems;
             }
             string prefix = text[spanToBeReplaced.Start..caret];
-            if (insight?.IsTypePosition == true)
-                return LanguageTypes.Names.Concat(insight.Bindings.Where(member => member.IsConstraint).Select(member => member.Name))
-                    .Distinct(StringComparer.Ordinal).Where(name => name.StartsWith(prefix, StringComparison.Ordinal))
-                    .Select(name => new CaretCompletionItem(name,
-                        getExtendedDescription: _ => Task.FromResult<FormattedString>(completionBindings?.TryGetValue(name, out var constraint) == true ? constraint.Signature : "Built-in type " + name)))
-                    .ToArray();
             SourceCompletionContext? sourceContext = FindSource(text, caret);
             if (sourceContext is null && PromptSyntax.InsideLiteral(text, caret)) return [];
             IReadOnlyDictionary<string, SemanticMember> symbols = completionBindings ?? bindings;

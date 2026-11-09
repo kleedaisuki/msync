@@ -42,7 +42,7 @@ internal sealed partial class LanguageServer
         EditorDocument document = work.Document;
         int offset = Offset(document.Source, request.GetProperty("position"));
         var insight = document.Analysis?.At(offset);
-        if (insight?.IsGlobalImport == true)
+        if (insight?.IsGlobalImport == true || insight?.IsTypePosition == true)
             return Completions(document, request, insight, completionResolveDocumentation);
         string? sourceFile = Uri.TryCreate(work.Uri, UriKind.Absolute, out var uri) && uri.IsFile ? uri.LocalPath : null;
         JsonArray? items = null;

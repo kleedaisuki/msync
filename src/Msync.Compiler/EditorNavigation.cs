@@ -5,6 +5,23 @@ using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 namespace Msync.Compiler;
 
 public sealed record EditorLocation(string SourceName, string Source, SourceSpan Span);
+
+internal static class EditorTypeNames
+{
+    public static IEnumerable<(string Name, SourceSpan Span)> Parts(string source, TypeSyntax type)
+    {
+        int cursor = type.Span.Start;
+        foreach (string part in type.Name.Split("::", StringSplitOptions.None))
+        {
+            string text = part.TrimStart('$');
+            int start = source.IndexOf(text, cursor, StringComparison.Ordinal);
+            SourceSpan span = new(start, text.Length);
+            yield return (part, span);
+            cursor = span.End;
+        }
+    }
+}
+
 public enum EditorSymbolKind { Variable, Function, Scope, Field, Parameter }
 public sealed record EditorSymbol(string Name, SourceSpan Span, SourceSpan SelectionSpan, EditorSymbolKind Kind,
     IReadOnlyList<EditorSymbol> Children);
@@ -149,9 +166,12 @@ internal sealed partial class Compilation
 
     private void CaptureConceptDefinition(Frame frame, TypeSyntax syntax)
     {
-        if (editorContexts is null || !frame.Concepts.TryGetValue(syntax.Name, out var definition)) return;
+        if (editorContexts is null || !TryConcept(frame, syntax.Name, out var definition)) return;
         if (definition.Syntax.NameSpan is { } name)
-            CaptureDefinition(frame, new(syntax.Span.Start, syntax.Name.Length), [new(definition.SourceName, definition.Source, name)]);
+        {
+            SourceSpan selected = EditorTypeNames.Parts(frame.Source, syntax).Last().Span;
+            CaptureDefinition(frame, selected, [new(definition.SourceName, definition.Source, name)]);
+        }
     }
 
     private EditorLocation? DeclarationOrigin(Frame frame, SourceSpan? span) =>
