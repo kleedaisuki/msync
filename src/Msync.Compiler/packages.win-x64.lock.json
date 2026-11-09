@@ -11,10 +11,16 @@
       "msync.core": {
         "type": "Project"
       },
+      "msync.hir": {
+        "type": "Project",
+        "dependencies": {
+          "Msync.Core": "[0.8.1, )"
+        }
+      },
       "msync.optimization": {
         "type": "Project",
         "dependencies": {
-          "Msync.Core": "[0.8.0, )"
+          "Msync.Core": "[0.8.1, )"
         }
       }
     },
