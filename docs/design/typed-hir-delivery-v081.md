@@ -85,6 +85,31 @@ documentation commit may intervene between the accepted candidate and promotion.
 Final release receipts can be committed after publication without changing the
 tagged source or asset bytes.
 
+## Correct execution is not a matched cost result
+
+Frozen14 completes the original one-insert source and the loop-based 24-insert
+source through default compilation and actual execution, producing `1` and
+`17`. The earlier semantic-growth observations remain historical failure
+evidence, not the current outcome. The expanded 24-call source used for the
+published performance baseline is a different input; its byte identity must be
+checked independently before comparing function counts or costs.
+
+That exact expanded input revealed approximately 1.48 GB of candidate analysis
+allocation, versus approximately 151 MB for the baseline's cold whole compile.
+The single GC allocation trace recorded in `2ef67e4` attributes about 58% to
+formal-input rewriting and 22% to future-domain enrichment. Code-schema frames
+overlap formal-input frames and must not be added to them. This regression
+remains an acceptance issue despite correct output and fewer generated bodies.
+
+Local graph rewriting should preserve unchanged values and arrays rather than
+rebuild them unconditionally. Roslyn's
+[bound-tree list rewriting](https://github.com/dotnet/roslyn/blob/main/src/Compilers/CSharp/Portable/BoundTree/BoundTreeRewriter.cs#L29-L57)
+allocates its replacement builder only after a changed item and otherwise
+returns the original list. The same no-op discipline fits enrichment here;
+completed-subgraph reuse additionally needs a call-local, role/substitution-aware
+memo. A recursion stack alone does not reuse a shared DAG, and a global
+caller-world cache would violate the semantic ownership boundary.
+
 ## Work ownership
 
 The compiler team owns semantic contracts, binding, specialization and lowering.
