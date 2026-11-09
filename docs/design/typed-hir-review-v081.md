@@ -452,3 +452,42 @@ Implementation and validation remain with the compiler owners. This review made
 no production changes, launched no product build and did not repeat the runaway
 input. The next discriminating observation is one corrected key/Analyze run,
 followed by caller-specific alias/carrier witnesses before a tree cost claim.
+
+## Cyclic Scope schemas: resolve formal references before binding
+
+The frozen-12 BTree journey reported a missing `Buffer::push` while compiling
+`BTree::new` followed by one insertion. The canonical `storage` module and its
+`Buffer` member were already bound, activated and populated. Rebinding the
+library or adding guards to BTree would address the wrong phase.
+
+The model owner's existing disposable trace demonstrates the relevant graph
+mechanism: `FormalInput` reserves a region with an empty provisional field map,
+a recursive `is_empty` capture retains that immutable record, and construction
+then replaces the region's row with the completed 13-member Buffer view. The
+captured record itself is not rewritten. A later binding sees both the stale
+empty record and the completed row for the same region. In that traced binding,
+actual-side lookup still finds the completed row; the trace is evidence of the
+escaped stale backedge, not by itself proof that this particular event is the
+terminal missing-member lookup.
+
+The existing representation already provides the required indirection: positive
+region identity plus its owning arena. The selected repair is to normalize
+`InvocationProjection.Bind`'s **formal** Scope through `instance.Objects` before
+traversing its fields, just as `Project` already does. Bind's actual operand
+continues to resolve through the caller's current object facts. Nested callable
+captures, future callable domains, elements and indexed carriers recurse through
+this same binding entry, so they need the same rule rather than separate
+fallbacks. `FormalInput.Abstract` and `FreezeSummary.Visit` likewise resolve
+through their source/context object tables.
+
+Negative-region structural views describe values directly; `-1` is not an object
+identity to resolve in an arena. Layout equality and field counts are not
+completion or authority proofs. Normalization must not merge an unrelated full
+module over an explicit user replacement, discard caller mutations, or mint a
+fresh identity for an existing shared cell. No additional forwarding-handle
+framework or whole-world graph clone is needed for this repair.
+
+This review supplied the targeted source/trace analysis and the minimal ownership
+rule to the model owner. It made no production edits, builds or reruns. Closing
+the BTree failure still requires the owner's resulting implementation evidence;
+the graph mechanism is not being promoted into an untested end-to-end verdict.
