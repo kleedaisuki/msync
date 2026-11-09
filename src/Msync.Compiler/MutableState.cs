@@ -294,7 +294,8 @@ internal sealed partial class Compilation
         {
             if (callables.TryGetValue(function, out var existing)) return existing;
             List<KeyValuePair<string, Binding>> captures = [];
-            Template fresh = new(function.Id, function.Syntax, captures, function.Source, function.SourceName) { Instance = true, Concepts = function.Concepts };
+            Template fresh = new(function.Id, function.Syntax, captures, function.Source, function.SourceName)
+            { Instance = true, Concepts = function.Concepts, StandardShadowed = function.StandardShadowed };
             callables.Add(function, fresh);
             templates.Add(fresh);
             foreach (var capture in function.Captures) captures.Add(new(capture.Key, FreshBinding(capture.Value)));
