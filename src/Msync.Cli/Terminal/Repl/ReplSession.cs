@@ -42,7 +42,7 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
                 workingDirectory: () => execution.WorkingDirectory) : null;
         editing = prompt is not null;
         if (!Console.IsInputRedirected)
-            Console.WriteLine(TerminalPresentation.Paint("msync 0.8.0", TerminalPresentation.HeadingColor, TerminalPresentation.Colors(color))
+            Console.WriteLine(TerminalPresentation.Paint("msync " + ProductVersion.Current, TerminalPresentation.HeadingColor, TerminalPresentation.Colors(color))
                 + (editing ? " — Tab to complete; Shift+Enter for a newline; /help for commands"
                     : " — basic input; /help for commands; /quit to leave"));
         if (!editing) Console.CancelKeyPress += Cancel;
