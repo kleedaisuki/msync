@@ -5,6 +5,10 @@ program execution or REPL execution session. Its initializer runs only on the
 first selected execution of that declaration. Later executions return the same
 instance, including its shared field cells and captured closures. An anonymous
 `scope { ... }` still creates an independent instance on every execution.
+A named expression such as `let object = scope Shared { value: "initial" };`
+has the same declaration-owned singleton identity. Its name is retained for
+semantic classification; it does not introduce an additional lexical binding
+or a process-wide name registry.
 
 ```msync
 fn cache(initial: String) {

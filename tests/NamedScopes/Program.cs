@@ -21,6 +21,7 @@ foreach (int level in new[] { 0, 2, 3 })
     foreach ((string name, string source, string expected) in new[]
     {
         ("named-identity", "fn factory(value: String) { scope Saved { item: value }; Saved }; let first = factory(\"first\"); first::item = \"changed\"; let second = factory(\"second\"); second::item", "changed"),
+        ("named-expression", "fn factory(value: String) { let object = scope Shared { item: value }; object }; let first = factory(\"first\"); first::item = \"changed\"; factory(\"ignored\")::item", "changed"),
         ("anonymous-fresh", "fn factory(value: String) { scope { item: value } }; let first = factory(\"first\"); first::item = \"changed\"; factory(\"second\")::item", "second"),
         ("initializer-effects", "let count = 0; fn factory() { scope Saved { item: { count = count + 1; \"value\" } }; Saved }; factory(); factory(); if count == 1 { \"once\" } else { \"repeated\" }", "once"),
         ("captured-cell", "fn factory(value: String) { scope Saved { item: value, read: fn { item }, write: fn(value: String) { item = value; } }; Saved }; let first = factory(\"first\"); let second = factory(\"second\"); second::write(\"shared\"); first::read()", "shared"),

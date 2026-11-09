@@ -300,6 +300,7 @@ internal sealed partial class Compilation
 
     private Info Scope(Frame frame, ScopeExpr scope, bool named = false)
     {
+        named |= scope.Name is not null;
         if (!scopeAllocationSites.TryGetValue(scope, out int allocation)) scopeAllocationSites.Add(scope, allocation = ++nextScopeAllocation);
         int initialized = -1;
         var beforeInitialization = frame.Facts;
@@ -391,6 +392,7 @@ internal sealed partial class Compilation
         }
         frame.Facts = frame.Facts.SetItem(result.Scope!.Identity, result);
         RegisterScope(frame, result.Scope);
+        if (scope.NameSpan is { } nameSpan) Observe(frame, nameSpan, result, scope.Name);
         return result;
     }
 
