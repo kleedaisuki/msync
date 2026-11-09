@@ -273,7 +273,7 @@ internal static class InterproceduralSpecialization
                 case OpCode.MakeClosure: PopMany(instruction.B); stack.Add(new(Function: instruction.A, CaptureCount: instruction.B)); break;
                 case OpCode.SpecializeClosure:
                     var closure = Pop();
-                    var specialized = closure.Function is null ? null : instruction.Text is null ? instruction.A
+                    var specialized = instruction.A < 0 || closure.Function is null ? null : instruction.Text is null ? instruction.A
                         : FunctionDispatch.Parse(instruction.Text).TryGetValue(closure.Function.Value, out var selected) ? selected : (int?)null;
                     stack.Add(closure with { Function = specialized }); break;
                 case OpCode.MakeScope:

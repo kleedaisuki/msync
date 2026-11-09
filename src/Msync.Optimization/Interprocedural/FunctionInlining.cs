@@ -184,7 +184,7 @@ internal static class FunctionInlining
                 case OpCode.MakeClosure: PopMany(instruction.B); stack.Add(new(instruction.A, Captures: instruction.B)); break;
                 case OpCode.SpecializeClosure:
                     var specialized = Pop();
-                    stack.Add(instruction.Text is null && (specialized?.Function is not null || !requireKnownCallee)
+                    stack.Add(instruction.A < 0 ? null : instruction.Text is null && (specialized?.Function is not null || !requireKnownCallee)
                         ? new(instruction.A, Captures: specialized?.Captures) : instruction.Text is not null && specialized?.Function is { } original
                             && FunctionDispatch.Parse(instruction.Text).TryGetValue(original, out var mapped) ? new(mapped, Captures: specialized.Captures) : null); break;
                 case OpCode.MakeScope:

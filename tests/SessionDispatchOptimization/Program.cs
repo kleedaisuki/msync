@@ -19,7 +19,11 @@ FunctionCode[] functions =
         new(OpCode.MakeClosure, 1), new(OpCode.Call, B: -1), new(OpCode.Pop),
         new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "value"), new(OpCode.Return)
     ], TypeRef.Any, ParameterTypes: [TypeRef.Scope]),
-    new("closed_source", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.Call, B: 2), new(OpCode.Return)], TypeRef.Number)
+    new("closed_source", 0, 0, [new(OpCode.MakeClosure, 1), new(OpCode.Call, B: 2), new(OpCode.Return)], TypeRef.Number),
+    new("open_adapter", 0, 0,
+        [new(OpCode.MakeClosure, 1), new(OpCode.SpecializeClosure, -1), new(OpCode.Call), new(OpCode.Return)], TypeRef.Number),
+    new("open_native_adapter", 0, 0,
+        [new(OpCode.Constant, 3), new(OpCode.SpecializeClosure, -2), new(OpCode.True), new(OpCode.Call, 1), new(OpCode.Return)], TypeRef.Bool)
 ];
 SessionDispatchTable[] tables = [new(0, new Dictionary<int, int> { [1] = 1 }), new(1, new Dictionary<int, int>())];
 Module input = new(constants, functions) { SessionDispatches = tables };
@@ -44,6 +48,15 @@ foreach (int level in new[] { 2, 3 })
         $"O{level}: unrelated arithmetic no longer optimizes");
     Check(optimized.Functions[6].Instructions.All(instruction => instruction.Op != OpCode.Call),
         $"O{level}: ordinary closed calls no longer inline");
+    foreach (int adapter in new[] { 7, 8 })
+    {
+        Check(optimized.Functions[adapter].Instructions.Any(instruction => instruction.Op == OpCode.SpecializeClosure && instruction.A < 0),
+            $"O{level}: open adapter slot was folded into its current target");
+        Check(optimized.Functions[adapter].Instructions.Any(instruction => instruction.Op == OpCode.Call),
+            $"O{level}: a call through an open adapter was folded or inlined");
+        Check((EffectAnalysis.FunctionEffects(optimized)[adapter] & InstructionEffect.Invoke) != 0,
+            $"O{level}: adapted callback's open effects disappeared");
+    }
     Check((EffectAnalysis.FunctionEffects(optimized)[2] & required) == required, $"O{level}: open effects lost after optimization");
     CheckMemory(optimized);
 }

@@ -1,6 +1,7 @@
 # Open-session optimizer contract
 
-Session calls encode a stable typed dispatch slot with negative `Call.B`.
+Session calls encode a stable typed dispatch slot with negative `Call.B`;
+callback adaptation uses the same slot family in negative `SpecializeClosure.A`.
 Their current target table is not a closed-world proof: a later accepted REPL
 generation can add a compatible definition. These checks keep the call opaque
 to inlining, native constant evaluation, memory summaries and physical function

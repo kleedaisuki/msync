@@ -378,7 +378,8 @@ internal static partial class CrossBlockMemoryOptimization
                     case OpCode.GetCapture: Unknown(1, cell: true); break;
                     case OpCode.SpecializeClosure:
                         var callable = Pop();
-                        state.Stack.Add(callable.Closure == 0 || callable.Function < 0 ? callable
+                        state.Stack.Add(instruction.A < 0 ? new(default, Opaque: true, Kinds: TypeKind.Function)
+                            : callable.Closure == 0 || callable.Function < 0 ? callable
                             : callable with
                             {
                                 Function = instruction.Text is null ? instruction.A

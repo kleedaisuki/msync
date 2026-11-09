@@ -249,7 +249,7 @@ internal static class GraphOptimization
                 OpCode.LoadLocal or OpCode.LoadStorage when !mutableSlots.Contains(instruction.A) => left,
                 OpCode.StoreLocal or OpCode.InitializeLocal or OpCode.Dup => left,
                 OpCode.MakeClosure when instruction.B == 0 => new FunctionValue(instruction.A),
-                OpCode.SpecializeClosure when left is FunctionValue function && instruction.Text is null => function with { Function = instruction.A },
+                OpCode.SpecializeClosure when instruction.A >= 0 && left is FunctionValue function && instruction.Text is null => function with { Function = instruction.A },
                 OpCode.Not when left is BoolValue boolean => Bool(!boolean.Data),
                 OpCode.IsNull when left is not null => Bool(left is NullValue),
                 OpCode.Negate when left is NumberValue number => new NumberValue(-number.Data),

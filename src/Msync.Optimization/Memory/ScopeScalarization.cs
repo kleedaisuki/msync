@@ -153,7 +153,12 @@ internal static class ScopeScalarization
                         stack.Add(closure.Captures is { } knownCaptures && instruction.A < knownCaptures.Count
                             ? knownCaptures[instruction.A] : new(Cell: new(new(), epoch, captured: true) { UnknownAlias = true }));
                         break;
-                    case OpCode.SpecializeClosure: stack.Add(Pop()); break;
+                    case OpCode.SpecializeClosure:
+                        var specialized = Pop();
+                        if (instruction.A < 0) { Escape(specialized); stack.Add(new()); }
+                        else
+                            stack.Add(specialized);
+                        break;
                     case OpCode.Call: case OpCode.ProcessCall:
                         foreach (var value in PopMany(instruction.A + 1)) Escape(value);
                         Invalidate(); stack.Add(new()); break;

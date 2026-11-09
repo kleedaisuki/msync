@@ -80,7 +80,8 @@ internal static class TailCallOptimization
     private static bool ClosedFunctions(Module module)
     {
         var entry = module.Functions[module.EntryPoint];
-        if (module.PreserveLocals || entry.ParameterCount != 0 || entry.CaptureCount != 0) return false;
+        if (module.PreserveLocals || module.SessionDispatches is { Count: > 0 }
+            || entry.ParameterCount != 0 || entry.CaptureCount != 0) return false;
         var reached = new HashSet<int>();
         var work = new Queue<int>();
         void Function(int index) { if (reached.Add(index)) work.Enqueue(index); }

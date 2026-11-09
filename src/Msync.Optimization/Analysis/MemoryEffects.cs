@@ -300,6 +300,7 @@ internal static class MemoryEffects
                     Push(capture); break;
                 case OpCode.SpecializeClosure:
                     var specialized = Dereference(state, Pop(state));
+                    if (instruction.A < 0) { Push(ValueInfo.Top); break; }
                     Push(specialized with
                     {
                         Closures = specialized.Closures.Select(candidate => candidate.Native is not null ? candidate
