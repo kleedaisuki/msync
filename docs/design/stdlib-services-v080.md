@@ -66,3 +66,10 @@ fresh factory instances, directory filtering and explicit snapshots, and a real
 child process receiving stdin. The same source runs at O0/O2/O3 through direct
 modules, serialized relocatable IR and contextual executable IR. Fixtures live
 under repository `.temp` and are removed by their live test owner.
+
+The focused managed journey passed 72 assertions at O0/O2/O3, each through source,
+serialized `.mso` and contextual `.mexe`. Command coverage includes a real owned
+child stdin pipe, Unicode output publication, `append_args` preserving the
+original snapshot and `on($local)` selecting the explicit endpoint. The final
+incremental harness build used `BuildProjectReferences=false` to consume the
+shared product owner's coherent compiler/runtime outputs.

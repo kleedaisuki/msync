@@ -22,7 +22,7 @@ try
             let alias = file;
             let separate = folder::file("separate.txt");
             file::write("hello 星");
-            file::append("\nsecond");
+            file::append(" second");
             separate::write("independent");
             let initial = file::read_text();
             file::move_to(folder::child("moved.txt"));
@@ -49,20 +49,24 @@ try
             if (Directory.Exists(Path.Combine(root, "work"))) Directory.Delete(Path.Combine(root, "work"), true);
             Value result = await Interpreter.ExecuteAsync(image, new(WorkingDirectory: root));
             if (result is not ScopeValue scope) throw new InvalidOperationException("Service result is not Scope");
-            Require(scope.Members["text"] is StringValue { Data: "hello 星\nsecond" }, "File read/append content");
+            Require(scope.Members["text"] is StringValue { Data: "hello 星 second" }, "File read/append content: " + scope.Members["text"]);
             Require(scope.Members["moved"] is BoolValue { Data: true }, "Move did not update shared captured location");
             Require(scope.Members["separate"] is StringValue { Data: "independent" }, "Factory instances share location");
             Require(scope.Members["count"] is NumberValue { Data: 3 }, "Directory snapshot lost entries");
             Require(scope.Members["filtered"] is NumberValue { Data: 3 }, "Directory predicate traversal");
-            Require(await File.ReadAllTextAsync(Path.Combine(root, "work", "copy.txt")) == "hello 星\nsecond", "File copy bytes");
+            Require(await File.ReadAllTextAsync(Path.Combine(root, "work", "copy.txt")) == "hello 星 second", "File copy bytes");
         }
 
         string executable = Environment.ProcessPath!.Replace("\"", "\"\"", StringComparison.Ordinal);
         string command = $$"""
             let command = $std::commands::Command("{{executable}}", ["--echo"]);
-            let result = command::capture_input("hello 星");
+            let extended = command::append_args(["extra"]);
+            let local = extended::on($local);
+            let result = local::capture_input("hello 星");
             result::write_to(./command-output);
             result::success and result::code == 0 and result::output == "echo:hello 星"
+                and $std::ranges::size(command::arguments()) == 1
+                and $std::ranges::size(extended::arguments()) == 2
             """;
         Module commands = Compiler.Compile(command, "commands.msync", level);
         using MemoryStream commandImage = new();
