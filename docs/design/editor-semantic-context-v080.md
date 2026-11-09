@@ -288,3 +288,19 @@ Persistent REPL display metadata uses `CompilerSession.DescribeConcepts()`
 separately from `DescribeBindings()`. A `SemanticMember.IsConstraint` marker lets
 the prompt retain concept highlighting and hints without offering those names
 as executable values or treating them as bound filesystem operands.
+
+Parameter identity is distinct from the identity of its argument value.
+`Binding.IsParameter` preserves variable presentation for a Scope parameter even
+when its actual argument is a named Scope. The editor records parameter origins
+and reference spans without copying or weakening the inferred Scope shape.
+Origin matching uses source-string reference identity plus the source span, not
+just a filename and offset: accepted REPL submissions share a filename but can
+reuse the same offsets for unrelated declarations. Function-valued parameters
+retain function presentation. Associated type names are offered only in the
+owning concept's type positions; they are not executable bindings.
+
+The complete focused editor workflow passed against managed snapshot 4 on
+November 9, 2026, with zero build warnings. The selected lexical/member lookup
+check additionally matched all 16 exposed values after the parameter-role
+change. These checks use shared product DLLs and compile only the test project;
+actual protocol and native host journeys remain separate delivery evidence.
