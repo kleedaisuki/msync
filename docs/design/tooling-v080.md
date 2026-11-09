@@ -51,6 +51,10 @@ The semantic-token stream merges those spans linearly without sorting another
 token collection. Physical completion consumes compiler flow context; obsolete
 Connection `::` resolver chains are removed rather than kept as a second path.
 The `@` inside a native SSH authority remains URI data, not qualification syntax.
+Runtime value display follows the same direction: remote Path values print
+`raw @ ssh://alias` or `raw @ wsl://distribution`, while local paths retain their
+native spelling without a synthesized `$local`. This is presentation only:
+`Path as String` still projects `NativeText`, not the endpoint-qualified display.
 
 The progressive reference exposes Number, `as` and concepts below `language`.
 Library topics derive their module set from the embedded executable source

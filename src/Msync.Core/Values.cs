@@ -56,7 +56,7 @@ public sealed record PathValue(string Raw, string? WorkingDirectory = null, Conn
             return Path.GetFullPath(path, WorkingDirectory ?? defaultDirectory);
         return Path.IsPathRooted(path) ? path : Path.Combine(WorkingDirectory ?? defaultDirectory, path);
     }
-    public override string ToString() => Connection is null || Connection.Kind == ConnectionKind.Local ? NativeText : $"{Connection}::{Raw}";
+    public override string ToString() => Connection is null || Connection.Kind == ConnectionKind.Local ? NativeText : $"{Raw} @ {Connection}";
 }
 public sealed record PathSelection(PathValue Directory, string Pattern,
     Func<IAsyncEnumerable<Value>, CancellationToken, IAsyncEnumerable<Value>>? Apply = null, bool Recursive = false);
