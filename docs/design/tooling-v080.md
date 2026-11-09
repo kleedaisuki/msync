@@ -89,6 +89,27 @@ redirecting and disposing a custom editor during resolution.
 [custom-editors]: https://code.visualstudio.com/api/extension-guides/custom-editors
 [virtual-documents]: https://code.visualstudio.com/api/extension-guides/virtual-documents
 
+Focused acceptance is split by ownership:
+
+* `tests/Msync.EndToEnd/artifact_disassembly_journey.py --binary PATH` exercises
+  CLI text/JSON/color/stdin, both artifact stages with source removed, inertness,
+  malformed files and explicit broken-configuration bypass.
+* `tests/Msync.EndToEnd/artifact_view_journey.py --binary PATH` exercises the
+  actual protocol, remote filesystem labels, malformed-payload recovery,
+  cancellation concurrent with normal source hover, and navigation metadata.
+* `MSYNC_TEST_ARTIFACT_ONLY=1 MSYNC_TEST_SERVER_PATH=ABS_PATH node
+  editors/vscode/test/integration/run.cjs` selects the real extension-host journey
+  without repeating the existing source-language suite.
+
+The VS Code 1.144 host journey opens both binary custom editors and derived text
+views, navigates symbols/definitions, checks hover, refreshes after recompilation
+and repair, and restarts the server. Read-only behavior is tested through the
+actual user `type` command together with `isDirty` and binary hashes: privileged
+`TextEditor.edit` is not a user-editability oracle for virtual documents. An
+absolute effect-marker path detects accidental execution independently of server
+cwd. Script-looking literals and a valid debug span containing a `command:` URI
+remain inert data, rather than requiring a test-only product hook.
+
 Native TextMate coloring is the fallback. Semantic URI tokens retain the
 protocol, `://` operator, and complete address separately; quoted URI text stays
 a String. Tokens spanning actual newlines split into legal single-line UTF-16
