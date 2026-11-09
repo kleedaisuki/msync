@@ -47,7 +47,7 @@ public static partial class NativeSignatures
         Add("fs", "set_permissions", TypeRef.Null, NativeEffect.Write, path, TypeRef.String);
         Add("fs", "set_readonly", TypeRef.Null, NativeEffect.Write, path, TypeRef.Bool);
         Add("fs", "delete touch", TypeRef.Null, NativeEffect.Write, path);
-        Add("fs", "create_directory create_directories remove remove_all", TypeRef.Bool, NativeEffect.Write, path);
+        Add("fs", "create_directory create_directories remove remove_all remove_directory", TypeRef.Bool, NativeEffect.Write, path);
         Add("fs", "rename create_hard_link create_symlink create_directory_symlink copy_symlink", TypeRef.Null, NativeEffect.Write, path, path);
         Add("fs", "copy_file copy", TypeRef.Bool, NativeEffect.Write, path, path);
         Add("fs", "root_name root_directory root_path relative_path parent_path filename stem extension lexically_normal remove_filename make_preferred", TypeRef.Path, NativeEffect.Pure, path);

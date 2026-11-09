@@ -44,14 +44,14 @@ public static partial class NativeRegistry
     private static RangeValue Range(Value value, string operation) => value as RangeValue
         ?? throw new MsyncException($"ranges.{operation} expects Range, received {value.Type}");
 
-    private static double FiniteNumber(Value value, string operation) => value is NumberValue number && double.IsFinite(number.Data)
-        ? number.Data : throw new MsyncException($"ranges.{operation} requires finite Number arguments");
+    private static double FiniteNumber(Value value, string operation, string module = "ranges") => value is NumberValue number && double.IsFinite(number.Data)
+        ? number.Data : throw new MsyncException($"{module}.{operation} requires finite Number arguments");
 
-    private static long Ordinal(Value value, string operation, bool positive)
+    private static long Ordinal(Value value, string operation, bool positive, string module = "ranges")
     {
-        double number = FiniteNumber(value, operation);
+        double number = FiniteNumber(value, operation, module);
         if (number < (positive ? 1 : 0) || number != Math.Truncate(number) || number >= 9223372036854775808d)
-            throw new MsyncException($"ranges.{operation} requires a {(positive ? "positive" : "nonnegative")} integral count representable by the platform iterator");
+            throw new MsyncException($"{module}.{operation} requires a {(positive ? "positive" : "nonnegative")} integral count representable by the platform iterator");
         return (long)number;
     }
 

@@ -171,6 +171,15 @@ public static partial class NativeRegistry
             if ((attributes.Value & FileAttributes.Directory) != 0) Directory.Delete(local, name == "remove_all" && directory); else File.Delete(local);
             return name == "delete" ? Value.Null : Value.True;
         }
+        if (name == "remove_directory")
+        {
+            FileAttributes? attributes = Attributes(local);
+            if (attributes is null) return Value.False;
+            if ((attributes.Value & FileAttributes.Directory) == 0 || (attributes.Value & FileAttributes.ReparsePoint) != 0)
+                throw new IOException($"rmdir requires a directory, not a file or symbolic link: '{local}'.");
+            Directory.Delete(local);
+            return Value.True;
+        }
         string destination = args.Count > 1 ? context.LocalPath(args[1]) : "";
         switch (name)
         {

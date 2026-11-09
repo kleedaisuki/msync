@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using Msync.Core;
 
 namespace Msync.Runtime;
@@ -11,7 +10,7 @@ public static partial class NativeRegistry
     private static Value ShellOperation(string name, IReadOnlyList<Value> arguments, RuntimeContext context,
         CancellationToken cancellationToken) => name switch
     {
-        "tail_lines" => TailRange(Range(arguments[0], name), Ordinal(arguments[1], name, false), cancellationToken),
+        "tail_lines" => TailRange(Range(arguments[0], name), Ordinal(arguments[1], name, false, "shell"), cancellationToken),
         "unique_lines" => Adapt(Range(arguments[0], name), TypeRef.String, UniqueLines, cancellationToken),
         "which" => Which(Text(arguments[0]), context),
         "process_table" => ProcessTable(cancellationToken),
@@ -73,7 +72,7 @@ public static partial class NativeRegistry
     private static bool Executable(string path)
     {
         if (!File.Exists(path)) return false;
-        return OperatingSystem.IsWindows() || CanExecute(path, 1) == 0;
+        return OperatingSystem.IsWindows() || NativeAccess.Executable(path);
     }
 
     private static RangeValue ProcessTable(CancellationToken cancellationToken)
@@ -81,21 +80,19 @@ public static partial class NativeRegistry
         List<Value> rows = [];
         foreach (Process process in Process.GetProcesses())
         {
-            using (process)
+            using Process owned = process;
+            cancellationToken.ThrowIfCancellationRequested();
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                try
-                {
-                    rows.Add(new ScopeValue(ProcessRowLayout,
-                        [new NumberValue(process.Id), new StringValue(process.ProcessName)]));
-                }
-                // A process can exit between enumeration and reading its name.
-                catch (InvalidOperationException) { }
-                catch (Win32Exception error)
-                {
-                    rows.Add(new ScopeValue(ProcessRowLayout,
-                        [new NumberValue(process.Id), new StringValue($"<unavailable: {error.Message}>")]));
-                }
+                rows.Add(new ScopeValue(ProcessRowLayout,
+                    [new NumberValue(owned.Id), new StringValue(owned.ProcessName)]));
+            }
+            // A process can exit between enumeration and reading its name.
+            catch (InvalidOperationException) { }
+            catch (Win32Exception error)
+            {
+                rows.Add(new ScopeValue(ProcessRowLayout,
+                    [new NumberValue(owned.Id), new StringValue($"<unavailable: {error.Message}>")]));
             }
         }
         rows.Sort(static (left, right) => ((NumberValue)((ScopeValue)left).GetField(0)).Data
@@ -105,6 +102,4 @@ public static partial class NativeRegistry
 
     private static readonly ScopeLayout ProcessRowLayout = new(["pid", "name"]);
 
-    [LibraryImport("libc", EntryPoint = "access", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
-    private static partial int CanExecute(string path, int mode);
 }

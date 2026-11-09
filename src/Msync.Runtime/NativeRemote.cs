@@ -43,7 +43,7 @@ public static partial class NativeRegistry
         if (name is "status" or "symlink_status") return new StringValue(result);
         if (name == "permissions") return new RangeValue(RemotePermissions(result).Select(flag => (Value)new StringValue(flag)), TypeRef.String);
         if (name is "absolute" or "canonical" or "weakly_canonical" or "read_symlink" or "relative" or "proximate") return path.WithRaw(result);
-        if (name is "exists" or "is_regular_file" or "is_directory" or "is_symlink" or "is_block_file" or "is_character_file" or "is_fifo" or "is_socket" or "is_other" or "is_empty" or "is_readonly" or "equivalent" or "create_directory" or "create_directories" or "remove" or "remove_all")
+        if (name is "exists" or "is_regular_file" or "is_directory" or "is_symlink" or "is_block_file" or "is_character_file" or "is_fifo" or "is_socket" or "is_other" or "is_empty" or "is_readonly" or "equivalent" or "create_directory" or "create_directories" or "remove" or "remove_all" or "remove_directory")
             return Bool(result == "true");
         return Value.Null;
     }
@@ -78,6 +78,7 @@ public static partial class NativeRegistry
         "touch" => "touch -- \"$p\"",
         "remove" => "value=$(kind); if [ \"$value\" = not_found ]; then printf false; else if [ \"$value\" = directory ]; then rmdir -- \"$p\"; else rm -- \"$p\"; fi; printf true; fi",
         "remove_all" => "value=$(kind); if [ \"$value\" = not_found ]; then printf false; else rm -rf -- \"$p\"; printf true; fi",
+        "remove_directory" => "value=$(kind); if [ \"$value\" = not_found ]; then printf false; else rmdir -- \"$p\"; printf true; fi",
         "rename" => "q=$(expand \"$2\"; printf .); q=${q%.}; mv -f -- \"$p\" \"$q\"",
         "create_hard_link" => "q=$(expand \"$2\"; printf .); q=${q%.}; ln -- \"$p\" \"$q\"",
         "create_symlink" or "create_directory_symlink" => "q=$(expand \"$2\"; printf .); q=${q%.}; ln -s -- \"$1\" \"$q\"",
