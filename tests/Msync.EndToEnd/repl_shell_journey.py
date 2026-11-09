@@ -11,11 +11,33 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from io import TextIOWrapper
 from pathlib import Path
 from typing import cast
 
 ROOT: Path = Path(__file__).resolve().parents[2]
+
+
+def future_callables(evaluate: Callable[[str, str], float]) -> None:
+    evaluate(
+        'let live_op = fn { [1] }; let deferred_op = live_op(); "OPEN_READY"',
+        "OPEN_READY",
+    )
+    evaluate('live_op = fn { [2] }; "OPEN_CHANGED"', "OPEN_CHANGED")
+    evaluate(
+        '$std::string::concat("OPEN_RESULT:", $std::ranges::first(deferred_op) as String)',
+        "OPEN_RESULT:2",
+    )
+    evaluate(
+        'let live_map = fn(value) { value + 1 }; let mapped = $std::ranges::transform([2], live_map); "MAP_READY"',
+        "MAP_READY",
+    )
+    evaluate('live_map = fn(value) { value + 10 }; "MAP_CHANGED"', "MAP_CHANGED")
+    evaluate(
+        '$std::string::concat("MAP_RESULT:", $std::ranges::first(mapped) as String)',
+        "MAP_RESULT:12",
+    )
 
 
 def fixtures(directory: Path) -> Path:
@@ -58,6 +80,12 @@ pwd()
 /pwd
 let echo = fn(value: String) { $std::string::concat("user:", value) };
 echo("override")
+let live_op = fn { [1] }; let deferred_op = live_op();
+live_op = fn { [2] };
+($std::ranges::first(deferred_op) as String) -> ./future-call.txt;
+let live_map = fn(value) { value + 1 }; let mapped = $std::ranges::transform([2], live_map);
+live_map = fn(value) { value + 10 };
+($std::ranges::first(mapped) as String) -> ./future-callback.txt;
 /quit
 """
     started = time.perf_counter_ns()
@@ -106,6 +134,8 @@ echo("override")
     assert "missing" in completed.stderr, completed.stderr
     assert (work / "created.txt").read_text(encoding="utf-8") == "created"
     assert not (directory / "created.txt").exists()
+    assert (directory / "future-call.txt").read_text(encoding="utf-8") == "2"
+    assert (directory / "future-callback.txt").read_text(encoding="utf-8") == "12"
     return {
         "direct_shell_functions": True,
         "session_cd_and_legacy_command": True,
@@ -115,6 +145,7 @@ echo("override")
         "lazy_effects_accepted_after_display": True,
         "scope_field_values": True,
         "native_directory_error_and_recovery": True,
+        "future_callable_and_native_callback": True,
         "redirected_journey_ms": elapsed_ms,
     }
 
@@ -141,6 +172,7 @@ def terminal(binary: Path, directory: Path) -> dict[str, object]:
             console.send("\x03")
             console.prompt(boundary)
             console.evaluate('echo("STILL_READY")', "STILL_READY")
+            future_callables(console.evaluate)
             console.send("\x04")
             console.exit()
         finally:
@@ -165,6 +197,7 @@ def terminal(binary: Path, directory: Path) -> dict[str, object]:
             unix.send(b"\x03")
             unix.prompt(boundary)
             unix.evaluate('echo("STILL_READY")', "STILL_READY")
+            future_callables(unix.evaluate)
             unix.send(b"\x04")
             unix.process.wait(timeout=5)
             assert unix.process.returncode == 0
@@ -174,6 +207,7 @@ def terminal(binary: Path, directory: Path) -> dict[str, object]:
         "real_terminal_cd_path_completion": True,
         "real_terminal_streaming_ctrl_c": True,
         "prompt_recovers_after_cancel": True,
+        "real_terminal_future_callable_and_callback": True,
     }
 
 
