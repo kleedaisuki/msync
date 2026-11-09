@@ -20,8 +20,12 @@ The first *executed* initializer wins, not the first compile-time specialization
 An unselected branch cannot initialize the instance or run its effects. The
 inferred field storage constraints remain fixed across specializations; a second
 specialization does not create another singleton with incompatible field types.
-Singleton reads therefore retain schema and callable information, but not the
-initializer's literal-value or nullable-flow facts.
+Repeatable declarations therefore retain schema and callable information, but
+not the initializer's literal-value or nullable-flow facts. A declaration in the
+program-entry frame outside loops executes at most once and retains its actual
+first-initialization facts, including Path and Connection provenance for editor
+completion. Function, deferred and speculative frames do not inherit that
+single-execution guarantee.
 
 The compiler gives each Scope syntax identity a stable allocation-site number
 within its Compilation. This identity is reused across function specializations

@@ -255,6 +255,7 @@ internal sealed partial class Compilation
     {
         Frame frame = new(source, sourceName, sessionEnvironment)
         {
+            SingleExecution = true,
             Concepts = sessionConcepts,
             Locals = sessionLocals,
             ContextOwner = document.Span,

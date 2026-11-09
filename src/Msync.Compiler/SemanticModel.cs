@@ -79,6 +79,7 @@ internal sealed class Frame(string source, string sourceName, ImmutableDictionar
     public Dictionary<object, HashSet<(object Scope, string Member)>> FieldOwners { get; init; } = [];
     public SourceSpan ContextOwner { get; set; } = new(0, source.Length);
     public bool ContextIncludesEnd { get; set; } = true;
+    public bool SingleExecution { get; init; }
     public bool EditorRecovery { get; set; }
     public bool EditorProbe { get; set; }
     public bool EditorReportErrors { get; set; }

@@ -32,7 +32,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         changedCastTargets?.Clear();
         int previousCastEpoch = castContractEpoch;
         newMutableCalls.Clear();
-        Frame frame = new(text, sourceName, sessionEnvironment) { Locals = sessionLocals, Concepts = sessionConcepts };
+        Frame frame = new(text, sourceName, sessionEnvironment) { Locals = sessionLocals, Concepts = sessionConcepts, SingleExecution = true };
         SnapshotFacts(frame);
         if (functions.Count == 0) functions.Add(new("<main>", 0, 0, [], TypeRef.Null));
         var previousFunctions = functions.ToArray();

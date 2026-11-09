@@ -381,8 +381,12 @@ internal sealed partial class Compilation
         });
         if (named)
         {
-            frame.Facts = JoinFacts(beforeInitialization, frame.Facts);
-            result = DeferredCapture(frame, new Binding(-1, existingSingleton ?? result));
+            bool firstExecution = frame.SingleExecution && frame.Loops.Count == 0 && existingSingleton is null;
+            if (!firstExecution)
+            {
+                frame.Facts = JoinFacts(beforeInitialization, frame.Facts);
+                result = DeferredCapture(frame, new Binding(-1, existingSingleton ?? result));
+            }
             if (!frame.EditorProbe && !frame.EditorRecovery) namedScopeInfos.TryAdd(scope, result);
         }
         frame.Facts = frame.Facts.SetItem(result.Scope!.Identity, result);
