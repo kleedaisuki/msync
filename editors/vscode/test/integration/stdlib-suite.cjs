@@ -23,7 +23,7 @@ async function run() {
     const runRoot = process.env.MSYNC_TEST_ROOT;
     assert.ok(workspace && runRoot, 'Launch through the isolated native-host runner');
     const source = [
-        'let file = $std::cast("./input", Path);',
+        'let file = "./input" as Path;',
         'let rows = $std::ranges::zip([file], [1]);',
         'for row in rows { let selected = row::first; };',
         'let text = $std::string::join(["a", "b"], "|");',
@@ -52,7 +52,7 @@ async function run() {
         hovers.push({ spelling, type, text });
     }
     const definitions = [];
-    for (const [spelling, module] of [['cast(', '_core'], ['zip(', 'ranges'], ['join(', 'string'], ['compose(', 'functional']]) {
+    for (const [spelling, module] of [['zip(', 'ranges'], ['join(', 'string'], ['compose(', 'functional']]) {
         const result = await bounded(`definition ${spelling}`, vscode.commands.executeCommand('vscode.executeDefinitionProvider', document.uri, position(spelling)));
         assert.ok(result && result.length, spelling);
         const target = result[0];

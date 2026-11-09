@@ -57,7 +57,7 @@ fn copy(file: Path | String, destination) {
 let file? = if exists ~/.codex { ~/.codex } else { null };
 match file {
     null => {},
-    _ => { copy(file, $wsl::file) },
+    _ => { copy(file, file @ $wsl) },
 };
 ```
 
@@ -71,9 +71,11 @@ match file {
 - Snippets cover named/anonymous functions, nullable bindings, conditions,
   exhaustive matches, range loops, lexical scopes, native signatures and SSH
   connections. A block's final expression retains its value; `;` discards it.
-- `$`, `::` and `/` have independent operator scopes. Namespaces, function
-  callbacks, range pipelines and ordered `[ ... ]` ranges keep their lexical
-  roles. Filename components such as `root/match/file` are not keywords.
+- `$`, `::`, `@` and `/` have independent operator scopes. Named standard
+  modules, callbacks, pipelines and ordered `[ ... ]` ranges keep their lexical
+  roles. `path @ connection` selects a physical endpoint; `scope::member`
+  selects a lexical member. Filename components such as `root/match/file`
+  are not keywords.
 - An unquoted URI keeps three roles: protocol, `://` operator and atomic address.
   IPv6 brackets, ports and Unicode paths stay part of the address. A closing
   semicolon or brace is not swallowed into the URI. Quoted URLs are Strings.
@@ -91,7 +93,9 @@ Function values use the theme's **function** color, including scope members and
 aliases such as `let callback = Module::operation;`. The `fn` and `scope`
 keywords use the theme's **keyword** color in every declaration form. Names of
 named `scope Name { ... }` declarations and their aliases use the **type** color,
-matching explicit type names. Values of anonymous `scope { ... }` expressions
+matching explicit type names and concept constraints. Standard modules such as
+`$std::math` are named scopes and use the same type role. Values of anonymous
+`scope { ... }` expressions
 use the ordinary **identifier** color, including
 instances returned by constructor-like functions. Their inferred type is still
 Scope: hover and completion retain their declared members. Colors
@@ -99,7 +103,8 @@ come from your VS Code theme; the extension does not impose a dark-only palette.
 Semantic highlighting is enabled by default for msync and can still be disabled
 in your language-specific editor settings. Before inference finishes, direct
 `fn` and `scope` declarations retain matching TextMate fallback roles.
-`if`, `else`, `match` and the null-test `?` use the theme's separate
+`if`, `else`, `match`, `as`, `acquire`, `release`, `acqrel` and the null-test `?`
+use the theme's separate
 **control-flow keyword** role; no RGB colors are hardcoded. Every Scope member
 can be inspected, including scalar and Connection-valued members.
 
@@ -123,12 +128,37 @@ select a Scope member. Diagnostics identify the failing expression and retain
 the call context rather than repeating the document URI in the message.
 
 **Format Document** uses the compiler's formatter with an 80-column target.
-Arguments and expressions wrap at syntax boundaries. Nested blocks keep their
+Arguments and expressions wrap at syntax boundaries. Long boolean expressions
+use a grouped continuation with leading `and`/`or`, so the operator remains
+visible beside each operand. Nested blocks keep their
 four-space indentation; less horizontal room causes earlier wrapping, not a
 flattened block structure. Indivisible paths, identifiers, URLs, literal contents
 and comments may exceed the target rather than changing their meaning. The
 extension selects this formatter for msync by default without changing other
 languages' formatting preferences.
+
+### Numbers, conversions and structural concepts
+
+Number literals include decimals, exponents, base prefixes and separators:
+
+```text
+let counts = [1_000, 1.5, .5, 1e3, 0xFF, 0b10_01, 0o77, -0];
+let file = "./input" as Path;
+let selected = file @ $local;
+concept Named { name: String, };
+concept Labeled { Named, };
+fn label(item: Labeled) -> String { item::name };
+let instance = scope { name: "Klee", };
+let title = label(instance);
+```
+
+Concepts describe required members and callable signatures without opening the
+runtime type universe. Named constraints participate in completion, hover,
+definition navigation and the document outline. A concept name is a type;
+`concept` and `type` remain declaration keywords. Conversion uses `as`,
+not a dynamic-looking cast helper. Only Path/String conversion is implicit.
+Numeric-looking filename components retain path roles rather than being
+partially colored as numbers; inferred semantic tokens refine the fallback.
 
 ## SSH authentication during completion
 

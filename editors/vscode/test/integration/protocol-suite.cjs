@@ -56,7 +56,7 @@ async function run() {
     const lines = uris.map((uri, index) => `let remote${index} = ${uri};`);
     const quoted = ['"ssh://forge"', '"tcp://[::1]:8022/path"'];
     lines.push(...quoted.map((literal, index) => `let quoted${index} = ${literal};`));
-    lines.push('let local_path = $local::file;');
+    lines.push('let local_path = file @ $local;');
     const filename = path.join(workspace, 'protocol-style.msync');
     await fs.writeFile(filename, lines.join('\n') + '\n');
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(filename));
@@ -97,7 +97,7 @@ async function run() {
         assert.ok(pieces.some(piece => piece.line === line && piece.text === literal && piece.type === 'string'));
         assert.ok(!pieces.some(piece => piece.line === line && ['protocol', 'endpoint'].includes(piece.type)));
     }
-    assert.ok(pieces.some(piece => piece.line === uris.length + quoted.length && piece.text === 'local' && piece.type === 'namespace'));
+    assert.ok(pieces.some(piece => piece.line === uris.length + quoted.length && piece.text === 'local' && piece.type === 'variable'));
     const result = { suite: 'protocol', status: 'passed', vscodeVersion: vscode.version, uris,
         legend: legend.tokenTypes, pieces, fallback };
     await fs.writeFile(path.join(runRoot, 'protocol-results.json'), JSON.stringify(result, null, 2));

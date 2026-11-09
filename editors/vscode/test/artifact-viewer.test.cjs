@@ -335,6 +335,7 @@ test('IR grammar colors real labels and future instruction mnemonics without sou
         ['  0042: ProcessCall arguments 0, release flags 1', 'release', 'keyword.control.msync-ir'],
         ['  0042: FutureFieldOpcode @c0 %2', 'FutureFieldOpcode', 'keyword.operator.msync-ir'],
         ['  0042: FutureFieldOpcode @c0 %2', '%2', 'variable.other.msync-ir'],
+        ...['Modulo', 'LoadSingleton', 'StoreSingleton'].map(opcode => [`  0042: ${opcode} 1`, opcode, 'keyword.operator.msync-ir']),
         ['  0042: GetMember "filename", slot #2 (layout-checked hint)', '"filename"', 'variable.other.property.msync-ir'],
         ['  0042: GetMember "filename", slot #2 (layout-checked hint)', 'slot', 'variable.other.property.layout.msync-ir'],
         ['  0042: GetMember "filename", slot #2 (layout-checked hint)', 'layout-checked', 'variable.other.property.layout.msync-ir'],

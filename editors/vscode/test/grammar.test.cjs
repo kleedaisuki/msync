@@ -89,8 +89,8 @@ test('paths preserve namespace, lookup, composition and callback roles', () => {
     for (const line of [
         'copy($local, .codex/codex.prompt);',
         '"C:\\Users\\STONE\\.codex"/codex.prompt',
-        '$local::.codex/codex.prompt',
-        '($local)::("C:\\Users\\STONE\\.codex" / codex.prompt)',
+        '.codex/codex.prompt @ $local',
+        '("C:\\Users\\STONE\\.codex" / codex.prompt) @ $local',
         '$std::ranges::filter(keep)',
     ]) {
         const pieces = grammar.tokenizeLine(line, textmate.INITIAL).tokens
@@ -104,9 +104,9 @@ test('paths preserve namespace, lookup, composition and callback roles', () => {
             }
         }
     }
-    hasScope('let config = $wsl::codex(config.toml);', 'wsl', 'entity.name.namespace.msync');
-    hasScope('let config = $wsl::codex(config.toml);', 'codex', 'entity.name.function.msync');
-    hasScope('items | $std::ranges::filter(present)', 'filter', 'support.function.range.msync');
+    hasScope('let config = codex(config.toml) @ $wsl;', 'wsl', 'variable.other.readwrite.msync');
+    hasScope('let config = codex(config.toml) @ $wsl;', 'codex', 'entity.name.function.msync');
+    hasScope('items | $std::ranges::filter(present)', 'filter', 'entity.name.function.msync');
     for (const namespace of ['$view', '$views', '$ranges', 'view', 'views', 'ranges'])
         assert.ok(!scopes(`items | ${namespace}::filter(present)`, 'filter').includes('support.function.range.msync'));
     for (const word of ['or', 'not', 'and', 'delete', 'true', 'fn', 'match', 'Path']) {
@@ -115,12 +115,12 @@ test('paths preserve namespace, lookup, composition and callback roles', () => {
 });
 
 test('ordered ranges do not absorb booleans, calls, paths or regex classes', () => {
-    const line = 'let items = ["可莉🌟", true, $local::"two words", codex(config.toml)];';
+    const line = 'let items = ["可莉🌟", true, "two words" @ $local, codex(config.toml)];';
     hasScope(line, '[', 'punctuation.section.brackets.begin.msync');
     hasScope(line, ']', 'punctuation.section.brackets.end.msync');
     hasScope(line, '可莉🌟', 'string.quoted.double.msync');
     hasScope(line, 'true', 'constant.language.boolean.msync');
-    hasScope(line, 'local', 'entity.name.namespace.msync');
+    hasScope(line, 'local', 'variable.other.readwrite.msync');
     hasScope(line, 'two words', 'string.quoted.double.msync');
     hasScope(line, 'codex', 'entity.name.function.msync');
     hasScope('let items = [root/<[>#]+\\.txt>];', '[>#]', 'constant.other.character-class.regexp.msync');
@@ -269,4 +269,80 @@ test('declaration keywords stay keywords while names retain inferred roles', () 
 
 test('explicit ancestor import stays a declaration keyword, not control flow', () => {
     hasScope('global root, .codex;', 'global', 'keyword.other.msync');
+});
+
+test('Number literals preserve complete lexical forms without coloring filename fragments', () => {
+    for (const literal of ['0', '1.5', '.5', '1.', '1e3', '1.5e-7', '1_000.25', '1e1_0', '0xFF_FF', '0Xab', '0b10_01', '0B11', '0o7_7', '0O12']) {
+        const line = `let value = ${literal};`;
+        hasScope(line, literal, 'constant.numeric.msync');
+        const start = line.indexOf(literal);
+        const token = grammar.tokenizeLine(line, textmate.INITIAL).tokens.find(item => item.startIndex === start);
+        assert.equal(token.endIndex - token.startIndex, literal.length, `${literal} is one number`);
+    }
+    hasScope('let value = -0;', '-', 'keyword.operator.msync');
+    hasScope('let value = -0;', '0', 'constant.numeric.msync');
+    for (const operator of ['+', '-', '*', '**', '/', '%', '@'])
+        hasScope(`let value = 7 ${operator} 2;`, operator, 'keyword.operator.msync');
+    for (const literal of ['1.5.toml', '1e3.txt', '0xFF-config', '.5.json', 'root/123', 'root/1.5', 'root/0xFF', 'root/file-12', '1__2']) {
+        const tokens = grammar.tokenizeLine(`let file = ${literal};`, textmate.INITIAL).tokens;
+        assert.ok(!tokens.some(item => item.scopes.includes('constant.numeric.msync')), literal);
+    }
+    hasScope('let value = 2**3**2;', '**', 'keyword.operator.msync');
+    hasScope('let value = 1+2;', '1', 'constant.numeric.msync');
+    hasScope('let value = 1+2;', '+', 'keyword.operator.msync');
+    hasScope('let value = 1+2;', '2', 'constant.numeric.msync');
+});
+
+test('concept contracts and explicit conversions use type and control roles', () => {
+    const lines = [
+        'concept Monoid {',
+        '    Semigroup,',
+        '    type Self;',
+        '    identity: Self,',
+        '    combine: fn(left: Self, right: Self) -> Self,',
+        '};',
+        'let value = path as String;',
+    ];
+    let stack = textmate.INITIAL;
+    const roles = [];
+    for (const line of lines) {
+        const result = grammar.tokenizeLine(line, stack);
+        roles.push(result.tokens.map(token => ({text:line.slice(token.startIndex, token.endIndex),scopes:token.scopes})));
+        stack = result.ruleStack;
+    }
+    for (const [index, word, role] of [
+        [0, 'concept', 'keyword.declaration.concept.msync'],
+        [0, 'Monoid', 'entity.name.type.msync'],
+        [1, 'Semigroup', 'entity.name.type.msync'],
+        [2, 'type', 'keyword.declaration.type.msync'],
+        [2, 'Self', 'entity.name.type.msync'],
+        [3, 'identity', 'variable.other.property.msync'],
+        [3, 'Self', 'entity.name.type.msync'],
+        [4, 'combine', 'entity.name.function.msync'],
+        [4, 'fn', 'keyword.declaration.function.msync'],
+        [4, 'left', 'variable.parameter.msync'],
+        [4, 'Self', 'entity.name.type.msync'],
+        [6, 'as', 'keyword.control.msync'],
+        [6, 'String', 'entity.name.type.msync'],
+    ]) assert.ok(roles[index].some(token => token.text === word && token.scopes.includes(role)), JSON.stringify({index,word,role,tokens:roles[index]}));
+    hasScope('fn fold(value: Monoid | Semigroup) {', 'Monoid', 'entity.name.type.msync');
+    hasScope('fn fold(value: Monoid | Semigroup) {', 'Semigroup', 'entity.name.type.msync');
+    hasScope('fn fold(value: Monoid) -> Monoid {', 'Monoid {', 'entity.name.type.msync');
+    hasScope('let value = object as Monoid;', 'Monoid', 'entity.name.type.msync');
+    hasScope('root/as/file @ remote;', 'as', 'variable.other.readwrite.msync');
+});
+
+test('standard module qualifiers are named types but connection values are identifiers', () => {
+    for (const line of ['$std::math::abs(-0);', '$std::string::trim(text);', '$std::ranges::take(items, 2);']) {
+        hasScope(line, 'std', 'entity.name.type.msync');
+        const module = line.split('::')[1];
+        hasScope(line, module, 'entity.name.type.msync');
+        const name = line.split('::')[2].split('(')[0];
+        hasScope(line, name, 'entity.name.function.msync');
+    }
+    hasScope('let root = $std;', 'std', 'entity.name.type.msync');
+    hasScope('path @ $wsl;', 'wsl', 'variable.other.readwrite.msync');
+    hasScope('path @ $local;', 'local', 'variable.other.readwrite.msync');
+    const words = new RegExp(require('../language-configuration.json').wordPattern, 'g');
+    assert.deepEqual('./path@$wsl'.match(words), ['.', 'path', 'wsl']);
 });
