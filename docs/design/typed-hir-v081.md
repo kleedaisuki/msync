@@ -211,13 +211,22 @@ invokes the bytecode lowerer or submits a session generation.
 
 ## Retention and export
 
-The default compile path need not retain every representation for the entire
-program. Source syntax can be released after lexical binding; fixed-point and
-query scratch state is released before finalized bodies leave semantic analysis.
-Typed bodies can be lowered and released by body when the driver does not need
-an exported full graph. Editor requests keep the projections they need, rather
-than mutable frame/callable/storage clones. Export explicitly retains the
-self-contained semantic graph required by the file.
+The default compile driver now runs `Analyze -> HirLowerer -> Optimizer`; there
+is no old frontend fallback. Its private lowering boundary returns bytecode
+without a retained layout, so syntax, binding/inference state and typed HIR are
+not retained during bytecode optimization. Analysis currently materializes the
+complete demanded HIR module before lowering; it does not yet stream individual
+bodies. `HirSealer` discards consumed bound-root nodes and unreferenced executable
+payloads while retaining semantic generic definitions. Type-query overlays and
+per-call substitution workspaces do not become part of the exported module.
+
+Standalone `Analyze` and `.mhir` export intentionally retain a self-contained
+semantic graph. Editor requests retain immutable observations and metadata, not
+mutable frame/callable/storage clones. A persistent REPL retains its accepted
+semantic generation and backend layout: future submissions may specialize an
+uncalled generic or refer to an old captured location. Its pending-generation
+journal is separate from query scratch state. No mode retains syntax trees,
+bytecode and a bytecode optimizer graph merely to answer an editor query.
 
 The new `.mhir` container has its own format version. It supports binary export,
 read-only text/JSON inspection and source-free lowering from a loaded finalized
