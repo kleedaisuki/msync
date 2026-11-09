@@ -224,8 +224,8 @@ def run(binary: Path, distribution: str | None) -> dict[str, Any]:
                 guest_fixture.write_remote,
                 password,
             )
-    sys.path.insert(0, str(ROOT / "legacy" / "benches"))
-    from ssh_v065 import Fixture
+    sys.path.insert(0, str(ROOT / "tests" / "support"))
+    from ssh_fixture import Fixture
 
     with Fixture(ROOT / ".temp" / "completion-auth") as fixture:
         subprocess.run(

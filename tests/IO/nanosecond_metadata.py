@@ -90,8 +90,8 @@ def run(binary: Path, root: Path) -> dict[str, dict[str, int]]:
 
 
 def run_ssh(binary: Path) -> dict[str, dict[str, int]]:
-    sys.path.insert(0, str(ROOT / "legacy" / "benches"))
-    from ssh_v065 import Fixture, lines
+    sys.path.insert(0, str(ROOT / "tests" / "support"))
+    from ssh_fixture import Fixture, lines
 
     results: dict[str, dict[str, int]] = {}
     with Fixture(ROOT / ".temp" / "nanosecond-ssh") as fixture:

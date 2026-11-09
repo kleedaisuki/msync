@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Exercise the C# transport over real loopback OpenSSH with native client counts."""
+
 from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 ROOT: Path = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "legacy" / "benches"))
-from ssh_v065 import Fixture, lines  # noqa: E402
+sys.path.insert(0, str(ROOT / "tests" / "support"))
+from ssh_fixture import Fixture, lines
 
 
 def main() -> None:
@@ -19,23 +20,47 @@ def main() -> None:
     parser.add_argument("--test-dll", type=Path)
     options: argparse.Namespace = parser.parse_args()
     artifacts: Path = ROOT / ".temp" / "build-transfer-tests"
-    test_dll: Path = options.test_dll or artifacts / "bin" / "Msync.Transfer.Tests" / "debug" / "Msync.Transfer.Tests.dll"
+    test_dll: Path = (
+        options.test_dll
+        or artifacts
+        / "bin"
+        / "Msync.Transfer.Tests"
+        / "debug"
+        / "Msync.Transfer.Tests.dll"
+    )
     if options.test_dll is None:
         subprocess.run(
-            ["dotnet", "build", str(ROOT / "tests/Msync.Transfer.Tests/Msync.Transfer.Tests.csproj"),
-             "--artifacts-path", str(artifacts), "-m:1", "-nr:false", "--nologo"],
-            cwd=ROOT, check=True,
+            [
+                "dotnet",
+                "build",
+                str(ROOT / "tests/Msync.Transfer.Tests/Msync.Transfer.Tests.csproj"),
+                "--artifacts-path",
+                str(artifacts),
+                "-m:1",
+                "-nr:false",
+                "--nologo",
+            ],
+            cwd=ROOT,
+            check=True,
         )
     with Fixture(ROOT / ".temp" / "transfer-ssh") as fixture:
         environment: dict[str, str] = fixture.environment()
         environment["MSYNC_TRANSFER_WORK"] = str(fixture.root / "work")
         environment["MSYNC_TRANSFER_REMOTE"] = "Perf_Fixture"
         environment["MSYNC_TRANSFER_SECOND_REMOTE"] = "Second_Fixture"
-        fixture.config.write_text(fixture.config.read_text().replace("Host Perf_Fixture", "Host Perf_Fixture Second_Fixture"))
+        fixture.config.write_text(
+            fixture.config.read_text().replace(
+                "Host Perf_Fixture", "Host Perf_Fixture Second_Fixture"
+            )
+        )
         before_log: int = len(lines(fixture.log))
         result: subprocess.CompletedProcess[bytes] = subprocess.run(
-            ["dotnet", str(test_dll.resolve())], cwd=ROOT, env=environment,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90, check=False,
+            ["dotnet", str(test_dll.resolve())],
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            timeout=90,
+            check=False,
         )
         log: list[str] = lines(fixture.log)[before_log:]
         calls: list[str] = lines(fixture.calls)

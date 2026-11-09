@@ -3,10 +3,10 @@
 ## C# staged language (v0.8.0)
 
 - The current product is the .NET 10 Native AOT implementation in `src/Msync.*`.
-  `legacy/` preserves the independently buildable Rust 0.7.3 implementation,
-  embedded standard sources and fixtures. Current C# readers accept artifact
-  format 4 only; formats 1/2/3 are rejected, not reinterpreted. Historical Rust
-  syntax/artifacts belong to the separate legacy implementation.
+  The retired Rust implementation is available in Git history at `v0.7.3`, not
+  in this checkout or a product compatibility path. Current readers accept
+  artifact format 4 only; formats 1/2/3 and historical Rust artifacts are
+  rejected, not reinterpreted or delegated to another executable.
 - Braces own blocks, `;` discards values, and a block tail is its result.
   Binding values are mutable but inferred/declared storage types are immutable;
   assignment checks the fixed constraint. Shadowing creates a new lexical identity.
@@ -41,7 +41,7 @@
   observations as reusable proofs. Binding lowers, optimizes once at the chosen
   level (default O2), then performs final contextual lowering. Executing `.mexe`
   does not rebind or reoptimize. `decltype` infers without executing effects.
-- Product code never depends on Python or the Rust tree. Typed Python under
+- Product code never depends on Python or a Rust toolchain. Typed Python under
   `scripts/`, `packaging/` and `tests/` owns development/installation experiments.
   Keep publication payloads in `artifacts/`, archives in `dist/`, disposable work
   in `.temp/`, and NuGet's transitive resolution in version-controlled lock files.

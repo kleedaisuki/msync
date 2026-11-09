@@ -168,8 +168,8 @@ matrix for every subsequent optimizer change. Documentation updates do not
 trigger native republication.
 
 The product is published from `src/Msync.Cli/Msync.Cli.csproj` using .NET 10
-Native AOT. The independent Rust implementation in `legacy/` remains a semantic
-baseline, not a dependency of the new executable or release payload.
+Native AOT. The retired Rust implementation remains in Git history at `v0.7.3`,
+not in the current source checkout, executable routing or release payload.
 
 ## Build and acceptance
 

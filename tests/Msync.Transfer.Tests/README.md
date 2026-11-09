@@ -34,8 +34,8 @@ The root language acceptance suite separately exercises source compilation and
 artifact execution; this focused executable isolates transfer semantics from
 frontend syntax.
 
-`ssh_journeys.py` reuses the existing typed fixture in
-`legacy/benches/ssh_v065.py` so both implementations use the same host keys,
+`ssh_journeys.py` reuses the typed fixture in
+`tests/support/ssh_fixture.py` so transport and language journeys use the same host keys,
 native alias configuration, process counting, and owned daemon lifetime. Product
 code has no dependency on that fixture or Python. The current link/mode journeys
 run on Unix; native Windows installation, filesystem behavior and WSL transport

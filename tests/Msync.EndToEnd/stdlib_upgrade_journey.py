@@ -416,8 +416,8 @@ def run_examples(
 
 
 def ssh_journey(binary: Path, directory: Path) -> dict[str, Any]:
-    sys.path.insert(0, str(ROOT / "legacy" / "benches"))
-    from ssh_v065 import Fixture
+    sys.path.insert(0, str(ROOT / "tests" / "support"))
+    from ssh_fixture import Fixture
 
     with Fixture(ROOT / ".temp" / "stdlib-upgrade" / "ssh") as fixture:
         remote = json.dumps(
@@ -471,7 +471,12 @@ result::error -> ./remote-stderr.txt;
 def identify(binary: Path) -> dict[str, Any]:
     components: dict[str, str] = {}
     if (binary.parent / "Msync.Compiler.dll").exists():
-        for name in ("Msync.Compiler.dll", "Msync.Core.dll", "Msync.Runtime.dll"):
+        for name in (
+            "Msync.Compiler.dll",
+            "Msync.Core.dll",
+            "Msync.Optimization.dll",
+            "Msync.Runtime.dll",
+        ):
             path = binary.parent / name
             components[name] = hashlib.sha256(path.read_bytes()).hexdigest()
     return {

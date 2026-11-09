@@ -30,7 +30,8 @@ all hosts and retain endpoint identity without invoking transport.
   `front`/`any_of` do not consume unneeded items. See Microsoft's
   [async stream cancellation contract](https://learn.microsoft.com/en-us/dotnet/csharp/asynchronous-programming/generate-consume-asynchronous-stream).
 - Pure lexical path operations follow the existing C++ filesystem-compatible
-  model in `legacy/src/execution/native_fs_path.rs` rather than `GetFullPath`,
+  model recorded in [v0.7.3](https://github.com/kleedaisuki/msync/blob/v0.7.3/src/execution/native_fs_path.rs)
+  rather than `GetFullPath`,
   which would resolve lexical operations against the host working directory.
 
 The initial integration passes 120 assertions. It also checks the legacy status

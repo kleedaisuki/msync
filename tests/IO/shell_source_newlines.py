@@ -50,8 +50,8 @@ def build_crlf(root: Path) -> Path:
 
 
 def run(binary: Path) -> dict[str, int | bool]:
-    sys.path.insert(0, str(ROOT / "legacy" / "benches"))
-    from ssh_v065 import Fixture, lines
+    sys.path.insert(0, str(ROOT / "tests" / "support"))
+    from ssh_fixture import Fixture, lines
 
     with Fixture(ROOT / ".temp" / "shell-source-newlines") as fixture:
         work = fixture.root / "work"

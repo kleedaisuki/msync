@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT: Path = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "legacy" / "benches"))
-from ssh_v065 import Fixture, lines
+sys.path.insert(0, str(ROOT / "tests" / "support"))
+from ssh_fixture import Fixture, lines
 
 
 def main() -> None:

@@ -107,8 +107,8 @@ release or tag was created.
 
 The extracted Linux Native AOT executable has SHA-256
 `ca5c2eb2aebe1397f4ec3a745a6e76dcfcf598723ba1046523f183012263f38b`.
-The final implementation is C#; the independently buildable Rust 0.7.3 baseline
-is retained under `legacy/`. Local strict solution compilation passes all eight
+The implementation is C#; the Rust 0.7.3 baseline used at this checkpoint is now
+retired from the checkout and remains in Git history. Local strict solution compilation passed all eight
 projects with zero warnings/errors, and solution whitespace verification passes.
 
 The same frozen native payload passed six encrypted OpenSSH CLI journeys:

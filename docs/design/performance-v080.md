@@ -28,7 +28,7 @@ The small check versus 128-operation check separates fixed startup from scaling.
 Source versus object separates frontend costs from runtime work. Single-file
 versus tree distinguishes fixed overhead from per-member I/O and publication.
 
-## Baseline preparation
+## Baseline preparation (historical)
 
 The existing root `target/release/msync` initially reported 0.6.6 and was not used
 as the 0.7.3 baseline. The preserved tree was rebuilt with:
@@ -37,7 +37,12 @@ as the 0.7.3 baseline. The preserved tree was rebuilt with:
 cargo build --release --locked --manifest-path legacy/Cargo.toml --bin msync --target-dir target
 ```
 
-The resulting optimized 0.7.3 image is retained under
+This records the original comparison setup. The Rust checkout and Cargo runner
+were retired before 0.8 publication; historical sources remain at
+[`v0.7.3`](https://github.com/kleedaisuki/msync/tree/v0.7.3).
+Current comparison tools accept frozen C# Native AOT images only.
+
+The resulting optimized 0.7.3 image was retained under
 `.temp/performance-v080/baseline/msync`; the benchmark makes another frozen copy
 and records its SHA-256 before measuring. A repeated real tree transfer confirms
 equivalent container semantics (`input-tree -> output-tree/`) and the intended

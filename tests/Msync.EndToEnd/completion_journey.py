@@ -42,7 +42,7 @@ def source_offset(text: str, position: dict[str, int]) -> int:
 def apply_edit(text: str, edit: dict[str, Any]) -> str:
     start = source_offset(text, edit["range"]["start"])
     end = source_offset(text, edit["range"]["end"])
-    return text[:start] + edit["newText"] + text[end:]
+    return text[:start] + cast(str, edit["newText"]) + text[end:]
 
 
 def native_run(
@@ -855,8 +855,8 @@ def wsl(binary: Path, directory: Path, distro: str) -> dict[str, int]:
 
 
 def ssh_fixture(binary: Path, directory: Path) -> dict[str, int]:
-    sys.path.insert(0, str(ROOT / "legacy/benches"))
-    from ssh_v065 import Fixture, lines
+    sys.path.insert(0, str(ROOT / "tests/support"))
+    from ssh_fixture import Fixture, lines
 
     with Fixture(ROOT / ".temp/completion-v080/ssh") as fixture:
         remote = fixture.root / "remote-files"

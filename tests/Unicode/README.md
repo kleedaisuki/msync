@@ -1,22 +1,23 @@
-# Full Unicode casing acceptance
+# Unicode 17 conformance
 
-Run `python3 tests/Unicode/compare_rust.py` to compare the generated C# runtime
-with the retained Unicode 17 Rust `String` semantics. Add `--native` to compile
-the focused oracle with Native AOT and invariant globalization before comparison.
-The oracle checks all valid Unicode scalar inputs and 2,018 deterministic string
-contexts; it does not repeat unrelated compiler, filesystem or transport tests.
+Run `python3 tests/Unicode/verify_unicode.py` to compare the C# conformance
+executable with the pinned Unicode Character Database under `vendor/unicode`.
+The expected full mappings and Final_Sigma contexts are derived from those
+normative files rather than from Python's installed Unicode version. Ordinal
+comparison uses code-point lexicographic ordering.
 
-Use `--order-only` to check only scalar ordinal comparison against Rust across
-10,008 deterministic pairs, without repeating accepted full casing measurements.
+The focused check examines all valid Unicode scalars, 2,018 deterministic string
+contexts and 10,008 ordering pairs. `--order-only` selects only ordering;
+`--native` publishes the same C# conformance executable with Native AOT. Pass
+`--binary PATH` to reuse an existing compatible conformance image instead of
+rebuilding product projects during another workstream.
 
-The Rust oracle deliberately names its Unicode version: a future Unicode upgrade
-must choose updated language behavior explicitly rather than silently inheriting
-whatever casing tables a newer host runtime installs.
+The former Rust oracle is retired with the Rust implementation. Its historical
+comparison remains recorded in `docs/design/unicode-v080.md`; current validation
+requires only .NET and the pinned Unicode data. Product execution never starts
+this Python verifier or parses UCD files.
 
-Disposable builds, map/context outputs and JSON results remain under
-`.temp/unicode-v080`. The ordinary CLI source / source-free `.mso` / bound `.mexe`
-journey is `full_unicode_case_regex_and_native_filename` in
+Disposable builds, outputs and reports remain in `.temp/unicode-v080`. The
+ordinary source / source-free `.mso` / bound `.mexe` journey is
+`full_unicode_case_regex_and_native_filename` in
 `tests/Acceptance/language_journeys.py`.
-
-See `docs/design/unicode-v080.md` for representation, property-context semantics,
-ASCII fast-path cost and the actual Native AOT verification record.

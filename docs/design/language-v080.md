@@ -1,8 +1,8 @@
 # v0.8 typed expression language
 
 The authoritative source grammar is implemented in `src/Msync.Compiler/Syntax`.
-The preserved Rust frontend and runtime live under `legacy/`; their old artifacts
-are not silently reinterpreted by the C# bytecode interpreter.
+The retired Rust frontend and runtime remain in Git history at `v0.7.3`, not
+the current checkout. Their artifacts are rejected by the C# bytecode interpreter.
 Current artifacts use format 4 only; formats 1/2/3 are rejected. Product version
 remains 0.8.0 and the default optimization level is O2. The
 [delivery matrix](language-upgrade-delivery-v080.md) records acceptance separately
@@ -295,10 +295,13 @@ import context. One old imported-name-set quirk allowed reimport after a local
 rebind to reset the name to the captured value; 0.8 instead keeps the explicit
 lexical-identity conflict rule above.
 
-These distinctions are grounded in `legacy/src/compiler/structured.rs`
+These historical distinctions are grounded in the `v0.7.3` sources:
+[`structured.rs`](https://github.com/kleedaisuki/msync/blob/v0.7.3/src/compiler/structured.rs)
 (`import_globals`, macro frame construction),
-`legacy/src/compiler/structured/symbols.rs` (`captured`, `instantiate`) and
-`legacy/src/compiler/structured/v6.rs` (slot assignment). The discriminating
+[`structured/symbols.rs`](https://github.com/kleedaisuki/msync/blob/v0.7.3/src/compiler/structured/symbols.rs)
+(`captured`, `instantiate`) and
+[`structured/v6.rs`](https://github.com/kleedaisuki/msync/blob/v0.7.3/src/compiler/structured/v6.rs)
+(slot assignment). The discriminating
 baseline tests are `lowering_v4::macro_global_uses_definition_snapshot_and_locals_do_not_leak`,
 `symbol_v052::lexical_globals_capture_prior_values_and_callers_are_not_captured`
 and the transitive/imported-template cases in `compiler_functions_v060`.

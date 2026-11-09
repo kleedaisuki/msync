@@ -2,8 +2,8 @@
 
 ## 0.8.0 — development
 
-- Replace the product implementation with C#/.NET 10 Native AOT while retaining
-  the independent Rust implementation and its established semantics in `legacy/`.
+- Replace the product implementation with C#/.NET 10 Native AOT and retire the
+  Rust source tree and executable routing; historical releases remain in Git.
 - Introduce brace-delimited block expressions, semicolon value discards, `let`,
   generic first-class `fn`, lexical scope values, exhaustive `match`, explicit
   nullable bindings and flow-sensitive narrowing, type patterns and unevaluated

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -17,12 +16,10 @@ def invoke(
     fixture: Path,
     *arguments: str,
     source: bytes | None = None,
-    environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         [str(binary), "--no-config", *arguments],
         cwd=fixture,
-        env=environment,
         input=source,
         capture_output=True,
         check=False,
@@ -30,7 +27,7 @@ def invoke(
     )
 
 
-def run(binary: Path, fixture: Path, legacy: Path | None) -> None:
+def run(binary: Path, fixture: Path) -> None:
     payload = "Unicode 可莉 𐐨\r\n" + ("βé" * 16000) + "\r\n尾部"
     source = ('"' + payload + '" -> ./output;\r\n').encode("utf-8")
     script = fixture / "Unicode source.msync"
@@ -50,29 +47,19 @@ def run(binary: Path, fixture: Path, legacy: Path | None) -> None:
     assert result.returncode != 0 and b"missing.msync" in result.stderr
     result = invoke(binary, fixture, "run", str(fixture))
     assert result.returncode != 0 and str(fixture).encode() in result.stderr
-    if legacy is not None:
-        environment = dict(os.environ)
-        environment["MSYNC_LEGACY"] = str(legacy)
-        old = '# msync: 0.7\n"old 可莉" -> old-output\n'.encode()
-        result = invoke(
-            binary, fixture, "run", "-", source=old, environment=environment
-        )
-        assert result.returncode == 0, result.stderr
-        assert (fixture / "old-output").read_bytes() == "old 可莉".encode()
     print(
-        "PASS: finite Unicode/BOM/CRLF source, streamed stdin, actionable read errors and optional consumed legacy stdin"
+        "PASS: finite Unicode/BOM/CRLF source, streamed stdin and actionable read errors"
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
-    parser.add_argument("--legacy", type=Path)
     args = parser.parse_args()
     root = ROOT / ".temp/product-latency"
     root.mkdir(parents=True, exist_ok=True)
     fixture = Path(tempfile.mkdtemp(prefix="source-input-", dir=root))
-    run(args.binary.resolve(), fixture, args.legacy.resolve() if args.legacy else None)
+    run(args.binary.resolve(), fixture)
 
 
 if __name__ == "__main__":

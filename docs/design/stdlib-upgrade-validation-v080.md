@@ -119,8 +119,8 @@ supposed snapshot; eager native Range results corrected that observable defect.
 
 ### Actual SSH service composition
 
-The optional Linux loopback fixture is reused from
-`legacy/benches/ssh_v065.py` as development infrastructure. No Rust or Python
+The optional Linux loopback fixture lives in
+`tests/support/ssh_fixture.py` as development infrastructure. No Rust or Python
 code participates in product execution. Select just this journey with:
 
 ```text

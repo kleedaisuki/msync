@@ -16,12 +16,13 @@ shared high surrogate, comparing the differing low surrogates already preserves
 scalar order. `TextSemantics.Ordinal` exposes the same ordering as a shared
 StringComparer for actual path/name iteration, with ordinal equality and hashing.
 
-The independent Rust oracle passed **10,008 deterministic pairs**, including
+The historical independent Rust oracle passed **10,008 deterministic pairs**, including
 empty/equal strings, long ASCII prefixes, the BMP/supplementary inversion,
 different low surrogates after a shared high surrogate, native path fragments
-and randomized mixed text. Run only this changed contract with
-`python3 tests/Unicode/compare_rust.py --order-only`; add `--native` to test the
-published focused oracle. Managed evidence is retained in
+and randomized mixed text. The Rust source and toolchain dependency have since
+been retired. Run this contract with
+`python3 tests/Unicode/verify_unicode.py --order-only`; add `--native` to test the
+C# Native AOT conformance image. Managed evidence is retained in
 `.temp/unicode-v080/build/managed-order-results.json`.
 
 ## Preserved language contract
@@ -74,18 +75,21 @@ rescanned for each preceding character.
 `scripts/generate_unicode.py` is a fully typed offline generator. Generated
 tables contain 1,488 lowercase and 1,580 uppercase nonidentity mappings, plus
 158 merged Cased and 464 merged Case_Ignorable intervals. Product code consumes
-the generated C# directly. Unicode License V3 attribution accompanies distribution.
+the [generated C#](../../src/Msync.Runtime/Generated/UnicodeCasingData.cs) directly.
+Unicode License V3 attribution accompanies distribution.
 
 ## Focused verification
 
 ```text
 python3 scripts/generate_unicode.py --check
-python3 tests/Unicode/compare_rust.py
-python3 tests/Unicode/compare_rust.py --native
+python3 tests/Unicode/verify_unicode.py
+python3 tests/Unicode/verify_unicode.py --native
 ```
 
-The independent Rust oracle calls the same `String` operations as the old native
-registry. The managed comparison examined every **1,112,064 Unicode scalar**:
+The retired independent Rust oracle called the same `String` operations as the
+old native registry. Its source remains in
+[the pre-retirement history](https://github.com/kleedaisuki/msync/blob/8f2c78e/tests/Unicode/oracle.rs).
+The managed comparison examined every **1,112,064 Unicode scalar**:
 all **3,037 nonidentity cases** matched, with mapping output SHA-256
 `836db61b31c5bc2ad2b41db5915fb98653a9fe0703551744f1b42d1b3ba7d167`.
 Another **2,018 deterministic string contexts** matched exactly, including final
@@ -103,3 +107,10 @@ through source, `.mso` and `.mexe` in
 `.temp/acceptance-v080/unicode-full-casing-corrected.json`; the focused scalar
 oracle does not replace that end-to-end journey. The pending final package audit
 uses the same language case against the installed Native AOT payload.
+
+After Rust retirement, `verify_unicode.py` derives expected scalar mappings and
+context rules from the pinned UCD files, and expected ordering from scalar
+lexicographic comparison. Reusing the existing managed conformance executable
+passed the same 3,037 mappings, 2,018 contexts and 10,008 ordering pairs, with the
+same mapping digest above. This replaces the development-toolchain dependency,
+not the language semantics or the historical observations.

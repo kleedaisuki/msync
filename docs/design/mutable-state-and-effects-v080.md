@@ -252,11 +252,12 @@ current external state at its selected block boundary.
 
 ## Directional barriers and work ownership
 
-The Rust baseline defines these concepts in
+The historical Rust baseline defines these concepts in
 [`barrier-execution.md`](barrier-execution.md),
 [`barrier-process.md`](barrier-process.md),
-`legacy/src/language/parser.rs`, and `legacy/src/structured/jobs.rs`.
-Its old async/await spellings remain legacy-only; the current surface exposes
+[`src/language/parser.rs`](https://github.com/kleedaisuki/msync/blob/v0.7.3/src/language/parser.rs),
+and [`src/structured/jobs.rs`](https://github.com/kleedaisuki/msync/blob/v0.7.3/src/structured/jobs.rs).
+Its old async/await spellings are not current syntax; the current surface exposes
 `release`, `acquire` and `acqrel` as control-flow keywords.
 
 | Form | Required meaning |

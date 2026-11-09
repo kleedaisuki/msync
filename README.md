@@ -3,7 +3,8 @@
 msync is a typed file-synchronization language. Version 0.8 uses C# and .NET
 Native AOT, with a brace-based expression language, source-backed standard
 library, binary bytecode artifacts, and a block interpreter. The previous Rust
-implementation remains buildable in [`legacy/`](legacy/README.md).
+implementation is retained in [Git history at v0.7.3](https://github.com/kleedaisuki/msync/tree/v0.7.3),
+not in the current checkout or distribution.
 
 ## Build and run
 
@@ -356,20 +357,14 @@ starts `msync --language-server` for typed diagnostics, formatting, completion,
 hover, navigation, document symbols, and semantic tokens. Standard-library
 navigation uses versioned virtual documents backed by the embedded sources.
 
-## Rust baseline and migration
+## Migration from earlier releases
 
-The old implementation is preserved, including its standard sources and tests:
-
-```sh
-cargo build --release --manifest-path legacy/Cargo.toml
-cargo run --manifest-path legacy/Cargo.toml -- run old-script.msync
-```
-
-Use `msync legacy ...` with a separately installed `msync-legacy` executable on
-PATH, or set `MSYNC_LEGACY` to the baseline executable. Explicit old grammar
-headers/`--syntax` selections and old `.mobj`/JSON artifacts dispatch to that
-baseline or report the build command; their meaning is never guessed from debug
-source. New scripts use `fn`, `let`, brace blocks and semicolons instead of
+The current checkout and packages contain only the C# implementation. Historical
+Rust sources, standard modules and tests remain available at the immutable
+[`v0.7.3` tag](https://github.com/kleedaisuki/msync/tree/v0.7.3); they are not a
+build or execution dependency. There is no legacy command or executable routing.
+Current artifacts use binary format 4 and must be compiled with the current
+language. Scripts use `fn`, `let`, brace blocks and semicolons instead of
 `symbol`/`boolean`/`macro`, indentation, `:=`, and `=>` bindings. `async`, `await`,
 and `delete` are not language keywords; deletion is an ordinary native function.
 
