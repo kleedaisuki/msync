@@ -127,7 +127,6 @@ operations retain an observation boundary. Range transfers keep their finite
 operation/preflight semantics instead of becoming an implicit source loop.
 `Jobs` and the configured payload budget bound finite-copy admission; a deferred
 process-output dependency does not occupy a copy slot while waiting for exit.
-Format-1/2 legacy modules retain the original broader control-flow draining.
 
 `release`, `acquire` and `acqrel` preserve the Rust baseline's directional
 ordering, not CPU atomic-memory synchronization. Before/release constrains earlier
@@ -199,6 +198,11 @@ only on demand. `MakeLazyRange` stores already-pure values directly and explicit
 zero-argument closures for effectful elements; a compact mask distinguishes them.
 `DeferRange` invokes a range-producing closure on first demand, including its
 arguments. The source compiler therefore does not spend effects on `take(0)`.
+Snapshot producers opt into `NativeBehavior.EagerRange`: environment variables
+and explicit Range materialization execute at their call site. The compiler
+preserves this evaluation policy through source wrappers instead of postponing
+the observation merely because its result is a Range. Ordinary lazy adapters
+remain demand-driven; taking zero items does not execute their callbacks.
 A REPL session retains local values and stable function identities. Deferred
 callbacks may observe a callable assigned in a later submission, so their code
 linkage follows the session's latest typed image while their original physical
