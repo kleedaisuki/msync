@@ -39,6 +39,24 @@ The same journey will consume the coherent new compiler and final Native images;
 the semantic-only API boundary is owned by the compiler rather than inferred
 from the protocol test's absence of effects.
 
+The coherent Typed HIR managed snapshot passed the same eleven protocol checks,
+and the unchanged `StandardConceptTooling` host passed all 47 contracts against
+that snapshot's Compiler/Core/HIR assemblies. This includes native aliases with
+source parameter names, variadic tails, nullable concept field completion,
+inline associated-type definitions and qualified standard concept composition.
+The accepted Compiler image was
+`824b4b9b8a779bbc3d3a40db76dffe1f5d02b9e361ca3ab76fac574d26da6a83`.
+These are managed integration results; final Native and installed extension
+acceptance remain separate workflows.
+
+Frozen-assembly test hosts must resolve explicit HintPaths before candidate
+assemblies discovered under their project directory. SDK default candidate
+search can select an older DLL in a previous local build directory even when
+the new HintPath and artifacts path are correct. For such isolated hosts, use
+`AssemblySearchPaths={HintPathFromItem};{RawFileName}` and compare the resolved
+Compiler hash with the snapshot receipt before interpreting a failure. An
+apphost hash alone does not identify its managed dependency generation.
+
 This is the implementation contract for completing names and members inside
 functions and Scopes in 0.8. It extends the original top-level prefix recovery;
 the focused acceptance results belong beside the implementation as they land.
