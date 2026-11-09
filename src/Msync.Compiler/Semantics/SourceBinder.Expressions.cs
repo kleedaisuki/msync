@@ -174,6 +174,7 @@ internal sealed partial class SourceBinder
             if (!scope.Values.TryGetValue(name.Name, out var existing))
                 throw Error($"Cannot assign to undeclared binding '{name.Name}'.", name.Span, "E0204");
             var location = Capture(existing, name.Name);
+            program.WrittenLocations.Add(program.Original(location));
             var value = Expression(assignment.Value);
             Observe(name.Span, location);
             return Node(HirKind.Assign, hir.Type(TypeRef.Null), assignment.Span, [value], location.Value,

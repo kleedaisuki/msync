@@ -42,11 +42,12 @@ internal sealed partial class SourceBinder
     private int nextLoop;
     private readonly Stack<HirLoopId> loops = [];
 
-    public SourceBinder(HirBuilder? builder = null, bool observations = false, bool editorMode = false)
+    public SourceBinder(HirBuilder? builder = null, bool observations = false, bool editorMode = false, bool isSession = false)
     {
         hir = builder ?? new();
         program = new(hir);
         program.BindModule = BindStandardModule;
+        program.IsSession = isSession;
         this.observations = observations;
         this.editorMode = editorMode;
     }
@@ -167,6 +168,7 @@ internal sealed partial class SourceBinder
         hir.Locations.Add(new(name, type, Range(span), scope.Template is null ? program.Entry : new(-1),
             locationKind, AdmitsNull: nullable, TemplateOwner: scope.Template));
         program.Declare(new(id, name, kind, Range(span), annotation, Template: scope.Template));
+        if (nativeModule is not null && scope.Template is null) program.WrittenLocations.Add(id);
         scope.Values = scope.Values.SetItem(name, id);
         Observe(span, id, declaration: true, parameter: kind == DeclarationKind.Parameter);
         return id;

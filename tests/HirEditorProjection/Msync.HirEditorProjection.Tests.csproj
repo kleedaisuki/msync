@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup Condition="'$(HirReferencePath)' == ''">
+    <ProjectReference Include="../../src/Msync.Hir/Msync.Hir.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(HirReferencePath)' != ''">
+    <Reference Include="Msync.Core"><HintPath>$(HirReferencePath)/Msync.Core.dll</HintPath></Reference>
+    <Reference Include="Msync.Hir"><HintPath>$(HirReferencePath)/Msync.Hir.dll</HintPath></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Msync.Compiler/Syntax/Ast.cs" Link="Syntax/Ast.cs" />
+    <Compile Include="../../src/Msync.Compiler/Diagnostics/Diagnostics.cs" Link="Diagnostics.cs" />
+    <Compile Include="../../src/Msync.Compiler/Editor/SemanticSymbols.cs" Link="SemanticSymbols.cs" />
+    <Compile Include="../../src/Msync.Compiler/Editor/EditorContext.cs" Link="EditorContext.cs" />
+    <Compile Include="../../src/Msync.Compiler/Editor/SemanticObservationView.cs" Link="SemanticObservationView.cs" />
+    <Compile Include="../../src/Msync.Compiler/Editor/SemanticValuePresenter.cs" Link="SemanticValuePresenter.cs" />
+    <Compile Include="../../src/Msync.Compiler/Editor/EditorSemanticIndex.cs" Link="EditorSemanticIndex.cs" />
+  </ItemGroup>
+</Project>

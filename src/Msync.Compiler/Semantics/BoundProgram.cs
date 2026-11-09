@@ -48,6 +48,7 @@ internal sealed class BoundProgram(HirBuilder hir)
     public HirBuilder Hir { get; } = hir;
     public HirFunctionId Entry { get; set; }
     public HirNodeId Body { get; set; }
+    public bool IsSession { get; set; }
     public List<BoundDeclaration> Declarations { get; } = [];
     private readonly Dictionary<HirLocationId, BoundDeclaration> declarations = [];
     public List<BoundTemplate> Templates { get; } = [];
@@ -65,6 +66,7 @@ internal sealed class BoundProgram(HirBuilder hir)
     public Dictionary<HirNodeId, HirTypeId> TypeAnnotations { get; } = [];
     public Dictionary<HirNodeId, int> ConceptUses { get; } = [];
     public Dictionary<int, string> TypeParameterNames { get; } = [];
+    public HashSet<HirLocationId> WrittenLocations { get; } = [];
     public Dictionary<string, BoundModule> StandardModules { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, HirLocationId> StandardLocations { get; } = new(StringComparer.Ordinal);
     public Func<string, BoundModule>? BindModule { get; set; }
@@ -75,6 +77,21 @@ internal sealed class BoundProgram(HirBuilder hir)
     public BoundDeclaration Declaration(HirLocationId location) => declarations[location];
     public bool TryDeclaration(HirLocationId location, out BoundDeclaration declaration) =>
         declarations.TryGetValue(location, out declaration!);
+    public HirLocationId Original(HirLocationId location)
+    {
+        while (declarations[location].CapturedFrom is { } source) location = source;
+        return location;
+    }
+    public bool IsStable(HirLocationId location)
+    {
+        if (!declarations.ContainsKey(location)) return false;
+        location = Original(location);
+        var declaration = declarations[location];
+        return declaration.Kind is DeclarationKind.Local or DeclarationKind.Parameter
+                or DeclarationKind.Loop or DeclarationKind.Pattern
+            && (!IsSession || declaration.Template is not null)
+            && !WrittenLocations.Contains(location);
+    }
     public void Declare(BoundDeclaration declaration)
     {
         Declarations.Add(declaration);

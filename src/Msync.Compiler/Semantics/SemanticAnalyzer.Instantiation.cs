@@ -206,6 +206,18 @@ internal sealed partial class SemanticAnalyzer
             formalArguments.Add(value);
         }
         input.Complete();
+        for (int index = 0; index < formalArguments.Count; index++)
+        {
+            var target = context.Location(template.Parameters[index]);
+            formalArguments[index] = input.AttachOrigin(formalArguments[index], target);
+            context.Values[target] = formalArguments[index];
+        }
+        for (int index = 0; index < formalCaptures.Count; index++)
+        {
+            var target = captureTargets[index];
+            formalCaptures[index] = input.AttachOrigin(context.Values[target], target);
+            context.Values[target] = formalCaptures[index];
+        }
         context.ExpectedReturn = template.ResultAnnotation is { } annotation ? ResolveHirType(annotation, context) : null;
         FunctionInstance instance = new(function)
         {
@@ -461,6 +473,22 @@ internal sealed partial class SemanticAnalyzer
             return result;
         }
 
+        public SemanticValue AttachOrigin(SemanticValue value, HirLocationId root) =>
+            AttachOrigin(value, new(root), []);
+
+        private SemanticValue AttachOrigin(SemanticValue value, SemanticOrigin origin, HashSet<int> active)
+        {
+            var result = value with { Origin = origin };
+            if (value.Scope is not { } scope || !active.Add(scope.Region)) return result;
+            scope = formal.Objects.GetValueOrDefault(scope.Region, scope);
+            scope = scope with { Fields = scope.Fields.ToImmutableDictionary(pair => pair.Key,
+                pair => AttachOrigin(pair.Value, origin with { Fields = origin.Fields.IsDefault
+                    ? [pair.Key] : origin.Fields.Add(pair.Key) }, active), StringComparer.Ordinal) };
+            formal.Objects[scope.Region] = scope;
+            active.Remove(scope.Region);
+            return result with { Scope = scope };
+        }
+
         public void Complete()
         {
             foreach (var pair in Locations.ToArray())
@@ -487,7 +515,13 @@ internal sealed partial class SemanticAnalyzer
         if (instance.Objects.IsEmpty && instance.Indexed.IsEmpty && instance.Cells.IsEmpty
             && instance.Result.Scope is null && instance.Result.Element is null
             && instance.Result.Callables.IsDefaultOrEmpty && instance.Result.Alternatives.IsDefaultOrEmpty)
-            return instance.Result with { Node = HirNodeId.None, Location = null };
+        {
+            if (instance.Result.Origin is { } origin && origin.Fields.IsDefaultOrEmpty)
+                for (int index = 0; index < instance.Arguments.Length; index++)
+                    if (instance.Arguments[index].Origin?.Root == origin.Root)
+                        return ProjectScalar(instance.Result, arguments[index]);
+            return instance.Result with { Node = HirNodeId.None, Location = null, Origin = null };
+        }
         InvocationProjection projection = new(this, instance, caller);
         for (int index = 0; index < arguments.Count; index++) projection.Bind(instance.Arguments[index], arguments[index]);
         for (int index = 0; index < captures.Count; index++)
@@ -500,10 +534,22 @@ internal sealed partial class SemanticAnalyzer
         return projection.Project(instance.Result) with { Location = null, Node = HirNodeId.None };
     }
 
+    private SemanticValue ProjectScalar(SemanticValue formal, SemanticValue actual)
+    {
+        var literal = actual.Literal;
+        if (literal is { Kind: HirLiteralKind.Path } path && Runtime(formal).WithoutNull == TypeRef.String)
+            literal = new(HirLiteralKind.String, Text: path.Text);
+        else if (literal is { Kind: HirLiteralKind.String } text && Runtime(formal).WithoutNull == TypeRef.Path)
+            literal = new(HirLiteralKind.Path, Text: text.Text);
+        return formal with { Literal = literal, DenotedType = actual.DenotedType,
+            Node = HirNodeId.None, Location = null, Origin = null };
+    }
+
     private sealed class InvocationProjection(SemanticAnalyzer owner, FunctionInstance instance, SemanticContext caller)
     {
         private readonly Dictionary<int, int> regions = [];
         private readonly Dictionary<int, int> indexedRegions = [];
+        private readonly Dictionary<HirLocationId, SemanticValue> origins = [];
         private readonly Dictionary<SemanticValue, SemanticValue> values = new(ReferenceEqualityComparer.Instance);
         private readonly HashSet<(SemanticValue Formal, SemanticValue Actual)> bound = new(new ValuePairComparer());
         public Dictionary<HirLocationId, HirLocationId> Locations { get; } = [];
@@ -511,6 +557,7 @@ internal sealed partial class SemanticAnalyzer
         public void Bind(SemanticValue formal, SemanticValue actual)
         {
             if (!bound.Add((formal, actual))) return;
+            if (formal.Origin is { } origin && origin.Fields.IsDefaultOrEmpty) origins[origin.Root] = actual;
             if (formal.Scope is { } shape && actual.Scope is { } scope)
             {
                 scope = caller.Objects.GetValueOrDefault(scope.Region, scope);
@@ -540,7 +587,21 @@ internal sealed partial class SemanticAnalyzer
         public SemanticValue Project(SemanticValue value)
         {
             if (values.TryGetValue(value, out var previous)) return previous;
-            var result = value with { Node = HirNodeId.None, Location = null };
+            var result = value with { Node = HirNodeId.None, Location = null, Origin = null };
+            if (value.Origin is { } origin && origins.TryGetValue(origin.Root, out var actual))
+            {
+                bool found = true;
+                if (!origin.Fields.IsDefault)
+                    foreach (var name in origin.Fields)
+                    {
+                        if (actual.Scope is not { } scope) { found = false; break; }
+                        scope = caller.Objects.GetValueOrDefault(scope.Region, scope);
+                        if (!scope.Fields.TryGetValue(name, out var field)) { found = false; break; }
+                        actual = scope.Locations.TryGetValue(name, out var location)
+                            ? caller.Values.GetValueOrDefault(location, field) : field;
+                    }
+                if (found) result = owner.ProjectScalar(result, actual);
+            }
             values[value] = result;
             if (value.Scope is { } shape)
             {

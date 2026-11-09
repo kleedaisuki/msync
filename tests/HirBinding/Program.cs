@@ -3,6 +3,13 @@ using Msync.Compiler.Semantics;
 using Msync.Compiler.Syntax;
 using Msync.Core;
 using Msync.Hir;
+using Msync.Runtime;
+
+if (args.Contains("--aggregates", StringComparer.Ordinal))
+{
+    await AggregateChecks.RunAsync();
+    return;
+}
 
 int checks = 0;
 void Check(bool condition, string message)
@@ -106,5 +113,15 @@ Check(incomplete.Declarations.Any(item => item is { Name: "argument", Kind: Decl
 Check(incomplete.Visibility.Any(item => item.Bindings.ContainsKey("local") && item.IncludesEnd),
     "Incomplete body visibility reaches the cursor");
 Check(incomplete.MemberUses.Single().Name is null, "An incomplete member access retains a receiver site");
+
+var written = Bind("let x=1; fn update(){x=2}; let y=3; fn ignore(y){let y=4; y=5};");
+var changed = written.Declarations.First(item => item.Name == "x");
+var unchanged = written.Declarations.First(item => item.Name == "y");
+Check(!written.IsStable(changed.Location) && written.IsStable(unchanged.Location),
+    "Actual captured writes invalidate only their declaration identity");
+var open = new SourceBinder(isSession: true).Bind("let value=1; fn local(){let inner=2;inner}", "<repl>");
+Check(!open.IsStable(open.Declarations.Single(item => item.Name == "value").Location)
+    && open.IsStable(open.Declarations.Single(item => item.Name == "inner").Location),
+    "Open session roots and closed private lifetimes have different future write domains");
 
 Console.WriteLine($"PASS {checks} source binding contracts");

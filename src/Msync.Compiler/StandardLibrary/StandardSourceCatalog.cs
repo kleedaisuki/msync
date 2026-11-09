@@ -2,7 +2,11 @@ namespace Msync.Compiler;
 
 internal static class StandardSourceCatalog
 {
-    internal static IReadOnlyDictionary<string, StandardSource> Read()
+    private static readonly Lazy<IReadOnlyDictionary<string, StandardSource>> sources = new(Create);
+
+    internal static IReadOnlyDictionary<string, StandardSource> Read() => sources.Value;
+
+    private static IReadOnlyDictionary<string, StandardSource> Create()
     {
         Dictionary<string, StandardSource> result = [];
         var assembly = typeof(Compiler).Assembly;

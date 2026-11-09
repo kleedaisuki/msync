@@ -1,0 +1,67 @@
+using System.Collections.Immutable;
+using Msync.Core;
+using Msync.Hir;
+using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
+
+namespace Msync.Compiler;
+
+internal readonly record struct SemanticValueId(int Value);
+
+internal sealed record SemanticConnectionView(ConnectionKind Kind, string Address = "");
+
+internal sealed record SemanticPathView(string Raw, string? WorkingDirectory = null,
+    SemanticConnectionView? Connection = null, string? HomeDirectory = null,
+    string? LocalSpelling = null);
+
+// Values refer to the frozen HIR tables, not mutable inference objects or slots.
+internal sealed record SemanticValueView(HirTypeId Type,
+    HirFunctionId? Function = null, HirTemplateId? Template = null,
+    HirTypeId? TypeValue = null,
+    string? NativeName = null, bool IsNamedScope = false, bool IsUnknown = false,
+    ImmutableArray<SemanticFieldView> Members = default,
+    ImmutableArray<SemanticValueId> Alternatives = default,
+    SemanticValueId? Element = null, SemanticConnectionView? Connection = null,
+    SemanticPathView? Path = null, string? Text = null,
+    string? Signature = null, string? Documentation = null);
+
+internal sealed record SemanticFieldView(string Name, SemanticValueId Value,
+    ImmutableArray<HirSourceRange> Definitions = default);
+
+internal sealed record SemanticBindingView(string Name, HirLocationId Location,
+    SemanticValueId Value, bool IsParameter = false);
+
+internal sealed record SemanticConceptView(string Name, HirSourceRange Definition,
+    string Signature, string Description, ImmutableArray<SemanticMember> Members);
+
+internal readonly record struct SemanticObservation(HirSourceRange Span,
+    SemanticValueId Value, string? Name = null, bool Concrete = true,
+    bool IsParameter = false);
+
+internal sealed record SemanticVisibility(SourceSpan Owner, bool IncludesEnd,
+    int Point, ImmutableDictionary<string, SemanticBindingView> Bindings,
+    ImmutableDictionary<string, SemanticConceptView> Concepts, bool Concrete = true);
+
+internal readonly record struct SemanticReceiver(SourceSpan Span,
+    SemanticValueId Value, EditorReceiverKind Kind = EditorReceiverKind.Member,
+    bool Concrete = true);
+
+internal readonly record struct SemanticPathOwner(SourceSpan Span,
+    SemanticConnectionView? Endpoint, bool Concrete = true);
+
+internal sealed record SemanticImport(SourceSpan Span,
+    ImmutableDictionary<string, SemanticBindingView> Bindings, bool Concrete = true);
+
+internal readonly record struct SemanticReference(SourceSpan Span,
+    ImmutableArray<HirSourceRange> Definitions, bool Concrete = true);
+
+internal sealed record SemanticObservationView(HirModule Module, HirSourceId Source,
+    ImmutableArray<SemanticValueView> Values,
+    ImmutableArray<SemanticObservation> Observations,
+    ImmutableArray<SemanticVisibility> Contexts,
+    ImmutableArray<SemanticReceiver> Receivers,
+    ImmutableArray<SemanticPathOwner> PathOwners,
+    ImmutableArray<SemanticImport> Imports,
+    ImmutableArray<SemanticReference> References)
+{
+    public SemanticValueView Value(SemanticValueId id) => Values[id.Value];
+}
