@@ -18,12 +18,12 @@ from stdlib_experience_journey import accept, invoke
 ROOT: Path = Path(__file__).resolve().parents[2]
 
 PROGRAM: str = r"""
-let file = $std::io::File::new(./native.txt);
+let file = $std::files::File::new(./native.txt);
 let alias = file;
-$std::io::File::write(file, "native 星");
-$std::io::File::append(alias, " text");
-$std::io::File::move_to(alias, ./moved.txt);
-$std::io::File::read_text(file) -> ./read.txt;
+$std::files::File::write(file, "native 星");
+$std::files::File::append(alias, " text");
+$std::files::File::move_to(alias, ./moved.txt);
+$std::files::File::read_text(file) -> ./read.txt;
 if file::path == alias::path and not exists ./native.txt {
     "shared-record" -> ./file-alias.txt;
 };
@@ -46,13 +46,13 @@ scope upper_store {
             $std::string::to_uppercase(text));
     },
 };
-let selected = $std::io::File::with_policy(./never-opened.txt, upper_store);
+let selected = $std::files::File::with_policy(./never-opened.txt, upper_store);
 if memory::reads == 0 and memory::writes == 0 {
     "no-construction-io" -> ./construction.txt;
 };
-$std::io::File::write(selected, "policy");
-$std::io::File::append(selected, " text");
-$std::io::File::read_text(selected) -> ./policy.txt;
+$std::files::File::write(selected, "policy");
+$std::files::File::append(selected, " text");
+$std::files::File::read_text(selected) -> ./policy.txt;
 if memory::reads == 1 and memory::writes == 2
     and not exists ./never-opened.txt {
     "selected-policy" -> ./policy-selected.txt;
@@ -82,16 +82,13 @@ $std::text::StringBuilder::append(independent, "separate");
 $std::text::StringBuilder::build(independent) -> ./separate.txt;
 let expression = $std::regex::Pattern::new("[0-9]+");
 $std::regex::Pattern::replace(expression, "id12", "<number>") -> ./regex.txt;
-let command = $std::process::Command::new(__EXECUTABLE__ as Path,
+let command = $std::commands::Command::new(__EXECUTABLE__ as Path,
     ["--version"]);
-let result = $std::process::Command::capture(command);
+let result = $std::commands::Command::capture(command);
 if result::success and result::code == 0
     and $std::string::contains(result::output, "0.8.0") {
     "actual-process" -> ./process.txt;
 };
-let compatibility = $std::text::Builder();
-compatibility::append("supported");
-compatibility::build() -> ./compatibility.txt;
 acquire;
 """
 
@@ -108,7 +105,6 @@ OUTPUTS: dict[str, bytes] = {
     "separate.txt": b"separate",
     "regex.txt": b"id<number>",
     "process.txt": b"actual-process",
-    "compatibility.txt": b"supported",
 }
 
 
@@ -191,14 +187,14 @@ def reject_services(binary: Path, directory: Path) -> int:
         ),
         (
             (
-                "$std::io::File::with_policy(./target, scope { "
+                "$std::files::File::with_policy(./target, scope { "
                 "read: fn(path: Path) { 1 } });"
             ),
             "read",
         ),
         (
             (
-                'let command = $std::process::Command::new(./program, ["a"]); '
+                'let command = $std::commands::Command::new(./program, ["a"]); '
                 "command::executable = true;"
             ),
             "Path",
