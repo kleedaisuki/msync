@@ -21,6 +21,14 @@ Expect("let power=-2**2; let inverse=2**-2;", "-2 ** 2", "2 ** -2");
 Expect("let value=2; (-value) as String; let copy-config=2; -copy-config; let flag=--flag; let path=./-filename;",
     "(-value) as String", "-copy-config;", "--flag", "./-filename");
 Expect("let value=./config @ ssh://forge; let text=value as String;", "./config @ ssh://forge", "value as String");
+string namedScopeSource = "let x = scope NamedScope { item:1 };";
+foreach (string text in new[] { namedScopeSource, Format(namedScopeSource) })
+{
+    var binding = (LetStatement)Parser.Parse(text).Statements[0];
+    var scope = (ScopeExpr)binding.Value;
+    if (scope.Name != "NamedScope" || scope.NameSpan is not { } nameSpan || text[nameSpan.Start..nameSpan.End] != "NamedScope")
+        throw new Exception($"Named Scope expression identity was lost:\n{text}");
+}
 Expect("scope SomeClass { new: fn -> Scope { scope { item: ~/.codex/AGENTS.md } }, copy: fn(where: Connection, object: Scope) { object::item @ where -> ./ } };",
     "scope SomeClass {\n    new: fn -> Scope {", "object::item @ where -> ./");
 Expect("concept Monoid { type Self; identity: Self, combine: fn(left: Self, right: Self) -> Self, };", "concept Monoid {", "identity: Self,\n", "combine: fn(");
