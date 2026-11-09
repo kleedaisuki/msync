@@ -32,7 +32,9 @@ internal sealed record ScopeInfo(IReadOnlyDictionary<string, Info> Members, bool
     IReadOnlyDictionary<string, IReadOnlyList<EditorLocation>>? Origins = null,
     IReadOnlySet<string>? NullableMembers = null, IReadOnlyDictionary<string, TypeRef?>? StorageTypes = null)
 {
+    public bool StandardLibrary { get; init; }
     public object Identity { get; init; } = new();
+    public bool IsInitializing { get; set; }
     public IReadOnlyDictionary<string, StorageConstraint> Storage { get; init; } =
         Members.ToDictionary(pair => pair.Key, pair => new StorageConstraint(StorageTypes?.GetValueOrDefault(pair.Key)
             ?? (pair.Value.Type.WithoutNull.Kind == TypeKind.Never ? null : pair.Value.Type),
@@ -49,6 +51,7 @@ internal sealed class Template(int id, FunctionExpr syntax, IReadOnlyList<KeyVal
     public string SourceName { get; } = sourceName;
     public Dictionary<string, Specialization> Specializations { get; } = [];
     public ImmutableDictionary<string, ConceptDefinition> Concepts { get; init; } = ImmutableDictionary<string, ConceptDefinition>.Empty;
+    public bool StandardShadowed { get; init; }
     public bool Instance { get; init; }
 }
 internal sealed class Specialization(int id, Info result, IReadOnlyList<TypeRef> parameterTypes)
@@ -91,6 +94,7 @@ internal sealed class Frame(string source, string sourceName, ImmutableDictionar
     public List<Info> Returns { get; } = [];
     public ImmutableDictionary<string, ConceptDefinition> Concepts { get; set; } = ImmutableDictionary<string, ConceptDefinition>.Empty;
     public TypeSyntax? ExpectedConceptReturn { get; set; }
+    public TypeEnvironment? ExpectedTypeEnvironment { get; set; }
     public TypeRef? ExpectedReturn { get; set; }
     public SourceSpan? ExpectedReturnSpan { get; set; }
     public Dictionary<int, int[]> SelfCaptureSlots { get; } = [];

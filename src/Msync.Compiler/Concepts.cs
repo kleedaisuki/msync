@@ -12,6 +12,7 @@ internal sealed record ConceptDefinition(ConceptDeclaration Syntax, string Sourc
 }
 internal sealed record ConceptContract(ConceptDefinition Definition, TypeSyntax Annotation, ImmutableDictionary<string, ConceptDefinition> Environment);
 internal sealed record ConceptMemberContract(ConceptDefinition Definition, ConceptMember Requirement, IReadOnlyDictionary<string, Info> Associated);
+internal sealed record TypeEnvironment(ImmutableDictionary<string, ConceptDefinition> Concepts, bool StandardShadowed);
 
 internal sealed partial class Compilation
 {
@@ -317,13 +318,20 @@ internal sealed partial class Compilation
     }
 
     private static Frame ConceptFrame(Frame frame, ConceptDefinition definition)
+        => TypeFrame(frame, new(definition.Environment, definition.StandardShadowed));
+
+    private static Frame TypeFrame(Frame frame, TypeEnvironment environment)
     {
         Frame lexical = CloneFrame(frame);
-        lexical.Concepts = definition.Environment;
-        lexical.Environment = definition.StandardShadowed
+        lexical.Concepts = environment.Concepts;
+        lexical.Environment = environment.StandardShadowed
             ? lexical.Environment.SetItem("std", new(-1, UnknownInfo)) : lexical.Environment.Remove("std");
         return lexical;
     }
+
+    private void CheckReturnConcept(Frame frame, Info value, TypeSyntax annotation, SourceSpan span)
+        => CheckConcept(frame.ExpectedTypeEnvironment is { } environment ? TypeFrame(frame, environment) : frame,
+            value, annotation, span);
 
     private static CompileException ConceptError(Frame frame, string message, SourceSpan span) => Error(frame, message, span,
         label: "invalid concept declaration", help: "Declare a named structural concept before using it.", code: "E0214");

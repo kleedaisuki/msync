@@ -48,6 +48,7 @@ internal sealed partial class Compilation
             ExpectedReturn = frame.ExpectedReturn,
             Concepts = frame.Concepts,
             ExpectedConceptReturn = frame.ExpectedConceptReturn,
+            ExpectedTypeEnvironment = frame.ExpectedTypeEnvironment,
             ContextOwner = frame.ContextOwner,
             ContextIncludesEnd = frame.ContextIncludesEnd,
             EditorRecovery = frame.EditorRecovery,

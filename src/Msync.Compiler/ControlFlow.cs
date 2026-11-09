@@ -180,7 +180,7 @@ internal sealed partial class Compilation
     private Info Return(Frame frame, ReturnExpr returned)
     {
         var result = returned.Value is null ? Emit(frame, OpCode.Null, TypeRef.Null, returned.Span) : Expression(frame, returned.Value);
-        if (frame.ExpectedConceptReturn is { } conceptReturn) CheckConcept(frame, result, conceptReturn, returned.Span);
+        if (frame.ExpectedConceptReturn is { } conceptReturn) CheckReturnConcept(frame, result, conceptReturn, returned.Span);
         if (frame.ExpectedReturn is not null)
         {
             CheckReturnConversion(frame, result.Type, frame.ExpectedReturn, returned.Span);

@@ -92,7 +92,8 @@ internal sealed partial class Compilation
                 return plain;
             }
             List<KeyValuePair<string, Binding>> captures = [];
-            Template current = new(template.Id, template.Syntax, captures, template.Source, template.SourceName) { Instance = true, Concepts = template.Concepts };
+            Template current = new(template.Id, template.Syntax, captures, template.Source, template.SourceName)
+            { Instance = true, Concepts = template.Concepts, StandardShadowed = template.StandardShadowed };
             Info result = new(TypeRef.Function, Function: current);
             Values.Add(value, result);
             for (int index = 0; index < template.Captures.Count; index++)

@@ -58,6 +58,7 @@ internal sealed class EditorSnapshot
             scope = new(members, scope.Named, scope.Origins, scope.NullableMembers, scope.StorageTypes)
             {
                 Identity = scope.Identity,
+                StandardLibrary = scope.StandardLibrary,
                 AllocationSite = scope.AllocationSite,
                 Storage = scope.Storage.ToDictionary(pair => pair.Key, pair => Storage(pair.Value), StringComparer.Ordinal),
                 FieldBindings = scope.FieldBindings.ToDictionary(pair => pair.Key, pair => pair.Value with { Storage = Storage(pair.Value.Storage) }, StringComparer.Ordinal)
@@ -84,7 +85,8 @@ internal sealed class EditorSnapshot
         List<KeyValuePair<string, Binding>> captures = [];
         Template snapshot = new(template.Id, template.Syntax, captures, template.Source, template.SourceName)
         {
-            Concepts = template.Concepts
+            Concepts = template.Concepts,
+            StandardShadowed = template.StandardShadowed
         };
         templates[(template, value)] = snapshot;
         bool matches = value is not null && (value.Function == template.Id || template.Specializations.Values.Any(item => item.Id == value.Function));
