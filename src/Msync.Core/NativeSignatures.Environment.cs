@@ -11,6 +11,9 @@ public static partial class NativeSignatures
         Add("unset", TypeRef.Null, NativeEffect.Write, TypeRef.String);
         Add("variables", new(TypeKind.Range, TypeRef.Scope), NativeEffect.Read);
         Add("working_directory", TypeRef.Path, NativeEffect.Read);
+        Add("set_working_directory", TypeRef.Path, NativeEffect.Write, TypeRef.Union(TypeRef.Path, TypeRef.String));
+        result["environment.set_working_directory"] = result["environment.set_working_directory"] with
+        { Behavior = NativeBehavior.MayFail | NativeBehavior.LocalMemory };
         Add("home_directory", TypeRef.Path, NativeEffect.Read);
         Add("operating_system", TypeRef.String, NativeEffect.Read);
         Add("newline", TypeRef.String, NativeEffect.Read);

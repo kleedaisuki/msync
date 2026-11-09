@@ -75,6 +75,7 @@ public static partial class NativeRegistry
         "create_directory" => "if [ -d \"$p\" ]; then printf false; else mkdir -- \"$p\"; printf true; fi",
         "create_directories" => "if [ -d \"$p\" ]; then printf false; else mkdir -p -- \"$p\"; printf true; fi",
         "delete" => "if [ -d \"$p\" ] && ! [ -L \"$p\" ]; then printf 'fs.delete requires a file or symlink: %s\\n' \"$p\" >&2; exit 1; fi; rm -f -- \"$p\"",
+        "touch" => "touch -- \"$p\"",
         "remove" => "value=$(kind); if [ \"$value\" = not_found ]; then printf false; else if [ \"$value\" = directory ]; then rmdir -- \"$p\"; else rm -- \"$p\"; fi; printf true; fi",
         "remove_all" => "value=$(kind); if [ \"$value\" = not_found ]; then printf false; else rm -rf -- \"$p\"; printf true; fi",
         "rename" => "q=$(expand \"$2\"; printf .); q=${q%.}; mv -f -- \"$p\" \"$q\"",

@@ -74,6 +74,8 @@ internal sealed partial class Compilation
     {
         if (signature.Name == "environment.variables")
             return RangeResult(RecordResult(("name", new(TypeRef.String)), ("value", new(TypeRef.String))));
+        if (signature.Name == "shell.process_table")
+            return RangeResult(RecordResult(("pid", new(TypeRef.Number)), ("name", new(TypeRef.String))));
         if (signature.Name is not ("regex.find" or "regex.matches")) return new(signature.Result);
         Info group = RecordResult(("name", new(TypeRef.String)), ("value", new(TypeRef.String)),
             ("index", new(TypeRef.Number)), ("length", new(TypeRef.Number)), ("success", new(TypeRef.Bool)));

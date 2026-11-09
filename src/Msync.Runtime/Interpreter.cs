@@ -498,6 +498,19 @@ public sealed class ExecutionSession(ExecutionOptions? options = null)
     private static readonly Value Uninitialized = new UninitializedValue();
     private Value[] locals = [];
     private SessionImage? image;
+    private string workingDirectory = Path.GetFullPath(options?.WorkingDirectory ?? Environment.CurrentDirectory);
+    public string WorkingDirectory => workingDirectory;
+    public void ChangeWorkingDirectory(string path)
+    {
+        RuntimeContext context = new((options ?? new()) with { WorkingDirectory = workingDirectory,
+            WorkingDirectoryChanged = AcceptWorkingDirectory });
+        context.ChangeWorkingDirectory(new StringValue(path));
+    }
+    private void AcceptWorkingDirectory(string directory)
+    {
+        workingDirectory = directory;
+        options?.WorkingDirectoryChanged?.Invoke(directory);
+    }
     private Value ReadSessionLocal(int slot) => locals[slot] is CellValue cell ? cell.Data : locals[slot];
     public bool IsLocalInitialized(int slot) => (uint)slot < (uint)locals.Length && !ReferenceEquals(ReadSessionLocal(slot), Uninitialized);
     public Value? GetLocalValue(int slot) => IsLocalInitialized(slot) ? ReadSessionLocal(slot) : null;
@@ -509,7 +522,8 @@ public sealed class ExecutionSession(ExecutionOptions? options = null)
         module = module with { PreserveLocals = true };
         if (image is null) image = new(module);
         else image.Publish(module);
-        var interpreter = new Interpreter(module, options);
+        var interpreter = new Interpreter(module, (options ?? new()) with
+        { WorkingDirectory = workingDirectory, WorkingDirectoryChanged = AcceptWorkingDirectory });
         interpreter.Attach(image);
         return interpreter.ExecuteEntryAsync(locals, startInstruction, cancellationToken);
     }

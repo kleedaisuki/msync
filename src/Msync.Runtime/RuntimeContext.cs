@@ -7,13 +7,14 @@ public sealed record ExecutionOptions(string? WorkingDirectory = null, string? S
     long? SpoolLimit = null, Action<RuntimeObservation>? Observe = null)
 {
     public Action<MsyncException>? ReportError { get; init; }
+    public Action<string>? WorkingDirectoryChanged { get; init; }
 }
 
 public sealed record RuntimeObservation(string Phase, string Outcome, string? Source = null, string? Destination = null, string? Detail = null, long DurationNanoseconds = 0);
 
 public sealed class RuntimeContext
 {
-    public string WorkingDirectory { get; }
+    public string WorkingDirectory { get; private set; }
     public string HomeDirectory { get; }
     public string? SourceFile { get; }
     public bool DryRun { get; }
@@ -25,6 +26,7 @@ public sealed class RuntimeContext
     public long? SpoolLimit { get; }
     public Action<RuntimeObservation>? Observe { get; }
     public Action<MsyncException>? ReportError { get; }
+    private readonly Action<string>? workingDirectoryChanged;
     public RuntimeContext(ExecutionOptions? options = null, BindingContext? binding = null)
     {
         options ??= new();
@@ -35,6 +37,7 @@ public sealed class RuntimeContext
         Output = options.Output ?? Console.Out;
         Error = options.Error ?? Console.Error;
         ReportError = options.ReportError;
+        workingDirectoryChanged = options.WorkingDirectoryChanged;
         Jobs = options.Jobs;
         BufferSize = options.BufferSize; MemoryLimit = options.MemoryLimit; SpoolLimit = options.SpoolLimit; Observe = options.Observe;
     }
@@ -45,4 +48,17 @@ public sealed class RuntimeContext
         _ => throw new MsyncException($"Expected Path or String, received {value.Type}")
     };
     public string LocalPath(Value value) => AsPath(value).LocalPath(WorkingDirectory, HomeDirectory);
+
+    public PathValue ChangeWorkingDirectory(Value value)
+    {
+        PathValue path = AsPath(value);
+        if (path.Connection?.Kind is ConnectionKind.Ssh or ConnectionKind.Wsl)
+            throw new MsyncException("cd changes the local execution directory; qualify remote command paths with 'path @ connection'.");
+        string directory = Path.GetFullPath(LocalPath(path));
+        if ((File.GetAttributes(directory) & FileAttributes.Directory) == 0)
+            throw new IOException($"Cannot cd to '{directory}': it is not a directory.");
+        WorkingDirectory = directory;
+        workingDirectoryChanged?.Invoke(directory);
+        return new(directory, directory, HomeDirectory: HomeDirectory);
+    }
 }

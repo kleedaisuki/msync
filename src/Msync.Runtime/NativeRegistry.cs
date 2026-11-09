@@ -12,7 +12,9 @@ public static partial class NativeRegistry
             throw new MsyncException($"Unknown native function '{name}'");
         if (!signature.Variadic && arguments.Count != signature.Parameters.Count)
             throw new MsyncException($"Native '{name}' expects {signature.Parameters.Count} arguments, received {arguments.Count}");
-        if (context.DryRun && signature.Effect == NativeEffect.Write) return signature.Result == TypeRef.Bool ? Value.True : Value.Null;
+        if (context.DryRun && signature.Effect == NativeEffect.Write
+            && (signature.Behavior.GetValueOrDefault() & NativeBehavior.LocalMemory) == 0)
+            return signature.Result == TypeRef.Bool ? Value.True : Value.Null;
         if (name == "cast") return CastOperation(arguments, context);
         int separator = name.IndexOf('.');
         string group = separator < 0 ? "" : name[..separator];
@@ -22,6 +24,7 @@ public static partial class NativeRegistry
             "fs" => await FileSystemAsync(operation, arguments, context, cancellationToken, signature.Effect),
             "io" => await IOOperationAsync(operation, arguments, context, cancellationToken),
             "math" => MathOperation(operation, arguments),
+            "meta" => MetaOperation(operation, arguments),
             "string" => await StringOperationAsync(operation, arguments, cancellationToken),
             "bool" => BooleanOperation(operation, arguments),
             "path" => PathOperation(operation, arguments, context),
@@ -30,6 +33,8 @@ public static partial class NativeRegistry
             "environment" => EnvironmentOperation(operation, arguments, context),
             "regex" => RegexOperation(operation, arguments),
             "text" => await TextBuilderOperationAsync(operation, arguments, cancellationToken),
+            "storage" => await StorageOperationAsync(operation, arguments, cancellationToken),
+            "shell" => ShellOperation(operation, arguments, context, cancellationToken),
             _ => throw new MsyncException($"Native namespace '{group}' is not registered")
         };
     }

@@ -191,6 +191,7 @@ internal static class MemoryEffects
         private readonly HashSet<int> queued = [];
         private readonly HashSet<int> starts = [0];
         private readonly Dictionary<int, string[]> allocationFields = [];
+        private int instructionPosition;
 
         internal FunctionMemoryEffects Run()
         {
@@ -286,6 +287,7 @@ internal static class MemoryEffects
 
         private void Transfer(State state, Instruction instruction, int pc)
         {
+            instructionPosition = pc;
             void Push(ValueInfo value) => state.Stack.Add(value);
             switch (instruction.Op)
             {
@@ -538,6 +540,8 @@ internal static class MemoryEffects
             if (signature.ResultRule == NativeResultRule.CastTarget && arguments.Length > 0) return arguments[0];
             if (signature.Behavior is { } behavior)
             {
+                if ((behavior & NativeBehavior.LocalMemory) != 0)
+                    return IndexedStorage(state, name, signature, arguments);
                 if ((behavior & NativeBehavior.Deferred) != 0)
                 {
                     foreach (var argument in arguments) Escape(state, argument, []);
@@ -549,6 +553,8 @@ internal static class MemoryEffects
                         if ((signature.Parameters[index].Kind & TypeKind.Range) != 0 && MayEnumerate(arguments[index]))
                             Enumerate(state, arguments[index]);
                 if ((behavior & NativeBehavior.Invokes) != 0) Unknown(state, arguments);
+                if (signature.ResultRule == NativeResultRule.RangeItem && arguments.Length > 0)
+                    return RangeContents(state, arguments[0]);
                 return signature.ResultRule == NativeResultRule.FirstArgument && arguments.Length > 0 ? arguments[0]
                     : signature.Result.Kind == TypeKind.Range ? new([], [], [], CallbackFreeRange: true) : ValueInfo.Empty;
             }
@@ -572,6 +578,42 @@ internal static class MemoryEffects
                 deferred = true; return new([], [], [], Deferred: true);
             }
             return signature.Result.Kind == TypeKind.Range ? new([], [], [], CallbackFreeRange: true) : ValueInfo.Empty;
+        }
+
+        private const string IndexedContents = "<indexed-items>";
+
+        private ValueInfo RangeContents(State state, ValueInfo value) => value.Elements is { } elements
+            ? elements.Aggregate(ValueInfo.Empty, Union) : ReadField(state, value, IndexedContents);
+
+        private ValueInfo IndexedStorage(State state, string name, NativeSignature signature, ValueInfo[] arguments)
+        {
+            if (name == "storage.buffer_new")
+            {
+                if (MayEnumerate(arguments[0])) Enumerate(state, arguments[0]);
+                return OwnedStorage(state, RangeContents(state, arguments[0]));
+            }
+            ValueInfo contents = ReadField(state, arguments[0], IndexedContents);
+            if (name == "storage.buffer_snapshot") return OwnedStorage(state, contents);
+            if (signature.Effect == NativeEffect.Write)
+            {
+                ValueInfo next = name switch
+                {
+                    "storage.buffer_clear" => ValueInfo.Empty,
+                    "storage.buffer_push" => Union(contents, arguments[1]),
+                    "storage.buffer_set" or "storage.buffer_insert" => Union(contents, arguments[2]),
+                    _ => contents
+                };
+                WriteField(state, arguments[0], IndexedContents, next);
+            }
+            return signature.ResultRule == NativeResultRule.RangeItem ? contents : ValueInfo.Empty;
+        }
+
+        private ValueInfo OwnedStorage(State state, ValueInfo contents)
+        {
+            MemoryAccess allocation = new(new(MemoryRootKind.Allocation, instructionPosition));
+            allocationFields[instructionPosition] = [IndexedContents];
+            state.Fields[allocation.Field(IndexedContents)] = contents;
+            return ValueInfo.At(allocation) with { CallbackFreeRange = true };
         }
         private bool MayEnumerate(ValueInfo value) => !value.CallbackFreeRange && (value.Deferred || value.Unknown || value.UnknownCell
             || value.Elements is null && value.Origins.Any(origin => origin.Root.Kind == MemoryRootKind.Capture || origin.Fields.Count > 0
@@ -616,6 +658,8 @@ internal static class MemoryEffects
 
         private static ValueInfo ReadContents(State state, ValueInfo value, string name)
         {
+            if (name == IndexedContents && value.Elements is { } elements)
+                return elements.Aggregate(ValueInfo.Empty, Union);
             var next = value.Unknown ? ValueInfo.Top : ValueInfo.Empty;
             foreach (var origin in value.Origins) next = Union(next, Dereference(state, FieldValue(state, origin.Field(name))));
             return next;
@@ -635,6 +679,7 @@ internal static class MemoryEffects
         }
         private void Escape(State state, ValueInfo value, HashSet<MemoryAccess> visited)
         {
+            foreach (var element in value.Elements ?? []) Escape(state, element, visited);
             foreach (var cell in value.Cells)
             {
                 if (!state.EscapedCells.Add(cell)) continue;
@@ -651,6 +696,7 @@ internal static class MemoryEffects
         }
         private void EscapeContents(State state, ValueInfo value, HashSet<MemoryAccess> visited)
         {
+            foreach (var element in value.Elements ?? []) Escape(state, element, visited);
             foreach (var origin in value.Origins.Where(origin => !External(origin)))
                 foreach (var member in Contents(state, origin)) Escape(state, member, visited);
             foreach (var closure in value.Closures) foreach (var capture in closure.Captures) Escape(state, capture, visited);

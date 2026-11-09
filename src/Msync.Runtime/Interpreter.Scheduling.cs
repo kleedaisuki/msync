@@ -147,6 +147,7 @@ public sealed partial class Interpreter
     private async ValueTask AwaitNativeDependenciesAsync(string name, IReadOnlyList<Value> arguments)
     {
         if (!NativeSignatures.TryGet(name, out var signature)) { await JoinTransfersAsync(); return; }
+        if ((signature.Behavior.GetValueOrDefault() & NativeBehavior.LocalMemory) != 0) return;
         var effects = EffectAnalysis.NativeEffects(name);
         if ((effects & (InstructionEffect.Read | InstructionEffect.Write)) == 0) return;
         await ordering;

@@ -21,6 +21,8 @@ public static partial class NativeRegistry
                 return EnvironmentVariables();
             case "working_directory":
                 return new PathValue(context.WorkingDirectory, context.WorkingDirectory, HomeDirectory: context.HomeDirectory);
+            case "set_working_directory":
+                return context.ChangeWorkingDirectory(arguments[0]);
             case "home_directory":
                 return new PathValue(context.HomeDirectory, context.WorkingDirectory, HomeDirectory: context.HomeDirectory);
             case "operating_system":

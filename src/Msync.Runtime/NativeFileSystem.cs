@@ -132,6 +132,27 @@ public static partial class NativeRegistry
             return Value.Null;
         }
         if (name == "set_permissions") { SetPermissions(local, Text(args[1])); return Value.Null; }
+        if (name == "touch")
+        {
+            DateTime timestamp = DateTime.UtcNow;
+            if (Directory.Exists(local))
+            {
+                Directory.SetLastAccessTimeUtc(local, timestamp);
+                Directory.SetLastWriteTimeUtc(local, timestamp);
+            }
+            else if (File.Exists(local))
+            {
+                File.SetLastAccessTimeUtc(local, timestamp);
+                File.SetLastWriteTimeUtc(local, timestamp);
+            }
+            else
+            {
+                using var file = File.OpenHandle(local, FileMode.OpenOrCreate, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+                File.SetLastAccessTimeUtc(file, timestamp);
+                File.SetLastWriteTimeUtc(file, timestamp);
+            }
+            return Value.Null;
+        }
         if (name == "equivalent") return Bool(NativeFileIdentity.Equivalent(local, context.LocalPath(args[1])));
         if (name is "create_directory" or "create_directories")
         {

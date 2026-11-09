@@ -4,7 +4,7 @@ namespace Msync.Core;
 
 public enum NativeEffect : byte { Pure, Read, Write }
 [Flags]
-public enum NativeBehavior : byte { None = 0, MayFail = 1, Enumerates = 2, Deferred = 4, Invokes = 8, EagerRange = 16 }
+public enum NativeBehavior : byte { None = 0, MayFail = 1, Enumerates = 2, Deferred = 4, Invokes = 8, EagerRange = 16, LocalMemory = 32 }
 public enum NativeResultRule : byte
 {
     Fixed, FirstArgument, RangeOfArguments, RangeItem, Transform, CastTarget,
@@ -46,7 +46,7 @@ public static partial class NativeSignatures
         Add("fs", "directory_iterator recursive_directory_iterator", new(TypeKind.Range, TypeRef.Path), NativeEffect.Read, path);
         Add("fs", "set_permissions", TypeRef.Null, NativeEffect.Write, path, TypeRef.String);
         Add("fs", "set_readonly", TypeRef.Null, NativeEffect.Write, path, TypeRef.Bool);
-        Add("fs", "delete", TypeRef.Null, NativeEffect.Write, path);
+        Add("fs", "delete touch", TypeRef.Null, NativeEffect.Write, path);
         Add("fs", "create_directory create_directories remove remove_all", TypeRef.Bool, NativeEffect.Write, path);
         Add("fs", "rename create_hard_link create_symlink create_directory_symlink copy_symlink", TypeRef.Null, NativeEffect.Write, path, path);
         Add("fs", "copy_file copy", TypeRef.Bool, NativeEffect.Write, path, path);
@@ -91,6 +91,9 @@ public static partial class NativeSignatures
         RegisterEnvironment(result);
         RegisterRegex(result);
         RegisterTextBuilder(result);
+        RegisterStorage(result);
+        RegisterMeta(result);
+        RegisterShell(result);
         return result;
     }
 }
