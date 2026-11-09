@@ -34,9 +34,63 @@ internal sealed partial class SemanticAnalyzer
         return new(type, first.Node, first.Literal == second.Literal ? first.Literal : null,
             callables, scope, element, EagerRange: first.EagerRange && second.EagerRange,
             Alternatives: [first, second],
-            IndexedRegion: first.IndexedRegion == second.IndexedRegion ? first.IndexedRegion : null,
+            IndexedRegion: payload?.IndexedRegion ?? (first.IndexedRegion == second.IndexedRegion ? first.IndexedRegion : null),
             DenotedType: first.DenotedType == second.DenotedType ? first.DenotedType : null,
-            DeferredEffects: CombineDeferredEffects(first.DeferredEffects, second.DeferredEffects));
+            DeferredEffects: CombineDeferredEffects(first.DeferredEffects, second.DeferredEffects),
+            IndexedAliases: payload?.IndexedAliases ?? JoinIndexedResources(first, second));
+    }
+
+    private static int IndexedResourceCount(SemanticValue value) => value.IndexedRegion is not null ? 1
+        : value.IndexedAliases.IsDefault ? 0 : value.IndexedAliases.Length;
+
+    private static int IndexedResourceAt(SemanticValue value, int index) => value.IndexedRegion ?? value.IndexedAliases[index];
+
+    private static int IndexedCarrierCount(SemanticIndexed storage) => storage.FixedCarrier is not null ? 1
+        : storage.CarrierConstraints.IsDefault ? 0 : storage.CarrierConstraints.Length;
+
+    private static HirTypeId IndexedCarrierAt(SemanticIndexed storage, int index) =>
+        storage.FixedCarrier ?? storage.CarrierConstraints[index];
+
+    private SemanticIndexed JoinIndexed(SemanticIndexed first, SemanticIndexed second)
+    {
+        var element = Join(first.Element, second.Element);
+        int firstCount = IndexedCarrierCount(first), secondCount = IndexedCarrierCount(second);
+        if (firstCount == 0) return second with { Element = element };
+        if (secondCount == 0) return first with { Element = element };
+        if (first.FixedCarrier is { } carrier && second.FixedCarrier == carrier)
+            return new(element, carrier);
+        var constraints = ImmutableArray.CreateBuilder<HirTypeId>(firstCount + secondCount);
+        for (int index = 0; index < firstCount; index++) constraints.Add(IndexedCarrierAt(first, index));
+        for (int index = 0; index < secondCount; index++)
+        {
+            var next = IndexedCarrierAt(second, index);
+            if (!constraints.Contains(next)) constraints.Add(next);
+        }
+        constraints.Sort(static (left, right) => left.Value.CompareTo(right.Value));
+        return constraints.Count == 1 ? new(element, constraints[0]) : new(element, CarrierConstraints: constraints.ToImmutable());
+    }
+
+    private static ImmutableArray<int> JoinIndexedResources(SemanticValue first, SemanticValue second)
+    {
+        int firstCount = IndexedResourceCount(first), secondCount = IndexedResourceCount(second);
+        if (firstCount == 0 || secondCount == 0 || first.IndexedRegion is { } region && second.IndexedRegion == region) return [];
+        if (first.IndexedRegion is null && second.IndexedRegion is null
+            && first.IndexedAliases.AsSpan().SequenceEqual(second.IndexedAliases.AsSpan())) return first.IndexedAliases;
+        var regions = ImmutableArray.CreateBuilder<int>(firstCount + secondCount);
+        int left = 0, right = 0;
+        while (left < firstCount || right < secondCount)
+        {
+            if (right == secondCount || left < firstCount && IndexedResourceAt(first, left) < IndexedResourceAt(second, right))
+                regions.Add(IndexedResourceAt(first, left++));
+            else if (left == firstCount || IndexedResourceAt(second, right) < IndexedResourceAt(first, left))
+                regions.Add(IndexedResourceAt(second, right++));
+            else
+            {
+                regions.Add(IndexedResourceAt(first, left++));
+                right++;
+            }
+        }
+        return regions.ToImmutable();
     }
 
     private static IEnumerable<SemanticCallable> Choices(SemanticValue value) => value.Callables.IsDefault

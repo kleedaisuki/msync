@@ -231,13 +231,26 @@ internal sealed partial class SemanticAnalyzer
             Require(arguments[index], target, source, allowImplicit: true, context: context);
             converted.Add(Convert(arguments[index], target, source, context));
         }
-        if (signature.Name is "storage.buffer_set" or "storage.buffer_push" or "storage.buffer_insert"
-            && arguments[0].IndexedRegion is { } region && context.Indexed.TryGetValue(region, out var indexed)
-            && indexed.FixedCarrier is { } carrier)
+        if (signature.Name is "storage.buffer_set" or "storage.buffer_push" or "storage.buffer_insert")
         {
             int last = converted.Count - 1;
-            Require(converted[last], carrier, source, allowImplicit: true, context: context);
-            converted[last] = Convert(converted[last], carrier, source, context);
+            HirTypeId? uniformCarrier = null;
+            bool differentRepresentation = false;
+            for (int index = 0; index < IndexedResourceCount(arguments[0]); index++)
+            {
+                int region = IndexedResourceAt(arguments[0], index);
+                if (!context.Indexed.TryGetValue(region, out var indexed)) continue;
+                for (int constraint = 0; constraint < IndexedCarrierCount(indexed); constraint++)
+                {
+                    var carrier = IndexedCarrierAt(indexed, constraint);
+                    Require(converted[last], carrier, source, allowImplicit: true, context: context);
+                    if (uniformCarrier is { } previous && hir.Types[previous.Value].RuntimeType != hir.Types[carrier.Value].RuntimeType)
+                        differentRepresentation = true;
+                    uniformCarrier ??= carrier;
+                }
+            }
+            if (!differentRepresentation && uniformCarrier is { } target)
+                converted[last] = Convert(converted[last], target, source, context);
         }
         return converted.MoveToImmutable();
     }
@@ -334,31 +347,46 @@ internal sealed partial class SemanticAnalyzer
     {
         if (signature.Name == "storage.buffer_new")
         {
-            var element = DynamicElement(Item(arguments[0]), context);
+            var initial = DynamicElement(Item(arguments[0]), context);
             int region = ++nextRegion;
-            context.Indexed[region] = new(element,
-                Runtime(element).Kind == TypeKind.Never ? null : element.Type);
-            return RangeValue(element) with { IndexedRegion = region, EagerRange = true };
+            context.Indexed[region] = new(initial,
+                Runtime(initial).Kind == TypeKind.Never ? null : initial.Type);
+            return RangeValue(initial) with { IndexedRegion = region, EagerRange = true };
         }
-        if (arguments[0].IndexedRegion is not { } identity || !context.Indexed.TryGetValue(identity, out var storage))
+        int count = IndexedResourceCount(arguments[0]);
+        if (count == 0)
             throw Error(source, "Indexed operations require a Buffer-owned Range; construct it with Buffer::new.", "E0222");
-        if (signature.Effect == NativeEffect.Write) context.IndexedWrites.Add(identity);
-        if (signature.Name is "storage.buffer_set" or "storage.buffer_push" or "storage.buffer_insert")
+        SemanticValue? element = null;
+        for (int index = 0; index < count; index++)
         {
-            var value = arguments[^1];
-            if (storage.FixedCarrier is null)
-                storage = new(DynamicElement(value, context), value.Type);
-            else Require(value, storage.FixedCarrier.Value, source, allowImplicit: true, context: context);
-            storage = storage with { Element = DynamicElement(Join(storage.Element, value), context) };
-            context.Indexed[identity] = storage;
+            int identity = IndexedResourceAt(arguments[0], index);
+            if (!context.Indexed.TryGetValue(identity, out var storage))
+                throw Error(source, "Indexed operations require a live Buffer resource description.", "E0222");
+            if (signature.Effect == NativeEffect.Write) context.IndexedWrites.Add(identity);
+            if (signature.Name is "storage.buffer_set" or "storage.buffer_push" or "storage.buffer_insert")
+            {
+                var value = arguments[^1];
+                if (IndexedCarrierCount(storage) == 0)
+                    storage = new(DynamicElement(value, context), value.Type);
+                else
+                {
+                    for (int constraint = 0; constraint < IndexedCarrierCount(storage); constraint++)
+                        Require(value, IndexedCarrierAt(storage, constraint), source, allowImplicit: true, context: context);
+                    if (IndexedCarrierCount(storage) == 1)
+                        value = Convert(value, IndexedCarrierAt(storage, 0), source, context);
+                }
+                storage = storage with { Element = DynamicElement(Join(storage.Element, value), context) };
+                context.Indexed[identity] = storage;
+            }
+            if (signature.Effect == NativeEffect.Write)
+                context.RecordWrite(new(SemanticWriteKind.Indexed, storage.Element, Region: identity));
+            element = element is null ? storage.Element : Join(element, storage.Element);
         }
-        if (signature.Effect == NativeEffect.Write)
-            context.RecordWrite(new(SemanticWriteKind.Indexed, storage.Element, Region: identity));
         return signature.Name switch
         {
             "storage.buffer_get" or "storage.buffer_pop" or "storage.buffer_remove" =>
-                DynamicElement(storage.Element, context) with { Node = HirNodeId.None, Location = null },
-            "storage.buffer_snapshot" => RangeValue(storage.Element) with { EagerRange = true },
+                DynamicElement(element!, context) with { Node = HirNodeId.None, Location = null },
+            "storage.buffer_snapshot" => RangeValue(element!) with { EagerRange = true },
             _ => ValueForType(hir.Type(signature.Result))
         };
     }
@@ -379,5 +407,19 @@ internal sealed partial class SemanticAnalyzer
         }
         return value with { Scope = scope, Element = element, Literal = null, DenotedType = null,
             Location = null, Node = HirNodeId.None };
+    }
+
+    private SemanticValue RefreshIndexed(SemanticValue value, SemanticContext context)
+    {
+        int count = IndexedResourceCount(value);
+        if (count == 0) return value;
+        SemanticValue? element = null;
+        for (int index = 0; index < count; index++)
+        {
+            var current = context.Indexed[IndexedResourceAt(value, index)].Element;
+            element = element is null ? current : Join(element, current);
+        }
+        HirTypeId type = RangeType(element!.Type);
+        return value with { Type = Runtime(value).Nullable ? Nullable(type) : type, Element = element, EagerRange = true };
     }
 }

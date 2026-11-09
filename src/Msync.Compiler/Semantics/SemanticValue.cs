@@ -20,7 +20,8 @@ internal sealed record SemanticMemberContract(int Concept, HirConceptMember Requ
 
 internal sealed record SemanticOrigin(HirLocationId Root, ImmutableArray<string> Fields = default);
 
-internal sealed record SemanticIndexed(SemanticValue Element, HirTypeId? FixedCarrier = null);
+internal sealed record SemanticIndexed(SemanticValue Element, HirTypeId? FixedCarrier = null,
+    ImmutableArray<HirTypeId> CarrierConstraints = default);
 
 internal enum SemanticWriteKind : byte { Location, Field, Indexed }
 internal sealed record SemanticDeferredWrite(SemanticWriteKind Kind, SemanticValue After,
@@ -33,7 +34,8 @@ internal sealed record SemanticValue(HirTypeId Type, HirNodeId Node,
     ImmutableArray<SemanticValue> Alternatives = default, int? IndexedRegion = null,
     HirTypeId? DenotedType = null, SemanticOrigin? Origin = null,
     SemanticRuntimeObservation? Observation = null,
-    ImmutableArray<SemanticDeferredWrite> DeferredEffects = default)
+    ImmutableArray<SemanticDeferredWrite> DeferredEffects = default,
+    ImmutableArray<int> IndexedAliases = default)
 {
     public bool? KnownBool => Literal is { Kind: HirLiteralKind.Bool } literal ? literal.Boolean : null;
 }
