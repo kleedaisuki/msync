@@ -11,7 +11,8 @@ foreach (var (name, make, expected) in new (string, Func<HirModule>, double)[]
     ("loop-value", LoopValue, 6), ("for-break", ForBreak, 6),
     ("match", Match, 7), ("scope-cell", ScopeCell, 9),
     ("callee-before-args", NativeOrder, 2), ("named-self-cell", ScopeSelf, 9),
-    ("template-identity", TemplateIdentity, 7)
+    ("template-identity", TemplateIdentity, 7), ("forward-module-cell", ForwardModuleCell, 7),
+    ("dynamic-type", DynamicType, 0), ("dynamic-type-order", DynamicTypeOrder, 2)
 })
 {
     HirModule hir = make();
@@ -247,6 +248,45 @@ static HirModule TemplateIdentity()
     return x.Done(x.Block(x.Declare(captured, x.Number(3)),
         x.Declare(value, x.Node(HirKind.TemplateClosure, x.FunctionType)),
         x.Node(HirKind.Call, x.NumberType, [x.Read(value), x.Number(4)])));
+}
+
+static HirModule ForwardModuleCell()
+{
+    Example x = New();
+    var module = x.Location("module", x.ScopeType, kind: HirLocationKind.Import);
+    var capture = x.Location("module", x.ScopeType, 1, HirLocationKind.Import);
+    var getter = x.Location("get", x.FunctionType);
+    var field = x.Location("value", x.NumberType, kind: HirLocationKind.Field);
+    HirCapture shared = new(capture, HirCaptureMode.Location, module, HirNodeId.None);
+    x.Hir.Functions.Add(new("get", [], [shared], x.NumberType,
+        x.Node(HirKind.MemberRead, x.NumberType, [x.Read(capture)], text: "value")));
+    x.Hir.Closures.Add(new(new(1), [shared]));
+    x.Hir.ScopeLayouts.Add(new([new("value", x.NumberType)]));
+    x.Hir.AddScope(new(0, [field]));
+    x.Hir.Calls.Add(new(HirCallKind.Function, new(1)));
+    return x.Done(x.Block(x.Declare(getter, x.Node(HirKind.Closure, x.FunctionType)),
+        x.Declare(module, x.Node(HirKind.Scope, x.ScopeType, [x.Declare(field, x.Number(7))])),
+        x.Node(HirKind.Call, x.NumberType, [x.Read(getter)])));
+}
+static HirModule DynamicType()
+{
+    Example x = New(); var typeType = x.Hir.Type(TypeRef.Type);
+    var target = x.Location("target", typeType);
+    var number = x.Hir.Literal(new(HirLiteralKind.Type, Type: TypeRef.Number), typeType, x.Source);
+    var text = x.Hir.Literal(new(HirLiteralKind.Type, Type: TypeRef.String), typeType, x.Source);
+    var check = x.Node(HirKind.IsType, x.BoolType, [x.Number(3), x.Read(target)], data: -1);
+    return x.Done(x.Block(x.Declare(target, number), x.Assign(target, text),
+        x.Node(HirKind.If, x.NumberType, [check, x.Number(1), x.Number(0)])));
+}
+static HirModule DynamicTypeOrder()
+{
+    Example x = New(); var trace = x.Location("trace", x.NumberType);
+    var typeType = x.Hir.Type(TypeRef.Type);
+    var number = x.Hir.Literal(new(HirLiteralKind.Type, Type: TypeRef.Number), typeType, x.Source);
+    var left = x.Block(x.Assign(trace, x.Number(1)), x.Number(3));
+    var right = x.Block(x.Assign(trace, x.Number(2)), number);
+    return x.Done(x.Block(x.Declare(trace, x.Number(0)),
+        x.Node(HirKind.IsType, x.BoolType, [left, right], data: -1), x.Read(trace)));
 }
 
 internal sealed class Example

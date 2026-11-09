@@ -91,6 +91,12 @@ public static class HirLowerer
         internal int Function(HirFunctionId id) => layout.Functions[id];
         internal int Slot(HirFunctionId function, HirLocationId location) => layout.Locations[new(function, location)];
         internal bool SessionRoot(HirLocationId location) => sessionRoots?.Contains(location) == true;
+        internal bool SharedEntryImport(HirLocationId location)
+        {
+            var definition = hir.Locations[location.Value];
+            return definition.Owner == hir.Entry && definition.Kind == HirLocationKind.Import
+                && definition.TemplateOwner is null && !hir.UnresolvedImports.Contains(location);
+        }
         internal int Site(int construction)
         {
             var definition = hir.Scopes[construction];
@@ -118,6 +124,7 @@ public static class HirLowerer
         private readonly List<LoopState> loops = [];
         private readonly List<int> iterators = [];
         private readonly List<string> acquireRegions = [];
+        private readonly List<HirLocationId> newSharedImports = [];
         private int locals;
         private int nextRegion;
         private HirModule Hir => owner.Hir;
@@ -131,6 +138,12 @@ public static class HirLowerer
             PrepareLocations();
             if (function.IsOpen)
                 throw new InvalidOperationException($"Open function '{function.Name}' is not a finalized callable body.");
+            // Module locations own one frame-lifetime cell, including forward
+            // captures made before their module's value is initialized.
+            foreach (var location in newSharedImports)
+            {
+                Add(OpCode.Null); Add(OpCode.InitializeLocal, Slot(location.Value));
+            }
             Emit(function.Body);
             Add(OpCode.Return);
             owner.Layout.LocalCounts[id] = locals;
@@ -148,6 +161,7 @@ public static class HirLowerer
                 var key = new HirLocationSlot(id, locationId);
                 if (owner.Layout.Locations.ContainsKey(key)) continue;
                 owner.Layout.Locations.Add(key, locals++);
+                if (owner.SharedEntryImport(locationId)) newSharedImports.Add(locationId);
             }
         }
         private void FixedSlot(HirLocationId location, int slot)
@@ -243,7 +257,7 @@ public static class HirLowerer
         {
             // Session roots already own uninitialized storage. Capturing it is legal,
             // but only the completed initializer may publish a value into that cell.
-            if (!owner.SessionRoot(new(node.Data)))
+            if (!owner.SessionRoot(new(node.Data)) && !owner.SharedEntryImport(new(node.Data)))
             {
                 Add(OpCode.Null); Add(OpCode.InitializeLocal, Slot(node.Data), source: node.Source);
             }
@@ -338,7 +352,7 @@ public static class HirLowerer
         private void Scope(HirNode node)
         {
             var scope = Hir.Scopes[node.Data]; int site = owner.Site(node.Data);
-            if (scope.Self is { } self && !owner.SessionRoot(self))
+            if (scope.Self is { } self && !owner.SessionRoot(self) && !owner.SharedEntryImport(self))
             { Add(OpCode.Null); Add(OpCode.InitializeLocal, Slot(self.Value)); }
             int initialized = -1;
             if (scope.Singleton >= 0)
