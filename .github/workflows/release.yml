@@ -162,6 +162,15 @@ jobs:
           import subprocess
 
           subprocess.run(['xvfb-run', '-a', 'npm', 'run', 'test:integration'], check=True, timeout=360)
+      - name: Exercise source-free typed HIR editor
+        env:
+          MSYNC_TEST_HIR_ONLY: '1'
+        working-directory: editors/vscode
+        shell: python
+        run: |
+          import subprocess
+
+          subprocess.run(['xvfb-run', '-a', 'npm', 'run', 'test:integration'], check=True, timeout=360)
       - name: Package VSIX
         working-directory: editors/vscode
         run: |
