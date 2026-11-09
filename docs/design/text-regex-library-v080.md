@@ -2,12 +2,26 @@
 
 ## Ownership and source composition
 
-`$std::text::Builder()` returns a fresh ordinary Scope whose methods close over
-shared mutable storage. Aliasing a builder aliases that storage; calling the
-factory again does not. `append`, `append_line`, `append_all`, and `clear` return
-Null. `build` returns an immutable String snapshot, `length` counts Unicode
-scalars, and `empty` tests that count. `append_line` appends LF independently of
-host platform. Text input is explicit String, not implicit object stringification.
+`$std::text::StringBuilder` is a named Scope of shared associated functions.
+`StringBuilder::new()` returns a fresh data Scope containing `chunks`, `length`
+and a shared chunk policy. Aliasing an instance aliases that data; constructing
+another instance does not. Operations receive the instance explicitly:
+
+```msync
+let Builder = $std::text::StringBuilder;
+let text = Builder::new();
+Builder::append(text, "hello");
+let before = Builder::snapshot(text);
+Builder::append_line(text, " Klee");
+Builder::build(text) -> ./message.txt;
+```
+
+`append`, `append_line`, `append_all` and `clear` return Null. `build` and
+`snapshot` return immutable String values, `len` counts Unicode scalars, and
+`is_empty` tests that count. `append_line` appends LF independently of host
+platform. Text input is explicit String, not implicit object stringification.
+`with_policy` checks the supplied Scope against `$std::concepts::TextChunks`;
+instances retain the selected policy rather than their own accessor closures.
 
 The object implementation is executable source, not an opaque StringBuilder
 value. One native `append_chunk(Range<String>, String)` primitive returns an
@@ -33,7 +47,12 @@ prepared Debug VM run of 4096 32-character appends took 1174.850 ms and allocate
 406,358,792 bytes. This measured cost justified one precise host primitive,
 rather than introducing an opaque builder runtime kind or many native methods.
 
-### Prepared interpreter measurement
+### Historical prepared interpreter measurement
+
+The measurements below describe the earlier source-factory implementation and
+its original interpreter revision, not the current shared-family interface or
+the later allocation-optimized VM. They retain the causal evidence for choosing
+the persistent-chunk primitive.
 
 The final comparison uses the same snapshot-3 managed Debug assemblies,
 optimization O2, 32-character chunks, one warm run, and the median of three
@@ -52,13 +71,13 @@ allocated bytes in the measured execution. Remaining allocations include
 ordinary Fn/Scope interpreter invocation and scheduling machinery; the primitive
 does not remove that broader runtime cost.
 
-Reproduce with `tests/StdlibTextRegex --bench`; `--bench-source=PATH` selects a
-source baseline without replacing product files. The forest baseline is
+The original `tests/StdlibTextRegex --bench` driver accepted `--bench-source=PATH`
+to select a source baseline without replacing product files. The forest baseline is
 `a426bb6:stdlib/text.msync`, with each `merge` and `tail` result resolved using
 `ranges.empty` before overwriting the captured operand binding. That resolution
 is required to prevent deferred Range self-reference in the old source design.
 
-The final snapshot-4 embedded module passes 207 focused contracts across
+The earlier snapshot-4 embedded module passed 207 focused contracts across
 O0/O2/O3, source execution, `.mso` round-trip, and bound `.mexe` round-trip.
 These include eager generic-input consumption, prior Range/String snapshots,
 factory independence and aliases, clear/reuse, chunk ordering, optional and
@@ -78,10 +97,13 @@ retain a final input line terminator, following `string.lines`.
 Patterns are ordinary Strings, with inline options such as `(?im)`; there is no
 new regex runtime kind. Culture-invariant matching avoids host locale changes.
 The BCL static regex cache handles reused patterns; Native AOT does not emit new
-machine code. `compile(pattern)` binds a pattern in a fresh Scope of methods;
-it is a source-level convenience, not eager validation or a JIT promise.
-`pattern()` is a getter: no mutable copied field can silently disagree with the
-operations' captured pattern.
+machine code. `Pattern::new(expression)` returns a data Scope containing
+`expression`. Shared associated operations such as
+`Pattern::matches(pattern, text)` and `Pattern::replace(pattern, text, replacement)`
+read that field directly; there is no parallel captured pattern or getter that
+can disagree with it. Construction performs no matching, eager validation or
+JIT compilation. `$std::concepts::PatternSpec` constrains the record consumed by
+the associated functions.
 
 | Result | Fields |
 | --- | --- |

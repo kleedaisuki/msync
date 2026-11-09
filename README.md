@@ -138,9 +138,20 @@ scope Echo {
 let message = apply(Echo, "hello");
 ```
 
-Requirements are checked against concrete structure at specialization. Associated
-types relate an algebra's carrier, identity and operations; they do not prove
-mathematical laws such as associativity. See `msync skill language concepts`.
+Requirements are checked against concrete structure at specialization. Declare
+associated types where their relationship first appears:
+
+```rust
+concept Product {
+    first?: typename First,
+    second?: typename Second,
+};
+```
+
+The standard concepts describe products, optional values, sums and explicit
+policies without adding runtime type kinds. Mathematical laws such as
+associativity are not inferred from operation signatures. See
+`msync skill language concepts`.
 
 Unmarked process calls launch and wait. `let process = release ./tool();`
 keeps that Process live; `acquire process;` joins only it. `release` is a before
@@ -227,13 +238,13 @@ Scope members only. Named Scopes are shared singletons; anonymous `scope { ... }
 expressions construct fresh instances. Both functions and scopes can be anonymous:
 
 ```rust
-scope package {
+scope Package {
     input: input.txt,
     enabled: true,
     copy: fn(file, destination) { file -> destination },
     nested: scope { label: "codex", },
 };
-let alias = package;
+let alias = Package;
 alias::copy(alias::input, output.txt);
 ```
 
@@ -245,9 +256,31 @@ rather than reparsing a shell command, returning a `Process` value. The
 
 `stdlib/*.msync` files are executable compiler input embedded in the binary.
 The modules include filesystem/IO, Path/String/Number operations, Range
-algorithms, functions, live processes, collections, text builders, regex, file
-services, command objects and environment tools. `msync skill library` lists
-the embedded modules and progressively displays their actual declarations.
+algorithms, live processes, containers, text construction, regular expressions,
+data composition, metaprogramming and terminal utilities. `msync skill library`
+lists the embedded modules and progressively displays their actual declarations.
+
+Named Scope families use PascalCase; associated functions use snake_case and
+take their instance explicitly. Instances store data and selected policies,
+rather than duplicating a set of method closures:
+
+```rust
+let List = $std::containers::List;
+let files = List::new([./input.txt]);
+List::push(files, ./settings.toml);
+let before = List::snapshot(files);
+
+let report = $std::files::File::new(./report.txt);
+$std::files::File::write(report, "ready");
+```
+
+`$std::data` provides Pair, Option, Result and Either families. An absent Option
+is native Null; `Option::some(null)` remains a distinct present value. The
+`$std::meta` queries support type-directed composition without executing the
+function or member access being inspected. In the REPL, terminal utilities such
+as `ls()` and `cat(./report.txt)` are available directly; scripts use
+`$std::shell` explicitly.
+
 Pure compositions use ordinary functions; host-only operations use explicitly
 typed native declarations:
 
