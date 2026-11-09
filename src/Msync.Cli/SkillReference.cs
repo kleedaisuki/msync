@@ -28,13 +28,8 @@ internal static class SkillReference
         new("troubleshooting", "Read and repair source diagnostics", "troubleshooting")
     ];
 
-    private static Topic ModuleTopic(string module)
-    {
-        bool concepts = Msync.Compiler.Syntax.Parser.Parse(ReadStandard(module)).Statements
-            .All(statement => statement is Msync.Compiler.Syntax.ConceptDeclaration);
-        return new("library/" + module, concepts ? $"Compile-time {module} declarations" : $"Executable {module} declarations and operations",
-            concepts ? "concept-module" : "module", module);
-    }
+    private static Topic ModuleTopic(string module) => new("library/" + module,
+        $"Source-backed {module} declarations", "module", module);
 
     private static IEnumerable<string> StandardModules() => typeof(SkillReference).Assembly
         .GetManifestResourceNames()
@@ -52,6 +47,8 @@ internal static class SkillReference
         if (selected.Module is { } module)
         {
             string source = ReadStandard(module);
+            if (Msync.Compiler.Syntax.Parser.Parse(source).Statements.All(statement => statement is Msync.Compiler.Syntax.ConceptDeclaration))
+                body = Read("Msync.Skills.concept-module.md");
             body = body.Replace("{{module}}", module, StringComparison.Ordinal)
                 .Replace("{{source}}", source.TrimEnd(), StringComparison.Ordinal);
         }
