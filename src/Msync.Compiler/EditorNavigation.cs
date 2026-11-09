@@ -1,4 +1,5 @@
 using Msync.Compiler.Syntax;
+using System.Runtime.CompilerServices;
 using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 
 namespace Msync.Compiler;
@@ -25,6 +26,9 @@ internal static class EditorSymbols
                     break;
                 case ScopeDeclaration scope:
                     Add(scope.Name, scope.NameSpan, scope.Span, EditorSymbolKind.Scope, Collect(scope.Scope.Members));
+                    break;
+                case ScopeExpr { Name: { } name } scope:
+                    Add(name, scope.NameSpan, scope.Span, EditorSymbolKind.Scope, Collect(scope.Members));
                     break;
                 case ConceptDeclaration concept:
                     Add(concept.Name, concept.NameSpan, concept.Span, EditorSymbolKind.Scope,
@@ -76,6 +80,7 @@ internal static class EditorSymbols
     private static IReadOnlyList<EditorSymbol> CollectValue(Expr value) => value switch
     {
         FunctionExpr function => FunctionChildren(function),
+        ScopeExpr { Name: not null } scope => Collect([scope]),
         ScopeExpr scope => Collect(scope.Members),
         _ => Collect(Compilation.Children(value))
     };
@@ -124,6 +129,24 @@ internal sealed partial class EditorContextCollector
 
 internal sealed partial class Compilation
 {
+    private sealed class EditorSourceSpanComparer : IEqualityComparer<(string Source, SourceSpan Span)>
+    {
+        public bool Equals((string Source, SourceSpan Span) left, (string Source, SourceSpan Span) right) =>
+            ReferenceEquals(left.Source, right.Source) && left.Span == right.Span;
+        public int GetHashCode((string Source, SourceSpan Span) key) =>
+            HashCode.Combine(RuntimeHelpers.GetHashCode(key.Source), key.Span);
+    }
+    private readonly HashSet<(string Source, SourceSpan Span)>? editorParameterDefinitions = observe is null ? null : new(new EditorSourceSpanComparer());
+    private readonly HashSet<SourceSpan>? editorParameterOccurrences = observe is null ? null : [];
+
+    private void CaptureParameter(Frame frame, SourceSpan span)
+    {
+        editorParameterDefinitions?.Add((frame.Source, span));
+        if (IsCurrentSource(frame)) editorParameterOccurrences?.Add(span);
+    }
+
+    internal bool IsParameterOccurrence(SourceSpan span) => editorParameterOccurrences?.Contains(span) == true;
+
     private void CaptureConceptDefinition(Frame frame, TypeSyntax syntax)
     {
         if (editorContexts is null || !frame.Concepts.TryGetValue(syntax.Name, out var definition)) return;
@@ -136,7 +159,10 @@ internal sealed partial class Compilation
 
     private void CaptureDefinition(Frame frame, SourceSpan span, IReadOnlyList<EditorLocation> origins)
     {
-        if (editorContexts is not null && IsCurrentSource(frame)) editorContexts.Reference(frame, span, origins);
+        if (editorContexts is null || !IsCurrentSource(frame)) return;
+        editorContexts.Reference(frame, span, origins);
+        if (origins.Any(origin => editorParameterDefinitions!.Contains((origin.Source, origin.Span))))
+            editorParameterOccurrences!.Add(span);
     }
 
     private static IReadOnlyDictionary<string, IReadOnlyList<EditorLocation>>? JoinOrigins(ScopeInfo left, ScopeInfo right, IEnumerable<string> members)

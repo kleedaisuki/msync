@@ -328,7 +328,8 @@ internal sealed partial class Compilation
                 }
                 if (parameter.Nullable) info = info with { Type = info.Type.WithNull };
                 var origin = DeclarationOrigin(frame, new(parameter.Span.Start, parameter.Name.Length));
-                frame.Bind(parameter.Name, new(frame.Allocate(), info, Origin: origin));
+                frame.Bind(parameter.Name, new(frame.Allocate(), info, Origin: origin) { IsParameter = true });
+                CaptureParameter(frame, new(parameter.Span.Start, parameter.Name.Length));
                 if (origin is not null) CaptureDefinition(frame, origin.Span, [origin]);
                 Observe(frame, new(parameter.Span.Start, parameter.Name.Length), info, parameter.Name);
             }

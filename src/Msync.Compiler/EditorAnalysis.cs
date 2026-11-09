@@ -17,6 +17,7 @@ public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrence
     IReadOnlyList<SemanticMember>? RecoveryBindings = null, int? RecoveryStart = null)
 {
     internal EditorContextCollector? Contexts { get; init; }
+    internal IReadOnlyList<(SourceSpan Span, IReadOnlyList<SemanticMember> Types)> AssociatedTypes { get; init; } = [];
     public IReadOnlyList<SourceSpan> RegexSpans { get; init; } = [];
     public IReadOnlyList<EditorSymbol> Symbols { get; init; } = [];
     public IReadOnlyList<EditorLocation> DefinitionsAt(int offset) => Contexts?.DefinitionsAt(offset) ?? [];
@@ -33,7 +34,10 @@ public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrence
         return IsTypePosition(offset) ? context with
         {
             IsTypePosition = true,
-            Bindings = context.Bindings.Concat(Contexts?.ConceptsAt(offset) ?? []).ToArray()
+            Bindings = AssociatedTypes.Where(scope => scope.Span.Start <= offset && offset <= scope.Span.End)
+                .OrderBy(scope => scope.Span.Length).SelectMany(scope => scope.Types)
+                .Concat(Contexts?.ConceptsAt(offset) ?? []).Concat(context.Bindings)
+                .DistinctBy(member => member.Name).ToArray()
         } : context;
     }
     public SemanticMember? Resolve(int offset, string name) => Contexts is { } contexts ? contexts.Resolve(offset, name)
@@ -70,7 +74,7 @@ public static class EditorCompiler
             0 => [],
             1 => DescribeBindings(environments[0], scopes),
             _ => environments[0].Keys.Where(name => !name.StartsWith('$') && environments.All(environment => environment.ContainsKey(name)))
-                .Select(name => DescribeMember(name, environments.Select(environment => environment[name].Info), scopes, members: true)).ToArray()
+                .Select(name => DescribeBindingChoices(name, environments.Select(environment => environment[name]), scopes)).ToArray()
         };
         SemanticMember? receiver = receivers.Count == 0 ? null : DescribeMember("", receivers, scopes, members: true);
         return new(bindings, receiver, kind, physicalEndpoint, hasPhysicalOwner);
@@ -96,13 +100,29 @@ public static class EditorCompiler
                 : DescribeMember(name, shapes.Select(shape => shape.Members[name]), scopes, members: true);
         }
         if (name.StartsWith('$') || environments.Count == 0 || environments.Any(environment => !environment.ContainsKey(name))) return null;
-        return environments.Count == 1 ? DescribeMember(name, environments[0][name].Info, scopes, members: true)
-            : DescribeMember(name, environments.Select(environment => environment[name].Info), scopes, members: true);
+        return environments.Count == 1 ? DescribeBinding(name, environments[0][name], scopes)
+            : DescribeBindingChoices(name, environments.Select(environment => environment[name]), scopes);
     }
 
     private static SemanticMember[] DescribeBindings(IReadOnlyDictionary<string, Binding> bindings,
         Dictionary<ScopeInfo, ScopeDescription> scopes) => bindings.Where(pair => !pair.Key.StartsWith('$'))
-        .Select(pair => DescribeMember(pair.Key, pair.Value.Info, scopes, members: true)).ToArray();
+        .Select(pair => DescribeBinding(pair.Key, pair.Value, scopes)).ToArray();
+
+    private static SemanticMember DescribeBinding(string name, Binding binding, Dictionary<ScopeInfo, ScopeDescription> scopes)
+    {
+        SemanticMember member = DescribeMember(name, binding.Info, scopes, members: true);
+        return binding.IsParameter && binding.Info.Type.WithoutNull == TypeRef.Scope
+            ? member with { SemanticRole = "variable" } : member;
+    }
+
+    private static SemanticMember DescribeBindingChoices(string name, IEnumerable<Binding> bindings,
+        Dictionary<ScopeInfo, ScopeDescription> scopes)
+    {
+        Binding[] choices = bindings.ToArray();
+        SemanticMember member = DescribeMember(name, choices.Select(binding => binding.Info), scopes, members: true);
+        return choices.All(binding => binding.IsParameter && binding.Info.Type.WithoutNull == TypeRef.Scope)
+            ? member with { SemanticRole = "variable" } : member;
+    }
 
     public static EditorAnalysis Analyze(string source, string sourceName) => Analyze(source, sourceName, null);
 
@@ -120,12 +140,14 @@ public static class EditorCompiler
         IReadOnlyList<SourceSpan> regexSpans = [];
         IReadOnlyList<EditorSymbol> symbols = [];
         List<SourceSpan> typeSpans = [];
+        IReadOnlyList<(SourceSpan Span, IReadOnlyList<SemanticMember> Types)> associatedTypes = [];
         try
         {
             EditorParseResult parsed = Parser.ParseForEditor(source, sourceName);
             regexSpans = parsed.RegexSpans;
             Document document = parsed.Document;
             symbols = EditorSymbols.Collect(document.Statements);
+            associatedTypes = ConceptTypeScopes(document.Statements).ToArray();
             diagnostic = parsed.Error?.Diagnostic;
             Seed(document.Statements, source, syntax, typeSpans);
             Action<SourceSpan, Info, string?, bool> observer = (span, info, name, concrete) =>
@@ -153,6 +175,11 @@ public static class EditorCompiler
             syntax[span] = observation.Multiple is { } alternatives
                 ? Describe(span, observation.Name, alternatives.Values, scopeDescriptions)
                 : Describe(span, observation.Name, observation.Single!, scopeDescriptions);
+            if (syntax[span].SemanticRole == "type"
+                && (observation.Single?.Type.WithoutNull == TypeRef.Scope
+                    || observation.Multiple?.Values.All(item => item.Type.WithoutNull == TypeRef.Scope) == true)
+                && compilation?.IsParameterOccurrence(span) == true)
+                syntax[span] = syntax[span] with { SemanticRole = "variable" };
             if (observation.Single is { } single && compilation?.ConceptRequirementSignature(single) is { } requirement)
                 syntax[span] = syntax[span] with
                 {
@@ -172,7 +199,18 @@ public static class EditorCompiler
                 };
             }
         return new(syntax.Values.OrderBy(item => item.Span.Start).ThenBy(item => item.Span.Length).ToArray(), diagnostic, recovery, recoveryStart)
-        { Contexts = compilation?.EditorContexts, RegexSpans = regexSpans, TypeSpans = typeSpans, Symbols = symbols };
+        { Contexts = compilation?.EditorContexts, RegexSpans = regexSpans, TypeSpans = typeSpans, Symbols = symbols, AssociatedTypes = associatedTypes };
+    }
+
+    private static IEnumerable<(SourceSpan Span, IReadOnlyList<SemanticMember> Types)> ConceptTypeScopes(IEnumerable<Node> nodes)
+    {
+        foreach (Node node in nodes)
+        {
+            if (node is ConceptDeclaration concept)
+                yield return (concept.Span, concept.Types.Select(type => new SemanticMember(type.Name, "Type", $"type {type.Name}",
+                    "An associated type selected from the constrained Scope.", SemanticRole: "type") { IsConstraint = true }).ToArray());
+            foreach (var scope in ConceptTypeScopes(Compilation.Children(node))) yield return scope;
+        }
     }
 
     private sealed class Observation(string? name)
@@ -375,6 +413,7 @@ public static class EditorCompiler
                     Add(native.NameSpan, "Function", FunctionSignature(native.Name, native.Parameters, Slice(source, native.ReturnType.Span), source));
                     break;
                 case ScopeDeclaration scope: Add(scope.NameSpan, "Scope", $"{scope.Name}: Scope", "type"); break;
+                case ScopeExpr { Name: { } name } scope: Add(scope.NameSpan, "Scope", $"scope {name}", "type"); break;
                 case ConceptDeclaration concept:
                     Add(concept.NameSpan, "Concept", $"concept {concept.Name}", "type");
                     if (concept.NameSpan is { } conceptName)
