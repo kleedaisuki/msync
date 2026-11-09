@@ -176,6 +176,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--work-root", type=Path, default=ROOT / ".temp/stdlib-expansion"
+    )
     parser.add_argument("--samples", type=int, default=3)
     parser.add_argument("--skip-terminal", action="store_true")
     parser.add_argument(
@@ -184,7 +187,7 @@ def main() -> None:
     parser.add_argument("--case", action="append", choices=["startup", *SOURCES])
     options = parser.parse_args()
     binary: Path = options.binary.resolve()
-    scratch = ROOT / ".temp/stdlib-expansion"
+    scratch: Path = options.work_root.resolve()
     scratch.mkdir(parents=True, exist_ok=True)
     workspace = Path(tempfile.mkdtemp(prefix="journey-", dir=scratch))
     hashes = image_hashes(binary)
