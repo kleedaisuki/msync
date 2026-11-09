@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 
 namespace Msync.Core;
 
@@ -75,6 +76,9 @@ public sealed record RangeValue(IAsyncEnumerable<Value> Items, TypeRef ItemType,
 public sealed record ScopeValue : Value, IReadOnlyDictionary<string, Value>
 {
     private readonly Value[] fields;
+    public bool Equals(ScopeValue? other) => ReferenceEquals(this, other);
+    public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
+
     public ScopeValue(IReadOnlyDictionary<string, Value> members)
     {
         var names = new string[members.Count];

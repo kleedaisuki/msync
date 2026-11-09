@@ -26,6 +26,16 @@ Scope construction do not allocate the cache. Runtime constant cloning shares
 the layout, transforms visible field values into fresh slots and retains
 allocation-site provenance.
 
+Scope equality and hashing use stable instance identity. Neither a shared
+layout nor a shared empty storage array makes two independently constructed
+Scopes equal. Native `ranges.unique`/`contains` and `HashSet<Value>` therefore
+retain distinct objects while recognizing aliases, and field mutation does not
+change collection membership. The direct native regression first reproduced
+the record-derived equality failure with two instances using `Array.Empty`;
+actual source factories are also checked through source/object/executable
+routes. Current `PopMany(0)` happens to allocate distinct arrays, but semantic
+identity must not depend on that incidental allocation policy.
+
 The layout describes reference slots and member identity, not unboxed payload
 types. Two source shapes with the same names can share it even if their scalar
 payload types differ. The compiler separately owns fixed type/nullability

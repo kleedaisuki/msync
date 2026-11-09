@@ -34,6 +34,28 @@ catch (MsyncException error) { Check(error.Message == "Scope has no member 'miss
 try { _ = ScopeLayout.Parse("a\0a"); throw new InvalidOperationException("Duplicate member layout succeeded"); }
 catch (ArgumentException error) { Check(error.Message.Contains("same key", StringComparison.Ordinal), "Duplicate construction error changed"); }
 
+ScopeLayout emptyLayout = ScopeLayout.Parse("");
+ScopeValue emptyFirst = new(emptyLayout, Array.Empty<Value>());
+ScopeValue emptySecond = new(emptyLayout, Array.Empty<Value>());
+RangeValue emptyValues = new(new Value[] { emptyFirst, emptySecond, emptyFirst }, TypeRef.Scope);
+RuntimeContext nativeContext = new(new(WorkingDirectory: Environment.CurrentDirectory));
+static ValueTask<Value> NoCallback(Value target, IReadOnlyList<Value> arguments, CancellationToken token) =>
+    throw new InvalidOperationException("Unexpected callback during Scope collection lookup");
+RangeValue unique = (RangeValue)await NativeRegistry.InvokeAsync("ranges.unique", [emptyValues], nativeContext, NoCallback);
+int uniqueCount = 0;
+await foreach (Value item in unique.Items) uniqueCount++;
+Check(uniqueCount == 2, "Native unique merged two Scope instances sharing empty storage");
+Check(await NativeRegistry.InvokeAsync("ranges.contains", [new RangeValue(new Value[] { emptyFirst }, TypeRef.Scope), emptySecond], nativeContext, NoCallback)
+    is BoolValue { Data: false }, "Native contains mistook a distinct empty Scope for an alias");
+Check(await NativeRegistry.InvokeAsync("ranges.contains", [new RangeValue(new Value[] { emptyFirst }, TypeRef.Scope), emptyFirst], nativeContext, NoCallback)
+    is BoolValue { Data: true }, "Native contains lost the same Scope alias");
+HashSet<Value> identities = [emptyFirst, emptySecond, value];
+int hash = value.GetHashCode();
+value.SetField(0, Value.False);
+value.SetMember("cell", new StringValue("mutated-again"));
+Check(identities.Count == 3 && identities.Contains(value) && value.GetHashCode() == hash, "Field mutation changed Scope hash identity");
+Check(!value.Equals(mapped) && !emptyFirst.Equals(emptySecond) && emptyFirst.Equals((Value)emptyFirst), "Scope identity follows payload/layout instead of its instance");
+
 Module Factory() => new([new StringValue("original")],
 [
     new("main", 0, 0,
@@ -59,7 +81,8 @@ try
         ("loop-instances", "let read = fn { \"none\" }; for item in [\"first\", \"second\", \"third\"] { let object = scope { field: item, read: fn { field } }; read = object::read; }; read()", "third"),
         ("branch-layout", "let object = if exists ./selected { scope { first: true, value: \"selected\" } } else { scope { value: \"other\", first: false } }; object::value", "other"),
         ("nullable-field", "let object = scope { field?: \"before\", read: fn { field } }; object::field = null; if object::read() is null { \"cleared\" } else { \"stale\" }", "cleared"),
-        ("dot-member", "let object = scope { .codex: \"dot\" }; object::.codex", "dot")
+        ("dot-member", "let object = scope { .codex: \"dot\" }; object::.codex", "dot"),
+        ("empty-instance-identity", "fn make() { scope {} }; let first = make(); let second = make(); let count = 0; for object in $std::ranges::unique([first, second, first]) { count = count + 1; }; if count == 2 and not $std::ranges::contains([first], second) and $std::ranges::contains([first], first) { \"distinct\" } else { \"merged\" }", "distinct")
     })
     {
         foreach (int level in new[] { 0, 2, 3 })
