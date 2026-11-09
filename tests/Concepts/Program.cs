@@ -46,6 +46,76 @@ foreach (int level in new[] { 0, 2, 3 })
     var ranged = Compiler.Compile("concept C { item: Number }; fn use(values: Range<C>) { $std::ranges::size(values) }; use([scope {item: 1}, scope {item: 2}])", "range-concept.msync", level);
     Require(await Interpreter.ExecuteAsync(ranged) is NumberValue { Data: 2 }, "Range element structural concepts");
     Reject("concept C { item: Path }; { concept Local { value: Bool }; }; fn use(x: Local) { x }; use(scope {value:true});", "Unknown type", level);
+
+    const string standard = """
+        scope Operations {
+            Self: Number,
+            equal: fn(left: Number, right: Number) -> Bool { left == right },
+        };
+        concept Labeled {
+            $std::concepts::Equality,
+            label: String,
+        };
+        fn checked(value: $std::concepts::Equality)
+            -> $std::concepts::Equality { value };
+        """;
+    var qualified = Compiler.Compile(standard + "checked(Operations)::equal(4, 4)", "standard-concepts.msync", level);
+    using MemoryStream standardBytes = new();
+    Artifact.Write(qualified, standardBytes);
+    standardBytes.Position = 0;
+    var executable = Binding.Bind(qualified, new(Environment.CurrentDirectory, Environment.CurrentDirectory));
+    using MemoryStream executableBytes = new();
+    Artifact.Write(executable, executableBytes);
+    executableBytes.Position = 0;
+    foreach (Module image in new[] { qualified, Artifact.Read(standardBytes), Artifact.Read(executableBytes) })
+        Require(await Interpreter.ExecuteAsync(image) is BoolValue { Data: true }, "Qualified concept across source and binary stages");
+    var metadataOnly = Compiler.Compile("concept Local { $std::concepts::Equality, };", "concept-metadata.msync", level);
+    Require(!metadataOnly.Functions.SelectMany(function => function.Instructions).Any(instruction => instruction.Op == OpCode.MakeScope),
+        "A concept annotation allocated a runtime standard module");
+    var conceptRange = Compiler.Compile(standard + "fn count(values: Range<$std::concepts::Equality>) { $std::ranges::size(values) }; count([Operations])", "qualified-range.msync", level);
+    Require(await Interpreter.ExecuteAsync(conceptRange) is NumberValue { Data: 1 }, "Qualified Range element concept");
+    var conceptUnion = Compiler.Compile(standard + "fn either(value: $std::concepts::Equality | String) { true }; either(Operations)", "qualified-union.msync", level);
+    Require(await Interpreter.ExecuteAsync(conceptUnion) is BoolValue { Data: true }, "Qualified concept union");
+    var lexical = Compiler.Compile(standard + "let std = scope { other: true }; checked(Operations)::equal(2, 2)", "qualified-lexical.msync", level);
+    Require(await Interpreter.ExecuteAsync(lexical) is BoolValue { Data: true }, "Qualified function return resolved at definition, not caller");
+    var fixedContract = Compiler.Compile(standard + "let target: $std::concepts::Equality = Operations; let std = scope {}; target = Operations; true", "qualified-storage.msync", level);
+    Require(await Interpreter.ExecuteAsync(fixedContract) is BoolValue { Data: true }, "Stored concept contract retained lexical namespace");
+    Reject(standard + "checked(scope { Self: Number, equal: fn(a: Number,b: Number) { 1 } })", "return", level);
+    Reject("let std = scope {}; let value: $std::concepts::Equality = scope {};", "Unknown type", level);
+    const string nullableResult = """
+        concept Optional { type Item; value?: Item, };
+        fn some(value?) { scope { Item: decltype(value), value?: value } };
+        fn absent() -> Optional? { null };
+        fn returned_absent() -> Optional? { return null; };
+        fn present(value: Number) -> Optional? { some(value) };
+        fn is_absent(value?: Optional) { value is null };
+        fn read(value?: Optional) {
+            if value is null { 0 } else { value::value }
+        };
+        let stored?: Optional = null;
+        let initially_absent = is_absent(stored);
+        stored = some(4);
+        let stored_number = read(stored) == 4;
+        stored = some("Klee");
+        is_absent(absent()) and is_absent(returned_absent())
+            and read(present(4)) == 4 and initially_absent
+            and stored_number and read(stored) == "Klee"
+        """;
+    var preciseReturn = Compiler.Compile(nullableResult, "nullable-concept-results.msync", level);
+    Require(await Interpreter.ExecuteAsync(preciseReturn) is BoolValue { Data: true }, "Nullable concept returns retained actual Null or carrier shape");
+    foreach (string returned in new[] { "\"./converted\"", "return \"./converted\";" })
+    {
+        var converted = Compiler.Compile($"fn path() -> Path {{ {returned} }}; path()", "concept-return-conversion.msync", level);
+        Require(await Interpreter.ExecuteAsync(converted) is PathValue, "Declared Path return still converted its String representation");
+    }
+    foreach (string returned in new[] { "./converted", "return ./converted;" })
+    {
+        var converted = Compiler.Compile($"fn text() -> String {{ {returned} }}; text()", "concept-return-conversion.msync", level);
+        Require(await Interpreter.ExecuteAsync(converted) is StringValue, "Declared String return still converted its Path representation");
+    }
+    Reject("fn invalid() -> Number { ./path }; invalid()", "return type Number", level);
+    Reject("fn invalid() -> Number { return ./path; }; invalid()", "return type Number", level);
+    Reject("concept C { item: Number }; let value?: C = null; value = 3;", "Expected Scope?", level);
 }
 CompilerSession session = new();
 session.Compile("concept Named { item: Number, };");

@@ -191,7 +191,8 @@ internal sealed partial class Compilation(string source, string sourceName, int 
             CheckConversion(frame, result.Type, asserted, let.Value.Span);
             Convert(frame, result.Type, asserted, let.Value.Span);
         }
-        return Retype(result, asserted.Kind == TypeKind.Range && asserted.Element is null ? result.Type : asserted) with { EditorUnknown = false };
+        var target = asserted.Kind == TypeKind.Range && asserted.Element is null ? result.Type : asserted;
+        return (target.Accepts(result.Type) ? result : Retype(result, target)) with { EditorUnknown = false };
     }
 
     private Info StatementExpression(Frame frame, ExpressionStatement expression)
