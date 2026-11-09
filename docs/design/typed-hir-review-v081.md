@@ -132,3 +132,76 @@ arenas that can be released after their consumers finish. Roslyn's
 keeps semantic operations distinct from backend execution layout. The relevant
 lesson for msync is explicit identity and ownership of results, scratch state
 and output—not copying another compiler's complete framework.
+
+## Incremental review of the first correction
+
+The follow-up review is restricted to the three findings above. The new
+`SemanticAnalyzer.Instantiation.cs` removes `FunctionInstance.Context`, abstracts
+reachable operands into formal regions/cells, freezes a reachable summary, and
+projects that summary into each caller. Its alias-partition code key does not
+encode allocation identities. This removes the original first-caller-world cache
+and its retained whole-context cost; it is not yet proof that every projection
+preserves all location relationships.
+
+The following small source journeys were run through `Compiler.Analyze` →
+`HirArtifact.Write` → `HirArtifact.Read` → `HirLowerer.Lower` → interpreter on
+.NET SDK 10.0.403, Release, Linux. No complete test matrix was repeated.
+
+| Discriminator | Result | Interpretation |
+| --- | --- | --- |
+| Original two-object `wrap` example, returning `first::item * 10 + second::item` | `17` | Independent caller object provenance is preserved in this case. |
+| Annotated direct recursion queried with `decltype(recurse(1))`, script tail `0` | `0` | Query-local recursive promise terminates and does not execute recursion. |
+| Original `decltype(match ...)`, script tail `0` | `0` | No invalid executable Match payload escapes this query. |
+| `decltype(for item in [1] { item })`, script tail `0` | `0` | No invalid executable For payload escapes this query. |
+
+### Remaining projection defect: fields and captures must share cells
+
+The current projection clears `Scope.Locations` for a fresh returned object but
+projects its closures' captured locations through a separate `MapLocation` path.
+Consequently a field assignment and a closure read of that field no longer name
+the same abstract cell:
+
+```msync
+fn make() {
+    scope {
+        value?: 1,
+        get: fn { value },
+    }
+};
+let object = make();
+object::value = null;
+if object::get()? { 7 } else { 9 }
+```
+
+This source returned **9**, whereas the runtime field/capture alias requires
+**7**. The Number-only variation (`value: 1`, assignment `7`, tail
+`object::get()`) returns 7, illustrating why a runtime value-only scalar test can
+miss a wrong static branch proof. Preserve the field-to-cell map using the same
+location projection used by captured locations. Borrowed object fields retain
+caller cells; fresh object fields and captured locals receive fresh but shared
+per-invocation cells. Do not add object identities to the specialization key.
+The compiler owner received this exact counterexample.
+
+### Query publication: repaired examples are not yet ownership separation
+
+The initial correction guards executable Match/For payload appends and location
+storage-type rewrites with `context.Publish`. Declaration and parameter storage
+rewrites are guarded too. These corrections explain the successful examples,
+but the architecture still gives the analyzer the mutable `program.Hir` builder.
+Publication remains a convention every helper must remember, rather than an
+output capability absent from a query workspace.
+
+Complete the boundary by giving executable payload/location/function submission
+to one output owner (including reserve/seal operations). Constraint queries need
+a read-only bound-input view and canonical type/shape interning, not mutable
+executable tables. A query must be unable to acquire output through its context;
+this should not require rollback, table truncation, duplicated analysis or weaker
+artifact validation. Therefore finding 3 is **symptom-fixed, ownership boundary
+still open** at this review point.
+
+`InvokeType` now imports reachable operands into its query context. `TypeOf` and
+`IsType` still use `SemanticContext.Fork(publish: false)`, which copies the live
+context dictionaries. They do not cause the old retained-world cache, but retain
+O(live context size) temporary work per query. A read-only parent plus sparse
+constraint overlay can address that cost while establishing the ownership
+boundary, without whole-arena snapshots.
