@@ -22,7 +22,7 @@ maintaining another authoritative signature table.
 
 | Public entry | Responsibility | Implementation boundary |
 | --- | --- | --- |
-| `$std::cast(value, Type)` | Explicit, target-dependent conversion | A compiler-known Type value determines the inferred result; selected runtime conversions still validate their data |
+| `value as Type` | Explicit, target-dependent conversion | Language syntax selects a finite conversion matrix; Path/String remain the only implicit conversion pair |
 | `$std::ranges` | Sequence adapters, searches, folds and aggregate tools | Source composition for expressible algorithms; native iteration/materialization capabilities where source cannot implement a lazy producer |
 | `$std::functional` | Function and predicate composition | Ordinary generic source functions and closures |
 | `$std::math` | Binary64 arithmetic, classification and scalar composition | Host floating-point intrinsics and ordinary source utilities; no integer/fenv subsystem |
@@ -32,9 +32,16 @@ maintaining another authoritative signature table.
 | `$std::fs` | Existing filesystem inspection and mutation API | Retained compatibility surface, not silently removed in favor of `io` |
 | `$std::process` | Completed values and live process operations | Runtime-owned process lifetime/control, never a fabricated portable PID |
 | `$std::bool` | Boolean expression tools | Existing source composition remains valid |
+| `$std::collections` | Mutable ordered List, Map, Set, Stack and Queue objects | Source factories retain fixed-schema materialized Ranges and share captured storage through aliases |
+| `$std::text` | Incremental text construction and layout | Source Builder uses a balanced Range forest instead of repeatedly copying prior text |
+| `$std::regex` | Pattern matching, replacement and match/group records | Native regular-expression engine; Unicode scalar indexes, source pattern-bound service objects |
+| `$std::files` | File and Directory service objects | Source composition over established IO, Path and filesystem primitives; construction performs no IO |
+| `$std::commands` | Reusable command specifications and captured results | Source composition over Process, with explicit materialized argument snapshots and selected effects |
+| `$std::environment` | Process variables and captured execution directories | Narrow host primitives plus source nullable/default/path-list composition |
 
-`stdlib/_core.msync` is a private source prelude for root exports such as cast,
-not a public `$std::_core` namespace. `$std::ranges` remains the only predefined
+`stdlib/_core.msync` has no public root cast export: conversions are language
+expressions, not a dynamic universal conversion function. `_core` is not a
+public namespace. `$std::ranges` remains the only predefined
 range namespace; the removed `$view`, `$views`, `$ranges` and bare aliases are
 not restored. User-declared lexical names remain ordinary values.
 
@@ -93,26 +100,25 @@ and established native SSH/WSL transport ownership.
 
 ## Required semantic distinctions
 
-### Type-dependent casts
+### Statically selected conversions
 
 An explicit cast is not an implicit truthiness rule. `Null` still participates
 only in admitted nullable storage and `is null` / `is not null` tests; postfix
-`value?` still means **is null**. A target Type value determines the expression's
-inferred type. Invalid selected data conversions report the source operation
+`value?` still means **is null**. The type expression after `as` determines the
+inferred result without a dynamic universal-cast API. Invalid data conversions report the source operation
 and actual reason rather than returning an unrelated default.
 
-A positive Type-value guard such as `if target is Number` establishes Number
-as the denoted target, not Type as its metatype. For a target selected between
-Number and String, use the corresponding positive guard on each dynamic branch.
-Merely excluding Number does not establish that an otherwise unknown Type value
-denotes String. Deferred Range casts also retain their inferred result contract:
-reassigning the target binding to a different element type is diagnosed at the
-cast origin rather than silently changing a previously inferred Range schema.
+The compiler rejects conversion pairs outside its finite matrix. Converting
+text to Number parses the selected text at runtime; it does not change every
+String parameter into an implicit numeric input. `decltype(expression)` is
+unevaluated and can supply a statically inferred target.
 
 Path/String conversion changes the runtime value as well as its inferred type.
 Converting a Path for lexical inspection does not authenticate its endpoint.
-Converting textual content to Path is explicit, since `String -> destination`
-writes text while `Path -> destination` copies file content.
+Transfer dispatch preserves the operand's actual type: `String -> destination`
+writes text while `Path -> destination` copies file content. Use `text as Path`
+when that source expression must denote a file, rather than relying on another
+operation's Path parameter to introduce the implicit conversion.
 
 ### Range demand and replay
 
