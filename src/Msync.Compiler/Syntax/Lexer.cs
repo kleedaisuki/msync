@@ -1,8 +1,9 @@
 using System.Text;
+using Msync.Core;
 
 namespace Msync.Compiler.Syntax;
 
-internal enum TokenKind { End, Atom, String, Regex, LeftBrace, RightBrace, LeftParen, RightParen, LeftBracket, RightBracket, Comma, Semicolon, Colon, Select, Equal, Arrow, FatArrow, Question, Dollar, Slash, Pipe, EqualEqual, NotEqual, Less, LessEqual, Greater, GreaterEqual }
+internal enum TokenKind { End, Atom, Number, String, Regex, LeftBrace, RightBrace, LeftParen, RightParen, LeftBracket, RightBracket, Comma, Semicolon, Colon, Select, Equal, Arrow, FatArrow, Question, Dollar, Slash, Pipe, At, EqualEqual, NotEqual, Less, LessEqual, Greater, GreaterEqual }
 internal readonly record struct Token(TokenKind Kind, string Text, SourceSpan Span);
 internal sealed class Lexer(string source, string sourceName)
 {
@@ -27,7 +28,22 @@ internal sealed class Lexer(string source, string sourceName)
             if (source[position] == '#' && (position == 0 || char.IsWhiteSpace(source[position - 1])))
             { while (position < source.Length && source[position] is not ('\r' or '\n')) position++; continue; }
             int start = position;
+            bool numericStart = char.IsAsciiDigit(source[start]) || source[start] == '.' &&
+                start + 1 < source.Length && char.IsAsciiDigit(source[start + 1]);
+            int numberLength = numericStart && !PathSegment(start) ? NumberSyntax.LengthAt(source, start) : 0;
+            if (numberLength != 0)
+            {
+                position += numberLength;
+                Add(TokenKind.Number, source[start..position], start);
+                continue;
+            }
             char c = source[position++];
+            if (c == '*' && !PathSegment(start) && Take('*'))
+            { Add(TokenKind.Atom, "**", start); continue; }
+            if (!PathSegment(start) && (c is '+' or '*' or '%' || c == '-' &&
+                (position == source.Length || source[position] != '>') &&
+                (position == source.Length || char.IsWhiteSpace(source[position]) || char.IsDigit(source[position]) || source[position] == '.')))
+            { Add(TokenKind.Atom, source[start..position], start); continue; }
             if (c == '"') { ReadString(start); continue; }
             if (c == '<' && IsRegexStart()) { ReadRegex(start); continue; }
             if (c == '/' && position < source.Length && source[position] == '/' &&
@@ -47,6 +63,7 @@ internal sealed class Lexer(string source, string sourceName)
                 '$' => TokenKind.Dollar,
                 '/' => TokenKind.Slash,
                 '|' => TokenKind.Pipe,
+                '@' => TokenKind.At,
                 ':' => Take(':') ? TokenKind.Select : TokenKind.Colon,
                 '=' => Take('>') ? TokenKind.FatArrow : Take('=') ? TokenKind.EqualEqual : TokenKind.Equal,
                 '-' when Take('>') => TokenKind.Arrow,
@@ -136,8 +153,9 @@ internal sealed class Lexer(string source, string sourceName)
                 if (brackets == 0) break;
                 brackets--;
             }
-            string delimiters = uri ? "{}(),;?\"$|<>!" : "{}()[],;?\"$|<>!";
+            string delimiters = uri ? "{}(),;?\"$|<>!" : "{}()[],;?\"$|<>!@";
             if (char.IsWhiteSpace(c) || delimiters.Contains(c, StringComparison.Ordinal)) break;
+            if (!uri && !windows && !PathSegment(start) && c is '+' or '*' or '%') break;
             if (uri && brackets == 0 && c == ':' && position + 1 < source.Length && source[position + 1] == ':') break;
             if (!uri && !windows && (c == '/' || c == ':')) break;
             if (c == '=' && !uri) break;
@@ -145,5 +163,11 @@ internal sealed class Lexer(string source, string sourceName)
             position++;
         }
         Add(TokenKind.Atom, source[start..position], start);
+    }
+
+    private bool PathSegment(int start)
+    {
+        if (tokens.Count == 0 || tokens[^1].Kind != TokenKind.Slash || tokens[^1].Span.End != start) return false;
+        return tokens.Count == 1 || tokens[^2].Kind is not (TokenKind.Number or TokenKind.RightParen);
     }
 }

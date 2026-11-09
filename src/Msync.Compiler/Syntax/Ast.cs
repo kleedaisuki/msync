@@ -23,6 +23,19 @@ public sealed record ScopeDeclaration(string Name, ScopeExpr Scope, SourceSpan S
 {
     public SourceSpan? NameSpan { get; init; }
 }
+public sealed record ConceptDeclaration(string Name, IReadOnlyList<TypeSyntax> Bases, IReadOnlyList<ConceptAssociatedType> Types, IReadOnlyList<ConceptMember> Members, SourceSpan Span) : Statement(Span)
+{
+    public SourceSpan? NameSpan { get; init; }
+}
+public sealed record ConceptAssociatedType(string Name, SourceSpan Span) : Node(Span)
+{
+    public SourceSpan? NameSpan { get; init; }
+}
+public sealed record ConceptMember(string Name, TypeSyntax? Type, IReadOnlyList<Parameter>? Parameters, TypeSyntax? ReturnType, SourceSpan Span) : Node(Span)
+{
+    public bool Nullable { get; init; }
+    public SourceSpan? NameSpan { get; init; }
+}
 public sealed record ExpressionStatement(Expr Expression, bool Discarded, SourceSpan Span) : Statement(Span);
 public abstract record Expr(SourceSpan Span) : Node(Span);
 public sealed record MissingExpr(SourceSpan Span) : Expr(Span);
@@ -31,7 +44,8 @@ public sealed record PathExpr(string Path, SourceSpan Span) : Expr(Span);
 public sealed record StringExpr(string Value, SourceSpan Span) : Expr(Span);
 public sealed record BoolExpr(bool Value, SourceSpan Span) : Expr(Span);
 public sealed record NullExpr(SourceSpan Span) : Expr(Span);
-public sealed record NumberExpr(long Value, SourceSpan Span) : Expr(Span);
+public sealed record NumberExpr(double Value, SourceSpan Span) : Expr(Span);
+public sealed record CastExpr(Expr Value, TypeSyntax Type, SourceSpan Span) : Expr(Span);
 public sealed record UnaryExpr(string Operator, Expr Operand, SourceSpan Span) : Expr(Span);
 public sealed record BinaryExpr(string Operator, Expr Left, Expr Right, SourceSpan Span) : Expr(Span)
 {

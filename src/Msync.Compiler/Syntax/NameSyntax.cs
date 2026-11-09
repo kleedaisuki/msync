@@ -11,5 +11,5 @@ public static class NameSyntax
     }
 
     public static bool Boundary(char character) => char.IsWhiteSpace(character)
-        || "{}()[],;?:=|<>!\"$/".Contains(character, StringComparison.Ordinal);
+        || "{}()[],;?:=|<>!\"$/@+*%".Contains(character, StringComparison.Ordinal);
 }

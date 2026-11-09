@@ -1,3 +1,5 @@
+using Msync.Core;
+
 namespace Msync.Compiler.Syntax;
 
 public sealed record EditorParseResult(Document Document, SyntaxException? Error, int? IncompleteStart = null)
@@ -46,6 +48,9 @@ public sealed class Parser
         SyntaxException? first = parser.firstError ?? error;
         return new(new(statements, new(0, source.Length)) { EditorError = first }, first, parser.incompleteRoot) { RegexSpans = regexSpans };
     }
+
+    public static IReadOnlyList<SourceSpan> NumberSpans(string source) => new Lexer(source, "<editor>")
+        .LexForEditor(out _).Where(token => token.Kind == TokenKind.Number).Select(token => token.Span).ToArray();
     private Token Current => tokens[position];
     private Token Previous => tokens[Math.Max(0, position - 1)];
     private Token Peek(int distance = 1) => tokens[Math.Min(position + distance, tokens.Count - 1)];
@@ -131,6 +136,7 @@ public sealed class Parser
     private Statement Statement(TokenKind end)
     {
         var start = Current.Span;
+        if (TakeWord("concept")) return Concept(start);
         if (TakeWord("global")) return Global(start);
         if (TakeWord("let"))
         {
@@ -161,6 +167,49 @@ public sealed class Parser
         if (!discarded && !At(end) && !At(TokenKind.End)) Fail("Expected ';' between expressions.");
         return new ExpressionStatement(expression, discarded, SourceSpan.Cover(start, Previous.Span));
     }
+    private ConceptDeclaration Concept(SourceSpan start)
+    {
+        Token name = Require(TokenKind.Atom, "Expected a concept name.");
+        Require(TokenKind.LeftBrace, "Expected '{' after the concept name.");
+        List<TypeSyntax> bases = [];
+        List<ConceptAssociatedType> types = [];
+        List<ConceptMember> members = [];
+        while (!At(TokenKind.RightBrace) && !At(TokenKind.End))
+        {
+            int before = position;
+            if (TakeWord("type"))
+            {
+                Token associated = Require(TokenKind.Atom, "Expected an associated type name.");
+                types.Add(new(associated.Text, associated.Span) { NameSpan = associated.Span });
+            }
+            else if ((At(TokenKind.Atom) || At(TokenKind.String)) && (Peek().Kind == TokenKind.Colon ||
+                Peek().Kind == TokenKind.Question && Peek(2).Kind == TokenKind.Colon))
+            {
+                Token member = Next();
+                bool nullable = Take(TokenKind.Question);
+                Require(TokenKind.Colon, "Expected ':' after the required member name.");
+                TypeSyntax? type = null, result = null;
+                IReadOnlyList<Parameter>? parameters = null;
+                if (TakeWord("fn"))
+                {
+                    parameters = At(TokenKind.LeftParen) ? Parameters() : [];
+                    Require(TokenKind.Arrow, "Expected '->' and the required result type.");
+                    result = ParseType();
+                }
+                else type = ParseType();
+                members.Add(new(member.Text, type, parameters, result, SourceSpan.Cover(member.Span, Previous.Span))
+                { Nullable = nullable, NameSpan = member.Span });
+            }
+            else bases.Add(ParseType());
+            if (!Take(TokenKind.Comma) && !Take(TokenKind.Semicolon) && !At(TokenKind.RightBrace))
+                Fail("Expected ',' or ';' after a concept requirement.");
+            if (editorMode && position == before) Next();
+        }
+        Token close = Require(TokenKind.RightBrace, "Expected '}' after concept requirements.");
+        Require(TokenKind.Semicolon, "Expected ';' after the concept declaration.");
+        return new(name.Text, bases, types, members, SourceSpan.Cover(start, close.Span)) { NameSpan = name.Span };
+    }
+
     private GlobalStatement Global(SourceSpan start)
     {
         List<NameExpr> names = [];
@@ -196,15 +245,21 @@ public sealed class Parser
         Expr left = Prefix();
         while (true)
         {
-            if (At(TokenKind.LeftParen) && 9 >= minimum) { left = Call(left); continue; }
-            if (At(TokenKind.Question) && 9 >= minimum)
+            if (At(TokenKind.LeftParen) && 15 >= minimum) { left = Call(left); continue; }
+            if (At(TokenKind.Question) && 15 >= minimum)
             {
                 Next(); left = new UnaryExpr("?", left, SourceSpan.Cover(left.Span, Previous.Span)); continue;
             }
             string? op = Operator();
-            int precedence = Precedence(op);
+            int precedence = op == "/" && ExplicitPath(left) ? 16 : Precedence(op);
             if (op is null || precedence < minimum) break;
             Token operation = Next();
+            if (op == "as")
+            {
+                TypeSyntax type = ParseType();
+                left = new CastExpr(left, type, SourceSpan.Cover(left.Span, type.Span));
+                continue;
+            }
             if (op == "is" && TakeWord("not")) op = "is not";
             Expr right;
             if (op == "/" && IsExpressionEnd()) right = new PathExpr("", Previous.Span);
@@ -214,7 +269,7 @@ public sealed class Parser
                 right = new NameExpr(member.Text, member.Span);
                 if (WindowsPathBeforeString(member)) right = WindowsPathWithString(member);
             }
-            else right = Expression(precedence + (op == "=" ? 0 : 1));
+            else right = Expression(precedence + (op is "=" or "**" ? 0 : 1));
             left = op == "="
                 ? new AssignmentExpr(left, right, SourceSpan.Cover(left.Span, right.Span)) { OperatorSpan = operation.Span }
                 : new BinaryExpr(op, left, right, SourceSpan.Cover(left.Span, right.Span)) { OperatorSpan = operation.Span };
@@ -234,8 +289,17 @@ public sealed class Parser
         TokenKind.GreaterEqual => ">=",
         TokenKind.Select => "::",
         TokenKind.Slash => "/",
-        TokenKind.Atom when Current.Text is "and" or "or" or "is" or "+" or "-" or "*" => Current.Text,
+        TokenKind.At => "@",
+        TokenKind.Atom when Current.Text is "and" or "or" or "is" or "+" or "-" or "*" or "**" or "%" or "as" => Current.Text,
         _ => null
+    };
+    private static bool ExplicitPath(Expr value) => value switch
+    {
+        PathExpr => true,
+        NameExpr { Name: "~" or "." or ".." } => true,
+        NameExpr name => WindowsPathPrefix(name.Name),
+        BinaryExpr { Operator: "/" } path => ExplicitPath(path.Left),
+        _ => false
     };
     private static int Precedence(string? op) => op switch
     {
@@ -247,9 +311,11 @@ public sealed class Parser
         "is" or "is not" or "==" or "!=" => 5,
         "<" or "<=" or ">" or ">=" => 6,
         "+" or "-" => 7,
-        "*" => 8,
-        "/" => 11,
-        "::" => 12,
+        "*" or "/" or "%" => 8,
+        "@" => 9,
+        "as" => 10,
+        "**" => 13,
+        "::" => 17,
         _ => -1
     };
     private bool IsExpressionEnd() => Current.Kind is TokenKind.End or TokenKind.RightBrace or TokenKind.RightParen or TokenKind.RightBracket or TokenKind.Comma or TokenKind.Semicolon or TokenKind.Arrow || Word("in");
@@ -271,17 +337,17 @@ public sealed class Parser
         if (TakeWord("break")) { Expr? value = IsExpressionEnd() ? null : Expression(); return new BreakExpr(value, SourceSpan.Cover(token.Span, value?.Span ?? token.Span)); }
         if (TakeWord("exists") || TakeWord("not"))
         {
-            var operand = Expression(token.Text == "not" ? 5 : 9);
+            var operand = Expression(token.Text == "not" ? 5 : 8);
             return new UnaryExpr(token.Text, operand, SourceSpan.Cover(token.Span, operand.Span));
         }
-        if (TakeWord("-"))
+        if (TakeWord("-") || TakeWord("+"))
         {
-            var operand = Expression(9);
-            return new UnaryExpr("-", operand, SourceSpan.Cover(token.Span, operand.Span));
+            var operand = Expression(13);
+            return new UnaryExpr(token.Text, operand, SourceSpan.Cover(token.Span, operand.Span));
         }
         if (Take(TokenKind.Dollar))
         {
-            var operand = Expression(13);
+            var operand = Expression(18);
             return new UnaryExpr("$", operand, SourceSpan.Cover(token.Span, operand.Span));
         }
         if (At(TokenKind.LeftBrace)) return Block();
@@ -303,10 +369,11 @@ public sealed class Parser
         if (Take(TokenKind.Slash))
         {
             if (IsExpressionEnd()) return new PathExpr("/", token.Span);
-            var right = Expression(12);
+            var right = Expression(17);
             return new BinaryExpr("/", new PathExpr("/", token.Span), right, SourceSpan.Cover(token.Span, right.Span));
         }
         if (Take(TokenKind.String)) return new StringExpr(token.Text, token.Span);
+        if (Take(TokenKind.Number)) return new NumberExpr(NumberSyntax.TryParse(token.Text, out double number) ? number : 0, token.Span);
         if (Take(TokenKind.Regex)) return new PathExpr("<" + token.Text + ">", token.Span);
         if (!At(TokenKind.Atom))
         {
@@ -327,7 +394,6 @@ public sealed class Parser
             "true" => new BoolExpr(true, token.Span),
             "false" => new BoolExpr(false, token.Span),
             "null" => new NullExpr(token.Span),
-            _ when long.TryParse(token.Text, out long value) => new NumberExpr(value, token.Span),
             _ => new NameExpr(token.Text, token.Span)
         };
     }
@@ -475,7 +541,8 @@ public sealed class Parser
         if (matching && TakeWord("null")) return new NullPattern(token.Span);
         if (matching && Take(TokenKind.Regex)) return new RegexPattern(token.Text, token.Span);
         if (matching && LanguageTypes.Contains(token.Text)) { var type = ParseType(); return new TypePattern(type, type.Span); }
-        if (matching && (At(TokenKind.String) || Word("true") || Word("false") || long.TryParse(token.Text, out _)))
+        if (matching && (At(TokenKind.String) || At(TokenKind.Number) || Word("true") || Word("false") ||
+            (Word("+") || Word("-")) && Peek().Kind == TokenKind.Number))
         { var literal = Prefix(); return new LiteralPattern(literal, literal.Span); }
         return new NamePattern(Require(TokenKind.Atom, "Expected a binding or match pattern.").Text, token.Span);
     }
@@ -494,5 +561,5 @@ public sealed class Parser
             new(name.Span.Start, Math.Max(name.Span.End, Previous.Span.End) - name.Span.Start));
     }
     private bool ContinuesBarePath() => source[Previous.Span.End..Current.Span.Start].All(c => c is ' ' or '\t');
-    private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "loop" or "native" or "release" or "acquire" or "acqrel") && !LanguageTypes.Contains(text);
+    private static bool CanContinuePath(string text) => text is not ("+" or "-" or "*" or "**" or "%" or "as" or "concept" or "true" or "false" or "null" or "and" or "or" or "is" or "not" or "in" or "else" or "if" or "fn" or "scope" or "let" or "match" or "for" or "exists" or "return" or "break" or "loop" or "native" or "release" or "acquire" or "acqrel") && !LanguageTypes.Contains(text);
 }
