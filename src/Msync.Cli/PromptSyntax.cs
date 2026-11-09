@@ -7,7 +7,7 @@ namespace Msync.Cli;
 
 internal static class PromptSyntax
 {
-    internal static readonly string[] Keywords = ["let", "global", "fn", "scope", "concept", "type", "as", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "return", "break", "loop", "release", "acquire", "acqrel", .. LanguageTypes.Names];
+    internal static readonly string[] Keywords = ["let", "global", "fn", "scope", "concept", "typename", "as", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "return", "break", "loop", "release", "acquire", "acqrel", .. LanguageTypes.Names];
     internal static readonly string[] Builtins = ["$std", "$local", "$wsl", "$pwd", "$file", "$path", "$env"];
     internal static readonly string[] Commands = ["/help", "/?", "/syntax", "/quit", "/exit", "/clear", "/pwd", "/cd"];
 
@@ -95,11 +95,11 @@ internal static class PromptSyntax
             string selected = previous == "$" ? "$" + word : previous == "::" && chain.Length != 0 ? chain + "::" + word : word;
             AnsiColor? style = Commands.Contains(word, StringComparer.Ordinal) ? AnsiColor.Cyan
                 : word is "if" or "else" or "match" or "for" or "in" or "loop" or "return" or "break" or "release" or "acquire" or "acqrel" or "as" ? AnsiColor.Magenta
-                : Keywords.Contains(word, StringComparer.Ordinal) ? char.IsUpper(word[0]) ? AnsiColor.Magenta : AnsiColor.Cyan
+                : word == "type" || Keywords.Contains(word, StringComparer.Ordinal) ? char.IsUpper(word[0]) ? AnsiColor.Magenta : AnsiColor.Cyan
                 : word is "+" or "-" or "*" ? AnsiColor.Cyan
                 : NumberSyntax.TryParse(word, out _) ? AnsiColor.Magenta
                 : previous == "fn" ? AnsiColor.Yellow
-                : previous is "scope" or "concept" ? AnsiColor.Magenta
+                : previous is "scope" or "concept" or "typename" or "type" ? AnsiColor.Magenta
                 : bindings is not null && bindings.TryGetValue(selected, out var value) ? ValueColor(value.SemanticRole)
                 : DeclaredColor(text, position);
             if (style is { } accent) Add(accent);
@@ -180,7 +180,8 @@ internal static class PromptSyntax
                 : "destination: Path or String; '->' returns Bool"
             : source.EndsWith("@", StringComparison.Ordinal) ? "endpoint: Connection; Path | String @ Connection keeps path provenance"
             : EndsWithWord(source, "as") ? "explicit conversion: expression as Type; only Path/String conversion is implicit"
-            : source.EndsWith("concept", StringComparison.Ordinal) ? "concept Name { Base, type Self; member: Type, operation: fn(value: Self) -> Self };"
+            : source.EndsWith("concept", StringComparison.Ordinal) ? "concept Name { Base, member: typename Item, operation: fn(value: Item) -> Item };"
+            : EndsWithWord(source, "typename") ? "declare an associated type inline: member?: typename Item; reuse Item in related requirements"
             : source.EndsWith("=", StringComparison.Ordinal) && !source.EndsWith("==", StringComparison.Ordinal) ? "provide a value; use fn (...) { ... } for a function"
             : source.EndsWith("is", StringComparison.Ordinal) ? "null | not null | Type; '?' also means is null"
             : source.EndsWith("fn", StringComparison.Ordinal) ? "fn name(parameters) { result }; omit ';' on the result"

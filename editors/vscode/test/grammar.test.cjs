@@ -332,6 +332,25 @@ test('concept contracts and explicit conversions use type and control roles', ()
     hasScope('root/as/file @ remote;', 'as', 'variable.other.readwrite.msync');
 });
 
+test('inline associated binders retain declaration and type roles across requirement forms', () => {
+    const product = 'concept Product { first?: typename First, second?: typename Second, };';
+    hasScope(product, 'typename', 'keyword.declaration.type.msync');
+    hasScope(product, 'First', 'entity.name.type.msync');
+    hasScope(product, 'Second', 'entity.name.type.msync');
+    hasScope(product, '?', 'keyword.control.msync');
+    for (const line of [
+        'concept Bag { items: Range<typename Item>, };',
+        'concept Operation { apply: fn(value: typename Item) -> Item, };',
+        'concept Producer { make: fn() -> typename Item, };',
+    ]) {
+        hasScope(line, 'typename', 'keyword.declaration.type.msync');
+        hasScope(line, 'Item', 'entity.name.type.msync');
+    }
+    hasScope('concept Legacy { type Item; value: Item, };', 'type', 'keyword.declaration.type.msync');
+    hasScope('root/typename/file', 'typename', 'variable.other.readwrite.msync');
+    hasScope('"typename Item"', 'typename', 'string.quoted.double.msync');
+});
+
 test('standard module qualifiers are named types but connection values are identifiers', () => {
     for (const line of ['$std::math::abs(-0);', '$std::string::trim(text);', '$std::ranges::take(items, 2);']) {
         hasScope(line, 'std', 'entity.name.type.msync');

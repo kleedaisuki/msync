@@ -20,7 +20,7 @@ internal sealed partial class LanguageServer(
     private bool hierarchicalDocumentSymbols;
     private bool completionResolveDocumentation;
     private long serverRequest;
-    private static readonly string[] Keywords = ["let", "global", "fn", "scope", "concept", "type", "as", "native", "if", "else", "for", "in", "match", "return", "break", "loop", "release", "acquire", "acqrel", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", .. LanguageTypes.Names];
+    private static readonly string[] Keywords = ["let", "global", "fn", "scope", "concept", "typename", "as", "native", "if", "else", "for", "in", "match", "return", "break", "loop", "release", "acquire", "acqrel", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", .. LanguageTypes.Names];
 
     private JsonNode? Handle(string method, JsonElement p)
     {
@@ -297,6 +297,7 @@ internal sealed partial class LanguageServer(
 
     private static bool IsKeyword(ReadOnlySpan<char> token)
     {
+        if (token.SequenceEqual("type")) return true;
         foreach (string keyword in Keywords)
             if (token.SequenceEqual(keyword)) return true;
         return false;

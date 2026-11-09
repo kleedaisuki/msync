@@ -64,6 +64,23 @@ Color("value as Number", "as", AnsiColor.Magenta);
 Color("./file @ $local", "@", AnsiColor.Cyan);
 Color("concept Numeric { value: Number };", "concept", AnsiColor.Cyan);
 Color("concept Numeric { value: Number };", "Numeric", AnsiColor.Magenta);
+const string inlineProduct = "concept Product { first?: typename First, second?: typename Second, };";
+Color(inlineProduct, "typename", AnsiColor.Cyan);
+Color(inlineProduct, "First", AnsiColor.Magenta);
+Color(inlineProduct, "Second", AnsiColor.Magenta);
+Color("concept Bag { items: Range<typename Item>, };", "typename", AnsiColor.Cyan);
+Color("concept Bag { items: Range<typename Item>, };", "Item", AnsiColor.Magenta);
+Color("concept Operation { call: fn(value: typename Item) -> Item, };", "typename", AnsiColor.Cyan);
+Color("concept Operation { call: fn(value: typename Item) -> Item, };", "Item", AnsiColor.Magenta);
+Color("concept Legacy { type Item; item: Item, };", "type", AnsiColor.Cyan);
+Color("concept Legacy { type Item; item: Item, };", "Item", AnsiColor.Magenta);
+if (!PromptSyntax.Keywords.Contains("typename", StringComparer.Ordinal)
+    || PromptSyntax.Keywords.Contains("type", StringComparer.Ordinal))
+    throw new InvalidOperationException("Completion should prefer inline typename declarations.");
+if (PromptSyntax.Hint("concept", "concept".Length, new Dictionary<string, SemanticMember>()) is not { } conceptHint
+    || !conceptHint.Text.Contains("typename", StringComparison.Ordinal)
+    || conceptHint.Text.Contains("type Self;", StringComparison.Ordinal))
+    throw new InvalidOperationException("Concept hint should show the canonical inline associated declaration.");
 if (PromptSyntax.Hint("atlas", 5, new Dictionary<string, SemanticMember>()) is not null)
     throw new InvalidOperationException("A name suffix is not an 'as' keyword.");
 

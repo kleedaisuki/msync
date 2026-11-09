@@ -12,7 +12,7 @@ internal sealed record SourceCompletionItem(string Label, string Replacement, st
 
 internal static class SourceCompletion
 {
-    private static readonly string[] WordBoundaries = ["and", "or", "is", "not", "in", "else", "if", "fn", "scope", "let", "match", "for", "exists", "return", "break", "loop", "native", "concept", "type", "as"];
+    private static readonly string[] WordBoundaries = ["and", "or", "is", "not", "in", "else", "if", "fn", "scope", "let", "match", "for", "exists", "return", "break", "loop", "native", "concept", "type", "typename", "as"];
 
     public static SourceCompletionContext? Find(string text, int caret, bool includeBarePaths = false,
         PathValue? receiverPath = null, bool unknownPathReceiver = false, ConnectionValue? physicalEndpoint = null, bool unknownPhysicalOwner = false, IReadOnlySet<string>? boundNames = null, string? sourceFile = null)
@@ -282,7 +282,7 @@ internal static class SourceCompletion
     private static bool NeedsQuotes(string name) => name.Any(character => char.IsWhiteSpace(character)
         || "{}()[],;?\"$|<>!=:+*%@".Contains(character, StringComparison.Ordinal))
         || name is "true" or "false" or "null" or "fn" or "scope" or "if" or "else" or "match" or "for"
-            or "in" or "is" or "not" or "and" or "or" or "exists" or "decltype" or "return" or "break" or "loop" or "native" or "concept" or "type" or "as"
+            or "in" or "is" or "not" or "and" or "or" or "exists" or "decltype" or "return" or "break" or "loop" or "native" or "concept" or "type" or "typename" or "as"
             or "Bool" or "Range" or "String" or "Function" or "Scope" or "Path" or "Process" or "Connection" or "Null" or "Type" or "Number";
 
     private static SourceCompletionContext HostEdit(SourceCompletionContext context, string text, int caret)

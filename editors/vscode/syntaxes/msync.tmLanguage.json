@@ -135,6 +135,9 @@
               },
               "patterns": [
                 {
+                  "include": "#associated-bindings"
+                },
+                {
                   "match": "[\\p{L}_][\\p{L}\\p{N}_]*",
                   "name": "entity.name.type.msync"
                 },
@@ -156,6 +159,9 @@
                 }
               },
               "patterns": [
+                {
+                  "include": "#associated-bindings"
+                },
                 {
                   "match": "[\\p{L}_][\\p{L}\\p{N}_]*",
                   "name": "entity.name.type.msync"
@@ -214,6 +220,9 @@
               },
               "patterns": [
                 {
+                  "include": "#associated-bindings"
+                },
+                {
                   "match": "[\\p{L}_][\\p{L}\\p{N}_]*",
                   "name": "entity.name.type.msync"
                 },
@@ -235,6 +244,9 @@
                 }
               },
               "patterns": [
+                {
+                  "include": "#associated-bindings"
+                },
                 {
                   "match": "[\\p{L}_][\\p{L}\\p{N}_]*",
                   "name": "entity.name.type.msync"
@@ -429,7 +441,7 @@
           "name": "keyword.control.msync"
         },
         {
-          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:concept|type)(?![\\p{L}\\p{N}_./\\\\-])",
+          "match": "(?<![\\p{L}\\p{N}_./\\\\:-])(?:concept|type|typename)(?![\\p{L}\\p{N}_./\\\\-])",
           "name": "keyword.declaration.concept.msync"
         }
       ]
@@ -530,6 +542,17 @@
         }
       ]
     },
+    "associated-bindings": {
+      "match": "\\b(typename)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)",
+      "captures": {
+        "1": {
+          "name": "keyword.declaration.type.msync"
+        },
+        "3": {
+          "name": "entity.name.type.msync"
+        }
+      }
+    },
     "concept-declarations": {
       "begin": "(?<![\\p{L}\\p{N}_./\\\\:-])(concept)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)(\\s*\\{)",
       "end": "\\}",
@@ -555,7 +578,7 @@
           "include": "#comments"
         },
         {
-          "match": "\\b(type)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)",
+          "match": "\\b(type|typename)(\\s+)([\\p{L}_][\\p{L}\\p{N}_]*)",
           "captures": {
             "1": {
               "name": "keyword.declaration.type.msync"
