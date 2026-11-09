@@ -161,3 +161,31 @@ localizes the remaining growth before bytecode lowering or optimization. The
 record is `.temp/hir-stage-trace/frozen13-exact1-stage.*`; it is not a completed
 performance sample. Subsequent causal traces must use that exact source rather
 than silently reverting to the shorter insert-only input.
+
+## Tree integration after semantic growth corrections
+
+Frozen14 (Compiler SHA-256
+`1829c7cc29d0a63df96b71db8637f91ef514d068dc56308ec3559967a73565c4`)
+completes the actual default Compile → `.mso` execution boundary. The exact
+one-insert input above produces the single byte `1`, and the original 24-insert
+and lookup program produces exactly `17`. Compilation itself creates neither
+result file. Both executions use the compiled artifact rather than source replay.
+
+After those functional results, a single phase trace of the 24-insert source
+(`4570a1401bd98796088c1134674fe69d37aba0a2e04312b0959bf7c545328e60`)
+completes Analyze, Lower and O2 optimization:
+
+| Boundary | Completed result |
+| --- | --- |
+| Analyze | 38 functions, 50 generic templates, 4,193 nodes, 1,620 locations, 1,198 types, 38 Scope layouts |
+| Lower | 88 bytecode functions, 2,926 instructions |
+| O2 | 88 bytecode functions, 1,824 instructions |
+
+The single cold managed trace allocates approximately 145.7 MB in Analyze,
+0.45 MB in Lower and 22.3 MB in optimization. Its observed process RSS is
+99,520 KiB; this is not a managed-heap retention measurement. Cold stage times
+include JIT and initialization and cannot be compared with the recorded old
+warm component times. No warm matrix or Native latency claim follows from this
+functional gate. Exact frozen receipts and raw stage records are under
+`.temp/hir-stage-trace/frozen14-*`; the completed runtime outputs establish that
+subsequent cost measurements would concern functioning tree programs.
