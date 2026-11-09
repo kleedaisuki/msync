@@ -7,16 +7,16 @@ native fn replace(text: String, pattern: String, replacement: String) -> String;
 native fn split(text: String, pattern: String) -> Range<String>;
 native fn escape(text: String) -> String;
 
-fn compile(pattern: String) {
+fn compile(expression: String) {
     scope {
-        pattern: fn { pattern },
-        is_match: fn(text: String) { is_match(text, pattern) },
-        find: fn(text: String) { find(text, pattern) },
-        matches: fn(text: String) { matches(text, pattern) },
+        pattern: fn { expression },
+        is_match: fn(text: String) { is_match(text, expression) },
+        find: fn(text: String) { find(text, expression) },
+        matches: fn(text: String) { matches(text, expression) },
         replace: fn(text: String, replacement: String) {
-            replace(text, pattern, replacement)
+            replace(text, expression, replacement)
         },
-        split: fn(text: String) { split(text, pattern) }
+        split: fn(text: String) { split(text, expression) }
     }
 };
 fn values(text: String, pattern: String) {
