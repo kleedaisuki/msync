@@ -62,15 +62,11 @@ try
     Require(await File.ReadAllTextAsync(output) == "current artifact transfer", "Executable transfer changed bytes");
     File.Delete(source);
     bound.Position = 0;
-    try
-    {
-        Value failed = await Interpreter.ExecuteAsync(Artifact.Read(bound));
-        Require(failed is BoolValue { Data: false }, "Missing selected input did not report transfer failure");
-    }
-    catch (MsyncException error)
-    {
-        Require(error.ToString().Contains("input", StringComparison.Ordinal), "Missing selected input lost operation context");
-    }
+    using StringWriter errors = new();
+    Interpreter missing = new(Artifact.Read(bound), new(Error: errors));
+    Require(await missing.ExecuteAsync() is BoolValue { Data: false }, "Missing selected input did not return false");
+    Require(missing.FailedTransfers == 1 && errors.ToString().Contains("input", StringComparison.Ordinal), "Selected failure lost accounting or the real source path");
+    Require(await File.ReadAllTextAsync(output) == "current artifact transfer", "Failed retransmission changed completed destination bytes");
 }
 finally { Directory.Delete(root, recursive: true); }
 Module singleton = new([new NumberValue(0), new NumberValue(1)],
