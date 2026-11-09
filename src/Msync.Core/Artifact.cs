@@ -5,7 +5,7 @@ namespace Msync.Core;
 public static class Artifact
 {
     private static readonly byte[] Magic = "MSYNCBC\0"u8.ToArray();
-    public const ushort FormatVersion = 3;
+    public const ushort FormatVersion = 4;
     public const string LanguageVersion = "0.8.0";
     public static Module Read(string path)
     {
@@ -19,18 +19,18 @@ public static class Artifact
         using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: true);
         if (!reader.ReadBytes(Magic.Length).AsSpan().SequenceEqual(Magic)) throw new MsyncException("Not an msync binary bytecode artifact");
         var version = reader.ReadUInt16();
-        if (version is not (1 or 2 or FormatVersion)) throw new MsyncException($"Unsupported msync bytecode format {version}; supported formats are 1, 2 and {FormatVersion}");
+        if (version != FormatVersion) throw new MsyncException($"Unsupported msync bytecode format {version}; expected {FormatVersion}. Recompile the original .msync source with this version of msync.");
         var language = reader.ReadString();
         if (language != LanguageVersion) throw new MsyncException($"Unsupported bytecode language semantics {language}; expected {LanguageVersion}");
-        var semantics = version >= 3 ? (ModuleSemantics)reader.ReadByte() : ModuleSemantics.Legacy;
-        if ((semantics & ~ModuleSemantics.Current) != 0) throw new MsyncException($"Unsupported bytecode execution semantics {semantics}");
+        var semantics = (ModuleSemantics)reader.ReadByte();
+        if (semantics != ModuleSemantics.Current) throw new MsyncException($"Unsupported bytecode execution semantics {semantics}; recompile the original .msync source");
         var stage = (ArtifactStage)reader.ReadByte();
         if (!Enum.IsDefined(stage)) throw new MsyncException($"Unknown artifact stage {stage}");
         var optimization = reader.ReadInt32();
         var entry = reader.ReadInt32();
         BindingContext? context = reader.ReadBoolean() ? new(reader.ReadString(), reader.ReadString(), ReadOptional(reader)) : null;
         if ((stage == ArtifactStage.Executable) != (context is not null)) throw new MsyncException("Executable artifacts require a binding context; relocatable artifacts must not contain one");
-        var constants = ReadArray(reader, r => ReadValue(r, version));
+        var constants = ReadArray(reader, ReadValue);
         var functions = ReadArray(reader, r =>
         {
             var name = r.ReadString(); var parameters = r.ReadInt32(); var locals = r.ReadInt32(); var captures = r.ReadInt32();
@@ -40,7 +40,6 @@ public static class Artifact
             {
                 var op = (OpCode)ir.ReadByte();
                 if (!Enum.IsDefined(op)) throw new MsyncException($"Unknown bytecode opcode {(byte)op}");
-                if (version < 3 && op > OpCode.DeferRange) throw new MsyncException($"Opcode {op} requires bytecode format 3");
                 var a = ir.ReadInt32(); var b = ir.ReadInt32(); var text = ReadOptional(ir);
                 SourceSpan? span = ir.ReadBoolean() ? new(ir.ReadString(), ir.ReadInt32(), ir.ReadInt32()) : null;
                 return new Instruction(op, a, b, text, span);
@@ -85,7 +84,7 @@ public static class Artifact
     }
     public static void Validate(Module module)
     {
-        if ((module.Semantics & ~ModuleSemantics.Current) != 0) throw new MsyncException($"Unsupported bytecode execution semantics {module.Semantics}");
+        if (module.Semantics != ModuleSemantics.Current) throw new MsyncException($"Unsupported bytecode execution semantics {module.Semantics}; only the current execution contract is supported");
         if (module.EntryPoint < 0 || module.EntryPoint >= module.Functions.Count) throw new MsyncException("Bytecode entrypoint does not identify a function");
         if ((module.Stage == ArtifactStage.Executable) != (module.Context is not null)) throw new MsyncException("Bytecode stage and binding context disagree");
         foreach (var constant in module.Constants) ValidateConstant(constant, module);
@@ -157,17 +156,17 @@ public static class Artifact
     { var kind = (TypeKind)reader.ReadUInt16(); return new(kind, reader.ReadBoolean() ? ReadType(reader) : null); }
     private static void WriteType(BinaryWriter writer, TypeRef type)
     { writer.Write((ushort)type.Kind); writer.Write(type.Element is not null); if (type.Element is not null) WriteType(writer, type.Element); }
-    private static Value ReadValue(BinaryReader reader, ushort version) => reader.ReadByte() switch
+    private static Value ReadValue(BinaryReader reader) => reader.ReadByte() switch
     {
         0 => Value.Null,
         1 => new BoolValue(reader.ReadBoolean()),
         2 => new StringValue(reader.ReadString()),
         3 => new NumberValue(reader.ReadDouble()),
-        4 => new PathValue(reader.ReadString(), ReadOptional(reader), reader.ReadBoolean() ? ReadConnection(reader) : null, ReadOptional(reader), version >= 2 ? ReadOptional(reader) : null),
+        4 => new PathValue(reader.ReadString(), ReadOptional(reader), reader.ReadBoolean() ? ReadConnection(reader) : null, ReadOptional(reader), ReadOptional(reader)),
         5 => ReadConnection(reader),
         6 => new TypeValue(ReadType(reader)),
-        7 => new FunctionValue(reader.ReadInt32(), ReadArray(reader, r => ReadValue(r, version)), ReadOptional(reader)),
-        8 => new ScopeValue(ReadArray(reader, r => KeyValuePair.Create(r.ReadString(), ReadValue(r, version))).ToDictionary()),
+        7 => new FunctionValue(reader.ReadInt32(), ReadArray(reader, ReadValue), ReadOptional(reader)),
+        8 => new ScopeValue(ReadArray(reader, r => KeyValuePair.Create(r.ReadString(), ReadValue(r))).ToDictionary()),
         var tag => throw new MsyncException($"Unknown bytecode constant kind {tag}")
     };
     private static ConnectionValue ReadConnection(BinaryReader reader) => new((ConnectionKind)reader.ReadByte(), reader.ReadString());

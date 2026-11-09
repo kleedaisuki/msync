@@ -38,9 +38,6 @@ internal static class DirectionalChecks
         Module pairedModule = new([new StringValue("bytes"), new PathValue("output")], [paired]);
         FunctionCode unchanged = (FunctionCode)optimize.Invoke(null, [pairedModule, paired])!;
         Check(unchanged.Instructions.SequenceEqual(paired.Instructions), "Paired admission markers were moved", []);
-        Module legacy = pairedModule with { Functions = [Build([0, 1, 0, 2, 0])], Semantics = ModuleSemantics.Legacy };
-        unchanged = (FunctionCode)optimize.Invoke(null, [legacy, legacy.Functions[0]])!;
-        Check(unchanged.Instructions.SequenceEqual(legacy.Functions[0].Instructions), "Legacy object scheduling changed", []);
         return assertions;
 
         void Check(bool condition, string message, int[] events)

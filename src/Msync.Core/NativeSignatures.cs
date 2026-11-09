@@ -88,6 +88,8 @@ public static partial class NativeSignatures
         RegisterIOProcess(result);
         RegisterMath(result);
         RegisterIteration(result);
+        RegisterEnvironment(result);
+        RegisterRegex(result);
         return result;
     }
 }

@@ -7,7 +7,6 @@ internal static class LoopOptimization
 
     internal static FunctionCode Optimize(Module module, FunctionCode function, List<Value> constants, int level)
     {
-        if ((module.Semantics & ModuleSemantics.DirectionalScheduling) == 0) return function;
         var growthLimit = (long)function.Instructions.Count * (level == 1 ? 2 : level == 2 ? 4 : 8);
         var current = function;
         while (true)

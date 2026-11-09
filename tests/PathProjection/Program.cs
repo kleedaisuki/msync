@@ -70,10 +70,12 @@ using (MemoryStream stream = new())
 }
 using (Stream fixture = System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("Msync.PathProjection.Tests.Fixtures.path-v1.mso")!)
 {
-    Module legacy = Artifact.Read(fixture);
-    PathValue result = (PathValue)await Interpreter.ExecuteAsync(legacy);
-    Equal("./legacy-input", result.Raw, "Format 1 reader changed source path spelling");
-    Equal(OperatingSystem.IsWindows() ? ".\\legacy-input" : "./legacy-input", result.NativeText, "Format 1 execution lost native conversion");
+    try { Artifact.Read(fixture); throw new InvalidOperationException("Obsolete artifact format was accepted"); }
+    catch (MsyncException error)
+    {
+        Equal(true, error.Message.Contains("format 1", StringComparison.Ordinal), "Rejected artifact lost its format diagnostic");
+        Equal(true, error.Message.Contains("Recompile", StringComparison.Ordinal), "Rejected artifact omitted migration guidance");
+    }
 }
 
 string root = Path.Combine(Environment.CurrentDirectory, ".temp", "path-projection-" + Guid.NewGuid().ToString("N"));
@@ -95,7 +97,7 @@ try
     Equal("folder", parent.Raw, "Lexical parent changed symbolic spelling");
     if (!OperatingSystem.IsWindows()) Equal<string?>(null, parent.LocalSpelling, "Derived POSIX parent retained stale projection");
 
-    string source = "let file = ~/.codex; let remote = ssh://unused; let text: String = remote::file; text";
+    string source = "let file = ~/.codex; let remote = ssh://unused; let text: String = file @ remote; text";
     Module portable = Compiler.Compile(source, "projection-test", 0);
     foreach (Module module in new[] { portable, Binding.Bind(portable, new(root, root)) })
     {
@@ -105,4 +107,4 @@ try
     }
 }
 finally { Directory.Delete(root, true); }
-Console.WriteLine($"PASS: {assertions} path projection and artifact compatibility assertions");
+Console.WriteLine($"PASS: {assertions} path projection and current artifact assertions");

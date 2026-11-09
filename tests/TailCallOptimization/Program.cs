@@ -121,10 +121,12 @@ Module excessIntegrated = Optimizer.Optimize(excessCaptures, 3);
 Artifact.Validate(excessIntegrated);
 Require(await Failure(excessIntegrated) == excessError, "Integrated O3 erased an excess-capture trap");
 using MemoryStream legacyBytes = VersionTwoExcessCaptures();
-Module legacyExcess = Artifact.Read(legacyBytes);
-Require(legacyExcess.Semantics == ModuleSemantics.Legacy, "Version 2 fixture lost its execution semantics");
-Require(await Failure(legacyExcess) == excessError, "Version 2 baseline frame-copy failure changed");
-Require(await Failure(Optimizer.Optimize(legacyExcess, 3)) == excessError, "Version 2 O3 frame-copy failure changed");
+try { Artifact.Read(legacyBytes); throw new InvalidOperationException("Version 2 artifact was accepted"); }
+catch (MsyncException error)
+{
+    Require(error.Message.Contains("format 2", StringComparison.Ordinal), "Obsolete format diagnostic lost the actual version");
+    Require(error.Message.Contains("Recompile", StringComparison.Ordinal), "Obsolete format diagnostic omitted migration guidance");
+}
 Console.WriteLine($"Tail call optimization: {assertions} contracts passed.");
 
 static MemoryStream VersionTwoExcessCaptures()

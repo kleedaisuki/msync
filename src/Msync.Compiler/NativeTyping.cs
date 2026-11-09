@@ -67,8 +67,20 @@ internal sealed partial class Compilation
             NativeResultRule.RangeNested => RangeResult(arguments[0]),
             NativeResultRule.RangeRepeat => RangeResult(arguments[0]),
             NativeResultRule.RangeScan when callbackResult is not null => RangeResult(callbackResult),
-            _ => new(signature.Result)
+            _ => LibraryNativeResult(signature)
         };
+
+    private static Info LibraryNativeResult(NativeSignature signature)
+    {
+        if (signature.Name == "environment.variables")
+            return RangeResult(RecordResult(("name", new(TypeRef.String)), ("value", new(TypeRef.String))));
+        if (signature.Name is not ("regex.find" or "regex.matches")) return new(signature.Result);
+        Info group = RecordResult(("name", new(TypeRef.String)), ("value", new(TypeRef.String)),
+            ("index", new(TypeRef.Number)), ("length", new(TypeRef.Number)), ("success", new(TypeRef.Bool)));
+        Info match = RecordResult(("value", new(TypeRef.String)), ("index", new(TypeRef.Number)),
+            ("length", new(TypeRef.Number)), ("groups", RangeResult(group)));
+        return signature.Name == "regex.matches" ? RangeResult(match) : match with { Type = TypeRef.Scope.WithNull };
+    }
 
     private static Info FlattenResult(Frame frame, Info source, SourceSpan span)
     {

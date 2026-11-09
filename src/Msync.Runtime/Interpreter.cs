@@ -136,11 +136,9 @@ public sealed partial class Interpreter
                     case OpCode.Pop: Pop(); break;
                     case OpCode.Dup: stack.Add(stack[^1]); break;
                     case OpCode.Jump:
-                        if (LegacyScheduling) await DrainAsync();
                         pc = instruction.A - 1; break;
                     case OpCode.JumpIfFalse:
                     case OpCode.JumpIfTrue:
-                        if (LegacyScheduling) await DrainAsync();
                         if (AsBool(await ResolveAsync(Pop())) == (instruction.Op == OpCode.JumpIfTrue)) pc = instruction.A - 1;
                         break;
                     case OpCode.MakeClosure: stack.Add(new FunctionValue(instruction.A, PopMany(instruction.B))); break;
@@ -149,14 +147,12 @@ public sealed partial class Interpreter
                     case OpCode.Call:
                     case OpCode.ProcessCall:
                         {
-                            if (LegacyScheduling) await DrainAsync();
                             var arguments = ValueArguments(PopMany(instruction.A)); var callee = ReadValue(Pop());
                             if (instruction.Op == OpCode.Call && instruction.Text is not null && callee is FunctionValue { NativeName: null } dynamicFunction) callee = Specialize(dynamicFunction, instruction);
                             else if (instruction.Op == OpCode.Call && instruction.B != 0) callee = ((FunctionValue)callee) with { Function = instruction.B - 1 };
-                            stack.Add(await InvokeScheduledAsync(callee, arguments, LegacyScheduling ? 0 : instruction.B, instruction.Span, cancellationToken)); break;
+                            stack.Add(await InvokeScheduledAsync(callee, arguments, instruction.B, instruction.Span, cancellationToken)); break;
                         }
                     case OpCode.NativeCall:
-                        if (LegacyScheduling && RequiresLegacyFrontierJoin(instruction.Text!)) await DrainAsync();
                         stack.Add(await InvokeNativeAsync(instruction.Text!, PopMany(instruction.A), cancellationToken)); break;
                     case OpCode.Barrier: await FenceAsync(instruction.A, instruction.B, instruction.Text); break;
                     case OpCode.Acquire:
@@ -164,7 +160,6 @@ public sealed partial class Interpreter
                         else stack.Add(await AcquireAsync(Pop()));
                         break;
                     case OpCode.Return:
-                        if (LegacyScheduling) await DrainAsync();
                         return new(pc, stack.Count == 0 ? Value.Null : Pop(), true);
                     case OpCode.LoadBuiltin: stack.Add(Builtin(instruction.Text!)); break;
                     case OpCode.Convert:
@@ -213,7 +208,7 @@ public sealed partial class Interpreter
                             bool discarded = pc + 1 < code.Count && code[pc + 1].Op == OpCode.Pop
                                 && source is PathValue or StringValue or DeferredValue
                                 && destination is PathValue or StringValue or DeferredValue;
-                            if (!discarded && (LegacyScheduling || source is not (PathValue or StringValue or DeferredValue))) await DrainAsync();
+                            if (!discarded && source is not (PathValue or StringValue or DeferredValue)) await DrainAsync();
                             var completion = await ScheduleTransferAsync(source, destination, instruction.Span, instruction.Op == OpCode.LocalTransfer, cancellationToken, discarded);
                             if (discarded) pc++;
                             else stack.Add(await completion ? Value.True : Value.False);
@@ -254,7 +249,6 @@ public sealed partial class Interpreter
                         }
                     case OpCode.IteratorNext:
                         {
-                            if (LegacyScheduling) await DrainAsync();
                             var iterator = ((IteratorValue)locals[instruction.A]).Iterator;
                             if (await iterator.MoveNextAsync()) stack.Add(iterator.Current);
                             else { await iterator.DisposeAsync(); iterators.Remove(iterator); pc = instruction.B - 1; }
@@ -409,9 +403,6 @@ public sealed partial class Interpreter
         if (failure is not null) throw failure;
         return Encoding.UTF8.GetString(output.GetBuffer(), 0, checked((int)output.Length));
     }
-    private static bool RequiresLegacyFrontierJoin(string nativeName) => !NativeSignatures.TryGet(nativeName, out var signature)
-        || signature.Effect != NativeEffect.Pure
-        || signature.Parameters.Any(parameter => (parameter.Kind & (TypeKind.Range | TypeKind.Function)) != 0);
     private async ValueTask<Value> InvokeNativeAsync(string name, IReadOnlyList<Value> arguments, CancellationToken cancellationToken)
     {
         try
@@ -419,9 +410,9 @@ public sealed partial class Interpreter
             if (name == "_core.iterator_close") return await CloseIteratorAsync(arguments[0]);
             if (name is "io.read_lines" or "io.read_bytes") return ReadIORange(name, arguments, cancellationToken);
             if (name == "process.spawn") return await SpawnProcessAsync(arguments, cancellationToken);
-            if (!LegacyScheduling && name is "process.stdout" or "process.stderr" or "process.success" or "process.exit_code" && arguments[0] is ProcessValue process)
+            if (name is "process.stdout" or "process.stderr" or "process.success" or "process.exit_code" && arguments[0] is ProcessValue process)
                 return ProcessMember(process, name[8..]);
-            if (!LegacyScheduling && arguments.Any(value => value is DeferredValue)
+            if (arguments.Any(value => value is DeferredValue)
                 && (EffectAnalysis.NativeEffects(name) & (InstructionEffect.Read | InstructionEffect.Write | InstructionEffect.Invoke)) == 0
                 && NativeSignatures.TryGet(name, out var signature)
                 && !signature.Parameters.Any(type => (type.Kind & (TypeKind.Range | TypeKind.Function)) != 0))

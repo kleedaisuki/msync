@@ -1,2 +1,1 @@
-# Root operations have dependent result types; ordinary modules remain namespaced.
-native fn cast(value?, target: Type) -> Bool | String | Path | Range | Function | Scope | Process | Connection | Type | Number | Null;
+# Explicit conversions use `value as Type`; public operations live in modules.

@@ -31,7 +31,6 @@ public sealed partial class Interpreter
     private readonly Dictionary<Task, IReadOnlyList<ProcessValue>> processDependencies = [];
     private readonly Dictionary<Task, ResourceKey> namespaceProducers = [];
     private WorkOwner currentOwner = new();
-    private bool LegacyScheduling => (module.Semantics & ModuleSemantics.DirectionalScheduling) == 0;
     private Task ordering = Task.CompletedTask;
 
     private static Value ReadValue(Value value) => value is CellValue cell ? cell.Data : value;

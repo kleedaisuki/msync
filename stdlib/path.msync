@@ -3,7 +3,7 @@ fn join(base: Path | String, child: Path | String) {
     base/child
 };
 fn qualify(connection: Connection, path: Path | String) {
-    connection::path
+    path @ connection
 };
 fn identity(path: Path | String) {
     path

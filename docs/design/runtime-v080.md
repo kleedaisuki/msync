@@ -11,17 +11,18 @@ syntax trees to the interpreter. Recursion uses specialized forward references.
 The `Null` value is distinct from Bool. Iterator state, live processes, handles,
 transport sessions and lazy enumerators cannot be embedded as constants.
 
-The binary container has independent format version **3** and language-semantics
-version **0.8.0**. Its explicit module semantics distinguish mutable locations and
-directional scheduling from the earlier snapshot-capture execution contract.
-The reader also accepts formats 1 and 2 with their legacy semantics; format 1's
-original path constants have no additional local spelling. Rewriting an older
-artifact in the new container preserves its semantic flags. It is not JSON or
-serialized source. The decoder validates table
-references, layouts and reachable stack/control-flow shape before execution.
-Bytecode dataflow rejects stack underflow, mismatched join heights, uninitialized
-locals, invalid iterator ownership, invalid closure layouts and impossible
-operand-kind combinations. No arbitrary instruction or filename quotas exist.
+The binary container has independent format version **4** and language-semantics
+version **0.8.0**. Only the current container and execution contract are accepted;
+older formats report their version and ask the user to recompile the original
+source. There is no legacy scheduler or snapshot-capture execution mode in the
+current interpreter. The semantics header byte identifies the fixed mutable
+location and directional scheduling contract, not optional execution switches.
+The decoder validates external table references, layouts and reachable
+stack/control-flow shape before execution. Bytecode dataflow rejects stack
+underflow, mismatched join heights, uninitialized locals, invalid iterator
+ownership, invalid closure layouts and impossible operand-kind combinations.
+No arbitrary instruction or filename quotas exist. Artifacts contain typed binary
+operations, not JSON or serialized source.
 
 The full state identity, nullable-field, optimization and directional barrier
 contract is in [mutable state and effects](mutable-state-and-effects-v080.md).
@@ -72,14 +73,13 @@ previous path's local projection. Windows lexical operations and directory
 iteration derive both spellings together; POSIX joins allocate no second string.
 The public four-argument constructor and deconstruction remain available.
 
-Format 2 adds the optional spelling to serialized Path values, including nested
-scope values and function captures. Format 1 remains readable without guessing
-or rewriting its existing path bytes. The retained binary fixture was produced
-by the original frozen 0.8 format-1 native CLI from stdin, so it contains no
-machine-local diagnostic path. `tests/PathProjection` checks simulated Windows
-grammar on every host, physical projected I/O, nested format-2 round trips,
-format-1 loading, and source/object/executable qualification. The native Windows
-platform journeys separately execute the same language-level distinction.
+The current format serializes this optional local spelling, including nested
+Scope values and function captures. The retained format-1 fixture now checks the
+explicit obsolete-format diagnostic rather than a second execution contract.
+`tests/PathProjection` checks simulated Windows grammar on every host, physical
+projected I/O, nested current-format round trips, obsolete-format rejection and
+source/object/executable qualification. The native Windows platform journeys
+separately execute the same language-level distinction.
 
 ## Execution and effects
 

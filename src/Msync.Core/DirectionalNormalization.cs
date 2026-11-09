@@ -6,7 +6,6 @@ internal static class DirectionalNormalization
 
     internal static FunctionCode Optimize(Module module, FunctionCode function)
     {
-        if ((module.Semantics & ModuleSemantics.DirectionalScheduling) == 0) return function;
         var code = function.Instructions;
         var targets = code.Where(i => i.Op is OpCode.Jump or OpCode.JumpIfTrue or OpCode.JumpIfFalse).Select(i => i.A)
             .Concat(code.Where(i => i.Op == OpCode.IteratorNext).Select(i => i.B)).ToHashSet();
@@ -42,7 +41,7 @@ internal static class DirectionalNormalization
                 case OpCode.Not: safe = Is(Pop(), TypeKind.Bool); stack.Add(TypeKind.Bool); break;
                 case OpCode.IsNull: Pop(); stack.Add(TypeKind.Bool); break;
                 case OpCode.Negate: safe = Is(Pop(), TypeKind.Number); stack.Add(TypeKind.Number); break;
-                case OpCode.Add: case OpCode.Subtract: case OpCode.Multiply: case OpCode.Divide:
+                case OpCode.Add: case OpCode.Subtract: case OpCode.Multiply: case OpCode.Divide: case OpCode.Remainder:
                     safe = Is(Pop(), TypeKind.Number) & Is(Pop(), TypeKind.Number); stack.Add(TypeKind.Number); break;
                 case OpCode.PathJoin:
                     safe = Is(Pop(), TypeKind.Path | TypeKind.String) & Is(Pop(), TypeKind.Path | TypeKind.String); stack.Add(TypeKind.Path); break;

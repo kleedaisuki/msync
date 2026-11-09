@@ -13,7 +13,8 @@ string root = Path.Combine(Environment.CurrentDirectory, ".temp", "optimization-
 Directory.CreateDirectory(root);
 try
 {
-    if (args.Contains("--directional", StringComparer.Ordinal)) { assertions += DirectionalChecks.Run(); await DirectionalTransfers(); }
+    if (args.Contains("--singletons", StringComparer.Ordinal)) assertions += await SingletonChecks.Run(root);
+    else if (args.Contains("--directional", StringComparer.Ordinal)) { assertions += DirectionalChecks.Run(); await DirectionalTransfers(); }
     else if (args.Contains("--mutable", StringComparer.Ordinal)) await MutableChecks();
     else
     {
@@ -274,12 +275,12 @@ async Task ValueNumberingChecks()
         "let value = exists ./absent; let read = fn { not value }; let first = read(); value = true; let second = read(); scope { first: first, second: second }", "cse-capture-write", 0),
         expectedValue: "Scope:first=Bool:True;second=Bool:False");
 
-    // Older valid objects allow an empty operand stack at Return. A stack
+    // An empty operand stack at Return supplies Null. A stack
     // splice must materialize Null rather than stealing a caller operand.
     Module emptyReturn = new([new NumberValue(7)],
     [new("main", 0, 0, [new(OpCode.Constant, 0), new(OpCode.MakeClosure, 1), new(OpCode.Call), new(OpCode.Pop), new(OpCode.Return)], TypeRef.Number),
-     new("empty-return", 0, 0, [new(OpCode.Return)], TypeRef.Null)], Semantics: ModuleSemantics.Legacy);
-    await Differential("legacy-empty-return", emptyReturn, expectedValue: "Number:7");
+     new("empty-return", 0, 0, [new(OpCode.Return)], TypeRef.Null)]);
+    await Differential("empty-return", emptyReturn, expectedValue: "Number:7");
 }
 
 
