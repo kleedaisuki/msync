@@ -3,6 +3,12 @@ using Msync.Core;
 using Msync.Hir;
 using Msync.Runtime;
 
+if (args is ["--allocations", var path])
+{
+    SemanticAllocationProbe.Run(path);
+    return;
+}
+
 int checks = TransactionChecks.Run();
 BindingRollback();
 await Query("decltype(match true { true => 1, _ => 2 }); 7", 7);

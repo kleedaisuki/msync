@@ -145,6 +145,23 @@ builder and created no index. Compilation was measured separately from runtime;
 this pre-integration revision's List execution still had an independent module
 initialization failure, so these numbers are not a successful runtime benchmark.
 
+The friend-host `tests/HirQueryOwnership --allocations path.msync` separates
+binding from semantic analysis without a product instrumentation hook. On the
+same List source, frozen Compiler
+`46868919dc98d58f95b7d5b2c144ea25f643df57d8cc055f24deac27e47c35e6`
+allocated approximately 556 KB in binding and 1312 KB in semantic analysis.
+The equivalent public `Compiler.Analyze` control matched their sum to within
+24 bytes. Binding produced 610 nodes, 284 types, 158 locations and 34 templates;
+semantic analysis added 153 arena nodes, 4 types and 41 locations and finalized
+6 functions. A separate replay of the final builder's Freeze and sealing cost
+42008 and 46080 bytes respectively, about 6.7% of semantic allocation. These
+representation copies are therefore not the main allocation source either;
+the next useful target is semantic workspace, constraint/flow and provenance
+projection work. The probe reports replay costs separately and never adds them
+to the measured semantic total twice. Small process-to-process allocation
+variation comes from hash layout and managed warm-up; no timing/allocation gate
+is imposed.
+
 ### Transactional source generations
 
 Session acceptance and editor source-generation workspaces are a separate
