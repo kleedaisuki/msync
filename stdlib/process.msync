@@ -33,11 +33,11 @@ scope NativeProcess {
     wait: wait,
     stdout: stdout,
     stderr: stderr,
-    exit-code: exit_code,
+    exit_code: exit_code,
     success: success,
     spawn: spawn,
     run: run,
-    run-input: run_input,
+    run_input: run_input,
 };
 
 # Completed data retains the actual Process and owns its captured output strings.
@@ -48,17 +48,17 @@ scope Completed {
             process: value,
             output: NativeProcess::stdout(value),
             error: NativeProcess::stderr(value),
-            code: NativeProcess::exit-code(value),
+            code: NativeProcess::exit_code(value),
             success: NativeProcess::success(value),
         }
     },
     lines: fn(self: $std::concepts::CompletedProcess) {
         $std::string::lines(self::output)
     },
-    error-lines: fn(self: $std::concepts::CompletedProcess) {
+    error_lines: fn(self: $std::concepts::CompletedProcess) {
         $std::string::lines(self::error)
     },
-    write-to: fn(self: $std::concepts::CompletedProcess,
+    write_to: fn(self: $std::concepts::CompletedProcess,
         destination: Path | String) {
         $std::io::write_text(destination, self::output)
     },
@@ -72,10 +72,10 @@ scope Command {
             arguments: $std::ranges::materialize(arguments),
         }
     },
-    with-args: fn(self: $std::concepts::CommandSpec, values: Range) {
+    with_args: fn(self: $std::concepts::CommandSpec, values: Range) {
         new(self::executable, values)
     },
-    append-args: fn(self: $std::concepts::CommandSpec, values: Range) {
+    append_args: fn(self: $std::concepts::CommandSpec, values: Range) {
         new(self::executable,
             $std::ranges::concat(self::arguments, values))
     },
@@ -88,14 +88,14 @@ scope Command {
     run: fn(self: $std::concepts::CommandSpec) {
         NativeProcess::run(self::executable, self::arguments)
     },
-    run-input: fn(self: $std::concepts::CommandSpec, input: String) {
-        NativeProcess::run-input(self::executable, self::arguments, input)
+    run_input: fn(self: $std::concepts::CommandSpec, input: String) {
+        NativeProcess::run_input(self::executable, self::arguments, input)
     },
     capture: fn(self: $std::concepts::CommandSpec) {
         Completed::new(NativeProcess::run(self::executable, self::arguments))
     },
-    capture-input: fn(self: $std::concepts::CommandSpec, input: String) {
-        Completed::new(NativeProcess::run-input(
+    capture_input: fn(self: $std::concepts::CommandSpec, input: String) {
+        Completed::new(NativeProcess::run_input(
             self::executable, self::arguments, input))
     },
     output: fn(self: $std::concepts::CommandSpec) {
@@ -107,9 +107,3 @@ scope Command {
             NativeProcess::run(self::executable, self::arguments)))
     },
 };
-
-# Canonical function spellings retain the same callable identities.
-let write-stdin = write_stdin;
-let close-stdin = close_stdin;
-let exit-code = exit_code;
-let run-input = run_input;

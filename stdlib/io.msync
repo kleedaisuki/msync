@@ -57,11 +57,11 @@ scope NativeText {
 };
 
 scope File {
-    with-policy: fn(path: Path | String,
+    with_policy: fn(path: Path | String,
         policy: $std::concepts::TextIOPolicy) {
         scope { path: path as Path, policy: policy }
     },
-    new: fn(path: Path | String) { with-policy(path, NativeText) },
+    new: fn(path: Path | String) { with_policy(path, NativeText) },
     name: fn(self: $std::concepts::PathRecord) {
         $std::path::filename(self::path)
     },
@@ -80,7 +80,7 @@ scope File {
     size: fn(self: $std::concepts::PathRecord) {
         file_size(self::path)
     },
-    read-text: fn(self: $std::concepts::TextFile) {
+    read_text: fn(self: $std::concepts::TextFile) {
         self::policy::read(self::path)
     },
     write: fn(self: $std::concepts::TextFile, text: String) {
@@ -89,23 +89,23 @@ scope File {
     append: fn(self: $std::concepts::TextFile, text: String) {
         self::policy::append(self::path, text)
     },
-    read-lines: fn(self: $std::concepts::TextFile) {
+    read_lines: fn(self: $std::concepts::TextFile) {
         self::policy::lines(self::path)
     },
-    read-bytes: fn(self: $std::concepts::PathRecord) {
+    read_bytes: fn(self: $std::concepts::PathRecord) {
         read_bytes(self::path)
     },
-    write-bytes: fn(self: $std::concepts::PathRecord, bytes: Range<Number>) {
+    write_bytes: fn(self: $std::concepts::PathRecord, bytes: Range<Number>) {
         write_bytes(self::path, bytes)
     },
-    append-bytes: fn(self: $std::concepts::PathRecord, bytes: Range<Number>) {
+    append_bytes: fn(self: $std::concepts::PathRecord, bytes: Range<Number>) {
         append_bytes(self::path, bytes)
     },
-    copy-to: fn(self: $std::concepts::PathRecord,
+    copy_to: fn(self: $std::concepts::PathRecord,
         destination: Path | String) {
         self::path -> destination
     },
-    move-to: fn(self: $std::concepts::PathRecord,
+    move_to: fn(self: $std::concepts::PathRecord,
         destination: Path | String) {
         let target = destination as Path;
         $std::fs::rename(self::path, target);
@@ -117,14 +117,14 @@ scope File {
     readonly: fn(self: $std::concepts::PathRecord) {
         $std::fs::is_readonly(self::path)
     },
-    set-readonly: fn(self: $std::concepts::PathRecord, value: Bool) {
+    set_readonly: fn(self: $std::concepts::PathRecord, value: Bool) {
         $std::fs::set_readonly(self::path, value)
     },
-    hard-link: fn(self: $std::concepts::PathRecord,
+    hard_link: fn(self: $std::concepts::PathRecord,
         destination: Path | String) {
-        $std::fs::create_hard-link(self::path, destination)
+        $std::fs::create_hard_link(self::path, destination)
     },
-    symbolic-link: fn(self: $std::concepts::PathRecord,
+    symbolic_link: fn(self: $std::concepts::PathRecord,
         destination: Path | String) {
         $std::fs::create_symlink(self::path, destination)
     },
@@ -171,11 +171,11 @@ scope Directory {
     snapshot: fn(self: $std::concepts::PathRecord) {
         $std::ranges::materialize($std::fs::directory_iterator(self::path))
     },
-    copy-to: fn(self: $std::concepts::PathRecord,
+    copy_to: fn(self: $std::concepts::PathRecord,
         destination: Path | String) {
         self::path -> destination
     },
-    move-to: fn(self: $std::concepts::PathRecord,
+    move_to: fn(self: $std::concepts::PathRecord,
         destination: Path | String) {
         let target = destination as Path;
         $std::fs::rename(self::path, target);
@@ -184,30 +184,7 @@ scope Directory {
     remove: fn(self: $std::concepts::PathRecord) {
         $std::fs::remove(self::path)
     },
-    remove-all: fn(self: $std::concepts::PathRecord) {
+    remove_all: fn(self: $std::concepts::PathRecord) {
         $std::fs::remove_all(self::path)
     },
 };
-
-# Canonical function spellings retain the same callable identities.
-let read-text = read_text;
-let read-lines = read_lines;
-let read-bytes = read_bytes;
-let write-text = write_text;
-let append-text = append_text;
-let write-bytes = write_bytes;
-let append-bytes = append_bytes;
-let file-size = file_size;
-let symlink-status = symlink_status;
-let is-regular-file = is_regular_file;
-let is-directory = is_directory;
-let is-symlink = is_symlink;
-let is-empty = is_empty;
-let create-directory = create_directory;
-let create-directories = create_directories;
-let remove-all = remove_all;
-let create-hard-link = create_hard_link;
-let create-symlink = create_symlink;
-let create-directory-symlink = create_directory_symlink;
-let read-symlink = read_symlink;
-let copy-symlink = copy_symlink;

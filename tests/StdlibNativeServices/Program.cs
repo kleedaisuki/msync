@@ -26,15 +26,15 @@ try
             file::write(first, "hello 星");
             file::append(first, " second");
             file::write(separate, "independent");
-            let initial = file::read-text(first);
-            file::move-to(first, directory::child(folder, "moved.txt"));
-            let copied = file::copy-to(first, ./work/copy.txt);
+            let initial = file::read_text(first);
+            file::move_to(first, directory::child(folder, "moved.txt"));
+            let copied = file::copy_to(first, ./work/copy.txt);
             let snapshot = directory::snapshot(folder);
             scope {
                 record: first,
                 initial: initial,
                 moved: file::name(alias) == "moved.txt",
-                separate_text: file::read-text(separate),
+                separate_text: file::read_text(separate),
                 count: $std::ranges::size(snapshot),
                 copied: copied,
                 separate_record: separate,
@@ -76,12 +76,12 @@ try
                 },
             };
             let file = $std::io::File;
-            let record = file::with-policy(./never-opened.txt, memory);
+            let record = file::with_policy(./never-opened.txt, memory);
             let untouched = state::reads == 0 and state::writes == 0;
             file::write(record, "custom");
             file::append(record, " policy");
-            let text = file::read-text(record);
-            let lines = $std::ranges::size(file::read-lines(record));
+            let text = file::read_text(record);
+            let lines = $std::ranges::size(file::read_lines(record));
             scope {
                 untouched: untouched,
                 text: text,
@@ -108,10 +108,10 @@ try
             let command = $std::process::Command;
             let completed = $std::process::Completed;
             let original = command::new("{{executable}}", ["--echo"]);
-            let extended = command::append-args(original, ["extra"]);
+            let extended = command::append_args(original, ["extra"]);
             let local = command::on(extended, $local);
-            let result = command::capture-input(local, "hello 星");
-            completed::write-to(result, ./command-output);
+            let result = command::capture_input(local, "hello 星");
+            completed::write_to(result, ./command-output);
             scope {
                 result: result,
                 good: result::success and result::code == 0
@@ -131,7 +131,7 @@ try
             Require(((ScopeValue)value["result"]).Members.Values.All(member => member is not FunctionValue), "Completed data owns object methods");
             Require(await File.ReadAllTextAsync(Path.Combine(root, "command-output")) == "echo:hello 星", "Completed output publication");
         }
-        Reject("$std::io::File::with-policy(./x, scope { read: fn(path:Path) { 1 }, lines: fn(path:Path) { [path as String] }, write: fn(path:Path,text:String) {}, append: fn(path:Path,text:String) {} })", "read", level);
+        Reject("$std::io::File::with_policy(./x, scope { read: fn(path:Path) { 1 }, lines: fn(path:Path) { [path as String] }, write: fn(path:Path,text:String) {}, append: fn(path:Path,text:String) {} })", "read", level);
         Reject("let value = $std::io::File::new(./x); value::path = 1;", "Path", level);
         Reject("$std::process::Command::run(scope { executable: ./x, arguments: true })", "arguments", level);
     }
