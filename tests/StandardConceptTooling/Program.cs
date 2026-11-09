@@ -71,4 +71,30 @@ const string shadowed = "let std = scope { }; fn inspect(value: Number) { value 
 EditorAnalysis lexical = EditorCompiler.Analyze(shadowed, "shadowed-standard.msync");
 Require(!lexical.At(shadowed.IndexOf("Number", StringComparison.Ordinal)).Bindings.Any(member => member.Name.StartsWith("$std::", StringComparison.Ordinal)),
     "Standard concept completion ignored lexical std shadowing.");
+
+const string inline = "concept Pair { first?: typename First, second?: typename Second, convert: fn(value: First) -> Second, };";
+EditorAnalysis pair = EditorCompiler.Analyze(inline, "inline-associated.msync");
+Require(pair.Diagnostic is null, pair.Diagnostic?.Message ?? "Inline associated declaration failed.");
+int firstDefinition = inline.IndexOf("First", StringComparison.Ordinal);
+int firstUse = inline.LastIndexOf("First", StringComparison.Ordinal);
+Require(pair.Occurrences.Any(item => item.Span.Start == firstDefinition && item.Signature == "typename First" && item.SemanticRole == "type"),
+    "Inline binder lost its canonical type signature.");
+Require(pair.DefinitionsAt(firstUse).Single().Span.Start == firstDefinition, "Associated type use does not navigate to the inline binder.");
+Require(pair.At(firstUse).Bindings.Any(member => member.Name == "First" && member.Signature == "typename First"),
+    "Inline associated type is absent from concept-local completion.");
+const string nested = "concept Sequence { items: Range<Range<typename name>>, visit: fn(item: name) -> name, };";
+EditorAnalysis sequence = EditorCompiler.Analyze(nested, "nested-associated.msync");
+Require(sequence.Diagnostic is null, sequence.Diagnostic?.Message ?? "Nested inline binder failed.");
+int nestedBinder = nested.IndexOf("name>>", StringComparison.Ordinal);
+Require(sequence.Occurrences.Any(item => item.Span.Start == nestedBinder && item.Signature == "typename name"),
+    "A lowercase binder matched the suffix of the typename keyword.");
+Require(sequence.DefinitionsAt(nested.LastIndexOf("name", StringComparison.Ordinal)).Single().Span.Start == nestedBinder,
+    "Nested Range binder use does not navigate to its declaration.");
+const string declaring = "concept Record { field: typ };";
+int declarationCaret = declaring.IndexOf("typ", StringComparison.Ordinal) + 3;
+EditorContext declarationContext = EditorCompiler.Analyze(declaring, "declaring-associated.msync").At(declarationCaret);
+Require(TypeCompletion.Candidates(TypeCompletion.Find(declaring, declarationCaret), declarationContext)
+    .Any(member => member.Name == "typename" && member.SemanticRole == "keyword"), "Concept field completion does not offer typename.");
+Require(!TypeCompletion.Candidates(TypeCompletion.Find(optional, optionType), option.At(optionType)).Any(member => member.Name == "typename"),
+    "typename was offered outside a concept requirement.");
 Console.WriteLine($"PASS {checks} standard concept editor contracts");

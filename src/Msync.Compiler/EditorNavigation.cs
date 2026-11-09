@@ -10,7 +10,7 @@ internal static class EditorTypeNames
 {
     public static IEnumerable<(string Name, SourceSpan Span)> Parts(string source, TypeSyntax type)
     {
-        int cursor = type.Span.Start;
+        int cursor = type.Span.Start + (type.DeclaresAssociatedType ? "typename".Length : 0);
         foreach (string part in type.Name.Split("::", StringSplitOptions.None))
         {
             string text = part.TrimStart('$');

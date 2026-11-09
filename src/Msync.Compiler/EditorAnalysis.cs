@@ -18,9 +18,15 @@ public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrence
 {
     internal EditorContextCollector? Contexts { get; init; }
     internal IReadOnlyList<(SourceSpan Span, IReadOnlyList<SemanticMember> Types)> AssociatedTypes { get; init; } = [];
+    internal IReadOnlyList<(SourceSpan Span, EditorLocation Target)> AssociatedDefinitions { get; init; } = [];
     public IReadOnlyList<SourceSpan> RegexSpans { get; init; } = [];
     public IReadOnlyList<EditorSymbol> Symbols { get; init; } = [];
-    public IReadOnlyList<EditorLocation> DefinitionsAt(int offset) => Contexts?.DefinitionsAt(offset) ?? [];
+    public IReadOnlyList<EditorLocation> DefinitionsAt(int offset)
+    {
+        var associated = AssociatedDefinitions.Where(reference => reference.Span.Start <= offset && offset <= reference.Span.End)
+            .Select(reference => reference.Target).Distinct().ToArray();
+        return associated.Length == 0 ? Contexts?.DefinitionsAt(offset) ?? [] : associated;
+    }
     public IReadOnlyList<SourceSpan> TypeSpans { get; init; } = [];
     public bool IsTypePosition(int offset)
     {
@@ -34,6 +40,7 @@ public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrence
         return IsTypePosition(offset) ? context with
         {
             IsTypePosition = true,
+            CanDeclareAssociatedType = AssociatedTypes.Any(scope => scope.Span.Start <= offset && offset <= scope.Span.End),
             Bindings = AssociatedTypes.Where(scope => scope.Span.Start <= offset && offset <= scope.Span.End)
                 .OrderBy(scope => scope.Span.Length).SelectMany(scope => scope.Types)
                 .Concat(Contexts?.ConceptsAt(offset) ?? [])
@@ -148,6 +155,7 @@ public static class EditorCompiler
         IReadOnlyList<EditorSymbol> symbols = [];
         List<SourceSpan> typeSpans = [];
         IReadOnlyList<(SourceSpan Span, IReadOnlyList<SemanticMember> Types)> associatedTypes = [];
+        IReadOnlyList<(SourceSpan Span, EditorLocation Target)> associatedDefinitions = [];
         try
         {
             EditorParseResult parsed = Parser.ParseForEditor(source, sourceName);
@@ -155,6 +163,7 @@ public static class EditorCompiler
             Document document = parsed.Document;
             symbols = EditorSymbols.Collect(document.Statements);
             associatedTypes = ConceptTypeScopes(document.Statements).ToArray();
+            associatedDefinitions = AssociatedTypeDefinitions(document.Statements, sourceName, source).ToArray();
             diagnostic = parsed.Error?.Diagnostic;
             Seed(document.Statements, source, syntax, typeSpans);
             Action<SourceSpan, Info, string?, bool> observer = (span, info, name, concrete) =>
@@ -207,7 +216,41 @@ public static class EditorCompiler
                 };
             }
         return new(syntax.Values.OrderBy(item => item.Span.Start).ThenBy(item => item.Span.Length).ToArray(), diagnostic, recovery, recoveryStart)
-        { Contexts = compilation?.EditorContexts, RegexSpans = regexSpans, TypeSpans = typeSpans, Symbols = symbols, AssociatedTypes = associatedTypes };
+        { Contexts = compilation?.EditorContexts, RegexSpans = regexSpans, TypeSpans = typeSpans, Symbols = symbols,
+            AssociatedTypes = associatedTypes, AssociatedDefinitions = associatedDefinitions };
+    }
+
+    private static IEnumerable<(SourceSpan Span, EditorLocation Target)> AssociatedTypeDefinitions(IEnumerable<Node> nodes,
+        string sourceName, string source)
+    {
+        foreach (Node node in nodes)
+        {
+            if (node is ConceptDeclaration concept)
+            {
+                var declarations = concept.Types.Where(type => type.NameSpan is not null).DistinctBy(type => type.Name).ToDictionary(type => type.Name,
+                    type => new EditorLocation(sourceName, source, type.NameSpan!.Value), StringComparer.Ordinal);
+                foreach (TypeSyntax type in RequirementTypes(concept.Members))
+                    if (declarations.TryGetValue(type.Name, out var target))
+                        yield return (EditorTypeNames.Parts(source, type).Last().Span, target);
+            }
+            foreach (var reference in AssociatedTypeDefinitions(Compilation.Children(node), sourceName, source)) yield return reference;
+        }
+
+        static IEnumerable<TypeSyntax> RequirementTypes(IEnumerable<Node> requirements)
+        {
+            foreach (Node node in requirements)
+            {
+                foreach (TypeSyntax type in TypeSyntaxFacts.Annotations(node))
+                    foreach (TypeSyntax nested in TypeTree(type)) yield return nested;
+            }
+        }
+
+        static IEnumerable<TypeSyntax> TypeTree(TypeSyntax type)
+        {
+            yield return type;
+            foreach (TypeSyntax child in type.Arguments.Concat(type.Alternatives))
+                foreach (TypeSyntax nested in TypeTree(child)) yield return nested;
+        }
     }
 
     private static IEnumerable<(SourceSpan Span, IReadOnlyList<SemanticMember> Types)> ConceptTypeScopes(IEnumerable<Node> nodes)
@@ -215,7 +258,7 @@ public static class EditorCompiler
         foreach (Node node in nodes)
         {
             if (node is ConceptDeclaration concept)
-                yield return (concept.Span, concept.Types.Select(type => new SemanticMember(type.Name, "Type", $"type {type.Name}",
+                yield return (concept.Span, concept.Types.Select(type => new SemanticMember(type.Name, "Type", $"typename {type.Name}",
                     "An associated type selected from the constrained Scope.", SemanticRole: "type") { IsConstraint = true }).ToArray());
             foreach (var scope in ConceptTypeScopes(Compilation.Children(node))) yield return scope;
         }
@@ -435,7 +478,7 @@ public static class EditorCompiler
                     Seed(concept.Members, source, occurrences, typeSpans);
                     break;
                 case ConceptAssociatedType associated:
-                    Add(associated.NameSpan, "Type", $"type {associated.Name}", "type");
+                    Add(associated.NameSpan, "Type", $"typename {associated.Name}", "type");
                     break;
                 case ConceptMember { Parameters: { } parameters } member:
                     Add(member.NameSpan, "Function", FunctionSignature(member.Name, parameters,
@@ -472,8 +515,9 @@ public static class EditorCompiler
             foreach (var (part, name) in EditorTypeNames.Parts(source, type))
             {
                 prefix += prefix.Length == 0 ? part : "::" + part;
-                occurrences[name] = new(name, "Type", prefix,
-                    prefix == type.Name ? "A type or structural concept constraint. It is checked without executing the expression."
+                occurrences[name] = new(name, "Type", type.DeclaresAssociatedType ? $"typename {type.Name}" : prefix,
+                    type.DeclaresAssociatedType ? "An associated type declared inline and inferred from the constrained value."
+                        : prefix == type.Name ? "A type or structural concept constraint. It is checked without executing the expression."
                         : "A compile-time standard-library namespace. Select a concept with `::`.", SemanticRole: "type");
             }
             foreach (TypeSyntax argument in type.Arguments) AddType(argument);

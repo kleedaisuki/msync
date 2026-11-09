@@ -24,7 +24,7 @@ internal sealed partial class LanguageServer
             items.Add((JsonNode)new JsonObject
             {
                 ["label"] = candidate.Name,
-                ["kind"] = 7,
+                ["kind"] = candidate.SemanticRole == "keyword" ? 14 : 7,
                 ["detail"] = candidate.Signature,
                 ["documentation"] = Documentation(candidate.Description),
                 ["textEdit"] = new JsonObject { ["range"] = source.Range(span.Start, span.Length), ["newText"] = candidate.Name }

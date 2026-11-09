@@ -36,9 +36,14 @@ internal static class TypeCompletion
     {
         IEnumerable<SemanticMember> candidates = insight?.Bindings.Where(member => member.IsConstraint) ?? [];
         if (context.Qualifier.Length == 0)
+        {
             candidates = LanguageTypes.Names.Select(name => new SemanticMember(name, "Type", name,
                 name == "Range" ? "Range<T> constrains the element type." : "A built-in type constraint.", SemanticRole: "type"))
                 .Concat(candidates);
+            if (insight?.CanDeclareAssociatedType == true)
+                candidates = candidates.Append(new("typename", "Keyword", "typename Name",
+                    "Declare an associated type inline, for example `first?: typename First`.", SemanticRole: "keyword"));
+        }
         Dictionary<string, SemanticMember> selected = new(StringComparer.Ordinal);
         foreach (SemanticMember candidate in candidates)
         {

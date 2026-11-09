@@ -10,6 +10,7 @@ public sealed record EditorContext(IReadOnlyList<SemanticMember> Bindings, Seman
     EditorReceiverKind ReceiverKind = EditorReceiverKind.Member, ConnectionValue? PhysicalEndpoint = null, bool HasPhysicalOwner = false)
 {
     public bool IsTypePosition { get; init; }
+    public bool CanDeclareAssociatedType { get; init; }
     public bool IsGlobalImport { get; init; }
 }
 
@@ -324,13 +325,16 @@ internal sealed partial class Compilation
                 diagnostic.EditorReportErrors = true;
                 EditorFailure(diagnostic, error);
             }
+            TypeEnvironment typeEnvironment = new(template.Concepts, template.StandardShadowed);
+            Frame annotationFrame = TypeFrame(frame, typeEnvironment);
+            frame.ExpectedTypeEnvironment = typeEnvironment;
             if (template.Syntax.ReturnType is { } returnType)
             {
                 try
                 {
-                    frame.ExpectedReturn = ResolveType(frame, returnType);
+                    frame.ExpectedReturn = ResolveType(annotationFrame, returnType);
                     frame.ExpectedReturnSpan = returnType.Span;
-                    frame.ExpectedConceptReturn = TryConcept(frame, returnType.Name, out _) ? returnType : null;
+                    frame.ExpectedConceptReturn = TryConcept(annotationFrame, returnType.Name, out _) ? returnType : null;
                 }
                 catch (CompileException) { }
             }
@@ -342,9 +346,9 @@ internal sealed partial class Compilation
                 {
                     try
                     {
-                        CaptureConceptDefinition(frame, parameter.Type);
-                        info = TryConcept(frame, parameter.Type.Name, out _)
-                            ? ConceptInfo(frame, parameter.Type) : new(ResolveType(frame, parameter.Type));
+                        CaptureConceptDefinition(annotationFrame, parameter.Type);
+                        info = TryConcept(annotationFrame, parameter.Type.Name, out _)
+                            ? ConceptInfo(annotationFrame, parameter.Type) : new(ResolveType(annotationFrame, parameter.Type));
                     }
                     catch (CompileException) { }
                 }
