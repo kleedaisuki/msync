@@ -9,6 +9,7 @@ msync compile job.msync -o job.mso
 msync run-ir job.mso
 msync bind-ir job.mso -o job.mexe
 msync run-ir job.mexe
+msync disassemble job.mexe
 ```
 
 A relocatable `.mso` selects runtime context when loaded. A `.mexe` captures
@@ -29,6 +30,19 @@ Machine-independent transformations run on `.mso`. Binding adds context-dependen
 lowering and runs the selected optimization level again on `.mexe`. Native AOT
 compiles the host executable; the language runtime executes typed binary
 instructions and scheduled blocks, never embedded debug source.
+
+## Inspect without executing
+
+`msync disassemble FILE.mso` and `msync disassemble FILE.mexe` reconstruct a
+read-only typed IR document from the binary file. The view includes the actual
+format and language versions, optimization level, functions, captures, local
+slots, constants, control-flow blocks and retained source spans. Bound artifacts
+also show their captured path context. No code is run or rebound, and no SSH/WSL
+connection is opened. The command does not load configuration or telemetry.
+
+Use `--json` for the versioned editor document model, or `-` for binary stdin.
+The original source may have been optimized away; disassembly does not invent
+missing expressions or require the source file to remain available.
 
 `-o -` writes binary output to stdout without help or status text. Redirect
 that stream as bytes using your shell's byte-preserving facilities; do not

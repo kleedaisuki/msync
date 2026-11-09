@@ -10,7 +10,7 @@ namespace Msync.Cli;
 
 internal static class Program
 {
-    private static readonly string[] Commands = ["run", "check", "compile", "emit-ir", "bind-ir", "run-ir", "plan", "plan-ir", "fmt", "repl", "doctor", "config", "help", "skill"];
+    private static readonly string[] Commands = ["run", "check", "compile", "emit-ir", "bind-ir", "run-ir", "plan", "plan-ir", "disassemble", "fmt", "repl", "doctor", "config", "help", "skill"];
 
     public static async Task<int> Main(string[] args)
     {
@@ -33,6 +33,17 @@ internal static class Program
             Options options = Options.Parse(args);
             if (options.Command == "help") { TerminalHelp.Show(options.File, color); return 0; }
             if (options.Command == "skill") { TerminalPresentation.Reference(SkillReference.Render(options.SkillTopics), color); return 0; }
+            if (options.Command == "disassemble")
+            {
+                if (options.Output is not null) throw new ArgumentException("Disassembly writes text to stdout; redirect it to a separate text file instead of using -o.");
+                string artifact = options.File ?? throw new ArgumentException("An artifact filename is required; use 'msync disassemble --help'.");
+                byte[] bytes = artifact == "-" ? await ReadArtifactInput() : await File.ReadAllBytesAsync(artifact);
+                string identity = artifact == "-" ? "<stdin>" : new Uri(Path.GetFullPath(artifact)).AbsoluteUri;
+                ArtifactDisassemblyResult document = ArtifactDisassembly.Read(bytes, identity);
+                if (options.Json) Console.WriteLine(document.ToJson().ToJsonString());
+                else Console.Write(TerminalPresentation.Syntax(document.Text, TerminalPresentation.Colors(color)));
+                return 0;
+            }
             Configuration configuration = Configuration.Load(options.ConfigPath, options.NoConfig, options.Overrides);
             if (options.Command == "config") { configuration.Dump(Console.Out); return 0; }
             configuration.Validate();
@@ -117,6 +128,12 @@ internal static class Program
     private static bool IsLegacySource(string source) => source.Split('\n').Take(5).Any(line => line.Trim().StartsWith("# msync: 0.", StringComparison.Ordinal) && !line.Trim().StartsWith("# msync: 0.8", StringComparison.Ordinal));
     private static ValueTask<string> ReadSource(string file) => file == "-"
         ? new(Console.In.ReadToEndAsync()) : ValueTask.FromResult(File.ReadAllText(file));
+    private static async Task<byte[]> ReadArtifactInput()
+    {
+        using MemoryStream bytes = new();
+        await Console.OpenStandardInput().CopyToAsync(bytes);
+        return bytes.ToArray();
+    }
     private static void Write(Module module, string output)
     {
         if (output != "-") { Artifact.Write(module, output); return; }
@@ -201,6 +218,7 @@ internal static class Program
         string? TracePath, string? TelemetryDatabase, bool NoTelemetry)
     {
         public bool ExplicitCommand { get; init; }
+        public bool Json { get; init; }
         public IReadOnlyList<string> SkillTopics { get; init; } = [];
         public int BufferSize { get; init; } = 65536;
         public long MemoryLimit { get; init; } = 67108864;
@@ -213,7 +231,7 @@ internal static class Program
             Dictionary<string, object> overrides = [];
             List<string> skillTopics = [];
             int optimization = 2, jobs = 4;
-            bool dryRun = false, formattingCheck = false, stdout = false, noConfig = false, noTelemetry = false;
+            bool dryRun = false, formattingCheck = false, stdout = false, noConfig = false, noTelemetry = false, json = false;
             int index = 0;
             bool commandSeen = false;
             if (args.Length != 0 && Commands.Contains(args[0], StringComparer.Ordinal)) { command = args[0]; index++; commandSeen = true; }
@@ -234,6 +252,7 @@ internal static class Program
                     case "--spool-limit": overrides["execution.spool_limit"] = Next(); break;
                     case "--check": formattingCheck = true; break;
                     case "--stdout": stdout = true; break;
+                    case "--json": json = true; break;
                     case "-O0": optimization = 0; break;
                     case "-O1": optimization = 1; break;
                     case "-O2": optimization = 2; break;
@@ -251,7 +270,8 @@ internal static class Program
                         file = arg; break;
                 }
             }
-            return new(command, file, output, dryRun, optimization, source, jobs, formattingCheck, stdout, syntax, configPath, noConfig, overrides, tracePath, telemetryDatabase, noTelemetry) { SkillTopics = skillTopics, ExplicitCommand = commandSeen };
+            if (json && command != "disassemble") throw new ArgumentException("--json is supported by 'msync disassemble'.");
+            return new(command, file, output, dryRun, optimization, source, jobs, formattingCheck, stdout, syntax, configPath, noConfig, overrides, tracePath, telemetryDatabase, noTelemetry) { SkillTopics = skillTopics, ExplicitCommand = commandSeen, Json = json };
         }
 
         private static string ColorPolicy(string value) => value is "auto" or "always" or "never" ? value
