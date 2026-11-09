@@ -54,7 +54,9 @@ let names = $std::collections::MapWith([
     scope { key: "alpha", value: 1 },
     scope { key: "ALPHA", value: 2 }
 ], insensitive);
-let nullable = $std::collections::Map([scope { key: "a", value?: 1 }]);
+let nullable = $std::collections::Map([
+    scope { key: "a", value?: 1 }, scope { key: "b", value?: null }
+]);
 nullable::put("a", null);
 let empty_stack = $std::collections::Stack($std::ranges::take([1], 0));
 let empty_queue = $std::collections::Queue($std::ranges::take([1], 0));

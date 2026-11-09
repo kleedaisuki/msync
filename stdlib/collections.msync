@@ -247,10 +247,16 @@ fn Stack(initial: Range) {
         is_empty: items::is_empty,
         clear: items::clear,
         push: items::add,
-        peek: fn { $std::ranges::last(items::snapshot()) },
+        peek: fn {
+            if items::is_empty() { null } else {
+                items::get(items::size() - 1)
+            }
+        },
         pop: fn {
-            let value? = $std::ranges::last(items::snapshot());
-            if not items::is_empty() { items::remove_at(items::size() - 1); };
+            if items::is_empty() { return null; };
+            let index = items::size() - 1;
+            let value? = items::get(index);
+            items::remove_at(index);
             value
         }
     }
@@ -263,10 +269,13 @@ fn Queue(initial: Range) {
         is_empty: items::is_empty,
         clear: items::clear,
         enqueue: items::add,
-        peek: fn { $std::ranges::first(items::snapshot()) },
+        peek: fn {
+            if items::is_empty() { null } else { items::get(0) }
+        },
         dequeue: fn {
-            let value? = $std::ranges::first(items::snapshot());
-            if not items::is_empty() { items::remove_at(0); };
+            if items::is_empty() { return null; };
+            let value? = items::get(0);
+            items::remove_at(0);
             value
         }
     }
