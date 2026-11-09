@@ -32,6 +32,7 @@ SOURCES: dict[str, str] = {
         + "\n$std::containers::BTree::get(tree, 17)"
     ),
 }
+EXTRA_SOURCES: dict[str, str] = {"arithmetic": "1 + 2"}
 
 
 def sha256(path: Path) -> str:
@@ -75,10 +76,11 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--source-revision", required=True)
+    parser.add_argument("--producer-receipt", type=Path)
     parser.add_argument("--samples", type=int, default=7)
     parser.add_argument("--retention-only", action="store_true")
     parser.add_argument("--world-scaling", action="store_true")
-    parser.add_argument("--case", action="append", choices=tuple(SOURCES))
+    parser.add_argument("--case", action="append", choices=(*SOURCES, *EXTRA_SOURCES))
     args = parser.parse_args()
     if args.world_scaling and args.case:
         parser.error("--world-scaling selects its own four cases; omit --case")
@@ -91,8 +93,11 @@ def main() -> None:
     work.mkdir(parents=True, exist_ok=True)
     output.parent.mkdir(parents=True, exist_ok=True)
     scaling = scaling_cases() if args.world_scaling else {}
-    sources = {name: case.source for name, case in scaling.items()} or SOURCES
-    selected: list[str] = args.case or list(sources)
+    sources = {name: case.source for name, case in scaling.items()} or {
+        **SOURCES,
+        **EXTRA_SOURCES,
+    }
+    selected: list[str] = args.case or list(scaling or SOURCES)
     records: list[dict[str, Any]] = []
     image: dict[str, Any] = {
         "source_revision": args.source_revision,
@@ -113,6 +118,19 @@ def main() -> None:
                 for path in sorted(component.parent.glob("Msync.*.dll"))
             },
         }
+    if args.producer_receipt:
+        receipt_path: Path = args.producer_receipt.resolve()
+        receipt: dict[str, Any] = json.loads(receipt_path.read_text(encoding="utf-8"))
+        verified = {
+            name: sha256(receipt_path.parent / name) for name in receipt["assemblies"]
+        }
+        if verified != receipt["assemblies"]:
+            raise RuntimeError("Producer receipt does not match its frozen assemblies")
+        if component is not None:
+            for name, actual in image["component"]["adjacent_assemblies"].items():
+                if actual != verified[name]:
+                    raise RuntimeError(f"Probe assembly differs from producer: {name}")
+        image["producer"] = {"receipt_path": str(receipt_path), "receipt": receipt}
     for name in selected:
         source = work / f"{name}.msync"
         source.write_text(sources[name], encoding="utf-8", newline="\n")
@@ -160,10 +178,18 @@ def main() -> None:
                 report = execute(component_args, work)
                 parsed: dict[str, Any] = json.loads(report.stdout)
                 if not args.retention_only:
-                    parsed["warm_ms_summary"] = distribution(parsed["warm_ms"])
-                    parsed["warm_allocation_summary"] = distribution(
-                        parsed["warm_allocated_bytes"]
+                    measurements = (
+                        parsed["phases"]
+                        if parsed["stage"] == "typed_hir_phases"
+                        else [parsed]
                     )
+                    for measurement in measurements:
+                        measurement["warm_ms_summary"] = distribution(
+                            measurement["warm_ms"]
+                        )
+                        measurement["warm_allocation_summary"] = distribution(
+                            measurement["warm_allocated_bytes"]
+                        )
                 record["managed_component"] = parsed
             records.append(record)
             output.write_text(json.dumps(image, indent=2) + "\n", encoding="utf-8")

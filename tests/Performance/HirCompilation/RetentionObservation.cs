@@ -6,6 +6,50 @@ using SourceCompiler = Msync.Compiler.Compiler;
 
 internal static class RetentionObservation
 {
+    public static JsonObject Measure<T>(Func<T> create, string stage) where T : class
+    {
+        Warm(create);
+        _ = Snapshot();
+        using HeapSampler sampler = new();
+        MemorySnapshot before = Snapshot();
+        sampler.Begin(GC.GetTotalMemory(false));
+        var held = Hold(create);
+        sampler.Finish();
+        MemorySnapshot released = Snapshot();
+        return new JsonObject
+        {
+            ["stage"] = stage,
+            ["requested_sampling_interval_ms"] = 1,
+            ["observed_peak_managed_heap_bytes"] = sampler.Peak,
+            ["heap_observations"] = sampler.Observations,
+            ["before"] = before.ToJson(),
+            ["held_result"] = held.Memory.ToJson(),
+            ["released_result"] = released.ToJson(),
+            ["result_alive_while_held"] = held.Alive,
+            ["result_alive_after_release"] = held.Reference.TryGetTarget(out _)
+        };
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void Warm<T>(Func<T> create) where T : class
+    {
+        for (int index = 0; index < 3; index++) GC.KeepAlive(create());
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static HeldValue<T> Hold<T>(Func<T> create) where T : class
+    {
+        T value = create();
+        WeakReference<T> reference = new(value);
+        MemorySnapshot memory = Snapshot();
+        bool alive = reference.TryGetTarget(out _);
+        GC.KeepAlive(value);
+        return new(reference, memory, alive);
+    }
+
+    private sealed record HeldValue<T>(WeakReference<T> Reference, MemorySnapshot Memory,
+        bool Alive) where T : class;
+
     public static JsonObject Compile(string source, string sourceName, int level)
     {
         Warm(source, sourceName, level);

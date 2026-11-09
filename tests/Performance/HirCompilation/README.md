@@ -197,3 +197,71 @@ the real candidate APIs are ready, record finalized HIR functions and distinct
 code instances before optimization alongside it; inlining and dead-code
 elimination may legitimately remove the residual wrapper. A source definition
 count of one is input metadata, not a fabricated candidate sharing result.
+
+## Actual phase API, first candidate slice
+
+Build `-p:HirPhaseProbe=true` to select `CandidateProgram.cs` instead of the
+released compiler-total entry point. This opt-in references `Msync.Hir.dll` and
+calls these actual APIs; it never calls the old `Compiler.Compile` facade:
+
+1. `Compiler.Analyze(source, name)` returns the immutable `HirModule`.
+2. `HirLowerer.Lower(hir, options).Module` consumes that known HIR, with backend
+   layout retention disabled.
+3. `HirArtifact.Write(hir, stream)` validates/serializes that same known HIR to a
+   fresh MemoryStream, including the output-buffer allocation.
+
+Each phase has its own first invocation, three warmups and warm observations.
+Lowering and serialization do not include reanalysis. The first lowering API
+does not run the optimizer: its level option sets bytecode metadata, not a
+performed O2 pass. Reports explicitly say `optimizer_used: false`; two level
+labels are not an optimization comparison. These are managed component
+observations, not Native AOT CLI latency or the final compile pipeline's cost.
+
+```sh
+dotnet build tests/Performance/HirCompilation/Msync.HirCompilation.csproj \
+  -c Release -p:HirPhaseProbe=true \
+  -p:FrozenAssemblies=/absolute/frozen/candidate \
+  --artifacts-path .temp/hir-phase/probe-build -o .temp/hir-phase/probe
+python3 tests/Performance/HirCompilation/measure.py \
+  --component .temp/hir-phase/probe/msync-hir-compilation \
+  --producer-receipt /absolute/frozen/candidate/snapshot.json \
+  --source-revision COMMIT --case none --case arithmetic --samples 7 \
+  --work .temp/hir-phase/inputs --output .temp/hir-phase/timing.json
+```
+
+`--producer-receipt` verifies every producer DLL hash against the frozen image,
+verifies the probe's copied product dependencies against that receipt, and
+embeds the original receipt with its source/build qualifications. The first
+slice used `.temp/hir-artifacts/snapshot-1/snapshot.json`: source collated at
+`21acb297597c0d3ee403dd6f770fe6255f30c6bc`, Compiler
+`0782c696ff02297a0e91c13e3d22362249eaf6df0a139ccbd0461244cedab49f`, HIR
+`4c5a58178505f14435684f1c547d10d803cf98f31b8da65e419830bcf3859769`.
+The producer reused immediately preceding dependency assemblies rather than
+claiming a clean rebuild of its transient worktree. All six exact DLL identities
+and this limitation remain in each raw report.
+
+Only the no-standard-library scalar and `1 + 2` inputs were measured in that
+slice; the incomplete standard-module linker was not benchmarked as a working
+candidate. Raw observations are `.temp/hir-first-phase/{timing,retention}.json`.
+
+| First managed slice, level 0 metadata | Analyze p50 ms / allocated B | Lower p50 ms / allocated B | HIR write p50 ms / allocated B |
+| --- | ---: | ---: | ---: |
+| Scalar binding | 0.0248 / 8,816 | 0.0013 / 2,904 | 0.0040 / 3,880 |
+| `1 + 2` | 0.0257 / 9,136 | 0.0024 / 2,568 | 0.0126 / 3,944 |
+
+These tiny observations establish that the actual stage boundaries are
+measurable; they are not evidence of overall migration speedup. In particular,
+serialization is not part of the ordinary compile-total control.
+
+Add `--retention-only` for separately instrumented candidate lifetimes. The
+analysis mode deliberately holds the complete returned HIR graph. The lowering
+mode keeps its input HIR alive and measures the additional returned bytecode;
+serialization keeps that same input HIR and measures its additional output
+stream/buffer. The scalar analysis observation was collected heap
+77,496 → 78,728 → 77,592 bytes; lowering 83,864 → 84,592 → 83,896;
+serialization 87,632 → 88,704 → 87,664. Each returned result was alive while
+held and collectible after release, in both inputs and both level labels.
+The input HIR intentionally remains live for the latter two operations. This
+does **not** demonstrate streaming compilation, body-at-a-time arena disposal,
+editor-only retained projections, or their future peak-memory benefits. Those
+ownership modes remain to be measured when their product APIs exist.
