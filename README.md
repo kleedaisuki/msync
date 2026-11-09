@@ -82,6 +82,11 @@ time, not by widening types during execution.
 Function arguments are generic by default; annotations constrain admitted
 specializations. Functions are values, can capture lexical bindings, call
 recursively, and be passed to callback-taking functions.
+Inside a function, `global root, .codex;` explicitly imports prior lexical
+ancestor locations captured at definition time. It shares mutable locations,
+not process-wide variables, and does not search callers or future declarations.
+Implicit captures remain supported. See `msync skill language functions`.
+
 Return constraints use `-> Type` after the parameter list for named and
 anonymous functions. A nullable result is written `-> Path?`, for example.
 The constraint checks reachable block tails and explicit `return` expressions;

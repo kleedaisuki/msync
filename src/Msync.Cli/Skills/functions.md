@@ -61,3 +61,28 @@ an arbitrary type annotation does not turn a Path into a Scope or Connection.
 A Path is callable too: `./tool("argument")` starts a native Process with exact
 arguments, not shell interpolation. Read `msync skill library process` for
 result inspection.
+
+## Explicit ancestor imports
+
+`global` explicitly imports prior definition-time ancestor binding locations
+inside a function. It does not declare process-wide variables. Existing implicit
+captures remain valid; use an import when you want that dependency written out.
+The nearest ancestor wins, not the caller's environment or a future declaration.
+
+```msync
+let root = ./before;
+let .codex = ~/.codex;
+fn redirect() {
+    global root, .codex;
+    root = .codex;
+};
+redirect();
+```
+
+The imported locations share assignments and retain their fixed storage types.
+A later `let root = ...` shadows the old location without retargeting `redirect`.
+`global` is invalid at top level, and cannot replace a parameter or an already
+introduced local binding. Repeating the same import is allowed. A nested block
+may shadow an imported name; leaving the block restores that imported name.
+Scope bodies contain fields, not statements; a function-valued Scope field may
+import its prior lexical ancestor fields with the same rules.

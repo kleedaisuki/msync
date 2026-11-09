@@ -6,7 +6,7 @@ namespace Msync.Cli;
 
 internal static class PromptSyntax
 {
-    internal static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "return", "break", "loop", "release", "acquire", "acqrel", .. LanguageTypes.Names];
+    internal static readonly string[] Keywords = ["let", "global", "fn", "scope", "native", "if", "else", "for", "in", "match", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", "return", "break", "loop", "release", "acquire", "acqrel", .. LanguageTypes.Names];
     internal static readonly string[] Builtins = ["$std", "$local", "$wsl", "$pwd", "$file", "$path", "$env"];
     internal static readonly string[] Commands = ["/help", "/?", "/syntax", "/quit", "/exit", "/clear", "/pwd", "/cd"];
 
@@ -166,6 +166,7 @@ internal static class PromptSyntax
             : source.EndsWith("is", StringComparison.Ordinal) ? "null | not null | Type; '?' also means is null"
             : source.EndsWith("fn", StringComparison.Ordinal) ? "fn name(parameters) { result }; omit ';' on the result"
             : source.EndsWith("let", StringComparison.Ordinal) ? "let name = value; add '?' to admit Null"
+            : source.EndsWith("global", StringComparison.Ordinal) ? "global root, .codex; import prior definition-time ancestor locations inside fn"
             : source.EndsWith("scope", StringComparison.Ordinal) ? "scope Name { member: value }; select with Name::member"
             : source.EndsWith("release", StringComparison.Ordinal) ? "before fence; release Path(args) keeps its Process live"
             : source.EndsWith("acquire", StringComparison.Ordinal) ? "join this invocation's pending work; acquire process joins only that Process"

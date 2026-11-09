@@ -265,3 +265,8 @@ test('declaration keywords stay keywords while names retain inferred roles', () 
     assert.deepEqual(mappings.variable, ['variable.other.readwrite.msync']);
     assert.deepEqual(mappings.controlKeyword, ['keyword.control.msync']);
 });
+
+
+test('explicit ancestor import stays a declaration keyword, not control flow', () => {
+    hasScope('global root, .codex;', 'global', 'keyword.other.msync');
+});

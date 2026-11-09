@@ -26,6 +26,7 @@ void Color(string source, string token, AnsiColor? expected, IReadOnlyDictionary
 
 const string declaration = "fn copy(file: Path) -> Path { file }; scope Settings { root: ~/.codex };";
 Color(declaration, "fn", AnsiColor.Cyan);
+Color("global root, .codex;", "global", AnsiColor.Cyan);
 Color(declaration, "copy", AnsiColor.Yellow);
 Color(declaration, "scope", AnsiColor.Cyan);
 Color(declaration, "Settings", AnsiColor.Magenta);

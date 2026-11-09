@@ -279,11 +279,35 @@ def run_keywords(binary: Path, directory: Path) -> dict[str, int]:
     return {"keyword_and_explicit_hint_contracts": 4}
 
 
+def run_global(binary: Path, directory: Path) -> dict[str, int]:
+    (directory / ".codex").mkdir()
+    (directory / ".codex/trap.txt").write_bytes(b"FILESYSTEM TRAP")
+    terminal = Terminal(binary, directory, no_color=False)
+    source = "fn show() { global .codex; .codex }; show()"
+    try:
+        terminal.until(lambda: "> " in terminal.plain, "ancestor import prompt")
+        terminal.evaluate(
+            'let .codex = "GLOBAL_IMPORT_DONE"; "IMPORT_BOUND"', "IMPORT_BOUND"
+        )
+        start = complete(terminal, "fn show() { global .cod")
+        finish_submission(terminal, "; .codex }; show()", "GLOBAL_IMPORT_DONE", start)
+        terminal.key(b"/quit")
+        terminal.send(b"\r")
+        terminal.process.wait(timeout=5)
+        assert terminal.process.returncode == 0
+    finally:
+        terminal.finish(directory / "global.raw")
+    assert source in submitted(directory), submitted(directory)
+    return {"global_import_semantic_terminal_completion": 1}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument(
-        "--case", choices=["paths", "names", "builtins", "keywords"], action="append"
+        "--case",
+        choices=["paths", "names", "builtins", "keywords", "global"],
+        action="append",
     )
     arguments = parser.parse_args()
     assert os.name == "posix", "Use the real ConPTY detail fixture on Windows"
@@ -295,6 +319,7 @@ def main() -> None:
         "names": run_names,
         "builtins": run_builtins,
         "keywords": run_keywords,
+        "global": run_global,
     }
     result: dict[str, int] = {}
     for name in arguments.case or list(runners):

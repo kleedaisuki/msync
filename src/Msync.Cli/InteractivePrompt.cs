@@ -160,6 +160,11 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
 
         protected override Task<TextSpan> GetSpanToReplaceByCompletionAsync(string text, int caret, CancellationToken cancellationToken)
         {
+            if (insight?.IsGlobalImport == true)
+            {
+                var name = NameSyntax.SpanAt(text, caret);
+                return Task.FromResult(new TextSpan(name.Start, name.Length));
+            }
             if (BuiltinCompletion.Find(text, caret, insight) is { } builtin)
             {
                 if (BuiltinCompletion.IncludesDirectoryEntries(builtin) && FindSource(text, caret) is { } physical)
@@ -202,6 +207,15 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
 
         protected override async Task<IReadOnlyList<CompletionItem>> GetCompletionItemsAsync(string text, int caret, TextSpan spanToBeReplaced, CancellationToken cancellationToken)
         {
+            if (insight?.IsGlobalImport == true)
+            {
+                string importPrefix = text[spanToBeReplaced.Start..caret];
+                return insight.Bindings.Where(member => member.Name.StartsWith(importPrefix, StringComparison.Ordinal))
+                    .OrderBy(member => member.Name, TextSemantics.Ordinal)
+                    .Select(member => new CaretCompletionItem(member.Name,
+                        getExtendedDescription: _ => Task.FromResult<FormattedString>(member.Signature)))
+                    .ToArray();
+            }
             if (BuiltinCompletion.Find(text, caret, insight) is { } builtin)
             {
                 List<CompletionItem> builtinItems = BuiltinCompletion.Complete(builtin, Environment.CurrentDirectory)

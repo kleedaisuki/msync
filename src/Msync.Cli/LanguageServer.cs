@@ -20,7 +20,7 @@ internal sealed partial class LanguageServer(
     private bool hierarchicalDocumentSymbols;
     private bool completionResolveDocumentation;
     private long serverRequest;
-    private static readonly string[] Keywords = ["let", "fn", "scope", "native", "if", "else", "for", "in", "match", "return", "break", "loop", "release", "acquire", "acqrel", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", .. LanguageTypes.Names];
+    private static readonly string[] Keywords = ["let", "global", "fn", "scope", "native", "if", "else", "for", "in", "match", "return", "break", "loop", "release", "acquire", "acqrel", "null", "true", "false", "is", "not", "and", "or", "exists", "decltype", .. LanguageTypes.Names];
 
     private JsonNode? Handle(string method, JsonElement p)
     {
@@ -71,11 +71,15 @@ internal sealed partial class LanguageServer(
         int offset = Offset(document.Source, parameters.GetProperty("position"));
         if (document.Analysis?.IsTypePosition(offset) == true) return TypeCompletions(document.Source, offset);
         context ??= document.Analysis?.At(offset);
+        if (context?.IsGlobalImport == true)
+            return NameCompletions(document.Source, offset,
+                MemberCompletions(context.Bindings, document.Generation, offset, lazyDocumentation));
         JsonArray items = MemberCompletions(CompletionMembers(context), document.Generation, offset, lazyDocumentation);
         if (context?.Receiver is not null && context.ReceiverKind == EditorReceiverKind.Member)
             return NameCompletions(document.Source, offset, items);
         foreach (string keyword in Keywords)
-            items.Add((JsonNode)Completion(keyword, null, null, null, keyword: true));
+            items.Add((JsonNode)Completion(keyword, null, null, keyword == "global"
+                ? "Explicitly import prior definition-time ancestor locations inside a function; no caller or future lookup." : null, keyword: true));
         return NameCompletions(document.Source, offset, items);
     }
 

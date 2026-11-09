@@ -142,11 +142,15 @@ internal static class TerminalHelp
         Code("    source -> destination", color);
         Code("};", color);
         Code("let identity = fn(file: Path) -> Path { file };", color);
+        Code("fn update() { global source; source = ~/another-source; };", color);
         Code("scope Settings { home: ~/.codex, copy: fn(a, b) { a -> b } };", color);
         Code("Settings::copy(Settings::home, ~/backup);", color);
         Console.WriteLine("\nUnannotated parameters are generic and inferred at each call. Functions and");
         Console.WriteLine("Scopes are values and may be anonymous. Scope::member selects a lexical");
         Console.WriteLine("member; Connection::path qualifies a physical path. These are distinct types.");
+        Console.WriteLine("Inside fn, 'global source;' explicitly imports a prior ancestor location.");
+        Console.WriteLine("It shares assignments, not a snapshot; callers and later declarations are");
+        Console.WriteLine("not searched. Existing implicit captures remain valid.");
         Console.WriteLine("Write '-> Type' after the parameter list to constrain the return value.");
         Console.WriteLine("It checks block tails and explicit returns; '-> Path?' also admits Null.");
         Console.WriteLine();
