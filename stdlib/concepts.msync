@@ -85,7 +85,7 @@ concept CompletedProcess {
 # Selected text I/O policy; records and policies own distinct responsibilities.
 concept TextIOPolicy {
     read: fn(path: Path) -> String,
-    lines: fn(path: Path) -> Range < String >,
+    lines: fn(path: Path) -> Range<String>,
     write: fn(path: Path, text: String) -> Null,
     append: fn(path: Path, text: String) -> Null,
 };
@@ -98,13 +98,13 @@ concept TextFile {
 
 # Persistent text chunk policy; append must retain prior chunk snapshots.
 concept TextChunks {
-    append: fn(chunks: Range < String >, text: String) -> Range < String >,
-    build: fn(chunks: Range < String >) -> String,
+    append: fn(chunks: Range<String>, text: String) -> Range<String>,
+    build: fn(chunks: Range<String>) -> String,
 };
 
 # Explicit builder state, with a selected persistent chunk policy.
 concept TextBuffer {
-    chunks: Range < String >,
+    chunks: Range<String>,
     length: Number,
     policy: TextChunks,
 };
@@ -128,6 +128,13 @@ concept PartialOrder {
 # PartialOrder with totality: a <= b or b <= a for every carrier pair.
 concept TotalOrder {
     PartialOrder,
+};
+
+# Strict weak-order policy: irreflexive/transitive less with transitive
+# incomparability. Tree and heap families check its carrier and signature.
+concept StrictOrder {
+    sample?: typename Self,
+    less: fn(left: Self, right: Self) -> Bool,
 };
 
 # One binary operation closed over Self; no additional algebraic law.

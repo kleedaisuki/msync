@@ -18,11 +18,11 @@ PROGRAM: str = r"""
 
 let option = $std::data::Option;
 let present = option::some(3);
-(option::is-some(present) as String) -> ./present.txt;
-(option::is-none(option::none()) as String) -> ./none.txt;
-(option::get-or(option::map(present, fn(value: Number) { value + 1 }), 0)
+(option::is_some(present) as String) -> ./present.txt;
+(option::is_none(option::none()) as String) -> ./none.txt;
+(option::get_or(option::map(present, fn(value: Number) { value + 1 }), 0)
     as String) -> ./map.txt;
-(option::get-or(option::and-then(present,
+(option::get_or(option::and_then(present,
     fn(value: Number) { option::some(value + 2) }), 0) as String)
     -> ./bind.txt;
 let callback_calls = 0;
@@ -30,7 +30,7 @@ option::map(option::none(), fn(value: Number) {
     callback_calls = callback_calls + 1;
     value
 });
-option::and-then(option::none(), fn(value: Number) {
+option::and_then(option::none(), fn(value: Number) {
     callback_calls = callback_calls + 1;
     option::some(value)
 });
@@ -38,8 +38,8 @@ option::filter(option::none(), fn(value: Number) {
     callback_calls = callback_calls + 1;
     true
 });
-option::get-or-else(present, fn { callback_calls = callback_calls + 1; 10 });
-option::or-else(present, fn {
+option::get_or_else(present, fn { callback_calls = callback_calls + 1; 10 });
+option::or_else(present, fn {
     callback_calls = callback_calls + 1;
     option::some(10)
 });
@@ -48,34 +48,34 @@ option::or-else(present, fn {
     fn { "none" })) -> ./fold-some.txt;
 (option::fold(option::none(), fn(value: Number) { value as String },
     fn { "none" })) -> ./fold-none.txt;
-(option::get-or(option::none(), 11) as String)
+(option::get_or(option::none(), 11) as String)
     -> ./default.txt;
-(option::get-or-else(option::none(), fn { 12 }) as String)
+(option::get_or_else(option::none(), fn { 12 }) as String)
     -> ./default-lazy.txt;
-(option::get-or(option::or-else(option::none(), fn { option::some(13) }), 0)
+(option::get_or(option::or_else(option::none(), fn { option::some(13) }), 0)
     as String) -> ./alternative.txt;
-(option::is-some(option::filter(present, fn(value: Number) { value == 3 }))
+(option::is_some(option::filter(present, fn(value: Number) { value == 3 }))
     as String) -> ./filter-yes.txt;
-(option::is-none(option::filter(present, fn(value: Number) { value == 4 }))
+(option::is_none(option::filter(present, fn(value: Number) { value == 4 }))
     as String) -> ./filter-no.txt;
-(option::is-none(option::from-nullable(null)) as String)
+(option::is_none(option::from_nullable(null)) as String)
     -> ./from-null.txt;
-(option::get-or(option::from-nullable(14), 0) as String)
+(option::get_or(option::from_nullable(14), 0) as String)
     -> ./from-value.txt;
-(option::to-nullable(present) as String)
+(option::to_nullable(present) as String)
     -> ./to-value.txt;
-((option::to-nullable(option::none()) is null) as String)
+((option::to_nullable(option::none()) is null) as String)
     -> ./to-null.txt;
 let boxed_null = option::some(null);
-(option::is-some(boxed_null) as String)
+(option::is_some(boxed_null) as String)
     -> ./boxed-null-some.txt;
 (option::fold(boxed_null, fn(value?) { value is null }, fn { false })
     as String) -> ./boxed-null-value.txt;
-(option::get-or(option::flatten(option::some(option::some(15))), 0) as String)
+(option::get_or(option::flatten(option::some(option::some(15))), 0) as String)
     -> ./flatten.txt;
-(option::is-none(option::flatten(option::some(null))) as String)
+(option::is_none(option::flatten(option::some(null))) as String)
     -> ./flatten-null.txt;
-(option::get-or(option::zip-with(option::some(2), option::some(3),
+(option::get_or(option::zip_with(option::some(2), option::some(3),
     fn(left: Number, right: Number) { left + right }), 0) as String)
     -> ./zip-with.txt;
 let paired? = option::zip(option::some("Klee"), option::some(16));
@@ -83,12 +83,12 @@ if paired is not null {
     paired::value::first -> ./zip-first.txt;
     (paired::value::second as String) -> ./zip-second.txt;
 };
-(option::is-none(option::zip(option::none(), option::some(1))) as String)
+(option::is_none(option::zip(option::none(), option::some(1))) as String)
     -> ./zip-none.txt;
 let maybe? = if exists ./input.txt {
     option::some(17)
 } else { null };
-(option::get-or(option::map(maybe, fn(value: Number) { value + 1 }), 0)
+(option::get_or(option::map(maybe, fn(value: Number) { value + 1 }), 0)
     as String) -> ./dynamic.txt;
 """
 
@@ -124,7 +124,7 @@ NEGATIVE: tuple[tuple[str, str, str], ...] = (
     (
         "bind-must-return-option",
         (
-            "$std::data::Option::and-then($std::data::Option::some(3), "
+            "$std::data::Option::and_then($std::data::Option::some(3), "
             "fn(value: Number) { value + 1 });"
         ),
         "Option",
@@ -144,7 +144,7 @@ NEGATIVE: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "not-a-boxed-option",
-        '$std::data::Option::is-some(scope { other: "missing payload" });',
+        '$std::data::Option::is_some(scope { other: "missing payload" });',
         "value",
     ),
 )
@@ -245,10 +245,21 @@ def main() -> None:
             "type_family": "$std::data::Option",
             "binary": str(binary),
             "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
-            "managed_components": {
+            "companion_dlls": {
                 str(path.name): hashlib.sha256(path.read_bytes()).hexdigest()
                 for path in sorted(binary.parent.glob("*.dll"))
             },
+            "managed_msync_components": [
+                path.name
+                for path in sorted(binary.parent.glob("*.dll"))
+                if path.name.lower()
+                in {
+                    "msync.dll",
+                    "msync.core.dll",
+                    "msync.compiler.dll",
+                    "msync.runtime.dll",
+                }
+            ],
             "platform": platform.platform(),
             "levels": levels,
             "staged_program_executions": execute(binary, directory, levels),

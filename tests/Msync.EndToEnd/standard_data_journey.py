@@ -26,9 +26,9 @@ let changed = product::bimap(pair, $std::string::to_uppercase,
     fn(value: Number) { value + 1 });
 changed::first -> ./bimap-first.txt;
 (changed::second as String) -> ./bimap-second.txt;
-product::map-first(pair, $std::string::to_lowercase)::first
+product::map_first(pair, $std::string::to_lowercase)::first
     -> ./map-first.txt;
-(product::map-second(pair, fn(value: Number) { value * 2 })::second
+(product::map_second(pair, fn(value: Number) { value * 2 })::second
     as String) -> ./map-second.txt;
 let swapped = product::swap(pair);
 (swapped::first as String) -> ./swap-first.txt;
@@ -62,62 +62,62 @@ let nullable_pair = product::new(null, true);
 
 let success = result::ok("Klee");
 let failure = result::err("missing");
-(result::is-ok(success) as String) -> ./is-ok.txt;
-(result::is-err(failure) as String) -> ./is-err.txt;
+(result::is_ok(success) as String) -> ./is-ok.txt;
+(result::is_err(failure) as String) -> ./is-err.txt;
 result::fold(success, fn(value: String) { value },
     fn(error: String) { error }) -> ./result-fold.txt;
-result::get-or(result::map(success, $std::string::to_uppercase), "fallback")
+result::get_or(result::map(success, $std::string::to_uppercase), "fallback")
     -> ./result-map.txt;
-result::fold(result::map-error(failure, $std::string::to_uppercase),
+result::fold(result::map_error(failure, $std::string::to_uppercase),
     fn(value: String) { value }, fn(error: String) { error })
     -> ./result-map-error.txt;
 result::fold(result::bimap(failure, $std::string::to_lowercase,
     $std::string::to_uppercase), fn(value: String) { value },
     fn(error: String) { error }) -> ./result-bimap.txt;
-result::get-or(result::and-then(success,
+result::get_or(result::and_then(success,
     fn(value: String) { result::ok($std::string::concat(value, "!")) }),
     "fallback") -> ./result-bind.txt;
-result::get-or(result::or-else(failure,
+result::get_or(result::or_else(failure,
     fn(error: String) { result::ok($std::string::concat("recovered:", error)) }),
     "fallback") -> ./result-recover.txt;
-result::get-or(failure, "default") -> ./result-default.txt;
-result::get-or-else(failure,
+result::get_or(failure, "default") -> ./result-default.txt;
+result::get_or_else(failure,
     fn(error: String) { $std::string::concat("lazy:", error) })
     -> ./result-default-lazy.txt;
-option::get-or(result::to-option(success), "fallback")
+option::get_or(result::to_option(success), "fallback")
     -> ./result-to-option.txt;
-(option::is-none(result::to-option(failure)) as String)
+(option::is_none(result::to_option(failure)) as String)
     -> ./result-to-none.txt;
-option::get-or(result::error-option(failure), "fallback")
+option::get_or(result::error_option(failure), "fallback")
     -> ./result-error-option.txt;
-result::get-or(result::from-option(option::some("available"), "missing"),
+result::get_or(result::from_option(option::some("available"), "missing"),
     "fallback") -> ./result-from-option.txt;
-result::fold(result::from-option(null, "absent"),
+result::fold(result::from_option(null, "absent"),
     fn(value: String) { value }, fn(error: String) { error })
     -> ./result-from-none.txt;
-result::get-or(result::flatten(result::ok(result::ok("nested"))),
+result::get_or(result::flatten(result::ok(result::ok("nested"))),
     "fallback") -> ./result-flatten.txt;
 result::fold(result::zip(result::ok("joined"), result::ok(5)),
     fn(value: $std::concepts::Product) {
         $std::string::concat(value::first, value::second as String)
     }, fn(error: String) { error }) -> ./result-zip.txt;
-(result::get-or(result::zip-with(result::ok(2), result::ok(3),
+(result::get_or(result::zip_with(result::ok(2), result::ok(3),
     fn(first: Number, second: Number) { first + second }), 0) as String)
     -> ./result-zip-with.txt;
 let skipped = 0;
 result::map(failure, fn(value: String) {
     skipped = skipped + 1; value
 });
-result::and-then(failure, fn(value: String) {
+result::and_then(failure, fn(value: String) {
     skipped = skipped + 1; result::ok(value)
 });
-result::map-error(success, fn(error: String) {
+result::map_error(success, fn(error: String) {
     skipped = skipped + 1; error
 });
-result::or-else(success, fn(error: String) {
+result::or_else(success, fn(error: String) {
     skipped = skipped + 1; result::ok(error)
 });
-result::get-or-else(success, fn(error: String) {
+result::get_or_else(success, fn(error: String) {
     skipped = skipped + 1; error
 });
 (skipped as String) -> ./skipped.txt;
@@ -126,18 +126,18 @@ result::get-or-else(success, fn(error: String) {
 
 let left = either::left("left");
 let right = either::right(7);
-(either::is-left(left) as String) -> ./is-left.txt;
-(either::is-right(right) as String) -> ./is-right.txt;
-either::fold(either::map-left(left, $std::string::to_uppercase),
+(either::is_left(left) as String) -> ./is-left.txt;
+(either::is_right(right) as String) -> ./is-right.txt;
+either::fold(either::map_left(left, $std::string::to_uppercase),
     fn(value: String) { value }, fn(value: Number) { value as String })
     -> ./either-map-left.txt;
-either::fold(either::map-right(right, fn(value: Number) { value + 1 }),
+either::fold(either::map_right(right, fn(value: Number) { value + 1 }),
     fn(value: String) { value }, fn(value: Number) { value as String })
     -> ./either-map-right.txt;
 either::fold(either::bimap(left, $std::string::to_uppercase,
     fn(value: Number) { value + 1 }), fn(value: String) { value },
     fn(value: Number) { value as String }) -> ./either-bimap.txt;
-(either::is-right(either::swap(left)) as String) -> ./either-swap.txt;
+(either::is_right(either::swap(left)) as String) -> ./either-swap.txt;
 (either::merge(right) as String) -> ./either-merge.txt;
 """
 
@@ -211,7 +211,7 @@ NEGATIVE: tuple[tuple[str, str, str], ...] = (
     ("missing-product-field", "$std::data::Pair::swap(scope { first: 1 });", "second"),
     (
         "wrong-product-callback",
-        '$std::data::Pair::map-first($std::data::Pair::new("text", 1), fn(value: Number) { value + 1 });',
+        '$std::data::Pair::map_first($std::data::Pair::new("text", 1), fn(value: Number) { value + 1 });',
         "Number",
     ),
     (
@@ -221,12 +221,12 @@ NEGATIVE: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "invalid-result-bind",
-        "$std::data::Result::and-then($std::data::Result::ok(1), fn(value: Number) { value + 1 });",
+        "$std::data::Result::and_then($std::data::Result::ok(1), fn(value: Number) { value + 1 });",
         "Result",
     ),
     (
         "invalid-result-shape",
-        "$std::data::Result::is-ok(scope { other: true });",
+        "$std::data::Result::is_ok(scope { other: true });",
         "fold",
     ),
     (
