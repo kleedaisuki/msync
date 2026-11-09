@@ -93,7 +93,7 @@ internal sealed partial class SemanticAnalyzer
         SemanticValue result = value;
         if (hir.Types[type.Value].Shape != hir.Types[value.Type.Value].Shape
             || type != value.Type && !hir.Types[type.Value].Alternatives.IsDefaultOrEmpty)
-            result = ValueForType(type) with { Location = value.Location, Origin = value.Origin };
+            result = RetypeFlowValue(value, type, []);
         result = result with { Type = type, Literal = fact.Boolean is { } boolean
             ? new(HirLiteralKind.Bool, Boolean: boolean) : null,
             DenotedType = fact.Denotations is { Types.Length: 1 } denotations ? denotations.Types[0] : null,
@@ -136,5 +136,24 @@ internal sealed partial class SemanticAnalyzer
             }).ToImmutableArray() };
         context.Values[location] = result;
         return result;
+    }
+
+    private SemanticValue RetypeFlowValue(SemanticValue value, HirTypeId type, HashSet<int> active)
+    {
+        SemanticValue projected = ValueForType(type);
+        if (projected.Scope is not { } shape)
+            return value with { Type = type, Literal = null, DenotedType = null, Observation = null };
+        if (value.Scope is not { } existing)
+            return projected with { Location = value.Location, Origin = value.Origin };
+        if (existing.Region >= 0 && !active.Add(existing.Region)) return value with { Type = type };
+        var fields = shape.Fields;
+        foreach (var (name, target) in shape.Fields)
+            if (existing.Fields.TryGetValue(name, out var previous) && Runtime(target).Accepts(Runtime(previous)))
+                fields = fields.SetItem(name, RetypeFlowValue(previous, target.Type, active));
+        if (existing.Region >= 0) active.Remove(existing.Region);
+        return value with { Type = type, Literal = null, DenotedType = null, Observation = null,
+            Scope = existing with { Layout = shape.Layout, Fields = fields,
+                Locations = existing.Locations.Where(pair => fields.ContainsKey(pair.Key))
+                    .ToImmutableDictionary(StringComparer.Ordinal) } };
     }
 }

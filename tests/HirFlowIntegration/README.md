@@ -19,6 +19,14 @@ For a changed contract, `-- --case 'source substring'` selects matching programs
 without changing the default suite. For example, `--case 'let state = scope'`
 selects the three direct, aliased and nested mutable-field journeys.
 
+Type-valued loop variables carry finite canonical denotation sets, independently
+of their runtime `Type` kind. Dynamic `is` targets remain evaluated expressions;
+only a statically unique target supplies an ordinary value-type refinement.
+Unresolved pure projection is intersected with the binding's fixed storage
+constraint, rather than turning an established Number into an apparent nullable
+value. Uninitialized standard-module cells are unassigned facts, not complete
+Scope schemas.
+
 Logical binding cells and object fields have different invalidation domains.
 A known field write changes its field cell, not every private local that happens
 to reference a Scope. Unknown calls conservatively invalidate mutable captured

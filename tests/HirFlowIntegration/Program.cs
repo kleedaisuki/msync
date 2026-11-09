@@ -25,6 +25,9 @@ await Number("let changed = false; let value: Scope = scope { item: scope { firs
 await Number("let value: Scope = scope { item: 1, tag: 1 }; for item in [1, 2, 3] { value = scope { item: value, tag: 8 }; }; value::tag", 8);
 await Number("let changed = false; let represented = Number; loop { if changed { if 3 is represented { break 1; } else { break 7; } } else { represented = String; changed = true; } }", 7);
 await Number("let count = 0; for represented in [Number, String] { if represented is Number { count = count + 1; } }; count", 1);
+const string buffer = "native fn buffer_new(values: Range) -> Range; native fn buffer_get(values: Range, index: Number) -> Number;";
+await Number(buffer + "let changed = false; let value: Scope = scope { items: buffer_new([4]), first: true }; loop { if changed { break buffer_get(value::items, 0); } else { value = scope { items: value::items, second: false }; changed = true; } }", 4);
+await Number(buffer + "let old = buffer_new([1]); let changed = false; let value: Scope = scope { items: old, first: true }; loop { if changed { break buffer_get(value::items, 0) + buffer_get(old, 0); } else { value = scope { items: buffer_new([7]), second: false }; changed = true; } }", 8);
 Console.WriteLine($"PASS {checks} structured-flow artifact journeys");
 
 async Task Number(string source, double expected)
