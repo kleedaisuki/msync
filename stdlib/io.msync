@@ -43,3 +43,171 @@ fn read_symlink(path: Path | String) { $std::fs::read_symlink(path) };
 fn copy_symlink(source: Path | String, destination: Path | String) {
     $std::fs::copy_symlink(source, destination)
 };
+
+# Named operation families share code; instances contain data and explicit policy.
+scope NativeText {
+    read: fn(path: Path) -> String { read_text(path) },
+    lines: fn(path: Path) -> Range<String> { read_lines(path) },
+    write: fn(path: Path, text: String) -> Null {
+        write_text(path, text)
+    },
+    append: fn(path: Path, text: String) -> Null {
+        append_text(path, text)
+    },
+};
+
+scope File {
+    with-policy: fn(path: Path | String,
+        policy: $std::concepts::TextIOPolicy) {
+        scope { path: path as Path, policy: policy }
+    },
+    new: fn(path: Path | String) { with-policy(path, NativeText) },
+    name: fn(self: $std::concepts::PathRecord) {
+        $std::path::filename(self::path)
+    },
+    extension: fn(self: $std::concepts::PathRecord) {
+        $std::path::extension(self::path)
+    },
+    parent: fn(self: $std::concepts::PathRecord) {
+        $std::path::parent_path(self::path)
+    },
+    exists: fn(self: $std::concepts::PathRecord) {
+        $std::fs::exists(self::path)
+    },
+    status: fn(self: $std::concepts::PathRecord) {
+        $std::fs::status(self::path)
+    },
+    size: fn(self: $std::concepts::PathRecord) {
+        file_size(self::path)
+    },
+    read-text: fn(self: $std::concepts::TextFile) {
+        self::policy::read(self::path)
+    },
+    write: fn(self: $std::concepts::TextFile, text: String) {
+        self::policy::write(self::path, text)
+    },
+    append: fn(self: $std::concepts::TextFile, text: String) {
+        self::policy::append(self::path, text)
+    },
+    read-lines: fn(self: $std::concepts::TextFile) {
+        self::policy::lines(self::path)
+    },
+    read-bytes: fn(self: $std::concepts::PathRecord) {
+        read_bytes(self::path)
+    },
+    write-bytes: fn(self: $std::concepts::PathRecord, bytes: Range<Number>) {
+        write_bytes(self::path, bytes)
+    },
+    append-bytes: fn(self: $std::concepts::PathRecord, bytes: Range<Number>) {
+        append_bytes(self::path, bytes)
+    },
+    copy-to: fn(self: $std::concepts::PathRecord,
+        destination: Path | String) {
+        self::path -> destination
+    },
+    move-to: fn(self: $std::concepts::PathRecord,
+        destination: Path | String) {
+        let target = destination as Path;
+        $std::fs::rename(self::path, target);
+        self::path = target;
+    },
+    remove: fn(self: $std::concepts::PathRecord) {
+        $std::fs::remove(self::path)
+    },
+    readonly: fn(self: $std::concepts::PathRecord) {
+        $std::fs::is_readonly(self::path)
+    },
+    set-readonly: fn(self: $std::concepts::PathRecord, value: Bool) {
+        $std::fs::set_readonly(self::path, value)
+    },
+    hard-link: fn(self: $std::concepts::PathRecord,
+        destination: Path | String) {
+        $std::fs::create_hard-link(self::path, destination)
+    },
+    symbolic-link: fn(self: $std::concepts::PathRecord,
+        destination: Path | String) {
+        $std::fs::create_symlink(self::path, destination)
+    },
+};
+
+scope Directory {
+    new: fn(path: Path | String) { scope { path: path as Path } },
+    name: fn(self: $std::concepts::PathRecord) {
+        $std::path::filename(self::path)
+    },
+    parent: fn(self: $std::concepts::PathRecord) {
+        $std::path::parent_path(self::path)
+    },
+    child: fn(self: $std::concepts::PathRecord, name: Path | String) {
+        $std::path::join(self::path, name)
+    },
+    file: fn(self: $std::concepts::PathRecord, name: Path | String) {
+        File::new($std::path::join(self::path, name))
+    },
+    exists: fn(self: $std::concepts::PathRecord) {
+        $std::fs::is_directory(self::path)
+    },
+    create: fn(self: $std::concepts::PathRecord) {
+        $std::fs::create_directories(self::path)
+    },
+    entries: fn(self: $std::concepts::PathRecord) {
+        $std::fs::directory_iterator(self::path)
+    },
+    walk: fn(self: $std::concepts::PathRecord) {
+        $std::fs::recursive_directory_iterator(self::path)
+    },
+    files: fn(self: $std::concepts::PathRecord) {
+        $std::ranges::filter($std::fs::directory_iterator(self::path),
+            fn(entry: Path) { $std::fs::is_regular_file(entry) })
+    },
+    directories: fn(self: $std::concepts::PathRecord) {
+        $std::ranges::filter($std::fs::directory_iterator(self::path),
+            fn(entry: Path) { $std::fs::is_directory(entry) })
+    },
+    matching: fn(self: $std::concepts::PathRecord, predicate: Function) {
+        $std::ranges::filter($std::fs::directory_iterator(self::path),
+            predicate)
+    },
+    snapshot: fn(self: $std::concepts::PathRecord) {
+        $std::ranges::materialize($std::fs::directory_iterator(self::path))
+    },
+    copy-to: fn(self: $std::concepts::PathRecord,
+        destination: Path | String) {
+        self::path -> destination
+    },
+    move-to: fn(self: $std::concepts::PathRecord,
+        destination: Path | String) {
+        let target = destination as Path;
+        $std::fs::rename(self::path, target);
+        self::path = target;
+    },
+    remove: fn(self: $std::concepts::PathRecord) {
+        $std::fs::remove(self::path)
+    },
+    remove-all: fn(self: $std::concepts::PathRecord) {
+        $std::fs::remove_all(self::path)
+    },
+};
+
+# Canonical function spellings retain the same callable identities.
+let read-text = read_text;
+let read-lines = read_lines;
+let read-bytes = read_bytes;
+let write-text = write_text;
+let append-text = append_text;
+let write-bytes = write_bytes;
+let append-bytes = append_bytes;
+let file-size = file_size;
+let symlink-status = symlink_status;
+let is-regular-file = is_regular_file;
+let is-directory = is_directory;
+let is-symlink = is_symlink;
+let is-empty = is_empty;
+let create-directory = create_directory;
+let create-directories = create_directories;
+let remove-all = remove_all;
+let create-hard-link = create_hard_link;
+let create-symlink = create_symlink;
+let create-directory-symlink = create_directory_symlink;
+let read-symlink = read_symlink;
+let copy-symlink = copy_symlink;

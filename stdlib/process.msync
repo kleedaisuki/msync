@@ -27,3 +27,89 @@ fn run_input(executable: Path | String, arguments: Range, input: String) {
     let process = spawn(executable, arguments);
     communicate(process, input)
 };
+
+# The reusable operation dictionary captures the native/source primitives once.
+scope NativeProcess {
+    wait: wait,
+    stdout: stdout,
+    stderr: stderr,
+    exit-code: exit_code,
+    success: success,
+    spawn: spawn,
+    run: run,
+    run-input: run_input,
+};
+
+# Completed data retains the actual Process and owns its captured output strings.
+scope Completed {
+    new: fn(process: Process) {
+        let value = NativeProcess::wait(process);
+        scope {
+            process: value,
+            output: NativeProcess::stdout(value),
+            error: NativeProcess::stderr(value),
+            code: NativeProcess::exit-code(value),
+            success: NativeProcess::success(value),
+        }
+    },
+    lines: fn(self: $std::concepts::CompletedProcess) {
+        $std::string::lines(self::output)
+    },
+    error-lines: fn(self: $std::concepts::CompletedProcess) {
+        $std::string::lines(self::error)
+    },
+    write-to: fn(self: $std::concepts::CompletedProcess,
+        destination: Path | String) {
+        $std::io::write_text(destination, self::output)
+    },
+};
+
+# Construction snapshots argument data without starting or observing a process.
+scope Command {
+    new: fn(executable: Path | String, arguments: Range) {
+        scope {
+            executable: executable as Path,
+            arguments: $std::ranges::materialize(arguments),
+        }
+    },
+    with-args: fn(self: $std::concepts::CommandSpec, values: Range) {
+        new(self::executable, values)
+    },
+    append-args: fn(self: $std::concepts::CommandSpec, values: Range) {
+        new(self::executable,
+            $std::ranges::concat(self::arguments, values))
+    },
+    on: fn(self: $std::concepts::CommandSpec, connection: Connection) {
+        new(self::executable @ connection, self::arguments)
+    },
+    spawn: fn(self: $std::concepts::CommandSpec) {
+        NativeProcess::spawn(self::executable, self::arguments)
+    },
+    run: fn(self: $std::concepts::CommandSpec) {
+        NativeProcess::run(self::executable, self::arguments)
+    },
+    run-input: fn(self: $std::concepts::CommandSpec, input: String) {
+        NativeProcess::run-input(self::executable, self::arguments, input)
+    },
+    capture: fn(self: $std::concepts::CommandSpec) {
+        Completed::new(NativeProcess::run(self::executable, self::arguments))
+    },
+    capture-input: fn(self: $std::concepts::CommandSpec, input: String) {
+        Completed::new(NativeProcess::run-input(
+            self::executable, self::arguments, input))
+    },
+    output: fn(self: $std::concepts::CommandSpec) {
+        NativeProcess::stdout(
+            NativeProcess::run(self::executable, self::arguments))
+    },
+    lines: fn(self: $std::concepts::CommandSpec) {
+        $std::string::lines(NativeProcess::stdout(
+            NativeProcess::run(self::executable, self::arguments)))
+    },
+};
+
+# Canonical function spellings retain the same callable identities.
+let write-stdin = write_stdin;
+let close-stdin = close_stdin;
+let exit-code = exit_code;
+let run-input = run_input;
