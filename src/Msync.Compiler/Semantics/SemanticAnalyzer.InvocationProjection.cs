@@ -66,6 +66,7 @@ internal sealed partial class SemanticAnalyzer
             : (caller.Queries ??= new()).Singletons;
         private readonly Dictionary<HirLocationId, SemanticValue> origins = [];
         private readonly Dictionary<SemanticValue, SemanticValue> values = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<SemanticCallable, SemanticCallable> callables = new(ReferenceEqualityComparer.Instance);
         private readonly HashSet<(SemanticValue Formal, SemanticValue Actual)> bound = new(new ValuePairComparer());
         public Dictionary<HirLocationId, HirLocationId> Locations { get; } = [];
 
@@ -155,8 +156,12 @@ internal sealed partial class SemanticAnalyzer
 
         public SemanticValue Project(SemanticValue value)
         {
+            if (value.Node == HirNodeId.None && value.Location is null && value.Origin is null
+                && IsScalarSchema(value) && value.OpenSessionCalls.IsDefaultOrEmpty) return value;
             if (values.TryGetValue(value, out var previous)) return previous;
-            var result = value with { Node = HirNodeId.None, Location = null, Origin = null, DeferredEffects = [] };
+            var result = value.Node == HirNodeId.None && value.Location is null && value.Origin is null
+                && value.DeferredEffects.IsDefaultOrEmpty ? value
+                : value with { Node = HirNodeId.None, Location = null, Origin = null, DeferredEffects = [] };
             if (value.Origin is { } origin && origins.TryGetValue(origin.Root, out var actual))
             {
                 bool found = true;
@@ -220,24 +225,24 @@ internal sealed partial class SemanticAnalyzer
                 }
                 values[value] = result;
             }
-            if (value.Element is { } element) result = result with { Element = Project(element) };
+            if (value.Element is { } element)
+            {
+                var projected = Project(element);
+                if (!ReferenceEquals(projected, element)) result = result with { Element = projected };
+            }
             if (!value.Callables.IsDefaultOrEmpty)
-                result = result with { Callables = value.Callables.Select(callable => callable with
-                {
-                    Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture => capture with
-                    { Source = MapLocation(capture.Source), Value = Project(capture.Value) }).ToImmutableArray()
-                }).ToImmutableArray() };
+            {
+                var projected = ProjectCallables(value.Callables);
+                if (projected != value.Callables) result = result with { Callables = projected };
+            }
             if (value.FutureCallableDomain is { } future)
-                result = result with { FutureCallableDomain = new(MapLocation(future.Owner),
-                    future.Choices.Select(callable => callable with
-                    {
-                        Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture => capture with
-                        { Source = MapLocation(capture.Source), Value = Project(capture.Value) }).ToImmutableArray()
-                    }).ToImmutableArray(), future.Current.IsDefault ? default : future.Current.Select(callable => callable with
-                    {
-                        Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture => capture with
-                        { Source = MapLocation(capture.Source), Value = Project(capture.Value) }).ToImmutableArray()
-                    }).ToImmutableArray()) };
+            {
+                var location = MapLocation(future.Owner);
+                var choices = ProjectCallables(future.Choices);
+                var current = ProjectCallables(future.Current);
+                if (location != future.Owner || choices != future.Choices || current != future.Current)
+                    result = result with { FutureCallableDomain = new(location, choices, current) };
+            }
             if (!value.Alternatives.IsDefaultOrEmpty)
                 result = result with { Alternatives = value.Alternatives.Select(Project).ToImmutableArray() };
             if (value.IndexedRegion is { } indexed)
@@ -258,6 +263,48 @@ internal sealed partial class SemanticAnalyzer
                     Arguments = [.. binding.Arguments.Select(source => source is null ? null : source with { Root = MapLocation(source.Root) })]
                 })] };
             values[value] = result;
+            return result;
+        }
+
+        private ImmutableArray<SemanticCallable> ProjectCallables(ImmutableArray<SemanticCallable> source)
+        {
+            if (source.IsDefaultOrEmpty) return source;
+            ImmutableArray<SemanticCallable>.Builder? result = null;
+            for (int index = 0; index < source.Length; index++)
+            {
+                var original = source[index];
+                var projected = ProjectCallable(original);
+                if (result is null && !ReferenceEquals(original, projected))
+                {
+                    result = ImmutableArray.CreateBuilder<SemanticCallable>(source.Length);
+                    for (int previous = 0; previous < index; previous++) result.Add(source[previous]);
+                }
+                result?.Add(projected);
+            }
+            return result is null ? source : result.MoveToImmutable();
+        }
+
+        private SemanticCallable ProjectCallable(SemanticCallable source)
+        {
+            if (source.Captures.IsDefaultOrEmpty) return source;
+            if (callables.TryGetValue(source, out var known)) return known;
+            ImmutableArray<SemanticCapture>.Builder? captures = null;
+            for (int index = 0; index < source.Captures.Length; index++)
+            {
+                var original = source.Captures[index];
+                var location = MapLocation(original.Source);
+                var value = Project(original.Value);
+                var projected = location == original.Source && ReferenceEquals(value, original.Value)
+                    ? original : original with { Source = location, Value = value };
+                if (captures is null && !ReferenceEquals(original, projected))
+                {
+                    captures = ImmutableArray.CreateBuilder<SemanticCapture>(source.Captures.Length);
+                    for (int previous = 0; previous < index; previous++) captures.Add(source.Captures[previous]);
+                }
+                captures?.Add(projected);
+            }
+            var result = captures is null ? source : source with { Captures = captures.MoveToImmutable() };
+            callables[source] = result;
             return result;
         }
 

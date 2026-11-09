@@ -122,6 +122,14 @@ shared captured-field identity, distinct factory instances, alias-sensitive
 flow, returned closure environments and repeated indexed-read aliases (14
 assertions, including conversion and fixed nullable-carrier controls).
 
+Invocation projection similarly reuses completed callable rewrites for one
+invocation, using reference identity so distinct captured flow snapshots are
+not collapsed. Capture and callable arrays are rebuilt only when a projected
+item changes; native callables and unchanged scalar leaves remain shared.
+Frozen16 repeats the same 14 semantic assertions after combining projection
+sharing with role interning and enrichment changes. The combined candidate's
+cost observation cannot be attributed to projection alone.
+
 ## Work ownership
 
 The compiler team owns semantic contracts, binding, specialization and lowering.
