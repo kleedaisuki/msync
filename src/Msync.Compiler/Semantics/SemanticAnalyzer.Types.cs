@@ -184,6 +184,16 @@ internal sealed partial class SemanticAnalyzer
         var description = hir.Types[type.Value];
         SemanticValue value = new(type, HirNodeId.None);
         visited[type] = value;
+        if (!description.Alternatives.IsDefaultOrEmpty)
+        {
+            SemanticValue? joined = null;
+            foreach (HirTypeId alternative in description.Alternatives)
+            {
+                SemanticValue item = ValueForType(alternative, visited);
+                joined = joined is null ? item : Join(joined, item);
+            }
+            value = joined! with { Type = type };
+        }
         if (description.Shape >= 0)
         {
             var fields = hir.ScopeLayouts[description.Shape].Fields.ToImmutableDictionary(

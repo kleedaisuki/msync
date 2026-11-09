@@ -8,24 +8,29 @@ namespace Msync.Compiler.Semantics;
 
 internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObservationBuilder? observations = null)
 {
-    private readonly HirBuilder hir = program.Hir;
+    private readonly SemanticArena hir = new(program.Hir);
     private readonly int boundNodeCount = program.Hir.Nodes.Count;
     private int nextRegion;
 
-    internal HirModule Analyze()
+    internal SemanticContext FinalState => entryState ?? throw new InvalidOperationException("No semantic generation has been analyzed.");
+
+    internal HirModule Analyze(SemanticContext? seed = null)
     {
-        SemanticContext context = new(program.Entry);
+        SemanticOutput output = new(program.Hir);
+        SemanticContext context = new(program.Entry, output, seed);
+        nextRegion = seed?.NextRegion ?? 0;
         entryState = context;
         SemanticValue body = Analyze(program.Body, context);
         foreach (var returned in context.Returns) body = Join(body, returned);
         if (entryPrelude.Count != 0)
         {
             entryPrelude.Add(body.Node);
-            body = body with { Node = hir.Add(HirKind.Block, body.Type,
+            body = body with { Node = output.Add(HirKind.Block, body.Type,
                 program.Node(program.Body).Source, System.Runtime.InteropServices.CollectionsMarshal.AsSpan(entryPrelude)) };
         }
-        hir.Functions[program.Entry.Value] = new("<main>", [], [], body.Type, body.Node);
-        return hir.Freeze(program.Entry);
+        output.SealFunction(program.Entry, new("<main>", [], [], body.Type, body.Node));
+        context.NextRegion = nextRegion;
+        return HirSealer.Seal(output.Freeze(program.Entry, program.IsSession));
     }
 
     private SemanticValue Analyze(HirNodeId id, SemanticContext context)
@@ -37,7 +42,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         {
             HirKind.Literal => Literal(node, context),
             HirKind.NativeFunction => NativeFunction(node, context),
-            HirKind.ReadLocation or HirKind.ReadStorage => Read(node, context),
+            HirKind.ReadLocation or HirKind.ReadStorage => Read(id, node, context),
             HirKind.Declare => Declare(node, children, context),
             HirKind.Assign => Assign(node, children, context),
             HirKind.Discard => Discard(node, children, context),
@@ -47,7 +52,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
             HirKind.Range or HirKind.LazyRange => Range(node, children, context),
             HirKind.Call => Call(node, children, context),
             HirKind.If or HirKind.Match or HirKind.For or HirKind.Loop
-                or HirKind.Break or HirKind.Return or HirKind.Barrier => Control(node, children, context),
+                or HirKind.Break or HirKind.Return or HirKind.Barrier => Control(id, node, children, context),
             _ => Operation(node, children, context)
         };
         observations?.RecordNode(id, value, context);
@@ -61,7 +66,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         new(hir.Type(TypeRef.Function), Add(node, hir.Type(TypeRef.Function), [], context),
             Callables: [new(NativeName: node.Text)]);
 
-    private SemanticValue Read(HirNode node, SemanticContext context)
+    private SemanticValue Read(HirNodeId id, HirNode node, SemanticContext context)
     {
         if (StandardDeclaration(new(node.Data)) is { } imported)
         {
@@ -74,12 +79,13 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         HirLocationId location = context.Location(new(node.Data));
         SemanticValue value = context.Values.TryGetValue(location, out var current)
             ? current : new(Resolve(hir.Locations[location.Value].StorageType, context), HirNodeId.None);
+        value = FlowRead(id, location, value, context);
         if (value.Scope is { } scope && context.Objects.TryGetValue(scope.Region, out var active))
         {
             if (active.Initializing) throw Error(node.Source, "A named Scope cannot be read before its initialization completes.", "E0211");
             value = value with { Scope = active };
         }
-        HirTypeId type = context.DeferredReads && !Stable(location)
+        HirTypeId type = context.DeferredReads && !Stable(new(node.Data))
             ? context.Storage.GetValueOrDefault(location, hir.Locations[location.Value].StorageType) : value.Type;
         return value with { Type = type, Node = Add(node with { Data = location.Value }, type, [], context), Location = location };
     }
@@ -97,7 +103,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         value = Convert(value, type, node.Source, context);
         context.Storage[location] = type;
         context.Values[location] = value;
-        if (context.Publish) hir.Locations[location.Value] = hir.Locations[location.Value] with { StorageType = type };
+        context.Output?.SetLocation(location, hir.Locations[location.Value] with { StorageType = type });
         var declaredNode = Add(node with { Data = location.Value }, hir.Type(TypeRef.Null), [value.Node], context);
         return new(hir.Type(TypeRef.Null), declaredNode);
     }
@@ -110,6 +116,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         Require(value, target, node.Source, allowImplicit: true, context);
         value = Convert(value, target, node.Source, context);
         context.Values[location] = value;
+        context.CellWrites.Add(location);
         return new(hir.Type(TypeRef.Null), Add(node with { Data = location.Value }, hir.Type(TypeRef.Null), [value.Node], context));
     }
 
@@ -133,7 +140,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
 
     private HirNodeId Add(HirNode source, HirTypeId type, ReadOnlySpan<HirNodeId> children,
         SemanticContext context) => context.Publish
-            ? hir.Add(source.Kind, type, source.Source, children, source.Data, source.Text, source.Effects)
+            ? context.Output!.Add(source.Kind, type, source.Source, children, source.Data, source.Text, source.Effects)
             : HirNodeId.None;
 
     private TypeRef Runtime(SemanticValue value) => hir.Types[value.Type.Value].RuntimeType;
@@ -144,7 +151,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
     }
     private HirTypeId Nullable(HirTypeId type) => hir.Type(hir.Types[type.Value] with { RuntimeType = hir.Types[type.Value].RuntimeType.WithNull });
     private bool IsEditor => observations is not null;
-    private bool Stable(HirLocationId location) => false;
+    private bool Stable(HirLocationId location) => program.IsStable(location);
 
     private CompileException Error(HirSourceRange source, string message, string code = "E0200")
     {

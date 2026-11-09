@@ -21,7 +21,7 @@ internal sealed partial class SourceBinder
         var values = Expression(loop.Source);
         var outer = scope;
         scope = new(outer, Range(loop.Body.Span), outer.Template);
-        HirLoopId id = new(nextLoop++);
+        HirLoopId id = new(program.NextLoop++);
         loops.Push(id);
         try
         {
@@ -42,7 +42,7 @@ internal sealed partial class SourceBinder
 
     private HirNodeId Loop(LoopExpr loop)
     {
-        HirLoopId id = new(nextLoop++);
+        HirLoopId id = new(program.NextLoop++);
         loops.Push(id);
         try { return Node(HirKind.Loop, OpenType("break"), loop.Span, [Block(loop.Body)], id.Value); }
         finally { loops.Pop(); }

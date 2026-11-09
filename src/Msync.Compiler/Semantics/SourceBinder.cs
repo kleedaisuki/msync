@@ -31,25 +31,31 @@ internal sealed partial class SourceBinder
     private readonly BoundProgram program;
     private readonly bool observations;
     private readonly bool editorMode;
+    private readonly bool incremental;
     private HirSourceId source;
     private string sourceName = "<source>";
     private string sourceText = "";
     private string? nativeModule;
     private Environment scope = null!;
     private Environment? annotationScope;
-    private int nextTypeParameter;
-    private int nextSingleton;
-    private int nextLoop;
+    private StandardBindingDemand? standardDemand;
     private readonly Stack<HirLoopId> loops = [];
+    private readonly Queue<string> pendingModules = new();
 
     public SourceBinder(HirBuilder? builder = null, bool observations = false, bool editorMode = false, bool isSession = false)
     {
         hir = builder ?? new();
         program = new(hir);
-        program.BindModule = BindStandardModule;
         program.IsSession = isSession;
         this.observations = observations;
         this.editorMode = editorMode;
+    }
+
+    public SourceBinder(BoundProgram previous, bool observations = false, bool editorMode = false)
+        : this(previous.Hir, observations, editorMode, isSession: true)
+    {
+        program.Inherit(previous);
+        incremental = true;
     }
 
     public BoundProgram Bind(string text, string name = "<source>", Document? document = null)
@@ -62,15 +68,27 @@ internal sealed partial class SourceBinder
         }
         sourceText = text;
         sourceName = name;
+        if (!program.IsSession && !editorMode && text.Contains('$'))
+            standardDemand = new(document, StandardLibraries.Value);
         source = new(hir.Sources.Count);
         hir.Sources.Add(new(name, text));
-        program.Entry = new(hir.Functions.Count);
-        hir.Functions.Add(new("<main>", [], [], hir.Type(TypeRef.Any), new(-1), IsOpen: true));
+        if (!incremental)
+        {
+            program.Entry = new(hir.Functions.Count);
+            hir.Functions.Add(new("<main>", [], [], hir.Type(TypeRef.Any), new(-1), IsOpen: true));
+        }
         scope = new(null, Range(document.Span), null, includesEnd: true);
+        if (incremental)
+        {
+            scope.Values = program.Exports;
+            scope.Concepts = program.RootConcepts;
+        }
         program.Body = Statements(document.Statements, document.Span);
-        hir.Functions[program.Entry.Value] = hir.Functions[program.Entry.Value] with { Body = program.Body };
+        hir.SetFunction(program.Entry, hir.Functions[program.Entry.Value] with { Body = program.Body });
         program.Exports = scope.Values;
-        foreach (var (export, location) in scope.Values) hir.Exports.Add(new(export, location));
+        program.RootConcepts = scope.Concepts;
+        hir.SetExports(scope.Values.Select(pair => new HirExport(pair.Key, pair.Value)));
+        SealStandardBindings();
         return program;
     }
 
@@ -89,7 +107,9 @@ internal sealed partial class SourceBinder
         annotationScope = null;
         try
         {
-            var initializers = library.Document.Statements.Select(Statement).ToArray();
+            var statements = name == "concepts" ? library.Document.Statements
+                : standardDemand?.Declarations(name, library.Document) ?? library.Document.Statements;
+            var initializers = statements.Select(Statement).ToArray();
             var fields = scope.Values.Values.ToImmutableArray();
             int layout = hir.ScopeLayouts.Count;
             hir.ScopeLayouts.Add(new(fields.Select(location => new HirField(
@@ -116,24 +136,44 @@ internal sealed partial class SourceBinder
     {
         if (module.Length != 0 && !StandardLibraries.Value.ContainsKey(module))
             throw Error($"Unknown standard module '{module}'.", span, "E0205");
-        if (!program.StandardLocations.TryGetValue(module, out var sourceLocation))
-        {
-            sourceLocation = new(hir.Locations.Count);
-            string name = module.Length == 0 ? "$std" : "$std::" + module;
-            hir.Locations.Add(new(name, hir.Type(TypeRef.Scope), Range(span), program.Entry, HirLocationKind.Import));
-            program.Declare(new(sourceLocation, module, module.Length == 0
-                ? DeclarationKind.StandardRoot : DeclarationKind.StandardModule, Range(span)));
-            program.StandardLocations.Add(module, sourceLocation);
-        }
+        var sourceLocation = ReserveStandardLocation(module, Range(span));
         var location = Capture(sourceLocation, module.Length == 0 ? "$std" : "$std::" + module);
         return Node(HirKind.ReadLocation, hir.Type(TypeRef.Scope), span, data: location.Value,
             effects: HirEffects.ReadLocation);
     }
 
+    private HirLocationId ReserveStandardLocation(string module, HirSourceRange sourceRange)
+    {
+        if (program.StandardLocations.TryGetValue(module, out var existing)) return existing;
+        HirLocationId location = new(hir.Locations.Count);
+        string name = module.Length == 0 ? "$std" : "$std::" + module;
+        hir.Locations.Add(new(name, hir.Type(TypeRef.Scope), sourceRange, program.Entry, HirLocationKind.Import));
+        program.Declare(new(location, module, module.Length == 0
+            ? DeclarationKind.StandardRoot : DeclarationKind.StandardModule, sourceRange));
+        program.StandardLocations.Add(module, location);
+        pendingModules.Enqueue(module);
+        return location;
+    }
+
+    private void SealStandardBindings()
+    {
+        while (pendingModules.TryDequeue(out string? module))
+        {
+            if (module.Length != 0)
+            {
+                BindStandardModule(module);
+                continue;
+            }
+            var rootSource = hir.Locations[program.StandardLocations[""].Value].Source;
+            foreach (string name in StandardLibraries.Value.Keys.Where(name => !name.StartsWith('_')).Order(StringComparer.Ordinal))
+                ReserveStandardLocation(name, rootSource);
+        }
+    }
+
     private HirSourceRange Range(SourceSpan span) => new(source, span.Start, span.Length);
     private HirTypeId OpenType(string name)
     {
-        int parameter = nextTypeParameter++;
+        int parameter = program.NextTypeParameter++;
         program.TypeParameterNames.Add(parameter, name);
         return hir.Type(new HirType(TypeRef.Any, TypeParameter: parameter));
     }

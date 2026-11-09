@@ -30,8 +30,8 @@ internal readonly record struct FlowOperation(FlowOperationKind Kind, HirLocatio
         FlowOperationKind.Value => facts.Assign(Target, Value),
         FlowOperationKind.Copy => facts.Assign(Target, facts.Read(Source, Read)),
         FlowOperationKind.Expression => facts.Assign(Target, evaluate!(Expression, facts)),
-        FlowOperationKind.RangeElement => facts.Assign(Target, new((Expression.IsNone
-            ? facts.Read(Source).Type : evaluate!(Expression, facts).Type).Element ?? TypeRef.Any)),
+        FlowOperationKind.RangeElement => facts.Assign(Target, facts.Element(Expression.IsNone
+            ? facts.Read(Source) : evaluate!(Expression, facts))),
         FlowOperationKind.UnknownWrite => facts.InvalidateLocation(Target),
         FlowOperationKind.MemoryWrite => facts.InvalidateMemory(Memory),
         _ => facts

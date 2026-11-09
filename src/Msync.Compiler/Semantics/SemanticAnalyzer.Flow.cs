@@ -6,13 +6,13 @@ namespace Msync.Compiler.Semantics;
 
 internal sealed partial class SemanticAnalyzer
 {
-    private SemanticValue Control(HirNode node, ReadOnlySpan<HirNodeId> children,
+    private SemanticValue Control(HirNodeId id, HirNode node, ReadOnlySpan<HirNodeId> children,
         SemanticContext context) => node.Kind switch
     {
         HirKind.If => Conditional(node, children, context),
         HirKind.Match => Match(node, children, context),
-        HirKind.For => For(node, children, context),
-        HirKind.Loop => Loop(node, children, context),
+        HirKind.For => For(id, node, children, context),
+        HirKind.Loop => Loop(id, node, children, context),
         HirKind.Break => Break(node, children, context),
         HirKind.Return => Return(node, children, context),
         HirKind.Barrier => Barrier(node, children, context),
@@ -75,7 +75,7 @@ internal sealed partial class SemanticAnalyzer
                 branch.Values[location] = value;
                 branch.Storage[location] = value.Type;
                 if (context.Publish)
-                    hir.Locations[location.Value] = hir.Locations[location.Value] with { StorageType = value.Type };
+                    context.Output!.SetLocation(location, hir.Locations[location.Value] with { StorageType = value.Type });
             }
             SemanticValue valueResult = Analyze(arm.Value, branch);
             arms.Add(arm with { Value = valueResult.Node });
@@ -95,24 +95,26 @@ internal sealed partial class SemanticAnalyzer
         if (context.Publish)
         {
             index = hir.Matches.Count;
-            hir.Matches.Add(new(arms.ToImmutableArray()));
+            context.Output!.AddMatch(new(arms.ToImmutableArray()));
         }
         return result with { Node = Add(node with { Data = index }, result.Type, [subject.Node], context) };
     }
 
-    private SemanticValue For(HirNode node, ReadOnlySpan<HirNodeId> children,
+    private SemanticValue For(HirNodeId id, HirNode node, ReadOnlySpan<HirNodeId> children,
         SemanticContext context)
     {
         SemanticValue sequence = Analyze(children[0], context);
         Require(sequence, hir.Type(new TypeRef(TypeKind.Range)), program.Node(children[0]).Source);
+        ApplyDeferredEffects(sequence, context);
         HirFor iteration = hir.Fors[node.Data];
         SemanticContext bodyContext = ForkFlow(context);
+        bodyContext.FlowAnalysis = PrepareFlow(id, context);
         HirLocationId item = bodyContext.Location(iteration.Item);
         SemanticValue element = sequence.Element ?? new(hir.Type(Runtime(sequence).Element ?? TypeRef.Any), HirNodeId.None);
         bodyContext.Values[item] = element;
         bodyContext.Storage[item] = element.Type;
         if (context.Publish)
-            hir.Locations[item.Value] = hir.Locations[item.Value] with { StorageType = element.Type };
+            context.Output!.SetLocation(item, hir.Locations[item.Value] with { StorageType = element.Type });
         bodyContext.Breaks[iteration.Loop] = [];
         SemanticValue body = Analyze(children[1], bodyContext);
         MergeContexts(context, context.Fork(), bodyContext);
@@ -121,17 +123,18 @@ internal sealed partial class SemanticAnalyzer
         if (context.Publish)
         {
             index = hir.Fors.Count;
-            hir.Fors.Add(iteration with { Item = item });
+            context.Output!.AddFor(iteration with { Item = item });
         }
         HirTypeId result = hir.Type(TypeRef.Null);
         return new(result, Add(node with { Data = index }, result, [sequence.Node, body.Node], context));
     }
 
-    private SemanticValue Loop(HirNode node, ReadOnlySpan<HirNodeId> children,
+    private SemanticValue Loop(HirNodeId id, HirNode node, ReadOnlySpan<HirNodeId> children,
         SemanticContext context)
     {
         HirLoopId loop = new(node.Data);
         SemanticContext bodyContext = ForkFlow(context);
+        bodyContext.FlowAnalysis = PrepareFlow(id, context);
         bodyContext.Breaks[loop] = [];
         SemanticValue body = Analyze(children[0], bodyContext);
         context.Returns.AddRange(bodyContext.Returns);
@@ -179,31 +182,30 @@ internal sealed partial class SemanticAnalyzer
         SemanticValue value = children.Length == 0 ? Null(node.Source, context) : Analyze(children[0], context);
         HirBarrier barrier = hir.Barriers[node.Data];
         if (barrier.Release && children.Length != 0 && context.Publish)
-            value = value with { Node = ScheduleBarrierValue(value.Node, barrier.Acquire ? 3 : 1) };
+            value = value with { Node = ScheduleBarrierValue(value.Node, barrier.Acquire ? 3 : 1, context.Output!) };
         return value with { Node = Add(node, value.Type, children.Length == 0 ? [] : [value.Node], context) };
     }
 
-    private HirNodeId ScheduleBarrierValue(HirNodeId id, int scheduling)
+    private HirNodeId ScheduleBarrierValue(HirNodeId id, int scheduling, SemanticOutput output)
     {
         HirNode node = hir.Nodes[id.Value];
-        var children = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(hir.Edges)
-            .Slice(node.Children.Start, node.Children.Count).ToArray();
+        var children = hir.Children(node).ToArray();
         if (node.Kind is HirKind.Assign or HirKind.MemberAssign)
         {
-            children[^1] = ScheduleBarrierValue(children[^1], scheduling);
-            return hir.Add(node.Kind, node.Type, node.Source, children, node.Data, node.Text, node.Effects);
+            children[^1] = ScheduleBarrierValue(children[^1], scheduling, output);
+            return output.Add(node.Kind, node.Type, node.Source, children, node.Data, node.Text, node.Effects);
         }
         if (node.Kind != HirKind.Call || hir.Calls[node.Data].Kind != HirCallKind.Path) return id;
         int call = hir.Calls.Count;
-        hir.Calls.Add(hir.Calls[node.Data] with { Scheduling = scheduling });
-        return hir.Add(HirKind.Call, node.Type, node.Source, children, call, node.Text, node.Effects);
+        output.AddCall(hir.Calls[node.Data] with { Scheduling = scheduling });
+        return output.Add(HirKind.Call, node.Type, node.Source, children, call, node.Text, node.Effects);
     }
 
     private SemanticValue Null(HirSourceRange source, SemanticContext context)
     {
         HirTypeId type = hir.Type(TypeRef.Null);
         HirLiteral literal = new(HirLiteralKind.Null);
-        return new(type, context.Publish ? hir.Literal(literal, type, source) : HirNodeId.None, literal);
+        return new(type, context.Publish ? context.Output!.Literal(literal, type, source) : HirNodeId.None, literal);
     }
 
     private SemanticValue Retype(SemanticValue value, TypeRef type) =>
@@ -365,6 +367,7 @@ internal sealed partial class SemanticAnalyzer
     private void MergeContexts(SemanticContext destination, params SemanticContext[] branches)
     {
         if (branches.Length == 0) return;
+        if (!destination.Publish) { MergeQueryContexts(destination, branches); return; }
         foreach (var pair in branches[0].Values) destination.Values[pair.Key] = pair.Value;
         foreach (var pair in branches[0].Storage) destination.Storage[pair.Key] = pair.Value;
         foreach (var pair in branches[0].Objects) destination.Objects[pair.Key] = pair.Value;
@@ -381,6 +384,45 @@ internal sealed partial class SemanticAnalyzer
                     fields = fields.SetItem(name, fields.TryGetValue(name, out var before) ? Join(before, value) : value);
                 destination.Objects[region] = previous with { Fields = fields };
             }
+        }
+    }
+
+    private void MergeQueryContexts(SemanticContext destination, SemanticContext[] branches)
+    {
+        HashSet<HirLocationId>? values = null, storage = null;
+        HashSet<int>? objects = null;
+        foreach (SemanticContext branch in branches)
+        {
+            foreach (var pair in branch.Values.LocalEntries) (values ??= []).Add(pair.Key);
+            foreach (var pair in branch.Storage.LocalEntries) (storage ??= []).Add(pair.Key);
+            foreach (var pair in branch.Objects.LocalEntries) (objects ??= []).Add(pair.Key);
+        }
+        if (values is not null)
+            foreach (HirLocationId location in values)
+            {
+                SemanticValue? merged = null;
+                foreach (SemanticContext branch in branches)
+                    if (branch.Values.TryGetValue(location, out var value)) merged = merged is null ? value : Join(merged, value);
+                if (merged is not null) destination.Values[location] = merged;
+            }
+        if (storage is not null)
+            foreach (HirLocationId location in storage)
+                foreach (SemanticContext branch in branches)
+                    if (branch.Storage.TryGetValue(location, out var type)) destination.Storage[location] = type;
+        if (objects is null) return;
+        foreach (int region in objects)
+        {
+            SemanticScope? merged = null;
+            foreach (SemanticContext branch in branches)
+            {
+                if (!branch.Objects.TryGetValue(region, out var scope)) continue;
+                if (merged is null) { merged = scope; continue; }
+                var fields = merged.Fields;
+                foreach (var (name, value) in scope.Fields)
+                    fields = fields.SetItem(name, fields.TryGetValue(name, out var previous) ? Join(previous, value) : value);
+                merged = merged with { Fields = fields };
+            }
+            if (merged is not null) destination.Objects[region] = merged;
         }
     }
 

@@ -143,7 +143,7 @@ internal sealed class SemanticValuePresenter(SemanticObservationView view,
         SemanticValueView? value = key.Kind == ValueKind.Value ? view.Value(new(key.Id)) : null;
         ImmutableArray<Field> members;
         if (value is not null && !value.Members.IsDefault)
-            members = value.Members.Select(field => new Field(field.Name, new(ValueKind.Value, field.Value.Value))).ToImmutableArray();
+            members = value.Members.Select(field => new Field(field.Name, new(ValueKind.Value, field.Value.Value, field.AdmitsNull))).ToImmutableArray();
         else if (RuntimeType(key).WithoutNull == TypeRef.Process)
             members = [
                 new("stdout", new(ValueKind.RuntimeType, 0, RuntimeType: TypeRef.String)),

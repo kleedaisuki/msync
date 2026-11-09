@@ -25,6 +25,8 @@ public static class HirLowerer
         private readonly Dictionary<Value, int> constantIndices = new(ValueRepresentation.Comparer);
         private readonly Dictionary<HirFunctionId, FunctionCode> functions = [];
         private readonly List<HirLocationId>?[] locations = new List<HirLocationId>?[hir.Functions.Length];
+        private readonly HashSet<HirLocationId>? sessionRoots = hir.IsSession
+            ? hir.Exports.Select(export => export.Location).ToHashSet() : null;
 
         internal HirLoweringResult Run()
         {
@@ -88,6 +90,7 @@ public static class HirLowerer
             ? layout.Templates[new(id.Value)] : layout.Functions[new(id.Value)];
         internal int Function(HirFunctionId id) => layout.Functions[id];
         internal int Slot(HirFunctionId function, HirLocationId location) => layout.Locations[new(function, location)];
+        internal bool SessionRoot(HirLocationId location) => sessionRoots?.Contains(location) == true;
         internal int Site(int construction)
         {
             if (layout.AllocationSites.TryGetValue(construction, out int site)) return site;
@@ -232,7 +235,12 @@ public static class HirLowerer
         }
         private void Declare(HirNode node)
         {
-            Add(OpCode.Null); Add(OpCode.InitializeLocal, Slot(node.Data), source: node.Source);
+            // Session roots already own uninitialized storage. Capturing it is legal,
+            // but only the completed initializer may publish a value into that cell.
+            if (!owner.SessionRoot(new(node.Data)))
+            {
+                Add(OpCode.Null); Add(OpCode.InitializeLocal, Slot(node.Data), source: node.Source);
+            }
             Emit(Child(node, 0)); Add(OpCode.StoreLocal, Slot(node.Data), source: node.Source); Add(OpCode.Null);
         }
         private void Block(HirNode node)
@@ -324,7 +332,8 @@ public static class HirLowerer
         private void Scope(HirNode node)
         {
             var scope = Hir.Scopes[node.Data]; int site = owner.Site(node.Data);
-            if (scope.Self is { } self) { Add(OpCode.Null); Add(OpCode.InitializeLocal, Slot(self.Value)); }
+            if (scope.Self is { } self && !owner.SessionRoot(self))
+            { Add(OpCode.Null); Add(OpCode.InitializeLocal, Slot(self.Value)); }
             int initialized = -1;
             if (scope.Singleton >= 0)
             {

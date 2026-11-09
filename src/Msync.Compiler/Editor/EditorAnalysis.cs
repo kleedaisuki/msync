@@ -7,7 +7,6 @@ namespace Msync.Compiler;
 public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrences, SourceDiagnostic? Diagnostic,
     IReadOnlyList<SemanticMember>? RecoveryBindings = null, int? RecoveryStart = null)
 {
-    internal EditorContextCollector? Contexts { get; init; }
     internal EditorSemanticIndex? SemanticContexts { get; init; }
     internal IReadOnlyList<(SourceSpan Span, IReadOnlyList<SemanticMember> Types)> AssociatedTypes { get; init; } = [];
     internal IReadOnlyList<(SourceSpan Span, EditorLocation Target)> AssociatedDefinitions { get; init; } = [];
@@ -17,7 +16,7 @@ public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrence
     {
         var associated = AssociatedDefinitions.Where(reference => reference.Span.Start <= offset && offset <= reference.Span.End)
             .Select(reference => reference.Target).Distinct().ToArray();
-        return associated.Length == 0 ? SemanticContexts?.DefinitionsAt(offset) ?? Contexts?.DefinitionsAt(offset) ?? [] : associated;
+        return associated.Length == 0 ? SemanticContexts?.DefinitionsAt(offset) ?? [] : associated;
     }
     public IReadOnlyList<SourceSpan> TypeSpans { get; init; } = [];
     public bool IsTypePosition(int offset)
@@ -28,20 +27,19 @@ public sealed record EditorAnalysis(IReadOnlyList<SemanticOccurrence> Occurrence
     }
     public EditorContext At(int offset)
     {
-        EditorContext context = SemanticContexts?.At(offset) ?? Contexts?.At(offset) ?? new(RecoveryBindings ?? [], null);
+        EditorContext context = SemanticContexts?.At(offset) ?? new(RecoveryBindings ?? [], null);
         return IsTypePosition(offset) ? context with
         {
             IsTypePosition = true,
             CanDeclareAssociatedType = AssociatedTypes.Any(scope => scope.Span.Start <= offset && offset <= scope.Span.End),
             Bindings = AssociatedTypes.Where(scope => scope.Span.Start <= offset && offset <= scope.Span.End)
                 .OrderBy(scope => scope.Span.Length).SelectMany(scope => scope.Types)
-                .Concat(SemanticContexts?.ConceptsAt(offset) ?? Contexts?.ConceptsAt(offset) ?? [])
+                .Concat(SemanticContexts?.ConceptsAt(offset) ?? [])
                 .Concat(context.Bindings.Any(member => member.Name == "std") ? [] : EditorCompiler.StandardConceptBindings)
                 .Concat(context.Bindings)
                 .DistinctBy(member => member.Name).ToArray()
         } : context;
     }
     public SemanticMember? Resolve(int offset, string name) => SemanticContexts is { } semantic ? semantic.Resolve(offset, name)
-        : Contexts is { } contexts ? contexts.Resolve(offset, name)
-            : RecoveryBindings?.FirstOrDefault(binding => binding.Name == name);
+        : RecoveryBindings?.FirstOrDefault(binding => binding.Name == name);
 }

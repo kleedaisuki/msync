@@ -18,18 +18,47 @@ internal sealed record FlowLocationDomain(TypeRef StorageType, TypeRef DeferredT
     HirTypeId? InitialSemanticType = null, HirTypeId? DeferredSemanticType = null);
 
 internal readonly record struct FlowFact(TypeRef Type, bool Assigned = true, bool? Boolean = null,
-    HirTypeId? SemanticType = null)
+    HirTypeId? SemanticType = null, FlowCallableDomain? Callables = null)
 {
     internal static FlowFact Join(FlowFact left, FlowFact right) => new(
         TypeRef.Union(left.Type, right.Type), left.Assigned && right.Assigned,
         left.Boolean == right.Boolean ? left.Boolean : null,
-        left.SemanticType == right.SemanticType ? left.SemanticType : null);
+        left.SemanticType == right.SemanticType ? left.SemanticType : null,
+        FlowCallableDomain.Join(left.Callables, right.Callables));
+}
+
+internal readonly record struct FlowCallableIdentity(HirTemplateId? Template = null, string? NativeName = null);
+
+internal sealed class FlowCallableDomain : IEquatable<FlowCallableDomain>
+{
+    public ImmutableArray<FlowCallableIdentity> Choices { get; }
+
+    public FlowCallableDomain(IEnumerable<FlowCallableIdentity> choices) => Choices = choices.Distinct()
+        .OrderBy(item => item.Template?.Value ?? -1).ThenBy(item => item.NativeName, StringComparer.Ordinal).ToImmutableArray();
+
+    public static FlowCallableDomain? Join(FlowCallableDomain? left, FlowCallableDomain? right)
+    {
+        if (left is null) return right;
+        if (right is null || left.Equals(right)) return left;
+        return new(left.Choices.Concat(right.Choices));
+    }
+
+    public bool Equals(FlowCallableDomain? other) => ReferenceEquals(this, other)
+        || other is not null && Choices.AsSpan().SequenceEqual(other.Choices.AsSpan());
+    public override bool Equals(object? obj) => obj is FlowCallableDomain other && Equals(other);
+    public override int GetHashCode()
+    {
+        HashCode hash = new();
+        foreach (var choice in Choices) hash.Add(choice);
+        return hash.ToHashCode();
+    }
 }
 
 internal interface IFlowTypeAlgebra
 {
     FlowFact Join(FlowFact left, FlowFact right);
     FlowFact Refine(FlowFact value, TypeRef tested, bool positive);
+    FlowFact Element(FlowFact value);
 }
 
 // Facts are edge-local persistent deltas over immutable location contracts.
@@ -59,6 +88,10 @@ internal sealed class FlowFacts
         new(domains.AddRange(locations), values, Reachable, types);
 
     public FlowLocationDomain Domain(HirLocationId location) => domains[location];
+    public bool Contains(HirLocationId location) => domains.ContainsKey(location);
+
+    public FlowFact Element(FlowFact value) => types?.Element(value)
+        ?? new(value.Type.Element ?? TypeRef.Any);
 
     public FlowFact Read(HirLocationId location, FlowReadKind kind = FlowReadKind.Immediate)
     {

@@ -107,6 +107,9 @@ internal sealed partial class SourceBinder
         var location = Declare(declaration.Name, declaration.NameSpan ?? declaration.Span,
             DeclarationKind.Native, type);
         program.NativeLocations.Add(location, identity);
+        if (observations) program.NativeSignatures.TryAdd(identity, new(identity, Range(declaration.Span),
+            declaration.Parameters.Select(parameter => parameter.Name).ToImmutableArray(), parameterTypes, result,
+            declaration.Parameters.Select(parameter => parameter.Nullable).ToImmutableArray()));
         var value = Node(HirKind.NativeFunction, type, declaration.Span, text: identity);
         return Node(HirKind.Declare, hir.Type(TypeRef.Null), declaration.Span, [value], location.Value);
     }
@@ -177,7 +180,7 @@ internal sealed partial class SourceBinder
             int layout = hir.ScopeLayouts.Count;
             hir.ScopeLayouts.Add(new(shape.ToImmutableArray()));
             int construction = hir.Scopes.Count;
-            hir.Scopes.Add(new(layout, fields.ToImmutableArray(), named || expression.Name is not null ? nextSingleton++ : -1, self));
+            hir.Scopes.Add(new(layout, fields.ToImmutableArray(), named || expression.Name is not null ? program.NextSingleton++ : -1, self));
             var result = Node(HirKind.Scope, hir.Type(new HirType(TypeRef.Scope, Shape: layout)), expression.Span,
                 System.Runtime.InteropServices.CollectionsMarshal.AsSpan(initializers), construction);
             if (startContext >= 0) program.Visibility[startContext] = program.Visibility[startContext] with { Anchor = result };

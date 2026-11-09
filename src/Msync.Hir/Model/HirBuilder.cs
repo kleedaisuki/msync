@@ -3,7 +3,7 @@ using Msync.Core;
 
 namespace Msync.Hir;
 
-public sealed class HirBuilder
+public sealed partial class HirBuilder
 {
     public List<HirSource> Sources { get; } = [];
     public List<HirType> Types { get; } = [];
@@ -25,8 +25,10 @@ public sealed class HirBuilder
     public List<HirFunctionAdaptation> Adaptations { get; } = [];
     public List<HirTemplateClosure> TemplateClosures { get; } = [];
     public List<HirConcept> Concepts { get; } = [];
-    public List<HirExport> Exports { get; } = [];
-    public List<HirLocationId> UnresolvedImports { get; } = [];
+    private List<HirExport> exports = [];
+    private List<HirLocationId> unresolvedImports = [];
+    public IReadOnlyList<HirExport> Exports => exports;
+    public IReadOnlyList<HirLocationId> UnresolvedImports => unresolvedImports;
     private readonly Dictionary<HirType, HirTypeId> types = new(new TypeComparer());
 
     private sealed class TypeComparer : IEqualityComparer<HirType>

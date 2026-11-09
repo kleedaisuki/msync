@@ -69,7 +69,9 @@ internal sealed partial class SourceBinder
         List<int> bases = [];
         foreach (var parent in declaration.Bases)
         {
-            if (!scope.Concepts.TryGetValue(parent.Name, out int inherited))
+            var parentType = Type(parent);
+            int inherited = hir.Types[parentType.Value].Concept;
+            if (inherited < 0)
                 throw Error($"Unknown concept '{parent.Name}'.", parent.Span, "E0214");
             bases.Add(inherited);
             foreach (var (name, type) in program.Concepts[inherited].AssociatedTypes)
@@ -89,7 +91,8 @@ internal sealed partial class SourceBinder
             if (member.Type is { } annotation)
             {
                 var type = Type(annotation);
-                requirements.Add(new(member.Name, type, member.Nullable, origin));
+                requirements.Add(new(member.Name, type, member.Nullable, origin,
+                    DeclarationSource: Range(member.Span)));
                 members.Add(new(member.Name, type, origin, Nullable: member.Nullable));
                 continue;
             }
@@ -103,7 +106,8 @@ internal sealed partial class SourceBinder
             int signature = hir.Signatures.Count;
             hir.Signatures.Add(new(arguments, result));
             var functionType = hir.Type(new HirType(TypeRef.Function, Signature: signature));
-            requirements.Add(new(member.Name, functionType, member.Nullable, origin, arguments, result));
+            requirements.Add(new(member.Name, functionType, member.Nullable, origin, arguments, result,
+                member.Parameters!.Select(parameter => parameter.Name).ToImmutableArray(), Range(member.Span)));
             members.Add(new(member.Name, functionType, origin, signature, member.Nullable));
         }
         int id = hir.Concepts.Count;

@@ -98,10 +98,19 @@ Check(patterns.Hir.Literals.Any(item => item is { Kind: HirLiteralKind.Number, N
 
 var standard = Bind("fn first() { $std::ranges::size([1]) }; fn second() { $std::ranges::size([2]) }; $std::ranges::size([])");
 Check(standard.StandardLocations.Keys.SequenceEqual(new[] { "ranges" }), "A direct module use does not bind every standard module");
-Check(standard.StandardModules.Count == 0, "Source binding reserves imports without analyzing or loading their bodies");
+Check(standard.StandardModules.Keys.SequenceEqual(new[] { "ranges" }), "Source binding seals only the demanded module before semantic analysis");
 var source = standard.StandardLocations["ranges"];
-Check(standard.Templates.All(template => template.Captures.Any(location => Original(standard, location) == source)),
+Check(standard.Templates.Where(template => template.Name is "first" or "second").All(template => template.Captures.Any(location => Original(standard, location) == source)),
     "Functions capture the same shared module cell");
+
+var transitive = Bind("$std::files::File::read_text");
+Check(transitive.StandardLocations.Where(pair => pair.Key.Length != 0).All(pair => transitive.StandardModules.ContainsKey(pair.Key)),
+    "Every transitive standard dependency is bound before semantic analysis");
+Check(transitive.StandardModules.ContainsKey("io") && !transitive.StandardModules.ContainsKey("commands"),
+    "Transitive source dependencies retain selected demand rather than binding the whole library");
+var firstClass = Bind("let standard = $std; standard");
+Check(StandardSourceCatalog.Read().Keys.Where(name => !name.StartsWith('_')).All(firstClass.StandardModules.ContainsKey),
+    "A first-class standard root binds all its public module shapes");
 
 var inline = Bind("concept Product { first?: typename First, second?: typename Second }; fn take(value: Product) { value };", true);
 Check(inline.Hir.Concepts.Count == 1, "An inline associated-type concept is retained as semantic metadata");
@@ -123,5 +132,15 @@ var open = new SourceBinder(isSession: true).Bind("let value=1; fn local(){let i
 Check(!open.IsStable(open.Declarations.Single(item => item.Name == "value").Location)
     && open.IsStable(open.Declarations.Single(item => item.Name == "inner").Location),
     "Open session roots and closed private lifetimes have different future write domains");
+
+var accepted = new SourceBinder(isSession: true).Bind("let value=1; fn read(){value};", "<repl>");
+var retained = accepted.Hir.Freeze(accepted.Entry, isSession: true);
+var next = new SourceBinder(accepted).Bind("let alias=read; value=2; alias()", "<repl>");
+Check(next.Entry == accepted.Entry && next.Exports["value"] == accepted.Exports["value"],
+    "A subsequent submission preserves entry and declaration identities");
+Check(next.Hir.Sources.Count == 2 && next.Templates.Count == accepted.Templates.Count,
+    "Only the new submission is bound; prior template bodies are retained");
+Check(retained.Sources.Length == 1 && retained.Exports.Length == 2,
+    "Appending to a new binding generation does not mutate the accepted immutable HIR");
 
 Console.WriteLine($"PASS {checks} source binding contracts");

@@ -25,7 +25,7 @@ internal sealed record SemanticValueView(HirTypeId Type,
     string? Signature = null, string? Documentation = null);
 
 internal sealed record SemanticFieldView(string Name, SemanticValueId Value,
-    ImmutableArray<HirSourceRange> Definitions = default);
+    ImmutableArray<HirSourceRange> Definitions = default, bool AdmitsNull = false);
 
 internal sealed record SemanticBindingView(string Name, HirLocationId Location,
     SemanticValueId Value, bool IsParameter = false);

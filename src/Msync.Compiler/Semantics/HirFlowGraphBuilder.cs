@@ -7,12 +7,19 @@ namespace Msync.Compiler.Semantics;
 internal sealed record HirFlowAnalysis(FlowGraph Graph, FlowSolution Solution,
     ImmutableDictionary<HirNodeId, FlowFacts> Inputs);
 
-internal sealed class HirFlowGraphBuilder(HirModule module,
+internal sealed class HirFlowGraphBuilder(IFlowProgramView module,
     Func<HirNodeId, FlowFacts, FlowFact>? project = null,
     Func<HirLocationId, HirLocationId>? locations = null,
     Func<HirNodeId, HirLocationId?>? places = null,
     Func<HirNodeId, HirEffects>? effects = null)
 {
+    public HirFlowGraphBuilder(HirModule module, Func<HirNodeId, FlowFacts, FlowFact>? project = null,
+        Func<HirLocationId, HirLocationId>? locations = null, Func<HirNodeId, HirLocationId?>? places = null,
+        Func<HirNodeId, HirEffects>? effects = null) : this(new FrozenFlowProgramView(module), project, locations, places, effects) { }
+
+    public HirFlowGraphBuilder(BoundProgram program, Func<HirNodeId, FlowFacts, FlowFact>? project = null,
+        Func<HirLocationId, HirLocationId>? locations = null, Func<HirNodeId, HirLocationId?>? places = null,
+        Func<HirNodeId, HirEffects>? effects = null) : this(new BoundFlowProgramView(program), project, locations, places, effects) { }
     private sealed class Block
     {
         public List<FlowOperation> Operations { get; } = [];
@@ -28,7 +35,7 @@ internal sealed class HirFlowGraphBuilder(HirModule module,
 
     public HirFlowAnalysis Analyze(HirNodeId body, FlowFacts initial)
     {
-        nextTemporary = Math.Max(module.Locations.Length, initial.NextLocationIdentity);
+        nextTemporary = Math.Max(module.LocationCount, initial.NextLocationIdentity);
         Visit(body);
         FlowGraph graph = new(blocks.Select(block => new FlowBlock(block.Operations.ToImmutableArray(),
             block.Successors.ToImmutableArray())).ToImmutableArray(), new(0));
@@ -57,8 +64,8 @@ internal sealed class HirFlowGraphBuilder(HirModule module,
         if (project is not null) return project(id, facts);
         HirNode node = module.Node(id);
         if (Place(id) is { } place) return facts.Read(place);
-        bool? boolean = node.Kind == HirKind.Literal && module.Literals[node.Data].Kind == HirLiteralKind.Bool
-            ? module.Literals[node.Data].Boolean : null;
+        bool? boolean = node.Kind == HirKind.Literal && module.Literal(node.Data).Kind == HirLiteralKind.Bool
+            ? module.Literal(node.Data).Boolean : null;
         return new(module.RuntimeType(node.Type), Boolean: boolean);
     }
 
@@ -114,11 +121,11 @@ internal sealed class HirFlowGraphBuilder(HirModule module,
                 current = -1;
                 return;
             case HirKind.Closure:
-                foreach (var capture in module.Closures[node.Data].Captures)
+                foreach (var capture in module.Closure(node.Data).Captures)
                     if (capture.Mode == HirCaptureMode.Value) Visit(capture.SourceValue);
                 return;
             case HirKind.TemplateClosure:
-                foreach (var capture in module.TemplateClosures[node.Data].Captures)
+                foreach (var capture in module.TemplateClosure(node.Data).Captures)
                     if (capture.Mode == HirCaptureMode.Value) Visit(capture.SourceValue);
                 return;
             case HirKind.Binary when (HirBinaryOperator)node.Data is HirBinaryOperator.And or HirBinaryOperator.Or:
@@ -146,7 +153,7 @@ internal sealed class HirFlowGraphBuilder(HirModule module,
         }
         else if (node.Kind == HirKind.Scope)
         {
-            HirScopeConstruction scope = module.Scopes[node.Data];
+            HirScopeConstruction scope = module.Scope(node.Data);
             if (scope.Self is { } self) Operation(FlowOperation.Assign(Location(self), module.RuntimeType(node.Type)));
             if (scope.Singleton >= 0)
                 foreach (var field in scope.Fields) Operation(FlowOperation.Write(Location(field)));
@@ -205,7 +212,9 @@ internal sealed class HirFlowGraphBuilder(HirModule module,
         var children = module.Children(node);
         if (node.Kind is HirKind.IsNull or HirKind.IsType && Place(children[0]) is { } subject)
         {
-            TypeRef tested = node.Kind == HirKind.IsNull ? TypeRef.Null : module.RuntimeType(new(node.Data));
+            TypeRef tested = node.Kind == HirKind.IsNull ? TypeRef.Null
+                : children.Length == 2 && module.Node(children[1]).Kind == HirKind.TypeValue
+                    ? module.RuntimeType(new(module.Node(children[1]).Data)) : module.RuntimeType(new(node.Data));
             return [new(subject, tested, positive)];
         }
         if (Place(id) is { } location) return [new(location, null, Boolean: positive)];
@@ -231,7 +240,7 @@ internal sealed class HirFlowGraphBuilder(HirModule module,
         HirLocationId sequence = new(nextTemporary++);
         temporaries.Add(sequence, new(TypeRef.Any, TypeRef.Any, StableForLifetime: true, InitiallyAssigned: false));
         Operation(FlowOperation.Evaluate(sequence, children[0]));
-        HirFor iteration = module.Fors[node.Data];
+        HirFor iteration = module.For(node.Data);
         FlowBlockId head = NewBlock(), body = NewBlock(), end = NewBlock();
         Edge(head);
         current = head.Value;
@@ -249,7 +258,7 @@ internal sealed class HirFlowGraphBuilder(HirModule module,
     {
         Visit(children[0]);
         FlowBlockId end = NewBlock();
-        foreach (HirMatchArm arm in module.Matches[node.Data].Arms)
+        foreach (HirMatchArm arm in module.Match(node.Data).Arms)
         {
             FlowBlockId body = NewBlock(), next = NewBlock();
             HirPattern pattern = arm.Pattern;
@@ -263,9 +272,9 @@ internal sealed class HirFlowGraphBuilder(HirModule module,
                 {
                     positive = [new(place, tested)]; negative = [new(place, tested, false)];
                 }
-                else if (pattern.Kind == HirPatternKind.Literal && module.Literals[pattern.Data].Kind == HirLiteralKind.Bool)
+                else if (pattern.Kind == HirPatternKind.Literal && module.Literal(pattern.Data).Kind == HirLiteralKind.Bool)
                 {
-                    bool value = module.Literals[pattern.Data].Boolean;
+                    bool value = module.Literal(pattern.Data).Boolean;
                     positive = [new(place, null, Boolean: value)]; negative = [new(place, null, Boolean: !value)];
                 }
             }

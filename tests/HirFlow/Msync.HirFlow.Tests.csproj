@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Msync.Core/Msync.Core.csproj" />
+    <ProjectReference Include="../../src/Msync.Hir/Msync.Hir.csproj" />
+    <Compile Include="../../src/Msync.Compiler/Semantics/FlowFacts.cs" Link="FlowFacts.cs" />
+    <Compile Include="../../src/Msync.Compiler/Semantics/FlowGraph.cs" Link="FlowGraph.cs" />
+    <Compile Include="../../src/Msync.Compiler/Semantics/HirFlowGraphBuilder.cs" Link="HirFlowGraphBuilder.cs" />
+    <Compile Include="../../src/Msync.Compiler/Semantics/FlowProgramView.cs" Link="FlowProgramView.cs" />
+    <Compile Include="../../src/Msync.Compiler/Semantics/BoundProgram.cs" Link="BoundProgram.cs" />
+    <Compile Include="../../src/Msync.Compiler/Syntax/Ast.cs" Link="Ast.cs" />
+    <Compile Include="../../src/Msync.Compiler/Diagnostics/Diagnostics.cs" Link="Diagnostics.cs" />
+  </ItemGroup>
+</Project>

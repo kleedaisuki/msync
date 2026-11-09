@@ -18,7 +18,7 @@ internal sealed partial class SemanticAnalyzer
         {
             SemanticValue value = EnsureModule(module, node.Source, context);
             values.Add(module, value);
-            locations.Add(module, program.StandardLocations[module]);
+            if (program.StandardLocations.TryGetValue(module, out var location)) locations.Add(module, location);
         }
         var fields = values.ToImmutable();
         int layout = Shape(fields);
@@ -28,23 +28,20 @@ internal sealed partial class SemanticAnalyzer
         HirTypeId type = hir.Type(new HirType(TypeRef.Scope, Shape: layout));
         if (!context.Publish) return new(type, HirNodeId.None, Scope: scope);
         int construction = hir.Scopes.Count;
-        hir.Scopes.Add(new(layout, locations.Values.ToImmutableArray()));
-        return new(type, hir.Add(HirKind.Scope, type, node.Source, data: construction), Scope: scope);
+        context.Output!.AddScope(new(layout, locations.Values.ToImmutableArray()));
+        return new(type, context.Output!.Add(HirKind.Scope, type, node.Source, data: construction), Scope: scope);
     }
 
     private SemanticValue EnsureModule(string name, HirSourceRange source, SemanticContext context)
     {
+        if (program.StandardLocations.TryGetValue(name, out var shared)
+            && context.Values.TryGetValue(shared, out var initialized)) return initialized;
         if (context.Publish && modules.TryGetValue(name, out var existing)) return existing;
-        BoundModule bound = program.BindModule!(name);
+        BoundModule bound = program.StandardModules[name];
         SemanticContext target = context.Publish ? entryState! : context;
         SemanticValue value = Analyze(bound.Body, target);
-        if (!program.StandardLocations.TryGetValue(name, out HirLocationId location))
-        {
-            location = new(hir.Locations.Count);
-            hir.Locations.Add(new("$std::" + name, value.Type, source, program.Entry, HirLocationKind.Import));
-            program.StandardLocations.Add(name, location);
-            program.Declare(new(location, name, DeclarationKind.StandardModule, source));
-        }
+        if (!context.Publish) return value;
+        HirLocationId location = program.StandardLocations[name];
         target.Values[location] = value;
         target.Storage[location] = value.Type;
         context.Values[location] = value;
@@ -53,8 +50,8 @@ internal sealed partial class SemanticAnalyzer
         if (context.Publish)
         {
             modules.Add(name, value);
-            hir.Locations[location.Value] = hir.Locations[location.Value] with { StorageType = value.Type };
-            entryPrelude.Add(hir.Add(HirKind.Declare, hir.Type(TypeRef.Null), source, [value.Node], location.Value));
+            context.Output!.SetLocation(location, hir.Locations[location.Value] with { StorageType = value.Type });
+            entryPrelude.Add(context.Output!.Add(HirKind.Declare, hir.Type(TypeRef.Null), source, [value.Node], location.Value));
         }
         return value;
     }

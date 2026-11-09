@@ -227,7 +227,7 @@ static HirModule Tables()
     builder.Adaptations.Add(new([new(new(2), new(2))]));
     builder.TemplateClosures.Add(new(new(0), []));
     builder.Concepts.Add(new("Carrier", source, [], [new(10)], [new("value", new(10), source, Nullable: true)]));
-    builder.Exports.Add(new("shared", new(0)));
+    builder.SetExports([new("shared", new(0))]);
     return builder.Freeze(new(0), isSession: true);
 }
 

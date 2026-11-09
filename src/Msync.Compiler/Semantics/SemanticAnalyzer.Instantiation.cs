@@ -10,6 +10,7 @@ internal sealed partial class SemanticAnalyzer
     internal sealed class InstantiationWorkspace
     {
         internal Dictionary<string, FunctionInstance> Instances { get; } = new(StringComparer.Ordinal);
+        internal Dictionary<int, SemanticScope> Singletons { get; } = [];
     }
 
     // An instance is a code/signature promise in formal provenance space. Caller
@@ -24,18 +25,25 @@ internal sealed partial class SemanticAnalyzer
         public ImmutableDictionary<int, SemanticScope> Objects { get; set; } = ImmutableDictionary<int, SemanticScope>.Empty;
         public ImmutableDictionary<int, SemanticIndexed> Indexed { get; set; } = ImmutableDictionary<int, SemanticIndexed>.Empty;
         public ImmutableDictionary<HirLocationId, SemanticValue> Cells { get; set; } = ImmutableDictionary<HirLocationId, SemanticValue>.Empty;
+        public ImmutableDictionary<int, ImmutableHashSet<int>> AliasViews { get; set; } = ImmutableDictionary<int, ImmutableHashSet<int>>.Empty;
+        public ImmutableHashSet<int> IndexedWrites { get; set; } = [];
+        public ImmutableHashSet<HirLocationId> CellWrites { get; set; } = [];
+        public ImmutableHashSet<(int Region, string Field)> FieldWrites { get; set; } = [];
         public bool Complete { get; set; }
     }
 
-    private readonly record struct FunctionInvocation(HirFunctionId Id, SemanticValue Result);
+    private readonly record struct FunctionInvocation(HirFunctionId Id, SemanticValue Result,
+        ImmutableArray<SemanticDeferredWrite> Effects);
     private readonly Dictionary<string, FunctionInstance> instances = new(StringComparer.Ordinal);
+    private readonly Dictionary<int, SemanticScope> projectedSingletons = [];
 
     private SemanticContext QueryContext(SemanticContext context, SemanticValue callee,
         IReadOnlyList<SemanticValue> arguments)
     {
-        SemanticContext query = new(context.Function, publish: false)
-        { Queries = context.Queries ?? new() };
+        SemanticContext query = new(context.Function)
+        { Queries = context.Queries ?? new(), DeferredReads = context.DeferredReads };
         HashSet<SemanticValue> visited = new(ReferenceEqualityComparer.Instance);
+        HashSet<int> importedRegions = [];
         Import(callee);
         foreach (var argument in arguments) Import(argument);
         return query;
@@ -46,7 +54,19 @@ internal sealed partial class SemanticAnalyzer
             if (value.Scope is { } scope)
             {
                 scope = context.Objects.GetValueOrDefault(scope.Region, scope);
+                if (scope.Region >= 0 && !importedRegions.Add(scope.Region)) return;
                 query.Objects[scope.Region] = scope;
+                if (context.AliasViews.TryGetValue(scope.Region, out var views))
+                {
+                    query.AliasViews[scope.Region] = views;
+                    foreach (var view in views)
+                        if (context.Objects.TryGetValue(view, out var viewScope))
+                            Import(new(hir.Type(new HirType(TypeRef.Scope, Shape: viewScope.Layout)), HirNodeId.None, Scope: viewScope));
+                }
+                if (!scope.Aliases.IsDefault)
+                    foreach (var alias in scope.Aliases)
+                        if (context.Objects.TryGetValue(alias, out var aliasScope))
+                            Import(new(hir.Type(new HirType(TypeRef.Scope, Shape: aliasScope.Layout)), HirNodeId.None, Scope: aliasScope));
                 foreach (var field in scope.Fields.Values) Import(field);
                 foreach (var location in scope.Locations.Values) ImportLocation(location);
             }
@@ -56,6 +76,16 @@ internal sealed partial class SemanticAnalyzer
                 Import(indexed.Element);
             }
             if (value.Element is { } element) Import(element);
+            if (!value.DeferredEffects.IsDefault)
+                foreach (var write in value.DeferredEffects)
+                {
+                    Import(write.After);
+                    if (write.Kind == SemanticWriteKind.Location) ImportLocation(write.Location);
+                    else if (write.Kind == SemanticWriteKind.Field && context.Objects.TryGetValue(write.Region, out var target))
+                        Import(new(hir.Type(new HirType(TypeRef.Scope, Shape: target.Layout)), HirNodeId.None, Scope: target));
+                    else if (write.Kind == SemanticWriteKind.Indexed && context.Indexed.TryGetValue(write.Region, out var storage))
+                        query.Indexed[write.Region] = storage;
+                }
             foreach (var callable in Choices(value))
                 if (!callable.Captures.IsDefault)
                     foreach (var capture in callable.Captures)
@@ -87,16 +117,16 @@ internal sealed partial class SemanticAnalyzer
             emitted.Add(capture with { SourceLocation = source });
         }
         int index = hir.TemplateClosures.Count;
-        if (context.Publish) hir.TemplateClosures.Add(new(closure.Template, emitted.ToImmutable()));
+        if (context.Publish) context.Output!.AddTemplateClosure(new(closure.Template, emitted.ToImmutable()));
         var expression = context.Publish
-            ? hir.Add(HirKind.TemplateClosure, hir.Type(TypeRef.Function), node.Source, data: index)
+            ? context.Output!.Add(HirKind.TemplateClosure, hir.Type(TypeRef.Function), node.Source, data: index)
             : HirNodeId.None;
         return new(hir.Type(TypeRef.Function), expression,
             Callables: [new(closure.Template, Captures: captures.ToImmutable())]);
     }
 
     private FunctionInvocation Instantiate(HirTemplateId id, ImmutableArray<SemanticCapture> captured,
-        IReadOnlyList<SemanticValue> arguments, HirSourceRange source, SemanticContext caller)
+        IReadOnlyList<SemanticValue> arguments, HirSourceRange source, SemanticContext caller, bool applyEffects = true)
     {
         var template = hir.Templates[id.Value];
         if (arguments.Count != template.Parameters.Length)
@@ -110,7 +140,7 @@ internal sealed partial class SemanticAnalyzer
         {
             instance = BuildInstance(id, template, arguments, captureValues, actualCaptures, source, caller, cache, key);
         }
-        return new(instance.Id, ProjectInvocation(instance, arguments, captureValues, actualCaptures, caller));
+        return ProjectInvocation(instance, arguments, captureValues, actualCaptures, caller, applyEffects);
     }
 
     private FunctionInstance BuildInstance(HirTemplateId id, HirTemplate template,
@@ -128,9 +158,9 @@ internal sealed partial class SemanticAnalyzer
             recursiveSignature = Instantiate(id, captured, arguments, source, query).Result;
         }
         HirFunctionId function = new(caller.Publish ? hir.Functions.Count : -1);
-        if (caller.Publish) hir.Functions.Add(new(template.Name, [], [],
+        caller.Output?.ReserveFunction(new(template.Name, [], [],
             hir.Type(new TypeRef(TypeKind.Never)), HirNodeId.None, id, IsOpen: true));
-        SemanticContext context = new(function, caller.Publish) { Queries = caller.Queries };
+        SemanticContext context = new(function, caller.Output) { Queries = caller.Queries, DeferredReads = caller.DeferredReads };
         foreach (var declaration in program.Declarations)
         {
             var location = hir.Locations[declaration.Location.Value];
@@ -139,7 +169,7 @@ internal sealed partial class SemanticAnalyzer
             if (caller.Publish)
             {
                 target = new(hir.Locations.Count);
-                hir.Locations.Add(location with { Owner = function, TemplateOwner = null });
+                caller.Output!.ReserveLocation(location with { Owner = function, TemplateOwner = null });
             }
             context.Locations.Add(declaration.Location, target);
         }
@@ -187,21 +217,21 @@ internal sealed partial class SemanticAnalyzer
             if (coercion && context.Publish)
             {
                 incoming = new(hir.Locations.Count);
-                hir.Locations.Add(definition with { Name = "<input:" + definition.Name + ">", Owner = function,
+                context.Output!.ReserveLocation(definition with { Name = "<input:" + definition.Name + ">", Owner = function,
                     TemplateOwner = null, StorageType = argument.Type });
-                var read = hir.Add(HirKind.ReadLocation, argument.Type, definition.Source, data: incoming.Value);
+                var read = context.Output!.Add(HirKind.ReadLocation, argument.Type, definition.Source, data: incoming.Value);
                 argument = argument with { Node = read };
             }
             // Conversion is a typed operation at the function boundary, including
             // callbacks and dynamic dispatch. The backend merely lays out these nodes.
-            var converted = Convert(argument, parameterType, source, context);
+            var converted = Convert(argument, parameterType, definition.Source, context);
             if (coercion && context.Publish)
-                parameterInitializers.Add(hir.Add(HirKind.Declare, hir.Type(TypeRef.Null), definition.Source,
+                parameterInitializers.Add(context.Output!.Add(HirKind.Declare, hir.Type(TypeRef.Null), definition.Source,
                     [converted.Node], data: target.Value));
             var value = converted with { Location = target, Node = HirNodeId.None };
             context.Values[target] = value;
             context.Storage[target] = definition.AdmitsNull ? Nullable(parameterType) : parameterType;
-            if (caller.Publish) hir.Locations[target.Value] = hir.Locations[target.Value] with { StorageType = context.Storage[target] };
+            caller.Output?.SetLocation(target, hir.Locations[target.Value] with { StorageType = context.Storage[target] });
             parameters.Add(incoming);
             formalArguments.Add(value);
         }
@@ -243,14 +273,14 @@ internal sealed partial class SemanticAnalyzer
             if (context.Publish && parameterInitializers.Count != 0)
             {
                 parameterInitializers.Add(body.Node);
-                body = body with { Node = hir.Add(HirKind.Block, body.Type, template.Source,
+                body = body with { Node = context.Output!.Add(HirKind.Block, body.Type, template.Source,
                     System.Runtime.InteropServices.CollectionsMarshal.AsSpan(parameterInitializers)) };
             }
             instance.Result = result with { Location = null };
             FreezeSummary(instance, context);
             instance.Complete = true;
-            if (caller.Publish) hir.Functions[function.Value] = new(template.Name,
-                parameters.ToImmutable(), captures.ToImmutable(), result.Type, body.Node, id);
+            caller.Output?.SealFunction(function, new(template.Name,
+                parameters.ToImmutable(), captures.ToImmutable(), result.Type, body.Node, id));
             return instance;
         }
         catch (CompileException error)
@@ -276,7 +306,17 @@ internal sealed partial class SemanticAnalyzer
         instance.Objects = objects.ToImmutableDictionary();
         instance.Indexed = indexed.ToImmutableDictionary();
         instance.Cells = cells.ToImmutableDictionary();
+        instance.FieldWrites = context.FieldWrites.ToImmutableHashSet();
+        instance.CellWrites = context.CellWrites.ToImmutableHashSet();
+        instance.IndexedWrites = context.IndexedWrites.ToImmutableHashSet();
+        instance.AliasViews = context.AliasViews.Where(pair => objects.ContainsKey(pair.Key))
+            .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
 
+        void VisitRegion(int region)
+        {
+            if (context.Objects.TryGetValue(region, out var scope) && !objects.ContainsKey(region))
+                Visit(new(new(-1), HirNodeId.None, Scope: scope));
+        }
         void VisitCell(HirLocationId location)
         {
             if (cells.ContainsKey(location) || !context.Values.TryGetValue(location, out var value)) return;
@@ -290,9 +330,24 @@ internal sealed partial class SemanticAnalyzer
             {
                 scope = context.Objects.GetValueOrDefault(scope.Region, scope);
                 if (objects.TryAdd(scope.Region, scope))
+                {
                     foreach (var field in scope.Fields.Values) Visit(field);
+                    if (!scope.Aliases.IsDefault)
+                        foreach (var alias in scope.Aliases) VisitRegion(alias);
+                    if (context.AliasViews.TryGetValue(scope.Region, out var views))
+                        foreach (var view in views) VisitRegion(view);
+                }
             }
             if (value.Element is { } element) Visit(element);
+            if (!value.DeferredEffects.IsDefault)
+                foreach (var write in value.DeferredEffects)
+                {
+                    Visit(write.After);
+                    if (write.Kind == SemanticWriteKind.Location) VisitCell(write.Location);
+                    else if (write.Kind == SemanticWriteKind.Field) VisitRegion(write.Region);
+                    else if (write.Kind == SemanticWriteKind.Indexed && context.Indexed.TryGetValue(write.Region, out var deferredStorage))
+                        indexed.TryAdd(write.Region, deferredStorage);
+                }
             foreach (var callable in Choices(value))
                 if (!callable.Captures.IsDefault)
                     foreach (var capture in callable.Captures) { VisitCell(capture.Source); Visit(capture.Value); }
@@ -327,14 +382,28 @@ internal sealed partial class SemanticAnalyzer
         IReadOnlyList<SemanticValue> captures, SemanticContext caller)
     {
         StringBuilder key = new();
-        key.Append(id.Value).Append(':');
+        key.Append(id.Value).Append(caller.DeferredReads ? 'd' : 'i').Append(':');
+        if (arguments.All(IsScalarSchema) && captures.All(IsScalarSchema))
+        {
+            foreach (var value in arguments) AppendScalarKey(value);
+            key.Append('|');
+            foreach (var value in captures) AppendScalarKey(value);
+            return key.ToString();
+        }
         HashSet<SemanticValue> active = new(ReferenceEqualityComparer.Instance);
         KeyProvenance provenance = new();
         foreach (var value in arguments) { AppendValueKey(key, value, caller, active, provenance); key.Append(';'); }
         key.Append('|');
         foreach (var value in captures) { AppendValueKey(key, value, caller, active, provenance); key.Append(';'); }
         return key.ToString();
+
+        void AppendScalarKey(SemanticValue value) => key.Append(value.Type.Value).Append('T')
+            .Append(value.DenotedType?.Value ?? -1).Append(';');
     }
+
+    private static bool IsScalarSchema(SemanticValue value) => value.Scope is null
+        && value.Element is null && value.Callables.IsDefaultOrEmpty && value.IndexedRegion is null
+        && value.Alternatives.IsDefaultOrEmpty && value.DeferredEffects.IsDefaultOrEmpty;
 
     private string ValueKey(SemanticValue value)
     {
@@ -364,6 +433,8 @@ internal sealed partial class SemanticAnalyzer
         {
             scope = context?.Objects.GetValueOrDefault(scope.Region, scope) ?? scope;
             key.Append('{').Append(provenance.Region(scope.Region));
+            if (!scope.Aliases.IsDefaultOrEmpty)
+                foreach (var alias in scope.Aliases) key.Append('A').Append(provenance.Region(alias));
             foreach (var field in scope.Fields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
             {
                 key.Append(field.Key).Append(':');
@@ -379,6 +450,14 @@ internal sealed partial class SemanticAnalyzer
             key.Append('I').Append(provenance.Region(region)).Append(':').Append(indexed.FixedCarrier?.Value ?? -1);
             AppendValueKey(key, indexed.Element, context, active, provenance);
         }
+        if (!value.DeferredEffects.IsDefaultOrEmpty)
+            foreach (var write in value.DeferredEffects)
+            {
+                key.Append('W').Append((int)write.Kind).Append(write.Field);
+                key.Append(write.Kind == SemanticWriteKind.Location
+                    ? provenance.Location(write.Location) : provenance.Region(write.Region));
+                AppendValueKey(key, write.After, context, active, provenance);
+            }
         active.Remove(value);
     }
 
@@ -404,284 +483,4 @@ internal sealed partial class SemanticAnalyzer
         }
     }
 
-    private sealed class FormalInput(SemanticAnalyzer owner, SemanticContext caller, SemanticContext formal)
-    {
-        private readonly Dictionary<int, int> regions = [];
-        private readonly Dictionary<int, int> indexedRegions = [];
-        private readonly Dictionary<SemanticValue, SemanticValue> values = new(ReferenceEqualityComparer.Instance);
-        public Dictionary<HirLocationId, HirLocationId> Locations { get; } = [];
-
-        public SemanticValue Abstract(SemanticValue value)
-        {
-            if (values.TryGetValue(value, out var known)) return known;
-            // Runtime constants are not specialization facts. In particular a first
-            // Bool argument must not delete the other caller's branch from shared code.
-            var result = value with { Node = HirNodeId.None, Location = null,
-                Literal = value.DenotedType is null ? null : value.Literal,
-                Callables = [], Scope = null, Element = null, Alternatives = [], IndexedRegion = null };
-            values[value] = result;
-            if (value.Scope is { } scope)
-            {
-                scope = caller.Objects.GetValueOrDefault(scope.Region, scope);
-                if (scope.Region >= 0 && regions.TryGetValue(scope.Region, out var existing))
-                    result = result with { Scope = formal.Objects[existing] };
-                else
-                {
-                    int region = ++owner.nextRegion;
-                    if (scope.Region >= 0) regions[scope.Region] = region;
-                    var symbolic = scope with { Region = region, Fields = ImmutableDictionary<string, SemanticValue>.Empty,
-                        Locations = ImmutableDictionary<string, HirLocationId>.Empty, Aliases = [] };
-                    formal.Objects[region] = symbolic;
-                    result = result with { Scope = symbolic };
-                    values[value] = result;
-                    var fields = scope.Fields.ToImmutableDictionary(pair => pair.Key,
-                        pair => Abstract(scope.Locations.TryGetValue(pair.Key, out var location)
-                            ? caller.Values.GetValueOrDefault(location, pair.Value) : pair.Value), StringComparer.Ordinal);
-                    symbolic = symbolic with { Fields = fields };
-                    formal.Objects[region] = symbolic;
-                    result = result with { Scope = symbolic };
-                }
-            }
-            if (value.Element is { } element) result = result with { Element = Abstract(element) };
-            if (!value.Callables.IsDefaultOrEmpty)
-                result = result with { Callables = value.Callables.Select(callable => callable with
-                {
-                    Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture =>
-                    {
-                        var source = FormalLocation(capture.Source);
-                        var captured = Abstract(capture.Mode == HirCaptureMode.Location
-                            ? caller.Values.GetValueOrDefault(capture.Source, capture.Value) : capture.Value);
-                        formal.Values[source] = captured;
-                        formal.Storage[source] = caller.Storage.GetValueOrDefault(capture.Source, captured.Type);
-                        return capture with { Source = source, Value = captured };
-                    }).ToImmutableArray()
-                }).ToImmutableArray() };
-            if (!value.Alternatives.IsDefaultOrEmpty)
-                result = result with { Alternatives = value.Alternatives.Select(Abstract).ToImmutableArray() };
-            if (value.IndexedRegion is { } indexed)
-            {
-                if (!indexedRegions.TryGetValue(indexed, out var region))
-                {
-                    region = ++owner.nextRegion;
-                    indexedRegions[indexed] = region;
-                    if (caller.Indexed.TryGetValue(indexed, out var description))
-                        formal.Indexed[region] = description with { Element = Abstract(description.Element) };
-                }
-                result = result with { IndexedRegion = region };
-            }
-            values[value] = result;
-            return result;
-        }
-
-        public SemanticValue AttachOrigin(SemanticValue value, HirLocationId root) =>
-            AttachOrigin(value, new(root), []);
-
-        private SemanticValue AttachOrigin(SemanticValue value, SemanticOrigin origin, HashSet<int> active)
-        {
-            var result = value with { Origin = origin };
-            if (value.Scope is not { } scope || !active.Add(scope.Region)) return result;
-            scope = formal.Objects.GetValueOrDefault(scope.Region, scope);
-            scope = scope with { Fields = scope.Fields.ToImmutableDictionary(pair => pair.Key,
-                pair => AttachOrigin(pair.Value, origin with { Fields = origin.Fields.IsDefault
-                    ? [pair.Key] : origin.Fields.Add(pair.Key) }, active), StringComparer.Ordinal) };
-            formal.Objects[scope.Region] = scope;
-            active.Remove(scope.Region);
-            return result with { Scope = scope };
-        }
-
-        public void Complete()
-        {
-            foreach (var pair in Locations.ToArray())
-                if (caller.Values.TryGetValue(pair.Key, out var value)) formal.Values[pair.Value] = Abstract(value);
-        }
-
-        private HirLocationId FormalLocation(HirLocationId source)
-        {
-            if (Locations.TryGetValue(source, out var target)) return target;
-            target = source;
-            if (formal.Publish)
-            {
-                target = new(owner.hir.Locations.Count);
-                owner.hir.Locations.Add(owner.hir.Locations[source.Value] with { Owner = formal.Function, TemplateOwner = null });
-            }
-            Locations[source] = target;
-            return target;
-        }
-    }
-
-    private SemanticValue ProjectInvocation(FunctionInstance instance, IReadOnlyList<SemanticValue> arguments,
-        IReadOnlyList<SemanticValue> captures, ImmutableArray<SemanticCapture> captureDefinitions, SemanticContext caller)
-    {
-        if (instance.Objects.IsEmpty && instance.Indexed.IsEmpty && instance.Cells.IsEmpty
-            && instance.Result.Scope is null && instance.Result.Element is null
-            && instance.Result.Callables.IsDefaultOrEmpty && instance.Result.Alternatives.IsDefaultOrEmpty)
-        {
-            if (instance.Result.Origin is { } origin && origin.Fields.IsDefaultOrEmpty)
-                for (int index = 0; index < instance.Arguments.Length; index++)
-                    if (instance.Arguments[index].Origin?.Root == origin.Root)
-                        return ProjectScalar(instance.Result, arguments[index]);
-            return instance.Result with { Node = HirNodeId.None, Location = null, Origin = null };
-        }
-        InvocationProjection projection = new(this, instance, caller);
-        for (int index = 0; index < arguments.Count; index++) projection.Bind(instance.Arguments[index], arguments[index]);
-        for (int index = 0; index < captures.Count; index++)
-        {
-            projection.Bind(instance.Captures[index], captures[index]);
-            if (captureDefinitions[index].Mode == HirCaptureMode.Location)
-                projection.Locations[instance.CaptureTargets[index]] = captureDefinitions[index].Source;
-        }
-        if (instance.Complete) projection.ApplyEffects();
-        return projection.Project(instance.Result) with { Location = null, Node = HirNodeId.None };
-    }
-
-    private SemanticValue ProjectScalar(SemanticValue formal, SemanticValue actual)
-    {
-        var literal = actual.Literal;
-        if (literal is { Kind: HirLiteralKind.Path } path && Runtime(formal).WithoutNull == TypeRef.String)
-            literal = new(HirLiteralKind.String, Text: path.Text);
-        else if (literal is { Kind: HirLiteralKind.String } text && Runtime(formal).WithoutNull == TypeRef.Path)
-            literal = new(HirLiteralKind.Path, Text: text.Text);
-        return formal with { Literal = literal, DenotedType = actual.DenotedType,
-            Node = HirNodeId.None, Location = null, Origin = null };
-    }
-
-    private sealed class InvocationProjection(SemanticAnalyzer owner, FunctionInstance instance, SemanticContext caller)
-    {
-        private readonly Dictionary<int, int> regions = [];
-        private readonly Dictionary<int, int> indexedRegions = [];
-        private readonly Dictionary<HirLocationId, SemanticValue> origins = [];
-        private readonly Dictionary<SemanticValue, SemanticValue> values = new(ReferenceEqualityComparer.Instance);
-        private readonly HashSet<(SemanticValue Formal, SemanticValue Actual)> bound = new(new ValuePairComparer());
-        public Dictionary<HirLocationId, HirLocationId> Locations { get; } = [];
-
-        public void Bind(SemanticValue formal, SemanticValue actual)
-        {
-            if (!bound.Add((formal, actual))) return;
-            if (formal.Origin is { } origin && origin.Fields.IsDefaultOrEmpty) origins[origin.Root] = actual;
-            if (formal.Scope is { } shape && actual.Scope is { } scope)
-            {
-                scope = caller.Objects.GetValueOrDefault(scope.Region, scope);
-                regions[shape.Region] = scope.Region;
-                foreach (var pair in shape.Fields)
-                    if (scope.Fields.TryGetValue(pair.Key, out var field))
-                        Bind(pair.Value, scope.Locations.TryGetValue(pair.Key, out var location)
-                            ? caller.Values.GetValueOrDefault(location, field) : field);
-            }
-            if (formal.Element is { } element && actual.Element is { } actualElement) Bind(element, actualElement);
-            if (formal.IndexedRegion is { } indexed && actual.IndexedRegion is { } actualIndexed)
-                indexedRegions[indexed] = actualIndexed;
-            if (!formal.Callables.IsDefaultOrEmpty && !actual.Callables.IsDefaultOrEmpty)
-                for (int choice = 0; choice < Math.Min(formal.Callables.Length, actual.Callables.Length); choice++)
-                {
-                    var first = formal.Callables[choice].Captures;
-                    var second = actual.Callables[choice].Captures;
-                    if (first.IsDefaultOrEmpty || second.IsDefaultOrEmpty) continue;
-                    for (int index = 0; index < Math.Min(first.Length, second.Length); index++)
-                    {
-                        Locations[first[index].Source] = second[index].Source;
-                        Bind(first[index].Value, second[index].Value);
-                    }
-                }
-        }
-
-        public SemanticValue Project(SemanticValue value)
-        {
-            if (values.TryGetValue(value, out var previous)) return previous;
-            var result = value with { Node = HirNodeId.None, Location = null, Origin = null };
-            if (value.Origin is { } origin && origins.TryGetValue(origin.Root, out var actual))
-            {
-                bool found = true;
-                if (!origin.Fields.IsDefault)
-                    foreach (var name in origin.Fields)
-                    {
-                        if (actual.Scope is not { } scope) { found = false; break; }
-                        scope = caller.Objects.GetValueOrDefault(scope.Region, scope);
-                        if (!scope.Fields.TryGetValue(name, out var field)) { found = false; break; }
-                        actual = scope.Locations.TryGetValue(name, out var location)
-                            ? caller.Values.GetValueOrDefault(location, field) : field;
-                    }
-                if (found) result = owner.ProjectScalar(result, actual);
-            }
-            values[value] = result;
-            if (value.Scope is { } shape)
-            {
-                shape = instance.Objects.GetValueOrDefault(shape.Region, shape);
-                if (!regions.TryGetValue(shape.Region, out var region)) regions[shape.Region] = region = ++owner.nextRegion;
-                // Fresh fields and closures must project through one location map:
-                // a getter captures the same cell that member assignment mutates.
-                var symbolic = shape with { Region = region, Fields = ImmutableDictionary<string, SemanticValue>.Empty,
-                    Locations = caller.Objects.GetValueOrDefault(region)?.Locations ?? shape.Locations.ToImmutableDictionary(
-                        pair => pair.Key, pair => MapLocation(pair.Value), StringComparer.Ordinal),
-                    Aliases = shape.Aliases.IsDefault ? [] : shape.Aliases.Select(MapRegion).ToImmutableArray() };
-                result = result with { Scope = symbolic };
-                values[value] = result;
-                symbolic = symbolic with { Fields = shape.Fields.ToImmutableDictionary(pair => pair.Key,
-                    pair => Project(pair.Value), StringComparer.Ordinal) };
-                caller.Objects[region] = symbolic;
-                foreach (var field in symbolic.Locations)
-                    if (symbolic.Fields.TryGetValue(field.Key, out var fieldValue)) caller.Values[field.Value] = fieldValue;
-                result = result with { Scope = symbolic };
-            }
-            if (value.Element is { } element) result = result with { Element = Project(element) };
-            if (!value.Callables.IsDefaultOrEmpty)
-                result = result with { Callables = value.Callables.Select(callable => callable with
-                {
-                    Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture => capture with
-                    { Source = MapLocation(capture.Source), Value = Project(capture.Value) }).ToImmutableArray()
-                }).ToImmutableArray() };
-            if (!value.Alternatives.IsDefaultOrEmpty)
-                result = result with { Alternatives = value.Alternatives.Select(Project).ToImmutableArray() };
-            if (value.IndexedRegion is { } indexed)
-            {
-                if (!indexedRegions.TryGetValue(indexed, out var region)) indexedRegions[indexed] = region = ++owner.nextRegion;
-                if (instance.Indexed.TryGetValue(indexed, out var storage))
-                    caller.Indexed[region] = storage with { Element = Project(storage.Element) };
-                result = result with { IndexedRegion = region };
-            }
-            values[value] = result;
-            return result;
-        }
-
-        public void ApplyEffects()
-        {
-            foreach (var (formal, actual) in Locations.ToArray())
-                if (instance.Cells.TryGetValue(formal, out var value)) caller.Values[actual] = Project(value);
-            foreach (var region in regions.Keys.ToArray())
-                if (instance.Objects.TryGetValue(region, out var shape))
-                    _ = Project(new(owner.hir.Type(new HirType(TypeRef.Scope, Shape: shape.Layout)), HirNodeId.None, Scope: shape));
-            foreach (var region in indexedRegions.Keys.ToArray())
-                if (instance.Indexed.TryGetValue(region, out var storage))
-                    caller.Indexed[indexedRegions[region]] = storage with { Element = Project(storage.Element) };
-        }
-
-        private int MapRegion(int formal)
-        {
-            if (regions.TryGetValue(formal, out var actual)) return actual;
-            regions[formal] = actual = ++owner.nextRegion;
-            return actual;
-        }
-
-        private HirLocationId MapLocation(HirLocationId formal)
-        {
-            if (Locations.TryGetValue(formal, out var actual)) return actual;
-            actual = formal;
-            if (caller.Publish)
-            {
-                actual = new(owner.hir.Locations.Count);
-                owner.hir.Locations.Add(owner.hir.Locations[formal.Value] with { Owner = caller.Function, TemplateOwner = null });
-            }
-            Locations[formal] = actual;
-            if (instance.Cells.TryGetValue(formal, out var value)) caller.Values[actual] = Project(value);
-            return actual;
-        }
-    }
-
-    private sealed class ValuePairComparer : IEqualityComparer<(SemanticValue Formal, SemanticValue Actual)>
-    {
-        public bool Equals((SemanticValue Formal, SemanticValue Actual) x, (SemanticValue Formal, SemanticValue Actual) y) =>
-            ReferenceEquals(x.Formal, y.Formal) && ReferenceEquals(x.Actual, y.Actual);
-        public int GetHashCode((SemanticValue Formal, SemanticValue Actual) pair) => HashCode.Combine(
-            System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(pair.Formal),
-            System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(pair.Actual));
-    }
 }

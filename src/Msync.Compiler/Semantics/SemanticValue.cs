@@ -22,39 +22,51 @@ internal sealed record SemanticOrigin(HirLocationId Root, ImmutableArray<string>
 
 internal sealed record SemanticIndexed(SemanticValue Element, HirTypeId? FixedCarrier = null);
 
+internal enum SemanticWriteKind : byte { Location, Field, Indexed }
+internal sealed record SemanticDeferredWrite(SemanticWriteKind Kind, SemanticValue After,
+    HirLocationId Location = default, int Region = -1, string? Field = null);
+
 internal sealed record SemanticValue(HirTypeId Type, HirNodeId Node,
     HirLiteral? Literal = null, ImmutableArray<SemanticCallable> Callables = default,
     SemanticScope? Scope = null, SemanticValue? Element = null,
     HirLocationId? Location = null, bool EagerRange = false,
     ImmutableArray<SemanticValue> Alternatives = default, int? IndexedRegion = null,
-    HirTypeId? DenotedType = null, SemanticOrigin? Origin = null)
+    HirTypeId? DenotedType = null, SemanticOrigin? Origin = null,
+    SemanticRuntimeObservation? Observation = null,
+    ImmutableArray<SemanticDeferredWrite> DeferredEffects = default)
 {
     public bool? KnownBool => Literal is { Kind: HirLiteralKind.Bool } literal ? literal.Boolean : null;
 }
 
-internal sealed class SemanticContext(HirFunctionId function, bool publish = true)
+internal sealed class SemanticContext(HirFunctionId function, SemanticOutput? output = null, SemanticContext? parent = null)
 {
     public HirFunctionId Function { get; } = function;
-    public bool Publish { get; } = publish;
+    public SemanticOutput? Output { get; } = output;
+    public bool Publish => Output is not null;
     public bool DeferredReads { get; set; }
     public SemanticAnalyzer.InstantiationWorkspace? Queries { get; set; }
     public HirFlowAnalysis? FlowAnalysis { get; set; }
     public HirTypeId? ExpectedReturn { get; set; }
-    public Dictionary<HirLocationId, HirLocationId> Locations { get; } = [];
-    public Dictionary<HirLocationId, SemanticValue> Values { get; } = [];
-    public Dictionary<HirLocationId, HirTypeId> Storage { get; } = [];
-    public Dictionary<int, SemanticScope> Objects { get; } = [];
-    public Dictionary<int, SemanticIndexed> Indexed { get; } = [];
-    public Dictionary<int, ImmutableHashSet<int>> AliasViews { get; } = [];
-    public Dictionary<(int Region, string Field), ImmutableArray<SemanticMemberContract>> MemberContracts { get; } = [];
-    public Dictionary<HirTypeId, HirTypeId> Substitutions { get; } = [];
+    public int NextRegion { get; set; }
+    public SemanticFacts<HirLocationId, HirLocationId> Locations { get; } = new(parent?.Locations);
+    public SemanticFacts<HirLocationId, SemanticValue> Values { get; } = new(parent?.Values);
+    public SemanticFacts<HirLocationId, HirTypeId> Storage { get; } = new(parent?.Storage);
+    public SemanticFacts<int, SemanticScope> Objects { get; } = new(parent?.Objects);
+    public SemanticFacts<int, SemanticIndexed> Indexed { get; } = new(parent?.Indexed);
+    public SemanticFacts<int, ImmutableHashSet<int>> AliasViews { get; } = new(parent?.AliasViews);
+    public SemanticFacts<(int Region, string Field), ImmutableArray<SemanticMemberContract>> MemberContracts { get; } = new(parent?.MemberContracts);
+    public SemanticFacts<HirTypeId, HirTypeId> Substitutions { get; } = new(parent?.Substitutions);
+    public HashSet<int> IndexedWrites { get; init; } = [];
+    public HashSet<HirLocationId> CellWrites { get; init; } = [];
+    public HashSet<(int Region, string Field)> FieldWrites { get; init; } = [];
     public List<SemanticValue> Returns { get; } = [];
     public Dictionary<HirLoopId, List<SemanticValue>> Breaks { get; } = [];
 
-    public SemanticContext Fork(bool? publish = null)
+    public SemanticContext Fork()
     {
-        SemanticContext fork = new(Function, publish ?? Publish)
-        { DeferredReads = DeferredReads, ExpectedReturn = ExpectedReturn, Queries = Queries, FlowAnalysis = FlowAnalysis };
+        if (Output is null) return QueryFork();
+        SemanticContext fork = new(Function, Output)
+        { DeferredReads = DeferredReads, ExpectedReturn = ExpectedReturn, Queries = Queries, FlowAnalysis = FlowAnalysis, FieldWrites = FieldWrites, NextRegion = NextRegion };
         foreach (var pair in Locations) fork.Locations.Add(pair.Key, pair.Value);
         foreach (var pair in Values) fork.Values.Add(pair.Key, pair.Value);
         foreach (var pair in Storage) fork.Storage.Add(pair.Key, pair.Value);
@@ -65,6 +77,9 @@ internal sealed class SemanticContext(HirFunctionId function, bool publish = tru
         foreach (var pair in Substitutions) fork.Substitutions.Add(pair.Key, pair.Value);
         return fork;
     }
+
+    public SemanticContext QueryFork() => new(Function, parent: this)
+    { DeferredReads = DeferredReads, ExpectedReturn = ExpectedReturn, Queries = Queries ?? new(), FlowAnalysis = FlowAnalysis, NextRegion = NextRegion };
 
     public HirLocationId Location(HirLocationId source) => Locations.GetValueOrDefault(source, source);
 }

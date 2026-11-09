@@ -84,6 +84,44 @@ Ordinary control-flow joins and recursive signature fixed points remain real
 analysis. The goal is to remove speculative *compilation* and later repair,
 not to pretend that type inference never needs a worklist.
 
+### Query publication capability
+
+`SemanticArena` exposes executable tables through read-only views. It permits
+canonical type and structural-layout interning, which contains no executable
+body, mutable location state or runtime observation. `SemanticOutput` is the
+only semantic-stage owner of executable node/payload append, location allocation
+and updates, and function reservation/sealing. The analysis driver creates the
+output capability and gives it to emitting contexts. Query contexts have no
+output capability; their flow forks cannot acquire one. Helpers cannot append
+to an executable arena through their read view. Publication checks may avoid
+constructing unused descriptors, but are no longer the ownership boundary.
+
+Type/trait queries borrow the current fact maps using `SemanticFacts` overlays.
+The parent maps remain read-only for the synchronous query lifetime; a query
+owns every changed fact, and Scope/indexed descriptions are immutable. Query
+construction therefore does not enumerate or clone the lexical world.
+Invocation queries can additionally import only reachable operands into their
+local recursive-signature workspace. Query control-flow forks use overlays as
+well. Emitting control-flow forks still copy their current facts deliberately;
+this is distinct from speculative query compilation and preserves existing
+flow-join behavior.
+
+`tests/HirQueryOwnership` compares executable table sizes before and after
+structured queries, then serializes/reloads HIR and runs the pure lowerer's
+output. It also checks query/flow-fork capability isolation and allocation
+independence from a large unused lexical environment.
+
+Session acceptance and editor source-generation workspaces are a separate
+boundary: they may append newly bound source to the session arena while the
+generation is pending. `HirBuilder.BeginTransaction` records arena lengths and
+generation-owned export/import list references in constant time. Existing
+location/function replacements pass through setters that journal only the
+first old value. Commit retains the generation; rollback restores overwritten
+rows and rewinds newly appended tables and type-interner keys. Export/import
+lists are read-only to consumers and replaced as generation values, so opening
+a transaction does not copy or scan accepted history. This transaction is not
+used for `decltype`, concept checks or generic signature inference.
+
 ### Instance code versus call-site provenance
 
 `SemanticAnalyzer.Instantiation` stores code promises in formal location and
@@ -95,6 +133,23 @@ own identities. Fresh Scope fields and returned closure captures use one shared
 location projection: `object::field = value` and a getter capturing that field
 must observe the same cell, without sharing cells with another constructor call.
 Scalar-only results bypass graph projection allocation.
+
+The result scheme also carries formal root/field-path provenance. Projection
+substitutes each caller's scalar literals, denoted types and Path/String metadata;
+these values are not part of shared code identity. Assignment and ordinary
+operators drop or replace the provenance as appropriate. A read-only call does
+not overwrite its caller's object facts with a cached snapshot.
+
+Field and captured-cell writes are explicit summaries, separate from the typed
+result. Scope constructor initializers are not writes to an existing instance:
+anonymous results get fresh cells, while a named allocation site is initialized
+once and retains later caller mutations. Subsequent explicit writes in the
+function body still project on every admitted execution. Source regions, indexed
+read views and their alias groups are renamed together, including reverse
+invalidation edges; two indexed reads are not assumed to identify one object.
+Callback construction can request code/result projection without committing its
+write summary, leaving invocation admission and zero-or-more execution to the
+consumer's evaluation policy.
 
 The code key includes semantic types, callable definitions, denoted types,
 evaluation policy and canonical alias partitions. An alias partition uses
@@ -182,3 +237,18 @@ Roslyn's [bound nodes](https://github.com/dotnet/roslyn/blob/main/src/Compilers/
 and [nullable flow analysis](https://github.com/dotnet/roslyn/blob/main/src/Compilers/CSharp/Portable/FlowAnalysis/NullableWalker.cs)
 motivate keeping bound operations, storage annotations and current flow facts
 separate. These are mechanisms to adapt to msync, not new runtime dependencies.
+
+### Standard binding closure
+
+Lexical binding closes standard-source dependencies before returning its bound
+program. Each reserved standard import enters a worklist; binding its selected
+exports may reserve further imports. A first-class `$std` value alone expands
+all public module shapes. Direct `$std::module::export` access retains the source
+export demand plan and does not initialize or bind unrelated module families.
+Qualified concept requirements are resolved in this same binding phase.
+
+`BoundProgram.StandardModules` contains the resulting bound module bodies and
+export identities. Semantic analysis and read-only queries consume that table;
+there is no callback into `SourceBinder` and no query-triggered parsing or
+binding. Runtime initialization remains separate: semantic publication schedules
+only the required module initialization, while a type query publishes none.

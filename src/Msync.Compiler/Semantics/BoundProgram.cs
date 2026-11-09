@@ -35,7 +35,11 @@ internal sealed record BoundConcept(int Id, string Name, HirSourceRange Source,
     ImmutableDictionary<string, HirTypeId> AssociatedTypes);
 internal sealed record BoundRequirement(string Name, HirTypeId Type, bool Nullable,
     HirSourceRange Source, ImmutableArray<HirTypeId> Parameters = default,
-    HirTypeId? Result = null);
+    HirTypeId? Result = null, ImmutableArray<string> ParameterNames = default,
+    HirSourceRange? DeclarationSource = null);
+internal sealed record BoundNativeSignature(string Name, HirSourceRange Source,
+    ImmutableArray<string> ParameterNames, ImmutableArray<HirTypeId> Parameters,
+    HirTypeId Result, ImmutableArray<bool> NullableParameters = default);
 
 internal sealed record BoundTemplate(HirTemplateId Id, string Name,
     ImmutableArray<HirLocationId> Parameters, ImmutableArray<HirLocationId> Captures,
@@ -49,6 +53,9 @@ internal sealed class BoundProgram(HirBuilder hir)
     public HirFunctionId Entry { get; set; }
     public HirNodeId Body { get; set; }
     public bool IsSession { get; set; }
+    public int NextTypeParameter { get; set; }
+    public int NextSingleton { get; set; }
+    public int NextLoop { get; set; }
     public List<BoundDeclaration> Declarations { get; } = [];
     private readonly Dictionary<HirLocationId, BoundDeclaration> declarations = [];
     public List<BoundTemplate> Templates { get; } = [];
@@ -63,15 +70,39 @@ internal sealed class BoundProgram(HirBuilder hir)
     public List<BoundStandardUse> StandardUses { get; } = [];
     public Dictionary<HirLocationId, HirTemplateId> FunctionLocations { get; } = [];
     public Dictionary<HirLocationId, string> NativeLocations { get; } = [];
+    public Dictionary<string, BoundNativeSignature> NativeSignatures { get; } = new(StringComparer.Ordinal);
     public Dictionary<HirNodeId, HirTypeId> TypeAnnotations { get; } = [];
     public Dictionary<HirNodeId, int> ConceptUses { get; } = [];
     public Dictionary<int, string> TypeParameterNames { get; } = [];
     public HashSet<HirLocationId> WrittenLocations { get; } = [];
     public Dictionary<string, BoundModule> StandardModules { get; } = new(StringComparer.Ordinal);
     public Dictionary<string, HirLocationId> StandardLocations { get; } = new(StringComparer.Ordinal);
-    public Func<string, BoundModule>? BindModule { get; set; }
     public ImmutableDictionary<string, HirLocationId> Exports { get; set; }
         = ImmutableDictionary<string, HirLocationId>.Empty;
+    public ImmutableDictionary<string, int> RootConcepts { get; set; }
+        = ImmutableDictionary<string, int>.Empty;
+
+    public void Inherit(BoundProgram previous)
+    {
+        foreach (var declaration in previous.Declarations) Declare(declaration);
+        Templates.AddRange(previous.Templates);
+        Concepts.AddRange(previous.Concepts);
+        foreach (var pair in previous.FunctionLocations) FunctionLocations.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.NativeLocations) NativeLocations.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.NativeSignatures) NativeSignatures.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.TypeAnnotations) TypeAnnotations.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.ConceptUses) ConceptUses.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.TypeParameterNames) TypeParameterNames.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.StandardModules) StandardModules.Add(pair.Key, pair.Value);
+        foreach (var pair in previous.StandardLocations) StandardLocations.Add(pair.Key, pair.Value);
+        WrittenLocations.UnionWith(previous.WrittenLocations);
+        Exports = previous.Exports;
+        RootConcepts = previous.RootConcepts;
+        Entry = previous.Entry;
+        NextTypeParameter = previous.NextTypeParameter;
+        NextSingleton = previous.NextSingleton;
+        NextLoop = previous.NextLoop;
+    }
 
     public HirNode Node(HirNodeId id) => Hir.Nodes[id.Value];
     public BoundDeclaration Declaration(HirLocationId location) => declarations[location];
@@ -87,10 +118,12 @@ internal sealed class BoundProgram(HirBuilder hir)
         if (!declarations.ContainsKey(location)) return false;
         location = Original(location);
         var declaration = declarations[location];
-        return declaration.Kind is DeclarationKind.Local or DeclarationKind.Parameter
-                or DeclarationKind.Loop or DeclarationKind.Pattern
-            && (!IsSession || declaration.Template is not null)
-            && !WrittenLocations.Contains(location);
+        if (declaration.Kind is not (DeclarationKind.Local or DeclarationKind.Parameter
+                or DeclarationKind.Loop or DeclarationKind.Pattern) || WrittenLocations.Contains(location)) return false;
+        if (declaration.Template is not null) return true;
+        foreach (BoundModule module in StandardModules.Values)
+            if (module.Source == declaration.Source.Source && module.Exports.Values.Contains(location)) return false;
+        return !IsSession || !Exports.Values.Contains(location);
     }
     public void Declare(BoundDeclaration declaration)
     {

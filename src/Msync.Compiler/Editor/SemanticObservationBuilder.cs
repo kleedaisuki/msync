@@ -139,6 +139,12 @@ internal sealed class SemanticObservationBuilder
             if (shape.Locations.TryGetValue(selection.Name, out var location))
                 references.Add(new(Span(selection.MemberSpan), [Definition(location)], false));
         }
+        foreach (var use in program.TypeUses)
+        {
+            if (use.Source.Source != source) continue;
+            int concept = program.Hir.Types[use.Type.Value].Concept;
+            if (concept >= 0) references.Add(new(Span(use.Source), [program.Concepts[concept].Source]));
+        }
         return new(module, source, values.ToImmutableArray(), observations.ToImmutableArray(),
             contexts.ToImmutableArray(), receivers.ToImmutableArray(), pathOwners.ToImmutableArray(),
             imports.ToImmutableArray(), references.ToImmutableArray());
@@ -219,14 +225,23 @@ internal sealed class SemanticObservationBuilder
             new SemanticFieldView(pair.Key, Value(pair.Value, context),
                 scope.Locations.TryGetValue(pair.Key, out var location) ? [Definition(location)] : []))
             .ToImmutableArray();
+        int concept = program.Hir.Types[value.Type.Value].Concept;
+        if (scope is null && concept >= 0)
+            fields = Requirements(concept).Select(requirement => new SemanticFieldView(requirement.Name,
+                Value(new(requirement.Type, HirNodeId.None), context), [requirement.Source], requirement.Nullable))
+                .ToImmutableArray();
         var callable = value.Callables.IsDefaultOrEmpty ? null : value.Callables[0];
         string? native = callable?.NativeName;
         HirTemplateId? template = callable?.Template;
         bool unknown = program.Hir.Types[value.Type.Value].TypeParameter >= 0
             && scope is null && callable is null;
-        SemanticConnectionView? connection = value.Literal is { Kind: HirLiteralKind.Connection } endpoint
-            ? new(endpoint.ConnectionKind, endpoint.Text ?? "") : null;
+        SemanticConnectionView? connection = value.Observation?.Connection is { } imported
+            ? new(imported.Kind, imported.Address)
+            : value.Literal is { Kind: HirLiteralKind.Connection } endpoint
+                ? new(endpoint.ConnectionKind, endpoint.Text ?? "") : null;
         SemanticPathView? path = KnownPath(value, context);
+        BoundNativeSignature? nativeSignature = native is not null
+            ? program.NativeSignatures.GetValueOrDefault(native) : null;
         values[id.Value] = new(value.Type, Template: template, TypeValue: value.DenotedType,
             NativeName: native, IsNamedScope: scope?.Named == true, IsUnknown: unknown,
             Members: fields,
@@ -234,12 +249,19 @@ internal sealed class SemanticObservationBuilder
                 : value.Alternatives.Select(item => Value(item, context)).ToImmutableArray(),
             Element: value.Element is null ? null : Value(value.Element, context),
             Connection: connection, Path: path,
-            Text: value.Literal is { Kind: HirLiteralKind.String } text ? text.Text : null);
+            Text: value.Observation?.Text
+                ?? (value.Literal is { Kind: HirLiteralKind.String } text ? text.Text : null),
+            Signature: nativeSignature is null ? null : NativeSignature(nativeSignature),
+            Documentation: nativeSignature is null ? null : Documentation(nativeSignature.Source));
         return id;
     }
 
     private SemanticPathView? KnownPath(SemanticValue value, SemanticContext context)
     {
+        if (value.Observation?.Path is { } imported)
+            return new(imported.Raw, imported.WorkingDirectory,
+                imported.Connection is { } importedEndpoint ? new(importedEndpoint.Kind, importedEndpoint.Address) : null,
+                imported.HomeDirectory, imported.LocalSpelling);
         if (value.Literal is { Kind: HirLiteralKind.Path } literal) return new(literal.Text ?? "");
         if (value.Node.IsNone) return null;
         HirNode node = program.Hir.Nodes[value.Node.Value];
@@ -354,18 +376,48 @@ internal sealed class SemanticObservationBuilder
         BoundConcept concept = program.Concepts[id];
         var members = concept.Requirements.Select(requirement => new SemanticMember(requirement.Name,
             program.Hir.Types[requirement.Type.Value].RuntimeType.ToString(),
-            requirement.Parameters.IsDefault ? $"{requirement.Name}: {TypeName(requirement.Type)}"
-                : $"{requirement.Name}: fn({string.Join(", ", requirement.Parameters.Select(TypeName))}) -> {TypeName(requirement.Result!.Value)}",
+            requirement.DeclarationSource is { } written ? Text(written)
+                : requirement.Parameters.IsDefault ? $"{requirement.Name}: {TypeName(requirement.Type)}"
+                    : $"{requirement.Name}: fn({string.Join(", ", requirement.Parameters.Select(TypeName))}) -> {TypeName(requirement.Result!.Value)}",
             "A required member of this structural concept.",
             SemanticRole: requirement.Parameters.IsDefault ? "variable" : "function")).ToImmutableArray();
         return new(concept.Name, concept.Source, $"concept {concept.Name}",
-            "A named structural constraint. Required fields and callable signatures are checked at specialization."
+            Documentation(concept.Source)
+                + "\n\nA named structural constraint. Required fields and callable signatures are checked at specialization."
                 + (members.Length == 0 ? "" : "\n\nRequired members:\n" + string.Join('\n', members.Select(member => $"- `{member.Signature}`"))), members);
     }
 
     private string TypeName(HirTypeId type) => program.Hir.Types[type.Value].TypeParameter >= 0
         ? program.TypeParameterNames.GetValueOrDefault(program.Hir.Types[type.Value].TypeParameter, "inferred at call")
         : program.Hir.Types[type.Value].RuntimeType.ToString();
+
+    private IEnumerable<BoundRequirement> Requirements(int concept)
+    {
+        BoundConcept definition = program.Concepts[concept];
+        return definition.Bases.SelectMany(Requirements).Concat(definition.Requirements)
+            .DistinctBy(requirement => requirement.Name);
+    }
+
+    private string NativeSignature(BoundNativeSignature declaration)
+    {
+        NativeSignatures.TryGet(declaration.Name, out var native);
+        string parameters = string.Join(", ", declaration.Parameters.Select((type, index) =>
+        {
+            TypeRef runtime = program.Hir.Types[type.Value].RuntimeType;
+            bool nullable = !declaration.NullableParameters.IsDefault && declaration.NullableParameters[index]
+                || runtime.Nullable && runtime != TypeRef.Null;
+            string prefix = native?.Variadic == true && index >= native.Parameters.Count ? "..." : "";
+            return $"{prefix}{declaration.ParameterNames[index]}{(nullable ? "?" : "")}: "
+                + (nullable ? runtime.WithoutNull.ToString() : TypeName(type));
+        }));
+        return $"fn {declaration.Name}({parameters}) -> {TypeName(declaration.Result)}";
+    }
+
+    private string Text(HirSourceRange source) => program.Hir.Sources[source.Source.Value].Text is { } text
+        ? text.Substring(source.Start, source.Length) : "";
+
+    private string Documentation(HirSourceRange source) => program.Hir.Sources[source.Source.Value].Text is { } text
+        ? SemanticStandardCatalog.Documentation(text, source.Start) : "";
 
     private HirSourceRange Definition(HirLocationId location)
     {

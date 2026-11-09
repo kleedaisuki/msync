@@ -49,6 +49,8 @@ internal static class AggregateChecks
                 is NumberValue { Data: 2 }, $"Caller-visible capture writes O{level}");
             Check(await Run("$std::bool::both(true,false)", level) is BoolValue { Data: false },
                 $"A source module uses the shared HIR import location O{level}");
+            Check(await Run("fn make(value){scope Saved {item:value}}; make(\"first\"); let second=make(./path); second::item", level)
+                is StringValue { Data: "first" }, $"A named Scope retains its established carrier O{level}");
         }
         Console.WriteLine($"PASS {checks} typed aggregate contracts");
     }

@@ -40,7 +40,7 @@ Require(canonical.Type(new HirType(TypeRef.Any, Alternatives: [variable, textTyp
     "Equivalent symbolic types did not retain one canonical identity");
 Example persistent = New();
 var persistentX = persistent.Location("x", persistent.NumberType);
-persistent.Hir.Exports.Add(new("x", persistentX));
+persistent.Hir.SetExports([new("x", persistentX)]);
 persistent.Hir.Functions[0] = persistent.Hir.Functions[0] with { Body = persistent.Declare(persistentX, persistent.Number(3)) };
 HirLoweringSession backendSession = new();
 await using ExecutionSession runtimeSession = new();
@@ -58,7 +58,7 @@ foreach (HirLoweringSession? session in new HirLoweringSession?[] { null, new() 
 Require(HirLowerer.Lower(dependent, session: backendSession).Layout.Slot(new(0), persistentX) == firstSlot,
     "An existing session failed to resolve an explicit location import");
 var persistentY = persistent.Location("y", persistent.NumberType);
-persistent.Hir.Exports.Add(new("y", persistentY));
+persistent.Hir.SetExports([.. persistent.Hir.Exports, new("y", persistentY)]);
 persistent.Hir.Functions[0] = persistent.Hir.Functions[0] with
 {
     Body = persistent.Block(persistent.Assign(persistentX, persistent.Number(5)),
@@ -69,6 +69,21 @@ var secondGeneration = backendSession.Lower(persistent.Hir.Freeze(new(0), isSess
 Require(secondGeneration.Layout.Slot(new(0), persistentX) == firstSlot, "Persistent logical location changed its runtime slot");
 Require(await runtimeSession.ExecuteAsync(secondGeneration.Module) is NumberValue { Data: 7 }, "Persistent HIR session lost its values");
 Require(secondGeneration.Module.SessionRoots!.Count == 2, "Session exports were not mapped explicitly");
+Example failing = New();
+var broken = failing.Location("broken", failing.NumberType);
+failing.Hir.SetExports([new("broken", broken)]);
+var badText = failing.Hir.Literal(new(HirLiteralKind.String, Text: "not a number"),
+    failing.Hir.Type(TypeRef.String), failing.Source);
+failing.Hir.SetFunction(new(0), failing.Hir.Functions[0] with
+{ Body = failing.Declare(broken, failing.Node(HirKind.Convert, failing.NumberType, [badText], failing.NumberType.Value)) });
+var failedImage = HirLowerer.Lower(failing.Hir.Freeze(new(0), isSession: true));
+await using ExecutionSession failedSession = new();
+bool failed = false;
+try { await failedSession.ExecuteAsync(failedImage.Module); }
+catch (MsyncException) { failed = true; }
+Require(failed, "The invalid Number initializer did not fail");
+Require(!failedSession.IsLocalInitialized(failedImage.Layout.Slot(new(0), broken)),
+    "A failed root initializer published a placeholder Null");
 Console.WriteLine($"PASS {checks} pure HIR lowering/source-free execution contracts");
 
 void Require(bool condition, string message)
