@@ -158,7 +158,7 @@ internal static class BytecodeValidation
                         throw Error("native argument count disagrees with registry signature");
                     for (var i = 0; i < arguments.Length; i++) Require(arguments[i], signature.Parameters[Math.Min(i, signature.Parameters.Count - 1)].Kind);
                     Push(signature.Result); break;
-                case OpCode.LoadBuiltin: Push(instruction.Text?.TrimStart('$') is "std" or "view" or "views" or "ranges" ? TypeRef.Scope : TypeRef.Connection); break;
+                case OpCode.LoadBuiltin: Push(instruction.Text?.TrimStart('$') is "std" ? TypeRef.Scope : TypeRef.Connection); break;
                 case OpCode.MakeRange: PopMany(instruction.A); Push(new(TypeKind.Range)); break;
                 case OpCode.MakeLazyRange:
                     var items = PopMany(instruction.A);
@@ -170,6 +170,8 @@ internal static class BytecodeValidation
                 case OpCode.MakeScope:
                     if ((instruction.Text is null ? 0 : instruction.Text.Split('\0', StringSplitOptions.RemoveEmptyEntries).Length) != instruction.A) throw Error("scope member names disagree with value count");
                     PopMany(instruction.A); Push(TypeRef.Scope); break;
+                case OpCode.GetSingleton: Push(new(TypeKind.Scope | TypeKind.Null)); break;
+                case OpCode.SetSingleton: Require(Pop(), TypeKind.Scope); Push(TypeRef.Scope); break;
                 case OpCode.GetMember: Require(Pop(), TypeKind.Scope | TypeKind.Connection | TypeKind.Process); Push(TypeRef.Any); break;
                 case OpCode.SetMember: Pop(); Require(Pop(), TypeKind.Scope); Push(TypeRef.Null); break;
                 case OpCode.GetCapture: Require(Pop(), TypeKind.Function); Push(TypeRef.Any); break;
@@ -208,6 +210,7 @@ internal static class BytecodeValidation
                 case OpCode.Subtract:
                 case OpCode.Multiply:
                 case OpCode.Divide:
+                case OpCode.Remainder:
                     Require(Pop(), TypeKind.Number); Require(Pop(), TypeKind.Number); Push(TypeRef.Number); break;
                 case OpCode.Negate: Require(Pop(), TypeKind.Number); Push(TypeRef.Number); break;
                 case OpCode.GetIterator: Require(Pop(), TypeKind.Range); stack.Add(new(new(TypeKind.Range), Iterator: true)); break;
