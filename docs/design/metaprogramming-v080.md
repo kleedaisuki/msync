@@ -54,6 +54,97 @@ type relations, nullability and union laws plus actual O0/O2/O3 source,
 serialized `.mso` and contextual `.mexe` execution. It does not introduce timing
 thresholds or unrelated full-regression dependencies.
 
+## Dependent expression queries
+
+Ten queries use the compiler's structural and callable information rather than
+inventing runtime reflection on the closed `Type` kind:
+
+| Query | Result and contract |
+| --- | --- |
+| `is_invocable(operation, witnesses...)` | Bool: the selected callable accepts the supplied argument schemas |
+| `is_invocable_r(result, operation, witnesses...)` | Bool: invocation is valid and its result implicitly converts to the requested Type |
+| `invoke_result(operation, witnesses...)` | Inferred result Type; invalid invocations produce `E0222` with the actual typing reason |
+| `parameter_count(operation)` | Declared arity, or the minimum native variadic arity; null for an unknown/inconsistent signature |
+| `parameter_types(operation)` | Range of declared parameter Types; unannotated generic parameters are Any; null when unavailable |
+| `is_variadic(operation)` | Whether the callable has a native variadic tail, including callable Path/String process specifications |
+| `has_member(value, name)` | Whether every value represented by the current non-null structural schema has this member |
+| `member_type(value, name)` | Inferred member Type, or null when absent |
+| `member_names(value)` | Declared member names in ordinal order |
+| `member_count(value)` | Number of declared members |
+
+These operands are **unevaluated**. A witness which is itself a Type denotes a
+prospective argument type, such as `Number`; another expression supplies its
+inferred structural/callable schema. Function bodies, argument blocks, Process
+calls, transfers and endpoint authentication are not executed. The function
+value naming the query is obtained normally; its tested operands are not run.
+Parameter inspection reports declarations, not a universally quantified
+higher-kinded signature or a layout/ABI promise. A Path/String process callable
+is variadic with minimum arity zero and has no fixed `parameter_types` list.
+
+```msync
+let meta = $std::meta;
+fn label(value) {
+    if meta::has_member(value, "name") { value::name }
+    else { value as String }
+};
+label(scope { name: "Klee" });
+label(42);
+
+let increment = fn(value: Number) { value + 1 };
+let accepts_number = meta::is_invocable(increment, Number);
+let result_type = meta::invoke_result(increment, Number);
+```
+
+Known results remain semantic facts during specialization, before bytecode
+optimization. The generic branch above therefore checks the selected member or
+conversion instead of typechecking both incompatible implementations. Ordinary
+Type producers still retain effects: `is_same(compute_type(), Number)` evaluates
+`compute_type()`, whereas `is_invocable(action, compute_argument())` only infers
+the candidate argument expression.
+
+A concept can participate through an ordinary constrained callable; there is no
+runtime Concept value and no `Scope`-kind shortcut for structural satisfaction:
+
+```msync
+concept Named { name: String, };
+let accepts_named = fn(value: Named) { value::name };
+let valid = meta::is_invocable(accepts_named, scope { name: "Klee" });
+let invalid = meta::is_invocable(accepts_named, scope { name: 42 });
+```
+
+Metadata inference uses a separate Compilation with shared immutable source AST
+and code, copied semantic locations, and fresh specialization tables. It does
+not reparse a generated source string or invoke an alternate evaluator. A
+failed detection cannot reserve a stale Never specialization in the real
+program or attach callable/concept contracts to its live locations. Scope
+memory views, source provenance graphs and indexed Buffer element constraints
+are cloned with their internal alias relationships intact. No query bytecode or
+runtime AST is serialized; artifacts contain the resulting ordinary values.
+
+The [C++ relationship traits](https://eel.is/c++draft/meta.rel) motivate
+conversion and invocability questions. Its
+[unevaluated invocation result](https://eel.is/c++draft/meta.trans.other)
+motivates result inference, while msync uses its own source specialization
+rules rather than C++ overload resolution or SFINAE. `enable_if`, pointer/CV/ref
+transforms, trivial-copy/layout traits and nominal inheritance queries have no
+corresponding semantics here and are not supplied as misleading no-ops.
+
+## Accepted incremental observations
+
+- `tests/MetaTypeValues` accepted 2,774 focused type-relation, transformation,
+  runtime-native and staged artifact contracts. The source layer contains 13
+  ordinary conveniences over 15 pure Type primitives.
+- `tests/MetaTraits` accepted 292 dependent-query checks across O0/O2/O3 and
+  source, serialized relocatable and serialized contextual executable stages.
+  The additional Buffer probes cover successful and failed speculative writes
+  followed by a different real first element type, plus memory-view isolation.
+- `tests/Msync.EndToEnd/type_traits_journey.py` accepted nine real CLI routes,
+  261 exact file contents, 27 absent forbidden effects and four diagnostics.
+  It deletes source before binary execution and changes cwd after binding.
+  Its recorded image is the managed Debug CLI in
+  `.temp/meta-traits/build/bin/Msync.Cli/debug`; this is not a Native AOT timing
+  claim. Native platform acceptance reuses the same focused journey.
+
 Known Type arguments retain their denoted type through these operations. A
 predicate over `decltype(value)` therefore selects the valid specialization
 branch before lowering, including at O0:
