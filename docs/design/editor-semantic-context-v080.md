@@ -1,5 +1,44 @@
 # Lexical semantic contexts for editing incomplete source
 
+## Typed HIR migration contract (0.8.1)
+
+The Typed HIR migration separates editor analysis from executable lowering.
+The language server already consumes `EditorAnalysis`, not bytecode `Module`;
+its protocol does not need to expose backend slots or change for this boundary.
+The new producer must supply the same views from a read-only semantic generation:
+
+* Occurrences retain their source-owned range, type, signature, semantic role,
+  member shape and known Path/Connection provenance.
+* `At(offset)` selects lexical declaration boundaries and receivers, including
+  incomplete generic bodies. Unknown parameters remain bindings rather than
+  reverting to unbound Paths. Context tables retain scope identities rather
+  than eagerly expanding every completion list.
+* Definition locations pair the correct source document with each range.
+  Standard declarations navigate to the same embedded source bytes through
+  versioned `msync-stdlib` documents.
+* Diagnostics and error nodes preserve useful neighboring declarations.
+  Queries cannot mutate specialization/storage domains or emit bytecode to
+  discover a signature. Builtin and standard metadata come from semantic
+  catalogs, not executable module construction.
+* A document's text, version and server generation own one analysis result.
+  Background completion of an older generation cannot overwrite a newer one;
+  close/reopen creates a new identity even when the LSP version restarts at one.
+
+Selected physical Path completion remains a separate effectful operation.
+Analyzing source, producing semantic tokens, hovering, navigating or formatting
+must not enumerate remote directories, authenticate, execute a Process or
+perform a transfer.
+
+`tests/Msync.EndToEnd/hir_editor_journey.py` exercises these protocol views using
+the real language server. Its published-0.8.0 baseline passed generic instance
+types, uncalled/incomplete contexts, latest-generation selection, nullable flow,
+error recovery, UTF-16 definition ranges, standard source navigation, exact
+qualified edits, close/reopen and absence of source effects. The baseline image
+is `10d27794ccf2dd4c5638fd6d77d3510de5b6f1dd61ac0e0557382e3cf36c32ad`.
+The same journey will consume the coherent new compiler and final Native images;
+the semantic-only API boundary is owned by the compiler rather than inferred
+from the protocol test's absence of effects.
+
 This is the implementation contract for completing names and members inside
 functions and Scopes in 0.8. It extends the original top-level prefix recovery;
 the focused acceptance results belong beside the implementation as they land.
