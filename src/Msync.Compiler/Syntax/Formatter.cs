@@ -304,6 +304,7 @@ public static class Formatter
             Types.AddRange(TypeSyntaxFacts.Annotations(node).Select(type => type.Span));
             if (node is PathExpr path) Paths.Add(path.Span);
             if (node is UnaryExpr { Operator: "+" or "-" } unary) UnaryOperators.Add(unary.Span.Start);
+            if (node is CastExpr { OperatorSpan: { } cast }) Operators.Add(cast.Start);
             if (node is BinaryExpr binary && binary.OperatorSpan is { } operation)
             {
                 if (binary.Operator != "::" && (binary.Operator != "/" || binary.Left is NumberExpr || binary.Right is NumberExpr)) Operators.Add(operation.Start);

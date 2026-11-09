@@ -45,7 +45,10 @@ public sealed record StringExpr(string Value, SourceSpan Span) : Expr(Span);
 public sealed record BoolExpr(bool Value, SourceSpan Span) : Expr(Span);
 public sealed record NullExpr(SourceSpan Span) : Expr(Span);
 public sealed record NumberExpr(double Value, SourceSpan Span) : Expr(Span);
-public sealed record CastExpr(Expr Value, TypeSyntax Type, SourceSpan Span) : Expr(Span);
+public sealed record CastExpr(Expr Value, TypeSyntax Type, SourceSpan Span) : Expr(Span)
+{
+    public SourceSpan? OperatorSpan { get; init; }
+}
 public sealed record UnaryExpr(string Operator, Expr Operand, SourceSpan Span) : Expr(Span);
 public sealed record BinaryExpr(string Operator, Expr Left, Expr Right, SourceSpan Span) : Expr(Span)
 {

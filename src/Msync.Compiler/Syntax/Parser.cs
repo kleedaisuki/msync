@@ -259,9 +259,9 @@ public sealed class Parser
         Require(TokenKind.Semicolon, "Expected ';' after the native declaration.");
         return new(name.Text, parameters, type, SourceSpan.Cover(start, Previous.Span)) { NameSpan = name.Span };
     }
-    private Expr Expression(int minimum = 0)
+    private Expr Expression(int minimum = 0, bool header = false)
     {
-        Expr left = Prefix();
+        Expr left = Prefix(header);
         while (true)
         {
             if (At(TokenKind.LeftParen) && 15 >= minimum) { left = Call(left); continue; }
@@ -276,19 +276,19 @@ public sealed class Parser
             if (op == "as")
             {
                 TypeSyntax type = ParseType();
-                left = new CastExpr(left, type, SourceSpan.Cover(left.Span, type.Span));
+                left = new CastExpr(left, type, SourceSpan.Cover(left.Span, type.Span)) { OperatorSpan = operation.Span };
                 continue;
             }
             if (op == "is" && TakeWord("not")) op = "is not";
             Expr right;
-            if (op == "/" && IsExpressionEnd()) right = new PathExpr("", Previous.Span);
+            if (op == "/" && IsPathEnd(header)) right = new PathExpr("", Previous.Span);
             else if (op == "::" && At(TokenKind.Atom))
             {
                 var member = Next();
                 right = new NameExpr(member.Text, member.Span);
                 if (WindowsPathBeforeString(member)) right = WindowsPathWithString(member);
             }
-            else right = Expression(precedence + (op is "=" or "**" ? 0 : 1));
+            else right = Expression(precedence + (op is "=" or "**" ? 0 : 1), header);
             left = op == "="
                 ? new AssignmentExpr(left, right, SourceSpan.Cover(left.Span, right.Span)) { OperatorSpan = operation.Span }
                 : new BinaryExpr(op, left, right, SourceSpan.Cover(left.Span, right.Span)) { OperatorSpan = operation.Span };
@@ -337,11 +337,17 @@ public sealed class Parser
         "::" => 17,
         _ => -1
     };
-    private bool IsExpressionEnd() => Current.Kind is TokenKind.End or TokenKind.RightBrace or TokenKind.RightParen or TokenKind.RightBracket or TokenKind.Comma or TokenKind.Semicolon or TokenKind.Arrow or TokenKind.At || Word("in");
-    private Expr Prefix()
+    private bool IsExpressionEnd(bool header = false) => Current.Kind is TokenKind.End or TokenKind.RightBrace or TokenKind.RightParen or TokenKind.RightBracket or TokenKind.Comma or TokenKind.Semicolon or TokenKind.Arrow or TokenKind.At || Word("in") || header && At(TokenKind.LeftBrace);
+    private bool IsPathEnd(bool header)
+    {
+        // Adjacency keeps ./and a filename; a separated operator resumes expression parsing.
+        return IsExpressionEnd(header) || Current.Span.Start > Previous.Span.End && Operator() is
+            "and" or "or" or "is" or "as" or "==" or "!=" or "<" or "<=" or ">" or ">=" or "|" or "=";
+    }
+    private Expr Prefix(bool header)
     {
         Token token = Current;
-        if (Word("release") || Word("acquire") || Word("acqrel")) return Barrier();
+        if (Word("release") || Word("acquire") || Word("acqrel")) return Barrier(header);
         if (TakeWord("if")) return If(token.Span);
         if (TakeWord("match")) return Match(token.Span);
         if (TakeWord("for")) return For(token.Span);
@@ -352,21 +358,21 @@ public sealed class Parser
             return Scope(token.Span) with { Name = name?.Text, NameSpan = name?.Span };
         }
         if (TakeWord("loop")) { var body = Block(); return new LoopExpr(body, SourceSpan.Cover(token.Span, body.Span)); }
-        if (TakeWord("return")) { Expr? value = IsExpressionEnd() ? null : Expression(); return new ReturnExpr(value, SourceSpan.Cover(token.Span, value?.Span ?? token.Span)); }
-        if (TakeWord("break")) { Expr? value = IsExpressionEnd() ? null : Expression(); return new BreakExpr(value, SourceSpan.Cover(token.Span, value?.Span ?? token.Span)); }
+        if (TakeWord("return")) { Expr? value = IsExpressionEnd() ? null : Expression(header: header); return new ReturnExpr(value, SourceSpan.Cover(token.Span, value?.Span ?? token.Span)); }
+        if (TakeWord("break")) { Expr? value = IsExpressionEnd() ? null : Expression(header: header); return new BreakExpr(value, SourceSpan.Cover(token.Span, value?.Span ?? token.Span)); }
         if (TakeWord("exists") || TakeWord("not"))
         {
-            var operand = Expression(token.Text == "not" ? 5 : 8);
+            var operand = Expression(token.Text == "not" ? 5 : 8, header);
             return new UnaryExpr(token.Text, operand, SourceSpan.Cover(token.Span, operand.Span));
         }
         if (TakeWord("-") || TakeWord("+"))
         {
-            var operand = Expression(13);
+            var operand = Expression(13, header);
             return new UnaryExpr(token.Text, operand, SourceSpan.Cover(token.Span, operand.Span));
         }
         if (Take(TokenKind.Dollar))
         {
-            var operand = Expression(18);
+            var operand = Expression(18, header);
             return new UnaryExpr("$", operand, SourceSpan.Cover(token.Span, operand.Span));
         }
         if (At(TokenKind.LeftBrace)) return Block();
@@ -387,8 +393,8 @@ public sealed class Parser
         }
         if (Take(TokenKind.Slash))
         {
-            if (IsExpressionEnd()) return new PathExpr("/", token.Span);
-            var right = Expression(17);
+            if (IsPathEnd(header)) return new PathExpr("/", token.Span);
+            var right = Expression(17, header);
             return new BinaryExpr("/", new PathExpr("/", token.Span), right, SourceSpan.Cover(token.Span, right.Span));
         }
         if (Take(TokenKind.String)) return new StringExpr(token.Text, token.Span);
@@ -416,7 +422,7 @@ public sealed class Parser
             _ => new NameExpr(token.Text, token.Span)
         };
     }
-    private BarrierExpr Barrier()
+    private BarrierExpr Barrier(bool header)
     {
         SourceSpan start = Current.Span;
         bool release = false, acquire = false;
@@ -430,7 +436,7 @@ public sealed class Parser
             acquire |= after;
             Next();
         }
-        Expr? value = IsExpressionEnd() ? null : Expression();
+        Expr? value = IsExpressionEnd() ? null : Expression(header: header);
         return new(release, acquire, value, SourceSpan.Cover(start, value?.Span ?? Previous.Span));
     }
 
@@ -519,13 +525,13 @@ public sealed class Parser
     }
     private IfExpr If(SourceSpan start)
     {
-        var condition = Expression(); var then = Block(); Expr? otherwise = null;
+        var condition = Expression(header: true); var then = Block(); Expr? otherwise = null;
         if (TakeWord("else")) otherwise = TakeWord("if") ? If(Previous.Span) : Block();
         return new(condition, then, otherwise, SourceSpan.Cover(start, otherwise?.Span ?? then.Span));
     }
     private MatchExpr Match(SourceSpan start)
     {
-        var value = Expression(); Require(TokenKind.LeftBrace, "Expected '{' after match value.");
+        var value = Expression(header: true); Require(TokenKind.LeftBrace, "Expected '{' after match value.");
         List<MatchArm> arms = [];
         while (!At(TokenKind.RightBrace) && !At(TokenKind.End))
         {
@@ -542,7 +548,7 @@ public sealed class Parser
     {
         var pattern = ParsePattern(false);
         if (!TakeWord("in")) Fail("Expected 'in' after the loop binding.");
-        var values = Expression(); var body = Block();
+        var values = Expression(header: true); var body = Block();
         return new(pattern, values, body, SourceSpan.Cover(start, body.Span));
     }
     private Pattern ParsePattern(bool matching)
@@ -562,7 +568,7 @@ public sealed class Parser
         if (matching && LanguageTypes.Contains(token.Text)) { var type = ParseType(); return new TypePattern(type, type.Span); }
         if (matching && (At(TokenKind.String) || At(TokenKind.Number) || Word("true") || Word("false") ||
             (Word("+") || Word("-")) && Peek().Kind == TokenKind.Number))
-        { var literal = Prefix(); return new LiteralPattern(literal, literal.Span); }
+        { var literal = Prefix(false); return new LiteralPattern(literal, literal.Span); }
         return new NamePattern(Require(TokenKind.Atom, "Expected a binding or match pattern.").Text, token.Span);
     }
     private TypeSyntax ParseType(bool union = true)
