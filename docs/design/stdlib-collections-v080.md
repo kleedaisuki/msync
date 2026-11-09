@@ -1,9 +1,9 @@
-# Source-backed ordered collections in 0.8
+# Source-backed collection families in 0.8
 
-## Canonical families and policy ownership
+## Data, operations and policy ownership
 
-`$std::containers::List`, `Map`, `Set`, `Stack` and `Queue` are named Scope
-families. Associated operations take the instance explicitly:
+`$std::containers::{List, Map, EqualitySet, Stack, Queue}` are named Scope
+families. Their reusable associated functions take the instance explicitly:
 
 ```msync
 let values = $std::containers::List::new([1, 2]);
@@ -12,139 +12,103 @@ $std::containers::List::push(alias, 3);
 let snapshot = $std::containers::List::snapshot(values);
 ```
 
-The instance contains typed Range storage and its policy values, not a copied
-set of closures. Named family code and named default policies are shared;
-instance records and their mutations retain ordinary Scope identity. Fixed
-storage schemas, shallow snapshot identity and explicit nullable admission are
-the same language rules used by ordinary records.
+Instances contain typed Range storage and policy values, not captured getter
+or method tables. Family code and named default policies are shared, while
+anonymous instance records are fresh. Aliases observe the same mutable Scope;
+their storage schemas remain fixed. No additional collection TypeKind is needed.
 
-`RangeStorage` requires a typed `snapshot(Range) -> Range` operation. The default
-`SnapshotStorage` materializes the selected input. Custom storage policies can
-trace or implement a different snapshot representation while preserving ordered
-contents. Mutations eagerly publish the policy's selected snapshot rather than
-store a lazy self-referential update. `Map::with_equality` and
-`Set::with_equality` accept an `Equality` policy, whose associated `Self` and
-first-order `equal(Self, Self) -> Bool` signature are compiler checked.
-`with_policy` selects equality and storage together. This permits case-folded
-String keys without introducing a global equality instance or a runtime policy
-registry. The actual policy's callable identities participate in ordinary
-generic function specialization.
+## Construction and fixed element schemas
 
-## Compatibility callable factories
-
-The earlier Pascal-named factories below remain supported. They preserve
-established method-call source; new code uses the associated family operations
-above rather than introducing more factory-object wrappers.
-
-`$std::collections` provides `List`, `Map`, `MapWith`, `Set`, `SetWith`,
-`Stack`, and `Queue`. They are normal generic source functions returning fresh
-anonymous Scope objects. Methods close over shared mutable state. Copying a
-collection Scope therefore shares its mutations; calling a factory again creates
-an independent collection. No additional runtime collection type is introduced.
-
-## Ownership and storage schema
-
-Every constructor consumes an initial Range to determine its element schema.
-Prototype factories hide the empty Range/record seed and do not insert a sample:
+`new(initial)` determines element schemas from the supplied Range. Empty
+constructors accept ordinary prototypes without inserting them:
 
 ```msync
-let numbers = $std::collections::EmptyList(0);
-numbers::add(1);
-let words = $std::collections::EmptySet("");
-let counts = $std::collections::EmptyMap("", 0);
-counts::put("readme", 1);
-let optional = $std::collections::EmptyNullableMap("", 0);
-optional::put("readme", null);
+let numbers = $std::containers::List::empty(0);
+$std::containers::List::push(numbers, 1);
+let words = $std::containers::EqualitySet::empty("");
+let counts = $std::containers::Map::empty("", 0);
+$std::containers::Map::insert(counts, "readme", 1);
+let optional = $std::containers::Map::empty_nullable("", 0);
+$std::containers::Map::insert(optional, "readme", null);
 ```
 
-The prototype arguments are ordinary values evaluated once, not unevaluated Type
-descriptors. Their inferred types fix the new collection's schema. Passing Null
-alone therefore establishes Null-only storage, not a future arbitrary type.
-`EmptyNullableMap` explicitly admits Null in the mapped value while preserving
-the concrete value prototype's type; it does not make keys nullable.
-
-`EmptySetWith(prototype, equal)` and
-`EmptyMapWith(key_prototype, value_prototype, equal)` retain a custom equivalence
-relation. `EmptyStack(prototype)` and `EmptyQueue(prototype)` follow the same
-storage policy. These are source compositions, not additional native types.
-
-For direct Range composition, `List([] as Range<Number>)` is also supported.
-`take(existing, 0)` preserves an existing richer element schema. A concept such
-as Entry is a constraint, not a constructor for a new Scope row layout; casting
-an empty Range to `Range<Entry>` does not invent key/value locations.
-
-Inferred storage types remain fixed across
-method calls. Collections are not untyped bags merely because methods are
-first-class Function values. A constructor infers storage from the values it
-consumes, not from permission to assign a different value to a caller's original
-location. For example, reading a currently nonnull nullable Scope field can
-produce a Number-only Range. To construct nullable mapped storage, supply an
-actual nullable element union (or an explicitly typed Range seed), rather than
-assuming a copied scalar retains the admission rules of its former location.
+Prototype arguments evaluate once. Their inferred types determine storage;
+passing Null alone does not create a future arbitrary type. Explicit nullable
+storage admits Null in addition to its concrete mapped element. For direct
+Range composition, `List::new([] as Range<Number>)` is supported. A concept is a
+constraint, not a constructor for a new row: `Range<Entry>` does not manufacture
+missing entry locations.
 
 Mutation publishes a materialized replacement Range, not a growing chain of
-lazy transforms. `materialize` is an explicit eager operation, including when
-returned from a source function: the compiler carries its EagerRange result
-policy through the callable. A normal source function returning a lazy Range
-remains deferred. This distinction is essential: storing a deferred
-`concat(state::items, ...)` back into `state::items` makes its later read observe
-itself. Stable snapshot methods therefore return explicit `materialize(...)`,
-not a bare captured field. `snapshot()` and Map's `entries()` return a stable shallow
-snapshot; a later collection mutation cannot change its membership. Elements
-that are Scope objects preserve their normal identity. Map owns separate key and value snapshots. Its `entries()` method constructs
-fresh entry records instead of mutating caller-owned entries. Separating the
-columns also keeps a stable scalar storage schema; repeated row-transform
-replacements needlessly grow compiler shape joins.
+lazy transforms over the location being replaced. Source functions returning
+ordinary Ranges retain demand-driven execution; explicit `materialize` preserves
+its eager semantics through wrappers. `snapshot` and Map's `entries`, `keys`
+and `values` freeze membership but preserve element object identity. Map owns
+separate typed key/value columns and creates fresh entry records instead of
+mutating caller-owned entries.
 
-## API families
+## Equality and storage policies
 
-| Factory | Operations |
+`RangeStorage` requires `snapshot(Range) -> Range`; default `SnapshotStorage`
+materializes the selected input. Custom storage can trace or change snapshot
+representation while preserving ordered contents. Mutations eagerly admit the
+policy's snapshot so a source Range policy cannot accidentally install a
+self-referential lazy update.
+
+`Map::with_equality` and `EqualitySet::with_equality` accept an `Equality` policy.
+Its associated `Self` and first-order `equal(Self, Self) -> Bool` signature are
+compiler checked. `with_policy` selects equality and storage together. Actual
+policy callable identities specialize normally, with no global equality
+registry or runtime mode switch. Null admission and comparison remain explicit.
+
+Map retains first-key position and the latest mapped value for equivalent keys.
+`insert` reports a new key; `try_insert` does not overwrite. Membership, rather
+than a nullable value check, distinguishes an absent key from a present Null.
+`EqualitySet` preserves first insertion order and uses its explicit equivalence
+relation. These snapshot-based families do not claim logarithmic operations.
+
+## Associated operations
+
+| Family | Principal operations |
 | --- | --- |
-| `List(initial)` | snapshot, size, is_empty, clear, get, get_or, add, add_all, insert, set, remove_at, remove_where, contains, index_of, slice, reverse, sort_with |
-| `Map(initial)` / `MapWith(initial, equal)` | entries, keys, values, size, is_empty, clear, contains_key, get_or, put, try_add, remove |
-| `Set(initial)` / `SetWith(initial, equal)` | snapshot, size, is_empty, clear, contains, add, remove, union_with, intersect_with, except_with, is_subset_of, overlaps |
-| `Stack(initial)` | snapshot, size, is_empty, clear, push, peek, pop |
-| `Queue(initial)` | snapshot, size, is_empty, clear, enqueue, peek, dequeue |
-| Empty factories | EmptyList, EmptySet, EmptySetWith, EmptyMap, EmptyMapWith, EmptyNullableMap, EmptyStack, EmptyQueue |
+| `List` | new, empty, with_storage, push, extend, get, get_or, set, insert, remove, remove_where, contains, index_of, slice, reverse, sort_with, snapshot, size, is_empty, clear |
+| `Map` | new, empty, empty_nullable, with_equality, with_policy, entries, keys, values, contains_key, get, get_or, insert, try_insert, remove, size, is_empty, clear |
+| `EqualitySet` | new, empty, with_equality, with_policy, contains, insert, remove, union_with, intersect_with, except_with, is_subset_of, overlaps, snapshot, size, is_empty, clear |
+| `Stack` / `Queue` | new, empty, with_storage, push, peek, pop, snapshot, size, is_empty, clear |
 
-Map input entries have fields `key` and `value`. Duplicate keys keep their first
-position and receive the last value. `put` reports whether a new key was added;
-`try_add` does not overwrite. `get_or` distinguishes a missing entry from a
-present nullable value by inspecting entry membership, not testing its value.
-Set keeps the first occurrence and preserves insertion order. `With` comparers
-must behave as an equivalence relation. Default equality is Range `matches`,
-including its explicit handling of Null. There is no global comparer registry.
+Index/count inputs follow the Range library's finite integral Number rules.
+Absent get/peek/pop results are Null. List indexed mutation returns false for an
+out-of-range index; `remove_where` returns a count. Empty stack peek does not
+form a negative drop count.
 
-List `set`, `insert`, and `remove_at` report false for out-of-bounds indices.
-Count/index operations retain the Range library's integral Number requirements.
-`get`, `peek`, `pop`, and `dequeue` return Null on absence. `get_or` accepts an
-explicit fallback. `remove_where` returns the number removed.
+## Ordered families
 
-## Cost model and adoption
+Canonical `Set` is a red-black tree using `StrictOrder`, not the linear
+equality-based family. BTree, BPlusTree and Heap are distinct ordered structures,
+not aliases for sorting a Range. `NaturalOrder` gives Null and NaN an explicit
+container order without changing language-level IEEE comparisons. Their source
+algorithms and indexed-storage boundary are recorded with the ordered-structure
+implementation; `EqualitySet` remains available for arbitrary equivalence
+relations that are not orderings.
+See [the ordered-container contract](ordered-containers-v080.md) for node
+ownership, indexed storage, complexity and algorithm-specific observations.
 
-These are ordered, Range-backed collections, not hidden hash tables. Lookup is
-linear; mutations generally copy a finite snapshot. Map/Set construction and set
-algebra with arbitrary source comparers can be quadratic. They target script
-configuration, manifests, small mutable worklists and expressive source
-composition. Large sequential work should continue to use lazy Range adapters;
-no-collection programs do not instantiate this module. A future host hash index
-would require an explicit consistent equality/hash contract, not merely a
-renaming of this implementation.
+```msync
+let ordered = $std::containers::Set::new([3, 1, 2]);
+$std::containers::Set::insert(ordered, 4);
+$std::containers::Set::remove(ordered, 2);
+let ascending = $std::containers::Set::snapshot(ordered);
+```
 
-The operation families are informed by .NET
-[List<T>](https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.list-1?view=net-10.0),
-[Dictionary<TKey,TValue>](https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.dictionary-2?view=net-10.0),
-and [HashSet<T>](https://learn.microsoft.com/en-us/dotnet/api/system.collections.generic.hashset-1?view=net-10.0).
-Their host iterator invalidation and hash-table complexity are not claimed here.
+The unpublished callable factory module has been deleted. There is one current
+Scope-family API, without a second compatibility vocabulary.
 
-`tests/Msync.EndToEnd/collections_journey.py` exercises alias mutation, factory
-isolation, stable snapshots, duplicate keys, ordered set algebra, stack/queue
-behavior, custom equality, nullable mapped values, empty stack/queue operations,
-and O0/O2/O3 source/relocatable/executable CLI routes. Three rejected programs
-exercise fixed List, Set and Map storage schemas.
+## Focused observations
 
-`tests/Msync.EndToEnd/collections_empty_journey.py` independently exercises all
-eight empty factories, empty reads/removals, populated mutations, custom
-comparers and explicit nullable mapped values through O2 source, relocatable and
-executable CLI paths. It also rejects concrete element-type changes, an
-unadmitted Null value and a String comparator used with Number keys.
+The snapshot-based family owner accepted nine actual source/object/executable
+routes at O0/O2/O3 with fixed-schema, alias, policy and mutation checks. The
+final unpublished-adapter removal accepted three O2 routes with 39 exact byte
+observations and three useful signature/storage rejections. Its fixture is
+`tests/Msync.EndToEnd/collections_policy_journey.py`; final Native cross-platform
+acceptance belongs to the delivery record. Ordered-family evidence is distinct
+from these snapshot-based observations.

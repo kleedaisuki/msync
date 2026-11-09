@@ -20,11 +20,14 @@ are fresh anonymous Scopes; aliases retain the same mutable instance identity.
 | Family | Instance data | Explicit policy boundary |
 | --- | --- | --- |
 | `$std::containers::List`, `Stack`, `Queue` | Typed materialized items and storage policy | `RangeStorage::snapshot` |
-| `$std::containers::Map`, `Set` | Typed item/key/value snapshots, equality and storage policies | Associated-carrier `Equality`, plus `RangeStorage` |
-| `$std::io::File` | Path and text-IO policy | First-order `TextIOPolicy`; Path provenance remains attached |
-| `$std::io::Directory` | Path | Existing filesystem/Range operations |
-| `$std::process::Command` | Executable Path and materialized argument snapshot | Actual Process operations, not a fabricated host resource |
-| `$std::process::Completed` | Completed Process, output/error text and status | No hidden last-result slot |
+| `$std::containers::Map`, `EqualitySet` | Typed item/key/value snapshots, equality and storage policies | Associated-carrier `Equality`, plus `RangeStorage` |
+| `$std::containers::Set` | Red-black tree nodes and root state | `StrictOrder`; shared `NaturalOrder` by default |
+| `$std::containers::BTree`, `BPlusTree`, `Heap` | Ordered nodes, links or heap storage | Explicit `StrictOrder` comparison policy |
+| `$std::files::File` | Path and text-IO policy | First-order `TextIOPolicy`; Path provenance remains attached |
+| `$std::files::Directory` | Path | Existing filesystem/Range operations |
+| `$std::commands::Command` | Executable Path, materialized arguments and selected runner | Checked `ProcessRunner` operations and actual Process lifetimes |
+| `$std::commands::Completed` | Completed Process, output/error text and status | No hidden last-result slot |
+| `$std::commands::Checked` | Command record and exit policy | `ExitPolicy` classifies the complete result into `data::Result` |
 | `$std::text::StringBuilder` | Chunks, Unicode-scalar length and chunk policy | Typed `TextChunks` append/build operations |
 | `$std::regex::Pattern` | Pattern expression | Existing native regular-expression primitives |
 
@@ -54,12 +57,11 @@ policy owns the selected read/write behavior; a chunk policy preserves ordered
 text concatenation. Signature satisfaction alone is not proof of these laws,
 purity, or permission to reorder effects.
 
-The earlier Pascal-named factory functions (`List`, `File`, `Command`, `Builder`
-and their peers) remain source-compatible adapters. They are not the canonical
-model for new code. In particular, a named Scope is not made implicitly callable
-as a constructor: construction is an explicit `family::new(...)` operation.
-Existing low-level `Path`, `Process`, `Range`, `io` and `fs` operations remain
-useful directly; no wrapper record is required merely to use a native value.
+Construction is an explicit `Family::new(...)` operation; a named Scope is not
+implicitly callable. The unpublished factory-object entrypoints and duplicate
+`collections` module have been removed rather than retained as adapters.
+Low-level `Path`, `Process`, `Range`, `io` and `fs` remain directly useful; a
+wrapper record is not required merely to use a native value.
 
 Class-like family Scopes use PascalCase and functions use lowercase snake_case.
 This convention applies to new associated operations and the existing scalar,
@@ -77,9 +79,9 @@ scope FoldCase {
         $std::string::to_lowercase(left) == $std::string::to_lowercase(right)
     },
 };
-let names = $std::containers::Set::with_equality(["Klee", "klee"], FoldCase);
-$std::containers::Set::insert(names, "Alice");
-let unique = $std::containers::Set::snapshot(names);
+let names = $std::containers::EqualitySet::with_equality(["Klee", "klee"], FoldCase);
+$std::containers::EqualitySet::insert(names, "Alice");
+let unique = $std::containers::EqualitySet::snapshot(names);
 ```
 
 The constructor checks the standard `Equality` contract. `Self` and the function
@@ -91,29 +93,21 @@ integer mode flag or a hidden global equality setting.
 
 ### Focused integration observations
 
-The canonical collection owner accepted nine real source/object/executable
-routes at O0/O2/O3, 126 exact output observations and three policy/storage type
-rejections. The final naming-only correction reused those semantic results and
-accepted the three O2 routes, 42 observations and the same three diagnostics.
-The callable `collections` compatibility module remained byte-identical.
+Initial canonical owner observations covered collection aliases and snapshots,
+custom equality/storage, real File operations, actual child processes and
+custom text policies through source and serialized `.mso`/`.mexe` at O0/O2/O3.
+The source-only naming/namespace cleanup reuses unchanged semantic observations.
+Removal of unpublished adapters additionally accepted the new collection O2
+journey (three stages, 39 byte observations and three diagnostics) and 135
+canonical text/pattern assertions without rerunning the deleted entrypoints.
 
-The service owner accepted 180 actual filesystem, custom-policy and child-process
-assertions through source and serialized `.mso`/`.mexe` at O0/O2/O3. The text and
-pattern owner accepted 153 canonical record/policy assertions and 207 existing
-text/regex contracts; the final snake_case correction reran the affected 153
-checks rather than the unchanged historical matrix. These are focused owner
-observations, not a sum of independent end-to-end scenarios.
-
-`tests/Msync.EndToEnd/stdlib_policy_journey.py` combines the canonical collection
-journey with actual File reads/rename, a selected in-memory uppercase IO policy,
-a custom materialized chunk policy, regex, a real child msync process and the
-existing Builder compatibility path. The cross-module slice passed all nine
-managed staged routes before the final spelling correction; the final snake_case
-O2 slice passed three routes, 39 byte observations and three useful diagnostics.
-Its `--services-only` selection avoids repeating the collection owner's local
-acceptance. Native platform delivery runs the full combined selection; its exact
-image identities and results belong to the delivery record, not these managed
-component observations.
+`tests/Msync.EndToEnd/stdlib_policy_journey.py` is the narrow cross-module Native
+boundary. It combines the collection journey with actual File reads/rename, a
+selected in-memory uppercase IO policy, custom materialized text chunks, regex
+and a real child msync process. `--services-only` avoids repeating the collection
+owner's local acceptance. The command-policy entrypoint separately exercises
+selected runners and exit classification. Final Native image identities and
+results belong to the delivery record rather than these managed observations.
 
 ## Two layers, one semantic implementation
 
@@ -133,7 +127,7 @@ definition navigation and `msync skill library MODULE` use those same embedded
 bytes. This note records operation families and their contracts rather than
 maintaining another authoritative signature table.
 
-## Namespace ownership and compatibility
+## Namespace ownership
 
 | Public entry | Responsibility | Implementation boundary |
 | --- | --- | --- |
@@ -144,18 +138,18 @@ maintaining another authoritative signature table.
 | `$std::string` | Unicode text, searches, slices and Range producers | Unicode scalar host primitives plus source conveniences |
 | `$std::path` | Lexical path composition and decomposition | Source wrappers over existing path/filesystem primitives; endpoint provenance remains attached |
 | `$std::io` | File content and link-oriented workflows | Selected host effects, with Range-based lines/bytes instead of an Array type |
-| `$std::fs` | Existing filesystem inspection and mutation API | Retained compatibility surface, not silently removed in favor of `io` |
+| `$std::fs` | Filesystem inspection and mutation primitives | Selected native effects; no source-level class wrapper is required |
 | `$std::process` | Completed values and live process operations | Runtime-owned process lifetime/control, never a fabricated portable PID |
 | `$std::bool` | Boolean expression tools | Existing source composition remains valid |
 | `$std::containers` | Named collection families and explicit equality/storage policies | Typed data records; shared associated functions, Range snapshots and native indexed storage where required |
 | `$std::data` | Option, Result, Either and Pair composition | Closed runtime kinds; native null sum, Scope products and explicit eliminators |
 | `$std::concepts` | Reusable structural and policy contracts | Compile-time declarations; no runtime concept values or implicit instance registry |
 | `$std::meta` | Closed-type and callable metaprogramming | Unevaluated compiler queries and finite Type operations, not a user-extensible runtime type hierarchy |
-| `$std::collections` | Compatibility callable collection factories | Established source behavior retained; new code uses `containers` |
+| `$std::shell` | Native terminal-oriented commands | Ordinary typed source composition over Path, Range, IO and Process; REPL directory state belongs to the execution context |
 | `$std::text` | StringBuilder and text layout | Source data records use one native persistent-chunk primitive instead of repeatedly copying prior text |
 | `$std::regex` | Pattern family, matching and match/group records | Native regular-expression engine; Unicode scalar indexes and raw pattern specification records |
-| `$std::files` | Compatibility callable File/Directory services | Existing source behavior retained; new code uses `io::File` and `io::Directory` |
-| `$std::commands` | Compatibility callable command/result services | Existing source behavior retained; new code uses `process::Command` and `process::Completed` |
+| `$std::files` | File/Directory families and explicit IO policies | Data records, shared associated operations and selected IO effects |
+| `$std::commands` | Command, Completed and Checked families | Explicit process-runner and exit-classification policies; actual Process lifetimes |
 | `$std::environment` | Process variables and captured execution directories | Narrow host primitives plus source nullable/default/path-list composition |
 
 `stdlib/_core.msync` has no public root cast export: conversions are language
@@ -171,35 +165,49 @@ root must observe the same module object and permitted field assignments.
 Parsing may be cached; a first caller's live Scope, captured binding slots,
 working directory or home directory must not become process-global cache data.
 
-The object services are ordinary structural values. For example, the compiler
-checks a File service against a user-defined concept without a trait registry,
-an implementation declaration, or an additional host object kind:
+The object services are ordinary structural values. A generic algorithm states
+its required data and policy capabilities instead of assuming instance-bound
+methods:
 
 ```msync
-concept WritableText {
-    write: fn(value: String) -> Null,
+fn save(destination: $std::concepts::TextFile, text: String) {
+    $std::files::File::write(destination, text)
 };
-fn save(destination: WritableText, text: String) {
-    destination::write(text)
-};
-let report = $std::files::File(./report.txt);
+let report = $std::files::File::new(./report.txt);
 save(report, "completed");
 ```
 
-File and Command factories capture specifications; they do not open files,
-start processes or authenticate remote endpoints until a selected method does
-that work. Qualify a physical path with `path @ connection`; `::` selects the
-object's lexical methods and fields.
+File and Command constructors capture specifications; they perform no IO or
+authentication until a selected operation does that work. Physical paths use
+`path @ connection`; `::` selects lexical family operations or data fields.
 
 Direct module selection instantiates only that module and its executable source
 dependencies. A function captures the internal module location, not a detached
 module snapshot. If later code materializes the whole `$std` root, its fields
 load those same module Cells; changing a root module member therefore remains
 visible to the earlier closure. A user-declared `std` still follows ordinary
-lexical shadowing. The focused loading owner accepted 56 O0/O2/O3 and binary
-contracts, including root/member replacement and shadowing. A tiny unoptimized
-Bool use contains only that module's six source functions, not the enlarged
-Range/String library's declarations.
+lexical shadowing. Earlier module-level acceptance covered 56 O0/O2/O3 and
+binary contracts, including root/member replacement and shadowing, before the
+finer-grained export selection below replaced whole-module declaration loading.
+
+The enlarged family library additionally computes a source-AST export-demand
+and lexical-dependency closure for a whole ordinary compilation. Direct
+selection does not instantiate unrelated named families. Needed declarations
+retain their original source order and locations, and potentially effectful
+initializers are retained independently of whether their exported name is read.
+If a module becomes a first-class value, or the whole standard root escapes,
+its complete shape is required. Persistent REPL and editor sessions also retain
+complete shape because future requests are not known to the current source
+unit. This is static source selection, not runtime lazy-module machinery, an IR
+extension or a cache of one caller's live semantic Scope.
+
+The demand-loading owner accepted 48 focused real source/object/executable
+contracts for shared cells and later root replacement. Its matched managed O0
+control reduced a direct List program from 857 functions and 9,028 instructions
+to 43 functions and 452 instructions; warm compilation allocation changed from
+14.148 MB to 0.938 MB and observed time from 109.4 ms to 6.33 ms. These explain
+the compiler mechanism, not Native product startup latency; production-image
+measurements remain owned by the performance/delivery records.
 
 ## C++ operation-family mapping
 
@@ -218,6 +226,11 @@ map, not an ABI or a requirement to reproduce pointer categories.
 | Mutating algorithms over iterator references | Return transformed Ranges or perform explicit callbacks/IO; do not pretend that immutable scalar elements are C++ writable references |
 | Parallel execution policies | Not a name-only wrapper: source callbacks retain single-VM mutation and task-owner semantics; independent IO is scheduled by the runtime |
 | Allocators, pointer operations and integer bit manipulation | No corresponding source-level representation is introduced in this expansion |
+
+The C++ names `as_const`, `as_rvalue` and `common` are deliberately absent.
+msync has no cv/reference categories or distinct iterator/sentinel representation
+for those adapters to transform. Returning the original Range under those names
+would advertise a capability rather than implement one.
 
 The floating-point portion of `<cmath>` fits the existing Number representation:
 arithmetic, classification, rounding and elementary functions are actual binary64

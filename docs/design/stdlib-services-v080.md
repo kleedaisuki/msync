@@ -1,117 +1,122 @@
-# Source-composed file and command services
+# Native file and command families
 
-`io` and `process` organize associated operations in named Scopes without
-another host resource type. Canonical instances contain data, not a collection
-of captured getter and method functions. The existing filesystem, UTF-8 IO,
-Range and Process primitives remain the effectful boundary.
+Named Scope families own constructors and associated operations; anonymous
+Scope records own instance data and selected policies. Functions take `self`
+explicitly. The source modules are executable compiler input, not parallel
+documentation or host-side object wrappers.
 
-## Canonical associated operations
+## Files: `files::File` and `files::Directory`
 
 ```msync
-let file = $std::io::File::new(./report.txt);
-$std::io::File::write(file, "completed");
+let file = $std::files::File::new(./report.txt);
+$std::files::File::write(file, "completed");
 let alias = file;
-$std::io::File::move_to(alias, ./finished.txt);
-let text = $std::io::File::read_text(file);
+$std::files::File::move_to(alias, ./finished.txt);
+let text = $std::files::File::read_text(file);
 ```
 
-The record has a `path` field and a `policy` field. `TextFile` composes the
-`PathRecord` and `TextIOPolicy` requirements; operations that only need a path
-accept the smaller `PathRecord` contract. `File::with_policy(path, policy)`
-selects read/line-production/write/append behavior explicitly. The named `NativeText`
-policy invokes the established IO primitives. A policy can instead apply a
-codec or implement an application store without changing the File family or
-pretending that a different runtime resource kind has been introduced.
-Line production is its own policy operation so the native default preserves
-streaming reads instead of buffering an entire file through `read` first.
+`File` records contain `path: Path` and a `TextIOPolicy` value. `PathRecord`
+constrains path-only operations; `TextFile` additionally requires the policy.
+`File::with_policy(path, policy)` selects read, line-production, write and append
+behavior. `NativeText` invokes the existing IO primitives. A different policy
+can apply a codec or an application store without another runtime resource
+kind or a hidden global backend registry. Its `lines(Path) -> Range<String>`
+operation preserves streaming in the native implementation instead of buffering
+the entire file through `read` first.
 
-`Directory::new(path)` stores only its Path. Directory operations take that
-record explicitly and retain ordinary lazy enumeration versus eager snapshot
-semantics. `Command::new(executable, arguments)` stores the executable Path and
-one materialized argument snapshot. `Command::run(self)` returns a real Process;
-`Command::capture(self)` returns a completed data record with `process`,
-`output`, `error`, `code`, and `success` fields. `Completed::lines(self)` and
-`Completed::write_to(self, destination)` are shared associated functions, not
-closures allocated into every result.
+`Directory::new(path)` stores only a Path. Its enumeration functions retain
+ordinary lazy Range demand; `snapshot(self)` explicitly materializes one
+observation. Construction neither opens a file nor observes or authenticates an
+endpoint. Path identity/provenance, normal transfer failure and retry behavior
+remain owned by existing IO and transport mechanisms.
 
-Construction does no filesystem observation, opens no file, and starts no
-process or SSH authentication. Mutation changes the existing anonymous Scope
-record, so aliases see the same Path or configuration; fresh constructors do
-not share instance state. `move_to` updates `self::path` only after the rename
-succeeds. Policy and data field storage types remain fixed.
+Mutation changes the existing instance record, so aliases observe the same Path
+while separate constructors remain independent. `move_to` changes `self::path`
+only after a successful rename. There is no per-instance getter/method closure
+table and no stale metadata cache.
 
-## Compatibility callable services
+## Commands: specifications, launch and completion
 
-The following factory-style API remains supported for existing source. New code
-uses the named families above; these older contracts are not a template for
-adding further getter/method bags.
+`commands::Command::new(executable, arguments)` stores an executable Path, one
+materialized argument snapshot and the shared `NativeProcess` runner. It does
+not start a process, inspect a remote filesystem or authenticate a connection.
+`with_runner(executable, arguments, runner)` selects a `ProcessRunner` policy:
 
-## File and directory ownership
+| Operation | Required result and lifetime |
+| --- | --- |
+| `spawn(Path, Range)` | A real live, controlled Process |
+| `run(Path, Range)` | A completed Process with input closed |
+| `run_input(Path, Range, String)` | A completed Process after supplying and closing input |
 
-`$std::files::File(path)` returns a fresh anonymous Scope whose methods share a
-captured Path location. `path()`, `name()`, `extension()` and `parent()` inspect
-that current location. Reads, writes, metadata, permissions and link creation
-are performed only when the corresponding method is called. No file is opened
-by construction and no status is cached as a later proof.
+The compiler checks all three signatures at specialization. A policy can add
+tracing, argument transformation or execution conventions by composing the same
+native process primitives; it cannot fabricate a portable PID or substitute a
+non-Process result. Runtime control, completion and transport lifetimes remain
+owned by the returned Process.
 
-`move_to(destination)` performs the rename before updating the captured location.
-Aliases of one File observe the new location; separately constructed File values
-do not. The captured storage type remains Path. `copy_to` leaves the source
-location unchanged and uses ordinary transfer semantics, including endpoint
-provenance, atomic file replacement and retryable directory cohorts.
+A live Process returned through a source method transfers to the caller's work
+ownership rather than joining before the caller can supply or close stdin.
+This applies through the selected source runner and the associated Command
+function; unrelated, nonescaping work still joins its original function owner.
 
-`Directory(path)` similarly owns a current location. `child(name)` returns a
-Path; `file(name)` builds a File service. `entries()`, `walk()`, `files()`,
-`directories()` and `matching(predicate)` are Range observations, not cached
-lists. Filtering preserves normal lazy demand. `snapshot()` explicitly
-materializes one directory observation. No global filesystem registry or extra
-validation pass is introduced.
+`with_args`, `append_args` and `on(connection)` return fresh specifications and
+preserve the exact selected runner. Old argument snapshots are unchanged.
+`on` uses normal `Path @ Connection` qualification, not string prefix guessing.
+The specification's fields have fixed storage types; aliases retain ordinary
+Scope identity. The runner is explicit state, not a callback bag copied into
+each instance.
 
-This follows the useful object-location aspect of
-[.NET FileInfo](https://learn.microsoft.com/en-us/dotnet/api/system.io.fileinfo)
-and the demand-driven behavior of
-[DirectoryInfo.EnumerateFiles](https://learn.microsoft.com/en-us/dotnet/api/system.io.directoryinfo.enumeratefiles),
-without inheriting a stale metadata cache or introducing a second Array API.
+`run`, `spawn` and `run_input` return Process values. `capture` and `capture_input`
+return `Completed` data records with `process`, `output`, `error`, `code`, and
+`success` fields. Strings belong to that run, and the actual Process is retained.
+`Completed::lines(self)`, `error_lines(self)` and `write_to(self, destination)`
+are shared associated functions. There is no global last-result slot.
 
-## Commands and completed results
+## Exit classification: `commands::Checked`
 
-`$std::commands::Command(executable, arguments)` captures a Path and one
-materialized argument Range. Argument evaluation happens once at construction;
-subsequent runs reuse that snapshot. Construction does not start a local process,
-authenticate an SSH connection or observe the remote filesystem.
+Launching a command and interpreting its exit status are independent policies.
+`Checked::new(command)` selects `ExitStatus`, which accepts ordinary successful
+completion. `Checked::with_policy(command, policy)` selects an `ExitPolicy`
+whose `accept(CompletedProcess) -> Bool` signature is checked statically.
 
-`with_args`, `append_args` and `on(connection)` return fresh configurations,
-leaving the original executable and argument snapshot unchanged.
-`executable()` and `arguments()` inspect that captured configuration; detached
-mutable data fields do not masquerade as live configuration setters. `on` uses
-`program @ connection`, preserving the selected endpoint's grammar. `spawn`
-returns the actual controlled Process; callers may use `$std::process` to write
-stdin, close it, wait, terminate or kill. `run` closes stdin and waits;
-`run_input` writes the supplied text, closes stdin and waits.
+```msync
+scope SearchExit {
+    accept: fn(result: $std::concepts::CompletedProcess) -> Bool {
+        result::code == 0 or result::code == 1
+    },
+};
+let command = $std::commands::Command::new(./search, ["needle"]);
+let checked = $std::commands::Checked::with_policy(command, SearchExit);
+let outcome = $std::commands::Checked::run(checked);
+```
 
-`capture` and `capture_input` produce a fresh completed Result record:
-`process`, `output`, `error`, `code`, `success`, plus `lines()`, `error_lines()`
-and `write_to(destination)`. Strings belong to that completed run, not to a
-mutable global last-result slot. `output()` and `lines()` on Command perform a
-new run on each invocation. Nonzero exit codes remain normal result data; spawn,
-transport and IO failures retain their original source diagnostics.
+`run` and `run_input` return `data::Result`: accepted completion is `ok`, rejected
+completion is `err`. Both variants retain the entire completed record, including
+stdout, stderr, exit code and Process identity. A nonzero exit code is result
+data, not a swallowed exception. Spawn, transport and IO failures retain their
+original source diagnostics; an exit classifier does not catch or replace them.
+Construction and type checking execute neither the runner nor the classifier.
 
-The separation of reusable configuration from started Process follows
-[Java ProcessBuilder](https://docs.oracle.com/en/java/javase/25/docs/api/java.base/java/lang/ProcessBuilder.html).
-There is deliberately no source-level fake streaming pipeline: buffering one
-completed output is not presented as a concurrent OS pipe.
+`io` and `process` retain precise low-level primitives. `files` and `commands`
+own their native Scope families; there are no duplicate factory implementations,
+legacy entrypoint adapters or implicitly callable class Scopes.
 
-## Validation
+## Focused validation
 
-`tests/StdlibServices` exercises real UTF-8 read/append/copy/rename, alias identity,
-fresh factory instances, directory filtering and explicit snapshots, and a real
-child process receiving stdin. The same source runs at O0/O2/O3 through direct
-modules, serialized relocatable IR and contextual executable IR. Fixtures live
-under repository `.temp` and are removed by their live test owner.
-
-The focused managed journey passed 72 assertions at O0/O2/O3, each through source,
-serialized `.mso` and contextual `.mexe`. Command coverage includes a real owned
-child stdin pipe, Unicode output publication, `append_args` preserving the
-original snapshot and `on($local)` selecting the explicit endpoint. The final
-incremental harness build used `BuildProjectReferences=false` to consume the
-shared product owner's coherent compiler/runtime outputs.
+The canonical File/Directory/Command/Completed implementation initially passed
+180 focused real filesystem, custom-policy and child-process assertions at
+O0/O2/O3 through source and serialized object/executable bytecode. Subsequent
+namespace-only cleanup reuses those results where the implementation is
+unchanged. The command-policy entrypoint in `tests/StdlibNativeServices` selects
+only launch/classification changes: real input/output, nonzero exits, custom
+runners, preserved argument/policy snapshots, source-free stages and useful
+signature diagnostics. Its 114 assertions passed through all three stages at
+O0/O2/O3, including an actual returned live spawn whose caller closes stdin.
+`tests/Msync.EndToEnd/commands_policy_journey.py` additionally passed nine actual
+managed CLI routes, 99 exact output observations and four useful policy
+diagnostics. It checks no effects during construction/check/compile/bind, no
+authentication for an unselected SSH specification, deleted source files and
+executable execution from another directory. Its report records the matched
+assemblies and Python fixture identity. The same script provides the narrow
+Native platform boundary; the delivery record owns those image identities and
+results.
