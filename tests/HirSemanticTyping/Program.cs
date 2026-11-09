@@ -5,6 +5,18 @@ using Msync.Runtime;
 
 int checks = 0;
 bool metadataOnly = args.Contains("--meta", StringComparer.Ordinal);
+bool typeIdentityOnly = args.Contains("--type-is", StringComparer.Ordinal);
+if (typeIdentityOnly)
+{
+    await Number("let count = 0; for type in [Number, String] { if 3 is type { count = count + 1; }; }; count", 1);
+    await Number("let count = 0; for type in [Number, String] { if type is Number { count = count + 1; }; }; count", 1);
+    await Number("let state = 0; let matches = { state = 1; 3 } is { if state == 1 { state = 2; Number } else { String } }; if matches { state } else { 0 }", 2);
+    await Boolean("decltype(~/.codex) is Path", true);
+    await Boolean("let target = Number; 3 is { target = String; target }", false);
+    Reject("3 is 3", "E0203");
+    Console.WriteLine($"PASS {checks} dynamic Type identity HIR journeys");
+    return;
+}
 if (metadataOnly)
 {
     await Boolean("$std::meta::is_invocable(fn(value) { value + 1 }, Number)", true);
@@ -82,6 +94,9 @@ async Task<Value> Execute(string source, ArtifactStage stage)
     {
         Check(!hir.Calls.Any(call => call.NativeName is { } name && name.StartsWith("meta.", StringComparison.Ordinal)
             && name is not "meta.is_same"), "Dependent metadata must not survive as a runtime native call");
+    }
+    if (metadataOnly || typeIdentityOnly)
+    {
         using MemoryStream graph = new();
         HirArtifact.Write(hir, graph);
         graph.Position = 0;

@@ -32,6 +32,7 @@ enumerates values or performs I/O to establish these facts.
 ```text
 dotnet run --project tests/HirSemanticTyping -c Release
 dotnet run --project tests/HirSemanticTyping -c Release -- --meta
+dotnet run --project tests/HirSemanticTyping -c Release -- --type-is
 ```
 
 Use an isolated artifacts path while other implementation lanes build the shared
@@ -44,3 +45,9 @@ bodies, and non-execution of metadata operands. It round-trips the semantic
 graph through `.mhir` before lowering, and checks that dependent queries are
 resolved rather than emitted as runtime native calls. This slice can run alone
 when only metadata analysis changes.
+
+The Type-identity slice retains runtime Type expressions on both sides of `is`,
+including loop-carried Type values. It checks left-to-right operand effects,
+unknown represented types, and static `decltype` identities through the same
+`.mhir` round-trip boundary. A dynamic Type is a value, not a request to execute
+the right operand in a speculative query context.
