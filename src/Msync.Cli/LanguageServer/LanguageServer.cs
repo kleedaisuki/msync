@@ -1,4 +1,5 @@
 using Msync.Compiler;
+using Msync.Core;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -33,9 +34,11 @@ internal sealed partial class LanguageServer(
                 && capabilities.TryGetProperty("workspace", out var workspace)
                 && workspace.TryGetProperty("semanticTokens", out var tokens)
                 && tokens.TryGetProperty("refreshSupport", out var refresh) && refresh.ValueKind == JsonValueKind.True;
-            return JsonNode.Parse("""
-            {"capabilities":{"positionEncoding":"utf-16","textDocumentSync":{"openClose":true,"change":2},"documentFormattingProvider":true,"codeActionProvider":true,"completionProvider":{"resolveProvider":true,"triggerCharacters":[":","$","/","\\","@"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["keyword","function","variable","type","string","comment","protocol","endpoint","operator","namespace","controlKeyword","regexp","number"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"msync","version":"0.8.0"}}
-            """);
+            JsonNode response = JsonNode.Parse("""
+            {"capabilities":{"positionEncoding":"utf-16","textDocumentSync":{"openClose":true,"change":2},"documentFormattingProvider":true,"codeActionProvider":true,"completionProvider":{"resolveProvider":true,"triggerCharacters":[":","$","/","\\","@"]},"hoverProvider":true,"definitionProvider":true,"documentSymbolProvider":true,"semanticTokensProvider":{"legend":{"tokenTypes":["keyword","function","variable","type","string","comment","protocol","endpoint","operator","namespace","controlKeyword","regexp","number"],"tokenModifiers":[]},"full":true}},"serverInfo":{"name":"msync","version":""}}
+            """)!;
+            response["serverInfo"]!["version"] = ProductVersion.Current;
+            return response;
         }
         if (method == "shutdown") return null;
         if (method == "completionItem/resolve") return ResolveCompletion(p);

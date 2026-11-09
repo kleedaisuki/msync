@@ -239,6 +239,12 @@ def semantic_types(
 
 
 def editor(binary: Path, cwd: Path) -> dict[str, int]:
+    version = invoke(binary, cwd, ["--version"])
+    package = re.fullmatch(r"msync (\d+\.\d+\.\d+)\s*", version.stdout)
+    assert version.returncode == 0 and package is not None, (
+        version.stdout,
+        version.stderr,
+    )
     client = Client(binary)
     uri = (cwd / "screenshot.msync").as_uri()
     source = (
@@ -260,7 +266,7 @@ def editor(binary: Path, cwd: Path) -> dict[str, int]:
                 }
             },
         )
-        assert initialized["serverInfo"]["version"] == "0.8.0"
+        assert initialized["serverInfo"]["version"] == package.group(1), initialized
         legend: list[str] = initialized["capabilities"]["semanticTokensProvider"][
             "legend"
         ]["tokenTypes"]
