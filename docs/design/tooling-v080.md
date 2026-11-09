@@ -31,6 +31,15 @@ not retain mutable `Frame`, `Info`, bytecode builders or a callback into the
 lowerer. Repeated queries must not add specializations, constrain a later real
 write, commit a REPL binding or start an operation.
 
+Semantic diagnostics remain independent of bytecode emission. The semantic
+factory produces source-owned labels, type-specific guidance and structured
+fixes; assignment failures retain the declaration that established the fixed
+storage constraint, and concept failures retain the concept declaration.
+Operand checks identify the offending operand instead of the surrounding
+binary expression. Call diagnostics retain declared parameter names. These
+facts feed both terminal rendering and LSP diagnostics/code actions without
+re-parsing an error message or consulting a lowered instruction stream.
+
 The protocol-facing `SemanticObservationView` retains only immutable source,
 type, location, structural-layout and signature tables plus projected values,
 visibility points and references. `SemanticTypeTables` projects a generic

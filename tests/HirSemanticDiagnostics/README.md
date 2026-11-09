@@ -21,5 +21,11 @@ executable and the first true-cutover managed CLI snapshot (Compiler SHA256
 The baseline's type-directed Null/Bool/Range/conversion advice, named argument
 help and related declaration locations informed the new factory; no old
 mutable compiler or bytecode-emission path is retained. Snapshot 4 passed the
-initial 32 contracts. The operand-span and fixed-field checks were added after
-that observation and require the next coordinated source snapshot.
+initial 32 contracts. Snapshot 5 (Compiler SHA256
+`46868919dc98d58f95b7d5b2c144ea25f643df57d8cc055f24deac27e47c35e6`)
+passed 44 contracts, including the arithmetic operand span, fixed-field
+declaration, lexical standard-namespace shadowing and actual parameter names.
+Four actual CLI checks also confirmed the operand underline and the source
+function signature. Two later assertions require assignment mismatch spans to
+identify the RHS value; these follow the same source-routing mechanism and are
+selected for the next coordinated snapshot rather than another full matrix.
