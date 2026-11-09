@@ -62,3 +62,29 @@ replace both the Native package and VSIX, reload the window, and restart the
 language server. The final actual-host record must include its absolute
 `msync.serverPath` and executable SHA-256; a same-version stale PATH binary is not
 a valid upgraded editor observation.
+
+## Focused native entrypoints
+
+`packaging/language_upgrade.py --binary /absolute/native/msync` selects only this
+upgrade's integrated CLI, tooling, class-library and progressive-reference
+journeys. The native workflow exposes the same selection as
+`polish_only=true, polish_phases=upgrade`; it does not run historical object-format
+fixtures or unrelated installer tests. Each phase retains stdout/stderr, elapsed
+time and the exact executable SHA-256. This is an execution interface, not an
+acceptance result.
+
+- `tests/Msync.EndToEnd/language_upgrade_journey.py`: composed concept parameter
+  and return constraints, compact arithmetic/bases, `as`, actual `@` file bytes,
+  singleton versus fresh factory identity, source-free stages at O0/O2/O3, and
+  useful negative diagnostics.
+- `tests/Msync.EndToEnd/language_upgrade_tooling_journey.py`: direct language-server
+  and redirected REPL contracts owned by the language-experience lane.
+- `tests/Msync.EndToEnd/stdlib_upgrade_journey.py`: useful source-composed services
+  and collections; optional matched baseline/candidate loading observations.
+- `tests/Msync.EndToEnd/skill_journey.py`: progressive offline reference and actual
+  compilation of its current-language examples.
+
+The production-bundle actual VS Code host supports the focused selection
+`MSYNC_TEST_LANGUAGE_UPGRADE_ONLY=1`, with the final absolute native path in
+`MSYNC_TEST_SERVER_PATH`. The host suite is an additional editor boundary, not a
+substitute for native CLI execution on both operating systems.
