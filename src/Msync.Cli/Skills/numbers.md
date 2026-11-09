@@ -13,12 +13,20 @@ let binary = 0b1010;
 let octal = 0o17;
 let negative_zero = -0;
 let result = (decimal + fraction) / 2 - 7 % 4;
+let power = 2 ** 3 ** 2;
 ```
 
 Use `+`, `-`, `*`, `/`, `%` and `**` for arithmetic. Parentheses make grouping
 explicit. `/` also joins Path/String operands; the operand types select the
 operation. Use explicit `./` or `~/` spelling for paths beginning with digits.
 Binding names such as `copy-config` and `.codex` remain legal atom names.
+Exponentiation groups to the right: `2 ** 3 ** 2` is 512. It binds more tightly
+than a unary sign: `-2 ** 2` is -4, while `2 ** -2` is 0.25. `%` is the
+truncating remainder, whose sign follows its left operand.
+
+Division follows IEEE 754, including infinities and NaN rather than an integer
+division exception. NaN is unequal to itself; ordered comparisons with NaN are
+false. Use the explicit math classification operations when that case matters.
 
 Binary64 does not represent every integer above 2^53 exactly. Integer count
 parameters require a finite, integral value in their supported domain; adding

@@ -46,7 +46,11 @@ Semantic roles augment rather than replace the source grammar, following the
 Physical qualification is `path @ connection`; lexical member access remains
 `scope::member`. All prompt, source-LSP, syntax-reference and snippet examples
 must use the same contract. Number token presentation consumes the source
-numeric grammar rather than reclassifying arbitrary digit-prefixed paths.
+lexer's numeric spans rather than reclassifying arbitrary digit-prefixed paths.
+The semantic-token stream merges those spans linearly without sorting another
+token collection. Physical completion consumes compiler flow context; obsolete
+Connection `::` resolver chains are removed rather than kept as a second path.
+The `@` inside a native SSH authority remains URI data, not qualification syntax.
 
 The progressive reference exposes Number, `as` and concepts below `language`.
 Library topics derive their module set from the embedded executable source
