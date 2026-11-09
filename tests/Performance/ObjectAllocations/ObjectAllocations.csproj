@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <MsyncSourceRoot Condition="'$(MsyncSourceRoot)' == ''">$(MSBuildThisFileDirectory)../../..</MsyncSourceRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="$(MsyncSourceRoot)/src/Msync.Compiler/Msync.Compiler.csproj" />
+    <ProjectReference Include="$(MsyncSourceRoot)/src/Msync.Runtime/Msync.Runtime.csproj" />
+  </ItemGroup>
+</Project>
