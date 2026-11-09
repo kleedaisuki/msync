@@ -258,10 +258,7 @@ internal sealed partial class Compilation
         }
         else
         {
-            int offset = frame.Code.Count;
-            frame.Code.AddRange(scratch.Code.Select(instruction => instruction.Op is OpCode.Jump or OpCode.JumpIfFalse or OpCode.JumpIfTrue
-                ? instruction with { A = instruction.A + offset }
-                : instruction.Op == OpCode.IteratorNext ? instruction with { B = instruction.B + offset } : instruction));
+            AppendCode(frame, scratch.Code);
             frame.Locals = scratch.Locals;
             frame.Environment = scratch.Environment;
             frame.Facts = scratch.Facts;
