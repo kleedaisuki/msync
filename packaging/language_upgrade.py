@@ -21,6 +21,7 @@ from platform_journeys import ROOT, Phase, run_phase
 END_TO_END: Path = ROOT / "tests/Msync.EndToEnd"
 JOURNEYS: tuple[tuple[str, Path], ...] = (
     ("language", END_TO_END / "language_upgrade_journey.py"),
+    ("hir-semantics", END_TO_END / "hir_semantic_journey.py"),
     ("tooling", END_TO_END / "language_upgrade_tooling_journey.py"),
     ("library", END_TO_END / "stdlib_upgrade_journey.py"),
     ("empty-collections", END_TO_END / "collections_empty_journey.py"),
@@ -108,6 +109,13 @@ def main() -> int:
             extra = ["--ssh-fixture", "--case", "ssh-file-and-command"]
         elif name in {"library-policy", "command-policies"}:
             extra = ["--levels", "2"]
+        elif name == "hir-semantics":
+            extra = [
+                "--levels",
+                "2",
+                "--output",
+                str(output / "hir-semantics.json"),
+            ]
         elif name == "stdlib-cost":
             extra = [
                 "--samples",
