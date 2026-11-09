@@ -61,6 +61,21 @@ session. A genuinely unresolved session location remains an actionable error;
 neither its current runtime value nor credentials are a substitute for an
 explicit dependency contract.
 
+## Allocation identity across session generations
+
+A Scope construction has a semantic allocation-site identity independent of its
+position in the Scope payload arena. Publishing a typed construction assigns
+that identity; compaction, serialization and lowering preserve it. Backend
+allocation mappings and runtime-feedback projection use the explicit identity,
+not the construction's current dense array index. Otherwise pruning an unrelated
+payload can reconnect a live REPL object to a different construction.
+
+An allocation site is not an object instance. Repeated execution of an anonymous
+construction creates distinct objects at the same site. A named Scope's
+declaration-owned singleton identity is another separate contract. Neither
+ordinary object identity nor capture-cell identity belongs in a code-sharing key
+merely to recover facts that should be projected at each invocation.
+
 Disposable reports and fixtures stay under `.temp/`. Baseline packages and final
 publication payloads belong under `artifacts/` and `dist/`. Reusable mechanisms,
 measurements and decisions belong in the focused English design notes.
