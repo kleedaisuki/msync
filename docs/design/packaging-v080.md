@@ -2,6 +2,66 @@
 
 ## Current complete local delivery set
 
+The public [msync v0.8.0 release](https://github.com/kleedaisuki/msync/releases/tag/v0.8.0) is published, not a
+same-version development replacement. Its immutable tag and tested source are
+`637bd091e62e013f4003a1fa7e2c8f0b5e917140`. Product version remains **0.8.0**,
+default optimization **O2**, and current artifact format **4**. The Rust tree and
+its dispatch entrypoints have been removed. The five-project C# organization
+preserves language, CLI and bytecode behavior.
+
+| Asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `msync-0.8.0-linux-x86_64.tar.gz` | 7,337,980 | `bd5310545263db3abb2fe25c6c3c2fcf4ebe1e23de22a8ce288a1a4611cc81f2` |
+| `msync-0.8.0-windows-x86_64.zip` | 7,864,381 | `550ad034e17fcf2bbfbed6828d77e0ec318d368bfc537bed1a5e9bccb01fa40e` |
+| `msync-0.8.0-windows-x86_64-setup.exe` | 7,464,849 | `004aa73717f8a16f98e8fa8f78cc3c2180bfde51defc3a8ca5e4886040cf33eb` |
+| `msync-language-0.8.0.vsix` | 135,921 | `e36430bcd50eeeccafdcbacf52bc84c3765065e97e919036ff44f103ac4c58bd` |
+
+Public `SHA256SUMS` covers these four assets. Downloaded bytes also match all
+five GitHub asset digests, including the checksum file itself. Local `dist/`
+contains these exact public files, and its platform-specific auxiliary checksum
+files have been refreshed rather than retaining the previous development hashes.
+
+The native images are:
+
+- Linux: `10d27794ccf2dd4c5638fd6d77d3510de5b6f1dd61ac0e0557382e3cf36c32ad`.
+- Windows: `f7af8ecdac501fdf07e2695389fbd79faf9b0bbae1331168fc38430a7e121abf`.
+
+Both portable manifests verify **264 entries**, including **21 byte-exact LF
+standard sources** and **59 modified MPL source files**. Five Windows newline
+variants are upstream prose, not executable standard sources. Native payloads
+contain no managed product DLLs. All nine VSIX payloads match the built source,
+grammars, snippets and notices.
+
+[Release workflow 42664648430](https://github.com/kleedaisuki/msync/actions/runs/42664648430) rebuilt both Native
+packages from that exact source, passed package smoke and the selected
+source/object/executable, nullable policy, metadata and actual PTY/ConPTY
+journeys, and exercised the public 0.4 installer upgrade baseline on Windows.
+Its actual VS Code **1.144.0** source and read-only artifact suites used the
+packaged Linux Native image above, with `managedAssemblies: {}`. They passed
+two-theme inline-type/policy/source navigation and real data/Set output, plus
+source-independent binary highlighting, outline/navigation, readonly behavior,
+automatic refresh/recovery and restart.
+
+The preceding [workflow 42663500200](https://github.com/kleedaisuki/msync/actions/runs/42663500200) did not publish:
+Linux acceptance passed, while Windows terminal fixtures lacked the pinned
+`winpty` wheel. The repair changed only release setup, not product behavior or
+Unicode assertions. A new complete release wave then built all assets at the
+same new tag revision; no published asset or tag was replaced.
+
+Platform reports are archived under `artifacts/ci/42664648430/acceptance/`.
+The exact editor observations remain in the workflow log and the local copy
+`.temp/release-v080/editor.log`; the first report uploader omitted hidden
+`.temp` paths, so a later workflow-only fix enables those explicit report globs.
+This does not change published package bytes or require another product build.
+The machine-readable receipt is `.temp/final-public-release-v080.json` and the
+source/payload audit is `.temp/release-v080/payload-audit.json`.
+
+Install the complete Native package and matching VSIX, then reload VS Code and
+restart the language server. Older 0.7 syntax/artifacts require migration and
+recompilation; old unshipped 0.8 factory APIs have no adapters.
+
+## Previous complete canonical-library development delivery set
+
 The source-backed concepts, data/policy library, ordered structures, typed
 terminal tools and allocation/static-optimization delivery remains **0.8.0**,
 **default O2**, **current-only format 4**. Final Native source is
