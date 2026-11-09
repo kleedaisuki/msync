@@ -92,6 +92,21 @@ let changed = fresh("first");
 changed::text = "changed";
 fresh("fresh")::text -> ./fresh.txt;
 
+fn wrap(value: Scope) { scope { value: value } };
+let left = scope { text: "left" };
+let right = scope { text: "right" };
+let wrapped_left = wrap(left);
+let wrapped_right = wrap(right);
+wrapped_right::value::text = "right-changed";
+wrapped_left::value::text -> ./projected-left.txt;
+right::text -> ./projected-right.txt;
+fn accessor(value: Scope) { fn { value::text } };
+let get_left = accessor(left);
+let get_right = accessor(right);
+right::text = "right-again";
+get_left() -> ./captured-left.txt;
+get_right() -> ./captured-right.txt;
+
 let query_effects = 0;
 fn effectful() {
     query_effects = query_effects + 1;
@@ -139,6 +154,10 @@ OUTPUTS: dict[str, bytes] = {
     "present-null.txt": b"present-null",
     "singleton.txt": b"singleton",
     "fresh.txt": b"fresh",
+    "projected-left.txt": b"left",
+    "projected-right.txt": b"right-changed",
+    "captured-left.txt": b"left",
+    "captured-right.txt": b"right-again",
     "query-invocable.txt": b"true",
     "query-result.txt": b"true",
     "query-effects.txt": b"0",

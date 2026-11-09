@@ -54,6 +54,7 @@ source, relocatable bytecode and context-bound executable bytecode at O0/O2/O3:
 * original Scope aliases selected through indexed storage;
 * independent empty/snapshot carriers and present-Null Option values;
 * named singleton versus anonymous factory identity;
+* same-shape arguments projected into independent results and closure captures;
 * unevaluated metadata, including failed-query constraint isolation.
 
 The source-free routes delete their source before execution; the executable route
