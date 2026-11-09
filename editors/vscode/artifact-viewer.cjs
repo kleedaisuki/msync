@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const SCHEME = 'msync-artifact';
@@ -48,10 +49,12 @@ function errorText(error) {
 }
 
 class ArtifactViews {
-    constructor(vscode, request) {
+    constructor(vscode, request, watch) {
         this.vscode = vscode;
         this.request = request;
+        this.watch = watch;
         this.entries = new Map();
+        this.directories = new Map();
         this.changed = new vscode.EventEmitter();
         this.onDidChange = this.changed.event;
         this.disposed = false;
@@ -64,11 +67,69 @@ class ArtifactViews {
         const entry = { uri, generation: 0, panels: new Set(), documents: 0, textOpen: false };
         const directory = path.posix.dirname(uri.path);
         const parent = uri.with({ path: /^\/[A-Za-z]:$/.test(directory) ? directory + '/' : directory, query: '', fragment: '' });
-        const watcher = this.vscode.workspace.createFileSystemWatcher(new this.vscode.RelativePattern(parent, path.posix.basename(uri.path)));
-        entry.watch = [watcher, watcher.onDidChange(() => this.invalidate(entry)),
-            watcher.onDidCreate(() => this.invalidate(entry)), watcher.onDidDelete(() => this.invalidate(entry))];
+        entry.watch = this.watchEntry(entry, parent);
         this.entries.set(key, entry);
         return entry;
+    }
+
+    workspaceWatch(entry, parent) {
+        const uri = entry.uri;
+        const watcher = this.vscode.workspace.createFileSystemWatcher(new this.vscode.RelativePattern(parent, path.posix.basename(uri.path)));
+        return [watcher, watcher.onDidChange(() => this.invalidate(entry)),
+            watcher.onDidCreate(() => this.invalidate(entry)), watcher.onDidDelete(() => this.invalidate(entry))];
+    }
+
+    watchEntry(entry, parent) {
+        if (entry.uri.scheme !== 'file') return this.workspaceWatch(entry, parent);
+        const key = parent.toString();
+        let directory = this.directories.get(key);
+        if (!directory) {
+            directory = { key, parent, entries: new Set(), names: new Map() };
+            try {
+                // Workspace RelativePattern watches depend on VS Code's asynchronous
+                // recursive backend. A synchronous local directory subscription
+                // closes the initial-open/atomic-publication gap without polling.
+                directory.watcher = this.watch(parent.fsPath, { persistent: false }, (_, filename) => this.localChange(directory, filename));
+            } catch (error) {
+                this.watchFailure(parent, error);
+                return this.workspaceWatch(entry, parent);
+            }
+            directory.watcher.on('error', error => this.localFailure(directory, error));
+            this.directories.set(key, directory);
+        }
+        const name = this.watchName(path.posix.basename(entry.uri.path));
+        if (!directory.names.has(name)) directory.names.set(name, new Set());
+        directory.entries.add(entry);
+        directory.names.get(name).add(entry);
+        return [{ dispose: () => {
+            directory.entries.delete(entry);
+            const entries = directory.names.get(name);
+            entries?.delete(entry);
+            if (!entries?.size) directory.names.delete(name);
+            if (!directory.entries.size) { directory.watcher.close(); this.directories.delete(key); }
+        } }];
+    }
+
+    watchName(name) { return process.platform === 'win32' ? name.toLowerCase() : name; }
+
+    localChange(directory, filename) {
+        if (this.disposed || this.directories.get(directory.key) !== directory) return;
+        const entries = filename == null ? directory.entries : directory.names.get(this.watchName(String(filename)));
+        for (const entry of entries || []) this.invalidate(entry);
+    }
+
+    localFailure(directory, error) {
+        if (this.disposed || this.directories.get(directory.key) !== directory) return;
+        directory.watcher.close();
+        this.directories.delete(directory.key);
+        for (const entry of directory.entries) entry.watch = this.workspaceWatch(entry, directory.parent);
+        directory.entries.clear(); directory.names.clear();
+        this.watchFailure(directory.parent, error);
+    }
+
+    watchFailure(parent, error) {
+        void this.vscode.window.showWarningMessage(
+            `Native file notifications are unavailable for ${parent.fsPath}: ${error.message}. Using VS Code's filesystem watcher; msync: Refresh Bytecode View remains available.`);
     }
 
     async load(entry, token) {
@@ -271,6 +332,7 @@ class ArtifactViews {
             for (const item of entry.watch) item.dispose();
         }
         this.entries.clear();
+        this.directories.clear();
         this.changed.dispose();
     }
 }
@@ -376,8 +438,8 @@ window.addEventListener('message', event => {
 </script></body></html>`;
 }
 
-function registerArtifactViews(vscode, context, request) {
-    const views = new ArtifactViews(vscode, request);
+function registerArtifactViews(vscode, context, request, watch = fs.watch) {
+    const views = new ArtifactViews(vscode, request, watch);
     const selector = { scheme: SCHEME, language: LANGUAGE };
     context.subscriptions.push(views,
         vscode.window.registerCustomEditorProvider(VIEW_TYPE, views, { supportsMultipleEditorsPerDocument: true, webviewOptions: { enableFindWidget: true } }),

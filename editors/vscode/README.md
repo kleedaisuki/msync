@@ -165,6 +165,14 @@ reloads after external compilation; file changes and language-server restarts
 also refresh open views. A corrupt or unsupported artifact displays the reader's
 diagnostic with retry and reader-settings actions rather than a binary editor.
 
+File-backed artifacts share one synchronous directory notification subscription
+per open folder, filtered to the displayed filenames. This catches fast atomic
+compiler publication even while VS Code's initial workspace watcher is still
+starting. Other filesystem schemes use the workspace provider. If native file
+notifications fail, the extension explains the failure and falls back to that
+provider; manual Refresh remains available. No polling or recursive watcher is
+added by the extension.
+
 The reader is the configured `msync.serverPath` language server. The extension
 reads bytes through VS Code's workspace filesystem, including remote workspaces,
 and sends them to the native typed-bytecode reader; it does not contain a second

@@ -43,9 +43,9 @@ function fixture(text = '; typed IR\nfn @f0 main() -> Bool\n  return true\n') {
     };
 }
 
-function harness(request = async () => fixture()) {
+function harness(request = async () => fixture(), nativeWatch) {
     const providers = new Map(), commands = new Map(), languageProviders = new Map();
-    const files = new Map(), watchers = [], errors = [], opened = [], custom = [];
+    const files = new Map(), watchers = [], nativeWatchers = [], errors = [], warnings = [], opened = [], custom = [];
     const closed = new Emitter();
     const disposable = () => ({ dispose() {} });
     const host = {
@@ -86,12 +86,21 @@ function harness(request = async () => fixture()) {
             async showTextDocument(document, options) { this.activeTextEditor = { document }; opened.push({ document, options }); return this.activeTextEditor; },
             async showOpenDialog() { return []; },
             async showErrorMessage(message) { errors.push(message); },
+            async showWarningMessage(message) { warnings.push(message); },
         },
     };
     const context = { subscriptions: [] };
     const calls = [];
-    const views = registerArtifactViews(host, context, async (parameters, token) => { calls.push({ parameters, token }); return request(parameters, token); });
-    return { host, views, context, providers, commands, languageProviders, files, watchers, errors, opened, custom, calls, closed };
+    const watch = nativeWatch || ((directory, options, callback) => {
+        const watcher = { directory, options, callback, listeners: new Map(),
+            on(event, handler) { this.listeners.set(event, handler); return this; },
+            close() { this.disposed = true; },
+            change: { fire(uri) { callback('change', path.posix.basename(uri.path)); } },
+        };
+        nativeWatchers.push(watcher); return watcher;
+    });
+    const views = registerArtifactViews(host, context, async (parameters, token) => { calls.push({ parameters, token }); return request(parameters, token); }, watch);
+    return { host, views, context, providers, commands, languageProviders, files, watchers, nativeWatchers, errors, warnings, opened, custom, calls, closed };
 }
 
 function panel() {
@@ -126,7 +135,8 @@ test('artifact views use the configured reader protocol, share one decode and ne
     assert.equal(h.calls[0].parameters.uri, uri.toString());
     assert.deepEqual(Buffer.from(h.calls[0].parameters.data, 'base64'), bytes);
     assert.deepEqual(h.files.get(uri.toString()), bytes);
-    assert.equal(h.watchers[0].pattern.baseUri.path, '/outside workspace');
+    assert.equal(h.nativeWatchers[0].directory, '/outside workspace');
+    assert.equal(h.watchers.length, 0, 'Local artifacts must not depend on asynchronous workspace watchers');
     assert.equal(h.languageProviders.get('symbols').selector.language, 'msync-ir');
     h.views.dispose();
 });
@@ -135,8 +145,51 @@ test('watching a Windows drive-root artifact retains the absolute volume root', 
     const h = harness(); const uri = URI.parse('file:///D:/job.mso');
     h.files.set(uri.toString(), Buffer.from('binary'));
     await h.views.provideTextDocumentContent(textUri(h.host, uri));
-    assert.equal(h.watchers[0].pattern.baseUri.path.toLowerCase(), '/d:/');
-    assert.equal(h.watchers[0].pattern.pattern, 'job.mso');
+    assert.equal(h.nativeWatchers[0].directory.toLowerCase(), URI.from({ scheme: 'file', path: '/d:/' }).fsPath);
+    h.views.dispose();
+});
+
+test('local atomic publication uses one synchronous directory watch and filters sibling filenames', async () => {
+    const h = harness(async parameters => fixture(Buffer.from(parameters.data, 'base64').toString()));
+    const left = URI.file('/build/left.mso'), right = URI.file('/build/right.mexe');
+    h.files.set(left.toString(), Buffer.from('LEFT')); h.files.set(right.toString(), Buffer.from('RIGHT'));
+    await h.views.provideTextDocumentContent(textUri(h.host, left));
+    await h.views.provideTextDocumentContent(textUri(h.host, right));
+    assert.equal(h.nativeWatchers.length, 1); assert.equal(h.watchers.length, 0);
+    const native = h.nativeWatchers[0];
+    h.files.set(left.toString(), Buffer.from('REPLACED'));
+    native.callback('rename', '.left.mso.msync-stage');
+    assert.equal(await h.views.provideTextDocumentContent(textUri(h.host, left)), 'LEFT');
+    native.callback('rename', 'left.mso');
+    assert.equal(await h.views.provideTextDocumentContent(textUri(h.host, left)), 'REPLACED');
+    assert.equal(await h.views.provideTextDocumentContent(textUri(h.host, right)), 'RIGHT');
+    assert.equal(h.calls.length, 3);
+    h.closed.fire({ uri: textUri(h.host, left) }); assert.notEqual(native.disposed, true);
+    h.closed.fire({ uri: textUri(h.host, right) }); assert.equal(native.disposed, true);
+    h.views.dispose();
+});
+
+test('missing native filenames refresh the owned directory and native errors explain provider fallback', async () => {
+    const h = harness(); const uri = URI.file('/build/job.mso');
+    h.files.set(uri.toString(), Buffer.from('native'));
+    const virtual = textUri(h.host, uri); await h.views.provideTextDocumentContent(virtual);
+    const native = h.nativeWatchers[0];
+    native.callback('rename', null); await h.views.provideTextDocumentContent(virtual);
+    assert.equal(h.calls.length, 2);
+    native.listeners.get('error')(new Error('native notification failure'));
+    assert.equal(native.disposed, true); assert.equal(h.watchers.length, 1);
+    assert.match(h.warnings[0], /native notification failure.*VS Code.*Refresh/);
+    h.watchers[0].change.fire(uri); await h.views.provideTextDocumentContent(virtual);
+    assert.equal(h.calls.length, 3);
+    h.views.dispose(); assert.equal(h.watchers[0].disposed, true);
+});
+
+test('native registration failure retains workspace notifications and actionable refresh', async () => {
+    const h = harness(undefined, () => { throw new Error('watch service unavailable'); });
+    const uri = URI.file('/build/job.mso'); h.files.set(uri.toString(), Buffer.from('native'));
+    await h.views.provideTextDocumentContent(textUri(h.host, uri));
+    assert.equal(h.nativeWatchers.length, 0); assert.equal(h.watchers.length, 1);
+    assert.match(h.warnings[0], /watch service unavailable/);
     h.views.dispose();
 });
 
@@ -155,7 +208,7 @@ test('default custom editor is read-only and has bytecode metadata, outline and 
     assert.equal(h.host.window.activeTextEditor.document.uri.scheme, 'msync-artifact');
     view.disposed.fire(); document.dispose();
     h.closed.fire(h.host.window.activeTextEditor.document);
-    assert.equal(h.watchers[0].disposed, true);
+    assert.equal(h.nativeWatchers[0].disposed, true);
     h.views.dispose();
 });
 
@@ -199,7 +252,7 @@ test('corrupt artifact error remains readable and repaired file refreshes withou
     const virtual = textUri(h.host, uri);
     const error = await h.views.provideTextDocumentContent(virtual);
     assert.match(error, /Unsupported bytecode format 999/); assert.match(error, /not been modified or executed/);
-    valid = true; h.files.set(uri.toString(), Buffer.from('repaired')); h.watchers[0].change.fire(uri);
+    valid = true; h.files.set(uri.toString(), Buffer.from('repaired')); h.nativeWatchers[0].change.fire(uri);
     assert.equal(await h.views.provideTextDocumentContent(virtual), fixture().text);
     assert.equal(h.calls.length, 2);
     h.views.dispose();
@@ -212,7 +265,7 @@ test('rewrite cancels and discards an older decode while retaining the newest ge
     const virtual = textUri(h.host, uri);
     const first = h.views.provideTextDocumentContent(virtual);
     while (!complete) await Promise.resolve();
-    h.files.set(uri.toString(), Buffer.from('new')); h.watchers[0].change.fire(uri);
+    h.files.set(uri.toString(), Buffer.from('new')); h.nativeWatchers[0].change.fire(uri);
     assert.equal(h.calls[0].token.isCancellationRequested, true);
     complete(fixture('stale'));
     assert.equal(await first, 'new');
