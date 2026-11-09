@@ -80,7 +80,9 @@ internal sealed partial class SemanticAnalyzer
         var choices = Choices(value).ToList();
         HashSet<HirLocationId> active = [];
         Collect(definition);
-        return value with { Callables = choices.Distinct().ToImmutableArray(), Alternatives = default };
+        ImmutableArray<SemanticCallable> admittedChoices = choices.Distinct(SemanticCallableIdentity.Instance).ToImmutableArray();
+        return value with { Callables = admittedChoices, Alternatives = default,
+            FutureCallableDomain = new(StorageOwner(source, context), admittedChoices, value.Callables) };
 
         void Collect(HirLocationId target)
         {
@@ -98,7 +100,7 @@ internal sealed partial class SemanticAnalyzer
                 if (expression.Kind is HirKind.ReadLocation or HirKind.ReadStorage)
                     Collect(program.Original(new(expression.Data)));
                 foreach (SemanticCallable choice in BoundCallables(write, context))
-                    if (!choices.Any(existing => existing.Template == choice.Template && existing.NativeName == choice.NativeName))
+                    if (!choices.Contains(choice, SemanticCallableIdentity.Instance))
                         choices.Add(choice);
             }
         }

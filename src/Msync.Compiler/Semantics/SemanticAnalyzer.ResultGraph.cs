@@ -94,6 +94,10 @@ internal sealed partial class SemanticAnalyzer
                     {
                         Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture => capture with
                         { Source = PublishCell(capture.Source), Value = Visit(capture.Value) }).ToImmutableArray()
+                    }).ToImmutableArray(), future.Current.IsDefault ? default : future.Current.Select(callable => callable with
+                    {
+                        Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture => capture with
+                        { Source = PublishCell(capture.Source), Value = Visit(capture.Value) }).ToImmutableArray()
                     }).ToImmutableArray()) };
             if (!value.Alternatives.IsDefaultOrEmpty)
                 projected = projected with { Alternatives = value.Alternatives.Select(Visit).ToImmutableArray() };

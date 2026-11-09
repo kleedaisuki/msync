@@ -53,7 +53,9 @@ internal sealed partial class SemanticAnalyzer
         {
             key.Append("U(");
             AppendCallableKey(key, future.Choices, context, active, provenance);
-            key.Append(')');
+            key.Append("|C(");
+            if (!future.Current.IsDefaultOrEmpty) AppendCallableKey(key, future.Current, context, active, provenance);
+            key.Append("))");
         }
         if (value.Scope is { } scope)
             AppendScopeKey(key, context?.Objects.GetValueOrDefault(scope.Region, scope) ?? scope, context, active, provenance);

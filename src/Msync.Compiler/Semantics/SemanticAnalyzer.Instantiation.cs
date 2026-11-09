@@ -105,7 +105,7 @@ internal sealed partial class SemanticAnalyzer
             if (value.FutureCallableDomain is { } future)
             {
                 ImportLocation(future.Owner);
-                foreach (var callable in future.Choices)
+                foreach (var callable in future.Current.IsDefault ? future.Choices : future.Choices.AddRange(future.Current))
                     if (!callable.Captures.IsDefault)
                         foreach (var capture in callable.Captures) { ImportLocation(capture.Source); Import(capture.Value); }
             }
@@ -435,7 +435,7 @@ internal sealed partial class SemanticAnalyzer
             if (value.FutureCallableDomain is { } future)
             {
                 VisitCell(future.Owner);
-                foreach (var callable in future.Choices)
+                foreach (var callable in future.Current.IsDefault ? future.Choices : future.Choices.AddRange(future.Current))
                     if (!callable.Captures.IsDefault)
                         foreach (var capture in callable.Captures) { VisitCell(capture.Source); Visit(capture.Value); }
             }

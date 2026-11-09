@@ -29,6 +29,8 @@ by value do not borrow the original cell's future assignments. Formalization
 maps the owner and captures, while code schemas encode only definitions, types,
 and alias topology. This keeps lazy members returned inside another Scope correct
 without restoring the whole caller environment to a callee.
+Independent cells do not imply independent function type obligations: an inferred
+call protocol must still survive copying a callable value.
 
 Each possible source target is analyzed in an isolated facts overlay. The call
 joins those alternatives once; it does not sequentially apply every candidate's

@@ -110,6 +110,18 @@ completed-subgraph reuse additionally needs a call-local, role/substitution-awar
 memo. A recursion stack alone does not reuse a shared DAG, and a global
 caller-world cache would violate the semantic ownership boundary.
 
+Formal-input rewriting now keeps completed subgraphs for one rewriting
+operation, indexed by source-value reference and structural role. Location-only
+callable environments can additionally share a completed rewrite by semantic
+callable identity when every captured cell has an actual caller fact. Value
+captures and missing-cell fallback snapshots retain reference/role separation.
+This memo is neither a persistent caller cache nor a change to MAY/MUST alias
+semantics. Native callables without captures and unchanged callable arrays are
+reused. Frozen15's focused source-to-HIR-artifact-to-runtime journeys preserve
+shared captured-field identity, distinct factory instances, alias-sensitive
+flow, returned closure environments and repeated indexed-read aliases (14
+assertions, including conversion and fixed nullable-carrier controls).
+
 ## Work ownership
 
 The compiler team owns semantic contracts, binding, specialization and lowering.

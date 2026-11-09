@@ -31,7 +31,7 @@ internal sealed partial class SemanticAnalyzer
             {
                 SemanticValue selected = FutureCallables(current, binding, context, receiver);
                 SemanticCallableDomain storageDomain = current.FutureCallableDomain is { } existing
-                    && StorageOwner(existing.Owner, context) == owner ? existing : new(owner, selected.Callables);
+                    && StorageOwner(existing.Owner, context) == owner ? existing : new(owner, selected.Callables, current.Callables);
                 result = ReferenceEquals(storageDomain, current.FutureCallableDomain)
                     ? current : current with { FutureCallableDomain = storageDomain };
             }
@@ -72,7 +72,10 @@ internal sealed partial class SemanticAnalyzer
                 result = result with { Callables = current.Callables.Select(Callable).ToImmutableArray() };
             if (result.FutureCallableDomain is { } domain && domain.Choices.Any(callable => !callable.Captures.IsDefaultOrEmpty))
                 result = result with { FutureCallableDomain = domain with
-                { Choices = domain.Choices.Select(Callable).ToImmutableArray() } };
+                {
+                    Choices = domain.Choices.Select(Callable).ToImmutableArray(),
+                    Current = domain.Current.IsDefault ? default : domain.Current.Select(Callable).ToImmutableArray()
+                } };
             if (!current.Alternatives.IsDefaultOrEmpty)
                 result = result with { Alternatives = current.Alternatives.Select(item => Visit(item, cell, borrowed, receiver)).ToImmutableArray() };
             versions[owner] = result;

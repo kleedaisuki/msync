@@ -28,6 +28,9 @@ await Number("factory-parameter-writer", first + "fn make() { scope { operation:
 await Number("factory-captured-writer", first + "fn make() { scope { operation: fn { [1] }, replace: fn { operation = fn { [\"bad\"] }; } } }; let a = make(); let b = make(); let pending = a::operation(); b::replace(); first(pending) + 1", 2);
 await Number("wrapped-future-domain", first + "fn make() { scope { operation: fn { [1] } } }; fn wrap(object: Scope) { scope { items: [object::operation()] } }; let a = make(); let b = make(); let holder_a = wrap(a); let holder_b = wrap(b); b::operation = fn { [2] }; first(first(holder_b::items))", 2);
 await Number("copied-parameter-domain", first + "let operation = fn { [1] }; fn wrap(copy) { scope { items: [copy()] } }; let holder = wrap(operation); operation = fn { [2] }; first(first(holder::items))", 1);
+Reject("fixed-captured-signature", first + "fn maker(value) { fn { [value] } }; let operation = maker(1); let pending = operation(); operation = maker(\"text\"); first(pending)");
+await Text("path-string-contract", "let operation = fn { \"before\" }; operation(); operation = fn { ./after }; operation()", "./after");
+await Number("contract-query-isolation", first + "let state = scope { writes: 0 }; let operation = fn { [1] }; let pending = operation(); operation = fn { state::writes = state::writes + 10; [2] }; if state::writes == 0 { first(pending); if state::writes == 10 { 1 } else { 0 } } else { -1 }", 1);
 await Number("resource-return-eager", """
     native fn buffer_new(initial: Range) -> Range;
     native fn buffer_get(items: Range, index: Number) -> Scope;
@@ -54,6 +57,32 @@ await Number("nested-resource-policy-cache", """
     if state::changed { 0 } else { 1 }
     """, 1);
 Console.WriteLine($"PASS {checks} callable write-domain journeys");
+
+void Reject(string name, string source)
+{
+    if (args.Length != 0 && !args.Contains(name, StringComparer.Ordinal)) return;
+    try { _ = Compiler.Analyze(source, name + ".msync"); }
+    catch (CompileException error) when (error.Diagnostic.Code == "E0213")
+    {
+        checks++;
+        if (error.Diagnostic.Related.Count == 0) throw new InvalidOperationException("Callable contract diagnostic must locate the original promise.");
+        return;
+    }
+    throw new InvalidOperationException(name + ": expected the fixed callable protocol to reject the future target.");
+}
+
+async Task Text(string name, string source, string expected)
+{
+    if (args.Length != 0 && !args.Contains(name, StringComparer.Ordinal)) return;
+    HirModule hir = Compiler.Analyze(source, name + ".msync");
+    using MemoryStream bytes = new();
+    HirArtifact.Write(hir, bytes);
+    bytes.Position = 0;
+    Value actual = await Interpreter.ExecuteAsync(HirLowerer.Lower(HirArtifact.Read(bytes), new(0)).Module);
+    checks++;
+    if (actual is not StringValue text || text.Data != expected)
+        throw new InvalidOperationException($"{name}: expected a String '{expected}', received {actual.Type} '{actual}'.");
+}
 
 async Task Number(string name, string source, double expected)
 {

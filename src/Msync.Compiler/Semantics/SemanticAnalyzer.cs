@@ -137,6 +137,7 @@ internal sealed partial class SemanticAnalyzer(BoundProgram program, SemanticObs
         }
         value = Convert(value, target, valueSource, context);
         CheckSessionAssignment(location, value, valueSource, context);
+        CheckClosedAssignment(location, value, valueSource, context);
         context.Values[location] = value;
         UpdateStorageValue(location, value, context);
         context.CellWrites.Add(location);

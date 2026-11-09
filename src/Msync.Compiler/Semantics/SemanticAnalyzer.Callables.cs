@@ -44,10 +44,14 @@ internal sealed partial class SemanticAnalyzer
             var processResult = ValueForType(hir.Type(TypeRef.Process));
             return processResult with { Node = EmitCall(new(HirCallKind.Path, new(-1)), callee, arguments, processResult.Type, source, context) };
         }
+        HirTypeId? closedResult = CheckClosedFutureCall(callee, arguments, source, context);
         var choices = Choices(callee).ToArray();
         if (choices.Length == 0) throw Error(source, $"{Runtime(callee)} has no resolved callable identity.", "E0204");
         if (choices.Length == 1 && choices[0].NativeName is { } native)
-            return InvokeNative(native, arguments, source, context, callee);
+        {
+            SemanticValue nativeResult = InvokeNative(native, arguments, source, context, callee);
+            return closedResult is { } required ? Convert(nativeResult, required, source, context) : nativeResult;
+        }
 
         SemanticValue? result = null;
         List<HirDispatchTarget> dispatch = [];
@@ -66,7 +70,7 @@ internal sealed partial class SemanticAnalyzer
         if (alternatives is not null) deferredEffects.AddRange(MergeCallAlternatives(context, alternatives));
         var call = choices.Length == 1
             ? new HirCall(HirCallKind.Function, dispatch[0].Target)
-            : new HirCall(HirCallKind.Dynamic, new(-1), Targets: dispatch.ToImmutableArray());
+            : new HirCall(HirCallKind.Dynamic, new(-1), Targets: dispatch.Distinct().ToImmutableArray());
         if (resultDomain is { } domain) result = result! with { Type = domain };
         int slot = OpenSessionCall(callee, arguments, result!.Type, source, context);
         if (slot >= 0)
@@ -75,9 +79,10 @@ internal sealed partial class SemanticAnalyzer
             result = FutureRead(result, result.Type, context) with
             { OpenSessionCalls = AddSessionCall(result.OpenSessionCalls, SessionBinding(slot, callee, arguments, context)) };
         }
-        return result! with { Node = EmitCall(call, callee, arguments, result!.Type, source, context), Location = null,
+        SemanticValue emitted = result! with { Node = EmitCall(call, callee, arguments, result!.Type, source, context), Location = null,
             DeferredEffects = result.DeferredEffects.IsDefaultOrEmpty ? deferredEffects.ToImmutable()
                 : result.DeferredEffects.AddRange(deferredEffects) };
+        return closedResult is { } requiredResult ? Convert(emitted, requiredResult, source, context) : emitted;
     }
 
     private static SemanticContext CallAlternative(SemanticContext context) => new(context.Function, context.Output, context)

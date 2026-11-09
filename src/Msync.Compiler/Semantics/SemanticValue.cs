@@ -11,7 +11,8 @@ internal sealed record SemanticCallable(HirTemplateId? Template = null,
     string? NativeName = null, ImmutableArray<SemanticCapture> Captures = default,
     HirCallableId? RuntimeIdentity = null);
 
-internal sealed record SemanticCallableDomain(HirLocationId Owner, ImmutableArray<SemanticCallable> Choices);
+internal sealed record SemanticCallableDomain(HirLocationId Owner, ImmutableArray<SemanticCallable> Choices,
+    ImmutableArray<SemanticCallable> Current = default);
 
 internal sealed record SemanticScope(int Region, int Layout,
     ImmutableDictionary<string, SemanticValue> Fields,
@@ -90,6 +91,8 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
     public SemanticFacts<HirLocationId, HirLocationId> Locations { get; } = new(parent?.Locations);
     public SemanticFacts<HirLocationId, ImmutableArray<int>> CallableContracts { get; } = new(parent?.CallableContracts);
     public SemanticFacts<HirLocationId, ImmutableArray<int>> EstablishedCallableContracts { get; } = new();
+    public SemanticFacts<HirLocationId, ImmutableArray<SessionCallRequirement>> ClosedCallRequirements { get; }
+        = new(parent?.ClosedCallRequirements);
     public SemanticFacts<HirLocationId, HirLocationId> Definitions { get; } = new(parent?.Definitions);
     public SemanticFacts<HirLocationId, SemanticValue> Values { get; } = new(parent?.Values);
     public SemanticFacts<HirLocationId, HirTypeId> Storage { get; } = new(parent?.Storage);
@@ -114,6 +117,7 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
         foreach (var pair in SingletonSchemas) fork.SingletonSchemas.Add(pair.Key, pair.Value);
         foreach (var pair in Locations) fork.Locations.Add(pair.Key, pair.Value);
         foreach (var pair in Definitions) fork.Definitions.Add(pair.Key, pair.Value);
+        foreach (var pair in ClosedCallRequirements) fork.ClosedCallRequirements.Add(pair.Key, pair.Value);
         foreach (var pair in CallableContracts) fork.CallableContracts.Add(pair.Key, pair.Value);
         foreach (var pair in Values) fork.Values.Add(pair.Key, pair.Value);
         foreach (var pair in Storage) fork.Storage.Add(pair.Key, pair.Value);

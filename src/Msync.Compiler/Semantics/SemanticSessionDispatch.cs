@@ -56,6 +56,9 @@ internal sealed partial class SemanticAnalyzer
             foreach (var (location, slots) in branch.EstablishedCallableContracts.LocalEntries)
                 destination.EstablishedCallableContracts[location] = [.. destination.EstablishedCallableContracts.GetValueOrDefault(location, [])
                     .Concat(slots).Distinct()];
+            foreach (var (location, requirements) in branch.ClosedCallRequirements.LocalEntries)
+                destination.ClosedCallRequirements[location] = [.. destination.ClosedCallRequirements.GetValueOrDefault(location, [])
+                    .Concat(requirements).Distinct()];
         }
     }
 
@@ -70,18 +73,24 @@ internal sealed partial class SemanticAnalyzer
             || SessionSource(callee, context) is not { } address) return -1;
         if (address.Fields.IsDefaultOrEmpty && Stable(address.Root)) return -1;
 
+        int slot = sessionDispatch.Calls.Count;
+        sessionDispatch.Calls.Add(CreateCallRequirement(slot, address, arguments, result, source, context));
+        if (callee.Location is { } location) EstablishSessionContract(StorageOwner(location, context), slot, context);
+        RefreshSessionCall(slot, context, callee);
+        return slot;
+    }
+
+    private SessionCallRequirement CreateCallRequirement(int slot, SessionCallableSource address,
+        IReadOnlyList<SemanticValue> arguments, HirTypeId result, HirSourceRange source, SemanticContext context)
+    {
         SemanticContext prototype = new(new(-1));
         FormalInput input = new(this, context, prototype);
         var values = arguments.Select(input.Abstract).ToImmutableArray();
         input.Complete();
-        int slot = sessionDispatch.Calls.Count;
-        sessionDispatch.Calls.Add(new(slot, address, values,
+        return new(slot, address, values,
             [.. arguments.Select(argument => argument.Location is { } location ? StorageOwner(location, context) : (HirLocationId?)null)],
             result, source, prototype.Objects.ToImmutableDictionary(), prototype.Indexed.ToImmutableDictionary(),
-            prototype.Values.ToImmutableDictionary(), prototype.Storage.ToImmutableDictionary(), []));
-        if (callee.Location is { } location) EstablishSessionContract(StorageOwner(location, context), slot, context);
-        RefreshSessionCall(slot, context, callee);
-        return slot;
+            prototype.Values.ToImmutableDictionary(), prototype.Storage.ToImmutableDictionary(), []);
     }
 
     private SessionCallableSource? SessionSource(SemanticValue callee, SemanticContext context)
@@ -202,7 +211,7 @@ internal sealed partial class SemanticAnalyzer
 
     private (ImmutableArray<HirDispatchTarget> Targets, ImmutableArray<SemanticDeferredWrite> Effects) CheckSessionTarget(SessionCallRequirement requirement,
         SemanticValue callee, HirSourceRange source, SemanticContext context, bool publish,
-        ImmutableArray<SessionCallableSource?> argumentBindings = default)
+        ImmutableArray<SessionCallableSource?> argumentBindings = default, bool allowImplicitReturn = false)
     {
         if (Runtime(callee).Nullable)
             throw Error(source, "A deferred callable must remain non-null for its established signature.", "E0201");
@@ -235,7 +244,7 @@ internal sealed partial class SemanticAnalyzer
                 if (publish) dispatch.Add(new(choice.RuntimeIdentity ?? HirCallableId.From(template), invocation.Id));
             }
             else result = InvokeType(new(hir.Type(TypeRef.Function), HirNodeId.None, Callables: [choice]), arguments, source, target);
-            try { Require(result, requirement.Result, source, context: target); }
+            try { Require(result, requirement.Result, source, allowImplicit: allowImplicitReturn, context: target); }
             catch (CompileException error)
             {
                 var document = hir.Sources[source.Source.Value];

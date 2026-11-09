@@ -26,6 +26,9 @@ internal sealed partial class SemanticAnalyzer
         private readonly Dictionary<int, int> regions = [];
         private readonly Dictionary<int, int> indexedRegions = [];
         private readonly Dictionary<SemanticValue, SemanticValue> active = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<(SemanticValue Value, string Role), SemanticValue> completed = new(ReferenceRoleComparer<SemanticValue>.Instance);
+        private readonly Dictionary<(SemanticCallable Value, string Role), SemanticCallable> callables = new(ReferenceRoleComparer<SemanticCallable>.Instance);
+        private readonly Dictionary<SemanticCallable, SemanticCallable> locationCallables = new(SemanticCallableIdentity.Instance);
         private readonly Dictionary<string, int> scopeRoles = new(StringComparer.Ordinal);
         private readonly Dictionary<string, int> resourceRoles = new(StringComparer.Ordinal);
         private readonly List<(int Formal, ImmutableHashSet<int> Sources)> scopeViews = [];
@@ -37,6 +40,7 @@ internal sealed partial class SemanticAnalyzer
         private SemanticValue Abstract(SemanticValue value, string role)
         {
             if (active.TryGetValue(value, out var known)) return known;
+            if (completed.TryGetValue((value, role), out known)) return known;
             // Runtime constants are not specialization facts. In particular a first
             // Bool argument must not delete the other caller's branch from shared code.
             var result = value with { Node = HirNodeId.None, Location = null,
@@ -77,32 +81,10 @@ internal sealed partial class SemanticAnalyzer
             }
             if (value.Element is { } element) result = result with { Element = Abstract(element, role + "[]") };
             if (!value.Callables.IsDefaultOrEmpty)
-                result = result with { Callables = value.Callables.Select(callable => callable with
-                {
-                    Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture =>
-                    {
-                        var source = FormalLocation(capture.Source);
-                        var captured = Abstract(capture.Mode == HirCaptureMode.Location
-                            ? caller.Values.GetValueOrDefault(capture.Source, capture.Value) : capture.Value, role + "@" + source.Value);
-                        formal.Values[source] = captured;
-                        formal.Storage[source] = caller.Storage.GetValueOrDefault(capture.Source, captured.Type);
-                        return capture with { Source = source, Value = captured };
-                    }).ToImmutableArray()
-                }).ToImmutableArray() };
+                result = result with { Callables = AbstractCallables(value.Callables, role) };
             if (value.FutureCallableDomain is { } future)
                 result = result with { FutureCallableDomain = new(FormalLocation(future.Owner),
-                    future.Choices.Select(callable => callable with
-                    {
-                        Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture =>
-                        {
-                            var source = FormalLocation(capture.Source);
-                            var captured = Abstract(capture.Mode == HirCaptureMode.Location
-                                ? caller.Values.GetValueOrDefault(capture.Source, capture.Value) : capture.Value, role + "@future");
-                            formal.Values[source] = captured;
-                            formal.Storage[source] = owner.StorageType(capture.Source, caller);
-                            return capture with { Source = source, Value = captured };
-                        }).ToImmutableArray()
-                    }).ToImmutableArray()) };
+                    AbstractCallables(future.Choices, role), AbstractCallables(future.Current, role)) };
             if (!value.Alternatives.IsDefaultOrEmpty && value.Scope is null && value.Element is null)
                 result = result with { Alternatives = value.Alternatives.Select(alternative => Abstract(alternative, role + "|" + alternative.Type.Value)).ToImmutableArray() };
             if (value.IndexedRegion is { } indexed)
@@ -134,7 +116,62 @@ internal sealed partial class SemanticAnalyzer
                     Arguments = [.. binding.Arguments.Select(source => source is null ? null : source with { Root = FormalLocation(source.Root) })]
                 })] };
             active.Remove(value);
+            completed[(value, role)] = result;
             return result;
+        }
+
+        private ImmutableArray<SemanticCallable> AbstractCallables(ImmutableArray<SemanticCallable> values, string role)
+        {
+            if (values.IsDefaultOrEmpty) return [];
+            ImmutableArray<SemanticCallable>.Builder? rewritten = null;
+            for (int index = 0; index < values.Length; index++)
+            {
+                var original = values[index];
+                var item = AbstractCallable(original, role);
+                if (rewritten is null && !ReferenceEquals(original, item))
+                {
+                    rewritten = ImmutableArray.CreateBuilder<SemanticCallable>(values.Length);
+                    for (int previous = 0; previous < index; previous++) rewritten.Add(values[previous]);
+                }
+                rewritten?.Add(item);
+            }
+            return rewritten is null ? values : rewritten.MoveToImmutable();
+        }
+
+        private SemanticCallable AbstractCallable(SemanticCallable callable, string role)
+        {
+            if (callable.Captures.IsDefaultOrEmpty) return callable;
+            // Location captures name the same environment through every path in this
+            // operation. Value captures retain their structural selection role.
+            bool sharedEnvironment = callable.Captures.All(capture => capture.Mode == HirCaptureMode.Location
+                && caller.Values.ContainsKey(capture.Source));
+            if (sharedEnvironment && locationCallables.TryGetValue(callable, out var shared)) return shared;
+            string environment = sharedEnvironment ? "" : role;
+            if (callables.TryGetValue((callable, environment), out var known)) return known;
+            var captures = ImmutableArray.CreateBuilder<SemanticCapture>(callable.Captures.Length);
+            foreach (var capture in callable.Captures)
+            {
+                var source = FormalLocation(capture.Source);
+                var captured = Abstract(capture.Mode == HirCaptureMode.Location
+                    ? caller.Values.GetValueOrDefault(capture.Source, capture.Value) : capture.Value,
+                    capture.Mode == HirCaptureMode.Location ? "capture." + source.Value : role + "@value." + source.Value);
+                formal.Values[source] = captured;
+                formal.Storage[source] = owner.StorageType(capture.Source, caller);
+                captures.Add(capture with { Source = source, Value = captured });
+            }
+            var result = callable with { Captures = captures.MoveToImmutable() };
+            callables[(callable, environment)] = result;
+            if (sharedEnvironment) locationCallables[callable] = result;
+            return result;
+        }
+
+        private sealed class ReferenceRoleComparer<T> : IEqualityComparer<(T Value, string Role)> where T : class
+        {
+            public static readonly ReferenceRoleComparer<T> Instance = new();
+            public bool Equals((T Value, string Role) first, (T Value, string Role) second) =>
+                ReferenceEquals(first.Value, second.Value) && StringComparer.Ordinal.Equals(first.Role, second.Role);
+            public int GetHashCode((T Value, string Role) key) => HashCode.Combine(
+                System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.Value), StringComparer.Ordinal.GetHashCode(key.Role));
         }
 
         private int MapResourceView(ImmutableArray<int> sources, string role)

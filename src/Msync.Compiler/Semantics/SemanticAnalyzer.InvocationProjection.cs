@@ -126,6 +126,18 @@ internal sealed partial class SemanticAnalyzer
                         Bind(first[index].Value, second[index].Value);
                     }
                 }
+                if (!formalFuture.Current.IsDefaultOrEmpty && !actualFuture.Current.IsDefaultOrEmpty)
+                    for (int choice = 0; choice < Math.Min(formalFuture.Current.Length, actualFuture.Current.Length); choice++)
+                    {
+                        var first = formalFuture.Current[choice].Captures;
+                        var second = actualFuture.Current[choice].Captures;
+                        if (first.IsDefaultOrEmpty || second.IsDefaultOrEmpty) continue;
+                        for (int index = 0; index < Math.Min(first.Length, second.Length); index++)
+                        {
+                            Locations[first[index].Source] = second[index].Source;
+                            Bind(first[index].Value, second[index].Value);
+                        }
+                    }
             }
             if (!formal.Callables.IsDefaultOrEmpty && !actual.Callables.IsDefaultOrEmpty)
                 for (int choice = 0; choice < Math.Min(formal.Callables.Length, actual.Callables.Length); choice++)
@@ -218,6 +230,10 @@ internal sealed partial class SemanticAnalyzer
             if (value.FutureCallableDomain is { } future)
                 result = result with { FutureCallableDomain = new(MapLocation(future.Owner),
                     future.Choices.Select(callable => callable with
+                    {
+                        Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture => capture with
+                        { Source = MapLocation(capture.Source), Value = Project(capture.Value) }).ToImmutableArray()
+                    }).ToImmutableArray(), future.Current.IsDefault ? default : future.Current.Select(callable => callable with
                     {
                         Captures = callable.Captures.IsDefault ? [] : callable.Captures.Select(capture => capture with
                         { Source = MapLocation(capture.Source), Value = Project(capture.Value) }).ToImmutableArray()

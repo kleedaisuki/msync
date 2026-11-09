@@ -233,6 +233,7 @@ internal sealed partial class SemanticAnalyzer
         value = Convert(value, target, valueSource, context);
         CheckMemberContracts(scope, node.Text!, value, valueSource, context);
         CheckSessionMemberAssignment(scope, node.Text!, value, valueSource, context);
+        CheckClosedMemberAssignment(scope, node.Text!, value, valueSource, context);
         InvalidateScopeAliases(scope, context);
         var updated = scope with { Fields = scope.Fields.SetItem(node.Text!, value) };
         context.Objects[scope.Region] = updated;
