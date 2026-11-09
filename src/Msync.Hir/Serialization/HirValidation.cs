@@ -164,7 +164,8 @@ public static class HirValidation
             case HirKind.Coerce or HirKind.Convert: Id(node.Data, module.Types.Length, "conversion target"); Arity(count, 1, 1); break;
             case HirKind.IsType:
                 Arity(count, 1, 2);
-                if (count == 1) Id(node.Data, module.Types.Length, "type test target");
+                if (count == 1 || node.Data >= 0) Id(node.Data, module.Types.Length, "type test target");
+                else if (node.Data != -1) Fail("dynamic type test has an invalid target tag");
                 break;
             case HirKind.TypeOf: Arity(count, 1, 1); break;
             case HirKind.RegexMatch or HirKind.SelectPath: if (node.Text is null) Fail("pattern text is missing"); Arity(count, 1, 1); break;
@@ -280,8 +281,11 @@ public static class HirValidation
                 if (visited[id.Value]) continue;
                 visited[id.Value] = true;
                 var node = module.Node(id);
-                if (node.Kind is HirKind.Error or HirKind.TypeOf || node.Kind == HirKind.IsType && node.Children.Count != 1)
+                if (node.Kind is HirKind.Error or HirKind.TypeOf)
                     Fail($"closed function retains unresolved semantic {node.Kind}");
+                if (node.Kind == HirKind.IsType && node.Children.Count == 2
+                    && module.RuntimeType(module.Node(module.Children(node)[1]).Type) != Msync.Core.TypeRef.Type)
+                    Fail("dynamic type-test target must have Type type");
                 foreach (var child in module.Children(node)) pending.Push(child);
                 if (node.Kind == HirKind.Match)
                     foreach (var arm in module.Matches[node.Data].Arms) pending.Push(arm.Value);

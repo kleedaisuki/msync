@@ -93,10 +93,15 @@ HirModule symbolicTest = scalarCycle with
 HirModule symbolicRead = Decode(Encode(symbolicTest));
 Check(symbolicRead.Children(symbolicRead.Nodes[2]).SequenceEqual([new HirNodeId(0), new(1)]),
     "Bound generic type test retains its unevaluated symbolic target");
-Check(HirPrinter.Print(symbolicRead).Contains("IsType symbolic", StringComparison.Ordinal),
+Check(HirPrinter.Print(symbolicRead).Contains("IsType target-expression", StringComparison.Ordinal),
     "Bound type test does not invent a finalized target type");
-RejectModule(symbolicTest with { Functions = [symbolicTest.Functions[0] with { Body = new(2), Result = new(2) }] },
-    "Closed function cannot retain a symbolic type-test operand");
+HirModule dynamicTest = symbolicTest with { Functions = [symbolicTest.Functions[0] with { Body = new(2), Result = new(2) }] };
+Check(Decode(Encode(dynamicTest)).Nodes[2].Children.Count == 2,
+    "Closed dynamic type test retains its evaluated Type-valued target");
+RejectModule(dynamicTest with { Edges = [new(0), new(0)] },
+    "Closed dynamic type test rejects a non-Type target");
+RejectModule(dynamicTest with { Nodes = dynamicTest.Nodes.SetItem(2, dynamicTest.Nodes[2] with { Data = -2 }) },
+    "Dynamic type-test target tag is explicit");
 
 byte[] tiny = Encode(Scalar(42));
 for (int length = 0; length < tiny.Length; length++) Reject(tiny[..length], "Truncation rejected");

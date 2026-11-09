@@ -158,7 +158,7 @@ public static class HirPrinter
             {
                 HirKind.Literal => "@c" + node.Data,
                 HirKind.TypeValue or HirKind.Coerce or HirKind.Convert => "@t" + node.Data,
-                HirKind.IsType => node.Children.Count == 1 ? "@t" + node.Data : "symbolic",
+                HirKind.IsType => node.Children.Count == 1 ? "@t" + node.Data : "target-expression",
                 HirKind.ReadLocation or HirKind.ReadStorage or HirKind.Declare or HirKind.Assign => "@l" + node.Data,
                 HirKind.Call => "@k" + node.Data,
                 HirKind.Closure => "@u" + node.Data,
