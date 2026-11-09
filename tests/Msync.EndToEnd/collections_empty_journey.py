@@ -71,10 +71,12 @@ def run(command: Sequence[str], cwd: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--cli", required=True, nargs="+")
+    command = parser.add_mutually_exclusive_group(required=True)
+    command.add_argument("--cli", nargs="+")
+    command.add_argument("--binary", type=Path)
     parser.add_argument("--inline-source", action="store_true")
     args = parser.parse_args()
-    cli: list[str] = args.cli
+    cli: list[str] = [str(args.binary.resolve())] if args.binary else args.cli
     prefix = (ROOT / "stdlib/collections.msync").read_text() if args.inline_source else ""
 
     def code(source: str) -> str:
