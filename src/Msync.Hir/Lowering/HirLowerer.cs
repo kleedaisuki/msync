@@ -13,10 +13,17 @@ public static class HirLowerer
         private readonly List<Value> constants = [];
         private readonly Dictionary<Value, int> constantIndices = new(ValueRepresentation.Comparer);
         private readonly Dictionary<HirFunctionId, FunctionCode> functions = [];
+        private readonly List<HirLocationId>?[] locations = new List<HirLocationId>?[hir.Functions.Length];
 
         internal HirLoweringResult Run()
         {
             ReserveCallables();
+            for (int index = 0; index < hir.Locations.Length; index++)
+            {
+                var location = hir.Locations[index];
+                if (location.Owner.Value < 0 || location.TemplateOwner is not null) continue;
+                (locations[location.Owner.Value] ??= []).Add(new(index));
+            }
             for (int index = 0; index < hir.Functions.Length; index++)
             {
                 HirFunctionId id = new(index);
@@ -40,7 +47,7 @@ public static class HirLowerer
             {
                 SessionRoots = hir.IsSession ? hir.Exports.Select(export => Slot(hir.Entry, export.Location)).Distinct().ToArray() : null
             };
-            return new(result, layout.Layout);
+            return new(result, options.RetainLayout ? layout.Layout : HirLoweringLayout.Empty);
         }
 
         private void ReserveCallables()
@@ -86,6 +93,7 @@ public static class HirLowerer
         internal TypeRef Type(HirTypeId id) => hir.RuntimeType(id);
         internal HirModule Hir => hir;
         internal HirLoweringSession Layout => layout;
+        internal IReadOnlyList<HirLocationId> Locations(HirFunctionId function) => locations[function.Value] ?? (IReadOnlyList<HirLocationId>)Array.Empty<HirLocationId>();
     }
 
     private sealed class FunctionLowering(Lowering owner, HirFunctionId id, HirFunction function)
@@ -119,11 +127,8 @@ public static class HirLowerer
             locals = owner.Layout.LocalCounts.GetValueOrDefault(id);
             for (int index = 0; index < function.Captures.Length; index++) FixedSlot(function.Captures[index].Target, index);
             for (int index = 0; index < function.Parameters.Length; index++) FixedSlot(function.Parameters[index], function.Captures.Length + index);
-            for (int index = 0; index < Hir.Locations.Length; index++)
+            foreach (var locationId in owner.Locations(id))
             {
-                var location = Hir.Locations[index];
-                if (location.Owner != id || location.TemplateOwner is not null) continue;
-                HirLocationId locationId = new(index);
                 var key = new HirLocationSlot(id, locationId);
                 if (owner.Layout.Locations.ContainsKey(key)) continue;
                 owner.Layout.Locations.Add(key, locals++);
