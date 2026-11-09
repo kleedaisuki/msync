@@ -78,18 +78,24 @@
       },
       {
         "command": "msync.openArtifactText",
-        "title": "msync: Open Bytecode as Read-only IR"
+        "title": "msync: Open Artifact as Read-only IR"
       },
       {
         "command": "msync.refreshArtifact",
-        "title": "msync: Refresh Bytecode View"
+        "title": "msync: Refresh Artifact View"
       }
     ],
     "customEditors": [
       {
         "viewType": "msync.bytecode",
-        "displayName": "msync Bytecode",
+        "displayName": "msync Typed Artifact",
         "selector": [
+          {
+            "filenamePattern": "*.mhir"
+          },
+          {
+            "filenamePattern": "*.MHIR"
+          },
           {
             "filenamePattern": "*.mso"
           },
@@ -110,7 +116,7 @@
       "explorer/context": [
         {
           "command": "msync.openArtifactText",
-          "when": "resourceExtname == .mso || resourceExtname == .mexe || resourceExtname == .MSO || resourceExtname == .MEXE",
+          "when": "resourceExtname == .mhir || resourceExtname == .MHIR || resourceExtname == .mso || resourceExtname == .mexe || resourceExtname == .MSO || resourceExtname == .MEXE",
           "group": "navigation"
         }
       ],

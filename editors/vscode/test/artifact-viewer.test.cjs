@@ -43,6 +43,27 @@ function fixture(text = '; typed IR\nfn @f0 main() -> Bool\n  return true\n') {
     };
 }
 
+function hirFixture() {
+    const model = fixture([
+        'hir format 1 language "0.8.0"',
+        'source @s0 "removed source 可莉.msync"',
+        'type @t0 = Path',
+        'binding @l0 "file" : @t0 mutable',
+        'fn @f0 "copy" -> Bool',
+        '  @n0: CaptureLocation @l0 : @t0',
+        '  @n1: If @n0 -> Bool',
+    ].join('\n'));
+    model.artifactKind = 'hir';
+    model.formatVersion = 1;
+    model.stage = 'typed-hir';
+    delete model.optimizationLevel;
+    const span = (line, start, end) => ({ start: { line, character: start }, end: { line, character: end } });
+    model.symbols = [{ name: 'file', kind: 13, range: span(3, 0, 33), selectionRange: span(3, 8, 11) }];
+    model.references = [{ range: span(5, 23, 26), targetLine: 3, targetCharacter: 8 }];
+    model.hovers = [{ range: span(5, 23, 26), markdown: '**Location capture** `file: Path`' }];
+    return model;
+}
+
 function harness(request = async () => fixture(), nativeWatch) {
     const providers = new Map(), commands = new Map(), languageProviders = new Map();
     const files = new Map(), watchers = [], nativeWatchers = [], errors = [], warnings = [], opened = [], custom = [];
@@ -114,6 +135,7 @@ test('virtual URI preserves Unicode, spaces, UNC and remote filesystem identitie
     for (const value of [
         'file:///C:/Program%20Files/%E5%8F%AF%E8%8E%89.mso',
         'file://server/share/with%20space/file.mexe',
+        'file:///C:/Program%20Files/%E5%8F%AF%E8%8E%89.mhir',
         'vscode-remote://ssh-remote+forge/home/klee/%E5%8F%AF%E8%8E%89.mso?query=1#part',
     ]) {
         const source = URI.parse(value);
@@ -139,6 +161,62 @@ test('artifact views use the configured reader protocol, share one decode and ne
     assert.equal(h.watchers.length, 0, 'Local artifacts must not depend on asynchronous workspace watchers');
     assert.equal(h.languageProviders.get('symbols').selector.language, 'msync-ir');
     h.views.dispose();
+});
+
+test('typed HIR uses native semantic metadata without bytecode or source replay', async () => {
+    const h = harness(async () => hirFixture());
+    const uri = URI.file('/outside workspace/可莉.mhir');
+    const original = Buffer.from([77, 72, 73, 82, 0, 255]);
+    h.files.set(uri.toString(), original);
+    const document = await h.views.openCustomDocument(uri), view = panel();
+    await h.views.resolveCustomEditor(document, view);
+    assert.match(view.webview.html, /Typed HIR · format 1/);
+    assert.match(view.webview.html, /semantic representation; not recovered source/);
+    assert.ok(!view.webview.html.includes('Oundefined'));
+    assert.ok(!view.webview.html.includes('Typed bytecode'));
+    assert.deepEqual(Buffer.from(h.calls[0].parameters.data, 'base64'), original);
+    assert.deepEqual(h.files.get(uri.toString()), original);
+    const virtual = textUri(h.host, uri);
+    const text = await h.views.provideTextDocumentContent(virtual);
+    assert.equal(text, hirFixture().text);
+    assert.equal(h.calls.length, 1, 'Text and custom view share the semantic decode');
+    const symbols = await h.views.provideDocumentSymbols({ uri: virtual });
+    assert.equal(symbols[0].name, 'file');
+    const hover = await h.views.provideHover({ uri: virtual }, new Position(5, 24));
+    assert.match(hover.contents.value, /Location capture/);
+    assert.equal(hover.contents.isTrusted, false);
+    const definition = await h.views.provideDefinition({ uri: virtual }, new Position(5, 24));
+    assert.equal(definition.uri.toString(), virtual.toString());
+    assert.equal(definition.range.line ?? definition.range.start.line, 3);
+    assert.equal(h.opened.length, 0, 'Deleted original source is not needed or opened for internal HIR links');
+    view.disposed.fire(); document.dispose(); h.closed.fire({ uri: virtual });
+    h.views.dispose();
+});
+
+test('typed HIR active-file text action refreshes after atomic replacement', async () => {
+    const h = harness(async parameters => ({ ...hirFixture(), text: Buffer.from(parameters.data, 'base64').toString() }));
+    const uri = URI.file('/build/job.MHIR');
+    h.files.set(uri.toString(), Buffer.from('hir FIRST'));
+    h.host.window.activeTextEditor = { document: { uri } };
+    await h.commands.get('msync.openArtifactText')();
+    assert.equal(h.host.window.activeTextEditor.document.getText(), 'hir FIRST');
+    h.files.set(uri.toString(), Buffer.from('hir SECOND'));
+    h.nativeWatchers[0].callback('rename', 'job.MHIR');
+    assert.equal(await h.views.provideTextDocumentContent(textUri(h.host, uri)), 'hir SECOND');
+    assert.equal(h.calls.length, 2);
+    h.views.dispose();
+});
+
+test('semantic HIR webview distinguishes declarations, types, locations and structured control', () => {
+    const model = hirFixture();
+    model.text += '\ntemplate @g0 "copy"\n  @n2: Loop @n1 -> Bool';
+    const html = renderPage(URI.file('/job.mhir'), model);
+    for (const [role, value] of [
+        ['keyword', 'hir'], ['keyword', 'binding'], ['path', '@s0'],
+        ['type', '@t0'], ['type', 'Path'], ['local', '@l0'],
+        ['function', '@f0'], ['function', '@g0'], ['block', '@n0'],
+        ['opcode', 'CaptureLocation'], ['control', 'If'], ['control', 'Loop'],
+    ]) assert.ok(html.includes(`<span class="${role}">${value}</span>`), `${role} ${value}`);
 });
 
 test('watching a Windows drive-root artifact retains the absolute volume root', async () => {
@@ -309,8 +387,11 @@ test('webview treats hostile bytecode/debug data as inert escaped text', () => {
 
 test('manifest offers binary opening without routing IR through source diagnostics', () => {
     const manifest = require('../package.json');
-    assert.equal(manifest.version, '0.8.1');
-    assert.equal(manifest.contributes.customEditors.find(item => item.viewType === 'msync.bytecode').priority, 'default');
+    assert.equal(manifest.version, require('../package-lock.json').version);
+    const editor = manifest.contributes.customEditors.find(item => item.viewType === 'msync.bytecode');
+    assert.equal(editor.priority, 'default');
+    assert.ok(editor.selector.some(item => item.filenamePattern === '*.mhir'));
+    assert.ok(editor.selector.some(item => item.filenamePattern === '*.MHIR'));
     assert.ok(manifest.contributes.languages.some(item => item.id === 'msync-ir'));
     assert.ok(manifest.activationEvents.includes('onCustomEditor:msync.bytecode'));
     assert.ok(manifest.contributes.commands.some(item => item.command === 'msync.refreshArtifact'));
@@ -351,6 +432,15 @@ test('IR grammar colors real labels and future instruction mnemonics without sou
         ['const @c0: Number = number(NaN)', 'NaN', 'constant.numeric.msync-ir'],
         ['const @c0: Bool = true', 'true', 'constant.language.msync-ir'],
         ['const @c0: String = "hello; world"', 'world', 'string.quoted.double.msync-ir'],
+        ['type @t0 = Path', '@t0', 'entity.name.type.msync-ir'],
+        ['binding @l0 "file" : @t0 mutable', '@l0', 'variable.other.msync-ir'],
+        ['source @s0 "file.msync"', '@s0', 'support.type.path.msync-ir'],
+        ['template @g0 "copy"', '@g0', 'entity.name.function.msync-ir'],
+        ['  @n2: CaptureLocation @l0 : @t0', '@n2', 'entity.name.label.msync-ir'],
+        ['  @n2: CaptureLocation @l0 : @t0', 'CaptureLocation', 'keyword.operator.msync-ir'],
+        ['  @n3: If @n2 -> Bool', 'If', 'keyword.control.msync-ir'],
+        ['  @n3: Match @n2 -> Bool', 'Match', 'keyword.control.msync-ir'],
+        ['  @n4: DeferRange @f0 -> Range', 'DeferRange', 'keyword.control.msync-ir'],
     ]) {
         const start = line.indexOf(token);
         const actual = grammar.tokenizeLine(line, textmate.INITIAL).tokens.find(item => item.startIndex <= start && item.endIndex > start);

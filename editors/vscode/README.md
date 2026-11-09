@@ -10,11 +10,11 @@ by the extension.
 ## Install and develop
 
 Requires VS Code 1.91 or newer and the matching msync executable on PATH.
-Install `msync-language-0.8.0.vsix` from the release with **Extensions: Install
+Install `msync-language-0.8.1.vsix` from the release with **Extensions: Install
 from VSIX**, or:
 
 ```sh
-code --install-extension msync-language-0.8.0.vsix
+code --install-extension msync-language-0.8.1.vsix
 ```
 
 The VSIX does not bundle the executable. Set `msync.serverPath` to its absolute
@@ -213,13 +213,19 @@ from different endpoints are queued rather than replacing each other. Responses
 are returned directly to native SSH, not written to the output channel or stored
 in extension settings.
 
-## Inspect compiled bytecode
+## Inspect semantic HIR and compiled bytecode
 
-Open a `.mso` or `.mexe` file to inspect it with **msync Bytecode**, the default
-read-only custom editor. It shows the actual artifact format and language
-versions, optimization level, typed constants, functions, captures, basic blocks,
-instructions and bound context. The outline and operand links navigate within
-the artifact. The view uses your editor theme and has Find support.
+Open a `.mhir`, `.mso` or `.mexe` file with **msync Typed Artifact**, the default
+read-only custom editor. The outline and reference links navigate within the
+artifact, even after its original source has been removed. The view uses your
+editor theme and has Find support.
+
+Typed HIR is the compiler's semantic representation, not bytecode decompiled
+into apparent source. Its view distinguishes types, declaration and location
+identities, structured expressions, function identities and capture operations.
+Its own format version is independent from bytecode. The bytecode views show
+their stage, actual format and language versions, optimization level, constants,
+functions, captures, basic blocks, instructions and bound context.
 
 Both binary stages use independent IR highlighting: function, block, constant
 and local references have distinct roles; branches and acquire/release markers
@@ -227,12 +233,14 @@ are control flow rather than ordinary opcodes. Field names and checked layout
 slots remain recognizable beside types, escaped path/String data and exact
 numeric representations, including hexadecimal bits, negative zero and NaN.
 The custom view reads VS Code theme colors; the text view uses standard TextMate
-scopes. Neither sends disassembled IR through the source-language checker.
+scopes. HIR type and location references have their own roles, and structured
+branches and loops remain control flow. No artifact view sends generated IR
+through the source-language checker.
 
 **Open IR as Text** opens the same decoded data in a normal read-only editor,
 with `msync-ir` highlighting, Outline, hover explanations and Go to Definition.
-The command is also available as **msync: Open Bytecode as Read-only IR** in the
-Command Palette and the Explorer context menu. **msync: Refresh Bytecode View**
+The command is also available as **msync: Open Artifact as Read-only IR** in the
+Command Palette and the Explorer context menu. **msync: Refresh Artifact View**
 reloads after external compilation; file changes and language-server restarts
 also refresh open views. A corrupt or unsupported artifact displays the reader's
 diagnostic with retry and reader-settings actions rather than a binary editor.
@@ -247,10 +255,11 @@ added by the extension.
 
 The reader is the configured `msync.serverPath` language server. The extension
 reads bytes through VS Code's workspace filesystem, including remote workspaces,
-and sends them to the native typed-bytecode reader; it does not contain a second
-JavaScript binary parser. Inspection never runs the artifact, binds paths to a
-new context, authenticates endpoints, or changes the original file. The view is
-a disassembly of optimized typed IR, not a claim to recover discarded source.
+and sends them to the native semantic-HIR or bytecode reader; it does not contain
+a second JavaScript binary parser. Inspection never runs the artifact, binds
+paths to a new context, authenticates endpoints, or changes the original file.
+The view renders actual semantic data or optimized bytecode; it does not claim
+to recover discarded source.
 Available source references open only when explicitly selected.
 
 ## Verification
