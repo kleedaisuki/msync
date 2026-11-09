@@ -311,7 +311,7 @@ def main() -> None:
         if arguments.output:
             arguments.output.parent.mkdir(parents=True, exist_ok=True)
             arguments.output.write_text(report + "\n", encoding="utf-8")
-        print(report)
+        print(json.dumps(summaries, indent=2))
 
 
 if __name__ == "__main__":
