@@ -34,6 +34,7 @@ public static class Formatter
         private readonly HashSet<int> statementStarts = document.Statements.Skip(1).Select(statement => statement.Span.Start).ToHashSet();
         private int lineStart;
         private int pathIndex;
+        private int typeIndex;
         private int continuation;
         private int indent;
         private Token? previous;
@@ -61,6 +62,10 @@ public static class Formatter
         }
         private void Emit(Token token)
         {
+            if (token.Kind is TokenKind.Less or TokenKind.Greater && InType(token))
+            {
+                Trim(); Text(token.Text); return;
+            }
             if (hints.Operators.Contains(token.Span.Start))
             {
                 EmitOperator(token);
@@ -212,6 +217,7 @@ public static class Formatter
             if (previous is not { } prior) return;
             if (token.Kind == TokenKind.String && prior.Kind == TokenKind.Atom && Parser.WindowsPathPrefix(prior.Text)) return;
             if (prior.Kind is TokenKind.LeftParen or TokenKind.LeftBracket or TokenKind.Select or TokenKind.Slash or TokenKind.Dollar) return;
+            if (prior.Kind == TokenKind.Less && InType(prior)) return;
             if (hints.UnaryOperators.Contains(prior.Span.Start)) return;
             if (prior.Kind == TokenKind.Atom && token.Kind == TokenKind.Atom)
             {
@@ -229,6 +235,12 @@ public static class Formatter
         {
             while (pathIndex < hints.Paths.Count && hints.Paths[pathIndex].End <= prior.Start) pathIndex++;
             return pathIndex < hints.Paths.Count && hints.Paths[pathIndex].Start <= prior.Start && current.End <= hints.Paths[pathIndex].End;
+        }
+        private bool InType(Token token)
+        {
+            while (typeIndex < hints.Types.Count && hints.Types[typeIndex].End <= token.Span.Start) typeIndex++;
+            return typeIndex < hints.Types.Count && hints.Types[typeIndex].Start <= token.Span.Start
+                && token.Span.End <= hints.Types[typeIndex].End;
         }
         private void Comments(string gap)
         {
@@ -278,15 +290,18 @@ public static class Formatter
         public HashSet<int> UnaryOperators { get; } = [];
         public Dictionary<int, SourceSpan> Chains { get; } = [];
         public List<SourceSpan> Paths { get; } = [];
+        public List<SourceSpan> Types { get; } = [];
         public static LayoutHints Collect(Document document)
         {
             LayoutHints hints = new();
             foreach (var statement in document.Statements) hints.Visit(statement, null);
             hints.Paths.Sort((left, right) => left.Start.CompareTo(right.Start));
+            hints.Types.Sort((left, right) => left.Start.CompareTo(right.Start));
             return hints;
         }
         private void Visit(Node node, SourceSpan? chain)
         {
+            Types.AddRange(TypeSyntaxFacts.Annotations(node).Select(type => type.Span));
             if (node is PathExpr path) Paths.Add(path.Span);
             if (node is UnaryExpr { Operator: "+" or "-" } unary) UnaryOperators.Add(unary.Span.Start);
             if (node is BinaryExpr binary && binary.OperatorSpan is { } operation)
@@ -304,6 +319,7 @@ public static class Formatter
             ExpressionStatement expression => [expression.Expression],
             FunctionDeclaration declaration => [declaration.Function],
             ScopeDeclaration declaration => [declaration.Scope],
+            ConceptDeclaration concept => concept.Members,
             FunctionExpr function => [function.Body],
             BlockExpr block => block.Statements,
             ScopeExpr scope => scope.Members.Cast<Node>().Concat(scope.Value is null ? [] : [scope.Value]),
@@ -315,7 +331,8 @@ public static class Formatter
             BarrierExpr { Value: not null } barrier => [barrier.Value],
             CallExpr call => new Node[] { call.Callee }.Concat(call.Arguments),
             IfExpr conditional => new Node[] { conditional.Condition, conditional.Then }.Concat(conditional.Else is null ? [] : [conditional.Else]),
-            MatchExpr match => new Node[] { match.Value }.Concat(match.Arms.Select(arm => (Node)arm.Value)),
+            MatchExpr match => new Node[] { match.Value }.Concat(match.Arms),
+            MatchArm arm => [arm.Pattern, arm.Value],
             ForExpr loop => [loop.Source, loop.Body],
             LoopExpr loop => [loop.Body],
             RangeExpr range => range.Items,

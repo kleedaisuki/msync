@@ -32,6 +32,12 @@ foreach (string text in new[] { namedScopeSource, Format(namedScopeSource) })
 Expect("scope SomeClass { new: fn -> Scope { scope { item: ~/.codex/AGENTS.md } }, copy: fn(where: Connection, object: Scope) { object::item @ where -> ./ } };",
     "scope SomeClass {\n    new: fn -> Scope {", "object::item @ where -> ./");
 Expect("concept Monoid { type Self; identity: Self, combine: fn(left: Self, right: Self) -> Self, };", "concept Monoid {", "identity: Self,\n", "combine: fn(");
+Expect("concept Product { first?: typename First, second?: typename Second, };",
+    "first?: typename First,", "second?: typename Second,");
+Expect("concept Sequence { items:Range<Range<typename Item>>, visit:fn(item:Item)->Range<Item>, };",
+    "items: Range<Range<typename Item>>", "item: Item", "-> Range<Item>");
+Expect("fn read(values:Range<Range<String>>)->Range<String>{ values }; let n=1; n<2; n>0;",
+    "values: Range<Range<String>>", "-> Range<String>", "n < 2", "n > 0");
 Expect("let text = \"  first\n  last  \"; # retain this comment\nlet pattern=match ./abc { <[a-z]{3}> => { true }, _ => { false } };", "\"  first\n  last  \"", "# retain this comment", "<[a-z]{3}>");
 string logical = string.Join(" and ", Enumerable.Repeat("true == true", 12));
 string chain = Format($"let accepted = {logical};");

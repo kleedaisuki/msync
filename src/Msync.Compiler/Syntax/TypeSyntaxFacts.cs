@@ -2,6 +2,20 @@ namespace Msync.Compiler.Syntax;
 
 public static class TypeSyntaxFacts
 {
+    internal static IEnumerable<TypeSyntax> Annotations(Node node) => node switch
+    {
+        LetStatement { Type: { } type } => [type],
+        FunctionExpr function => function.Parameters.Select(parameter => parameter.Type).Append(function.ReturnType).OfType<TypeSyntax>(),
+        NativeDeclaration native => native.Parameters.Select(parameter => parameter.Type).Append(native.ReturnType).OfType<TypeSyntax>(),
+        ConceptDeclaration concept => concept.Bases,
+        ConceptMember requirement => new[] { requirement.Type, requirement.ReturnType }
+            .Concat(requirement.Parameters?.Select(parameter => parameter.Type) ?? []).OfType<TypeSyntax>(),
+        TypeExpr value => [value.Type],
+        CastExpr cast => [cast.Type],
+        TypePattern pattern => [pattern.Type],
+        _ => []
+    };
+
     public static bool IsReturnTypeArrow(string source)
     {
         IReadOnlyList<Token> tokens = new Lexer(source, "<editor>").LexForEditor(out _);
