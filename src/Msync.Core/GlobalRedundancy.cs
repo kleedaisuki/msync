@@ -306,7 +306,7 @@ internal static class GlobalRedundancy
                         Unknown(pc, instruction.Text is { } native && NativeSignatures.TryGet(native, out var signature) ? signature.Result : TypeRef.Any); break;
                     case OpCode.GetSingleton: Unknown(pc, new(TypeKind.Scope | TypeKind.Null)); break;
                     case OpCode.SetSingleton: Pop(); Unknown(pc, TypeRef.Scope); break;
-                    case OpCode.LoadBuiltin: Unknown(pc, instruction.Text?.TrimStart('$') is "std" or "view" or "views" or "ranges" ? TypeRef.Scope : TypeRef.Connection); break;
+                    case OpCode.LoadBuiltin: Unknown(pc, instruction.Text?.TrimStart('$') is "std" ? TypeRef.Scope : TypeRef.Connection); break;
                     case OpCode.MakeScope: PopMany(instruction.A); Unknown(pc, TypeRef.Scope); break;
                     case OpCode.MakeRange: case OpCode.MakeLazyRange: PopMany(instruction.A); Unknown(pc, new(TypeKind.Range)); break;
                     case OpCode.SpecializeClosure: Pop(); Unknown(pc, TypeRef.Function); break;

@@ -100,7 +100,7 @@ internal static class TailCallOptimization
         {
             foreach (var instruction in module.Functions[index].Instructions)
             {
-                if (instruction.Op == OpCode.LoadBuiltin && instruction.Text?.TrimStart('$') is "std" or "view" or "views" or "ranges") return false;
+                if (instruction.Op == OpCode.LoadBuiltin && instruction.Text?.TrimStart('$') is "std") return false;
                 if (instruction.Op == OpCode.Constant && !Closed(module.Constants[instruction.A])) return false;
                 if (instruction.Op == OpCode.MakeClosure || instruction.Op == OpCode.SpecializeClosure && instruction.Text is null) Function(instruction.A);
                 if (instruction.Op == OpCode.Call && instruction.B > 0) Function(instruction.B - 1);
