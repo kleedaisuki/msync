@@ -52,7 +52,9 @@ def distribution(values: list[float]) -> dict[str, object]:
     }
 
 
-def execute(command: list[str], directory: Path) -> subprocess.CompletedProcess[bytes]:
+def execute(
+    command: list[str], directory: Path, *, allow_failure: bool = False
+) -> subprocess.CompletedProcess[bytes]:
     result = subprocess.run(
         command,
         cwd=directory,
@@ -61,7 +63,7 @@ def execute(command: list[str], directory: Path) -> subprocess.CompletedProcess[
         env={**os.environ, "NO_COLOR": "1", "DOTNET_TieredCompilation": "0"},
         timeout=180,
     )
-    if result.returncode != 0:
+    if result.returncode != 0 and not allow_failure:
         raise RuntimeError(
             f"{command!r} failed ({result.returncode}): "
             + result.stderr.decode("utf-8", errors="replace")
@@ -80,6 +82,9 @@ def main() -> None:
     parser.add_argument("--samples", type=int, default=7)
     parser.add_argument("--level", action="append", type=int, choices=(0, 1, 2, 3))
     parser.add_argument("--retention-only", action="store_true")
+    parser.add_argument("--include-compile", action="store_true")
+    parser.add_argument("--preflight-only", action="store_true")
+    parser.add_argument("--accepted-preflight", type=Path)
     parser.add_argument("--world-scaling", action="store_true")
     parser.add_argument("--case", action="append", choices=(*SOURCES, *EXTRA_SOURCES))
     args = parser.parse_args()
@@ -89,6 +94,8 @@ def main() -> None:
     component: Path | None = args.component.resolve() if args.component else None
     if args.retention_only and component is None:
         parser.error("--retention-only requires --component")
+    if (args.preflight_only or args.include_compile) and component is None:
+        parser.error("--preflight-only and --include-compile require --component")
     work: Path = args.work.resolve()
     output: Path = args.output.resolve()
     work.mkdir(parents=True, exist_ok=True)
@@ -132,6 +139,21 @@ def main() -> None:
                 if actual != verified[name]:
                     raise RuntimeError(f"Probe assembly differs from producer: {name}")
         image["producer"] = {"receipt_path": str(receipt_path), "receipt": receipt}
+    accepted: dict[tuple[str, int], dict[str, Any]] | None = None
+    if args.accepted_preflight:
+        preflight: dict[str, Any] = json.loads(
+            args.accepted_preflight.read_text(encoding="utf-8")
+        )
+        if preflight.get("component") != image.get("component"):
+            raise RuntimeError("Preflight image differs from measurement image")
+        accepted = {
+            (record["case"], record["optimization"]): record
+            for record in preflight["records"]
+        }
+        image["accepted_preflight"] = {
+            "path": str(args.accepted_preflight.resolve()),
+            "sha256": sha256(args.accepted_preflight),
+        }
     for name in selected:
         source = work / f"{name}.msync"
         source.write_text(sources[name], encoding="utf-8", newline="\n")
@@ -152,6 +174,31 @@ def main() -> None:
                     "result_shape": "Scope{value:Scope{item:Number}}",
                     "consumed_result_indices": [0, case.calls // 2, case.calls - 1],
                 }
+            if accepted is not None:
+                admission = accepted[(name, level)]
+                if admission["source_sha256"] != record["source_sha256"]:
+                    raise RuntimeError(f"Preflight source changed: {name}")
+                if admission["preflight"]["returncode"] != 0:
+                    record["skipped_unsupported"] = admission["preflight"]
+                    records.append(record)
+                    output.write_text(
+                        json.dumps(image, indent=2) + "\n", encoding="utf-8"
+                    )
+                    continue
+            if args.preflight_only:
+                result = execute(
+                    [str(component), str(source), str(level), "--validate-only"],
+                    work,
+                    allow_failure=True,
+                )
+                record["preflight"] = {
+                    "returncode": result.returncode,
+                    "stdout": result.stdout.decode("utf-8", errors="replace"),
+                    "stderr": result.stderr.decode("utf-8", errors="replace"),
+                }
+                records.append(record)
+                output.write_text(json.dumps(image, indent=2) + "\n", encoding="utf-8")
+                continue
             if binary is not None and not args.retention_only:
                 command = [
                     str(binary),
@@ -176,6 +223,8 @@ def main() -> None:
                 ]
                 if args.retention_only:
                     component_args.append("--retention-only")
+                if args.include_compile:
+                    component_args.append("--include-compile")
                 report = execute(component_args, work)
                 parsed: dict[str, Any] = json.loads(report.stdout)
                 if not args.retention_only:

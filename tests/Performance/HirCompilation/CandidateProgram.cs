@@ -16,7 +16,27 @@ int samples = args.Length > 2 && !args[2].StartsWith("--", StringComparison.Ordi
     ? int.Parse(args[2], CultureInfo.InvariantCulture) : 9;
 const string sourceName = "hir-compilation.msync";
 bool retention = args.Contains("--retention-only", StringComparer.Ordinal);
+bool includeCompile = args.Contains("--include-compile", StringComparer.Ordinal);
+if (args.Contains("--validate-only", StringComparer.Ordinal))
+{
+    var validated = SourceCompiler.Compile(source, sourceName, level);
+    Console.WriteLine(new JsonObject
+    {
+        ["stage"] = "compile_preflight",
+        ["functions"] = validated.Functions.Count,
+        ["instructions"] = validated.Functions.Sum(function => function.Instructions.Count)
+    }.ToJsonString());
+    return;
+}
 JsonArray phases = [];
+if (includeCompile)
+{
+    Func<Msync.Core.Module> compile = () => SourceCompiler.Compile(source, sourceName, level);
+    if (retention)
+        phases.Add(RetentionObservation.Measure(compile, "normal_compile_retention"));
+    else
+        phases.Add(Observe(compile, "normal_compile_total", samples).Report);
+}
 Func<HirModule> analyze = () => SourceCompiler.Analyze(source, sourceName);
 HirModule hir;
 if (retention)
@@ -42,8 +62,10 @@ var module = Lower();
 Console.WriteLine(new JsonObject
 {
     ["stage"] = retention ? "typed_hir_retention" : "typed_hir_phases",
-    ["compiler_facade_used"] = false,
-    ["optimizer_used"] = false,
+    ["compiler_facade_used"] = includeCompile,
+    ["optimizer_used"] = includeCompile,
+    ["normal_compile_optimization_level"] = includeCompile ? level : null,
+    ["lower_phase_optimizer_used"] = false,
     ["lowering_options_level"] = level,
     ["lowering_retain_layout"] = false,
     ["source_sha256"] = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(source))),
@@ -53,6 +75,9 @@ Console.WriteLine(new JsonObject
     ["hir_templates"] = hir.Templates.Length,
     ["hir_nodes"] = hir.Nodes.Length,
     ["hir_locations"] = hir.Locations.Length,
+    ["hir_types"] = hir.Types.Length,
+    ["hir_scope_layouts"] = hir.ScopeLayouts.Length,
+    ["hir_specialized_template_functions"] = hir.Functions.Count(function => function.Template is not null),
     ["functions"] = module.Functions.Count,
     ["instructions"] = module.Functions.Sum(function => function.Instructions.Count),
     ["hir_artifact_bytes"] = encoded.Length,

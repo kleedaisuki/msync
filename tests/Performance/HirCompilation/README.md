@@ -303,3 +303,101 @@ Raw timings were recorded for reproducibility, but concurrent shared build work
 still prevents a causal timing trend claim. This continuation establishes actual
 phase-call allocation and held/released stability after semantic model changes,
 not complete workload acceptance or a final migration performance comparison.
+
+### Default Compile cutover: supported workloads and construction cost
+
+The next image is the genuine default Analyze → Lower → Optimize cutover,
+`.temp/hir-editor-cli/frozen4/snapshot-receipt.json`, Compiler
+`3296ff6984adfbb10360c836568b90c9ac7c24bd48b503cdf5b87385d3592b42`, HIR
+`99e291ccd03c3390350513abd430bac58207a0537000e580c3b25f54542b1118`.
+The complete six-DLL receipt is embedded in the raw observations under
+`.temp/hir-fourth-phase/`. Again only the test probe was built.
+
+`--include-compile` opts into measuring the actual default Compile facade as an
+additional phase. This phase includes the optimizer at the selected level;
+`lower_unoptimized` remains an independent backend-only observation. In
+retention mode, normal Compile runs **before** the probe deliberately retains
+any analyzed HIR, so its before/held/released observations do not include a
+second semantic graph held by the caller. Separate Analyze/Lower/Export
+observations keep their previously documented ownership boundaries.
+
+Run `--preflight-only` first: one real default Compile per source/level records
+acceptance and final bytecode counts without repeated warm observations. Pass
+its JSON as `--accepted-preflight FILE` to later observations; the driver
+verifies the same product image and source hashes and skips rejected cases,
+retaining their diagnostics rather than benchmarking a failure. For example:
+
+```sh
+python3 tests/Performance/HirCompilation/measure.py \
+  --component /absolute/frozen/probe/msync-hir-compilation \
+  --producer-receipt /absolute/frozen/snapshot-receipt.json \
+  --source-revision COMMIT --preflight-only \
+  --work .temp/hir-default/inputs --output .temp/hir-default/preflight.json
+python3 tests/Performance/HirCompilation/measure.py \
+  --component /absolute/frozen/probe/msync-hir-compilation \
+  --producer-receipt /absolute/frozen/snapshot-receipt.json \
+  --source-revision COMMIT --include-compile --samples 3 \
+  --accepted-preflight .temp/hir-default/preflight.json \
+  --work .temp/hir-default/inputs --output .temp/hir-default/timing.json
+```
+
+Five regular inputs were accepted at O0/O2. The B-tree was rejected at
+`msync-stdlib:///0.8.0/containers.msync:682:24` with `Scope has no member 'node'`
+during MemberRead → Loop → generic instance analysis. It was skipped in all
+subsequent timing and retention runs, not reported as faster compilation.
+
+| Default cutover allocation traffic, B | Compile O0 | Compile O2 | Analyze | Lower only | HIR write |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Scalar | 17,040 | 30,464 | 12,968 | 2,944 | 2,960 |
+| Bool | 68,816 | 183,120 | 58,888 | 6,144 | 7,240 |
+| Shell | 93,288 | 249,664 | 78,872 | 9,800 | 26,312 |
+| List | 1,875,760 | 4,530,224 | 1,737,944–1,738,312 | 72,288 | 508,328 |
+| Traits | 36,728 | 60,688 | 31,576 | 4,024 | 13,544 |
+
+These are three warm samples per stage/level, not an isolated latency
+comparison. Allocation identifies a real construction-cost question: the
+released List O0 control allocates 927,712 B, versus 1,875,760 B here (about
+2.02×); O2 changes from 4,432,800 B to 4,530,224 B (about +2.2%). Meanwhile the
+new O2 residual has 27 functions/228 instructions versus 43/415 in the released
+control. A smaller optimized program does not by itself establish a cheaper
+compiler. Most current List construction traffic occurs in semantic analysis.
+The candidate still has active semantic fixes and is not the final performance
+acceptance image.
+
+| Input | HIR functions / templates | Nodes | Types | Scope layouts |
+| --- | ---: | ---: | ---: | ---: |
+| Scalar | 1 / 0 | 4 | 3 | 0 |
+| Bool | 2 / 1 | 19 | 9 | 1 |
+| Shell | 2 / 1 | 28 | 21 | 4 |
+| List | 6 / 34 | 623 | 287 | 8 |
+| Traits | 1 / 0 | 7 | 12 | 1 |
+
+The unrelated-world grid was also accepted and observed at O0, with the same
+one specialized `wrap` function plus entry (two finalized functions and one
+generic template) in all four cases:
+
+| Private bindings / calls | Analyze allocated B | Nodes | Types / layouts | Collected Analyze before / held / released B |
+| --- | ---: | ---: | ---: | ---: |
+| 32 / 8 | 366,256 | 137 | 32 / 12 | 110,496 / 130,152 / 110,592 |
+| 32 / 64 | 1,546,768 | 473 | 144 / 68 | 117,224 / 188,848 / 117,320 |
+| 1,024 / 8 | 4,520,240 | 2,121 | 32 / 12 | 180,144 / 430,136 / 180,240 |
+| 1,024 / 64 | 5,576,936 | 2,457 | 144 / 68 | 174,584 / 476,544 / 174,680 |
+
+The extra 56 calls allocate about 1.18 MB with 32 unrelated bindings and
+1.06 MB with 1,024: this control does not show a caller-world × call-count
+allocation amplification. Code sharing is visible, but type/layout counts still
+grow with source call sites; sharing code must not be mislabeled as interning
+every structural row or merging object identities. Semantic freshness/aliasing
+remains the separate end-to-end journey's contract.
+
+All 56 independent phase-result retention observations found the returned
+result alive while held and collectible afterward. For List O2, normal Compile
+collected heap was 1,526,728 → 1,556,680 → 1,526,760 B; deliberately retained
+full Analyze output was 1,530,080 → 1,620,080 → 1,530,176 B. Their sampled
+heap-occupancy peaks were about 5.75 MB and 3.30 MB respectively, not retained
+object sizes. Some tiny phases have zero background samples; their reported
+initial observation cannot establish an interval peak. Remaining cache/runtime
+deltas after release are not charged to a result whose weak reference is dead.
+These measurements do not prove per-body streaming disposal or final editor
+retention behavior. No old baseline was remeasured and no timing speedup or
+regression is attributed under concurrent shared builds.
