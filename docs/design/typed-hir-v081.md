@@ -111,6 +111,42 @@ structured queries, then serializes/reloads HIR and runs the pure lowerer's
 output. It also checks query/flow-fork capability isolation and allocation
 independence from a large unused lexical environment.
 
+### Canonical structural layouts
+
+`HirBuilder.InternScopeLayout` owns structural row interning. The hash key
+includes ordered field names, storage-type IDs and null admission; equality
+still compares the complete field sequence. Binding may append open rows
+directly: the index catches up over each new row once and retains the first
+matching ID. Semantic analysis and flow projection no longer scan every layout
+for each request. The index is lazy, so a program without Scope layouts creates
+no index collections. Generation rollback removes only appended canonical keys
+and rewinds the indexing cursor, retaining cached information about accepted
+rows.
+
+`tests/HirScopeInterning` checks structural identity, direct-binding catch-up and
+rollback against linear lookup over 5000 generated requests. Its optional
+`--benchmark` compares the previous linear algorithm with indexed lookup in one
+process. Linux x64, .NET 10 Release, `DOTNET_TieredCompilation=0`, 20000 repeated
+two-field requests produced:
+
+| Existing rows | Linear lookup | Indexed lookup | First indexing | Steady allocation |
+| --- | ---: | ---: | ---: | ---: |
+| 64 | 27.567 ms | 2.289 ms | 61.1 us | 0 B |
+| 512 | 253.813 ms | 1.946 ms | 186.9 us | 0 B |
+| 2048 | 1089.168 ms | 2.043 ms | 660.0 us | 0 B |
+
+A controlled compiler comparison used parent revision `a70d44b` with only the
+`f1850c4` interner changes applied. Warm `List::new([1, 2, 3])` followed by
+`List::size` retained the same 8 layouts, 6 functions and 623 nodes. Analyze
+allocation changed from 1688704 to 1690640 bytes; lowering stayed at 89384
+bytes. This index removes growing lookup cost, not the larger List semantic
+analysis allocation. The no-stdlib arithmetic control added 24 bytes to the
+builder and created no index. Compilation was measured separately from runtime;
+this pre-integration revision's List execution still had an independent module
+initialization failure, so these numbers are not a successful runtime benchmark.
+
+### Transactional source generations
+
 Session acceptance and editor source-generation workspaces are a separate
 boundary: they may append newly bound source to the session arena while the
 generation is pending. `HirBuilder.BeginTransaction` records arena lengths and
