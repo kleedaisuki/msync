@@ -178,7 +178,8 @@ jobs:
               if os.environ['POLISH_MEMORY'] == 'true':
                   arguments.extend(['--phase', 'memory-layout'])
               if os.environ['POLISH_ARTIFACTS'] == 'true':
-                  arguments.extend(['--phase', 'artifact-view'])
+                  for phase in ('artifact-view', 'artifact-disassembly'):
+                      arguments.extend(['--phase', phase])
               if os.environ['POLISH_IDENTIFIERS'] == 'true':
                   arguments.extend(['--phase', 'identifier-return'])
               if os.environ['POLISH_COMPLETION'] == 'true':
@@ -213,7 +214,7 @@ jobs:
         run: dotnet publish tests/Performance/Components/Msync.Components.csproj -c Release -r win-x64 -p:RestoreLockedMode=true -p:SourceRevisionId=${{ github.sha }} --artifacts-path artifacts/memory-component-build -o artifacts/memory-components -m:1 -nr:false
       - name: Record native Windows cross-block memory and layout costs
         if: ${{ !cancelled() && steps.memory-components.outcome == 'success' }}
-        run: artifacts/memory-components/msync-components.exe --optimizer-pipeline --cases memory_branches,memory_loop,layout_factory --sizes 1,32,128 --levels 2 --samples 7 --warmups 3 --output .temp/platform-results/memory-components.json
+        run: artifacts/memory-components/msync-components.exe --optimizer-pipeline --cases memory_branches,memory_loop,layout_factory --sizes 1,32 --levels 2 --samples 7 --warmups 3 --output .temp/platform-results/memory-components.json
       - name: Publish the native Windows optimizer component observation image
         id: state-components
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.state == 'true' && runner.os == 'Windows' && steps.package.outcome == 'success' }}

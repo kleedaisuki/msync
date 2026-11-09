@@ -44,6 +44,7 @@ def main() -> int:
             "linear-effect",
             "memory-layout",
             "artifact-view",
+            "artifact-disassembly",
             "navigation",
             "repl-palette",
             "terminal-detail",
@@ -98,6 +99,7 @@ def main() -> int:
         ("linear-effect", "linear_effect_journey.py"),
         ("memory-layout", "memory_layout_journey.py"),
         ("artifact-view", "artifact_view_journey.py"),
+        ("artifact-disassembly", "artifact_disassembly_journey.py"),
         ("navigation", "navigation_journey.py"),
         ("repl-palette", "repl_palette_journey.py"),
     ]
