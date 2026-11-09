@@ -9,28 +9,35 @@ an independent collection. No additional runtime collection type is introduced.
 ## Ownership and storage schema
 
 Every constructor consumes an initial Range to determine its element schema.
-Empty scalar collections can specify their element type without an existing
-value:
+Prototype factories hide the empty Range/record seed and do not insert a sample:
 
 ```msync
-let numbers = $std::collections::List([] as Range<Number>);
+let numbers = $std::collections::EmptyList(0);
 numbers::add(1);
-let words = $std::collections::Set([] as Range<String>);
-```
-
-An empty Map needs a structural entry seed. `take(..., 0)` records its inferred
-schema without inserting a sample element:
-
-```msync
-let entries = $std::ranges::take([scope { key: "", value: 0 }], 0);
-let counts = $std::collections::Map(entries);
+let words = $std::collections::EmptySet("");
+let counts = $std::collections::EmptyMap("", 0);
 counts::put("readme", 1);
+let optional = $std::collections::EmptyNullableMap("", 0);
+optional::put("readme", null);
 ```
 
-`Range<Entry>` where Entry is a concept is a constraint, not a constructor for a
-new Scope row layout; casting an empty Range to it does not invent key/value
-locations. The same `take(existing, 0)` technique preserves an existing richer
-element schema. Inferred storage types remain fixed across
+The prototype arguments are ordinary values evaluated once, not unevaluated Type
+descriptors. Their inferred types fix the new collection's schema. Passing Null
+alone therefore establishes Null-only storage, not a future arbitrary type.
+`EmptyNullableMap` explicitly admits Null in the mapped value while preserving
+the concrete value prototype's type; it does not make keys nullable.
+
+`EmptySetWith(prototype, equal)` and
+`EmptyMapWith(key_prototype, value_prototype, equal)` retain a custom equivalence
+relation. `EmptyStack(prototype)` and `EmptyQueue(prototype)` follow the same
+storage policy. These are source compositions, not additional native types.
+
+For direct Range composition, `List([] as Range<Number>)` is also supported.
+`take(existing, 0)` preserves an existing richer element schema. A concept such
+as Entry is a constraint, not a constructor for a new Scope row layout; casting
+an empty Range to `Range<Entry>` does not invent key/value locations.
+
+Inferred storage types remain fixed across
 method calls. Collections are not untyped bags merely because methods are
 first-class Function values. A constructor infers storage from the values it
 consumes, not from permission to assign a different value to a caller's original
@@ -62,6 +69,7 @@ replacements needlessly grow compiler shape joins.
 | `Set(initial)` / `SetWith(initial, equal)` | snapshot, size, is_empty, clear, contains, add, remove, union_with, intersect_with, except_with, is_subset_of, overlaps |
 | `Stack(initial)` | snapshot, size, is_empty, clear, push, peek, pop |
 | `Queue(initial)` | snapshot, size, is_empty, clear, enqueue, peek, dequeue |
+| Empty factories | EmptyList, EmptySet, EmptySetWith, EmptyMap, EmptyMapWith, EmptyNullableMap, EmptyStack, EmptyQueue |
 
 Map input entries have fields `key` and `value`. Duplicate keys keep their first
 position and receive the last value. `put` reports whether a new key was added;
@@ -98,3 +106,9 @@ isolation, stable snapshots, duplicate keys, ordered set algebra, stack/queue
 behavior, custom equality, nullable mapped values, empty stack/queue operations,
 and O0/O2/O3 source/relocatable/executable CLI routes. Three rejected programs
 exercise fixed List, Set and Map storage schemas.
+
+`tests/Msync.EndToEnd/collections_empty_journey.py` independently exercises all
+eight empty factories, empty reads/removals, populated mutations, custom
+comparers and explicit nullable mapped values through O2 source, relocatable and
+executable CLI paths. It also rejects concrete element-type changes, an
+unadmitted Null value and a String comparator used with Number keys.

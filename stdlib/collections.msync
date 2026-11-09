@@ -11,7 +11,9 @@ fn List(initial: Range) {
                 $std::ranges::take(state::items, 0)
             );
         },
-        get: fn(index: Number) { $std::ranges::at(state::items, index) },
+        get: fn(index: Number) {
+            $std::ranges::at_or(state::items, index, null)
+        },
         get_or: fn(index: Number, fallback?) {
             $std::ranges::at_or(state::items, index, fallback)
         },
@@ -279,4 +281,37 @@ fn Queue(initial: Range) {
             value
         }
     }
+};
+
+# Prototypes establish fixed storage schemas; zero-count seeds insert no values.
+fn EmptyList(prototype?) {
+    List($std::ranges::take([prototype], 0))
+};
+fn EmptySet(prototype?) {
+    Set($std::ranges::take([prototype], 0))
+};
+fn EmptySetWith(prototype?, equal: Function) {
+    SetWith($std::ranges::take([prototype], 0), equal)
+};
+fn EmptyMap(key_prototype?, value_prototype?) {
+    Map($std::ranges::take([
+        scope { key?: key_prototype, value?: value_prototype }
+    ], 0))
+};
+fn EmptyMapWith(key_prototype?, value_prototype?, equal: Function) {
+    MapWith($std::ranges::take([
+        scope { key?: key_prototype, value?: value_prototype }
+    ], 0), equal)
+};
+fn EmptyNullableMap(key_prototype?, value_prototype?) {
+    Map($std::ranges::take([
+        scope { key?: key_prototype, value?: value_prototype },
+        scope { key?: key_prototype, value?: null }
+    ], 0))
+};
+fn EmptyStack(prototype?) {
+    Stack($std::ranges::take([prototype], 0))
+};
+fn EmptyQueue(prototype?) {
+    Queue($std::ranges::take([prototype], 0))
 };
