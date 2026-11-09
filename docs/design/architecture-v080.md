@@ -68,6 +68,13 @@ while `HirLoweringSession` owns their logical-to-physical layout. Pure
 `Compilation` emission partials and bytecode-producing editor probe path are
 removed, rather than retained as an alternate frontend.
 
+The session bridge is an integration owner: `SemanticSession` coordinates
+analysis, lowering and execution feedback, while its Values/Sites adapters use
+`HirLoweringLayout` to relate runtime values to semantic identities. Their
+current placement under `Semantics/` does not make those orchestration adapters
+part of source binding or type analysis. `SourceBinder` and `SemanticAnalyzer`
+do not allocate physical slots or emit bytecode.
+
 Runtime `ExecutionSession`, `SessionImage` and `ResourceIndex` are independent
 owners rather than declarations appended to the interpreter. Opcode dispatch,
 invocation and lifecycle code are separate interpreter partials; native indexed
