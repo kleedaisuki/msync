@@ -1,0 +1,14 @@
+{
+  "name": "msync Typed IR",
+  "scopeName": "source.msync-ir",
+  "patterns": [
+    { "name": "comment.line.semicolon.msync-ir", "match": ";.*$" },
+    { "name": "string.quoted.double.msync-ir", "begin": "\"", "end": "\"", "patterns": [{ "name": "constant.character.escape.msync-ir", "match": "\\\\." }] },
+    { "name": "keyword.control.msync-ir", "match": "\\b(?:artifact|context|const|fn|block|entry|format|language|optimization|semantics|captures|locals|successors|effects|readonly)\\b" },
+    { "name": "entity.name.function.msync-ir", "match": "@f[0-9]+|[@%]c[0-9]+|@b[0-9]+_[0-9]+|\\bb[0-9]+\\b" },
+    { "name": "entity.name.type.msync-ir", "match": "\\b(?:Null|Bool|Number|String|Path|Scope|Function|Connection|Process|Range|Type)\\b" },
+    { "match": "^(\\s*[0-9]+:\\s+)([A-Za-z][A-Za-z0-9_]*)", "captures": { "2": { "name": "keyword.operator.msync-ir" } } },
+    { "name": "variable.other.msync-ir", "match": "%[0-9]+|\\b(?:local|capture|arg)[0-9]+\\b" },
+    { "name": "constant.numeric.msync-ir", "match": "\\b[0-9]+(?:\\.[0-9]+)?\\b" }
+  ]
+}

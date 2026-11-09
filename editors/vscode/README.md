@@ -141,6 +141,30 @@ from different endpoints are queued rather than replacing each other. Responses
 are returned directly to native SSH, not written to the output channel or stored
 in extension settings.
 
+## Inspect compiled bytecode
+
+Open a `.mso` or `.mexe` file to inspect it with **msync Bytecode**, the default
+read-only custom editor. It shows the actual artifact format and language
+versions, optimization level, typed constants, functions, captures, basic blocks,
+instructions and bound context. The outline and operand links navigate within
+the artifact. The view uses your editor theme and has Find support.
+
+**Open IR as Text** opens the same decoded data in a normal read-only editor,
+with `msync-ir` highlighting, Outline, hover explanations and Go to Definition.
+The command is also available as **msync: Open Bytecode as Read-only IR** in the
+Command Palette and the Explorer context menu. **msync: Refresh Bytecode View**
+reloads after external compilation; file changes and language-server restarts
+also refresh open views. A corrupt or unsupported artifact displays the reader's
+diagnostic with retry and reader-settings actions rather than a binary editor.
+
+The reader is the configured `msync.serverPath` language server. The extension
+reads bytes through VS Code's workspace filesystem, including remote workspaces,
+and sends them to the native typed-bytecode reader; it does not contain a second
+JavaScript binary parser. Inspection never runs the artifact, binds paths to a
+new context, authenticates endpoints, or changes the original file. The view is
+a disassembly of optimized typed IR, not a claim to recover discarded source.
+Available source references open only when explicitly selected.
+
 ## Verification
 
 `npm test` uses the actual `vscode-textmate` engine and Oniguruma WASM. It checks

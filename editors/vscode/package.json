@@ -13,7 +13,9 @@
   ],
   "main": "./out/extension.cjs",
   "activationEvents": [
-    "onLanguage:msync"
+    "onLanguage:msync",
+    "onLanguage:msync-ir",
+    "onCustomEditor:msync.bytecode"
   ],
   "contributes": {
     "languages": [
@@ -26,6 +28,15 @@
           ".msync"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "msync-ir",
+        "aliases": [
+          "msync Typed IR"
+        ],
+        "extensions": [
+          ".msync-ir"
+        ]
       }
     ],
     "grammars": [
@@ -36,6 +47,11 @@
         "unbalancedBracketScopes": [
           "string.regexp.msync"
         ]
+      },
+      {
+        "language": "msync-ir",
+        "scopeName": "source.msync-ir",
+        "path": "./syntaxes/msync-ir.tmLanguage.json"
       }
     ],
     "snippets": [
@@ -59,8 +75,58 @@
       {
         "command": "msync.restartLanguageServer",
         "title": "msync: Restart Language Server"
+      },
+      {
+        "command": "msync.openArtifactText",
+        "title": "msync: Open Bytecode as Read-only IR"
+      },
+      {
+        "command": "msync.refreshArtifact",
+        "title": "msync: Refresh Bytecode View"
       }
     ],
+    "customEditors": [
+      {
+        "viewType": "msync.bytecode",
+        "displayName": "msync Bytecode",
+        "selector": [
+          {
+            "filenamePattern": "*.mso"
+          },
+          {
+            "filenamePattern": "*.mexe"
+          },
+          {
+            "filenamePattern": "*.MSO"
+          },
+          {
+            "filenamePattern": "*.MEXE"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "msync.openArtifactText",
+          "when": "resourceExtname == .mso || resourceExtname == .mexe || resourceExtname == .MSO || resourceExtname == .MEXE",
+          "group": "navigation"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "msync.openArtifactText",
+          "when": "activeCustomEditorId == msync.bytecode",
+          "group": "navigation"
+        },
+        {
+          "command": "msync.refreshArtifact",
+          "when": "activeCustomEditorId == msync.bytecode || resourceScheme == msync-artifact",
+          "group": "navigation"
+        }
+      ]
+    },
     "semanticTokenTypes": [
       {
         "id": "protocol",
@@ -123,6 +189,7 @@
     "@vscode/test-electron": "3.1.0",
     "esbuild": "0.28.2",
     "vscode-oniguruma": "2.0.1",
-    "vscode-textmate": "9.3.2"
+    "vscode-textmate": "9.3.2",
+    "vscode-uri": "3.2.0"
   }
 }

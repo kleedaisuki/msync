@@ -32,12 +32,23 @@ function harness(command = 'msync', startError) {
         async sendRequest(method, params) { this.requests.push(method); return `${method}:${params.uri}`; }
     }
     const host = {
+        EventEmitter: class {
+            constructor() { this.event = () => ({ dispose() {} }); }
+            fire() {}
+            dispose() {}
+        },
+        languages: {
+            registerDocumentSymbolProvider() { return { dispose() {} }; },
+            registerHoverProvider() { return { dispose() {} }; },
+            registerDefinitionProvider() { return { dispose() {} }; },
+        },
         commands: {
             registerCommand(name, callback) { commands.set(name, callback); return { dispose() {} }; },
             executeCommand(...args) { executed.push(args); return Promise.resolve(); },
         },
         workspace: {
             onDidChangeConfiguration(callback) { configurationListeners.push(callback); return { dispose() {} }; },
+            onDidCloseTextDocument() { return { dispose() {} }; },
             registerTextDocumentContentProvider(scheme, provider) {
                 const registration = { scheme, provider, dispose() {} };
                 providers.push(registration);
@@ -51,7 +62,7 @@ function harness(command = 'msync', startError) {
                 return command;
             } };
         } },
-        window: { showErrorMessage: (message, action) => {
+        window: { registerCustomEditorProvider() { return { dispose() {} }; }, showErrorMessage: (message, action) => {
             errors.push(message);
             assert.equal(action, 'Open Settings');
             return Promise.resolve(selectedAction);
@@ -86,7 +97,7 @@ test('activation launches stdio client without shell and registers user/library 
         { scheme: 'msync-stdlib', language: 'msync' },
     ]);
     assert.deepEqual(client.args[3].initializationOptions, { sshPrompt: true });
-    assert.equal(context.subscriptions.length, 3);
+    assert.equal(context.subscriptions.length, 12);
     assert.equal(client.started, 1);
     assert.equal(errors.length, 0);
     await extension.deactivate();
@@ -126,7 +137,7 @@ test('manually malformed server setting is diagnosed without throwing during act
 test('stdlib definition documents request source from the running server', async () => {
     const { extension, providers, context } = harness();
     await extension.activate(context);
-    assert.equal(providers.length, 1);
+    assert.equal(providers.length, 2);
     assert.equal(providers[0].scheme, 'msync-stdlib');
     const text = await providers[0].provider.provideTextDocumentContent({ toString: () => 'msync-stdlib:///0.7.0/fs.msync' });
     assert.equal(text, 'msync/stdlibSource:msync-stdlib:///0.7.0/fs.msync');
@@ -142,7 +153,7 @@ test('explicit restart replaces the client without duplicating library document 
     assert.equal(created.length, 2);
     assert.equal(created[0].stopped, 1);
     assert.equal(created[1].started, 1);
-    assert.equal(providers.length, 1);
+    assert.equal(providers.length, 2);
     await providers[0].provider.provideTextDocumentContent({ toString: () => 'msync-stdlib:///0.7.2/fs.msync' });
     assert.equal(created[0].requests.length, 0);
     assert.equal(created[1].requests.length, 1);
