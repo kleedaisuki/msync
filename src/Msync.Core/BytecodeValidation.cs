@@ -104,7 +104,9 @@ internal static class BytecodeValidation
                 case OpCode.LoadCell:
                 case OpCode.LoadStorage:
                     var local = locals[instruction.A] ?? throw Error($"local {instruction.A} is not defined on every incoming path");
-                    stack.Add(cells.Contains(instruction.A) ? local with { Constant = null, Function = null } : local); break;
+                    // An escaped location can be written through closure aliases,
+                    // including aliases introduced when a callee is inlined.
+                    stack.Add(cells.Contains(instruction.A) ? local with { Type = TypeRef.Any, Constant = null, Function = null } : local); break;
                 case OpCode.StoreLocal:
                 case OpCode.InitializeLocal: locals[instruction.A] = Pop(); break;
                 case OpCode.Pop: Pop(); break;

@@ -112,6 +112,54 @@ selected by runtime control flow retains a finite set of statically checked
 callable alternatives and a precomputed template-to-specialization dispatch map.
 There is no runtime source parsing or generic type inference.
 
+### Explicit `global` imports and the Rust compatibility boundary
+
+`global name, other;` explicitly imports existing definition-time lexical
+ancestors into an `fn`; it is not a declaration in a process-wide name table.
+Resolve the nearest prior binding at the function's definition, never an
+unrelated caller local or a later declaration. A nested function can import a
+grandparent binding even when its parent did not explicitly import it. Prior
+Scope fields are legitimate ancestors for functions defined inside that Scope.
+An import retains the binding's type, Null admission, declaration origin and
+identity. Ordinary 0.8 implicit capture remains supported.
+
+In 0.8 the imported location is the same shared cell used by ordinary captures.
+Assignment through the import updates that location, subject to its fixed type;
+later assignment to the same outer location is visible inside the function.
+A later `let` shadows with a different location and does not retarget the import.
+The import outlives the defining frame when its closure does. Top-level `global`
+is invalid because top-level bindings already share their lexical environment.
+A parameter or a local `let` with the same name conflicts with the import;
+repeating an import of the same still-visible location is harmless. Reimporting
+after shadowing with a new local is also a conflict, rather than silently
+retargeting that local. Scope syntax remains fields plus a value expression;
+functions inside a Scope may import preceding fields, but `global` does not
+create exported fields.
+
+The Rust 0.7.3 baseline owns a deliberately different value model. Its parser
+emits `StatementKind::Global`, and `import_globals` imports from frozen ancestor
+maps into a fresh invocation environment. Frozen maps can contain a live
+`Value::Dynamic(Slot)`, so an imported runtime Bool/String slot observes later
+slot updates, whereas a captured literal remains the old literal. Importing does
+not import the owner's `cells` map: assigning the imported name changes the
+invocation's local value, not the outer binding. Prior macro/symbol/boolean
+definitions can also be imported by their frozen identity. A root Scope has the
+same top-level restriction; a Scope nested in a macro inherits that invocation's
+import context. One old imported-name-set quirk allowed reimport after a local
+rebind to reset the name to the captured value; 0.8 instead keeps the explicit
+lexical-identity conflict rule above.
+
+These distinctions are grounded in `legacy/src/compiler/structured.rs`
+(`import_globals`, macro frame construction),
+`legacy/src/compiler/structured/symbols.rs` (`captured`, `instantiate`) and
+`legacy/src/compiler/structured/v6.rs` (slot assignment). The discriminating
+baseline tests are `lowering_v4::macro_global_uses_definition_snapshot_and_locals_do_not_leak`,
+`symbol_v052::lexical_globals_capture_prior_values_and_callers_are_not_captured`
+and the transitive/imported-template cases in `compiler_functions_v060`.
+Restoring the keyword in 0.8 reuses existing lexical captures and typed location
+effects; it does not require a global registry, a new opcode, or a new artifact
+format, and does not change old artifact capture semantics.
+
 A type-derived condition such as `if decltype(value) is Path` selects its
 statically possible branch during specialization. `match decltype(value)`
 similarly infers only the selected type arm after checking exhaustive coverage

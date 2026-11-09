@@ -230,6 +230,7 @@ internal sealed partial class Compilation
             frame.Bind(name, binding with { Slot = frame.Allocate(), Info = info });
             InstallCaptureFacts(frame, info);
         }
+        frame.GlobalBindings = frame.Environment;
         for (int index = 0; index < arguments.Count; index++)
         {
             var parameter = function.Syntax.Parameters[index];
@@ -254,7 +255,12 @@ internal sealed partial class Compilation
     private static bool Accessor(Node node) => node switch
     {
         NameExpr or PathExpr or StringExpr or NumberExpr or BoolExpr or NullExpr or TypeExpr => true,
-        BlockExpr block => block.Statements.Count == 0 || block.Statements.Count == 1 && Accessor(block.Statements[0]),
+        BlockExpr block => block.Statements.Count(statement => statement is not GlobalStatement) switch
+        {
+            0 => true,
+            1 => Accessor(block.Statements.First(statement => statement is not GlobalStatement)),
+            _ => false
+        },
         ExpressionStatement statement => Accessor(statement.Expression),
         ReturnExpr { Value: not null } returned => Accessor(returned.Value),
         UnaryExpr { Operator: "?" or "not" or "$" } unary => Accessor(unary.Operand),

@@ -10,6 +10,7 @@ public sealed record EditorContext(IReadOnlyList<SemanticMember> Bindings, Seman
     EditorReceiverKind ReceiverKind = EditorReceiverKind.Member, ConnectionValue? PhysicalEndpoint = null, bool HasPhysicalOwner = false)
 {
     public bool IsTypePosition { get; init; }
+    public bool IsGlobalImport { get; init; }
 }
 
 internal readonly record struct EditorPathFlowStart(int Selections, int Leaves);
@@ -27,12 +28,24 @@ internal sealed partial class EditorContextCollector
     private sealed record Selection(SourceSpan Span, Info Receiver, bool Concrete, EditorReceiverKind Kind, Expr? Expression,
         IReadOnlyList<SourceSpan>? PhysicalDomains = null);
     private sealed record PathLeaf(Expr Expression, bool Concrete, bool HasOwner = false, ConnectionValue? Endpoint = null);
+    private sealed record ImportContext(SourceSpan Span, ImmutableDictionary<string, Binding> Bindings, bool Concrete);
     private readonly List<Snapshot> snapshots = [];
     private readonly List<Selection> selections = [];
     private readonly List<PathLeaf> leaves = [];
+    private readonly List<ImportContext> imports = [];
     private readonly HashSet<Expr> physicalExpressions = new(ReferenceEqualityComparer.Instance);
 
     public void Capture(Frame frame, int point) => snapshots.Add(new(frame.ContextOwner, frame.ContextIncludesEnd, point, frame.Environment, frame.EditorReportErrors));
+    public void Import(Frame frame, GlobalStatement statement)
+    {
+        int start = statement.Span.Start + "global".Length;
+        int end = statement.Span.End;
+        if (end > start && frame.Source[end - 1] == ';') end--;
+        else while (end < frame.Source.Length && char.IsWhiteSpace(frame.Source[end])) end++;
+        var bindings = frame.GlobalBindings!.Where(pair => !frame.Environment.TryGetValue(pair.Key, out var local)
+            || ReferenceEquals(local.Identity, pair.Value.Identity)).ToImmutableDictionary(StringComparer.Ordinal);
+        imports.Add(new(new(start, end - start), bindings, frame.EditorReportErrors));
+    }
     public void Leaf(Frame frame, Expr expression) => leaves.Add(new(expression, frame.EditorReportErrors));
     public EditorPathFlowStart BeginPhysicalPathFlow(Expr expression)
     {
@@ -101,14 +114,25 @@ internal sealed partial class EditorContextCollector
 
     public EditorContext At(int offset)
     {
+        var targets = ImportsAt(offset);
+        if (targets.Count != 0) return EditorCompiler.DescribeContext(targets, []) with { IsGlobalImport = true };
         var selected = SelectAt(offset);
         return EditorCompiler.DescribeContext(selected.Bindings, selected.Receivers, selected.Kind, selected.Endpoint, selected.HasOwner);
     }
 
     public SemanticMember? Resolve(int offset, string name)
     {
+        var targets = ImportsAt(offset);
+        if (targets.Count != 0) return EditorCompiler.ResolveContext(targets, [], EditorReceiverKind.Member, name);
         var selected = SelectAt(offset);
         return EditorCompiler.ResolveContext(selected.Bindings, selected.Receivers, selected.Kind, name);
+    }
+
+    private IReadOnlyList<ImmutableDictionary<string, Binding>> ImportsAt(int offset)
+    {
+        var selected = imports.Where(item => item.Span.Start <= offset && offset <= item.Span.End).ToArray();
+        if (selected.Any(item => item.Concrete)) selected = selected.Where(item => item.Concrete).ToArray();
+        return selected.Select(item => item.Bindings).ToArray();
     }
 
     private SelectedContext SelectAt(int offset)
@@ -233,8 +257,16 @@ internal sealed partial class Compilation
                 ContextOwner = template.Syntax.Body.Span,
                 ContextIncludesEnd = template.Syntax.Body.EditorIncomplete,
                 EditorRecovery = true,
-                EditorProbe = true
+                EditorProbe = true,
+                GlobalBindings = definition.Environment
             };
+            try { ValidateGlobalImports(frame, template.Syntax); }
+            catch (CompileException error)
+            {
+                var diagnostic = CloneFrame(frame);
+                diagnostic.EditorReportErrors = true;
+                EditorFailure(diagnostic, error);
+            }
             if (template.Syntax.ReturnType is { } returnType)
             {
                 try { frame.ExpectedReturn = ResolveType(frame, returnType); frame.ExpectedReturnSpan = returnType.Span; }

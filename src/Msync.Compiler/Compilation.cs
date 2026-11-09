@@ -117,6 +117,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
     private Info Statement(Frame frame, Statement statement) => statement switch
     {
         LetStatement let => Let(frame, let),
+        GlobalStatement global => ImportGlobals(frame, global),
         FunctionDeclaration declaration => DeclareFunction(frame, declaration),
         NativeDeclaration native => Declare(frame, native.Name, Native(frame, native, null), native.NameSpan),
         ScopeDeclaration declaration => Declare(frame, declaration.Name, Scope(frame, declaration.Scope, named: true), declaration.NameSpan),

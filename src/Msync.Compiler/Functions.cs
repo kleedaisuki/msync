@@ -29,6 +29,7 @@ internal sealed partial class Compilation
 
     private Info Function(Frame frame, FunctionExpr function, Binding? declaration = null)
     {
+        if (!frame.EditorRecovery) ValidateGlobalImports(frame, function);
         var usedNames = Names(function.Body).ToHashSet(StringComparer.Ordinal);
         bool needsStandard = HasStandardReference(function.Body);
         if (needsStandard && !frame.Environment.ContainsKey("std") && !frame.Environment.ContainsKey("$std"))
@@ -133,6 +134,7 @@ internal sealed partial class Compilation
         {
             ExpectedReturn = asserted,
             Facts = caller.Facts,
+            FieldOwners = caller.FieldOwners,
             ExpectedReturnSpan = template.Syntax.ReturnType?.Span,
             ContextOwner = template.Syntax.Body.Span,
             ContextIncludesEnd = template.Syntax.Body.EditorIncomplete,
@@ -149,6 +151,7 @@ internal sealed partial class Compilation
             frame.Facts = frame.Facts.SetItem(capture.Value.Identity, capture.Value.Info);
             if (caller.DeferredCaptures) InstallCaptureFacts(frame, capture.Value.Info);
         }
+        frame.GlobalBindings = frame.Environment;
         for (int index = 0; index < arguments.Count; index++)
         {
             var parameter = template.Syntax.Parameters[index];

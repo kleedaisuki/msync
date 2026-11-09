@@ -40,6 +40,7 @@ internal sealed partial class Compilation
         {
             Locals = frame.Locals,
             Facts = frame.Facts,
+            GlobalBindings = frame.GlobalBindings,
             Declarations = frame.Declarations,
             ScopeSites = frame.ScopeSites,
             Allocations = frame.Allocations,

@@ -55,6 +55,7 @@ internal sealed class Frame(string source, string sourceName, ImmutableDictionar
     public string Source { get; } = source;
     public string SourceName { get; } = sourceName;
     public ImmutableDictionary<string, Binding> Environment { get; set; } = environment ?? ImmutableDictionary<string, Binding>.Empty;
+    public ImmutableDictionary<string, Binding>? GlobalBindings { get; set; }
     public ImmutableDictionary<object, Info> Facts { get; set; } = ImmutableDictionary<object, Info>.Empty;
     public Dictionary<(int Start, string Name), Binding> Declarations { get; init; } = [];
     public Dictionary<ScopeExpr, object> ScopeSites { get; init; } = new(ReferenceEqualityComparer.Instance);

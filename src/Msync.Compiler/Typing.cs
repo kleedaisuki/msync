@@ -139,6 +139,7 @@ internal sealed partial class Compilation
     }
     private static IEnumerable<string> ReadNames(Node node)
     {
+        if (node is GlobalStatement) yield break;
         if (node is AssignmentExpr { Target: NameExpr } assignment)
         {
             foreach (var name in ReadNames(assignment.Value)) yield return name;
@@ -151,6 +152,7 @@ internal sealed partial class Compilation
     {
         BlockExpr block => block.Statements,
         LetStatement let => [let.Value],
+        GlobalStatement global => global.Names,
         ExpressionStatement expression => [expression.Expression],
         FunctionDeclaration declaration => [declaration.Function],
         ScopeDeclaration declaration => [declaration.Scope],
