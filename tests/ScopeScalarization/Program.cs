@@ -51,8 +51,8 @@ try
         ("escaped-read", "let box = scope { item: 1 }; box::item = 9; let seen = box::item; scope { object: box, seen: seen }", false),
         ("captured-object", "let box = scope { item: 0 }; let mutate = fn { box::item = 9; }; mutate(); box::item", false),
         ("captured-rebinding", "let box = scope { item: 1 }; let other = scope { item: 2 }; let replace = fn { box = other; }; replace(); box::item = 9; other::item", false),
-        ("captured-field-store", "scope Box { item: 1, update: fn { item = 7; } }; Box::update(); Box::item", true),
-        ("captured-field-read", "scope Box { item: 1, read: fn { item } }; Box::item = 9; Box::read()", true),
+        ("captured-field-store", "let Box = scope { item: 1, update: fn { item = 7; } }; Box::update(); Box::item", true),
+        ("captured-field-read", "let Box = scope { item: 1, read: fn { item } }; Box::item = 9; Box::read()", true),
         ("branch-alias", "let box = scope { item: 0 }; if exists ./flag { box::item = 9; }; box::item", false),
         ("loop-liveout", "let previous = scope { item: 0 }; for item in [1, 2] { let box = scope { item: item }; previous = box; }; previous::item", false),
         ("rebound-alias", "let box = scope { item: 1 }; let alias = box; alias = scope { item: 2 }; alias::item = 9; box::item", true)
@@ -89,6 +89,24 @@ try
          new(OpCode.LoadCell, 0), new(OpCode.InitializeLocal, 1), new(OpCode.Constant, 1), new(OpCode.MakeScope, 1, Text: "item"),
          new(OpCode.StoreLocal, 1), new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "item"), new(OpCode.Return)], TypeRef.Number)], OptimizationLevel: 0);
     Require(await Execute(Scalarize(cellAliases)) == "Number:2", "raw capture-cell alias store did not update original binding");
+    Module capturedAcrossBlocks = new([new StringValue("before"), new StringValue("replacement")],
+        [new("cross-block-capture", 0, 2,
+            [new(OpCode.Constant, 0), new(OpCode.MakeScope, 1, Text: "item"), new(OpCode.InitializeLocal, 0),
+             new(OpCode.LoadCell, 0), new(OpCode.MakeClosure, 1, 1), new(OpCode.InitializeLocal, 1), new(OpCode.Jump, 7),
+             new(OpCode.Constant, 1), new(OpCode.MakeScope, 1, Text: "item"), new(OpCode.StoreLocal, 0),
+             new(OpCode.LoadLocal, 1), new(OpCode.Call, 0, 2), new(OpCode.Return)], TypeRef.String),
+         new("read-captured-scope", 0, 1,
+            [new(OpCode.LoadLocal, 0), new(OpCode.GetMember, Text: "item"), new(OpCode.Return)], TypeRef.String, CaptureCount: 1)], OptimizationLevel: 0);
+    Require(await Execute(Scalarize(capturedAcrossBlocks)) == "String:replacement", "cross-block captured rebinding lost its Scope allocation");
+    var freshCode = capturedAcrossBlocks.Functions[0].Instructions.ToArray();
+    freshCode[9] = new(OpCode.InitializeLocal, 0);
+    freshCode[10] = new(OpCode.LoadLocal, 0);
+    freshCode[11] = new(OpCode.GetMember, Text: "item");
+    Module freshIdentity = capturedAcrossBlocks with { Functions = [capturedAcrossBlocks.Functions[0] with { Instructions = freshCode }, capturedAcrossBlocks.Functions[1]] };
+    Module freshScalarized = Scalarize(freshIdentity);
+    Require(freshScalarized.Functions[0].Instructions.Count(instruction => instruction.Op == OpCode.MakeScope) == 1,
+        "a fresh lexical identity inherited a previous cell's escape state");
+    Require(await Execute(freshScalarized) == "String:replacement", "fresh lexical identity changed its result");
     Module fieldAliases = new([new NumberValue(1), new NumberValue(2)], [new("fields", 0, 2,
         [new(OpCode.Constant, 0), new(OpCode.InitializeLocal, 0), new(OpCode.LoadCell, 0), new(OpCode.Pop),
          new(OpCode.LoadStorage, 0), new(OpCode.MakeScope, 1, Text: "item"), new(OpCode.InitializeLocal, 1),

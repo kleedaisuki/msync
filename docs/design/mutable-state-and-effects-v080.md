@@ -55,6 +55,18 @@ same cell in both its defining frame and all closures. Do not use names to find
 that cell later. Alternatively an initial uniform-cell implementation is
 semantically valid, but its normal-path allocation cost must be measured.
 
+Block-local scalar replacement must retain that cell state at CFG boundaries.
+The singleton initialization branch exposed a case where a later Scope store
+was mistaken for a private object because the `LoadCell` occurred in an earlier
+block. `ScopeScalarization` now computes may-captured block-entry facts, with
+`LoadCell` generating a captured location and `InitializeLocal` starting a new
+lexical lifetime. A `StoreLocal` through an existing captured location cannot
+replace an escaping Scope with a dummy scalar value. Functions without capture
+operations skip this extra analysis. The focused scalarization fixture checks
+both cross-block rebinding and successful scalarization after a fresh
+initialization in the same physical slot; the named-Scope fixture checks the
+source and serialized O0/O2/O3 routes.
+
 Scope fields have stable membership for a declared shape; mutation changes a
 field value, not its name or the set of fields. Scope identity and field
 nullability are distinct from its current field values. In particular mutable

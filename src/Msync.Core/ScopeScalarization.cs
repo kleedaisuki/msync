@@ -39,6 +39,7 @@ internal static class ScopeScalarization
         // within this CFG region. Live-out aliases keep the physical instance.
         var blocks = Blocks(function.Instructions);
         var liveOut = Liveness(function.Instructions, blocks);
+        var capturedAtEntry = CapturedEntries(function, blocks);
         var allocations = new Dictionary<int, Allocation>();
         var reads = new Dictionary<int, Read>();
         var writes = new Dictionary<int, Write>();
@@ -51,7 +52,7 @@ internal static class ScopeScalarization
             Storage Local(int slot)
             {
                 if (locals.TryGetValue(slot, out var storage)) return storage;
-                storage = new(new(), epoch, slot < function.CaptureCount); locals.Add(slot, storage); return storage;
+                storage = new(new(), epoch, capturedAtEntry is not null && capturedAtEntry[block.Start].Contains(slot)); locals.Add(slot, storage); return storage;
             }
             Reference ReadStorage(Storage storage) => storage.Captured && storage.WrittenAt < epoch ? new() : storage.Value;
             Reference Payload(Reference value) => value.Cell is { } cell ? ReadStorage(cell) : value;
@@ -303,5 +304,37 @@ internal static class ScopeScalarization
             foreach (var predecessor in predecessors[start]) if (queued.Add(predecessor)) work.Enqueue(predecessor);
         }
         return outputs;
+    }
+
+    private static Dictionary<int, HashSet<int>>? CapturedEntries(FunctionCode function, IReadOnlyList<Block> blocks)
+    {
+        if (function.CaptureCount == 0 && !function.Instructions.Any(instruction => instruction.Op == OpCode.LoadCell)) return null;
+        var inputs = blocks.ToDictionary(block => block.Start, _ => new HashSet<int>());
+        inputs[0].UnionWith(Enumerable.Range(0, function.CaptureCount));
+        var byStart = blocks.ToDictionary(block => block.Start);
+        var work = new Queue<int>(); work.Enqueue(0);
+        var queued = new HashSet<int> { 0 };
+        var reached = new HashSet<int> { 0 };
+        while (work.TryDequeue(out var start))
+        {
+            queued.Remove(start);
+            var block = byStart[start];
+            var captured = new HashSet<int>(inputs[start]);
+            for (var pc = block.Start; pc < block.End; pc++)
+            {
+                var instruction = function.Instructions[pc];
+                if (instruction.Op == OpCode.LoadCell) captured.Add(instruction.A);
+                // Initializing a lexical identity replaces the slot, not a prior cell's value.
+                if (instruction.Op == OpCode.InitializeLocal) captured.Remove(instruction.A);
+            }
+            foreach (var successor in block.Successors)
+            {
+                var input = inputs[successor];
+                int previous = input.Count;
+                input.UnionWith(captured);
+                if ((reached.Add(successor) || input.Count != previous) && queued.Add(successor)) work.Enqueue(successor);
+            }
+        }
+        return inputs;
     }
 }
