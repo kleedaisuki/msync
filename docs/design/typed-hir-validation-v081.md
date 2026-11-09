@@ -268,3 +268,15 @@ The raw 8,288,346-byte trace has SHA-256
 The exact command, producer receipt, parsed allocation stacks and offline reader
 are under `.temp/hir-final-cost/allocation-trace/`. The original trace is parsed
 multiple times without rerunning the product.
+
+Frozen15 (Compiler `b890eef66fd87f886674933bb7afacbdc297ca8e2cfae1ccb058aaafe2efb26d`)
+then receives one same-source, same-SDK, TieredCompilation=0 first-process
+phase observation, without another GC trace or warm batch. Analyze allocates
+941,771,288 B, down 36.3% from frozen14; all finalized HIR counts and the
+716,840 B lowering allocation remain unchanged. This producer combines the
+call-local FormalInput memo/no-op reuse with closed-callable checking and
+current-fact corrections, but excludes the later EnrichFutureDomains work.
+The total candidate change is therefore not attributed to one isolated hunk.
+It remains substantially above the old first complete O0 Compile's 151 MB, so
+matched final costs and publication are not inferred from this partial reduction.
+The raw observation is `.temp/hir-final-cost/frozen15-original-tree-trace-receipt.*`.
