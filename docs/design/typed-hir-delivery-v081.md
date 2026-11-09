@@ -35,6 +35,24 @@ These requirements remain pending until their implementation and scoped evidence
 are recorded. Existing unit names, green CI status or a plausible HIR class name
 are not substitutes for inspecting the actual representation and data flow.
 
+## Integration checkpoint: default frontend cutover
+
+Commit `6403421` changes the public `Compiler.Compile` path to semantic analysis,
+pure HIR lowering and the existing optimizer. It removes the old emitting
+`Compilation` implementation, standard-library partials and editor snapshot
+path. The semantic and backend boundaries are now production entry points,
+not only an experimental export command. This checkpoint is not a release
+acceptance verdict.
+
+| Area | Established evidence | Still required |
+| --- | --- | --- |
+| Phase ownership | `6403421`; the focused review in `dce9379` closes formal caller projection, query output ownership and binding-time standard-module demand. | Remaining semantic counterexamples must pass through the default frontend. |
+| Semantic files | `d5a8a7c` exposes export/import; `b3fe756` records source-deleted standard-library execution, deterministic repeated lowering and retained runtime source diagnostics. | Run the complete affected artifact journey against the cutover Native images. |
+| Editor retention | `7a6230e` replaces whole-module retention with signature/type/source projections; held editor views permit collection of the original module and node arena. | Matched real editor cost and installed-host acceptance. |
+| Session and language-server consumers | The semantic session bridge is committed in `fd87785`; consumer-owner reports cover the persistent-session and LSP journeys on frozen pre-cutover producers. | Revalidate affected integration paths using the new default-compiler producer; pre-cutover consumer evidence does not prove Native source compilation. |
+| Compiler cost | Separate real Analyze, Lower and HIR serialization APIs have measured allocation and lifetime observations for small controls. | Representative standard-library/generic workloads, unrelated-world scaling and matched user-visible latency. |
+| Delivery | Version/project locks and Native/editor release journeys are prepared. | Linux/Windows Native acceptance, matching VSIX, final provenance/checksums and immutable public 0.8.1 publication. |
+
 ## Work ownership
 
 The compiler team owns semantic contracts, binding, specialization and lowering.
