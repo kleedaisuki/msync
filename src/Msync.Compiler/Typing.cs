@@ -120,10 +120,7 @@ internal sealed partial class Compilation
     }
     private void CheckConversion(Frame frame, TypeRef actual, TypeRef expected, SourceSpan span)
     {
-        if (expected.Accepts(actual)) return;
-        var converted = actual.Kind & ~(TypeKind.Path | TypeKind.String);
-        if ((expected.Kind & (TypeKind.Path | TypeKind.String)) != 0 && (expected.Kind & converted) == converted) return;
-        throw TypeError(frame, actual, expected, span);
+        if (!MetaTypes.IsConvertible(actual, expected)) throw TypeError(frame, actual, expected, span);
     }
     private static void Require(Frame frame, TypeRef actual, TypeRef expected, SourceSpan span)
     {
