@@ -16,7 +16,7 @@ import socket
 import statistics
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol, cast
 
@@ -51,7 +51,14 @@ class PtyFactory(Protocol):
 
 
 class Terminal:
-    def __init__(self, binary: Path, directory: Path, *, color: bool = False) -> None:
+    def __init__(
+        self,
+        binary: Path,
+        directory: Path,
+        *,
+        color: bool = False,
+        command: Sequence[str] | None = None,
+    ) -> None:
         factory = cast(PtyFactory, importlib.import_module("winpty").PtyProcess)
         home = directory / "home"
         home.mkdir(exist_ok=True)
@@ -67,7 +74,9 @@ class Terminal:
         if color:
             environment.pop("NO_COLOR", None)
         self.process = factory.spawn(
-            [str(binary), "--no-config", "repl"],
+            list(command)
+            if command is not None
+            else [str(binary), "--no-config", "repl"],
             cwd=str(directory),
             env=environment,
             dimensions=(30, 120),
