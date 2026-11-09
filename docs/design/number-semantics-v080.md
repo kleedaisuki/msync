@@ -14,6 +14,13 @@ performs IEEE division, including infinity/NaN; `%` is truncating remainder with
 the dividend's sign, not Python's divisor-sign modulo or IEEE nearest-quotient
 remainder. `$std::math::remainder` remains the distinct IEEE remainder operation.
 Multiplicative operators have equal precedence and associate left to right.
+Power `**` associates right to left and binds more tightly than unary signs,
+as in Python: `-2**2` is -4 and `2**-2` is 0.25. Unary `-value` and `+value`
+operate on numeric bindings as well as literals. Internal hyphens in names and
+explicit path components remain data. Base-prefixed integer spellings use an
+integer parsing accumulator and one final binary64 conversion; ordinary values
+stay on a UInt64 fast path, while larger literals use BigInteger only while
+parsing. This does not introduce an arbitrary-precision runtime Number.
 This follows the [ECMAScript Number operations](https://262.ecma-international.org/16.0/index.html#sec-ecmascript-language-types-number-type),
 while literal grouping/base spellings follow the
 [Python lexical grammar](https://docs.python.org/3/reference/lexical_analysis.html#numeric-literals).
@@ -57,7 +64,7 @@ and generated finite sequence models. The historical investigation below records
 the baseline defects that motivated this change; its observations are not the
 new language contract.
 
-## Current implementation: evidence rather than inferred intent
+## Historical baseline before this upgrade
 
 | Layer | Actual implementation | Consequence |
 | --- | --- | --- |

@@ -1,5 +1,6 @@
 using Msync.Compiler.Syntax;
 using Msync.Core;
+using SourceSpan = Msync.Compiler.Syntax.SourceSpan;
 using System.Globalization;
 using System.Numerics;
 static Expr E(string source) => ((ExpressionStatement)Parser.Parse(source).Statements[0]).Expression;
