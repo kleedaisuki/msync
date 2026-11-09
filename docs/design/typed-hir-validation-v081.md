@@ -49,6 +49,7 @@ source, relocatable bytecode and context-bound executable bytecode at O0/O2/O3:
 * delayed argument/body execution exactly once;
 * callee evaluation before a mutating argument;
 * nested higher-order specialization and true recursive calls;
+* uncalled generic values and deferred body checking, with errors when selected;
 * late-written captured locations inside returned Ranges;
 * original Scope aliases selected through indexed storage;
 * independent empty/snapshot carriers and present-Null Option values;

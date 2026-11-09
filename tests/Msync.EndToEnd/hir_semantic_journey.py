@@ -114,6 +114,10 @@ mutable::operation = fn(value: Number) { true };
 ((not allowed) as String) -> ./failed-query-isolation.txt;
 let unselected = ssh://hir-no-auth.invalid;
 ((decltype(~ @ unselected) is Path) as String) -> ./unevaluated-endpoint.txt;
+let generic_value = fn(value) { value };
+((decltype(generic_value) is Function) as String) -> ./uncalled-generic.txt;
+fn unused_invalid(value) { 1 + true };
+"deferred" -> ./unused-body.txt;
 acquire;
 """
 
@@ -140,6 +144,8 @@ OUTPUTS: dict[str, bytes] = {
     "query-effects.txt": b"0",
     "failed-query-isolation.txt": b"true",
     "unevaluated-endpoint.txt": b"true",
+    "uncalled-generic.txt": b"true",
+    "unused-body.txt": b"deferred",
 }
 
 NEGATIVE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
@@ -171,6 +177,11 @@ values = "later";
 $std::ranges::size(delayed);
 """,
         ("Range", "String"),
+    ),
+    (
+        "called-invalid-generic",
+        "fn invalid(value) { 1 + true }; invalid(3);",
+        ("Number", "Bool"),
     ),
 )
 
