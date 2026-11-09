@@ -567,3 +567,49 @@ prompt sources. Four current delivery assets and their actual digests are in
 sources, prior/corrected/final image identities and exact paths. This closes the
 memory/artifact/global/correctness/scheduler delivery; a subsequently requested
 standard-library expansion is a separate coherent source slice.
+
+## Complete source-backed library delivery (2026-11-09)
+
+The unified standard-library payload supersedes the earlier native packages in
+`dist/`, while retaining their accepted memory, mutable-state, global-import,
+artifact-viewer, callee-order and scheduler evidence. Its native source is
+`e85e6170598dfd38adefbcb778e43647686c3096` (product base `71828ca`, including the
+source/cell scalarization correction `2972213`); language and extension remain
+0.8.0 with default O2 and readable artifact formats 1/2/3.
+
+Native run **42603680953** exercises the new library rather than repeating the
+old matrix. Both operating systems pass 72 composed source/mso/mexe executions,
+structured library LSP queries, 21 new for/tuple/TypeValue executions and 21 real
+file/controlled-process executions. Each target OS also passes 56 selective
+module/shared-cell contracts. Linux additionally passes 12 real product SSH
+executions, including stream IO and owned-process lifecycle; authentication and
+channel counts are checked separately from compile/bind, which do not connect.
+
+Windows' first help-source comparison incorrectly compared embedded checkout
+CRLF with Python's LF-normalized subprocess text. Fixture-only `c41776f` fixes
+the displayed-text comparison without changing product/source bytes. Successful
+run **42604406801** reuses that exact Windows native image and checks only the
+eight source-backed help pages, six color modes and the remaining dependent-cast
+diagnostic. It does not repeat the accepted 72 programs or rebuild Native AOT.
+
+Final executable SHA256 values:
+
+- Linux: `2b2f40a00e3767fad638b30c096017de671ee1434a81984b9a8218e4587b2a4f`.
+- Windows: `09d41e8fdcc383fda5b1aebee7343daf2ad3346d0fe611daedb28d0acd05d597`.
+
+The actual VS Code 1.144 host `.temp/vscode-host-T2vXq9` uses the final Linux
+executable by absolute installed path, with no managed DLLs. Four typed hovers,
+four embedded-source navigation targets and structured Range member completion
+pass. Native performance and the accepted expanded-Range initialization cost
+are recorded in [the performance note](performance-v080.md#source-backed-standard-library-expansion-and-selective-loading).
+
+`packaging/audit_payloads.py --native-source REV --output REPORT` checks all four
+final assets against `dist/SHA256SUMS`, every native manifest entry, the precise
+frozen Git bytes of all standard sources and modified PrettyPrompt sources,
+and the nine expected VSIX payload members against the built extension. The
+final packages contain **237 manifest entries per OS, 10 standard sources and
+59 modified PrettyPrompt source files**. Exact Windows checkout newline variants
+are recorded, not confused with different source content. Full artifact IDs,
+package hashes, host metadata and audit results are retained in
+`.temp/final-stdlib-delivery-v080.json`; disposable records are not product
+runtime dependencies. No published tag or release asset was replaced.
