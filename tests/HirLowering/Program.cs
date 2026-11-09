@@ -47,6 +47,16 @@ await using ExecutionSession runtimeSession = new();
 var firstGeneration = backendSession.Lower(persistent.Hir.Freeze(new(0), isSession: true));
 await runtimeSession.ExecuteAsync(firstGeneration.Module);
 int firstSlot = firstGeneration.Layout.Slot(new(0), persistentX);
+var dependent = persistent.Hir.Freeze(new(0), isSession: true) with { UnresolvedImports = [persistentX] };
+foreach (HirLoweringSession? session in new HirLoweringSession?[] { null, new() })
+{
+    bool rejected = false;
+    try { HirLowerer.Lower(dependent, session: session); }
+    catch (InvalidOperationException error) { rejected = error.Message.Contains("x", StringComparison.Ordinal); }
+    Require(rejected, "Unbound imported location did not report its session dependency");
+}
+Require(HirLowerer.Lower(dependent, session: backendSession).Layout.Slot(new(0), persistentX) == firstSlot,
+    "An existing session failed to resolve an explicit location import");
 var persistentY = persistent.Location("y", persistent.NumberType);
 persistent.Hir.Exports.Add(new("y", persistentY));
 persistent.Hir.Functions[0] = persistent.Hir.Functions[0] with

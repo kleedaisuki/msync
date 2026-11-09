@@ -6,7 +6,18 @@ namespace Msync.Hir;
 public static class HirLowerer
 {
     public static HirLoweringResult Lower(HirModule module, HirLoweringOptions? options = null,
-        HirLoweringSession? session = null) => new Lowering(module, options ?? new(), session ?? new()).Run();
+        HirLoweringSession? session = null)
+    {
+        if (!module.UnresolvedImports.IsDefaultOrEmpty)
+        {
+            var unresolved = module.UnresolvedImports.Where(id => session is null
+                || !session.Locations.ContainsKey(new(module.Locations[id.Value].Owner, id))).ToArray();
+            if (unresolved.Length != 0)
+                throw new InvalidOperationException("HIR requires an active session containing imports: "
+                    + string.Join(", ", unresolved.Select(id => module.Locations[id.Value].Name)) + ".");
+        }
+        return new Lowering(module, options ?? new(), session ?? new()).Run();
+    }
 
     private sealed class Lowering(HirModule hir, HirLoweringOptions options, HirLoweringSession layout)
     {
