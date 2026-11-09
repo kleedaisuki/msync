@@ -305,3 +305,44 @@ The second Native wave selects `library-policy`, `type-traits`,
 `stdlib-cost`. It rebuilds both current packages and records final-image costs,
 while reusing the first wave's unaffected ordered/data/static-optimization
 platform evidence rather than repeating the tree/property matrices.
+
+### Final data/library/runtime Native closure
+
+[Run 42654041790](https://github.com/kleedaisuki/msync/actions/runs/42654041790)
+completed successfully for both jobs, using source
+`768dfe45a2c09a8eac5779fb8dc466cae9f2df9b`. Final executable SHA-256 values are
+Linux `79d8aa922cc8472dd1423c5ff23bb66615c03465807a91c00db595b045fb52b3`
+and Windows `673a0f863b534c0bf1d7758069ee82c9c113bf5bbf54fc9e1c4d323fdf9861c4`.
+Both passed all seven selected phases and their package smoke. This includes the
+actual Map/type-trait nullable guards, Windows LF byte count, strict Unicode
+ConPTY painting/completion, cross-submission live Process and streamed Ctrl-C
+recovery. Number/object Native component observations and actual first-prompt /
+List first-Tab distributions were produced on each platform. They are not
+substituted for matched managed before/after causal measurements.
+
+The first wave's unaffected Option/data, static Buffer optimization, selected
+command policy and four-tree platform journeys remain accepted evidence. The
+second wave does not repeat their model/property matrices. Current source has
+no open functional lane; the two repairs to type checking and platform output
+are recorded above rather than hidden by fixture changes.
+
+The actual VS Code 1.144.0 host `.temp/vscode-host-rmBZb2` used the final absolute
+Linux Native path and matching SHA, with `managedAssemblies: {}`. Its selected
+production-bundle suite passed in two themes, navigated two embedded definitions,
+checked inline type binding and canonical snake_case policy completion, and
+executed the editor-produced data/Set programs. Their outputs were respectively
+`Klee`, `3,1` and `1,3,4`. The VSIX SHA-256 is
+`a21c98cfbfb3097b15147a1c55201cb71c4ef5fa40c2db7cb9b0717e170419e1`.
+
+The final portable manifests verify 264 entries per OS: all 21 executable
+standard sources use exact authored LF bytes, and all 59 modified MPL sources
+are present. All nine VSIX payloads match source and `SHA256SUMS` covers exactly
+the Linux archive, Windows portable archive, Windows installer and VSIX. See
+[the current packaging set](packaging-v080.md#current-complete-local-delivery-set)
+for bytes/hashes and [the performance record](performance-v080.md#final-native-library-and-vm-observations)
+for measurements. Collation is `.temp/final-standard-library-delivery-v080.json`;
+raw platform records are under `artifacts/ci/42654041790/`.
+
+Both Native package and VSIX must replace the prior same-version installation.
+Reload the editor window and restart its language server; no public release/tag
+was modified during this local delivery.

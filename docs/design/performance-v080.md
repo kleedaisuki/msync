@@ -1527,3 +1527,66 @@ than being optimized out. The probe separately exercises real nested transfer
 owners and barriers, zero-capture callable identity, cross-origin session paths,
 native dispatch and callee-before-argument mutation at O0/O1/O2/O3. These focused
 checks accompany the real CLI fixture instead of a blind full-suite rerun.
+
+## Final Native library and VM observations
+
+Final-source images from native run
+[42654041790](https://github.com/kleedaisuki/msync/actions/runs/42654041790)
+use source `768dfe45a2c09a8eac5779fb8dc466cae9f2df9b`, .NET 10 Native AOT,
+default O2. Linux image SHA is
+`79d8aa922cc8472dd1423c5ff23bb66615c03465807a91c00db595b045fb52b3`;
+Windows is `673a0f863b534c0bf1d7758069ee82c9c113bf5bbf54fc9e1c4d323fdf9861c4`.
+These are absolute per-platform observations, not a before/after comparison to
+managed JIT or to different CI hosts.
+
+| Prepared Number VM, 1024 elements | Linux p50 ms / bytes | Windows p50 ms / bytes |
+| --- | ---: | ---: |
+| Arithmetic chain | 0.6250 / 66,696 | 0.6115 / 66,696 |
+| Power chain | 0.5044 / 66,696 | 0.5568 / 66,696 |
+| Captured accumulator | 0.6387 / 66,664 | 0.5931 / 66,664 |
+
+Each case uses nine observations and eight executions per observation. The
+probe verifies exact-bit/staged results and records residual numeric sites and
+artifact hashes; the loops are not constant-return timing stand-ins. It reuses
+a prepared interpreter. The separate object probe creates a fresh interpreter
+for each operation and intentionally includes different ownership overhead.
+
+| Fresh object VM, 256 elements | Linux p50 ms / bytes | Windows p50 ms / bytes |
+| --- | ---: | ---: |
+| Escaping objects / methods | 9.8237 / 953,586 | 28.2708 / 1,477,496 |
+| Captured callbacks | 0.4996 / 122,384 | 0.5153 / 124,432 |
+| Path observations | 9.3369 / 788,488 | 27.6559 / 1,306,832 |
+
+OS-specific filesystem and suspended-state-machine costs make the path/object
+figures platform-dependent. They must not be presented as a portable speedup.
+The no-native fresh-interpreter literal control allocates 1,304 bytes on both
+platforms; the reused Number VM literal control allocates 248 bytes. The earlier
+matched managed measurements isolate the numeric, ownership and callback
+changes; these current Native values describe the shipped execution path.
+
+The bounded cold CLI probe launches fresh processes against warm OS caches,
+performs one untimed launch and keeps three raw observations. Terminal timings
+use actual Linux PTY / Windows ConPTY, not redirected input or artificial sleeps.
+The first List namespace Tab is verified by completing and evaluating real code.
+
+| Current product p50 milliseconds | Linux | Windows |
+| --- | ---: | ---: |
+| `--version` | 7.462 | 9.580 |
+| Check without stdlib | 8.167 | 12.292 |
+| Check Bool / Range | 9.981 / 12.082 | 12.176 / 13.375 |
+| Check List constructor / size | 25.457 | 23.118 |
+| Check meta / shell | 9.315 / 11.098 | 11.517 / 12.695 |
+| Actual first REPL prompt | 75.580 | 80.406 |
+| First typed prefix repaint | 0.239 | 3.179 |
+| First List namespace Tab repaint | 27.400 | 23.984 |
+
+Three observations are a focused latency observation, not a statistical product
+limit. Raw p95 values, samples, terminal logs, interpreter allocation reports and
+exact images are retained under
+`artifacts/ci/42654041790/{linux,windows}/download/.temp/platform-results/`.
+`stdlib-cost-work` retains transcripts and semantic completion output. The
+corresponding current-source/demand-loading mechanism and matched causal
+results are documented with
+[`StdlibLoading`](../../tests/StdlibLoading/DemandLoadingChecks.cs) and
+[`StdlibLoad`](../../tests/Performance/StdlibLoad/README.md) where applicable.
+No CI timing threshold or new runtime speculation tier was added.

@@ -2,7 +2,55 @@
 
 ## Current complete local delivery set
 
-The current Number/concept language upgrade is product version **0.8.0**, default
+The source-backed concepts, data/policy library, ordered structures, typed
+terminal tools and allocation/static-optimization delivery remains **0.8.0**,
+**default O2**, **current-only format 4**. Final Native source is
+`768dfe45a2c09a8eac5779fb8dc466cae9f2df9b`; later commits only record knowledge.
+No public tag, release asset or pull request was created or replaced.
+
+| Asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `msync-0.8.0-linux-x86_64.tar.gz` | 7,336,023 | `ea444c43a8863efa0746ff0a53c7fcdf096c757344819a93924e9bcb092f9dac` |
+| `msync-0.8.0-windows-x86_64.zip` | 7,858,323 | `9fbac45e8461c7a0650b704f34cc661e63ee1f000d75407035a330b942da88b6` |
+| `msync-0.8.0-windows-x86_64-setup.exe` | 7,465,069 | `edfe84654686997736eb0da449357e5357ab01bbb56bfd0ced408e431eb1acd9` |
+| `msync-language-0.8.0.vsix` | 135,921 | `a21c98cfbfb3097b15147a1c55201cb71c4ef5fa40c2db7cb9b0717e170419e1` |
+
+`dist/SHA256SUMS` covers exactly these four assets. Both portable manifests
+verify **264 entries**, including **21 standard sources** and **59 modified
+MPL PrettyPrompt sources**. All standard `.msync` bytes match the authored LF
+sources on both platforms. Five remaining Windows line-ending variants belong
+to other vendored text, not executable standard sources. The nine VSIX product
+payloads match the current tested bundle, grammar, snippets, docs and notices.
+
+The final executable identities are:
+
+- Linux: `79d8aa922cc8472dd1423c5ff23bb66615c03465807a91c00db595b045fb52b3`.
+- Windows: `673a0f863b534c0bf1d7758069ee82c9c113bf5bbf54fc9e1c4d323fdf9861c4`.
+
+[The final Native wave](https://github.com/kleedaisuki/msync/actions/runs/42654041790)
+completed successfully on Linux and Windows. It repaired and accepted the first
+wave's nullable-lazy, embedded-newline and Windows Unicode-paint defects without
+changing stdlib callers or weakening console assertions. Its scoped class,
+meta, terminal/ConPTY, Number and cold-cost reports complement the first wave's
+accepted data, static-optimization, command-policy and four-tree platform work.
+[The delivery record](language-upgrade-delivery-v080.md) preserves both waves and
+the intervening immutable-console A/B observation rather than presenting the
+initial failures as a clean aggregate run.
+
+Actual VS Code **1.144.0** at `.temp/vscode-host-rmBZb2` used the absolute final
+Linux executable, SHA above, with no managed msync assemblies. Two themes,
+inline type binders, virtual standard-source navigation and real policy/data
+programs passed; produced files contained `Klee`, `3,1` and `1,3,4`.
+
+Full collation is `.temp/final-standard-library-delivery-v080.json`; manifest and
+payload checks are `.temp/standard-algebra-delivery/final-payload-audit.json`.
+Install both current Native package and VSIX, reload VS Code and restart the
+language server. Same-version PATH or `msync.serverPath` installations must not
+retain an older executable. Older unshipped standard APIs have no adapters.
+
+## Previous Number/concept language delivery set
+
+The preceding Number/concept language upgrade is product version **0.8.0**, default
 **O2**, with **current-only binary format 4**. Native source is
 `a952448083a6f0bea9ee2def0e775dcd804500f7`; later fixture fixes do not change its
 executable bytes. There is no old-IR reading compatibility: recompile older
