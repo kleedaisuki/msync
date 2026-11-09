@@ -221,3 +221,40 @@ provide the asset hashes and complete measurement interpretation.
 Install both the Native package and VSIX from `dist/`, reload the editor window,
 and restart the language server. Recompile old `.mso`/`.mexe` files. Existing
 same-version installations must not retain a stale `msync.serverPath` binary.
+
+## Standard data composition and allocation follow-up
+
+This incremental delivery supplies reusable source-backed concepts for type-system
+composition, including product/sum protocols and Option/Result construction.
+Public constraint names use `$std::concepts::Name`. Concepts remain compile-time
+constraints, not runtime values or new carrier kinds. Mathematical operation
+dictionaries are a separate concern, not a substitute for these data protocols.
+The library architecture uses named Scope namespaces, language-native Fn/Scope
+specialization and explicit policies. Unpublished factory-method bags and
+compatibility adapters are removed rather than retained as alternate APIs.
+Canonical class namespaces use PascalCase and functions use snake_case.
+
+Changed collections and services require an integrated policy-driven journey in
+addition to the core data constructors. Ordered structures and closed-type
+metaprogramming traits receive their own scoped integration journeys. Typed
+terminal tools and persistent direct REPL commands form another real-IO and
+prompt journey on both native platforms. Object/closure allocation and Number
+execution are a separate measured workstream; IEEE binary64 behavior, mutable
+shared locations and Scope identity remain fixed.
+
+The baseline is the preceding accepted Native source
+`a952448083a6f0bea9ee2def0e775dcd804500f7` from run 42619095812. The existing
+packages and evidence above are that baseline, not acceptance for this follow-up.
+Incremental Native acceptance selects `option`, `data`, `concepts-tooling`,
+`number-allocation`, `library-policy`, `command-policies`, `trees`, `type-traits`,
+`terminal-library`, `shell-repl` and `stdlib-cost` under `polish_phases=upgrade`.
+An explicit phase selection is not broadened to unrelated remote-library work
+by the Linux SSH-fixture option. Already accepted frozen-context tests run only
+when the selected language or path contract actually requires them.
+
+Final Native acceptance records cold CLI controls, selected List construction,
+meta and shell checks, actual first prompt and the first List namespace
+completion in `stdlib-cost`. Its JSON and terminal transcripts are retained
+under the platform-results directory. These absolute Native observations are
+distinct from the performance owner's matched managed before/after allocation
+measurements.
