@@ -24,6 +24,11 @@ class Case:
 
 CASES = (
     Case(
+        "standard_module",
+        "($std::bool::both(true, false) as String) -> ./standard.txt;\n",
+        {"standard.txt": b"false"},
+    ),
+    Case(
         "generic_control",
         """fn choose(file: Path, ready: Bool) -> Path {
     if ready { file } else { ./unused }
@@ -187,15 +192,44 @@ def run_case(binary: Path, directory: Path, case: Case, level: int) -> dict[str,
     }
 
 
+def diagnostic_after_source_deletion(binary: Path, directory: Path) -> dict[str, Any]:
+    directory.mkdir()
+    source = directory / "deleted diagnostic.msync"
+    text = "./missing-input.txt -> ./destination.txt;\n"
+    source.write_text(text, encoding="utf-8", newline="")
+    artifact = directory / "diagnostic.mhir"
+    invoke(
+        binary,
+        directory,
+        ["compile", str(source), "--emit", "hir", "-o", str(artifact)],
+    )
+    source.unlink()
+    failed = invoke(binary, directory, ["run", str(artifact)], success=False)
+    diagnostic = failed.stderr.decode("utf-8")
+    if source.name not in diagnostic or text.strip() not in diagnostic:
+        raise AssertionError(
+            ("Deleted-source runtime diagnostic lost its source frame", diagnostic)
+        )
+    if (directory / "destination.txt").exists():
+        raise AssertionError("A failed source transfer published a destination")
+    return {"source_deleted": True, "source_frame": True, "stderr": diagnostic}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--work-root", type=Path)
     parser.add_argument("--levels", default="0,2,3")
+    parser.add_argument("--cases", default=",".join(case.name for case in CASES))
     options = parser.parse_args()
     binary = options.binary.resolve()
     levels = [int(value) for value in options.levels.split(",")]
+    requested = options.cases.split(",")
+    cases = [case for case in CASES if case.name in requested]
+    unknown = set(requested) - {case.name for case in CASES}
+    if unknown:
+        parser.error("Unknown HIR artifact cases: " + ", ".join(sorted(unknown)))
     base = options.work_root or ROOT / ".temp"
     base.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="hir-artifacts-", dir=base) as temporary:
@@ -204,8 +238,9 @@ def main() -> None:
         routes = [
             run_case(binary, root / f"O{level}-{case.name}", case, level)
             for level in levels
-            for case in CASES
+            for case in cases
         ]
+        diagnostic = diagnostic_after_source_deletion(binary, root / "diagnostic")
     report: dict[str, Any] = {
         "binary": str(binary),
         "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -216,6 +251,7 @@ def main() -> None:
         },
         "product": version,
         "routes": routes,
+        "deleted_source_diagnostic": diagnostic,
     }
     text = json.dumps(report, ensure_ascii=True, indent=2) + "\n"
     if options.output:

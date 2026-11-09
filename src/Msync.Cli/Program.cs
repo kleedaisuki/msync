@@ -68,11 +68,18 @@ internal static class Program
             string? source = binary ? null : await ReadSource(file);
             if (source is not null) snapshot = new(file, source);
             long compileStart = Stopwatch.GetTimestamp();
+            HirModule? semanticInput = hirInput ? HirArtifact.Read(file) : null;
+            if (semanticInput is not null)
+            {
+                HirSourceId origin = semanticInput.Node(semanticInput.Functions[semanticInput.Entry.Value].Body).Source.Source;
+                if (origin.Value >= 0 && semanticInput.Sources[origin.Value] is { Text: { } text } document)
+                    snapshot = new(document.Name, text);
+            }
             if (options.Emission == CompileEmission.Hir)
             {
                 if (binary && !hirInput)
                     throw new ArgumentException("Typed HIR cannot be reconstructed from lowered bytecode. Compile the original .msync source with '--emit hir'.");
-                HirModule semantic = hirInput ? HirArtifact.Read(file) : SourceCompiler.Analyze(source!, file);
+                HirModule semantic = semanticInput ?? SourceCompiler.Analyze(source!, file);
                 if (options.Output is { } output) HirCommands.Write(semantic, output);
                 else HirCommands.Print(semantic, color);
                 telemetry?.Observe(new("compile", "ok", Source: file, DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(compileStart).TotalMilliseconds * 1_000_000)));
@@ -80,14 +87,16 @@ internal static class Program
             }
             if (options.Command == "check")
             {
-                if (hirInput) _ = HirArtifact.Read(file);
-                else if (binary) _ = Artifact.Read(file);
-                else _ = SourceCompiler.Analyze(source!, file);
+                if (semanticInput is null)
+                {
+                    if (binary) _ = Artifact.Read(file);
+                    else _ = SourceCompiler.Analyze(source!, file);
+                }
                 telemetry?.Observe(new("compile", "ok", Source: file, DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(compileStart).TotalMilliseconds * 1_000_000)));
                 Console.WriteLine($"{file}: valid");
                 return Complete(0, telemetry);
             }
-            Module module = hirInput ? HirCommands.Lower(HirArtifact.Read(file), options.Optimization)
+            Module module = semanticInput is not null ? HirCommands.Lower(semanticInput, options.Optimization)
                 : binary ? Artifact.Read(file) : SourceCompiler.Compile(source!, file, options.Optimization);
             telemetry?.Observe(new("compile", "ok", Source: file, DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(compileStart).TotalMilliseconds * 1_000_000)));
             if (options.Command is "compile" or "emit-ir")
