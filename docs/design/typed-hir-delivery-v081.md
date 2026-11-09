@@ -45,6 +45,22 @@ and compiler cost observations. Release preparation owns version coherence and
 the final immutable publication. The root integrates those contracts rather
 than repeating every owner's accepted test matrix.
 
+## Standalone dependencies versus logical locations
+
+A logical location's binding role is not sufficient to determine whether an
+exported module needs a live session. A standard-module reference can originate
+as an imported name while its initializer and all of its dependencies are
+already contained in the finalized program. Likewise, a closure's formal
+capture describes a function boundary, not necessarily an external program
+dependency. Standalone admission must use explicit unresolved module/session
+dependencies, rather than reject every location with an import-like role.
+
+The artifact journey must therefore include a selectively used standard module:
+export its HIR, remove the original source, then lower and execute it without a
+session. A genuinely unresolved session location remains an actionable error;
+neither its current runtime value nor credentials are a substitute for an
+explicit dependency contract.
+
 Disposable reports and fixtures stay under `.temp/`. Baseline packages and final
 publication payloads belong under `artifacts/` and `dist/`. Reusable mechanisms,
 measurements and decisions belong in the focused English design notes.
