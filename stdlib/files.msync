@@ -1,0 +1,82 @@
+# Service objects capture a Path, not an open file or cached filesystem metadata.
+fn File(path: Path | String) {
+    let location = path as Path;
+    scope {
+        path: fn { location },
+        name: fn { $std::path::filename(location) },
+        extension: fn { $std::path::extension(location) },
+        parent: fn { $std::path::parent_path(location) },
+        exists: fn { $std::fs::exists(location) },
+        status: fn { $std::fs::status(location) },
+        size: fn { $std::io::file_size(location) },
+        read_text: fn { $std::io::read_text(location) },
+        read_lines: fn { $std::io::read_lines(location) },
+        read_bytes: fn { $std::io::read_bytes(location) },
+        write: fn(text: String) { $std::io::write_text(location, text) },
+        append: fn(text: String) { $std::io::append_text(location, text) },
+        write_bytes: fn(bytes: Range<Number>) {
+            $std::io::write_bytes(location, bytes)
+        },
+        append_bytes: fn(bytes: Range<Number>) {
+            $std::io::append_bytes(location, bytes)
+        },
+        copy_to: fn(destination: Path | String) { location -> destination },
+        move_to: fn(destination: Path | String) {
+            let target = destination as Path;
+            $std::fs::rename(location, target);
+            location = target;
+        },
+        remove: fn { $std::fs::remove(location) },
+        readonly: fn { $std::fs::is_readonly(location) },
+        set_readonly: fn(value: Bool) {
+            $std::fs::set_readonly(location, value)
+        },
+        hard_link: fn(destination: Path | String) {
+            $std::fs::create_hard_link(location, destination)
+        },
+        symbolic_link: fn(destination: Path | String) {
+            $std::fs::create_symlink(location, destination)
+        },
+    }
+};
+
+# Each enumeration observes the selected directory anew; callers choose caching.
+fn Directory(path: Path | String) {
+    let location = path as Path;
+    scope {
+        path: fn { location },
+        name: fn { $std::path::filename(location) },
+        parent: fn { $std::path::parent_path(location) },
+        child: fn(name: Path | String) { $std::path::join(location, name) },
+        file: fn(name: Path | String) {
+            File($std::path::join(location, name))
+        },
+        exists: fn { $std::fs::is_directory(location) },
+        create: fn { $std::fs::create_directories(location) },
+        entries: fn { $std::fs::directory_iterator(location) },
+        walk: fn { $std::fs::recursive_directory_iterator(location) },
+        files: fn {
+            $std::ranges::filter($std::fs::directory_iterator(location),
+                fn(entry: Path) { $std::fs::is_regular_file(entry) })
+        },
+        directories: fn {
+            $std::ranges::filter($std::fs::directory_iterator(location),
+                fn(entry: Path) { $std::fs::is_directory(entry) })
+        },
+        matching: fn(predicate: Function) {
+            $std::ranges::filter($std::fs::directory_iterator(location),
+                predicate)
+        },
+        snapshot: fn {
+            $std::ranges::materialize($std::fs::directory_iterator(location))
+        },
+        copy_to: fn(destination: Path | String) { location -> destination },
+        move_to: fn(destination: Path | String) {
+            let target = destination as Path;
+            $std::fs::rename(location, target);
+            location = target;
+        },
+        remove: fn { $std::fs::remove(location) },
+        remove_all: fn { $std::fs::remove_all(location) },
+    }
+};

@@ -1,0 +1,88 @@
+using Msync.Compiler;
+using Msync.Core;
+using Msync.Runtime;
+
+if (args.FirstOrDefault() == "--echo")
+{
+    Console.Write("echo:" + await Console.In.ReadToEndAsync());
+    return;
+}
+
+string root = Path.Combine(Environment.CurrentDirectory, ".temp", "services-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(root);
+int checks = 0;
+try
+{
+    foreach (int level in new[] { 0, 2, 3 })
+    {
+        string source = """
+            let folder = $std::files::Directory(./work);
+            folder::create();
+            let file = folder::file("first.txt");
+            let alias = file;
+            let separate = folder::file("separate.txt");
+            file::write("hello 星");
+            file::append("\nsecond");
+            separate::write("independent");
+            let initial = file::read_text();
+            file::move_to(folder::child("moved.txt"));
+            let copied = file::copy_to(folder::child("copy.txt"));
+            let snapshot = folder::snapshot();
+            let filtered = folder::matching(fn(path: Path) {
+                $std::path::extension(path) == ".txt"
+            });
+            scope {
+                text: initial,
+                moved: alias::name() == "moved.txt",
+                separate: separate::read_text(),
+                count: $std::ranges::size(snapshot),
+                filtered: $std::ranges::size(filtered),
+                copied: copied,
+            }
+            """;
+        Module module = Compiler.Compile(source, "services.msync", level);
+        using MemoryStream serialized = new();
+        Artifact.Write(module, serialized);
+        serialized.Position = 0;
+        foreach (Module image in new[] { module, Artifact.Read(serialized), Binding.Bind(module, new(root, root)) })
+        {
+            if (Directory.Exists(Path.Combine(root, "work"))) Directory.Delete(Path.Combine(root, "work"), true);
+            Value result = await Interpreter.ExecuteAsync(image, new(WorkingDirectory: root));
+            if (result is not ScopeValue scope) throw new InvalidOperationException("Service result is not Scope");
+            Require(scope.Members["text"] is StringValue { Data: "hello 星\nsecond" }, "File read/append content");
+            Require(scope.Members["moved"] is BoolValue { Data: true }, "Move did not update shared captured location");
+            Require(scope.Members["separate"] is StringValue { Data: "independent" }, "Factory instances share location");
+            Require(scope.Members["count"] is NumberValue { Data: 3 }, "Directory snapshot lost entries");
+            Require(scope.Members["filtered"] is NumberValue { Data: 3 }, "Directory predicate traversal");
+            Require(await File.ReadAllTextAsync(Path.Combine(root, "work", "copy.txt")) == "hello 星\nsecond", "File copy bytes");
+        }
+
+        string executable = Environment.ProcessPath!.Replace("\"", "\"\"", StringComparison.Ordinal);
+        string command = $$"""
+            let command = $std::commands::Command("{{executable}}", ["--echo"]);
+            let result = command::capture_input("hello 星");
+            result::write_to(./command-output);
+            result::success and result::code == 0 and result::output == "echo:hello 星"
+            """;
+        Module commands = Compiler.Compile(command, "commands.msync", level);
+        using MemoryStream commandImage = new();
+        Artifact.Write(commands, commandImage);
+        commandImage.Position = 0;
+        foreach (Module image in new[] { commands, Artifact.Read(commandImage), Binding.Bind(commands, new(root, root)) })
+        {
+            Require(await Interpreter.ExecuteAsync(image, new(WorkingDirectory: root)) is BoolValue { Data: true }, "Command capture/control/Unicode");
+            Require(await File.ReadAllTextAsync(Path.Combine(root, "command-output")) == "echo:hello 星", "Command output publication");
+        }
+    }
+    Console.WriteLine($"PASS {checks} services contracts");
+}
+finally
+{
+    Directory.Delete(root, true);
+}
+
+void Require(bool condition, string message)
+{
+    checks++;
+    if (!condition) throw new InvalidOperationException(message);
+}

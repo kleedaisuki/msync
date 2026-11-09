@@ -1,0 +1,50 @@
+# A completed result owns its output strings and still retains the real Process.
+fn Result(process: Process) {
+    let completed = $std::process::wait(process);
+    let output = $std::process::stdout(completed);
+    let error = $std::process::stderr(completed);
+    let code = $std::process::exit_code(completed);
+    scope {
+        process: completed,
+        output: output,
+        error: error,
+        code: code,
+        success: $std::process::success(completed),
+        lines: fn { $std::string::lines(output) },
+        error_lines: fn { $std::string::lines(error) },
+        write_to: fn(destination: Path | String) {
+            $std::io::write_text(destination, output)
+        },
+    }
+};
+
+# Argument snapshots are replayable. Construction starts no process or SSH login.
+fn Command(executable: Path | String, arguments: Range) {
+    let program = executable as Path;
+    let args = $std::ranges::materialize(arguments);
+    scope {
+        executable: fn { program },
+        arguments: fn { args },
+        with_args: fn(values: Range) { Command(program, values) },
+        append_args: fn(values: Range) {
+            Command(program, $std::ranges::concat(args, values))
+        },
+        on: fn(connection: Connection) { Command(program @ connection, args) },
+        spawn: fn { $std::process::spawn(program, args) },
+        run: fn { $std::process::run(program, args) },
+        run_input: fn(input: String) {
+            $std::process::run_input(program, args, input)
+        },
+        capture: fn { Result($std::process::run(program, args)) },
+        capture_input: fn(input: String) {
+            Result($std::process::run_input(program, args, input))
+        },
+        output: fn {
+            $std::process::stdout($std::process::run(program, args))
+        },
+        lines: fn {
+            $std::string::lines(
+                $std::process::stdout($std::process::run(program, args)))
+        },
+    }
+};
