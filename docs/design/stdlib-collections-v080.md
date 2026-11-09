@@ -12,7 +12,12 @@ Every constructor consumes an initial Range to determine its element schema.
 An empty collection with a known schema can be made with
 `$std::ranges::take(existing, 0)`. Inferred storage types remain fixed across
 method calls. Collections are not untyped bags merely because methods are
-first-class Function values.
+first-class Function values. A constructor infers storage from the values it
+consumes, not from permission to assign a different value to a caller's original
+location. For example, reading a currently nonnull nullable Scope field can
+produce a Number-only Range. To construct nullable mapped storage, supply an
+actual nullable element union (or an explicitly typed Range seed), rather than
+assuming a copied scalar retains the admission rules of its former location.
 
 Mutation publishes a materialized replacement Range, not a growing chain of
 lazy transforms. `materialize` is an explicit eager operation, including when
