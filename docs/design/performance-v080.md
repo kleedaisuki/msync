@@ -1117,3 +1117,129 @@ No further product rebuild is implied by these notes: the accepted package
 hashes above, VSIX, real VS Code host and cross-platform functional acceptance
 belong to the integration record. For repeated execution, compile/bind once and
 reuse `.mexe`; do not infer its latency from the slower complete-source path.
+
+## Cross-block field memory and compact Scope layouts
+
+The November 9 memory study compares the accepted product source `372296b`
+with `bb389db` (compact layouts, private cross-block scalar replacement,
+physical field forwarding, precise memory summaries and aggregate arguments).
+The same measurement-only source from `273ec92` is overlaid on both frozen
+source archives. A subsequent, separately measured change `a0bb5bd` skips the
+old block-local scalarizer when no Scope allocation remains after rewriting.
+These are Native AOT component comparisons on the same Debian host, not Rust
+comparisons or whole-CLI startup/I/O measurements.
+
+| Image | SHA-256 |
+| --- | --- |
+| Previous product plus matched probe | `ba5df4bafe2c5c9a551c1997f21777ca6b30f026719465e5204f861b91e0b5aa` |
+| Memory implementation `bb389db` | `37947d76c4b5ff61521ed5e24d06761dfb149e61ff89adf79449851b2a453e02` |
+| Applicability repair `a0bb5bd` | `1cca3fa98a97e832123481661d5e3a507070573ee1f21062640fc48aadb97951` |
+
+`tests/Performance/Components/MemoryPipelineWorkloads.cs` supplies three consumed
+workloads. `memory_branches` creates distinct objects live across branches and
+checks every resulting field. One actual `fs.exists` supplies its runtime Bool;
+the run timings include that same metadata query in both images. `memory_loop`
+carries fields through a finite loop and returns the expected Path only when its
+sequential sum is correct. `layout_factory` returns a lazy Range of fresh Scopes;
+the same driver consumes it and reads every file field, so its VM samples
+include real physical construction, not only an unevaluated adapter.
+
+The paired driver alternates AB/BA fresh processes, warms each phase three
+times, calibrates batches to about 2 ms, and records a separate allocation
+batch. Three paired observations per image at sizes 1/32 are a bounded workload
+study; the interpolated p95 is descriptive rather than a tail guarantee.
+Compile, optimize, bind and prepared VM phases overlap and are not summed.
+Every image/level is executed and round-tripped through `.mso` and `.mexe`
+before timing. No live object instance or filesystem observation is cached as
+an optimization proof.
+
+Selected O2 results against the previous product, before the applicability
+repair, are p50 / p95 milliseconds:
+
+| Workload, size 32 | Previous | Memory implementation | Previous / new allocation bytes |
+| --- | ---: | ---: | ---: |
+| Cross-branch raw optimization | 26.387 / 27.386 | 19.158 / 28.292 | 22,461,728 / 16,944,888 |
+| Cross-branch prepared VM | 0.1216 / 0.1647 | 0.0644 / 0.0664 | 70,944 / 34,600 |
+| Loop-field contextual binding | 0.875 / 1.196 | 0.295 / 0.327 | 569,096 / 142,208 |
+| Loop-field prepared VM | 0.1053 / 0.1128 | 0.0019 / 0.0031 | 52,112 / 1,664 |
+| Escaping-factory raw optimization | 0.816 / 0.852 | 1.131 / 1.206 | 616,088 / 618,976 |
+| Escaping-factory prepared VM | 0.1436 / 0.1575 | 0.0998 / 0.1290 | 67,008 / 48,720 |
+
+This is not uniform acceleration: the escaping-factory optimizer costs another
+0.315 ms in this sample while construction/consumption becomes cheaper. At
+size 1, its prepared VM changes from 0.0060 to 0.0069 ms and 4,240 to 4,304
+bytes; shared-layout setup does not pay back on every singleton use. The
+larger factory is the relevant shape-reuse case.
+
+Structural evidence distinguishes the mechanisms. A one-object branch keeps
+27 executable instructions, one MakeScope, two SetMembers and one GetMember in
+the previous product; the new pipeline has 18 instructions and no object/member
+operations. At 32 objects the new executable has 421 instructions and no
+MakeScope/GetMember/SetMember. The loop-field body at size 32 becomes a literal
+return after scalar replacement exposes finite evaluation. The escaping factory
+retains its MakeScope site and creates distinct instances; fewer allocated bytes
+there come from layout/storage, not pretending the objects disappeared.
+
+### Optimizer-cost diagnosis and bounded repair
+
+A size-128 branch pilot exposed a real remaining analysis cost despite lower
+allocation than the previous compiler: the memory implementation used roughly
+414 MB and hundreds of milliseconds for raw optimization. An isolated managed
+driver copied under `.temp` measured allocated bytes around individual passes,
+without adding diagnostics to the product hot path. Its largest phase was the
+existing block-local scalarizer: **267,299,392 bytes**, versus about 55 MB for
+global redundancy, 37 MB for predicates, 32 MB for graph demand and 21 MB for
+the new private cross-block analysis. Cold managed timings from that diagnostic
+are not used as native speed claims.
+
+The cause was stale applicability information: the outer driver knew the input
+contained Scopes, but cross-block scalar replacement had already removed every
+allocation. The local scalarizer still built CFG liveness and then returned the
+unchanged function. `a0bb5bd` puts the no-MakeScope proof in the scalarizer's own
+entrypoint. A structural test verifies one applicability enumeration and no CFG
+indexed reads; there is no input-size cutoff or reduced language semantics.
+
+Three paired native observations of the exact repair isolate its effect:
+
+| Branch workload | Before repair p50 / p95 ms | After repair p50 / p95 ms | Allocation bytes before / after |
+| --- | ---: | ---: | ---: |
+| Size 32, complete compile | 38.527 / 38.899 | 31.418 / 32.122 | 18,142,536 / 12,281,616 |
+| Size 32, raw optimize | 17.455 / 21.345 | 20.595 / 21.619 | 16,944,888 / 11,086,240 |
+| Size 128, complete compile | 667.168 / 698.249 | 336.823 / 357.859 | 420,560,632 / 153,266,208 |
+| Size 128, raw optimize | 546.139 / 556.526 | 252.613 / 261.939 | 413,774,160 / 146,482,104 |
+
+The size-32 raw-time sample did not improve; only its deterministic allocation
+reduction is claimed. Binding at size 128 remains approximately 206–207 ms and
+148 MB, and the repaired executable's instruction stream/125,224-byte VM
+allocation is unchanged. The repair avoids redundant compilation analysis,
+not a new execution optimization. A tiny no-Scope call retains exactly 65,520
+raw-optimization allocation bytes before/after. The remaining 128-object cost is
+still substantial inherited graph/PRE/predicate work; this study does not claim
+that all compiler scaling problems have disappeared.
+
+Ordinary no-Scope controls were measured before the repair and are unaffected
+by a guard on a Scope-only pass. Seven paired 1,024-transfer observations show
+raw optimization **17.774 / 22.780 → 14.610 / 20.835 ms**, with only a constant
+allocation change **6,930,320 → 6,931,032 bytes**. Complete compile changes
+25.833 → 26.588 ms; binding 17.406 → 16.907 ms. An initial three-pair +5 ms
+raw-time fluctuation did not persist in the larger confirmation, so it was not
+reported as a new algorithmic regression. This negative control does not establish
+a universal no-regression guarantee.
+
+Complete manifests, original samples, shapes and diagnostic records are under
+`.temp/memory-performance/`: `baseline-source.json`, `final-source.json`,
+`postguard-source.json`, their native-image manifests, `control-calls.json`,
+`control-transfers-confirm.json`, `memory-pilot.json`, `memory-128-pilot.json`,
+`sra-applicability.json`, `sra-tiny-control.json`, and
+`phase-diagnostic/summary.json`. Size-128 pilot observations against the old
+product have only one pair and are retained as mechanism/scaling probes, not
+presented as a settled latency distribution.
+
+Actual cross-platform user-journey coverage is separate:
+`tests/Msync.EndToEnd/memory_layout_journey.py` executes explicit O0/O2 source,
+relocatable and bound artifacts with exact binary file payloads, both selected
+branch edges, disjoint calls, shared captured fields, same-site live instances,
+deferred callback mutation, selected errors and a different launch cwd. Its
+default includes two newly fixed frontend regressions; the frozen previous
+product is exercised with `--baseline-compatible` instead of being credited
+with syntax/metadata behavior it did not support.
