@@ -16,7 +16,7 @@ if (args.Contains("--bench", StringComparer.Ordinal))
     string library = File.ReadAllText(libraryPath);
     foreach (int count in new[] { 64, 512, 4096 })
     {
-        string source = library + $"let b = Builder(); for x in $std::ranges::iota(0, {count}) {{ b::append(\"abcdefghijklmnopqrstuvwxyz012345\"); }}; b::build()";
+        string source = library + $"let b = StringBuilder::new(); for x in $std::ranges::iota(0, {count}) {{ StringBuilder::append(b, \"abcdefghijklmnopqrstuvwxyz012345\"); }}; StringBuilder::build(b)";
         Module module = Frontend.Compile(source, "text-builder-benchmark", 2);
         _ = await Interpreter.ExecuteAsync(module);
         List<double> times = [];
@@ -51,16 +51,16 @@ int checks = 0;
 foreach (int level in new[] { 0, 2, 3 })
 {
     foreach (var (source, expected) in cases) await Check(source, expected, level);
-    await Check("let b = $std::text::Builder(); b::append(\"A😀\"); b::append_line(\"x\"); b::build()", "A😀x\n", level);
-    await Check("let b = $std::text::Builder(); b::append(\"A😀\"); let alias = b; alias::append(\"z\"); b::length()", "3", level);
-    await Check("let b = $std::text::Builder(); let c = $std::text::Builder(); b::append(\"a\"); c::empty()", "true", level);
-    await Check("let b = $std::text::Builder(); b::append(\"a\"); let snapshot = b::build(); b::append(\"b\"); snapshot", "a", level);
-    await Check("let b = $std::text::Builder(); b::append_all([\"a\", \"b\", \"c\"]); b::clear(); b::append(\"z\"); b::build()", "z", level);
+    await Check("let b = $std::text::StringBuilder::new(); $std::text::StringBuilder::append(b, \"A😀\"); $std::text::StringBuilder::append_line(b, \"x\"); $std::text::StringBuilder::build(b)", "A😀x\n", level);
+    await Check("let b = $std::text::StringBuilder::new(); $std::text::StringBuilder::append(b, \"A😀\"); let alias = b; $std::text::StringBuilder::append(alias, \"z\"); b::length", "3", level);
+    await Check("let b = $std::text::StringBuilder::new(); let c = $std::text::StringBuilder::new(); $std::text::StringBuilder::append(b, \"a\"); $std::text::StringBuilder::is_empty(c)", "true", level);
+    await Check("let b = $std::text::StringBuilder::new(); $std::text::StringBuilder::append(b, \"a\"); let snapshot = $std::text::StringBuilder::build(b); $std::text::StringBuilder::append(b, \"b\"); snapshot", "a", level);
+    await Check("let b = $std::text::StringBuilder::new(); $std::text::StringBuilder::append_all(b, [\"a\", \"b\", \"c\"]); $std::text::StringBuilder::clear(b); $std::text::StringBuilder::append(b, \"z\"); $std::text::StringBuilder::build(b)", "z", level);
     await Check("let chunks = [\"a\"]; let snapshot = chunks; chunks = $std::text::append_chunk(chunks, \"b\"); $std::string::join(snapshot, \"\")", "a", level);
     await Check("let calls = 0; let inputs = $std::ranges::map([\"a\", \"b\"], fn(value: String) { calls = calls + 1; value }); let chunks = $std::text::append_chunk(inputs, \"c\"); calls", "2", level);
-    await Check("let b = $std::text::Builder(); for x in $std::ranges::iota(0, 129) { b::append(\"x\"); }; $std::string::length(b::build())", "129", level);
-    await Check("let pattern = $std::regex::compile(\"[0-9]+\"); pattern::replace(\"a12b\", \"x\")", "axb", level);
-    await Check("let pattern = $std::regex::compile(\"[0-9]+\"); pattern::pattern()", "[0-9]+", level);
+    await Check("let b = $std::text::StringBuilder::new(); for x in $std::ranges::iota(0, 129) { $std::text::StringBuilder::append(b, \"x\"); }; $std::string::length($std::text::StringBuilder::build(b))", "129", level);
+    await Check("let pattern = $std::regex::Pattern::new(\"[0-9]+\"); $std::regex::Pattern::replace(pattern, \"a12b\", \"x\")", "axb", level);
+    await Check("let pattern = $std::regex::Pattern::new(\"[0-9]+\"); pattern::expression", "[0-9]+", level);
     await Check("let item = $std::ranges::first($std::regex::matches(\"A😀abc\", \"(?<part>abc)(?<missing>z)?\")); let group = $std::ranges::last(item::groups); group::success", "false", level);
     await Check("let item = $std::ranges::first($std::regex::matches(\"A😀abc\", \"(?<part>abc)\")); let group = $std::ranges::last(item::groups); group::index", "2", level);
     await Check("let item = $std::ranges::first($std::regex::matches(\"a😀bc\", \"(?<=(?<prefix>😀))b\")); let group = $std::ranges::last(item::groups); group::index", "1", level);

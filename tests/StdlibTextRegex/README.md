@@ -27,8 +27,8 @@ comparison and its reconstruction are recorded in
 ## Named families and explicit policies
 
 `--native-families` selects only the canonical `text::StringBuilder` and
-`regex::Pattern` contracts, without repeating the established compatibility
-matrix. It covers raw instance data (no accessor/method closures), explicit
+`regex::Pattern` contracts, without repeating the broader text/regex matrix.
+It covers raw instance data (no accessor/method closures), explicit
 `self` operations, alias identity, fresh construction, Unicode scalar length,
 stable built-text snapshots, and a concept-checked eager chunk-storage policy.
 The policy records actual append calls, so compile-time signature inspection
@@ -36,11 +36,9 @@ cannot accidentally be counted as executed work. Missing or incompatible
 policies, invalid pattern specifications, and fixed storage-type violations
 must be rejected before execution. Each accepted program executes at O0/O2/O3
 through source, relocatable round-trip and contextual executable round-trip.
-Two selected old factory calls preserve source compatibility at the boundary.
-The focused entrypoint passed 153 assertions; the 207 existing text/regex
-assertions also passed after the compatibility factories were changed to
-forward to the shared family operations. Both used an isolated Release build
-with zero warnings and errors.
+The unpublished factory adapters have been removed; the regular text/regex
+fixtures and benchmark use the same named family operations. The focused
+entrypoint contains 135 assertions. No old spelling is retained as an alias.
 
 ```sh
 dotnet run --project tests/StdlibTextRegex/Msync.StdlibTextRegex.Tests.csproj \

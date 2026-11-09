@@ -21,8 +21,6 @@ internal static class NativeFamilies
             ("let p = $std::regex::Pattern::new(\"[,;]\"); $std::string::join($std::regex::Pattern::split(p, \"a,b;c\"), \"|\")", "a|b|c"),
             ("let p = $std::regex::Pattern::new(\"a\"); let alias = p; alias::expression = \"b\"; $std::regex::Pattern::is_match(p, \"b\")", "true"),
             ("let p = $std::regex::Pattern::new(\"😀\"); $std::ranges::size($std::regex::Pattern::matches(p, \"😀a😀\"))", "2"),
-            ("let b = $std::text::Builder(); b::append(\"old\"); b::build()", "old"),
-            ("let p = $std::regex::compile(\"[0-9]+\"); p::replace(\"a12b\", \"old\")", "aoldb"),
             ("""
                 let calls = 0;
                 scope EagerChunks {

@@ -28,21 +28,6 @@ scope Pattern {
     },
 };
 
-# Compatibility factory; new code uses Pattern's associated operations.
-fn compile(expression: String) {
-    let operations = Pattern;
-    let self = operations::new(expression);
-    scope {
-        pattern: fn { self::expression },
-        is_match: fn(text: String) { operations::is_match(self, text) },
-        find: fn(text: String) { operations::find(self, text) },
-        matches: fn(text: String) { operations::matches(self, text) },
-        replace: fn(text: String, replacement: String) {
-            operations::replace(self, text, replacement)
-        },
-        split: fn(text: String) { operations::split(self, text) }
-    }
-};
 fn values(text: String, pattern: String) {
     $std::ranges::map(matches(text, pattern), fn(matched) { matched::value })
 };

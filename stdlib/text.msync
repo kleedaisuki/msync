@@ -52,22 +52,6 @@ scope StringBuilder {
     },
 };
 
-# Compatibility factory; new code uses StringBuilder's associated operations.
-fn Builder() {
-    let self = StringBuilder::new();
-    scope {
-        append: fn(value: String) { StringBuilder::append(self, value) },
-        append_line: fn(value: String) { StringBuilder::append_line(self, value) },
-        append_all: fn(values: Range<String>) {
-            StringBuilder::append_all(self, values)
-        },
-        clear: fn { StringBuilder::clear(self) },
-        build: fn { StringBuilder::build(self) },
-        length: fn { self::length },
-        empty: fn { self::length == 0 }
-    }
-};
-
 fn join_lines(lines: Range<String>) { $std::string::join(lines, newline) };
 fn indent(text: String, prefix: String) {
     $std::string::join($std::ranges::map(
