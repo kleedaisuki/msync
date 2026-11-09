@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Text;
 using Msync.Core;
 using Msync.Hir;
 
@@ -12,8 +13,19 @@ internal sealed partial class SemanticAnalyzer
 
     private ReturnShape? CallShape(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext caller)
     {
+        // Eagerness is an expression policy, whereas future safety is a value
+        // domain. Neither projection publishes or specializes executable code.
+        ReturnShape? policy = ProjectCallShape(node, children, caller, future: false);
+        if (policy is { } current && (current.Eager || (current.Fact.Type.Kind & TypeKind.Range) == 0)) return current;
+        ReturnShape? domain = ProjectCallShape(node, children, caller, future: true);
+        return domain is { } legal ? legal with { Eager = policy?.Eager ?? legal.Eager } : policy;
+    }
+
+    private ReturnShape? ProjectCallShape(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext caller,
+        bool future)
+    {
         SemanticContext context = caller.QueryFork();
-        context.DeferredReads = true;
+        context.DeferredReads = future;
         context.FlowAnalysis = null;
         HashSet<HirLocationId> read = [], declared = [];
         foreach (HirNodeId child in children) CollectLocations(child, read, declared);
@@ -25,14 +37,18 @@ internal sealed partial class SemanticAnalyzer
             HirTypeId storage = context.Storage.GetValueOrDefault(location, hir.Locations[location.Value].StorageType);
             SemanticValue? current = context.Values.GetValueOrDefault(location);
             bool stable = Stable(original);
-            HirTypeId initial = stable ? current?.Type ?? storage : storage;
-            if (current is not null && (!stable || current.Scope is not null))
+            HirTypeId initial = !future || stable ? current?.Type ?? storage : storage;
+            if (future && current is not null && (!stable || current.Scope is not null))
                 context.Values[location] = FutureRead(current, initial, context, location);
             domains[location] = new(hir.Types[storage.Value].RuntimeType, hir.Types[storage.Value].RuntimeType,
                 stable, InitialType: hir.Types[initial.Value].RuntimeType,
                 StorageSemanticType: storage, InitialSemanticType: initial, DeferredSemanticType: storage);
         }
         FlowFacts facts = FlowFacts.Create(domains.ToImmutable(), new HirFlowTypeAlgebra(hir));
+        foreach (HirLocationId location in domains.Keys)
+            if (context.Values.TryGetValue(location, out SemanticValue? value))
+                facts = facts.Assign(location, new(hir.Types[value.Type.Value].RuntimeType, Boolean: value.KnownBool,
+                    SemanticType: value.Type, Denotations: value.DenotedType is { } denoted ? new([denoted]) : null));
         Dictionary<HirLocationId, bool> eager = [];
         List<ReturnShape> returns = [];
         ReturnShape[] arguments = new ReturnShape[children.Length - 1];
@@ -41,13 +57,7 @@ internal sealed partial class SemanticAnalyzer
         SemanticCallable[] choices = BoundCallables(children[0], context).ToArray();
         string? native = hir.Calls[node.Data].NativeName ?? (choices.Length == 1 ? choices[0].NativeName : null);
         if (native is not null && NativeSignatures.TryGet(native, out var signature))
-        {
-            bool eagerResult = (signature.Behavior.GetValueOrDefault() & NativeBehavior.EagerRange) != 0;
-            if (signature.ResultRule == NativeResultRule.FirstArgument && arguments.Length != 0)
-                return arguments[0] with { Eager = eagerResult || ((signature.Behavior.GetValueOrDefault()
-                    & NativeBehavior.Deferred) == 0 && arguments[0].Eager) };
-            return new(Shape(hir.Type(signature.Result)).Fact, eagerResult);
-        }
+            return NativeShape(signature, arguments);
         ReturnShape? result = null;
         foreach (SemanticCallable choice in choices)
             if (SourceReturnShape(choice, arguments, context) is { } shape)
@@ -82,6 +92,7 @@ internal sealed partial class SemanticAnalyzer
         caller.Output?.ReserveFunction(new("<range-call>", [], captures.ToImmutable(),
             hir.Type(TypeRef.Any), HirNodeId.None, IsOpen: true));
         SemanticValue result = Call(node, children, deferred, allowDeferral: false);
+        MergeSessionContracts(caller, [deferred]);
         result = PublishResultGraph(result, deferred, caller);
         var effects = result.DeferredEffects.IsDefault ? ImmutableArray<SemanticDeferredWrite>.Empty : result.DeferredEffects;
         effects = effects.Select(effect => effect.Kind == SemanticWriteKind.Location
@@ -110,13 +121,13 @@ internal sealed partial class SemanticAnalyzer
         if (template.Parameters.Length != arguments.Count) return null;
         var key = templateId.Value + (caller.DeferredReads ? "d:" : "i:") + string.Join(",", arguments.Select(argument =>
             (argument.Fact.SemanticType ?? hir.Type(argument.Fact.Type)).Value + (argument.Eager ? "!" : ".")
-                + argument.Fact.Boolean + (argument.Value is { } value ? ValueKey(value) : "")))
+                + argument.Fact.Boolean + (argument.Value is { } value ? ValueKey(value) + PolicyKey(value, caller) : "")))
             + ":" + string.Join(",", callable.Captures.IsDefault ? [] : callable.Captures.Select(capture =>
                 caller.Storage.GetValueOrDefault(capture.Source, capture.Value.Type).Value + ":"
-                    + ValueKey(caller.Values.GetValueOrDefault(capture.Source, capture.Value))));
+                    + ValueKey(caller.Values.GetValueOrDefault(capture.Source, capture.Value))
+                    + PolicyKey(caller.Values.GetValueOrDefault(capture.Source, capture.Value), caller)));
         if (returnSchemes.TryGetValue(key, out var cached)) return cached;
         SemanticContext context = caller.QueryFork();
-        context.DeferredReads = false;
         context.FlowAnalysis = null;
         var domains = ImmutableDictionary.CreateBuilder<HirLocationId, FlowLocationDomain>();
         Dictionary<HirLocationId, bool> eager = [];
@@ -143,8 +154,11 @@ internal sealed partial class SemanticAnalyzer
                     : caller.Values.GetValueOrDefault(capture.Source, capture.Value);
                 HirTypeId type = capture.Mode == HirCaptureMode.Location && caller.DeferredReads && !Stable(capture.Source)
                     ? caller.Storage.GetValueOrDefault(capture.Source, captured.Type) : captured.Type;
+                if (capture.Mode == HirCaptureMode.Location && caller.DeferredReads
+                    && (!Stable(capture.Source) || captured.Scope is not null))
+                    captured = FutureRead(captured, type, context, capture.Source);
                 context.Locations[target] = target;
-                context.Values[target] = captured with { Type = type, Node = HirNodeId.None, Literal = null };
+                context.Values[target] = captured with { Type = type, Node = HirNodeId.None };
                 domains[target] = new(hir.Types[type.Value].RuntimeType, hir.Types[type.Value].RuntimeType,
                     StorageSemanticType: type, InitialSemanticType: type);
                 eager[target] = captured.EagerRange;
@@ -177,10 +191,21 @@ internal sealed partial class SemanticAnalyzer
             FlowFacts facts = FlowFacts.Create(domains.ToImmutable(), algebra);
             for (int index = 0; index < template.Parameters.Length; index++)
                 facts = facts.Assign(template.Parameters[index], arguments[index].Fact);
+            foreach (HirCapture capture in template.Captures)
+                if (context.Values.TryGetValue(capture.Target, out SemanticValue? captured))
+                    facts = facts.Assign(capture.Target, new(hir.Types[captured.Type.Value].RuntimeType,
+                        Boolean: captured.KnownBool, SemanticType: captured.Type,
+                        Denotations: captured.DenotedType is { } denoted ? new([denoted]) : null));
+            HashSet<int> described = [];
+            foreach (HirLocationId input in template.Parameters.Concat(template.Captures.Select(capture => capture.Target)))
+                if (context.Values.TryGetValue(input, out SemanticValue? value))
+                    facts = SchemeScopeFacts(value, context, facts, described);
             var projection = new HirTypeProjection(program, hir, context, algebra,
                 (callee, inputs) => SourceFlowReturn(callee, inputs, context),
+                places: place => SchemePlace(place, context),
                 resolveCallable: callee => BoundCallables(callee, context));
-            context.FlowAnalysis = new HirFlowGraphBuilder(program, projection.Project, context.Location)
+            context.FlowAnalysis = new HirFlowGraphBuilder(program, projection.Project, context.Location,
+                    place => SchemePlace(place, context))
                 .Analyze(template.Body, facts);
             List<ReturnShape> exits = [];
             ReturnShape result = ProjectReturn(template.Body, context, ref facts, eager, exits);
@@ -291,9 +316,14 @@ internal sealed partial class SemanticAnalyzer
                 row = context.Objects.GetValueOrDefault(row.Region, row);
                 if (row.Fields.TryGetValue(name, out SemanticValue? member))
                 {
+                    FlowFact fact = Shape(member.Type).Fact;
                     if (row.Locations.TryGetValue(name, out HirLocationId location))
+                    {
                         member = context.Values.GetValueOrDefault(location, member);
-                    return new(Shape(member.Type).Fact, member.EagerRange || member.IndexedRegion is not null
+                        fact = facts.Contains(location) ? facts.Read(location)
+                            : fact with { Boolean = member.KnownBool };
+                    }
+                    return new(fact, member.EagerRange || member.IndexedRegion is not null
                         || !member.IndexedAliases.IsDefaultOrEmpty, member);
                 }
             }
@@ -307,27 +337,7 @@ internal sealed partial class SemanticAnalyzer
             var choices = BoundCallables(children[0], context).ToArray();
             string? native = call.NativeName ?? (choices.Length == 1 ? choices[0].NativeName : null);
             if (native is not null && NativeSignatures.TryGet(native, out var signature))
-            {
-                FlowFact fact = signature.ResultRule switch
-                {
-                    NativeResultRule.FirstArgument when arguments.Length != 0 => arguments[0].Fact,
-                    NativeResultRule.RangeItem when arguments.Length != 0 => Shape(new HirFlowTypeAlgebra(hir)
-                        .Element(arguments[0].Fact.SemanticType ?? hir.Type(arguments[0].Fact.Type))).Fact,
-                    _ => Shape(hir.Type(signature.Result)).Fact
-                };
-                bool eagerResult = (signature.Behavior.GetValueOrDefault() & NativeBehavior.EagerRange) != 0;
-                SemanticValue? nativeMetadata = signature.ResultRule switch
-                {
-                    NativeResultRule.FirstArgument when arguments.Length != 0 => arguments[0].Value,
-                    NativeResultRule.RangeItem when arguments.Length != 0 && arguments[0].Value is { } range => Item(range),
-                    _ => null
-                };
-                if (signature.ResultRule == NativeResultRule.FirstArgument && arguments.Length != 0
-                    && (signature.Behavior.GetValueOrDefault() & NativeBehavior.Deferred) == 0)
-                    eagerResult |= arguments[0].Eager;
-                return new(fact, eagerResult || nativeMetadata?.EagerRange == true || nativeMetadata?.IndexedRegion is not null
-                    || nativeMetadata is { IndexedAliases.IsDefaultOrEmpty: false }, nativeMetadata);
-            }
+                return NativeShape(signature, arguments);
             ReturnShape? result = null;
             foreach (SemanticCallable choice in choices)
                 if (SourceReturnShape(choice, arguments, context) is { } value)
@@ -341,6 +351,12 @@ internal sealed partial class SemanticAnalyzer
         bool isEager = node.Kind is HirKind.ReadLocation or HirKind.ReadStorage
             && eager.GetValueOrDefault(context.Location(new(node.Data)));
         SemanticValue? metadata = BoundValue(id, context);
+        if (metadata is not null && IndexedResourceCount(metadata) != 0)
+        {
+            metadata = RefreshIndexed(metadata, context);
+            if (!context.DeferredReads) projected = projected with
+            { Type = hir.Types[metadata.Type.Value].RuntimeType, SemanticType = metadata.Type };
+        }
         if (node.Kind is HirKind.TemplateClosure or HirKind.NativeFunction)
             metadata = new(projected.SemanticType ?? hir.Type(projected.Type), HirNodeId.None,
                 Callables: BoundCallables(id, context).ToImmutableArray());
@@ -469,6 +485,95 @@ internal sealed partial class SemanticAnalyzer
     }
 
     private ReturnShape Shape(HirTypeId type) => new(new(hir.Types[type.Value].RuntimeType, SemanticType: type));
+
+    private ReturnShape NativeShape(NativeSignature signature, IReadOnlyList<ReturnShape> arguments)
+    {
+        FlowFact fact = signature.ResultRule switch
+        {
+            NativeResultRule.FirstArgument when arguments.Count != 0 => arguments[0].Fact,
+            NativeResultRule.RangeItem when arguments.Count != 0 => Shape(new HirFlowTypeAlgebra(hir)
+                .Element(arguments[0].Fact.SemanticType ?? hir.Type(arguments[0].Fact.Type))).Fact,
+            _ => Shape(hir.Type(signature.Result)).Fact
+        };
+        SemanticValue? metadata = signature.ResultRule switch
+        {
+            NativeResultRule.FirstArgument when arguments.Count != 0 && arguments[0].Value is { } first =>
+                FirstNativeArgument(signature, first),
+            NativeResultRule.RangeItem when arguments.Count != 0 && arguments[0].Value is { } range => Item(range),
+            _ => null
+        };
+        NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
+        bool eager = (behavior & NativeBehavior.EagerRange) != 0
+            || signature.ResultRule == NativeResultRule.FirstArgument && arguments.Count != 0
+                && (behavior & NativeBehavior.PreservesIdentity) != 0 && arguments[0].Eager;
+        if (signature.ResultRule == NativeResultRule.RangeItem && metadata is not null)
+            eager |= metadata.EagerRange || IndexedResourceCount(metadata) != 0;
+        return new(fact, eager, metadata is null ? null : metadata with { EagerRange = eager });
+    }
+
+    private HirLocationId? SchemePlace(HirNodeId id, SemanticContext context)
+    {
+        HirNode node = program.Node(id);
+        if (node.Kind is not (HirKind.MemberRead or HirKind.MemberAssign) || node.Text is null) return null;
+        HirNodeId receiver = program.Children(id)[0];
+        if (BoundValue(receiver, context)?.Scope is { } row)
+        {
+            row = context.Objects.GetValueOrDefault(row.Region, row);
+            if (row.Locations.TryGetValue(node.Text, out HirLocationId location)) return location;
+        }
+        HirLocationId? field = (futureCallableWrites ??= new(program)).Field(receiver, node.Text);
+        return field is { } definition ? context.Location(definition) : null;
+    }
+
+    private FlowFacts SchemeScopeFacts(SemanticValue value, SemanticContext context, FlowFacts facts,
+        HashSet<int> described)
+    {
+        if (value.Scope is not { } row || row.Region >= 0 && !described.Add(row.Region)) return facts;
+        row = context.Objects.GetValueOrDefault(row.Region, row);
+        foreach (var pair in row.Locations)
+        {
+            SemanticValue member = context.Values.GetValueOrDefault(pair.Value, row.Fields[pair.Key]);
+            HirTypeId storage = context.Storage.GetValueOrDefault(pair.Value, member.Type);
+            if (!facts.Contains(pair.Value))
+                facts = facts.Extend([new(pair.Value, new(hir.Types[storage.Value].RuntimeType,
+                    hir.Types[storage.Value].RuntimeType, ExternallyWritable: true,
+                    StorageSemanticType: storage, InitialSemanticType: member.Type,
+                    InitialType: hir.Types[member.Type.Value].RuntimeType))]);
+            facts = facts.Assign(pair.Value, new(hir.Types[member.Type.Value].RuntimeType,
+                Boolean: member.KnownBool, SemanticType: member.Type,
+                Denotations: member.DenotedType is { } represented ? new([represented]) : null));
+            facts = SchemeScopeFacts(member, context, facts, described);
+        }
+        return facts;
+    }
+
+    private string PolicyKey(SemanticValue value, SemanticContext context)
+    {
+        StringBuilder key = new();
+        HashSet<SemanticValue> active = new(ReferenceEqualityComparer.Instance);
+        Append(value);
+        return key.ToString();
+
+        void Append(SemanticValue current)
+        {
+            if (!active.Add(current)) { key.Append('^'); return; }
+            key.Append(current.EagerRange ? '!' : '.').Append(current.KnownBool switch
+            { true => 't', false => 'f', null => '?' }).Append(current.DenotedType?.Value ?? -1);
+            if (current.Scope is { } row)
+            {
+                row = context.Objects.GetValueOrDefault(row.Region, row);
+                foreach (var pair in row.Fields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+                {
+                    key.Append(pair.Key).Append(':');
+                    Append(row.Locations.TryGetValue(pair.Key, out HirLocationId location)
+                        ? context.Values.GetValueOrDefault(location, pair.Value) : pair.Value);
+                }
+            }
+            if (current.Element is { } element) Append(element);
+            active.Remove(current);
+        }
+    }
+
     private static ReturnShape JoinShape(ReturnShape first, ReturnShape second, HirFlowTypeAlgebra types) =>
         first.Fact.Type.Kind == TypeKind.Never ? second : second.Fact.Type.Kind == TypeKind.Never ? first
             : new(types.Join(first.Fact, second.Fact), first.Eager || second.Eager);

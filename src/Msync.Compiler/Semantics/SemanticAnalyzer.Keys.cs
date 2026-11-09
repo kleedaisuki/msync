@@ -18,11 +18,12 @@ internal sealed partial class SemanticAnalyzer
             foreach (var value in captures) AppendScalarKey(value);
             return key.ToString();
         }
+        SemanticInputSchema schema = CodeSchema(arguments, captures, caller);
         HashSet<SemanticValue> active = new(ReferenceEqualityComparer.Instance);
         KeyProvenance provenance = new();
-        foreach (var value in arguments) { AppendValueKey(key, value, caller, active, provenance); key.Append(';'); }
+        foreach (var value in schema.Arguments) { AppendValueKey(key, value, schema.Context, active, provenance); key.Append(';'); }
         key.Append('|');
-        foreach (var value in captures) { AppendValueKey(key, value, caller, active, provenance); key.Append(';'); }
+        foreach (var value in schema.Captures) { AppendValueKey(key, value, schema.Context, active, provenance); key.Append(';'); }
         return key.ToString();
 
         void AppendScalarKey(SemanticValue value) => key.Append(value.Type.Value).Append('T')

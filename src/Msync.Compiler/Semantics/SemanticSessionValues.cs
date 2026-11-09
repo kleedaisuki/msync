@@ -114,7 +114,7 @@ internal sealed class SemanticSessionValues(BoundProgram program, HirLoweringLay
         if (template is null) return hint with { Node = HirNodeId.None };
         var definition = program.Hir.Templates[template.Value.Value];
         SemanticValue provisional = new(program.Hir.Type(TypeRef.Function), HirNodeId.None,
-            Callables: [new(template)]);
+            Callables: [new(template, RuntimeIdentity: identity)]);
         observed[actual] = provisional;
         var captures = ImmutableArray.CreateBuilder<SemanticCapture>();
         for (int index = 0; index < definition.Captures.Length; index++)
@@ -135,6 +135,6 @@ internal sealed class SemanticSessionValues(BoundProgram program, HirLoweringLay
             captures.Add(new(source, captured, definitionCapture.Mode));
             if (definitionCapture.Mode == HirCaptureMode.Location) facts.Values[source] = captured;
         }
-        return provisional with { Callables = [new(template, Captures: captures.ToImmutable())] };
+        return provisional with { Callables = [new(template, Captures: captures.ToImmutable(), RuntimeIdentity: identity)] };
     }
 }

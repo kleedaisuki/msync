@@ -369,6 +369,7 @@ internal sealed partial class SemanticAnalyzer
     private void MergeContexts(SemanticContext destination, params SemanticContext[] branches)
     {
         if (branches.Length == 0) return;
+        MergeSessionContracts(destination, branches);
         foreach (SemanticContext branch in branches)
         {
             destination.CellWrites.UnionWith(branch.CellWrites);

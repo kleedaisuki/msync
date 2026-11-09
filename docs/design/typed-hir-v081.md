@@ -221,6 +221,66 @@ call. Boundary Path/String conversions are explicit typed prologue operations:
 actual incoming parameters and converted lexical storage are distinct only when
 conversion is necessary, including native callbacks and returned captures.
 
+### Finite formal resource views
+
+Code keys and published instances use the same `FormalInput` normalization.
+`CodeSchema` builds an output-free semantic view before cache lookup; a miss
+materializes the corresponding typed formal body. Root/field/element roles are
+kept separate, so two same-typed buffers in different fields are not identified.
+A MAY-resource role joins readable elements and intersects writable carrier
+admission, rather than enumerating every possible runtime buffer in the code
+identity. Definite single resources keep the direct-ID path. Structural Scope
+prototypes likewise do not enumerate every object they may describe.
+
+At a call, projection binds a formal resource view to its actual candidate set.
+Returned aliases expand that set; writes through a MAY target weakly join each
+candidate's old and new facts, while definite-target writes retain their normal
+precision. Dynamic selected Scope views preserve alias invalidation and concept
+obligations. Negative structural Scope regions are descriptions, not object IDs.
+This separates reusable code identity from the size of a growing abstract heap.
+
+A controlled, flushed one-insert BTree probe completed after 159 instantiation
+entries with 31 published functions, 1170 types, 36 layouts and 36 Scopes. The
+recursive `insert_nonfull` key remained 1905 bytes with an identical hash across
+98 visits; the child process used approximately 74 MB and 1.404 seconds. The
+previous concrete-alias version grew from 23 to 288 objects and 17 to 317 indexed
+resources over a few recursive depths. These are a termination discriminator,
+not a completed 24-insert throughput result. Independent tiny runtime journeys
+check distinct indexed views, returned aliases and shared-field behavior; the
+larger real workflow remains a separate acceptance step.
+
+### Shared cells, completed rows and fresh descriptors
+
+A captured location imports the same storage constraint as its source cell.
+`StorageConstraintGraph` records those explicit source/target edges within an
+instance. Solving the first non-Null carrier seals that class, including a lazy
+thunk created before the assignment; it does not replace every occurrence of a
+source template's type-parameter ID. Current edge facts remain in their owning
+semantic context, not in the constraint graph. Projected cells retain both the
+fixed storage constraint and canonical declaration identity.
+
+Standard module locations are program-owned cells. A formal capture must consult
+the canonical completed module row, rather than freeze the first partial export
+snapshot as its namespace. Explicit program-cell replacements remain distinct
+from imported snapshots, including isolated query replacements. This is not a
+reason to borrow an ordinary caller's object graph into a cached function.
+
+A thunk's result can introduce new object, indexed-resource and private-cell
+descriptors. `PublishResultGraph` exports only descriptors reachable from the
+result that the parent does not already own; a negative structural Scope region
+is not an object identity. Changed borrowed locations are not committed by this
+transfer. Their write summaries stay attached to the deferred value until actual
+admission, including writes before the block's final returned expression.
+Indexed read unions preserve each possible resource identity. Carrier constraints
+travel with write summaries: a read union is not a new permissive write carrier.
+
+`HirAllocationSiteId` is a logical constructor identity, not a dense Scope-table
+index. Sealing can compact that table without changing backend/runtime receipts.
+Private and loop declarations receive fresh cells at their lexical lifetime;
+shared entry module cells are reserved once before forward closure captures and
+later initialized through those same cells. Exported session roots retain their
+uninitialized sentinel until a successful initializer stores its value.
+
 ## Deferred reads
 
 Three types are distinct:

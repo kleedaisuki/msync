@@ -29,6 +29,8 @@ internal sealed partial class SemanticAnalyzer
         public ImmutableDictionary<(int Region, string Field), ImmutableArray<SemanticMemberContract>> MemberContracts { get; set; }
             = ImmutableDictionary<(int Region, string Field), ImmutableArray<SemanticMemberContract>>.Empty;
         public ImmutableDictionary<HirLocationId, HirLocationId> Definitions { get; set; } = ImmutableDictionary<HirLocationId, HirLocationId>.Empty;
+        public ImmutableDictionary<HirLocationId, ImmutableArray<int>> CallableContracts { get; set; }
+            = ImmutableDictionary<HirLocationId, ImmutableArray<int>>.Empty;
         public ImmutableArray<SemanticWriteEvent> WriteEvents { get; set; } = default;
         public ImmutableHashSet<int> IndexedWrites { get; set; } = [];
         public ImmutableHashSet<HirLocationId> CellWrites { get; set; } = [];
@@ -225,6 +227,8 @@ internal sealed partial class SemanticAnalyzer
             var value = input.Abstract(captureValues[index]);
             context.Values[target] = value;
             context.Storage[target] = StorageType(captured[index].Source, caller);
+            if (caller.CallableContracts.TryGetValue(captured[index].Source, out var callableContracts))
+                context.CallableContracts[target] = callableContracts;
             if (StandardCell(captured[index].Source, caller) is { } moduleCell)
                 RegisterStorageAlias(target, moduleCell, context);
             input.Locations[captured[index].Source] = target;
@@ -359,6 +363,8 @@ internal sealed partial class SemanticAnalyzer
             reachedLocations.UnionWith(scope.Locations.Values);
         instance.Definitions = context.Definitions.Where(pair => reachedLocations.Contains(pair.Key))
             .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
+        instance.CallableContracts = context.EstablishedCallableContracts.Where(pair => reachedLocations.Contains(pair.Key))
+            .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
         instance.AliasViews = context.AliasViews.Where(pair => objects.ContainsKey(pair.Key))
             .ToImmutableDictionary(pair => pair.Key, pair => pair.Value);
 
@@ -379,7 +385,7 @@ internal sealed partial class SemanticAnalyzer
             if (value.Scope is { } scope)
             {
                 scope = context.Objects.GetValueOrDefault(scope.Region, scope);
-                if (objects.TryAdd(scope.Region, scope))
+                if (scope.Region < 0 || objects.TryAdd(scope.Region, scope))
                 {
                     foreach (var field in scope.Fields.Values) Visit(field);
                     if (!scope.Aliases.IsDefault)
@@ -393,6 +399,13 @@ internal sealed partial class SemanticAnalyzer
                     if (context.Indexed.TryGetValue(alias, out var aliasedStorage) && indexed.TryAdd(alias, aliasedStorage))
                         Visit(aliasedStorage.Element);
             if (value.Element is { } element) Visit(element);
+            if (!value.OpenSessionCalls.IsDefaultOrEmpty)
+                foreach (var binding in value.OpenSessionCalls)
+                {
+                    VisitCell(binding.Callee.Root);
+                    foreach (var argumentSource in binding.Arguments)
+                        if (argumentSource is not null) VisitCell(argumentSource.Root);
+                }
             if (!value.DeferredEffects.IsDefault)
                 foreach (var write in value.DeferredEffects)
                 {

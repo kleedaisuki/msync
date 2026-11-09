@@ -60,7 +60,7 @@ internal sealed partial class SemanticAnalyzer
             alternatives?.Add(selected);
             result = result is null ? instance.Result : Join(result, instance.Result!);
             if (context.DeferredReads && alternatives is null) deferredEffects.AddRange(instance.Effects);
-            dispatch.Add(new(HirCallableId.From(template), instance.Id));
+            dispatch.Add(new(choice.RuntimeIdentity ?? HirCallableId.From(template), instance.Id));
         }
         if (alternatives is not null) deferredEffects.AddRange(MergeCallAlternatives(context, alternatives));
         var call = choices.Length == 1
@@ -72,7 +72,7 @@ internal sealed partial class SemanticAnalyzer
         {
             call = call with { SessionSlot = slot };
             result = FutureRead(result, result.Type, context) with
-            { OpenSessionCalls = AddSessionCall(result.OpenSessionCalls, slot) };
+            { OpenSessionCalls = AddSessionCall(result.OpenSessionCalls, SessionBinding(slot, callee, arguments, context)) };
         }
         return result! with { Node = EmitCall(call, callee, arguments, result!.Type, source, context), Location = null,
             DeferredEffects = result.DeferredEffects.IsDefaultOrEmpty ? deferredEffects.ToImmutable()
@@ -86,13 +86,14 @@ internal sealed partial class SemanticAnalyzer
         NextRegion = context.NextRegion, InitializedSingletons = context.InitializedSingletons,
         MaybeInitializedSingletons = context.MaybeInitializedSingletons,
         ActiveSingletonGuards = context.ActiveSingletonGuards,
-        WriteEvents = context.WriteEvents is null ? null : []
+        WriteEvents = context.WriteEvents is null ? null : new(context.WriteEvents)
     };
 
     private ImmutableArray<SemanticDeferredWrite> MergeCallAlternatives(SemanticContext context,
         List<SemanticContext> alternatives)
     {
         SemanticContext[] branches = alternatives.ToArray();
+        MergeSessionContracts(context, branches);
         MergeSingletonFlow(context, branches);
         MergeIndexedContexts(context, branches);
         MergeQueryContexts(context, branches);
@@ -112,7 +113,6 @@ internal sealed partial class SemanticAnalyzer
             context.IndexedWrites.Add(region);
             effects.Add(new(SemanticWriteKind.Indexed, context.Indexed[region].Element, Region: region));
         }
-        foreach (SemanticDeferredWrite effect in effects) context.RecordWrite(effect);
         foreach (SemanticContext branch in branches)
             foreach (var definition in branch.Definitions.LocalEntries) context.Definitions[definition.Key] = definition.Value;
         return context.DeferredReads ? effects.ToImmutable() : [];

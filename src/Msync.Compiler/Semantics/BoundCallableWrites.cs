@@ -96,6 +96,20 @@ internal sealed class BoundCallableWrites
 
     internal bool WritesMember(string name) => memberNames.Contains(name);
 
+    internal HirLocationId? Field(HirNodeId receiver, string name)
+    {
+        Resolve();
+        HirLocationId? result = null;
+        foreach (int scope in ScopeValues(receiver, []))
+            foreach (HirLocationId field in program.Hir.Scopes[scope].Fields)
+                if (program.Hir.Locations[field.Value].Name == name)
+                {
+                    if (result is { } previous && previous != field) return null;
+                    result = field;
+                }
+        return result;
+    }
+
     internal HirTemplateId? Writer(HirLocationId location, HirNodeId value) =>
         writeOwners.TryGetValue((program.Original(location), value), out HirTemplateId owner) ? owner : null;
 

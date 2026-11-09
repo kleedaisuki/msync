@@ -192,6 +192,7 @@ internal sealed partial class SemanticAnalyzer
         context.Output?.ReserveFunction(new("<range-item>", [], captures.ToImmutable(),
             hir.Type(TypeRef.Any), HirNodeId.None, IsOpen: true));
         SemanticValue result = Analyze(expression, deferred);
+        MergeSessionContracts(context, [deferred]);
         result = PublishResultGraph(result, deferred, context, out var admissionEffects);
         if (!context.Publish) return (result, HirNodeId.None, admissionEffects);
         context.Output!.SealFunction(deferred.Function, new("<range-item>", [], captures.ToImmutable(), result.Type, result.Node));

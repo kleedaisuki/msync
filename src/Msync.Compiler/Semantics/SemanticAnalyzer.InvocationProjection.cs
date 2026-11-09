@@ -13,7 +13,8 @@ internal sealed partial class SemanticAnalyzer
         if (instance.Objects.IsEmpty && instance.Indexed.IsEmpty && instance.Cells.IsEmpty
             && instance.Result.Scope is null && instance.Result.Element is null
             && instance.Result.Callables.IsDefaultOrEmpty && instance.Result.Alternatives.IsDefaultOrEmpty
-            && instance.Result.DeferredEffects.IsDefaultOrEmpty && instance.WriteEvents.IsDefault)
+            && instance.Result.DeferredEffects.IsDefaultOrEmpty && instance.Result.OpenSessionCalls.IsDefaultOrEmpty
+            && instance.CallableContracts.IsEmpty && instance.WriteEvents.IsDefault)
         {
             if (instance.Result.Origin is { } origin && origin.Fields.IsDefaultOrEmpty)
                 for (int index = 0; index < instance.Arguments.Length; index++)
@@ -37,6 +38,7 @@ internal sealed partial class SemanticAnalyzer
             ? projection.ProjectWrites() : projection.EventEffects(events);
         if (applyEffects)
         {
+            projection.ApplyCallableContracts();
             if (events.IsDefault) projection.ApplyEffects(effects);
             else projection.ApplyEvents(events);
         }
@@ -58,6 +60,8 @@ internal sealed partial class SemanticAnalyzer
     {
         private readonly Dictionary<int, int> regions = [];
         private readonly Dictionary<int, int> indexedRegions = [];
+        private readonly Dictionary<int, ImmutableArray<int>> indexedGroups = [];
+        private readonly Dictionary<int, SemanticScope> scopeBindings = [];
         private readonly Dictionary<int, SemanticScope> singletonViews = caller.Publish && commitEffects ? owner.projectedSingletons
             : (caller.Queries ??= new()).Singletons;
         private readonly Dictionary<HirLocationId, SemanticValue> origins = [];
@@ -72,10 +76,8 @@ internal sealed partial class SemanticAnalyzer
             if (formal.Scope is { } shape && actual.Scope is { } scope)
             {
                 scope = caller.Objects.GetValueOrDefault(scope.Region, scope);
-                regions[shape.Region] = scope.Region;
-                if (!shape.Aliases.IsDefaultOrEmpty && !scope.Aliases.IsDefaultOrEmpty)
-                    for (int alias = 0; alias < Math.Min(shape.Aliases.Length, scope.Aliases.Length); alias++)
-                        regions[shape.Aliases[alias]] = scope.Aliases[alias];
+                scopeBindings[shape.Region] = scope;
+                if (scope.Region >= 0) regions[shape.Region] = scope.Region;
                 foreach (var pair in shape.Fields)
                     if (scope.Fields.TryGetValue(pair.Key, out var field))
                         Bind(pair.Value, scope.Locations.TryGetValue(pair.Key, out var location)
@@ -92,10 +94,23 @@ internal sealed partial class SemanticAnalyzer
                 }
             if (formal.Element is { } element && actual.Element is { } actualElement) Bind(element, actualElement);
             if (formal.IndexedRegion is { } indexed && actual.IndexedRegion is { } actualIndexed)
+            {
                 indexedRegions[indexed] = actualIndexed;
-            if (!formal.IndexedAliases.IsDefaultOrEmpty && !actual.IndexedAliases.IsDefaultOrEmpty)
-                for (int index = 0; index < Math.Min(formal.IndexedAliases.Length, actual.IndexedAliases.Length); index++)
-                    indexedRegions[formal.IndexedAliases[index]] = actual.IndexedAliases[index];
+                if (instance.Indexed.TryGetValue(indexed, out var prototype) && caller.Indexed.TryGetValue(actualIndexed, out var concrete))
+                    Bind(prototype.Element, concrete.Element);
+            }
+            if (!formal.IndexedAliases.IsDefaultOrEmpty && IndexedResourceCount(actual) != 0)
+            {
+                var targets = actual.IndexedRegion is { } unique ? ImmutableArray.Create(unique) : actual.IndexedAliases;
+                foreach (int view in formal.IndexedAliases)
+                {
+                    indexedGroups[view] = targets;
+                    if (!instance.Indexed.TryGetValue(view, out var prototype)) continue;
+                    var concrete = caller.Indexed[targets[0]];
+                    for (int index = 1; index < targets.Length; index++) concrete = owner.JoinIndexed(concrete, caller.Indexed[targets[index]]);
+                    Bind(prototype.Element, concrete.Element);
+                }
+            }
             if (!formal.Callables.IsDefaultOrEmpty && !actual.Callables.IsDefaultOrEmpty)
                 for (int choice = 0; choice < Math.Min(formal.Callables.Length, actual.Callables.Length); choice++)
                 {
@@ -131,39 +146,51 @@ internal sealed partial class SemanticAnalyzer
             values[value] = result;
             if (value.Scope is { } shape)
             {
-                shape = instance.Objects.GetValueOrDefault(shape.Region, shape);
-                bool existing = regions.TryGetValue(shape.Region, out var region);
-                if (!existing && shape.Named && TrySingleton(shape.Region, out var singleton))
+                if (shape.Region >= 0) shape = instance.Objects.GetValueOrDefault(shape.Region, shape);
+                if (scopeBindings.TryGetValue(shape.Region, out var binding))
                 {
-                    region = singleton.Region;
-                    regions[shape.Region] = region;
-                    caller.Objects.TryAdd(region, singleton);
-                    existing = true;
-                }
-                if (!existing) regions[shape.Region] = region = ++owner.nextRegion;
-                if (existing && caller.Objects.TryGetValue(region, out var live))
-                {
+                    var live = binding.Region >= 0 ? caller.Objects.GetValueOrDefault(binding.Region, binding) : binding;
                     result = result with { Scope = live };
-                    values[value] = result;
+                }
+                else if (shape.Region < 0)
+                {
+                    result = result with { Scope = shape with
+                    {
+                        Fields = shape.Fields.ToImmutableDictionary(pair => pair.Key, pair => Project(pair.Value), StringComparer.Ordinal),
+                        Aliases = ExpandScopeAliases(shape.Aliases)
+                    } };
                 }
                 else
                 {
-                    // Fresh fields and closures must project through one location map:
-                    // a getter captures the same cell that member assignment mutates.
-                    var symbolic = shape with { Region = region, Fields = ImmutableDictionary<string, SemanticValue>.Empty,
-                        Locations = caller.Objects.GetValueOrDefault(region)?.Locations ?? shape.Locations.ToImmutableDictionary(
-                            pair => pair.Key, pair => MapLocation(pair.Value), StringComparer.Ordinal),
-                        Aliases = shape.Aliases.IsDefault ? [] : shape.Aliases.Select(MapRegion).ToImmutableArray() };
-                    result = result with { Scope = symbolic };
-                    values[value] = result;
-                    symbolic = symbolic with { Fields = shape.Fields.ToImmutableDictionary(pair => pair.Key,
-                        pair => Project(pair.Value), StringComparer.Ordinal) };
-                    caller.Objects[region] = symbolic;
-                    if (shape.Named) singletonViews[shape.Region] = symbolic;
-                    foreach (var field in symbolic.Locations)
-                        if (symbolic.Fields.TryGetValue(field.Key, out var fieldValue)) caller.Values[field.Value] = fieldValue;
-                    result = result with { Scope = symbolic };
+                    bool existing = regions.TryGetValue(shape.Region, out var region);
+                    if (!existing && shape.Named && TrySingleton(shape.Region, out var singleton))
+                    {
+                        region = singleton.Region;
+                        regions[shape.Region] = region;
+                        caller.Objects.TryAdd(region, singleton);
+                        existing = true;
+                    }
+                    if (!existing) regions[shape.Region] = region = ++owner.nextRegion;
+                    if (existing && caller.Objects.TryGetValue(region, out var live)) result = result with { Scope = live };
+                    else
+                    {
+                        var symbolic = shape with { Region = region, Fields = ImmutableDictionary<string, SemanticValue>.Empty,
+                            Locations = shape.Locations.ToImmutableDictionary(pair => pair.Key, pair => MapLocation(pair.Value), StringComparer.Ordinal),
+                            Aliases = ExpandScopeAliases(shape.Aliases) };
+                        result = result with { Scope = symbolic };
+                        values[value] = result;
+                        symbolic = symbolic with { Fields = shape.Fields.ToImmutableDictionary(pair => pair.Key,
+                            pair => Project(pair.Value), StringComparer.Ordinal) };
+                        caller.Objects[region] = symbolic;
+                        foreach (int alias in symbolic.Aliases)
+                            caller.AliasViews[alias] = caller.AliasViews.GetValueOrDefault(alias, ImmutableHashSet<int>.Empty).Add(region);
+                        if (shape.Named) singletonViews[shape.Region] = symbolic;
+                        foreach (var field in symbolic.Locations)
+                            if (symbolic.Fields.TryGetValue(field.Key, out var fieldValue)) caller.Values[field.Value] = fieldValue;
+                        result = result with { Scope = symbolic };
+                    }
                 }
+                values[value] = result;
             }
             if (value.Element is { } element) result = result with { Element = Project(element) };
             if (!value.Callables.IsDefaultOrEmpty)
@@ -182,18 +209,33 @@ internal sealed partial class SemanticAnalyzer
                 result = result with { IndexedRegion = region };
             }
             if (!value.IndexedAliases.IsDefaultOrEmpty)
-                result = result with { IndexedAliases = value.IndexedAliases.Select(MapIndexedRegion).Distinct().Order().ToImmutableArray() };
+                result = result with { IndexedAliases = value.IndexedAliases.SelectMany(resource => ResourceTargets(resource)).Distinct().Order().ToImmutableArray() };
             if (!value.DeferredEffects.IsDefaultOrEmpty)
-                result = result with { DeferredEffects = value.DeferredEffects.Select(write => write with
+                result = result with { DeferredEffects = value.DeferredEffects.SelectMany(write => ProjectWrite(write)).ToImmutableArray() };
+            if (!value.OpenSessionCalls.IsDefaultOrEmpty)
+                result = result with { OpenSessionCalls = [.. value.OpenSessionCalls.Select(binding => binding with
                 {
-                    After = Project(write.After),
-                    IndexedStorage = write.IndexedStorage is { } storage ? storage with { Element = Project(storage.Element) } : null,
-                    Location = write.Kind == SemanticWriteKind.Location ? MapLocation(write.Location) : write.Location,
-                    Region = write.Kind == SemanticWriteKind.Field ? MapRegion(write.Region)
-                        : write.Kind == SemanticWriteKind.Indexed ? MapIndexedRegion(write.Region) : write.Region
-                }).ToImmutableArray() };
+                    Callee = binding.Callee with { Root = MapLocation(binding.Callee.Root) },
+                    Arguments = [.. binding.Arguments.Select(source => source is null ? null : source with { Root = MapLocation(source.Root) })]
+                })] };
             values[value] = result;
             return result;
+        }
+
+        private ImmutableArray<int> ScopeTargets(int formal)
+        {
+            if (scopeBindings.TryGetValue(formal, out var scope))
+                return scope.Aliases.IsDefaultOrEmpty ? (scope.Region >= 0 ? [scope.Region] : []) : scope.Aliases;
+            return [MapRegion(formal)];
+        }
+
+        private ImmutableArray<int> ExpandScopeAliases(ImmutableArray<int> aliases) => aliases.IsDefaultOrEmpty ? []
+            : aliases.SelectMany(scope => ScopeTargets(scope)).Distinct().Order().ToImmutableArray();
+
+        private ImmutableArray<int> ResourceTargets(int formal)
+        {
+            if (indexedGroups.TryGetValue(formal, out var group)) return group;
+            return [MapIndexedRegion(formal)];
         }
 
         private int MapIndexedRegion(int formal)
@@ -215,32 +257,65 @@ internal sealed partial class SemanticAnalyzer
             {
                 var guards = caller.ActiveSingletonGuards.IsDefaultOrEmpty ? item.Guards
                     : caller.ActiveSingletonGuards.AddRange(item.Guards).Distinct().ToImmutableArray();
-                var branches = item.Branches.IsDefault ? default
-                    : item.Branches.Select(ProjectEvents).ToImmutableArray();
-                SemanticDeferredWrite? write = item.Write is { } original ? ProjectWrite(original) : null;
-                if (write is not null || item.InitializeSingleton is not null || !branches.IsDefaultOrEmpty)
-                    result.Add(new(write, guards, item.InitializeSingleton, branches));
+                var branches = item.Branches.IsDefault ? default : item.Branches.Select(ProjectEvents).ToImmutableArray();
+                var writes = item.Write is { } original ? ProjectWrite(original) : [];
+                if (writes.IsEmpty)
+                {
+                    if (item.InitializeSingleton is not null || !branches.IsDefaultOrEmpty)
+                        result.Add(new(null, guards, item.InitializeSingleton, branches));
+                }
+                else foreach (var write in writes) result.Add(new(write, guards, item.InitializeSingleton, branches));
             }
             return result.ToImmutable();
         }
 
-        private SemanticDeferredWrite? ProjectWrite(SemanticDeferredWrite write)
+        private ImmutableArray<SemanticDeferredWrite> ProjectWrite(SemanticDeferredWrite write)
         {
             if (write.Kind == SemanticWriteKind.Location)
                 return Locations.TryGetValue(write.Location, out var location)
-                    ? write with { Location = location, After = Project(write.After) } : null;
+                    ? [write with { Location = location, After = Project(write.After) }] : [];
             if (write.Kind == SemanticWriteKind.Indexed)
-                return indexedRegions.TryGetValue(write.Region, out var indexed)
-                    ? write with { Region = indexed, After = Project(write.After),
-                        IndexedStorage = write.IndexedStorage is { } storage ? storage with { Element = Project(storage.Element) } : null } : null;
-            if (!regions.TryGetValue(write.Region, out var region))
             {
-                if (!instance.Objects.TryGetValue(write.Region, out var shape) || !shape.Named
-                    || !TrySingleton(write.Region, out var singleton)) return null;
-                regions[write.Region] = region = singleton.Region;
-                caller.Objects.TryAdd(region, singleton);
+                if (!indexedGroups.ContainsKey(write.Region) && !indexedRegions.ContainsKey(write.Region)) return [];
+                var after = Project(write.After);
+                var storage = write.IndexedStorage is { } indexed ? indexed with { Element = Project(indexed.Element) } : null;
+                var targets = ResourceTargets(write.Region);
+                return targets.Select(target =>
+                {
+                    var element = after;
+                    var summary = storage;
+                    if (indexedGroups.ContainsKey(write.Region))
+                    {
+                        var before = caller.Indexed[target];
+                        summary = summary is null ? before with { Element = owner.Join(before.Element, after) }
+                            : owner.JoinIndexed(before, summary);
+                        element = summary.Element;
+                    }
+                    return write with { Region = target, After = element, IndexedStorage = summary };
+                }).ToImmutableArray();
             }
-            return write with { Region = region, After = Project(write.After) };
+            if (!instance.Objects.TryGetValue(write.Region, out var shape)) return [];
+            if (!regions.ContainsKey(write.Region) && !scopeBindings.ContainsKey(write.Region))
+            {
+                if (shape.Named && TrySingleton(write.Region, out var singleton))
+                {
+                    regions[write.Region] = singleton.Region;
+                    caller.Objects.TryAdd(singleton.Region, singleton);
+                }
+                else if (shape.Dynamic && !shape.Aliases.IsDefaultOrEmpty)
+                    _ = Project(new(owner.hir.Type(new HirType(TypeRef.Scope, Shape: shape.Layout)), HirNodeId.None, Scope: shape));
+                else return [];
+            }
+            var projected = Project(write.After);
+            var actualTargets = scopeBindings.TryGetValue(write.Region, out var binding) && binding.Region < 0
+                ? binding.Aliases : ImmutableArray.Create(MapRegion(write.Region));
+            return actualTargets.Select(target =>
+            {
+                var after = projected;
+                if (binding is { Region: < 0 } && caller.Objects.TryGetValue(target, out var before)
+                    && before.Fields.TryGetValue(write.Field!, out var old)) after = owner.Join(old, after);
+                return write with { Region = target, After = after };
+            }).ToImmutableArray();
         }
 
         public ImmutableArray<SemanticDeferredWrite> EventEffects(ImmutableArray<SemanticWriteEvent> events)
@@ -329,24 +404,14 @@ internal sealed partial class SemanticAnalyzer
             if (instance.CellWrites.IsEmpty && instance.FieldWrites.IsEmpty && instance.IndexedWrites.IsEmpty) return [];
             ImmutableArray<SemanticDeferredWrite>.Builder writes = ImmutableArray.CreateBuilder<SemanticDeferredWrite>();
             foreach (var formal in instance.CellWrites)
-                if (Locations.TryGetValue(formal, out var actual) && instance.Cells.TryGetValue(formal, out var value))
-                    writes.Add(new(SemanticWriteKind.Location, Project(value), Location: actual));
+                if (instance.Cells.TryGetValue(formal, out var value))
+                    writes.AddRange(ProjectWrite(new(SemanticWriteKind.Location, value, Location: formal)));
             foreach (var write in instance.FieldWrites)
-            {
-                if (!instance.Objects.TryGetValue(write.Region, out var shape)) continue;
-                if (!regions.TryGetValue(write.Region, out var actual))
-                {
-                    if (!shape.Named || !TrySingleton(write.Region, out var singleton)) continue;
-                    regions[write.Region] = actual = singleton.Region;
-                    caller.Objects.TryAdd(actual, singleton);
-                }
-                if (shape.Fields.TryGetValue(write.Field, out var value))
-                    writes.Add(new(SemanticWriteKind.Field, Project(value), Region: actual, Field: write.Field));
-            }
+                if (instance.Objects.TryGetValue(write.Region, out var shape) && shape.Fields.TryGetValue(write.Field, out var value))
+                    writes.AddRange(ProjectWrite(new(SemanticWriteKind.Field, value, Region: write.Region, Field: write.Field)));
             foreach (var region in instance.IndexedWrites)
-                if (indexedRegions.TryGetValue(region, out var actual) && instance.Indexed.TryGetValue(region, out var storage))
-                    writes.Add(new(SemanticWriteKind.Indexed, Project(storage.Element), Region: actual,
-                        IndexedStorage: storage with { Element = Project(storage.Element) }));
+                if (instance.Indexed.TryGetValue(region, out var storage))
+                    writes.AddRange(ProjectWrite(new(SemanticWriteKind.Indexed, storage.Element, Region: region, IndexedStorage: storage)));
             return writes.ToImmutable();
         }
 
@@ -355,21 +420,24 @@ internal sealed partial class SemanticAnalyzer
             var context = destination ?? caller;
             foreach (var pair in instance.MemberContracts)
             {
-                if (!regions.TryGetValue(pair.Key.Region, out var region)) continue;
-                var key = (region, pair.Key.Field);
-                context.MemberContracts[key] = context.MemberContracts.GetValueOrDefault(key, [])
-                    .AddRange(pair.Value).Distinct().ToImmutableArray();
+                foreach (int region in ScopeTargets(pair.Key.Region))
+                {
+                    var key = (region, pair.Key.Field);
+                    context.MemberContracts[key] = context.MemberContracts.GetValueOrDefault(key, [])
+                        .AddRange(pair.Value).Distinct().ToImmutableArray();
+                }
             }
             foreach (var pair in instance.AliasViews)
             {
-                int source = MapRegion(pair.Key);
-                var views = pair.Value.Select(MapRegion).ToImmutableHashSet();
-                context.AliasViews[source] = context.AliasViews.GetValueOrDefault(source, ImmutableHashSet<int>.Empty).Union(views);
+                var views = pair.Value.SelectMany(scope => ScopeTargets(scope)).ToImmutableHashSet();
+                foreach (int source in ScopeTargets(pair.Key))
+                    context.AliasViews[source] = context.AliasViews.GetValueOrDefault(source, ImmutableHashSet<int>.Empty).Union(views);
             }
             foreach (var write in writes)
             {
                 if (write.Kind == SemanticWriteKind.Location)
                 {
+                    owner.CheckSessionAssignment(write.Location, write.After, owner.hir.Locations[write.Location.Value].Source, context);
                     context.Values[write.Location] = write.After;
                     owner.MarkProgramCell(write.Location, context);
                     context.CellWrites.Add(write.Location);
@@ -389,6 +457,8 @@ internal sealed partial class SemanticAnalyzer
                     continue;
                 }
                 if (!context.Objects.TryGetValue(write.Region, out var target)) continue;
+                if (target.Locations.TryGetValue(write.Field!, out var fieldLocation))
+                    owner.CheckSessionMemberAssignment(target, write.Field!, write.After, owner.hir.Locations[fieldLocation.Value].Source, context);
                 owner.InvalidateScopeAliases(target, context);
                 target = target with { Fields = target.Fields.SetItem(write.Field!, write.After) };
                 context.Objects[write.Region] = target;
@@ -408,6 +478,15 @@ internal sealed partial class SemanticAnalyzer
         private bool TrySingleton(int region, out SemanticScope singleton) =>
             singletonViews.TryGetValue(region, out singleton!) || caller.Publish && !commitEffects
             && owner.projectedSingletons.TryGetValue(region, out singleton!);
+
+        public void ApplyCallableContracts()
+        {
+            foreach (var (formal, contracts) in instance.CallableContracts)
+            {
+                var actual = MapLocation(formal);
+                foreach (int slot in contracts) EstablishSessionContract(actual, slot, caller);
+            }
+        }
 
         private int MapRegion(int formal)
         {

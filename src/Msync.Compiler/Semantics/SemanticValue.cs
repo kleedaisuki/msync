@@ -8,7 +8,8 @@ internal sealed record SemanticCapture(HirLocationId Source, SemanticValue Value
     HirCaptureMode Mode = HirCaptureMode.Location);
 
 internal sealed record SemanticCallable(HirTemplateId? Template = null,
-    string? NativeName = null, ImmutableArray<SemanticCapture> Captures = default);
+    string? NativeName = null, ImmutableArray<SemanticCapture> Captures = default,
+    HirCallableId? RuntimeIdentity = null);
 
 internal sealed record SemanticScope(int Region, int Layout,
     ImmutableDictionary<string, SemanticValue> Fields,
@@ -56,7 +57,7 @@ internal sealed record SemanticValue(HirTypeId Type, HirNodeId Node,
     SemanticRuntimeObservation? Observation = null,
     ImmutableArray<SemanticDeferredWrite> DeferredEffects = default,
     ImmutableArray<int> IndexedAliases = default,
-    ImmutableArray<int> OpenSessionCalls = default)
+    ImmutableArray<SessionCallBinding> OpenSessionCalls = default)
 {
     public bool? KnownBool => Literal is { Kind: HirLiteralKind.Bool } literal ? literal.Boolean : null;
 }
@@ -81,6 +82,8 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
     public HirTypeId? ExpectedReturn { get; set; }
     public int NextRegion { get; set; }
     public SemanticFacts<HirLocationId, HirLocationId> Locations { get; } = new(parent?.Locations);
+    public SemanticFacts<HirLocationId, ImmutableArray<int>> CallableContracts { get; } = new(parent?.CallableContracts);
+    public SemanticFacts<HirLocationId, ImmutableArray<int>> EstablishedCallableContracts { get; } = new();
     public SemanticFacts<HirLocationId, HirLocationId> Definitions { get; } = new(parent?.Definitions);
     public SemanticFacts<HirLocationId, SemanticValue> Values { get; } = new(parent?.Values);
     public SemanticFacts<HirLocationId, HirTypeId> Storage { get; } = new(parent?.Storage);
@@ -105,6 +108,7 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
         foreach (var pair in SingletonSchemas) fork.SingletonSchemas.Add(pair.Key, pair.Value);
         foreach (var pair in Locations) fork.Locations.Add(pair.Key, pair.Value);
         foreach (var pair in Definitions) fork.Definitions.Add(pair.Key, pair.Value);
+        foreach (var pair in CallableContracts) fork.CallableContracts.Add(pair.Key, pair.Value);
         foreach (var pair in Values) fork.Values.Add(pair.Key, pair.Value);
         foreach (var pair in Storage) fork.Storage.Add(pair.Key, pair.Value);
         foreach (var pair in Objects) fork.Objects.Add(pair.Key, pair.Value);

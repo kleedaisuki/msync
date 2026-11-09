@@ -46,21 +46,28 @@ internal sealed partial class SemanticAnalyzer
         }
         var value = NativeResult(signature, inputs, callback, source, context);
         NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
-        ImmutableArray<int> openCalls = [];
+        ImmutableArray<SessionCallBinding> openCalls = [];
         foreach (var input in inputs) openCalls = CombineSessionCalls(openCalls, input.OpenSessionCalls);
         ImmutableArray<SemanticDeferredWrite> pending = callbackEffects;
         for (int index = 0; index < signature.Parameters.Count && index < inputs.Length; index++)
             if (signature.Parameters[index].WithoutNull.Kind == TypeKind.Range)
                 pending = CombineDeferredEffects(pending, inputs[index].DeferredEffects);
         if (signature.ResultRule == NativeResultRule.RangeFlatten && inputs[0].Element is { } nested)
+        {
             pending = pending.AddRange(nested.DeferredEffects.IsDefault ? [] : nested.DeferredEffects);
+            openCalls = CombineSessionCalls(openCalls, nested.OpenSessionCalls);
+        }
         if ((behavior & NativeBehavior.Deferred) != 0)
-            value = value with { DeferredEffects = pending, EagerRange = false, OpenSessionCalls = openCalls };
+            value = value with { DeferredEffects = pending,
+                EagerRange = (behavior & NativeBehavior.PreservesIdentity) != 0 && value.EagerRange,
+                OpenSessionCalls = CombineSessionCalls(value.OpenSessionCalls, openCalls) };
         else if ((behavior & (NativeBehavior.Enumerates | NativeBehavior.Invokes)) != 0)
         {
             ApplySessionCallEffects(openCalls, context);
             ApplyDeferredEffects(pending, context);
-            value = value with { DeferredEffects = [], OpenSessionCalls = [] };
+            bool returnsPendingRange = signature.ResultRule == NativeResultRule.RangeItem
+                && (Runtime(value).Kind & TypeKind.Range) != 0;
+            if (!returnsPendingRange) value = value with { DeferredEffects = [], OpenSessionCalls = [] };
         }
         if (value.Literal is { } literal && signature.Name.StartsWith("meta.", StringComparison.Ordinal))
             return value with { Node = context.Publish ? context.Output!.Literal(literal, value.Type, source) : HirNodeId.None };
@@ -72,7 +79,7 @@ internal sealed partial class SemanticAnalyzer
         return value with
         {
             Node = EmitCall(emittedCall, callee, inputs, value.Type, source, context, NativeEffects(signature)),
-            Location = null, OpenSessionCalls = slot >= 0 ? AddSessionCall(value.OpenSessionCalls, slot) : value.OpenSessionCalls
+            Location = null, OpenSessionCalls = slot >= 0 ? AddSessionCall(value.OpenSessionCalls, SessionBinding(slot, callee, inputs, context)) : value.OpenSessionCalls
         };
     }
 
@@ -108,7 +115,7 @@ internal sealed partial class SemanticAnalyzer
                 var instance = Instantiate(template, choice.Captures, arguments, source, context, applyEffects: false);
                 result = instance.Result!;
                 effects.AddRange(instance.Effects);
-                targets.Add(new(HirCallableId.From(template), instance.Id));
+                targets.Add(new(choice.RuntimeIdentity ?? HirCallableId.From(template), instance.Id));
             }
             else if (choice.NativeName is { } native)
                 result = InvokeType(new(hir.Type(TypeRef.Function), HirNodeId.None, Callables: [choice]), arguments, source, context);
@@ -122,7 +129,7 @@ internal sealed partial class SemanticAnalyzer
             int adaptation = hir.Adaptations.Count;
             context.Output!.AddAdaptation(new(targets.ToImmutable()) { SessionSlot = slot });
             callable = callable with { Node = context.Output!.Add(HirKind.AdaptFunction, callable.Type, source, [callable.Node], adaptation),
-                OpenSessionCalls = slot >= 0 ? AddSessionCall(callable.OpenSessionCalls, slot) : callable.OpenSessionCalls };
+                OpenSessionCalls = slot >= 0 ? AddSessionCall(callable.OpenSessionCalls, SessionBinding(slot, callable, arguments, context)) : callable.OpenSessionCalls };
         }
         return (output, callable, effects.ToImmutable());
     }
@@ -207,7 +214,7 @@ internal sealed partial class SemanticAnalyzer
         var result = signature.ResultRule switch
         {
             NativeResultRule.Fixed => FixedNativeResult(signature),
-            NativeResultRule.FirstArgument => arguments[0] with { Node = HirNodeId.None, Location = null },
+            NativeResultRule.FirstArgument => FirstNativeArgument(signature, arguments[0]),
             NativeResultRule.RangeOfArguments => RangeValue(arguments.Count == 0
                 ? ValueForType(hir.Type(new TypeRef(TypeKind.Never))) : arguments.Aggregate(Join)),
             NativeResultRule.RangeItem => Item(arguments[0]) with { Node = HirNodeId.None, Location = null },
@@ -230,6 +237,14 @@ internal sealed partial class SemanticAnalyzer
         }
         bool eager = (signature.Behavior.GetValueOrDefault() & NativeBehavior.EagerRange) != 0;
         return result with { EagerRange = eager || result.EagerRange };
+    }
+
+    private static SemanticValue FirstNativeArgument(NativeSignature signature, SemanticValue value)
+    {
+        if ((signature.Behavior.GetValueOrDefault() & NativeBehavior.PreservesIdentity) != 0)
+            return value with { Node = HirNodeId.None, Location = null };
+        return value with { Node = HirNodeId.None, Location = null, IndexedRegion = null,
+            IndexedAliases = [], Origin = null, Observation = null, Alternatives = [], EagerRange = false };
     }
 
     private ImmutableArray<SemanticValue> CheckNativeArguments(NativeSignature signature,

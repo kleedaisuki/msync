@@ -14,16 +14,16 @@ internal sealed partial class SemanticAnalyzer
     {
         value = FutureCallables(value, location, context);
         if (value.Scope is not null || value.Element is not null) return FutureRead(value, storage, context, []);
-        return value.Type == storage && value.Literal is null && value.Observation is null && !value.EagerRange
+        return value.Type == storage && value.Literal is null && value.Observation is null
             && value.DenotedType is null ? value : value with
-            { Type = storage, Literal = null, Observation = null, EagerRange = false, DenotedType = null };
+            { Type = storage, Literal = null, Observation = null, DenotedType = null };
     }
 
     private SemanticValue FutureRead(SemanticValue value, HirTypeId storage,
         SemanticContext context, HashSet<int> active)
     {
         SemanticValue result = value with { Type = storage, Literal = null, Observation = null,
-            EagerRange = value.IndexedRegion is not null || !value.IndexedAliases.IsDefaultOrEmpty, DenotedType = null };
+            DenotedType = null };
         if (value.Element is { } element)
         {
             HirType descriptor = hir.Types[storage.Value];
@@ -115,6 +115,7 @@ internal sealed partial class SemanticAnalyzer
                     HirLocationId origin = program.Original(context.Definitions.GetValueOrDefault(capture.Source, capture.Source));
                     if (origin != definition) continue;
                     found = true;
+                    if (capture.Mode == HirCaptureMode.Value) { unknown = true; continue; }
                     if (StorageOwner(capture.Source, context) == StorageOwner(source, context)) return true;
                 }
                 if (!found) unknown = true;
