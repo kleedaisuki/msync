@@ -146,3 +146,32 @@
 - Installed editor navigation uses versioned `msync-stdlib` virtual source
   documents backed by the same embedded bytes as compilation. Compare URI
   scheme/path semantically: VS Code may normalize triple-slash spellings.
+- Public library families use named PascalCase Scopes and snake_case associated
+  functions with explicit instance arguments. Instances retain data and selected
+  policies, not per-instance getter/method bags. `containers`, `files`, `commands`,
+  `data`, `text` and `regex` own the corresponding families; `io` and `process`
+  retain host primitives. The unpublished factory interfaces have been removed,
+  not preserved through compatibility adapters.
+- Inline `typename` binders introduce associated types in concept requirements.
+  Qualified standard concepts are compile-time declarations, not runtime Scope
+  fields. `$std::meta` dependent queries do not execute their operands and must
+  isolate specialization, storage constraints and mutable indexed metadata.
+- Indexed storage is an explicitly mutable Range resource. Snapshots freeze
+  membership, not referenced objects. First-write carrier inference must update
+  the live runtime Range across REPL submissions without changing earlier
+  snapshots or hashed identities. See [indexed storage](docs/design/indexed-storage-v080.md)
+  and [ordered containers](docs/design/ordered-containers-v080.md).
+- Returned values do not alias a callee's private binding cell. Deferred free
+  reads and immediate callee-body flow are different phases; retain future
+  domains for writable captures without erasing valid local refinements.
+  Semantic specialization keys include callable/member shapes and generated
+  standard-module reads. See [generic specialization](docs/design/generic-specialization-v080.md).
+- Live Processes reachable through returned values, caller-owned locations or
+  exported REPL bindings move to the caller/session; non-escaping work still
+  joins. Range ownership roots are inspected without enumeration. Session cwd
+  changes never alter the host process cwd or reanchor existing/deferred paths.
+  Runtime-only session roots are not serialized into `.mso` or `.mexe`.
+- Standard export demand projection applies to closed standalone source. Module
+  escape retains complete shapes and shared cells; persistent sessions and
+  editor contexts retain exports for later requests. Do not cache first-caller
+  semantic environments or trade missing members for faster initialization.
