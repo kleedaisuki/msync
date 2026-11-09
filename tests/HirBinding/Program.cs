@@ -5,6 +5,12 @@ using Msync.Core;
 using Msync.Hir;
 using Msync.Runtime;
 
+if (args.Contains("--callable-identity", StringComparer.Ordinal))
+{
+    CallableIdentityChecks.Run();
+    return;
+}
+
 if (args.Contains("--singletons", StringComparer.Ordinal))
 {
     await SingletonChecks.RunAsync();

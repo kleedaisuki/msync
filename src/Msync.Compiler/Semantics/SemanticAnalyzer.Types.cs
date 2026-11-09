@@ -30,7 +30,7 @@ internal sealed partial class SemanticAnalyzer
             ? first.Element : Join(first.Element, second.Element);
         var type = hir.Type(new HirType(runtime, Shape: scope?.Layout ?? -1,
             Element: element?.Type.Value ?? -1));
-        var callables = Choices(first).Concat(Choices(second)).Distinct().ToImmutableArray();
+        var callables = Choices(first).Concat(Choices(second)).Distinct(SemanticCallableIdentity.Instance).ToImmutableArray();
         return new(type, first.Node, first.Literal == second.Literal ? first.Literal : null,
             callables, scope, element, EagerRange: first.EagerRange && second.EagerRange,
             Alternatives: [first, second],
@@ -95,17 +95,7 @@ internal sealed partial class SemanticAnalyzer
     }
 
     private static IEnumerable<SemanticCallable> Choices(SemanticValue value) => value.Callables.IsDefaultOrEmpty
-        ? [] : value.Callables.Length == 1 ? value.Callables : value.Callables.Distinct(NativeCallableIdentity.Instance);
-
-    private sealed class NativeCallableIdentity : IEqualityComparer<SemanticCallable>
-    {
-        public static NativeCallableIdentity Instance { get; } = new();
-        public bool Equals(SemanticCallable? first, SemanticCallable? second) =>
-            first?.NativeName is { } name && second?.NativeName is not null
-                ? name == second.NativeName && first.Template == second.Template : first == second;
-        public int GetHashCode(SemanticCallable value) => value.NativeName is { } name
-            ? HashCode.Combine(name, value.Template) : value.GetHashCode();
-    }
+        ? [] : value.Callables.Length == 1 ? value.Callables : value.Callables.Distinct(SemanticCallableIdentity.Instance);
 
     private int Shape(ImmutableDictionary<string, SemanticValue> fields)
     {
