@@ -71,6 +71,23 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y clang zlib1g-dev
       - name: Build and exercise Native AOT portable payload
         run: python packaging/build.py --rid ${{ matrix.rid }} --smoke
+      - name: Exercise reorganized product boundaries
+        shell: python
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.version }}
+          PACKAGE_NAME: ${{ matrix.name }}
+        run: |
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          binary: Path = Path('artifacts/package') / f"msync-{os.environ['PACKAGE_VERSION']}-{os.environ['PACKAGE_NAME']}" / 'bin' / ('msync.exe' if os.name == 'nt' else 'msync')
+          phases: tuple[str, ...] = ('concepts-tooling', 'library-policy', 'type-traits', 'shell-repl', 'artifact')
+          arguments: list[str] = [sys.executable, 'packaging/language_upgrade.py', '--binary', str(binary.resolve())]
+          for phase in phases:
+              arguments.extend(('--phase', phase))
+          subprocess.run(arguments, check=True)
       - name: Verify immutable installer upgrade baseline
         if: runner.os == 'Windows'
         shell: pwsh
@@ -90,6 +107,13 @@ jobs:
             dist/*.zip
             dist/*.tar.gz
             dist/*-setup.exe
+      - name: Retain native acceptance reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: acceptance-${{ matrix.name }}
+          if-no-files-found: ignore
+          path: .temp/platform-results/language-upgrade/
 
   editor:
     needs: [version, native]
@@ -116,9 +140,24 @@ jobs:
       - name: Install and build editor
         working-directory: editors/vscode
         run: npm ci --ignore-scripts && npm run build
-      - name: Exercise installed VS Code extension host
+      - name: Exercise current source-language editor
+        env:
+          MSYNC_TEST_STANDARD_CONCEPTS_ONLY: '1'
         working-directory: editors/vscode
-        run: timeout --signal=TERM --kill-after=20s 360s xvfb-run -a npm run test:integration
+        shell: python
+        run: |
+          import subprocess
+
+          subprocess.run(['xvfb-run', '-a', 'npm', 'run', 'test:integration'], check=True, timeout=360)
+      - name: Exercise read-only bytecode editor
+        env:
+          MSYNC_TEST_ARTIFACT_ONLY: '1'
+        working-directory: editors/vscode
+        shell: python
+        run: |
+          import subprocess
+
+          subprocess.run(['xvfb-run', '-a', 'npm', 'run', 'test:integration'], check=True, timeout=360)
       - name: Package VSIX
         working-directory: editors/vscode
         run: |

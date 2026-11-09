@@ -9,9 +9,37 @@ import unittest
 from pathlib import Path
 
 import build
+from language_upgrade import product_assembly_files
 
 
 class PackageTests(unittest.TestCase):
+    def test_component_provenance_uses_actual_project_assemblies(self) -> None:
+        temporary: Path = build.ROOT / ".temp"
+        temporary.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=temporary) as name:
+            root: Path = Path(name)
+            for relative, properties in (
+                (
+                    "src/Msync.Cli/Msync.Cli.csproj",
+                    "<AssemblyName>msync</AssemblyName>",
+                ),
+                ("src/Msync.Optimization/Msync.Optimization.csproj", ""),
+                (
+                    "src/nested/Other.csproj",
+                    "<AssemblyName>Other.Runtime</AssemblyName>",
+                ),
+            ):
+                project: Path = root / relative
+                project.parent.mkdir(parents=True, exist_ok=True)
+                project.write_text(
+                    f"<Project><PropertyGroup>{properties}</PropertyGroup></Project>",
+                    encoding="utf-8",
+                )
+            self.assertEqual(
+                product_assembly_files(root),
+                frozenset({"msync.dll", "msync.optimization.dll", "other.runtime.dll"}),
+            )
+
     def test_version_requires_editor_agreement(self) -> None:
         temporary = build.ROOT / ".temp"
         temporary.mkdir(exist_ok=True)

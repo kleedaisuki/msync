@@ -10,6 +10,7 @@ import os
 import platform
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from dataclasses import asdict
 from io import TextIOWrapper
 from pathlib import Path
@@ -44,6 +45,16 @@ JOURNEYS: tuple[tuple[str, Path], ...] = (
 OPTIONAL_PHASES: frozenset[str] = frozenset({"console-encoding", "remote-library"})
 
 
+def product_assembly_files(root: Path = ROOT) -> frozenset[str]:
+    names: set[str] = set()
+    for project in (root / "src").rglob("*.csproj"):
+        assembly: str = (
+            ET.parse(project).getroot().findtext(".//AssemblyName") or project.stem
+        )
+        names.add(f"{assembly}.dll".casefold())
+    return frozenset(names)
+
+
 def main() -> int:
     cast(TextIOWrapper, sys.stdout).reconfigure(encoding="utf-8")
     cast(TextIOWrapper, sys.stderr).reconfigure(encoding="utf-8")
@@ -68,6 +79,7 @@ def main() -> int:
     selected: set[str] = set(
         arguments.phase or (name for name, _ in JOURNEYS if name not in OPTIONAL_PHASES)
     )
+    assemblies: frozenset[str] = product_assembly_files()
     if arguments.ssh_fixture and arguments.phase is None:
         selected.add("remote-library")
     report: dict[str, object] = {
@@ -80,13 +92,7 @@ def main() -> int:
         "managed_msync_components": {
             path.name: hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted(binary.parent.glob("*.dll"))
-            if path.name
-            in {
-                "msync.dll",
-                "Msync.Compiler.dll",
-                "Msync.Core.dll",
-                "Msync.Runtime.dll",
-            }
+            if path.name.casefold() in assemblies
         },
         "fixture_revision": subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
