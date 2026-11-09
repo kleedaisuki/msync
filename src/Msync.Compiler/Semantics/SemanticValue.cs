@@ -11,6 +11,8 @@ internal sealed record SemanticCallable(HirTemplateId? Template = null,
     string? NativeName = null, ImmutableArray<SemanticCapture> Captures = default,
     HirCallableId? RuntimeIdentity = null);
 
+internal sealed record SemanticCallableDomain(HirLocationId Owner, ImmutableArray<SemanticCallable> Choices);
+
 internal sealed record SemanticScope(int Region, int Layout,
     ImmutableDictionary<string, SemanticValue> Fields,
     ImmutableDictionary<string, HirLocationId> Locations, bool Named = false,
@@ -57,7 +59,8 @@ internal sealed record SemanticValue(HirTypeId Type, HirNodeId Node,
     SemanticRuntimeObservation? Observation = null,
     ImmutableArray<SemanticDeferredWrite> DeferredEffects = default,
     ImmutableArray<int> IndexedAliases = default,
-    ImmutableArray<SessionCallBinding> OpenSessionCalls = default)
+    ImmutableArray<SessionCallBinding> OpenSessionCalls = default,
+    SemanticCallableDomain? FutureCallableDomain = null)
 {
     public bool? KnownBool => Literal is { Kind: HirLiteralKind.Bool } literal ? literal.Boolean : null;
 }
@@ -68,6 +71,8 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
     public SemanticOutput? Output { get; } = output;
     public bool Publish => Output is not null;
     public bool DeferredReads { get; set; }
+    public ImmutableHashSet<HirLocationId> ActivatedModules { get; set; }
+        = parent?.ActivatedModules ?? [];
     public ImmutableHashSet<HirLocationId> ReplacedProgramCells { get; set; }
         = parent?.ReplacedProgramCells ?? [];
     public ImmutableHashSet<int> InitializedSingletons { get; set; } = [];
@@ -79,6 +84,7 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
     public SemanticFacts<int, SemanticScope> SingletonSchemas { get; } = new(parent?.SingletonSchemas);
     public SemanticAnalyzer.InstantiationWorkspace? Queries { get; set; }
     public HirFlowAnalysis? FlowAnalysis { get; set; }
+    public IReadOnlyDictionary<HirNodeId, HirLocationId>? ReturnPlaces { get; set; }
     public HirTypeId? ExpectedReturn { get; set; }
     public int NextRegion { get; set; }
     public SemanticFacts<HirLocationId, HirLocationId> Locations { get; } = new(parent?.Locations);
@@ -102,7 +108,7 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
     {
         if (Output is null) return QueryFork();
         SemanticContext fork = new(Function, Output)
-        { ReplacedProgramCells = ReplacedProgramCells, DeferredReads = DeferredReads, ExpectedReturn = ExpectedReturn, Queries = Queries, FlowAnalysis = FlowAnalysis, FieldWrites = FieldWrites, NextRegion = NextRegion, InitializedSingletons = InitializedSingletons, MaybeInitializedSingletons = MaybeInitializedSingletons,
+        { ActivatedModules = ActivatedModules, ReplacedProgramCells = ReplacedProgramCells, DeferredReads = DeferredReads, ExpectedReturn = ExpectedReturn, Queries = Queries, FlowAnalysis = FlowAnalysis, FieldWrites = FieldWrites, NextRegion = NextRegion, InitializedSingletons = InitializedSingletons, MaybeInitializedSingletons = MaybeInitializedSingletons,
             ActiveSingletonGuards = ActiveSingletonGuards, WriteEvents = WriteEvents is null ? null : new(WriteEvents) };
         foreach (var pair in SingletonWriteFacts) fork.SingletonWriteFacts.Add(pair.Key, pair.Value);
         foreach (var pair in SingletonSchemas) fork.SingletonSchemas.Add(pair.Key, pair.Value);
@@ -120,7 +126,7 @@ internal sealed partial class SemanticContext(HirFunctionId function, SemanticOu
     }
 
     public SemanticContext QueryFork() => new(Function, parent: this)
-    { DeferredReads = DeferredReads, ExpectedReturn = ExpectedReturn, Queries = Queries ?? new(), FlowAnalysis = FlowAnalysis, NextRegion = NextRegion, InitializedSingletons = InitializedSingletons, MaybeInitializedSingletons = MaybeInitializedSingletons,
+    { DeferredReads = DeferredReads, ExpectedReturn = ExpectedReturn, Queries = Queries ?? new(), FlowAnalysis = FlowAnalysis, ReturnPlaces = ReturnPlaces, NextRegion = NextRegion, InitializedSingletons = InitializedSingletons, MaybeInitializedSingletons = MaybeInitializedSingletons,
             ActiveSingletonGuards = ActiveSingletonGuards, WriteEvents = WriteEvents is null ? null : new(WriteEvents) };
 
     public HirLocationId Location(HirLocationId source) => Locations.GetValueOrDefault(source, source);

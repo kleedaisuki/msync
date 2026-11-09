@@ -6,12 +6,14 @@ namespace Msync.Compiler.Semantics;
 
 internal sealed partial class SemanticAnalyzer
 {
-    private readonly Dictionary<string, SemanticValue> modules = new(StringComparer.Ordinal);
     private readonly List<HirNodeId> entryPrelude = [];
     private SemanticContext? entryState;
 
     private SemanticValue Standard(HirNode node, SemanticContext context)
     {
+        HirLocationId root = program.StandardLocations[""];
+        if (entryState!.ActivatedModules.Contains(root))
+            return context.Values.GetValueOrDefault(root) ?? entryState.Values[root];
         ImmutableDictionary<string, SemanticValue>.Builder values = ImmutableDictionary.CreateBuilder<string, SemanticValue>(StringComparer.Ordinal);
         ImmutableDictionary<string, HirLocationId>.Builder locations = ImmutableDictionary.CreateBuilder<string, HirLocationId>(StringComparer.Ordinal);
         foreach (string module in StandardSourceCatalog.Read().Keys.Where(name => !name.StartsWith('_')).Order(StringComparer.Ordinal))
@@ -29,14 +31,18 @@ internal sealed partial class SemanticAnalyzer
         if (!context.Publish) return new(type, HirNodeId.None, Scope: scope);
         int construction = hir.Scopes.Count;
         context.Output!.AddScope(new(layout, locations.Values.ToImmutableArray()));
-        return new(type, context.Output!.Add(HirKind.Scope, type, node.Source, data: construction), Scope: scope);
+        SemanticValue result = new(type, context.Output!.Add(HirKind.Scope, type, node.Source, data: construction), Scope: scope);
+        PublishModule(root, result, node.Source, context);
+        return result;
     }
 
     private SemanticValue EnsureModule(string name, HirSourceRange source, SemanticContext context)
     {
-        if (program.StandardLocations.TryGetValue(name, out var shared)
-            && context.Values.TryGetValue(shared, out var initialized)) return initialized;
-        if (context.Publish && modules.TryGetValue(name, out var existing)) return existing;
+        HirLocationId shared = program.StandardLocations[name];
+        if (entryState!.ActivatedModules.Contains(shared))
+            return StorageValue(shared, context) ?? entryState.Values[shared];
+        if (!context.Publish && context.Values.TryGetValue(shared, out var schema) && schema.Scope is not null)
+            return schema;
         BoundModule bound = program.StandardModules[name];
         SemanticContext target = context.Publish ? entryState! : context;
         SemanticValue value = Analyze(bound.Body, target);
@@ -47,18 +53,24 @@ internal sealed partial class SemanticAnalyzer
             context.Storage[location] = value.Type;
             return value;
         }
-        target.Values[location] = value;
-        target.Storage[location] = value.Type;
-        context.Values[location] = value;
-        context.Storage[location] = value.Type;
-        foreach (var pair in target.Objects) context.Objects[pair.Key] = pair.Value;
-        if (context.Publish)
-        {
-            modules.Add(name, value);
-            SealStorage(location, value.Type, target);
-            entryPrelude.Add(context.Output!.Add(HirKind.Declare, hir.Type(TypeRef.Null), source, [value.Node], location.Value));
-        }
+        PublishModule(location, value, source, context);
         return value;
+    }
+
+    private void PublishModule(HirLocationId location, SemanticValue value, HirSourceRange source,
+        SemanticContext context)
+    {
+        SemanticContext target = entryState!;
+        target.Values[location] = value;
+        context.Values[location] = value;
+        if (value.Scope is { } scope) target.Objects[scope.Region] = scope;
+        target.Storage[location] = value.Type;
+        context.Storage[location] = value.Type;
+        target.ActivatedModules = target.ActivatedModules.Add(location);
+        context.ActivatedModules = context.ActivatedModules.Add(location);
+        foreach (var pair in target.Objects) context.Objects[pair.Key] = pair.Value;
+        SealStorage(location, value.Type, target);
+        entryPrelude.Add(context.Output!.Add(HirKind.Declare, hir.Type(TypeRef.Null), source, [value.Node], location.Value));
     }
 
     private BoundDeclaration? StandardDeclaration(HirLocationId source)

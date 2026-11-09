@@ -397,3 +397,23 @@ a second environment snapshot. Field writes with a retained binding cell use
 the same target identity as direct cell writes. Unconditional replacement
 collapses both outcomes back into the ordinary value fact; guarded replay uses
 the initialized outcome for the skipped-initializer edge.
+
+### Namespace reservation and activation
+
+A standard namespace has three distinct compiler facts: its export row was
+bound, its shared runtime cell was reserved, and its initializer was admitted
+into the entry prelude. `ActivatedModules` records the last transition;
+`Values.ContainsKey` is not an initialization test. A type query may build a
+namespace schema without activating its runtime cell. First-class `$std` also
+publishes its root cell once, after the selected namespace initializers.
+
+REPL feedback follows this distinction. Closures may legitimately capture a
+reserved namespace cell whose administrative contents are still Null. That
+capture keeps its declaration identity and semantic hint; it is not registered
+as a user Null observation or entered into recursive-cell repair. Activated
+namespace values and their explicit replacements still receive normal runtime
+feedback. This preserves the shared cell without importing a backend
+initialization placeholder into the language's nullable flow facts. The actual
+CLI shell prelude plus stdin/TTY `first`, `transform` and late-callable workflows
+passed against frozen snapshot 12; a bare CompilerSession alone did not exercise
+this initialization boundary.

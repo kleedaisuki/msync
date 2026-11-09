@@ -126,6 +126,11 @@ internal sealed class SemanticSessionValues(BoundProgram program, HirLoweringLay
             SemanticValue capturedHint = priorCapture?.Value ?? facts.Values.GetValueOrDefault(source)
                 ?? new(program.Hir.Locations[source.Value].StorageType, HirNodeId.None);
             Value? actualCapture = actual.Captures is { } values && index < values.Count ? values[index] : null;
+            if (PendingModule(source))
+            {
+                captures.Add(new(source, capturedHint, definitionCapture.Mode));
+                continue;
+            }
             if (definitionCapture.Mode == HirCaptureMode.Location && actualCapture is CellValue cell)
             {
                 if (!cells.TryGetValue(cell, out var locations)) cells.Add(cell, locations = []);
@@ -136,5 +141,17 @@ internal sealed class SemanticSessionValues(BoundProgram program, HirLoweringLay
             if (definitionCapture.Mode == HirCaptureMode.Location) facts.Values[source] = captured;
         }
         return provisional with { Callables = [new(template, Captures: captures.ToImmutable(), RuntimeIdentity: identity)] };
+    }
+    private bool PendingModule(HirLocationId location)
+    {
+        location = facts.Definitions.GetValueOrDefault(location, location);
+        while (program.TryDeclaration(location, out var declaration))
+        {
+            if (declaration.Kind is DeclarationKind.StandardModule or DeclarationKind.StandardRoot)
+                return !facts.ActivatedModules.Contains(declaration.Location);
+            if (declaration.CapturedFrom is not { } captured) return false;
+            location = captured;
+        }
+        return false;
     }
 }
