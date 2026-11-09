@@ -218,7 +218,9 @@ internal sealed partial class Compilation
                     if (!scopes.Add(scope.Identity)) return "Scope";
                     return "{" + string.Join(',', scope.Members.Select(pair => pair.Key + ':' + Key(pair.Value))) + "}";
                 }
-                return InfoKey(info);
+                // Joins rebuild Scope metadata without changing its abstract shape,
+                // including when the Scope is an item of a Range.
+                return InfoKey(info, Key);
             }
             return string.Join(';', environment.OrderBy(pair => pair.Key, StringComparer.Ordinal)
                 .Select(pair => Key(facts.GetValueOrDefault(pair.Value.Identity, pair.Value.Info))));

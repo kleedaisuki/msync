@@ -188,3 +188,72 @@ visibility contract. The product session owner reconciles actually initialized
 bindings in source order; changing a lexical root does not undo filesystem work
 or revoke a value whose store already executed. Batch compilation does not
 allocate that session-only declaration journal.
+
+## Range-of-Scope loop convergence (2026-11-09)
+
+The first source-composed Map represented entries as `Range<Scope>` and replaced
+matching rows through a captured `transform` callback. Checking its constructor
+did not terminate. An independent nine-line reducer has the same failure:
+
+```msync
+let items = [scope { value: 1 }];
+for increment in [1, 2] {
+    items = $std::ranges::materialize(
+        $std::ranges::transform(items, fn(item) {
+            scope { value: item::value + increment }
+        })
+    );
+};
+$std::ranges::first(items)::value
+```
+
+`dotnet-stack` localized the work to `PrepareLoop -> put -> transform callback ->
+Conditional -> JoinFacts`, before optimization. Instrumenting the loop solver
+then showed the cause: direct Scope facts already used structural signatures,
+but nested `Range.Element` facts used `InfoKey`, including the transient
+`ScopeInfo` reference hash. Each `Join` produced equivalent new Scope metadata,
+so the signature changed forever. The original Map added 26 facts and 12
+functions per unsuccessful iteration, although its two member types were stable.
+This is a fixed-point correctness defect, not an unusually expensive valid
+specialization or a concept-checking bottleneck.
+
+The solver now applies the same structural traversal recursively to Range items
+and callable alternatives. General specialization keys retain their original
+Scope/callable identities; mutation facts, alias identities, eager snapshot
+semantics and effect propagation are unchanged. No iteration cap, widening to
+Any, optimizer bypass or mutable-global cache is introduced. This follows the
+usual distinction between semantic abstract-state change and implementation
+allocation identity: see the [abstract interpretation fixed-point model](https://www.di.ens.fr/~cousot/COUSOTpapers/POPL77.shtml)
+and GCC's [change-driven dataflow solver](https://gnu.googlesource.com/gcc/+/refs/heads/master/gcc/df-core.cc).
+
+The local probe froze the compiler sources and changed only this fix. Linux x64,
+.NET 10.0.403, managed Debug, O0, tiered compilation disabled, three untimed
+warmups and 15 timed compilations per fixture. Allocation is cumulative managed
+allocation traffic, not retained heap size. These are compiler component costs,
+not Native AOT or process-startup results:
+
+| Workload | Before p50 | After p50 | Before / after allocated |
+| --- | ---: | ---: | ---: |
+| No-stdlib scalar function | 0.264 ms | 0.208 ms | 32,544 / 32,544 B |
+| List constructor/control | 11.914 ms | 10.381 ms | 2.050 / 2.057 MB |
+| Set constructor/control | 18.442 ms | 16.982 ms | 3.145 / 3.157 MB |
+| Column-oriented Map control | 37.797 ms | 37.021 ms | 5.562 / 5.584 MB |
+| Original row-oriented Map | Nonconvergent | 53.988 ms | Unbounded / 6.747 MB |
+| Nine-line reducer | Nonconvergent | 7.345 ms | Unbounded / 1.870 MB |
+
+Both old failing programs exceeded a five-second external observation window;
+the changing signatures establish nonconvergence independently of that window.
+The ordinary controls retain their function counts and add at most 0.5%
+allocation for recursive structural signatures. Their timing variation is not a
+claimed speedup. The source-library owner separately selected a column-oriented
+Map representation; both representations now compile, so that library choice
+does not hide a compiler restriction.
+
+Raw probe reports and bounded stack/counter logs are under
+`.temp/compiler-map-cost`. The durable regression is
+[`tests/CompilerConvergence`](../../tests/CompilerConvergence/Program.cs):
+`dotnet run --project tests/CompilerConvergence` checks ordered duplicate Map
+replacement, nested Range-of-Scope facts, nullable fields, changing callable
+identities and independent anonymous instances. At O0/O2/O3 it executes source,
+serialized `.mso`, and context-bound serialized `.mexe` modules: 54 actual-result
+checks, with artifacts retained under `.temp/compiler-convergence`.

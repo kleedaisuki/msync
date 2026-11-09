@@ -194,7 +194,8 @@ internal sealed partial class Compilation
             var parameterConstraint = parameter.Type is null ? StorageType(info.Type, parameter.Nullable) : ResolveType(frame, parameter.Type);
             if (parameter.Nullable && parameterConstraint is not null) parameterConstraint = parameterConstraint.WithNull;
             frame.Bind(parameter.Name, new(frame.Allocate(), info, Origin: origin, AdmitsNull: parameter.Nullable || parameterConstraint?.Nullable == true,
-                Constraint: parameterConstraint));
+                Constraint: parameterConstraint) { IsParameter = true });
+            CaptureParameter(frame, new(parameter.Span.Start, parameter.Name.Length));
             if (parameter.Type is not null) AttachConcept(frame, frame.Environment[parameter.Name].Storage, parameter.Nullable ? parameter.Type with { Nullable = true } : parameter.Type);
             if (origin is not null) CaptureDefinition(frame, origin.Span, [origin]);
         }
@@ -384,7 +385,8 @@ internal sealed partial class Compilation
         KnownText = projection ? info.KnownText : null,
         Element = projection ? info.Element : ForgetEndpoint(info.Element)
     };
-    private static string InfoKey(Info info) => $"{info.Type}:{info.TypeValue}:{info.EagerRange}:{(info.Function is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Function))}:{info.NativeName}:{(info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope))}:{string.Join(',', info.Alternatives?.Select(InfoKey) ?? [])}:{(info.Element is null ? "" : InfoKey(info.Element))}";
+    private static string InfoKey(Info info) => InfoKey(info, InfoKey);
+    private static string InfoKey(Info info, Func<Info, string> nestedKey) => $"{info.Type}:{info.TypeValue}:{info.EagerRange}:{(info.Function is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Function))}:{info.NativeName}:{(info.Scope is null ? "" : System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(info.Scope))}:{string.Join(',', info.Alternatives?.Select(nestedKey) ?? [])}:{(info.Element is null ? "" : nestedKey(info.Element))}";
 
 
 }
