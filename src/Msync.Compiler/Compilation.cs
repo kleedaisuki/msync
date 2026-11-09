@@ -183,7 +183,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
                 help: "Add '?' after the binding name to admit Null, or use 'if value is not null' before binding.",
                 fix: let.Pattern is NamePattern bound ? new("Allow Null in this binding", new(bound.Span.End, 0), "?") : null,
                 code: "E0201");
-        if (asserted is null) return let.Nullable ? result with { Type = result.Type.WithNull } : result;
+        if (asserted is null) return result;
         if (let.Nullable) asserted = asserted.WithNull;
         if (!result.EditorUnknown)
         {
