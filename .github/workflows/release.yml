@@ -194,6 +194,7 @@ jobs:
         with:
           name: acceptance-vscode
           if-no-files-found: ignore
+          include-hidden-files: true
           path: |
             .temp/editor-release/payload.json
             .temp/vscode-host-*/run.json
