@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../src/Msync.Compiler/Syntax/*.cs" Link="Syntax/%(Filename)%(Extension)" />
+    <Compile Include="../../src/Msync.Compiler/Diagnostics.cs" Link="Diagnostics.cs" />
+    <Compile Include="../../src/Msync.Core/NumberSyntax.cs" Link="NumberSyntax.cs" />
+    <Compile Include="../../src/Msync.Core/Types.cs" Link="Types.cs" />
+    <Compile Include="../../src/Msync.Compiler/LanguageTypes.cs" Link="LanguageTypes.cs" />
+  </ItemGroup>
+</Project>
