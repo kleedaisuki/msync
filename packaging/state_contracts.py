@@ -61,6 +61,7 @@ MEMORY_CONTRACTS = (
     Contract("cross-block-memory", "CrossBlockMemory"),
     Contract("memory-effects", "MemoryEffects"),
     Contract("scope-layout", "ScopeLayout"),
+    Contract("aggregate-arguments", "AggregateArguments"),
 )
 
 

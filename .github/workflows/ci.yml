@@ -208,7 +208,7 @@ jobs:
         run: python packaging/state_contracts.py --output .temp/platform-results/state-contracts --contract constant-interner
       - name: Exercise selected cross-block memory and compact layout contracts
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.memory == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
-        run: python packaging/state_contracts.py --output .temp/platform-results/memory-contracts --contract cross-block-memory --contract memory-effects --contract scope-layout
+        run: python packaging/state_contracts.py --output .temp/platform-results/memory-contracts --contract cross-block-memory --contract memory-effects --contract scope-layout --contract aggregate-arguments
       - name: Publish native memory optimizer component observation image
         id: memory-components
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.memory == 'true' && runner.os == 'Windows' && steps.package.outcome == 'success' }}
