@@ -101,6 +101,16 @@ Null only until an overlapping write. An alias store or a called function whose
 write summary reaches the object invalidates that refinement. Unrelated writes
 must not invalidate all facts globally.
 
+A genuine Null predecessor contributes no conflicting Scope shape or callable
+identity. Join its type into the nullable result while retaining the other
+predecessor's payload metadata; member writes and calls still require a
+non-null control-flow edge. Facts also obey `join(x, x) = x` by retaining the
+same immutable descriptor. Rebuilding an unchanged Range's element Scope on
+each join changes metadata identities used by specialization and loop
+convergence, even though no source fact changed. Descriptor idempotence avoids
+that spurious growth without imposing a loop-analysis iteration quota or
+merging distinct runtime Scope instances.
+
 Compiler/editor snapshots must remain snapshots. Do not mutate a shared
 `Binding.Info` object inside previously captured persistent environment roots.
 Maintain evolving facts separately or replace immutable descriptors. The same

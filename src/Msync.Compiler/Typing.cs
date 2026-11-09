@@ -52,10 +52,12 @@ internal sealed partial class Compilation
     }
     private static Info Join(Info left, Info right)
     {
+        if (ReferenceEquals(left, right)) return left;
         if (left.Type.Kind == TypeKind.Never) return right;
         if (right.Type.Kind == TypeKind.Never) return left;
-        ScopeInfo? scope = null;
-        if (left.Scope is not null && right.Scope is not null)
+        var payload = left.Type.Kind == TypeKind.Null ? right : right.Type.Kind == TypeKind.Null ? left : null;
+        ScopeInfo? scope = payload?.Scope;
+        if (payload is null && left.Scope is not null && right.Scope is not null)
         {
             var members = left.Scope.Members.Where(member => right.Scope.Members.ContainsKey(member.Key))
                 .ToDictionary(member => member.Key, member => Join(member.Value, right.Scope.Members[member.Key]));
@@ -68,13 +70,14 @@ internal sealed partial class Compilation
                     members.ToDictionary(pair => pair.Key, pair => new StorageConstraint(StorageType(pair.Value.Type, pair.Value.Type.Nullable)))
             };
         }
-        IReadOnlyList<Info>? alternatives = null;
+        IReadOnlyList<Info>? alternatives = payload?.Alternatives;
         if (left.Type.WithoutNull == TypeRef.Function && right.Type.WithoutNull == TypeRef.Function &&
             (left.Function != right.Function || left.NativeName != right.NativeName || left.Alternatives is not null || right.Alternatives is not null))
             alternatives = CallableChoices(left).Concat(CallableChoices(right)).DistinctBy(InfoKey).ToArray();
-        return new(TypeRef.Union(left.Type, right.Type), left.Function == right.Function ? left.Function : null,
+        return new(TypeRef.Union(left.Type, right.Type),
+            payload is not null ? payload.Function : left.Function == right.Function ? left.Function : null,
             scope, left.TypeValue == right.TypeValue ? left.TypeValue : null,
-            left.NativeName == right.NativeName ? left.NativeName : null, alternatives,
+            payload is not null ? payload.NativeName : left.NativeName == right.NativeName ? left.NativeName : null, alternatives,
             left.Element is null || right.Element is null ? left.Element ?? right.Element : Join(left.Element, right.Element),
             left.KnownBool == right.KnownBool ? left.KnownBool : null,
             left.KnownConnection == right.KnownConnection ? left.KnownConnection : null,

@@ -97,6 +97,8 @@ internal sealed partial class Compilation
         if (assignment.Target is BinaryExpr { Operator: "::" } member && MemberName(member.Right) is { } field)
         {
             var receiver = Current(frame, Expression(frame, member.Left));
+            if (receiver.Type.Nullable && receiver.Scope is not null)
+                throw TypeError(frame, receiver.Type, TypeRef.Scope, member.Left.Span);
             int start = member.OperatorSpan?.End ?? member.Right.Span.Start;
             CaptureReceiver(frame, new(start, member.Right.Span.End - start), receiver);
             if (receiver.Scope is not { } scope || !scope.Members.TryGetValue(field, out var previous))

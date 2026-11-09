@@ -82,6 +82,42 @@ EXAMPLES: tuple[Example, ...] = (
         b"after",
     ),
     Example(
+        "nullable-scope-conditional",
+        'let object? = if exists ./missing { null } else { scope { file: "conditional" } }; if object is not null { object::file -> ./result; };',
+        b"conditional",
+    ),
+    Example(
+        "nullable-scope-null-branch",
+        'let prior? = if exists ./input { scope { old: "old" } } else { null }; let object? = if prior is null { prior } else { scope { file: "new" } }; if object is not null { object::file -> ./result; };',
+        b"new",
+    ),
+    Example(
+        "nullable-scope-loop-lifetime",
+        'let first? = null; let second? = null; let position = 0; for item in ["first", "second"] { let object = scope { file: item, read: fn { file } }; if position == 0 { first = object; } else { second = object; }; position = position + 1; }; if first is not null { if second is not null { first::file = "after"; first::read() -> ./result; second::read() -> ./retained-second; }; };',
+        b"after",
+        secondary_outputs=(("retained-second", b"second"),),
+    ),
+    Example(
+        "nullable-scope-return",
+        'fn make(present: Bool) { if present { scope { file: "returned" } } else { null } }; let object? = make(exists ./input); if object is not null { object::file -> ./result; };',
+        b"returned",
+    ),
+    Example(
+        "nullable-function-conditional",
+        'let operation? = if exists ./input { fn { "callable" } } else { null }; if operation is not null { operation() -> ./result; };',
+        b"callable",
+    ),
+    Example(
+        "nullable-native-function",
+        'let operation? = if exists ./missing { null } else { $std::string::trim }; if operation is not null { operation("  native  ") -> ./result; };',
+        b"native",
+    ),
+    Example(
+        "nullable-function-alternatives",
+        'let operation? = if exists ./input { if exists ./missing { fn { "other" } } else { fn { "selected" } } } else { null }; if operation is not null { operation() -> ./result; };',
+        b"selected",
+    ),
+    Example(
         "live-capture-read",
         'let value = "before"; let read = fn { value }; value = "after"; read() -> ./result;',
         b"after",
@@ -257,6 +293,21 @@ EXAMPLES: tuple[Example, ...] = (
 )
 
 INVALID: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "nullable-scope-write-needs-guard",
+        'let object? = if exists ./input { scope { file: "before" } } else { null }; object::file = "after";',
+        ("Scope", "Null", "Handle"),
+    ),
+    (
+        "nullable-function-call-needs-guard",
+        'let operation? = if exists ./input { fn { "before" } } else { null }; operation();',
+        ("Function", "Null", "Handle"),
+    ),
+    (
+        "nullable-scope-field-type",
+        'let first? = null; for item in [1] { first = scope { file: item }; }; if first is not null { first::file = "wrong type"; };',
+        ("Number", "String"),
+    ),
     (
         "callable-result-contract",
         'let operation = fn { "before" };\noperation() -> ./ignored;\noperation = fn { true };',

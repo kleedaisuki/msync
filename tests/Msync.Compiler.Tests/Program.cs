@@ -1,4 +1,5 @@
 using Msync.Compiler.Syntax;
+if (args.Contains("--nullable-payloads", StringComparer.Ordinal)) { NullablePayloadChecks.Run(); return; }
 if (args.Contains("--contextual-directories", StringComparer.Ordinal)) { ContextualDirectoryChecks.Run(); return; }
 if (args.Contains("--navigation", StringComparer.Ordinal)) { NavigationChecks.Run(); return; }
 if (args.Contains("--quoted-windows-paths", StringComparer.Ordinal)) { QuotedWindowsPaths.Run(); return; }
