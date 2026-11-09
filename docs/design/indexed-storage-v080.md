@@ -49,6 +49,12 @@ possible resource identities. It does not allocate a merged backing store or
 erase the indexed-storage capability. All non-null alternatives must be owned
 Buffers; joining an ordinary Range does not grant that capability.
 
+A derived Range preserves its element schema and referenced objects, not the
+input Buffer's backing-store identity. `NativeBehavior.PreservesIdentity`
+records the stronger claim only for actual identity operations. Similarly,
+consuming an outer Range must not discard the pending effects of an inner Range
+returned as an element; those effects belong to the later inner enumeration.
+
 Element reads join the possible values. Writes satisfy every possible target's
 fixed carrier, including constraints established on different control-flow
 edges. Indexed effect summaries retain these carrier constraints separately

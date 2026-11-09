@@ -10,6 +10,62 @@ bool resourceUnionOnly = args.Contains("--indexed-union", StringComparer.Ordinal
 bool indexedCastOnly = args.Contains("--indexed-cast", StringComparer.Ordinal);
 bool indexedCurrentOnly = args.Contains("--indexed-current", StringComparer.Ordinal);
 bool indexedFreshOnly = args.Contains("--indexed-fresh", StringComparer.Ordinal);
+bool rangeIdentityOnly = args.Contains("--range-identity", StringComparer.Ordinal);
+bool rangeViewsOnly = args.Contains("--range-views", StringComparer.Ordinal);
+bool nestedEffectsOnly = args.Contains("--nested-effects", StringComparer.Ordinal);
+bool nativeEffectsOnly = args.Contains("--native-effects", StringComparer.Ordinal);
+if (nativeEffectsOnly)
+{
+    Check(NativeSignatures.All.All(signature => signature.Behavior is not null),
+        "Native effect metadata must be complete before semantic analysis.");
+    HirModule process = Compiler.Analyze("let child = ./msync-hir-never-executed(); child::stdout", "process-effect-check.msync");
+    Check(process.Nodes.Any(node => node.Kind == HirKind.MemberRead && node.Text == "stdout"
+        && (node.Effects & (HirEffects.ReadExternal | HirEffects.Invoke | HirEffects.MayFail))
+            == (HirEffects.ReadExternal | HirEffects.Invoke | HirEffects.MayFail)),
+        "A Process stdout read must retain external wait effects without executing it during analysis.");
+    _ = HirLowerer.Lower(process, new(OptimizationLevel: 0));
+    foreach (var stage in new[] { ArtifactStage.Relocatable, ArtifactStage.Executable })
+    {
+        try
+        {
+            _ = await Execute("native fn cast(value, target: Type) -> Number; cast(\"not-a-number\", Number); 3", stage, 2);
+        }
+        catch (MsyncException error)
+        {
+            Check(error.Message.Contains("Cannot cast", StringComparison.Ordinal)
+                && error.Message.Contains("not-a-number", StringComparison.Ordinal),
+                "The discarded invalid native cast must preserve its actual failure after O2.");
+            continue;
+        }
+        throw new InvalidOperationException("O2 erased a native cast failure.");
+    }
+    Console.WriteLine($"PASS {checks} native semantic effect journeys");
+    return;
+}
+if (nestedEffectsOnly)
+{
+    const string native = "native fn transform(values: Range, operation: Function) -> Range; native fn single(value) -> Range; native fn first(values: Range) -> Range; native fn materialize(values: Range) -> Range; ";
+    const string inner = "let state = scope { changed: false }; let inner = transform([1], fn(value) { state::changed = true; value }); let selected = first(single(inner)); ";
+    await Number(native + inner + "if state::changed { 1 } else { 0 }", 0);
+    await Number(native + inner + "materialize(selected); if state::changed { 1 } else { 0 }", 1);
+    Console.WriteLine($"PASS {checks} nested Range effect journeys");
+    return;
+}
+if (rangeIdentityOnly || rangeViewsOnly)
+{
+    if (!rangeViewsOnly)
+    {
+        await Number("native fn ranges.identity(values: Range) -> Range; let buffer = $std::storage::Buffer::new([1]); $std::storage::Buffer::push(ranges.identity(buffer), 2)", 1);
+        await Number("let buffer = $std::storage::Buffer::new([1]); $std::storage::Buffer::push($std::ranges::identity(buffer), 2)", 1);
+        await Number("let buffer = $std::storage::Buffer::new([1]); $std::storage::Buffer::push($std::ranges::all(buffer), 2)", 1);
+        await Number("let child = $std::storage::Buffer::new([1]); let rows = $std::storage::Buffer::new([scope { items: child }]); let view = $std::ranges::reverse(rows); let row = $std::ranges::first(view); $std::storage::Buffer::push(row::items, 2)", 1);
+    }
+    Reject("let buffer = $std::storage::Buffer::new([1]); $std::storage::Buffer::push($std::ranges::reverse(buffer), 2)", "E0222");
+    Reject("let buffer = $std::storage::Buffer::new([1]); $std::storage::Buffer::push($std::ranges::filter(buffer, fn(value) { true }), 2)", "E0222");
+    Reject("let buffer = $std::storage::Buffer::new([1]); $std::storage::Buffer::push($std::ranges::materialize(buffer), 2)", "E0222");
+    Console.WriteLine($"PASS {checks} native Range identity journeys");
+    return;
+}
 if (indexedFreshOnly)
 {
     const string native = "native fn buffer_new(initial: Range) -> Range; native fn buffer_get(items: Range, index: Number) -> Scope; native fn buffer_push(items: Range, value) -> Number; ";
@@ -132,21 +188,21 @@ await Boolean(indexed + "let first = scope { red: false }; let items = buffer_ne
 await Boolean(indexed + "let first = scope { red: false }; let items = buffer_new([first]); let a = buffer_get(items, 0); a::red = true; if first::red { true } else { false }", true);
 Console.WriteLine($"PASS {checks} typed HIR type/operator/native contracts");
 
-async Task<Value> Execute(string source, ArtifactStage stage)
+async Task<Value> Execute(string source, ArtifactStage stage, int optimizationLevel = 0)
 {
     HirModule hir = Compiler.Analyze(source, "hir-typing.msync");
     if (metadataOnly)
     {
         Check(!HasRuntimeDependentMeta(hir), "Dependent metadata must not survive as a runtime native call");
     }
-    if (metadataOnly || typeIdentityOnly || resourceUnionOnly || indexedCastOnly || indexedCurrentOnly || indexedFreshOnly)
+    if (metadataOnly || typeIdentityOnly || resourceUnionOnly || indexedCastOnly || indexedCurrentOnly || indexedFreshOnly || rangeIdentityOnly || nestedEffectsOnly)
     {
         using MemoryStream graph = new();
         HirArtifact.Write(hir, graph);
         graph.Position = 0;
         hir = HirArtifact.Read(graph);
     }
-    Module code = HirLowerer.Lower(hir, new(OptimizationLevel: 0)).Module;
+    Module code = HirLowerer.Lower(hir, new(OptimizationLevel: optimizationLevel)).Module;
     if (stage == ArtifactStage.Executable)
         code = Msync.Optimization.Binding.Bind(code, new(Environment.CurrentDirectory, Environment.CurrentDirectory));
     using MemoryStream buffer = new();

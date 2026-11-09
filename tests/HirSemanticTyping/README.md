@@ -35,6 +35,9 @@ dotnet run --project tests/HirSemanticTyping -c Release -- --meta
 dotnet run --project tests/HirSemanticTyping -c Release -- --type-is
 dotnet run --project tests/HirSemanticTyping -c Release -- --indexed-union
 dotnet run --project tests/HirSemanticTyping -c Release -- --indexed-cast
+dotnet run --project tests/HirSemanticTyping -c Release -- --range-identity
+dotnet run --project tests/HirSemanticTyping -c Release -- --nested-effects
+dotnet run --project tests/HirSemanticTyping -c Release -- --native-effects
 ```
 
 Use an isolated artifacts path while other implementation lanes build the shared
@@ -66,3 +69,15 @@ checks the actual stored representation after push/set/insert, and checks that
 first-write inference preserves existing membership snapshots and hash identity.
 String-to-Path conversion retains the runtime directory/home context; the
 opposite conversion uses the selected Path's native spelling.
+
+Range identity tests distinguish a true identity from a derived view with the
+same element carrier. Reverse/filter/materialize do not acquire mutable Buffer
+ownership; references stored as elements still retain their own identities.
+Nested-effect tests distinguish consuming an outer Range from enumerating an
+inner Range returned as one of its values.
+
+Native-effect checks exercise the user-visible `check` behavior on a nonexistent
+Process path without running it, inspect the Process read's semantic effects,
+and retain a discarded invalid native cast's actual error through O2 execution.
+The registry supplies complete effect metadata to both semantic and bytecode
+consumers rather than requiring frontend bytecode queries.
