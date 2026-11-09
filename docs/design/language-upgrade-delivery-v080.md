@@ -148,3 +148,31 @@ prototype-based empty collection factories, 23 observations through three O2
 stages and three fixed-schema/comparer rejections. The ordinary combined library
 programs already cover nonempty List/Map/Set, so delivery does not repeat the
 collection owner's full 35-program local matrix on every native platform.
+
+## Coherent managed freeze
+
+Producer snapshot 4 includes the final production code, including eager collection
+snapshots, Range<Scope> loop-shape convergence, persistent REPL concept metadata,
+named Scope path facts, typed empty factories, Regex capture accessors and remote
+Path presentation. The implementation owners accepted their changed contracts
+against that immutable snapshot:
+
+- Language: Number 601 assertions, named Scopes 93, concepts 48 and integrated
+  semantics 232, plus focused grammar/editor identity checks. These counts are
+  distinct owner reports, not a summed end-to-end coverage metric.
+- Tooling: final LSP/redirected REPL/actual Linux PTY journey and persistent concept
+  Tab completion at `.temp/tooling-upgrade-journey-final.json`; selected physical
+  completion evidence is `.temp/tooling-final-provenance/report.json`.
+- Path presentation: `8795a7b` and
+  `.temp/path-display-journey/snapshot-4.json`, preserving native String projection
+  while displaying physical qualification with `@`, including source-free IR and
+  diagnostic provenance.
+- Class library: the authoritative
+  [composed-library validation record](stdlib-upgrade-validation-v080.md) records
+  45 local staged routes with 252 exact outputs and three actual SSH staged
+  routes. Delivery reuses that local evidence and runs the new platform boundary.
+
+The product tree at `c2caa704e311e3cf6622e748adc1f36a73d5b268` is committed; remaining
+fixture migrations do not imply uncommitted product bytes. Native platform
+acceptance, final VS Code host observation and final distribution audit remain
+pending until their immutable image reports are recorded below.
