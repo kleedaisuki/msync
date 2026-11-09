@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Msync.Compiler/Msync.Compiler.csproj" />
+    <ProjectReference Include="../Msync.Hir/Msync.Hir.csproj" />
     <ProjectReference Include="../Msync.Runtime/Msync.Runtime.csproj" />
     <ProjectReference Include="../Msync.Optimization/Msync.Optimization.csproj" />
     <ProjectReference Include="../../vendor/PrettyPrompt/PrettyPrompt.csproj" />

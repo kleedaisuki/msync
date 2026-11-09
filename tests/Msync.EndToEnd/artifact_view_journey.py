@@ -172,11 +172,14 @@ def main() -> None:
             for path in (relocatable, executable)
         }
         source.unlink()
+        version_line = invoke(binary, cwd, ["--version"]).stdout.strip()
+        assert version_line.startswith("msync "), version_line
+        product_version = version_line.removeprefix("msync ")
         client = Client(binary, cwd=cwd)
         summaries: dict[str, object] = {}
         try:
             initialized, _ = client.request("initialize", {"capabilities": {}})
-            assert initialized["serverInfo"]["version"] == "0.8.0"
+            assert initialized["serverInfo"]["version"] == product_version
             live_uri = (cwd / "live source.msync").as_uri()
             client.send(
                 "textDocument/didOpen",

@@ -52,7 +52,7 @@ internal sealed partial class LanguageServer
         work.Cancellation.Dispose();
         if (!artifactRequests.Remove(work.Id.ToJsonString())) return;
         if (completed.Error is OperationCanceledException) ArtifactReply(work.Id, null, -32800, "Artifact inspection cancelled.");
-        else if (completed.Error is { } error) ArtifactReply(work.Id, null, -32001, $"Cannot inspect bytecode: {error.Message}");
+        else if (completed.Error is { } error) ArtifactReply(work.Id, null, -32001, $"Cannot inspect artifact: {error.Message}");
         else ArtifactReply(work.Id, completed.Result);
     }
 

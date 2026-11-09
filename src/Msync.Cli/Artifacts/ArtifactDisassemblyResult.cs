@@ -4,18 +4,24 @@ using Msync.Core;
 namespace Msync.Cli;
 
 internal sealed record ArtifactDisassemblyResult(string Text, int FormatVersion, string Stage,
-    int OptimizationLevel, JsonArray Symbols, JsonArray References, JsonArray Hovers)
+    int? OptimizationLevel, JsonArray Symbols, JsonArray References, JsonArray Hovers,
+    string ArtifactKind = "bytecode")
 {
-    internal JsonObject ToJson() => new()
+    internal JsonObject ToJson()
     {
-        ["schemaVersion"] = 1,
-        ["formatVersion"] = FormatVersion,
-        ["languageVersion"] = Artifact.LanguageVersion,
-        ["stage"] = Stage,
-        ["optimizationLevel"] = OptimizationLevel,
-        ["text"] = Text,
-        ["symbols"] = Symbols,
-        ["references"] = References,
-        ["hovers"] = Hovers
-    };
+        JsonObject result = new()
+        {
+            ["schemaVersion"] = 1,
+            ["formatVersion"] = FormatVersion,
+            ["languageVersion"] = Artifact.LanguageVersion,
+            ["stage"] = Stage,
+            ["optimizationLevel"] = OptimizationLevel,
+            ["text"] = Text,
+            ["symbols"] = Symbols,
+            ["references"] = References,
+            ["hovers"] = Hovers
+        };
+        if (ArtifactKind != "bytecode") result["artifactKind"] = ArtifactKind;
+        return result;
+    }
 }

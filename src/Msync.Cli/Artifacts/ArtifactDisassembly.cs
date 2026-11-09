@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Globalization;
 using System.Text;
 using Msync.Core;
+using Msync.Hir;
 
 namespace Msync.Cli;
 
@@ -10,6 +11,8 @@ internal static class ArtifactDisassembly
     internal static ArtifactDisassemblyResult Read(byte[] bytes, string sourceUri, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (HirArtifact.IsHir(bytes) || sourceUri.EndsWith(".mhir", StringComparison.OrdinalIgnoreCase))
+            return HirArtifactRenderer.Read(bytes, cancellationToken);
         using MemoryStream stream = new(bytes, writable: false);
         Module module;
         try { module = Artifact.Read(stream); }
