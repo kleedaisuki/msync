@@ -16,12 +16,14 @@ internal static class Program
     {
         if (await SshPromptBroker.TryRunHelperAsync(args) is { } helperExit) return helperExit;
         TelemetrySession? telemetry = null;
+        ConsoleEncodingScope? consoleEncoding = null;
         SourceSnapshot? snapshot = null;
         string color = TerminalPresentation.RequestedColor(args);
         try
         {
             if (args.Length != 0 && args[0] == "legacy") return await Legacy(args[1..]);
             if (args.Contains("--language-server", StringComparer.Ordinal)) return await new LanguageServer(CheckForEditor, source => Formatter.Format(source)).RunAsync();
+            consoleEncoding = ConsoleEncodingScope.Open();
             if (args.Contains("--help", StringComparer.Ordinal) || args.Contains("-h", StringComparer.Ordinal))
             {
                 Options help = Options.Parse(args.Where(arg => arg is not ("--help" or "-h")).ToArray());
@@ -103,7 +105,7 @@ internal static class Program
             TerminalPresentation.Error(error, color, snapshot);
             return 1;
         }
-        finally { telemetry?.Dispose(); }
+        finally { using (consoleEncoding) telemetry?.Dispose(); }
     }
 
     private static int Complete(int code, TelemetrySession? telemetry)

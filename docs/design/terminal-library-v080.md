@@ -98,6 +98,34 @@ Null items inside a selected Range are visible. Accepting the compiler-session
 submission after result enumeration retains mutations performed by selected
 callbacks. Terminal completion resolves paths against the same session directory.
 
+### Windows console Unicode boundary
+
+The Windows Native image from run
+[42646810447](https://github.com/kleedaisuki/msync/actions/runs/42646810447),
+SHA-256 `3d35993771224559e08405c9454f01a51fd7912f660b7932504e784d5dd43415`,
+preserved Unicode input but lost characters while painting through the inherited
+console output code page. The immutable-image
+[A/B diagnostic](https://github.com/kleedaisuki/msync/actions/runs/42649863293)
+measured six UTF-8 bytes for `空间` and successfully entered/read the Unicode
+directory in both cases. Only a CP65001 console painted the original characters;
+the default console painted `??`. The diagnostic's ASCII suffix boundary is
+not used by the acceptance fixture, which still requires complete Unicode paint.
+
+`ConsoleEncodingScope` selects UTF-8 without a BOM once, only when Windows
+stdout or stderr targets a console. It restores the inherited encoding on exit because the console
+code page belongs to the shared terminal. No input encoding, argument spelling,
+path provenance or per-key logic changes. Fully redirected output and the
+language server do not enter this scope. With mixed redirection, the shared
+encoding also preserves diagnostic text; raw artifact/protocol byte streams
+remain owned by their existing writers.
+
+This follows the actual
+[.NET Windows console implementation](https://github.com/dotnet/runtime/blob/v10.0.0/src/libraries/System.Console/src/System/ConsolePal.Windows.cs)
+and Microsoft's
+[Unicode/CP65001 console guidance](https://learn.microsoft.com/en-us/windows/console/console-code-pages).
+The focused fixture remains `repl_shell_journey.py`, including Unicode/spaced
+directory completion, a gated Process across submissions and streaming Ctrl+C.
+
 ## Directory ownership and deferred admissions
 
 `environment.set_working_directory` and `shell.cd` change an execution's local
