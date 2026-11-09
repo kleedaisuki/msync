@@ -48,3 +48,11 @@ the recursive field loses nested shape depth; its runtime kind, null admission,
 outer row and unrelated fields remain. This is structural widening, not an
 iteration-count cutoff. Ordinary nullable initialization and finite shape
 alternatives retain their member information.
+
+Branch joins retain the union of logical cell, field and indexed write sets in
+addition to joining value facts. A captured assignment inside a conditional
+must remain in the function's effect summary even when only one branch writes.
+Two focused cases cover a Bool cell and a nullable Number cell. Published 0.8.0
+produced 7 and 8; the earlier HIR implementation dropped the write summary and
+selected an impossible Null branch. Frozen HIR snapshot 8 produces the same 7
+and 8, and its source-to-bytecode artifact round trips pass at O0/O2.
