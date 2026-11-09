@@ -60,13 +60,24 @@ public static class HirValidation
             Id(signature.Result.Value, module.Types.Length, "signature result");
             foreach (var parameter in signature.Parameters) Id(parameter.Value, module.Types.Length, "signature parameter");
         }
+        var sessionDispatches = module.SessionDispatches.OrEmpty();
+        for (int index = 0; index < sessionDispatches.Length; index++)
+        {
+            var dispatch = sessionDispatches[index];
+            if (!module.IsSession) Fail("session dispatch requires a session module");
+            if (dispatch.Slot != index) Fail("session dispatch slot disagrees with its stable session table position");
+            foreach (var parameter in dispatch.Parameters) Id(parameter.Value, module.Types.Length, "session parameter type");
+            Id(dispatch.Result.Value, module.Types.Length, "session result type");
+            Targets(module, dispatch.Targets);
+        }
         foreach (var call in module.Calls)
         {
             if (!Enum.IsDefined(call.Kind)) Fail("unknown call kind");
-            if (call.Kind == HirCallKind.Function) ClosedFunction(module, call.Function.Value, "call target");
+            if (call.Kind == HirCallKind.Function && call.SessionSlot < 0) ClosedFunction(module, call.Function.Value, "call target");
             else Optional(call.Function.Value, module.Functions.Length, "call function");
             if (call.Kind == HirCallKind.Native && string.IsNullOrEmpty(call.NativeName)) Fail("native call has no native identity");
             Targets(module, call.Targets);
+            SessionSlot(call.SessionSlot, sessionDispatches.Length);
         }
         foreach (var closure in module.Closures)
         {
@@ -104,7 +115,11 @@ public static class HirValidation
                 if (arm.Pattern.Kind == HirPatternKind.Regex && arm.Pattern.Text is null) Fail("regex pattern text is missing");
                 if (arm.Pattern.Binding is { } binding) Id(binding.Value, module.Locations.Length, "match binding");
             }
-        foreach (var adaptation in module.Adaptations) Targets(module, adaptation.Targets);
+        foreach (var adaptation in module.Adaptations)
+        {
+            Targets(module, adaptation.Targets);
+            SessionSlot(adaptation.SessionSlot, sessionDispatches.Length);
+        }
         foreach (var concept in module.Concepts)
         {
             Source(module, concept.Source);
@@ -131,6 +146,11 @@ public static class HirValidation
         foreach (var edge in module.Edges) Id(edge.Value, module.Nodes.Length, "node edge");
         foreach (var node in module.Nodes) Node(module, node);
         AcyclicNodes(module);
+    }
+
+    private static void SessionSlot(int slot, int count)
+    {
+        if (slot < -1 || slot >= count) Fail("session dispatch slot is unresolved");
     }
 
     private static void Node(HirModule module, HirNode node)

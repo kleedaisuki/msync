@@ -43,9 +43,9 @@
         "5": { "name": "keyword.operator.msync-ir" }
       }
     },
-    { "name": "keyword.declaration.msync-ir", "match": "\\b(?:artifact|hir|context|const|fn|block|entry|origin|format|language|optimization|semantics|captures|locals|successors|effects|pure|readonly|definition|binding|location|shape|template|instance|value|cell|mutable|closed|open)\\b|\\btype\\b(?!\\s*\\()|^\\s*source\\b" },
+    { "name": "keyword.declaration.msync-ir", "match": "\\b(?:artifact|hir|context|session_dispatch|session|const|fn|block|entry|origin|format|language|optimization|semantics|captures|locals|successors|effects|pure|readonly|definition|binding|location|shape|template|instance|value|cell|mutable|closed|open)\\b|\\btype\\b(?!\\s*\\()|^\\s*source\\b" },
     { "name": "keyword.control.msync-ir", "match": "\\b(?:release|acquire|acqrel|before-and-after|before|after|region-start|join|if|match|loop|while|for|return|break|continue|defer)\\b" },
-    { "name": "entity.name.function.msync-ir", "match": "@(?:f|g)[0-9]+" },
+    { "name": "entity.name.function.msync-ir", "match": "@(?:f|g|d)[0-9]+" },
     { "name": "constant.other.reference.msync-ir", "match": "[@%]c[0-9]+" },
     { "name": "entity.name.label.msync-ir", "match": "@b[0-9]+_[0-9]+|\\bb[0-9]+\\b|@n[0-9]+" },
     { "name": "entity.name.type.msync-ir", "match": "@t[0-9]+|\\b(?:Null|Bool|Number|String|Path|Scope|Function|Connection|Process|Range|Type|Never|Any)\\b" },

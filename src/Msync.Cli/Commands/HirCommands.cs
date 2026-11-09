@@ -14,6 +14,8 @@ internal static class HirCommands
             .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
         if (imports.Length != 0)
             throw new MsyncException($"Typed HIR requires session locations: {string.Join(", ", imports)}. Export a self-contained program for standalone compilation or execution; live session values are not stored in .mhir files.");
+        if (!module.SessionDispatches.IsDefaultOrEmpty)
+            throw new MsyncException("Typed HIR requires live session callable dispatch. Inspect this semantic artifact in read-only mode, or export a self-contained program for standalone compilation or execution; live session values are not stored in .mhir files.");
         return Optimizer.Optimize(HirLowerer.Lower(module, new(optimization)).Module, optimization);
     }
 

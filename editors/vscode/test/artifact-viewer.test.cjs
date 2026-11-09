@@ -436,6 +436,8 @@ test('IR grammar colors real labels and future instruction mnemonics without sou
         ['binding @l0 "file" : @t0 mutable', '@l0', 'variable.other.msync-ir'],
         ['source @s0 "file.msync"', '@s0', 'support.type.path.msync-ir'],
         ['template @g0 "copy"', '@g0', 'entity.name.function.msync-ir'],
+        ['session_dispatch @d0 (@t0) -> @t0', 'session_dispatch', 'keyword.declaration.msync-ir'],
+        ['session_dispatch @d0 (@t0) -> @t0', '@d0', 'entity.name.function.msync-ir'],
         ['  @n2: CaptureLocation @l0 : @t0', '@n2', 'entity.name.label.msync-ir'],
         ['  @n2: CaptureLocation @l0 : @t0', 'CaptureLocation', 'keyword.operator.msync-ir'],
         ['  @n3: If @n2 -> Bool', 'If', 'keyword.control.msync-ir'],

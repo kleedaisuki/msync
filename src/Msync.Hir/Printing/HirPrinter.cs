@@ -69,7 +69,7 @@ public static class HirPrinter
             for (int index = 0; index < module.Calls.Length; index++)
             {
                 var call = module.Calls[index];
-                Define($"call @k{index} {call.Kind} {(call.Function.Value >= 0 ? "@f" + call.Function.Value : "")}{(call.NativeName is { } native ? " native " + Quote(native) : "")} targets [{Targets(call.Targets)}] scheduling {call.Scheduling}",
+                Define($"call @k{index} {call.Kind} {(call.Function.Value >= 0 ? "@f" + call.Function.Value : "")}{(call.NativeName is { } native ? " native " + Quote(native) : "")} targets [{Targets(call.Targets)}] scheduling {call.Scheduling}{(call.SessionSlot >= 0 ? " session @d" + call.SessionSlot : "")}",
                     "@k" + index, "Call " + index, "Resolved operation identity and closed dispatch alternatives.", HirTextCategory.Table);
             }
             for (int index = 0; index < module.Closures.Length; index++)
@@ -97,8 +97,12 @@ public static class HirPrinter
                 Define($"range @r{index} modes [{string.Join(", ", module.Ranges[index].Deferred.OrEmpty().Select(deferred => deferred ? "defer" : "value"))}]",
                     "@r" + index, "Range evaluation " + index, "Explicit per-element evaluation mode.", HirTextCategory.Table);
             for (int index = 0; index < module.Adaptations.Length; index++)
-                Define($"adapt @a{index} [{Targets(module.Adaptations[index].Targets)}]", "@a" + index,
+                Define($"adapt @a{index} [{Targets(module.Adaptations[index].Targets)}]{(module.Adaptations[index].SessionSlot >= 0 ? " session @d" + module.Adaptations[index].SessionSlot : "")}", "@a" + index,
                     "Function adaptation " + index, "Maps semantic callable identities to finalized bodies.", HirTextCategory.Table);
+            foreach (var dispatch in module.SessionDispatches.OrEmpty())
+                Define($"session_dispatch @d{dispatch.Slot} ({string.Join(", ", dispatch.Parameters.Select(type => "@t" + type.Value))}) -> @t{dispatch.Result.Value} targets [{Targets(dispatch.Targets)}]",
+                    "@d" + dispatch.Slot, "Session dispatch " + dispatch.Slot,
+                    "Open-session semantic call contract; requires the owning live session to execute.", HirTextCategory.Table);
             for (int index = 0; index < module.Templates.Length; index++) Template(index);
             for (int index = 0; index < module.Functions.Length; index++) Function(index);
             Emit("");

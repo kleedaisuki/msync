@@ -28,11 +28,16 @@ internal sealed class HirBinaryWriter(BinaryWriter writer)
         Array(module.Matches, value => Array(value.Arms, arm => { Pattern(arm.Pattern); writer.Write(arm.Value.Value); }));
         Array(module.Barriers, value => { writer.Write(value.Release); writer.Write(value.Acquire); });
         Array(module.Ranges, value => Array(value.Deferred, writer.Write));
-        Array(module.Adaptations, value => Array(value.Targets, Target));
+        Array(module.Adaptations, value => { Array(value.Targets, Target); writer.Write(value.SessionSlot); });
         Array(module.Exports, value => { String(value.Name); writer.Write(value.Location.Value); });
         Array(module.TemplateClosures, value => { writer.Write(value.Template.Value); Array(value.Captures, Capture); });
         Array(module.Concepts, Concept);
         Array(module.UnresolvedImports, location => writer.Write(location.Value));
+        Array(module.SessionDispatches, dispatch =>
+        {
+            writer.Write(dispatch.Slot); Array(dispatch.Parameters, type => writer.Write(type.Value));
+            writer.Write(dispatch.Result.Value); Array(dispatch.Targets, Target);
+        });
     }
 
     private void Array<T>(ImmutableArray<T> values, Action<T> write)
@@ -125,7 +130,7 @@ internal sealed class HirBinaryWriter(BinaryWriter writer)
     {
         writer.Write((byte)call.Kind); writer.Write(call.Function.Value); Optional(call.NativeName);
         Array(call.Targets, Target);
-        writer.Write(call.Scheduling);
+        writer.Write(call.Scheduling); writer.Write(call.SessionSlot);
     }
 
     private void Target(HirDispatchTarget target)

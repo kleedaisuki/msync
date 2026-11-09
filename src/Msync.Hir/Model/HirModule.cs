@@ -24,12 +24,20 @@ public enum HirCallKind : byte { Function, Native, Dynamic, Path }
 public sealed record HirDispatchTarget(HirCallableId Identity, HirFunctionId Target);
 public sealed record HirCall(HirCallKind Kind, HirFunctionId Function,
     string? NativeName = null, ImmutableArray<HirDispatchTarget> Targets = default,
-    int Scheduling = 0);
+    int Scheduling = 0)
+{
+    public int SessionSlot { get; init; } = -1;
+}
+public sealed record HirSessionDispatch(int Slot, ImmutableArray<HirTypeId> Parameters,
+    HirTypeId Result, ImmutableArray<HirDispatchTarget> Targets);
 public sealed record HirScopeConstruction(int Layout, ImmutableArray<HirLocationId> Fields,
     int Singleton = -1, HirLocationId? Self = null, HirAllocationSiteId? Site = null);
 public sealed record HirFor(HirLoopId Loop, HirLocationId Item);
 public sealed record HirRange(ImmutableArray<bool> Deferred);
-public sealed record HirFunctionAdaptation(ImmutableArray<HirDispatchTarget> Targets);
+public sealed record HirFunctionAdaptation(ImmutableArray<HirDispatchTarget> Targets)
+{
+    public int SessionSlot { get; init; } = -1;
+}
 public enum HirPatternKind : byte { Any, Null, Literal, Type, Regex }
 public sealed record HirPattern(HirPatternKind Kind, int Data = -1, string? Text = null,
     HirLocationId? Binding = null);
@@ -81,6 +89,7 @@ public sealed record HirModule(
     ImmutableArray<HirConcept> Concepts = default)
 {
     public ImmutableArray<HirLocationId> UnresolvedImports { get; init; } = [];
+    public ImmutableArray<HirSessionDispatch> SessionDispatches { get; init; } = [];
     public ReadOnlySpan<HirNodeId> Children(HirNode node) => Edges.AsSpan(node.Children.Start, node.Children.Count);
     public HirNode Node(HirNodeId id) => Nodes[id.Value];
     public TypeRef RuntimeType(HirTypeId id) => Types[id.Value].RuntimeType;

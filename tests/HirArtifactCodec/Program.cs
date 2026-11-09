@@ -103,6 +103,35 @@ RejectModule(dynamicTest with { Edges = [new(0), new(0)] },
 RejectModule(dynamicTest with { Nodes = dynamicTest.Nodes.SetItem(2, dynamicTest.Nodes[2] with { Data = -2 }) },
     "Dynamic type-test target tag is explicit");
 
+HirModule openSession = scalarCycle with
+{
+    IsSession = true,
+    Calls = [new(HirCallKind.Dynamic, new(-1)) { SessionSlot = 0 }],
+    Adaptations = [new([]) { SessionSlot = 0 }],
+    SessionDispatches = [new(0, [new(0)], new(0), [new(new(0), new(0))])]
+};
+HirModule openSessionRead = Decode(Encode(openSession));
+Check(openSessionRead.SessionDispatches[0].Parameters.SequenceEqual([new HirTypeId(0)])
+    && openSessionRead.SessionDispatches[0].Result == new HirTypeId(0)
+    && openSessionRead.SessionDispatches[0].Targets[0].Target == new HirFunctionId(0)
+    && openSessionRead.Calls[0].SessionSlot == 0 && openSessionRead.Adaptations[0].SessionSlot == 0,
+    "Open session dispatch contracts retain only semantic identities");
+Check(Decode(Encode(openSession with { Calls = [openSession.Calls[0] with { Kind = HirCallKind.Function }] })).Calls[0].SessionSlot == 0,
+    "Open dispatch owns callable selection independently of a finite function target");
+HirPrintedModule openSessionView = HirPrinter.Describe(openSessionRead);
+Check(openSessionView.Definitions.Any(definition => definition.Identifier == "@d0")
+    && openSessionView.References.Count(reference => reference.Identifier == "@d0") == 2,
+    "Session call and callback adaptation resolve to a visible semantic dispatch contract");
+RejectModule(openSession with { IsSession = false }, "Closed artifacts cannot claim open session dispatch");
+RejectModule(openSession with { SessionDispatches = [] }, "Session call and adaptation require a declared slot");
+bool requiresSession = false;
+try { _ = HirLowerer.Lower(openSessionRead); }
+catch (InvalidOperationException error)
+{
+    requiresSession = error.Message.Contains("active HIR session", StringComparison.Ordinal);
+}
+Check(requiresSession, "Source-free lowering explains its live session requirement");
+
 byte[] tiny = Encode(Scalar(42));
 for (int length = 0; length < tiny.Length; length++) Reject(tiny[..length], "Truncation rejected");
 byte[] badMagic = (byte[])tiny.Clone(); badMagic[0] ^= 0xff; Reject(badMagic, "Bad magic rejected");

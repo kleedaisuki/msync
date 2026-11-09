@@ -8,6 +8,8 @@ public static class HirLowerer
     public static HirLoweringResult Lower(HirModule module, HirLoweringOptions? options = null,
         HirLoweringSession? session = null)
     {
+        if (!module.SessionDispatches.IsDefaultOrEmpty && session is null)
+            throw new InvalidOperationException("Open callable signatures require an active HIR session.");
         if (!module.UnresolvedImports.IsDefaultOrEmpty)
         {
             var unresolved = module.UnresolvedImports.Where(id => session is null
@@ -58,7 +60,10 @@ public static class HirLowerer
             var result = new Module(constants.ToArray(), code, layout.Functions[hir.Entry],
                 OptimizationLevel: options.OptimizationLevel, PreserveLocals: hir.IsSession || options.PreserveLocals)
             {
-                SessionRoots = hir.IsSession ? hir.Exports.Select(export => Slot(hir.Entry, export.Location)).Distinct().ToArray() : null
+                SessionRoots = hir.IsSession ? hir.Exports.Select(export => Slot(hir.Entry, export.Location)).Distinct().ToArray() : null,
+                SessionDispatches = hir.SessionDispatches.IsDefaultOrEmpty ? null : hir.SessionDispatches.Select(dispatch =>
+                    new SessionDispatchTable(dispatch.Slot, dispatch.Targets.ToDictionary(
+                        target => Callable(target.Identity), target => Function(target.Target)))).ToArray()
             };
             return new(result, options.RetainLayout ? layout.Layout : HirLoweringLayout.Empty);
         }
@@ -317,10 +322,11 @@ public static class HirLowerer
         {
             var call = Hir.Calls[node.Data];
             Emit(Child(node, 0));
-            if (call.Kind == HirCallKind.Native) Add(OpCode.Pop);
+            if (call.Kind == HirCallKind.Native && call.SessionSlot < 0) Add(OpCode.Pop);
             for (int index = 1; index < node.Children.Count; index++) Emit(Child(node, index));
             int count = node.Children.Count - 1;
-            if (call.Kind == HirCallKind.Native) Add(OpCode.NativeCall, count, text: call.NativeName, source: node.Source);
+            if (call.SessionSlot >= 0) Add(OpCode.Call, count, -call.SessionSlot - 1, source: node.Source);
+            else if (call.Kind == HirCallKind.Native) Add(OpCode.NativeCall, count, text: call.NativeName, source: node.Source);
             else if (call.Kind == HirCallKind.Path) Add(OpCode.ProcessCall, count, call.Scheduling, source: node.Source);
             else Add(OpCode.Call, count, call.Kind == HirCallKind.Function ? owner.Function(call.Function) + 1 : 0,
                 text: call.Targets.IsDefaultOrEmpty ? null : Dispatch(call.Targets), source: node.Source);
@@ -345,7 +351,10 @@ public static class HirLowerer
         }
         private void Adapt(HirNode node)
         {
-            Emit(Child(node, 0)); var targets = Hir.Adaptations[node.Data].Targets;
+            Emit(Child(node, 0)); var adaptation = Hir.Adaptations[node.Data];
+            if (adaptation.SessionSlot >= 0)
+            { Add(OpCode.SpecializeClosure, -adaptation.SessionSlot - 1, source: node.Source); return; }
+            var targets = adaptation.Targets;
             if (targets.Length == 1) Add(OpCode.SpecializeClosure, owner.Function(targets[0].Target), source: node.Source);
             else Add(OpCode.SpecializeClosure, text: Dispatch(targets), source: node.Source);
         }

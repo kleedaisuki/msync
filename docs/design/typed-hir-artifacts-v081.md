@@ -76,6 +76,15 @@ location classified as an import is not by itself unresolved: standard-module
 cells initialized by the program's semantic prelude are ordinary resolved
 members of that program and must not be rejected as live session dependencies.
 
+An open-session callable also carries an explicit semantic dependency. Its call
+or callback-adaptation descriptor refers to a stable session dispatch slot; the
+module records that slot's parameter/result types and semantic callable targets.
+This is inspectable metadata, not serialized live dispatch or closure state.
+Slots retain their complete session-table positions rather than being
+renumbered during sealing. Such a module remains read-only outside its owning
+session: standalone CLI lowering reports the live callable dependency instead
+of freezing a future callee or inventing one.
+
 ## Representation and inspection
 
 The binary codec uses explicit semantic tags and ID tables. It does not use a
@@ -108,7 +117,7 @@ line and caret in the runtime diagnostic.
 The frozen producer's six-assembly receipt and O2/complementary O0/O3 reports
 are retained under `.temp/hir-artifacts` for this investigation; these are
 disposable evidence, not product inputs. The focused codec suite currently
-passes 330 contracts, including exact literal bits, canonical read/write bytes,
+passes 340 contracts, including exact literal bits, canonical read/write bytes,
 stable allocation-site identity, malformed references, and evaluated dynamic
 Type-valued `is` targets. Both static one-child type tests and evaluated
 two-child type tests are semantic operations, not a reason to replay source.

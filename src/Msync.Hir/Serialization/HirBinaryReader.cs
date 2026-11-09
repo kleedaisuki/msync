@@ -39,19 +39,25 @@ internal sealed class HirBinaryReader(BinaryReader reader)
             Array("literals", 13, Literal),
             Array("scope layouts", 4, () => new HirScopeLayout(Array("fields", 6, Field))),
             Array("signatures", 9, Signature),
-            Array("calls", 14, Call),
+            Array("calls", 18, Call),
             Array("closures", 8, () => new HirClosure(new(reader.ReadInt32()), Array("captures", 13, Capture))),
             Array("scope constructions", 20, Scope),
             Array("for loops", 8, () => new HirFor(new(reader.ReadInt32()), new(reader.ReadInt32()))),
             Array("matches", 4, () => new HirMatch(Array("match arms", 14, () => new HirMatchArm(Pattern(), new(reader.ReadInt32()))))),
             Array("barriers", 2, () => new HirBarrier(Boolean(), Boolean())),
             Array("ranges", 4, () => new HirRange(Array("range deferred items", 1, Boolean))),
-            Array("function adaptations", 4, () => new HirFunctionAdaptation(Array("adaptation targets", 9, Target))),
+            Array("function adaptations", 8, () => new HirFunctionAdaptation(Array("adaptation targets", 9, Target)) { SessionSlot = reader.ReadInt32() }),
             entry,
             Array("exports", 5, () => new HirExport(String(), new(reader.ReadInt32()))), session,
             Array("template closures", 8, () => new HirTemplateClosure(new(reader.ReadInt32()), Array("template captures", 13, Capture))),
             Array("concepts", 25, Concept));
-        return result with { UnresolvedImports = Array("unresolved imports", 4, () => new HirLocationId(reader.ReadInt32())) };
+        return result with
+        {
+            UnresolvedImports = Array("unresolved imports", 4, () => new HirLocationId(reader.ReadInt32())),
+            SessionDispatches = Array("session dispatches", 16, () => new HirSessionDispatch(reader.ReadInt32(),
+                Array("session parameters", 4, () => new HirTypeId(reader.ReadInt32())), new(reader.ReadInt32()),
+                Array("session targets", 9, Target)))
+        };
     }
 
     private ImmutableArray<T> Array<T>(string name, int minimumBytes, Func<T> read)
@@ -182,7 +188,7 @@ internal sealed class HirBinaryReader(BinaryReader reader)
     private HirSignature Signature() => new(Array("signature parameters", 4, () => new HirTypeId(reader.ReadInt32())),
         new(reader.ReadInt32()), Boolean());
     private HirCall Call() => new(Defined((HirCallKind)reader.ReadByte()), new(reader.ReadInt32()), Optional(),
-        Array("dispatch targets", 9, Target), reader.ReadInt32());
+        Array("dispatch targets", 9, Target), reader.ReadInt32()) { SessionSlot = reader.ReadInt32() };
     private HirDispatchTarget Target() => new(new(reader.ReadInt32(), Boolean()), new(reader.ReadInt32()));
     private HirScopeConstruction Scope()
     {
