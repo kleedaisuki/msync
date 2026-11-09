@@ -95,7 +95,9 @@ public static class Optimizer
                     var features = FunctionAnalysis.Features(function);
                     var normalized = (features & FunctionFeatures.Directional) != 0 ? DirectionalNormalization.Optimize(inlined, function) : function;
                     var available = level >= 2 && (features & FunctionFeatures.Branch) != 0 ? GlobalRedundancy.OptimizeWithPool(inlined, normalized, constants, constantInterner) : normalized;
-                    return ValueNumbering.Eliminate(available, constants);
+                    var indexed = level >= 2 && (features & FunctionFeatures.IndexedReads) != 0
+                        ? IndexedMemoryOptimization.Optimize(available, constants) : available;
+                    return ValueNumbering.Eliminate(indexed, constants);
                 }
             }
             current = inlined;

@@ -10,7 +10,8 @@ internal enum FunctionFeatures
     Call = 8,
     Branch = 16,
     Directional = 32,
-    Fields = 64
+    Fields = 64,
+    IndexedReads = 128
 }
 
 internal static class FunctionAnalysis
@@ -18,6 +19,7 @@ internal static class FunctionAnalysis
     internal static FunctionFeatures Features(FunctionCode function)
     {
         var features = FunctionFeatures.None;
+        int indexedGets = 0, indexedSizes = 0;
         foreach (var instruction in function.Instructions)
             features |= instruction.Op switch
             {
@@ -28,6 +30,8 @@ internal static class FunctionAnalysis
                 OpCode.GetMember or OpCode.SetMember => FunctionFeatures.Fields,
                 OpCode.IteratorNext => FunctionFeatures.Iteration | FunctionFeatures.Branch,
                 OpCode.Call => FunctionFeatures.Call,
+                OpCode.NativeCall when instruction.Text == "storage.buffer_get" && ++indexedGets == 2 => FunctionFeatures.IndexedReads,
+                OpCode.NativeCall when instruction.Text == "storage.buffer_size" && ++indexedSizes == 2 => FunctionFeatures.IndexedReads,
                 OpCode.Barrier when instruction.B == 0 && instruction.Text is null => FunctionFeatures.Directional,
                 _ => FunctionFeatures.None
             };
