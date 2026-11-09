@@ -3,6 +3,10 @@
 The authoritative source grammar is implemented in `src/Msync.Compiler/Syntax`.
 The preserved Rust frontend and runtime live under `legacy/`; their old artifacts
 are not silently reinterpreted by the C# bytecode interpreter.
+Current artifacts use format 4 only; formats 1/2/3 are rejected. Product version
+remains 0.8.0 and the default optimization level is O2. The
+[delivery matrix](language-upgrade-delivery-v080.md) records acceptance separately
+from this language contract.
 
 ## Values, bindings and control flow
 
@@ -63,8 +67,8 @@ proved denotation for branch-local casts; ordinary payload narrowing is separate
 
 The finite semantic universe includes Bool, String, Path, Function, Scope,
 Connection, Process, Null, Range with an inferred item type, and Type values.
-Number is retained as a count primitive for the established range APIs and
-numeric process exit results. Unions use the Core `TypeKind` bitset, with an
+Number is the numeric carrier for arithmetic, range/count APIs and numeric
+process exit results. Unions use the Core `TypeKind` bitset, with an
 optional range item type, rather than allocating a vector for ordinary scalars.
 
 `match` requires exhaustive coverage. True/false cover Bool, null covers Null,
@@ -79,6 +83,54 @@ during compilation. Regex matching projects Path values into native strings.
 and infers the expression in a nonexecuted compilation frame and emits a Type
 constant; the operand's effects never enter the caller's instruction stream.
 
+## Numbers and explicit conversions
+
+Number is IEEE binary64, not a public integer-width hierarchy. Decimal fractions
+(`1.5`, `.5`, `1.`), exponent notation (`1e3`), separators (`1_000`), and binary,
+octal and hexadecimal integer literals (`0b10`, `0o10`, `0x10`) are accepted.
+Adjacent numeric operators such as `1+2` are arithmetic; explicit path spelling
+such as `./1.5` or `~/1+2` remains path data. Unary `+`/`-`, `+`, `-`, `*`, `/`,
+`%` and `**` use numeric operands. Multiplication/division/remainder associate
+left to right; exponentiation associates right to left and binds more tightly
+than unary negation: `-2**2` is `-4`.
+
+Division follows IEEE/JavaScript Number semantics, including infinity and NaN
+for zero divisors. `%` is truncating remainder with the dividend's sign, not
+Python's modulo; `$std::math::remainder` is the separate IEEE remainder function.
+NaN is unequal to itself and makes ordered comparisons false; positive and
+negative zero compare equal while their representation remains distinct. Static
+folding and runtime evaluation preserve those rules; an algebraic constraint
+does not license reassociation of floating-point operations.
+
+Lazy Range counts/indices require finite integral nonnegative Numbers below
+2^63; stride/chunk/slide require positive counts. They are not restricted to
+Int32 or silently parsed from String. Materialized containers retain their real
+storage limits. The [numeric contract and rationale](number-semantics-v080.md)
+explains count policy, safe integers and container ordering separately from
+source numeric equality.
+
+`value as TypeSyntax` requests an explicit conversion; the target is static type
+syntax, not an arbitrary runtime Type-valued expression. The source checker
+rejects impossible conversions before optimization. Value-dependent parse
+failures still produce an actual conversion diagnostic during execution.
+
+| Target | Admitted source representations beyond compatible identity |
+| --- | --- |
+| String | Path (native text), Bool, Number, Connection, Type |
+| Path | String, projected in the current context |
+| Number | Bool (`false`/`true` to 0/1), String/Path containing invariant numeric text |
+| Bool | Number (zero/NaN false, otherwise true), String/Path containing `true`/`false` |
+| Connection | String naming a builtin endpoint or an explicit `ssh://`/`wsl://` endpoint |
+| Range with an item constraint | Range whose elements admit the requested conversion, applied lazily |
+| Scope, Function, Process, Type | Compatible identity only; concept constraints are checked structurally |
+
+Nullable targets admit Null; nonnullable targets require prior null handling.
+A conversion of a union must admit every possible source case. Text-to-Bool is
+not nonempty-string truthiness. **Only Path/String conversion is implicit**,
+including assignments, parameters and annotated returns; no Number/Bool coercion
+is introduced. The old public `cast` function is replaced by `as`; its internal
+native lowering is not an additional source API.
+
 ## Functions and namespaces
 
 ### Canonical range namespace
@@ -92,10 +144,9 @@ an ordinary lexical binding with any of those names; it has no implicit
 namespace status.
 
 The editor's root catalog, TextMate range-function fallback, snippets and
-embedded skill examples use the same canonical namespace. Existing binary
-objects keep their original `LoadBuiltin` identities in the runtime and bytecode
-validator. This private read-compatibility boundary is not another source alias
-and is not advertised as a completion candidate.
+embedded skill examples use the same canonical namespace. Removed builtin
+identities are not retained in the current format-4 reader/runtime. An ordinary
+user declaration with the same spelling remains a lexical value, not a builtin.
 
 Named/anonymous `fn` is the one callable source construct. Parameters may state
 capability constraints such as `Path | String`; omitted types specialize from
@@ -129,6 +180,76 @@ function-table entry while retaining the closure's capture vector. A function
 selected by runtime control flow retains a finite set of statically checked
 callable alternatives and a precomputed template-to-specialization dispatch map.
 There is no runtime source parsing or generic type inference.
+
+### Named structural concepts
+
+Concepts express requirements over existing Scope values while keeping the
+runtime type universe closed:
+
+```msync
+concept Semigroup {
+    type Self;
+    combine: fn(left: Self, right: Self) -> Self,
+};
+concept Monoid {
+    Semigroup,
+    identity: Self,
+};
+fn use_identity(algebra: Monoid) -> Monoid {
+    algebra::combine(algebra::identity, algebra::identity);
+    algebra
+};
+```
+
+A body contains required members, operation signatures, associated type
+declarations and previously declared base concepts. Associated types are local
+or inherited; matching Type-valued members (for example `Self: String`), value
+members and concrete operation parameter annotations supply their carrier.
+Associated Scope carriers retain deep field shape rather than discarding it
+to the broad Scope kind. Implementing functions may remain generic.
+
+Constraints apply at specialization, annotated returns/bindings and static `as`
+checks. Concept names resolve in their definition-time lexical environment,
+including closures and REPL submissions. Mutable constrained locations and
+required operation members preserve their checked contracts on replacement.
+Checking does not execute operations or insert implicit field conversions.
+Missing members, unresolved associated types and wrong signatures relate the
+diagnostic to the concept declaration (`E0214`).
+
+There is no `requires`, `trait`, `impl`, global instance search, operator
+overloading or additional runtime TypeKind. Different Scope dictionaries may
+express different algebras over the same carrier. Structural checking cannot
+prove associativity, purity or commutativity and supplies no parallel-reduction
+or floating-point-reassociation proof. See
+[algebraic constraints and rationale](algebra-constraints-v080.md).
+
+### Scope identity and source class composition
+
+`scope Name { ... }` is a named declaration singleton: the first executed
+initializer establishes one shared instance per declaration within the current
+program or REPL session. Repeated calls/loop visits reach that same instance;
+specializations must agree on its fixed field schema. Reentrant initialization
+uses the first published canonical instance. Session reset creates an independent
+registry; this is not cross-program/process shared state.
+
+`scope { ... }` constructs a fresh instance each time it is evaluated. Thus a
+named namespace can expose an anonymous factory for independent objects:
+
+```msync
+scope Counter {
+    new: fn { scope { value: 0 } },
+};
+let first = Counter::new();
+let second = Counter::new();
+first::value = 1;
+```
+
+`second::value` stays 0. Aliasing `first` shares its identity and mutable fields;
+the inferred Number storage type remains fixed. Factory methods, captured
+locations and concept constraints provide source-level object composition
+without opening the runtime type system. The
+[standard-library inventory](stdlib-v080.md) and focused collections/services
+notes describe the built-in compositions rather than a second host class model.
 
 ### Explicit `global` imports and the Rust compatibility boundary
 
@@ -176,7 +297,7 @@ baseline tests are `lowering_v4::macro_global_uses_definition_snapshot_and_local
 and the transitive/imported-template cases in `compiler_functions_v060`.
 Restoring the keyword in 0.8 reuses existing lexical captures and typed location
 effects; it does not require a global registry, a new opcode, or a new artifact
-format, and does not change old artifact capture semantics.
+format. Historical artifacts are not accepted by the current C# reader.
 
 A type-derived condition such as `if decltype(value) is Path` selects its
 statically possible branch during specialization. `match decltype(value)`
@@ -190,8 +311,12 @@ retain their runtime branch.
 
 Scopes are lexical member values; Connections are physical endpoint values.
 `$wsl`, `$local`, native endpoint contexts and `ssh://...` produce Connections.
-Scope `::` selects a member; Connection `::` qualifies an inferred Path/String
-value. A scope selected by control flow exposes the intersection of member names
+Scope/Process `::` selects a member. `path @ connection` qualifies a Path/String
+value, evaluates the left operand before the right, and preserves raw path
+provenance. For example `(~/.codex @ ssh://forge) -> ./backup;` selects a remote
+source without introducing lexical endpoint members. The old physical
+`connection::path` spelling is rejected with migration guidance. A scope selected
+by control flow exposes the intersection of member names
 that exist in every alternative, with each member's joined semantic type.
 Identical dictionary allocation identity is not required for member projection.
 
@@ -227,11 +352,14 @@ checks comment and regex braces, actual multiline strings and incomplete EOF.
 
 Literal ranges keep a pure-value fast path. Effectful items become typed,
 zero-argument closure thunks; the range evaluates only demanded items. Calls
-returning Range defer the entire call and its argument evaluation until demand.
+returning Range ordinarily defer the call and its arguments until demand.
 `take(0)` therefore does not execute filesystem queries, mutations, or programs
 inside the source expression. Thunks capture only referenced existing slots;
 their bytecode owns any internal local slots. A finite range transfer remains
 one selected operation, not an implicit source-level `for`.
+Explicit eager snapshot operations (`materialize`, `environment.variables`)
+consume their input at the call and propagate that effect through source
+functions. They must not become deferred observations of later mutable state.
 
 The compiler emits source-independent, typed stack bytecode with explicit
 function tables, local slots, branches, capture layouts and native identities.
@@ -239,6 +367,10 @@ It passes the relocatable Module through the Core machine-independent optimizer
 at the requested level before export. Runtime binding performs contextual and
 machine-dependent lowering; native AOT compiles the host interpreter, not a
 reflection-based dynamic code generator for the DSL.
+Binding captures context once, lowers, optimizes once at the requested level,
+then performs final contextual lowering. Executing `.mexe` neither rebinds nor
+reoptimizes it. Format 4 is the sole supported binary contract; see
+[runtime ownership](runtime-v080.md).
 
 `CompilerSession` retains lexical bindings and stable function/local identities
 between REPL submissions. Each returned Module contains only the new main-entry
@@ -381,6 +513,12 @@ and its aliases have the type presentation role; an anonymous Scope value and a
 constructor-returned instance have the ordinary variable role. Both still have
 semantic type Scope and permit heterogeneous, independently inferred fields.
 Functions use the function role regardless of named/anonymous spelling.
+The literal `scope` and `fn` tokens remain keywords, not declaration-role
+identifiers. Named concepts and `$std` module namespaces use the type role;
+`if`/`else`/`match`, `?`, `acquire`/`release` and `as` use control-flow coloring,
+while `@` is an operator. Formatter layout uses a soft 80-column target and
+readable multiline Boolean chains, without changing literal data or semantics;
+see [tooling details](tooling-v080.md).
 
 ### Static endpoint hints and live prompt bindings
 

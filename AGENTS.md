@@ -4,8 +4,9 @@
 
 - The current product is the .NET 10 Native AOT implementation in `src/Msync.*`.
   `legacy/` preserves the independently buildable Rust 0.7.3 implementation,
-  embedded standard sources and fixtures; old syntax and object formats retain
-  their semantics through that explicit compatibility boundary.
+  embedded standard sources and fixtures. Current C# readers accept artifact
+  format 4 only; formats 1/2/3 are rejected, not reinterpreted. Historical Rust
+  syntax/artifacts belong to the separate legacy implementation.
 - Braces own blocks, `;` discards values, and a block tail is its result.
   Binding values are mutable but inferred/declared storage types are immutable;
   assignment checks the fixed constraint. Shadowing creates a new lexical identity.
@@ -18,15 +19,28 @@
   binding slots rather than looking their names up again in recursive callers.
   Implicit Path/String conversion must change the runtime value as well as its
   inferred type, including annotated function returns.
+  Number is binary64 with IEEE arithmetic/comparisons, right-associative `**`,
+  truncating `%`, and finite integral Int64 count/index admission. `as` checks a
+  static target and the explicit conversion matrix; Path/String is the only
+  implicit conversion. Named structural `concept` constraints compose member,
+  associated-type and callable contracts without opening `TypeKind` or proving
+  algebraic laws; see [the language contract](docs/design/language-v080.md).
+  Named Scope declarations are program/session-owned singletons initialized on
+  first execution; anonymous Scopes are fresh. `global` imports definition-time
+  lexical ancestor locations, not process-global names.
 - `Scope` is lexical; `Connection` is physical. `$wsl`, `$local` and SSH URLs
-  produce Connection values in 0.8. Endpoint qualification retains raw path
+  produce Connection values in 0.8. `Scope::member` selects lexical members;
+  `path @ connection` qualifies Path/String values. Connection `::` is removed.
+  Endpoint qualification retains raw path
   provenance; path separators follow the selected endpoint's grammar, so a
   POSIX backslash is filename data even on a Windows interpreter.
 - `.mso` and `.mexe` contain typed binary bytecode, never AST/debug-source replay.
   Format version and language-semantic version are independent. Relocatable
   bytecode is machine independent; executable lowering freezes context and
   specializes operations, but never stores live credentials or stale filesystem
-  observations as reusable proofs. `decltype` infers without executing effects.
+  observations as reusable proofs. Binding lowers, optimizes once at the chosen
+  level (default O2), then performs final contextual lowering. Executing `.mexe`
+  does not rebind or reoptimize. `decltype` infers without executing effects.
 - Product code never depends on Python or the Rust tree. Typed Python under
   `scripts/`, `packaging/` and `tests/` owns development/installation experiments.
   Keep publication payloads in `artifacts/`, archives in `dist/`, disposable work
@@ -35,7 +49,8 @@
   0.8 language/runtime/tooling/validation notes before revisiting these decisions.
   [Mutable state and effects](docs/design/mutable-state-and-effects-v080.md)
   supersedes the earlier immutable binding/capture decision and fixes the
-  dataflow, escape, directional barrier and artifact compatibility invariants.
+  dataflow, escape and directional barrier invariants. Its older binary
+  compatibility discussion is superseded by the current format-4-only contract.
 
 ## Normal-user transfer model (2026-11-01)
 
@@ -88,15 +103,14 @@
   finite Bool/String/Path unions do not need a heap vector in every expression.
 - `$std::ranges::` is the only predefined range namespace in current 0.8 source.
   The former `$view`, `$views`, `$ranges` and unbound bare range aliases are not
-  source/compiler/editor entrypoints. Old binary LoadBuiltin identities retain
-  runtime compatibility; user-declared lexical names are still ordinary values.
-  Preserve source-owned operand diagnostics. New typed object operations must
-  negotiate `typed_values_v2`, including exported values and intermediate types.
-  See [the type contract](docs/design/type-system-v065.md).
+  source/compiler/editor/runtime entrypoints. User-declared lexical names are
+  still ordinary values. Preserve source-owned operand diagnostics. Historical
+  capability negotiation in [the old type contract](docs/design/type-system-v065.md)
+  does not impose old-format compatibility on current format 4.
 - An implicit finite Range transfer is one selected transfer operation, not an
   implicit source-level `for`. Normal collision preflight can precede writes;
   failed multi-file work may be retried without a persistent rollback protocol.
-  Explicit loops and old For bytecode retain their iteration semantics; never
+  Explicit loops and For bytecode retain their iteration semantics; never
   guess executable intent from debug source.
 - Possible SSH paths are metadata, not executed effects. An unselected branch
   must not authenticate or globally join unrelated jobs. Bind credential and
@@ -109,11 +123,12 @@
   nonblocking/coalesced native wakeups; input priority or sleeps alone do not
   repair a cyclic backpressure dependency.
 
-## Standard library and namespaces (v0.7.0)
+## Standard library and namespaces (v0.8.0)
 
-- `$std` and explicit `scope name:` declarations use inferred Scope values.
-  Lexical namespaces select declared members; physical endpoint scopes qualify
-  paths. Keep their ownership distinctions rather than guessing from names.
+- `$std` modules and explicit `scope Name { ... }` declarations use inferred
+  named Scope values; named modules have type presentation in the editor.
+  Lexical namespaces select declared members with `::`; physical endpoints use
+  `@`. Keep their ownership distinctions rather than guessing from names.
 - Standard sources in `stdlib/*.msync` are executable compiler input, not
   parallel documentation. Cache parsed documents, never semantic scopes with a
   first caller's slots/cwd. Source compositions specialize normally; explicit
@@ -122,10 +137,12 @@
   a captured local projection until qualification; derived relative paths also
   retain explicit endpoint provenance. Lexical inspection uses raw text while
   actual local I/O uses captured context, not the process cwd.
-- Native operations, lexical namespace values and deferred path representation
-  negotiate `native_std_v1`. Old objects keep their original semantics; runtime
-  executes typed IR, never debug source. Lazy range calls evaluate arguments once
-  on demand, including source functions returning ranges.
+- Runtime executes current typed IR, never debug source. Ordinary Range calls
+  evaluate arguments once on demand, including source functions returning
+  ranges. Explicit eager snapshots (`materialize`, `environment.variables`)
+  propagate their eagerness through source functions instead of replaying
+  mutable inputs. Collections remain Range/Scope/Fn compositions, not new types.
+  See [the library inventory](docs/design/stdlib-v080.md).
 - Installed editor navigation uses versioned `msync-stdlib` virtual source
   documents backed by the same embedded bytes as compilation. Compare URI
   scheme/path semantically: VS Code may normalize triple-slash spellings.

@@ -12,9 +12,9 @@ The root build uses .NET 10. The implementation boundaries are:
 
 | Component | Owns | Must not own |
 | --- | --- | --- |
-| `Msync.Core` | Semantic types, values, typed bytecode, module/stage contract | Source parser, authenticated sessions |
+| `Msync.Core` | Semantic types, values, typed bytecode, artifact codec, machine-independent optimizer, module/stage contract | Source parser, authenticated sessions |
 | `Msync.Compiler` | Tokens/AST, binding, type inference, refinement, specialization, lowering | Executing filesystem observations or processes |
-| `Msync.Runtime` | Artifact codec, IR optimization, contextual binding, native operations, interpretation and transfer lifetime | Parsing/debug-source execution |
+| `Msync.Runtime` | Contextual binding/lowering, native operations, interpretation and transfer lifetime | Parsing/debug-source execution |
 | `Msync.Cli` | Commands, REPL, diagnostics, LSP transport and native process entrypoint | A second implementation of source semantics |
 
 Compilers, interpreters and native registries share semantic types rather than
@@ -35,6 +35,10 @@ are compiler inputs, not a second prose-only API.
 
 The artifacts contain operations, types, constants, symbolic context and source
 locations, not source to evaluate later. Source locations are diagnostic data.
+The current binary contract is format 4, language 0.8.0 (semantic flags 3).
+Readers reject earlier C# formats 1/2/3; compatibility code and old builtin
+alias identities are not retained. Historical versioning discussions describe
+previous releases, not a requirement to maintain their readers.
 Relocatable artifacts capture no live authentication, filesystem snapshots,
 handles or optimizer proofs about a previous execution. Executable artifacts
 freeze context, not remote credentials or a claim that external files still
@@ -61,11 +65,14 @@ exist. Loading an artifact does not authorize reusing stale observations.
   specialization reserves its identity before lowering its body: recursion is
   a normal typed call edge, not an infinite demand for inlining. New closures
   retain captured lexical locations; parameter expressions execute once.
-  Older binary artifacts retain their encoded snapshot-capture contract.
+  `global` explicitly imports definition-time lexical ancestor locations under
+  the same shared-cell contract; it is not process-global name lookup.
 * Scope is a lexical member object. Connection identifies a physical endpoint.
-  Both use `::`, but member lookup and endpoint path qualification are different
-  typed operations. Anonymous functions/scopes use exactly the named forms'
-  value representation.
+  Scope/Process member selection uses `::`; `Path | String @ Connection` is
+  physical qualification and evaluates left then right. Connection `::` is
+  rejected with migration guidance. Named Scope declarations initialize once on
+  first execution and share an instance within a program/REPL session; anonymous
+  Scopes allocate fresh instances. This is not a process-wide shared registry.
 * Paths retain raw text, captured local projection and explicit endpoint
   provenance. Requalifying an unbound `~` uses the selected endpoint's home.
   Lexical path operations do not accidentally turn raw text into local absolute
@@ -76,9 +83,16 @@ exist. Loading an artifact does not authorize reusing stale observations.
   path's native string projection. Type patterns operate on semantic types.
   `decltype(expr)` performs inference only; even native/process/transfer
   expressions in its operand are not executed.
-* The omitted-but-existing Bool type remains available. Numeric range/count
-  workloads require a Number primitive; it is not a special source-string
-  convention for native range calls.
+* Number is binary64 with IEEE division, unordered NaN comparisons, signed-zero
+  equality, truncating remainder and right-associative exponentiation. Finite
+  integral Int64 counts/indices serve lazy Range workloads without Int32 caps.
+  Numeric syntax and semantics are shared by static evaluation and execution.
+* `as` accepts a statically known target and a closed conversion matrix; only
+  Path/String conversion is implicit. A named `concept` composes structural
+  member, associated-type and function-signature constraints. Checking occurs
+  during specialization and annotated-result checking, not through runtime
+  dispatch. Concepts neither add TypeKinds/operator overloads nor prove laws.
+  See [the language contract](language-v080.md) for syntax and conversions.
 * Removed syntax (`:=`, binding `=>`, indentation declarations, async/await and
   the delete statement keyword) is not reintroduced through frontend aliases.
   Native filesystem deletion remains a callable library operation.
@@ -99,11 +113,21 @@ startup scan, parent-wide publication lock or filesystem-wide syncfs.
 One finite remote transfer uses one native SSH client/channel for metadata and
 bytes, preserving configured aliases, agents and native prompts.
 
-The old Rust CLI remains the explicit compatibility boundary for old scripts
-and old object/IR formats. New binary headers distinguish both format version
-and language semantics. A recognized container cannot silently change the
-meaning of its operations. Native AOT distribution must run without an installed
+The old Rust implementation remains a separate historical baseline; its formats
+are not current C# execution inputs. Binary headers distinguish format version
+and language semantics, and unsupported versions are rejected explicitly.
+Native AOT distribution must run without an installed
 .NET runtime; `.mexe` is msync executable IR, not an OS-native executable.
+
+Contextual binding captures cwd/home/source and binds constants once, lowers
+physical builtins and local transfers, invokes the optimizer once at the chosen
+level (default O2), then lowers newly exposed transfers/no-ops. Executable IR
+runs without rebinding or repeating this optimization pipeline. Structural
+artifact validation occurs at read; source type errors are checked before dead
+code elimination. Actual I/O admission owns failures and diagnostics rather
+than repeatedly proving permissions or file existence. A weak module-identity
+cache may retain immutable per-PC block lookup, never mutable cells, credentials
+or filesystem proofs. See [runtime details](runtime-v080.md).
 
 ## Engineering and research basis
 
@@ -142,3 +166,5 @@ compatibility. Cross-platform installation evidence supplements local checks.
 Implementation-specific language, runtime, tooling and validation findings belong
 in their focused 0.8 notes. This document fixes cross-component decisions, not a
 claim that every acceptance journey has already passed.
+The active [upgrade delivery matrix](language-upgrade-delivery-v080.md) separates
+required contracts, owner evidence, managed integration and native acceptance.
