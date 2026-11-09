@@ -9,8 +9,28 @@ an independent collection. No additional runtime collection type is introduced.
 ## Ownership and storage schema
 
 Every constructor consumes an initial Range to determine its element schema.
-An empty collection with a known schema can be made with
-`$std::ranges::take(existing, 0)`. Inferred storage types remain fixed across
+Empty scalar collections can specify their element type without an existing
+value:
+
+```msync
+let numbers = $std::collections::List([] as Range<Number>);
+numbers::add(1);
+let words = $std::collections::Set([] as Range<String>);
+```
+
+An empty Map needs a structural entry seed. `take(..., 0)` records its inferred
+schema without inserting a sample element:
+
+```msync
+let entries = $std::ranges::take([scope { key: "", value: 0 }], 0);
+let counts = $std::collections::Map(entries);
+counts::put("readme", 1);
+```
+
+`Range<Entry>` where Entry is a concept is a constraint, not a constructor for a
+new Scope row layout; casting an empty Range to it does not invent key/value
+locations. The same `take(existing, 0)` technique preserves an existing richer
+element schema. Inferred storage types remain fixed across
 method calls. Collections are not untyped bags merely because methods are
 first-class Function values. A constructor infers storage from the values it
 consumes, not from permission to assign a different value to a caller's original
