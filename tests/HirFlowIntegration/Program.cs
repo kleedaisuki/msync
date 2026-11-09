@@ -1,6 +1,7 @@
 using Msync.Compiler;
 using Msync.Core;
 using Msync.Hir;
+using Msync.Optimization;
 using Msync.Runtime;
 
 int checks = 0;
@@ -45,7 +46,8 @@ async Task Number(string source, double expected)
     var hir = Compiler.Analyze(source, "flow-journey.msync");
     foreach (int optimization in new[] { 0, 2 })
     {
-        Module module = HirLowerer.Lower(hir, new(OptimizationLevel: optimization)).Module;
+        Module module = Optimizer.Optimize(
+            HirLowerer.Lower(hir, new(OptimizationLevel: optimization)).Module, optimization);
         using MemoryStream stream = new();
         Artifact.Write(module, stream);
         stream.Position = 0;
@@ -61,7 +63,8 @@ async Task Text(string source, string expected)
     var hir = Compiler.Analyze(source, "flow-tree.msync");
     foreach (int optimization in new[] { 0, 2 })
     {
-        Module module = HirLowerer.Lower(hir, new(OptimizationLevel: optimization)).Module;
+        Module module = Optimizer.Optimize(
+            HirLowerer.Lower(hir, new(OptimizationLevel: optimization)).Module, optimization);
         Value value = await Interpreter.ExecuteAsync(module);
         checks++;
         if (value is not StringValue actual || actual.Data != expected)
