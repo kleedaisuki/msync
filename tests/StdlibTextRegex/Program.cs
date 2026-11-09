@@ -57,6 +57,7 @@ foreach (int level in new[] { 0, 2, 3 })
     await Check("let pattern = $std::regex::compile(\"[0-9]+\"); pattern::pattern()", "[0-9]+", level);
     await Check("let item = $std::ranges::first($std::regex::matches(\"A😀abc\", \"(?<part>abc)(?<missing>z)?\")); let group = $std::ranges::last(item::groups); group::success", "false", level);
     await Check("let item = $std::ranges::first($std::regex::matches(\"A😀abc\", \"(?<part>abc)\")); let group = $std::ranges::last(item::groups); group::index", "2", level);
+    await Check("let item = $std::ranges::first($std::regex::matches(\"a😀bc\", \"(?<=(?<prefix>😀))b\")); let group = $std::ranges::last(item::groups); group::index", "1", level);
     await Check("let matches = $std::regex::matches(\"abc\", \"abc\"); let first = $std::ranges::first(matches); first::value = \"changed\"; $std::ranges::first(matches)::value", "abc", level);
     await Check("if false { $std::regex::is_match(\"x\", \"[\"); }; \"ok\"", "ok", level);
     Module invalid = Frontend.Compile("let _ = $std::regex::is_match(\"x\", \"[\");", "regex-pattern-error", level);
