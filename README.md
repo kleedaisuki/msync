@@ -2,7 +2,7 @@
 
 msync is a typed file-synchronization language. Version 0.8 uses C# and .NET
 Native AOT, with a brace-based expression language, source-backed standard
-library, binary bytecode artifacts, and a block interpreter. The previous Rust
+library, typed semantic HIR, binary bytecode artifacts, and a block interpreter. The previous Rust
 implementation is retained in [Git history at v0.7.3](https://github.com/kleedaisuki/msync/tree/v0.7.3),
 not in the current checkout or distribution.
 
@@ -310,24 +310,31 @@ Optimization defaults to `-O2`. Select `-O1` for lower compilation latency or
 unoptimized typed bytecode. See `msync skill workflow artifacts` for the staged
 optimization policy.
 
-## Binary compilation pipeline
+## Typed compilation pipeline
 
 ```text
-.msync -> parse/type/narrow -> generic specialization -> typed bytecode
+.msync -> syntax and lexical binding -> semantic analysis / specialization
                                                        |
-                          machine-independent O0/O1/O2/O3 optimization
-                                                       |
-                                               relocatable .mso
-                                                       |
-                         runtime binding, block admission and specialization
-                                                       |
-                                                executable .mexe
-                                                       |
+                                              immutable Typed HIR
+                                                |            |
+                                           .mhir export   pure lowering
+                                                             |
+                                      typed bytecode -> O0/O1/O2/O3 optimization
+                                                             |
+                                                     relocatable .mso
+                                                             |
+                                         context binding / lowering
+                                                             |
+                                                      executable .mexe
+                                                             |
                                             interpreter + native scheduler
 ```
 
 ```sh
 msync check sync.msync
+msync compile sync.msync --emit hir -o sync.mhir
+msync disassemble sync.mhir --json
+msync compile sync.mhir -O1 -o sync.mso
 msync compile sync.msync -O1 -o sync.mso
 msync bind-ir sync.mso -o sync.mexe
 msync plan-ir sync.mexe
@@ -335,11 +342,32 @@ msync run sync.mso
 msync run-ir sync.mexe
 ```
 
-Both binary formats execute without the original source. A `.mso` binds to the
+Semantic analysis resolves declarations, types, storage constraints, captures,
+call targets and evaluation policy before bytecode generation. `Compiler.Analyze`
+returns the immutable semantic program; `Compiler.Compile` lowers that program
+and then optimizes the bytecode. The lowerer consumes no syntax tree and does
+not call back into type inference. Editor queries use semantic observations,
+not speculative bytecode compilation.
+
+A self-contained `.mhir` can be inspected, rewritten and lowered after deleting
+its source. Its source text is optional diagnostic data, not executable input;
+live session values and credentials are not stored in it. HIR cannot be
+reconstructed from `.mso` or `.mexe`: export it before bytecode lowering.
+
+Both bytecode formats execute without the original source. A `.mso` binds to the
 execution context when loaded. A `.mexe` captures working directory/home/source
 context; it does not persist open handles, authentication, filesystem snapshots,
 or validity proofs. Loading checks the bytecode format and executable contract.
 The runtime executes bytecode, never debug source or serialized AST.
+
+The six C# projects separate model, analysis and execution responsibilities:
+`Core` owns types and bytecode; `Hir` owns semantic programs, persistence and pure
+lowering; `Compiler` owns source semantics; `Optimization` owns IR transforms;
+`Runtime` owns execution and resources; `Cli` owns commands and editor/terminal
+hosting. The graph is acyclic and Native AOT still links one native executable.
+See [Typed HIR and phase ownership](docs/design/typed-hir-v081.md) for the
+information retained and discarded at each boundary, and the
+[architecture map](docs/design/architecture-v080.md) for project dependencies.
 
 ## Configuration and editor
 

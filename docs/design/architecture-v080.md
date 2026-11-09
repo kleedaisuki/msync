@@ -1,5 +1,10 @@
 # 0.8 language and execution architecture
 
+The current 0.8.1 semantic boundary is specified in
+[Typed HIR and compiler phase ownership](typed-hir-v081.md). The 0.8.0
+organization-only acceptance near the end of this note remains a historical
+baseline, not the description of the former emission frontend as current code.
+
 ## Scope and ownership
 
 The 0.8 migration replaces the indentation-based Rust frontend with a C#
@@ -13,8 +18,9 @@ The root build uses .NET 10. The implementation boundaries are:
 | Component | Owns | Must not own |
 | --- | --- | --- |
 | `Msync.Core` | Semantic types, values, typed bytecode, artifact codec, instruction effects and block formation | Source parser, optimizer passes, authenticated sessions |
+| `Msync.Hir` | Immutable typed semantic programs, source/definition/location identities, HIR persistence/printing and pure bytecode lowering | Source binding, type inference, live session objects or native execution |
 | `Msync.Optimization` | Machine-independent passes, function/effect analyses, constant evaluation, contextual IR binding/lowering | Source syntax, filesystem observations or authenticated execution |
-| `Msync.Compiler` | Tokens/AST, binding, type inference, refinement, specialization, lowering | Executing filesystem observations or processes |
+| `Msync.Compiler` | Tokens/AST, lexical binding, type inference, refinement, specialization, semantic generations and editor observations | Bytecode emission, physical frame layout or executing filesystem/process effects |
 | `Msync.Runtime` | Native operations, interpretation, scheduling and process/transfer lifetime | Source parsing, a second optimizer implementation |
 | `Msync.Cli` | Commands, REPL, diagnostics, LSP transport and native process entrypoint | A second implementation of source semantics |
 
@@ -30,31 +36,37 @@ codec and value model must not depend on optimization policy. There is no
 compatibility facade in Core. The managed project graph is acyclic:
 
 ```text
-Msync.Cli          -> Compiler, Runtime, Optimization
-Msync.Compiler     -> Core, Optimization
+Msync.Cli          -> Compiler, Hir, Runtime, Optimization
+Msync.Compiler     -> Core, Hir, Optimization
+Msync.Hir          -> Core
 Msync.Runtime      -> Core, Optimization
 Msync.Optimization -> Core
 Msync.Core         -> no other msync project
 ```
 
 Compiler and Runtime also reference Core directly. The CLI directly references
-Optimization for its IR binding commands. These are build-time and ownership
+Hir for semantic artifacts and Optimization for its IR binding commands. These are build-time and ownership
 boundaries; Native AOT still links one self-contained executable rather than
 loading managed components at runtime.
 
 | Project | Source entry points and domains |
 | --- | --- |
 | Core | `Types/`, `Values/`, `Bytecode/`, `Artifacts/`, `Native/`, `Context/`, `Diagnostics/` |
+| Hir | `Model/`, `Sealing/`, `Lowering/`, `Serialization/`, `Printing/` |
 | Optimization | `Pipeline/`, `Analysis/`, `Flow/`, `Memory/`, `Interprocedural/`, `Evaluation/`, `Contextual/` |
-| Compiler | Public compiler/session facades; `Syntax/`, `Compilation/`, `Editor/`, `StandardLibrary/`, `Diagnostics/` |
+| Compiler | Public compiler/session facades; `Syntax/`, `Semantics/`, `Editor/`, `StandardLibrary/`, `Diagnostics/` |
 | Runtime | `Execution/`, `Scheduling/`, `Transfers/`, `Native/`, `Context/`, `Platform/`, `Text/`, `Generated/` |
 | CLI | `Program` routing; `Commands/`, `Terminal/`, `LanguageServer/`, `Artifacts/`, `Configuration/`, `Diagnostics/`, `Telemetry/` |
 
-Classes follow state ownership rather than file-count targets. Compiler models
-are grouped by frame, binding/storage, Scope and callable lifetimes. Pure
-`SyntaxTraversal` and `LexicalWriteAnalysis` do not own compilation state;
-`StandardSourceCatalog` caches source resources, not caller environments.
-`Compilation` partials retain the one coherent per-compilation/session state.
+Classes follow state ownership rather than file-count targets. `SourceBinder`
+resolves immutable generic bodies and lexical identities. `SemanticAnalyzer`
+owns type/flow facts and callable specialization; query workspaces cannot append
+executable output. `SemanticSession` owns pending/accepted source generations,
+while `HirLoweringSession` owns their logical-to-physical layout. Pure
+`SyntaxTraversal` and lexical write analysis do not own semantic environments;
+`StandardSourceCatalog` caches source resources, not caller state. The former
+`Compilation` emission partials and bytecode-producing editor probe path are
+removed, rather than retained as an alternate frontend.
 
 Runtime `ExecutionSession`, `SessionImage` and `ResourceIndex` are independent
 owners rather than declarations appended to the interpreter. Opcode dispatch,
@@ -79,8 +91,9 @@ context; it does not perform filesystem observations or authentication.
 ```text
 *.msync
    -> tokens / syntax tree
-   -> inferred typed operations + specialized function identities
-   -> relocatable bytecode
+   -> bound generic bodies / semantic analysis / specialized identities
+   -> immutable Typed HIR ----> *.mhir
+   -> pure bytecode lowering
    -> machine-independent optimization and control/effect blocks (-O level)
    -> *.mso
         -> contextual binding + runtime lowering of selected work
@@ -88,7 +101,12 @@ context; it does not perform filesystem observations or authentication.
              -> interpreter / native operation admission / execution
 ```
 
-The artifacts contain operations, types, constants, symbolic context and source
+The `.mhir` container independently versions the typed semantic program. Its
+source text is optional diagnostic material, never syntax to replay. Standalone
+lowering requires a self-contained semantic entry; live external session values
+are not serialized into the file.
+
+Bytecode artifacts contain operations, types, constants, symbolic context and source
 locations, not source to evaluate later. Source locations are diagnostic data.
 The current binary contract is format 4, language 0.8.0 (semantic flags 3).
 Readers reject earlier C# formats 1/2/3; compatibility code and old builtin
