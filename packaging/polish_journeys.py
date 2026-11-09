@@ -50,6 +50,8 @@ def main() -> int:
             "call-order",
             "stdlib-experience",
             "stdlib-control",
+            "stdlib-skills",
+            "stdlib-cast-contract",
             "scheduler-frontier-source",
             "scheduler-frontier-executable",
             "artifact-view",
@@ -113,6 +115,8 @@ def main() -> int:
         ("call-order", "call_order_journey.py"),
         ("stdlib-experience", "stdlib_experience_journey.py"),
         ("stdlib-control", "mutable_state_journey.py"),
+        ("stdlib-skills", "stdlib_experience_journey.py"),
+        ("stdlib-cast-contract", "stdlib_experience_journey.py"),
         ("scheduler-frontier-source", "scheduling_journey.py"),
         ("scheduler-frontier-executable", "scheduling_journey.py"),
         ("artifact-view", "artifact_view_journey.py"),
@@ -157,6 +161,10 @@ def main() -> int:
             extra.append("--reference-only")
         if name == "global-terminal":
             extra.extend(["--case", "global"])
+        if name == "stdlib-skills":
+            extra.extend(["--case", "skills"])
+        if name == "stdlib-cast-contract":
+            extra.extend(["--case", "contracts"])
         if name == "stdlib-control":
             for case in (
                 "for-break-null",
