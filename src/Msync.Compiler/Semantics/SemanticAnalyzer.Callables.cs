@@ -8,6 +8,7 @@ internal sealed partial class SemanticAnalyzer
 {
     private SemanticValue Call(HirNode node, ReadOnlySpan<HirNodeId> children, SemanticContext context, bool allowDeferral = true)
     {
+        if (TryMetaCall(node, children, context, out SemanticValue metadata)) return metadata;
         ReturnShape? shape = allowDeferral ? CallShape(node, children, context) : null;
         if (shape is { Fact.Type.Kind: TypeKind.Range, Eager: false })
             return DeferredCall(node, children, context);
@@ -15,14 +16,17 @@ internal sealed partial class SemanticAnalyzer
         if (call.Kind == HirCallKind.Native)
         {
             SemanticValue nativeCallee = Analyze(children[0], context);
+            if (TryMetaCall(nativeCallee, node, children, context, out SemanticValue nativeMetadata)) return nativeMetadata;
             SemanticValue[] arguments = new SemanticValue[children.Length - 1];
             for (int index = 0; index < arguments.Length; index++) arguments[index] = Analyze(children[index + 1], context);
             return InvokeNative(call.NativeName!, arguments, node.Source, context, nativeCallee);
         }
         SemanticValue callee = Analyze(children[0], context);
+        if (TryMetaCall(callee, node, children, context, out SemanticValue computedMetadata)) return computedMetadata;
         SemanticValue[] inputs = new SemanticValue[children.Length - 1];
         for (int index = 0; index < inputs.Length; index++) inputs[index] = Analyze(children[index + 1], context);
-        HirTypeId? resultDomain = shape is { } projected && !projected.Eager && projected.Fact.Type != TypeRef.Any
+        HirTypeId? resultDomain = shape is { } projected && !projected.Eager
+            && projected.Fact.Type.WithoutNull != TypeRef.Any.WithoutNull
             && (projected.Fact.Type.Kind & TypeKind.Range) != 0
                 ? projected.Fact.SemanticType : null;
         return Invoke(callee, inputs, node.Source, context, resultDomain);
