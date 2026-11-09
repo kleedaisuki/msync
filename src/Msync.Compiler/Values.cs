@@ -38,6 +38,10 @@ internal sealed partial class Compilation
     {
         if (frame.Environment.TryGetValue(name, out var binding))
         {
+            if (binding.Info.Scope?.IsInitializing == true)
+                throw Error(frame, $"Named Scope '{name}' is still being initialized.", span,
+                    label: "this Scope has not been constructed yet",
+                    help: "Refer to the Scope from a member function called after construction, or use an already initialized field directly.", code: "E0211");
             if (binding.Origin is { } origin) CaptureDefinition(frame, span, [origin]);
             if (binding.Self is not null) EmitClosure(frame, binding.Self);
             else frame.Emit(OpCode.LoadLocal, binding.Slot, span: span);
@@ -298,7 +302,7 @@ internal sealed partial class Compilation
         return HasStaticPathProjection(connection) ? PathSemantics.Qualify(path, connection!) : null;
     }
 
-    private Info Scope(Frame frame, ScopeExpr scope, bool named = false)
+    private Info Scope(Frame frame, ScopeExpr scope, bool named = false, Binding? self = null)
     {
         named |= scope.Name is not null;
         if (!scopeAllocationSites.TryGetValue(scope, out int allocation)) scopeAllocationSites.Add(scope, allocation = ++nextScopeAllocation);
@@ -314,6 +318,8 @@ internal sealed partial class Compilation
         }
         namedScopeInfos.TryGetValue(scope, out var existingSingleton);
         var old = frame.Environment;
+        if (self is null && scope.Name is { } selfName)
+            self = ReserveScope(frame, selfName, scope.NameSpan);
         var owner = frame.ContextOwner;
         bool includesEnd = frame.ContextIncludesEnd;
         frame.ContextOwner = scope.Span;
@@ -326,6 +332,19 @@ internal sealed partial class Compilation
         List<string> keys = [];
         List<int> fieldSlots = [];
         Dictionary<string, Binding> fieldBindings = [];
+        Dictionary<string, StorageConstraint> fieldStorage = [];
+        if (!frame.ScopeSites.TryGetValue(scope, out var identity)) frame.ScopeSites.Add(scope, identity = new());
+        ScopeInfo shape = new(members, named, origins, nullableMembers, storageTypes)
+        {
+            Identity = identity,
+            AllocationSite = allocation,
+            FieldBindings = fieldBindings,
+            Storage = fieldStorage,
+            IsInitializing = self is not null
+        };
+        // Methods capture the reserved location and its complete eventual schema,
+        // including when a source module exports them into another frame.
+        if (self is not null) Update(frame, self, new(TypeRef.Scope, Scope: shape));
         foreach (var member in scope.Members)
         {
             if (members.ContainsKey(member.Name))
@@ -356,6 +375,7 @@ internal sealed partial class Compilation
             Store(frame, member.Name, info, member.NameSpan, member.Nullable);
             fieldSlots.Add(frame.Environment[member.Name].Slot);
             fieldBindings[member.Name] = frame.Environment[member.Name];
+            fieldStorage[member.Name] = frame.Environment[member.Name].Storage;
             if (origins is not null && frame.Environment[member.Name].Origin is { } origin) origins[member.Name] = [origin];
             keys.Add(member.Name); members[member.Name] = info;
             CaptureContext(frame, member.Span.End);
@@ -372,14 +392,8 @@ internal sealed partial class Compilation
         RestoreScope(frame, old);
         frame.ContextOwner = owner;
         frame.ContextIncludesEnd = includesEnd;
-        if (!frame.ScopeSites.TryGetValue(scope, out var identity)) frame.ScopeSites.Add(scope, identity = new());
-        Info result = new(TypeRef.Scope, Scope: new(members, named, origins, nullableMembers, storageTypes)
-        {
-            Identity = identity,
-            AllocationSite = allocation,
-            FieldBindings = fieldBindings,
-            Storage = fieldBindings.ToDictionary(pair => pair.Key, pair => pair.Value.Storage, StringComparer.Ordinal)
-        });
+        shape.IsInitializing = false;
+        Info result = new(TypeRef.Scope, Scope: shape);
         if (named)
         {
             bool firstExecution = frame.SingleExecution && frame.Loops.Count == 0 && existingSingleton is null;
@@ -392,6 +406,12 @@ internal sealed partial class Compilation
         }
         frame.Facts = frame.Facts.SetItem(result.Scope!.Identity, result);
         RegisterScope(frame, result.Scope);
+        if (self is not null)
+        {
+            frame.Emit(OpCode.Dup);
+            frame.Emit(OpCode.StoreLocal, self.Slot);
+            Update(frame, self, result);
+        }
         if (scope.NameSpan is { } nameSpan) Observe(frame, nameSpan, result, scope.Name);
         return result;
     }

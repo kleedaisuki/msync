@@ -75,7 +75,7 @@ internal sealed partial class Compilation
             {
                 case NativeDeclaration native: memberName = native.Name; info = Native(module, native, name); break;
                 case FunctionDeclaration function: memberName = function.Name; info = Function(module, function.Function); break;
-                case ScopeDeclaration scope: memberName = scope.Name; info = Scope(module, scope.Scope, named: true); break;
+                case ScopeDeclaration scope: memberName = scope.Name; info = ScopeDeclarationValue(module, scope); break;
                 case LetStatement { Pattern: NamePattern bound } let: memberName = bound.Name; info = Expression(module, let.Value); break;
             }
             if (memberName is null || info is null) throw Error(module, "A standard module contains only named declarations.", statement.Span);
@@ -87,14 +87,15 @@ internal sealed partial class Compilation
                 LetStatement { Pattern: NamePattern namePattern } => namePattern.Span,
                 _ => null
             };
-            Store(module, memberName, info, nameSpan);
+            if (statement is ScopeDeclaration) module.Emit(OpCode.Pop);
+            else Store(module, memberName, info, nameSpan);
             bindings[memberName] = module.Environment[memberName];
             if (origins is not null && module.Environment[memberName].Origin is { } origin) origins[memberName] = [origin];
             keys.Add(memberName); members[memberName] = info;
         }
         foreach (var key in keys) module.Emit(OpCode.LoadStorage, bindings[key].Slot);
         module.Emit(OpCode.MakeScope, keys.Count, text: string.Join('\0', keys), span: span);
-        frame.Code.AddRange(module.Code); frame.Locals = module.Locals;
+        AppendCode(frame, module.Code); frame.Locals = module.Locals;
         foreach (var (cacheName, binding) in StandardEnvironment(module)) frame.Bind(cacheName, binding);
         var result = new Info(TypeRef.Scope, Scope: new(members, Named: true, Origins: origins)
         {

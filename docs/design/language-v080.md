@@ -232,6 +232,13 @@ specializations must agree on its fixed field schema. Reentrant initialization
 uses the first published canonical instance. Session reset creates an independent
 registry; this is not cross-program/process shared state.
 
+A named Scope reserves its lexical location before constructing its fields.
+Member functions can therefore select later members through the Scope name,
+including recursive calls such as `Family::operation(...)`. They capture the
+same mutable location as ordinary closures, rather than a copied namespace or
+an independently initialized singleton. A named Scope expression supplies its
+name inside that expression; a declaration also binds it in the enclosing scope.
+
 `scope { ... }` constructs a fresh instance each time it is evaluated. Thus a
 named namespace can expose an anonymous factory for independent objects:
 

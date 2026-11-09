@@ -29,11 +29,20 @@ foreach (int level in new[] { 0, 2, 3 })
         ("initializer-flow-facts", "let flag = false; fn factory() { scope Saved { item: { flag = true; \"value\" } }; Saved }; factory(); flag = false; factory(); if flag { \"stale\" } else { \"skipped\" }", "skipped"),
         ("specialized-capture", "fn factory(value: Scope) { scope Saved { read: fn { value::item } }; Saved }; if false { factory(scope { item: \"unselected\" }); }; factory(scope { item: \"selected\" })::read()", "selected"),
         ("selected-first", "fn factory(value: String) { scope Saved { item: value }; Saved }; if false { factory(\"unselected\"); }; factory(\"selected\")::item", "selected"),
+        ("self-forward-member", "scope family { make: fn(value:String) { family::later(value) }, later: fn(value:String) { scope {item:value} } }; family::make(\"forward\")::item", "forward"),
+        ("self-expression", "let value = scope Family { make: fn { Family::later() }, later: fn { \"expression\" } }; value::make()", "expression"),
+        ("self-shared-mutation", "scope Family { item: \"before\", read: fn { Family::item } }; let alias = Family; alias::item = \"after\"; Family::read()", "after"),
+        ("self-binding-mutation", "scope Family { read: fn { Family::item }, item: \"before\" }; let original = Family; Family = scope {item: \"replacement\"}; original::read()", "replacement"),
+        ("self-recursive-operation", "scope Family { depth: fn(value:Number)->Number { if value == 0 { 0 } else { Family::depth(value - 1) + 1 } } }; if Family::depth(4) == 4 { \"recursive\" } else { \"wrong\" }", "recursive"),
+        ("self-singleton-first-capture", "fn factory(value:String) { scope Saved { read: fn { Saved::item }, item:value }; Saved }; factory(\"first\"); factory(\"ignored\")::read()", "first"),
     })
     {
         Module raw = Compiler.Compile(source, name, level);
         foreach (Module module in new[] { raw, RoundTrip(raw), RoundTrip(Binding.Bind(raw, new(Environment.CurrentDirectory, Environment.CurrentDirectory))) })
-            Check(await Interpreter.ExecuteAsync(module) is StringValue value && value.Data == expected, $"{name} O{level} {module.Stage}");
+        {
+            try { Check(await Interpreter.ExecuteAsync(module) is StringValue value && value.Data == expected, $"{name} O{level} {module.Stage}"); }
+            catch (Exception error) { throw new InvalidOperationException($"{name} O{level} {module.Stage}", error); }
+        }
     }
     CompilerSession compiler = new(optimization: level);
     ExecutionSession session = new();
@@ -49,6 +58,9 @@ foreach (int level in new[] { 0, 2, 3 })
     Check(await Submit("factory(\"ignored\")::item") is StringValue { Data: "after" }, $"REPL singleton persisted O{level}");
     await Submit("scope Other { item: \"different\" };");
     Check(await Submit("Other::item") is StringValue { Data: "different" }, $"REPL declaration identity O{level}");
+    await Submit("scope SelfFamily { read: fn { SelfFamily::item }, item: \"before\" };");
+    await Submit("SelfFamily::item = \"after\";");
+    Check(await Submit("SelfFamily::read()") is StringValue { Data: "after" }, $"REPL self capture O{level}");
     try
     {
         _ = Compiler.Compile("fn factory(value: Scope) { scope Saved { item: value }; Saved }; factory(scope { field: \"text\" }); factory(scope { field: 1 })", "fixed-singleton-schema", level);
@@ -57,6 +69,23 @@ foreach (int level in new[] { 0, 2, 3 })
     catch (CompileException error)
     {
         Check(error.Message.Contains("storage schema", StringComparison.Ordinal), $"Fixed singleton schema diagnostic O{level}");
+    }
+    foreach (string pending in new[]
+    {
+        "scope Pending { item: Pending };",
+        "scope Pending { read: fn { Pending::value }, value: 1, item: Pending::read() };"
+    })
+    {
+        try
+        {
+            _ = Compiler.Compile(pending, "pending-self", level);
+            throw new InvalidOperationException("A Scope read its unpublished self location");
+        }
+        catch (CompileException error)
+        {
+            Check(error.Diagnostic.Code == "E0211" && error.Message.Contains("still being initialized", StringComparison.Ordinal),
+                $"Uninitialized self diagnostic O{level}");
+        }
     }
     ExecutionSession independent = new();
     Module independentModule = Compiler.Compile("scope Other { item: \"independent\" }; Other::item", "isolated", level);

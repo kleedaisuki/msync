@@ -145,7 +145,7 @@ internal sealed partial class Compilation(string source, string sourceName, int 
         ConceptDeclaration concept => DeclareConcept(frame, concept),
         FunctionDeclaration declaration => DeclareFunction(frame, declaration),
         NativeDeclaration native => Declare(frame, native.Name, Native(frame, native, null), native.NameSpan),
-        ScopeDeclaration declaration => Declare(frame, declaration.Name, Scope(frame, declaration.Scope, named: true), declaration.NameSpan),
+        ScopeDeclaration declaration => DeclareScope(frame, declaration),
         ExpressionStatement expression => StatementExpression(frame, expression),
         _ => throw new InvalidOperationException($"Unknown statement {statement.GetType().Name}.")
     };
