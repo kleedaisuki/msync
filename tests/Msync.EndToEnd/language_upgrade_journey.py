@@ -37,6 +37,12 @@ constrained(TextConcat)::combine("Klee", "!") -> ./concept.txt;
 (((.5*2)+(0x10%3)) as String) -> ./compact.txt;
 ((1e3/4) as String) -> ./exponent.txt;
 ((1_000+0o10+0b10) as String) -> ./bases.txt;
+let nan = 0/0;
+if nan != nan and not (nan < 0) and 1/2 == .5 and -7%4 == -3
+    and 2**3**2 == 512 and $std::math::signbit(-0)
+    and $std::ranges::empty($std::ranges::take([], 2147483648)) {
+    "numeric-ok" -> ./numeric-semantics.txt;
+};
 fn named(value: String) {
     scope Saved { item: value };
     Saved
@@ -58,6 +64,7 @@ OUTPUTS: dict[str, bytes] = {
     "compact.txt": b"2",
     "exponent.txt": b"250",
     "bases.txt": b"1010",
+    "numeric-semantics.txt": b"numeric-ok",
     "singleton.txt": b"shared",
     "anonymous.txt": b"fresh",
     "copied.bin": bytes(range(256)) + b"\x00\r\n",
@@ -205,6 +212,10 @@ def main() -> None:
         report: dict[str, object] = {
             "binary": str(binary),
             "binary_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+            "managed_components": {
+                str(path.name): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted(binary.parent.glob("*.dll"))
+            },
             "platform": platform.platform(),
             "staged_program_executions": execute(binary, directory, arguments.levels),
             "negative_diagnostics": negative(binary, directory),

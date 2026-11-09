@@ -88,3 +88,55 @@ The production-bundle actual VS Code host supports the focused selection
 `MSYNC_TEST_LANGUAGE_UPGRADE_ONLY=1`, with the final absolute native path in
 `MSYNC_TEST_SERVER_PATH`. The host suite is an additional editor boundary, not a
 substitute for native CLI execution on both operating systems.
+
+## Managed integration observations
+
+The first producer-owned immutable CLI snapshot is
+`.temp/language-upgrade-managed/snapshot-1/msync`, executable SHA-256
+`10e48f20bebc980b777a13c12fb5f107c54b91d9e0cb47b5354ecc3b8cf2b282`.
+Its provenance file records the source diff as well as the HEAD because parallel
+implementation was still in progress. This is managed integration evidence,
+not the final native publication freeze.
+
+- The integrated CLI journey passed nine actual source/object/executable programs
+  at O0/O2/O3, four source-diagnostic rejections and four current/obsolete format
+  contracts. Its report is
+  `.temp/language-upgrade-delivery/managed-integrated.json`.
+- The semantic owner reported `tests/LanguageUpgrade` (fixture `7ceff29`): 232
+  assertions over 24 programs, three stages and O0/O2/O3 plus sixteen static
+  rejections. Coverage includes the cast matrix, lazy Range conversion, permitted
+  implicit conversions, `@` evaluation order, fixed storage/captures/nullable
+  flow, composed concept returns and singleton closures. This focused owner
+  evidence is reused rather than rerunning that matrix in delivery.
+
+Later fixes to source-library snapshots are not covered by this first snapshot;
+the final native cross-module journeys must consume the coherent publication
+image rather than infer acceptance from these early results.
+
+The source-migration owner additionally reported focused existing-workflow
+acceptance on snapshot 1: eight standard-library programs across 24 staged runs,
+nullable Scope members across 36 staged runs and three LSP revisions, six mutable
+state stages with the fixed-type diagnostic, twelve linear-effect cases, current
+format-4 views/schema-1 plus singleton/remainder instruction hovers, real SSH
+`path @ remote` authentication/cancellation with one authenticated session, and
+packaging smoke plus endpoint projection. That snapshot's `msync.dll` is
+`42d2052d4645ab33c24ddb7da6791c1666724b412f07440da4b2c52bd26fff24`.
+The repository DSL example also checks under snapshot 2, whose `msync.dll` is
+`1a98184e3e576898e38f64159b01fcb1db0552578b683cfd8d4982cc4ca61f8a`,
+including the corrected trailing-directory `@` syntax. These focused migration
+results are reused; no unrelated old-format compatibility matrix is retained.
+
+The native selection additionally runs current-format disassembly and, on Linux
+with explicit `--ssh-fixture`, a small real remote class-library journey. The
+library owner accepted its three O2 source/object/executable routes on snapshot 2
+(fixture `ca99597`): fifteen exact-byte observations, no authentication during
+check/compile/bind, five native SSH clients per selected execution and no `scp`.
+Windows supplements the native CLI bytes with the focused `tests/ContextBinding`
+filesystem contract; Linux already has the owner's local result.
+
+When `benchmark=true` and `baseline_run=42603680953` are selected, the same native
+publication wave records matched old/new no-stdlib and Boolean module loading
+and 128/1024-statement transfer compilation, generic value checking and
+object/executable execution. Each image creates and consumes its own binary
+format. The comparison does not require cross-version IR compatibility, build
+Rust again, or impose timing quality gates.
