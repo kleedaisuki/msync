@@ -1,6 +1,7 @@
 # Host filesystem operations preserve endpoint provenance and execute only at runtime.
 native fn exists(path: Path | String) -> Bool;
 native fn delete(path: Path | String) -> Null;
+native fn touch(path: Path | String) -> Null;
 native fn status(path: Path | String) -> String;
 native fn symlink_status(path: Path | String) -> String;
 native fn is_regular_file(path: Path | String) -> Bool;
@@ -26,6 +27,7 @@ native fn create_directory(path: Path | String) -> Bool;
 native fn create_directories(path: Path | String) -> Bool;
 native fn remove(path: Path | String) -> Bool;
 native fn remove_all(path: Path | String) -> Bool;
+native fn remove_directory(path: Path | String) -> Bool;
 native fn rename(source: Path | String, destination: Path | String) -> Null;
 native fn create_hard_link(target: Path | String, link: Path | String) -> Null;
 native fn create_symlink(target: Path | String, link: Path | String) -> Null;

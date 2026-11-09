@@ -102,6 +102,15 @@ internal static class TerminalHelp
         Row("/cd [PATH]", "Change directory; no argument selects home", color);
         Row("/clear", "Clear the view, retaining bindings", color);
         Console.WriteLine();
+        Heading("TYPED TERMINAL TOOLS", color);
+        Row("pwd(); cd(./work)", "Inspect or change this session's local directory", color);
+        Row("ls(); ls_at(~)", "Stream Path values from the selected directory", color);
+        Row("cat(./notes.txt)", "Read UTF-8 text; existing Path values retain their origin", color);
+        Row("grep(\"error\", ./log.txt)", "Select matching lines as a composable Range", color);
+        Row("head(sort(uniq(lines)), 10)", "Compose values, not shell command strings", color);
+        Row("msync skill library shell", "Read the complete typed command reference", color);
+        Console.WriteLine("These are ordinary shadowable functions imported only by the REPL.");
+        Console.WriteLine("Scripts select the same operations through $std::shell::operation(...).\n");
         Heading("EDITING", color);
         Row("Tab", "Complete names, members and selected paths", color);
         Row("Shift+Enter", "Insert a newline", color);
