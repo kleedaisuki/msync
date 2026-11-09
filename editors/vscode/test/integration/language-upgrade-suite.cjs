@@ -89,7 +89,7 @@ async function run() {
         ['concept Named', 'keyword'], ['Named {', 'type'], ['Labeled)', 'type'],
         ['fn label', 'keyword'], ['label(item', 'function'], ['scope Catalog', 'keyword'],
         ['Catalog {', 'type'], ['instance =', 'variable'], ['scope { name', 'keyword'],
-        ['1.5,', 'number'], ['.5,', 'number'], ['1e3,', 'number'], ['0xFF,', 'number'],
+        ['1.5,', 'number'], [' .5,', 'number', 1], ['1e3,', 'number'], ['0xFF,', 'number'],
         ['0b10_01,', 'number'], ['0o77,', 'number'], ['1_000,', 'number'],
         ['**3**2', 'operator'], ['as String', 'controlKeyword'], ['@ $local', 'operator'],
         ['std::math', 'type'], ['math::abs', 'type'], ['abs(-0)', 'function'],
@@ -98,17 +98,18 @@ async function run() {
     for (const theme of ['Default Dark Modern', 'Default Light Modern']) {
         await vscode.workspace.getConfiguration('workbench').update('colorTheme', theme, vscode.ConfigurationTarget.Global);
         const roles = await semanticRoles(document);
-        for (const [spelling, role] of expected) {
-            const actual = roles.get(source.indexOf(spelling));
+        for (const [spelling, role, shift = 0] of expected) {
+            const actual = roles.get(source.indexOf(spelling) + shift);
             assert.equal(actual?.type, role, `${theme}: ${spelling}: ${JSON.stringify(actual)}`);
         }
-        themes.push({theme, roles: expected.map(([spelling]) => ({spelling, ...roles.get(source.indexOf(spelling))}))});
+        themes.push({theme, roles: expected.map(([spelling, , shift = 0]) => ({spelling, ...roles.get(source.indexOf(spelling) + shift)}))});
     }
     const errors = vscode.languages.getDiagnostics(document.uri).filter(value => value.severity === vscode.DiagnosticSeverity.Error);
     assert.deepEqual(errors.map(value => value.message), []);
     const applyFormat = async () => {
         const edits = await bounded('formatting', vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', document.uri, {insertSpaces: true, tabSize: 4}));
         assert.ok(edits);
+        if (edits.length === 0) return;
         const update = new vscode.WorkspaceEdit();
         update.set(document.uri, edits);
         assert.ok(await vscode.workspace.applyEdit(update));
