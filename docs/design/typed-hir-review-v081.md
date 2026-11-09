@@ -205,3 +205,58 @@ context dictionaries. They do not cause the old retained-world cache, but retain
 O(live context size) temporary work per query. A read-only parent plus sparse
 constraint overlay can address that cost while establishing the ownership
 boundary, without whole-arena snapshots.
+
+## Follow-up: owned output and the frozen snapshot 2
+
+Snapshot 2 was inspected without rebuilding or repeating the test matrix. Its
+managed CLI lives under `.temp/hir-editor-cli/frozen`; the receipt identifies
+source HEAD `7a6230e09ef23ec6dfe0dbbdd2d849b9b263062b` plus its working diff.
+The inspected Compiler DLL SHA-256 is
+`1f6af0107fecce36009bec27d2d00069aa0472a7df9f2924b0356b6c65a52de7`.
+
+The fresh Scope/captured-field counterexample above now selects **7**, using the
+frozen CLI to export `.mhir`, load it, lower at O0, and write the selected branch
+result. The projection maps fresh `Scope.Locations` and closure captures through
+the same `MapLocation` dictionary and initializes the resulting caller cells.
+This closes the specific projection defect found in the preceding review.
+
+The output architecture is now materially different from the original guards:
+
+- `SemanticArena` exposes executable tables through `IReadOnlyList`; only
+  canonical type, shape and signature metadata can be interned through it.
+- `SemanticOutput` owns executable node/payload/location/function mutations,
+  including function reservation and completion.
+- A query context has `Output = null`; `Publish` is derived from that capability,
+  rather than independently enabling a shared writer. Query flow forks cannot
+  acquire an output capability from their parent.
+- `SemanticFacts` overlays immutable semantic descriptions on read-only borrowed
+  parent maps. `QueryFork` does not enumerate/copy the live world; writes enter
+  local maps. Query control-flow merging examines changed local keys.
+
+These properties establish the boundary for already-bound input. They are not
+inferred merely from successful export or from the sealer removing unused rows.
+The output owner also reported that a concurrently added direct
+`hir.Locations[index] = ...` / `hir.Add(...)` helper failed to compile against the
+read-only arena and was migrated to the output API. Its focused ownership checks
+are reused here rather than rerun. A second frozen source-free journey assigned
+null to both a nullable scalar and a Scope field inside `decltype`; subsequent
+real execution retained their original non-null values and selected `isolated`.
+
+### Still open: standard-library demand binding is a separate writer
+
+`EnsureModule` still calls `program.BindModule(name)` in a query context. The
+callback belongs to `SourceBinder.BindStandardModule`, which can append source,
+bound nodes, templates, locations and Scope descriptors to the same mutable
+`BoundProgram.Hir`. The query lacks `SemanticOutput`, but can therefore re-enter
+an earlier phase holding another writer. This is not evidence of a mutation of
+an existing committed location; it is an unresolved ownership bypass through
+shared bound-arena expansion.
+
+The output owner explicitly confirms that the focused already-bound ownership
+fixtures do not cover this path, and has handed it to the compiler integrator.
+Demand binding should be completed in its owned binding/linking phase, or publish
+separately owned immutable bound modules before semantic queries consume them.
+Do not treat later sealer pruning, artifact validity, or the absence of runtime
+I/O as proof that this query boundary is closed. The original finding 3 is now
+**closed for already-bound semantic operations; standard demand-binding
+ownership remains open**.
