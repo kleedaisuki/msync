@@ -43,6 +43,7 @@ internal sealed partial class LanguageServer
                     case InputError failure: Console.Error.WriteLine($"LSP input: {failure.Error.Message}"); return 1;
                     case AnalysisEvent completed: PublishAnalysis(completed); break;
                     case CompletionEvent completed: PublishCompletion(completed); break;
+                    case ArtifactEvent completed: PublishArtifact(completed); break;
                     case AuthEvent authentication: HandleAuthentication(authentication); break;
                     case MessageEvent incoming:
                         using (incoming.Message)
@@ -60,6 +61,7 @@ internal sealed partial class LanguageServer
             while (events.Reader.TryRead(out ServerEvent? item))
                 if (item is MessageEvent incoming) incoming.Message.Dispose();
                 else if (item is CompletionEvent completed) completed.Work.Cancellation.Dispose();
+                else if (item is ArtifactEvent artifactDone) artifactDone.Work.Cancellation.Dispose();
         }
     }
 
@@ -97,6 +99,11 @@ internal sealed partial class LanguageServer
         if (method == "shutdown") StopAnalysis();
         try
         {
+            if (id is not null && method == "msync/artifact")
+            {
+                BeginArtifact(id, parameters);
+                return false;
+            }
             if (id is not null && (method is "textDocument/hover" or "textDocument/semanticTokens/full" or "textDocument/completion"
                 or "textDocument/documentSymbol" or "textDocument/definition")
                 && parameters.TryGetProperty("textDocument", out var descriptor)
@@ -129,6 +136,7 @@ internal sealed partial class LanguageServer
         {
             string requested = parameters.GetProperty("id").GetRawText();
             CancelCompletions(id: requested);
+            CancelArtifacts(id: requested);
             for (int index = pendingInsights.Count - 1; index >= 0; index--)
                 if (pendingInsights[index].Id.ToJsonString() == requested)
                 {
@@ -248,6 +256,7 @@ internal sealed partial class LanguageServer
     {
         shuttingDown = true;
         CancelCompletions();
+        CancelArtifacts();
         StopAuthentication();
         foreach (var request in pendingInsights)
             Write(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = request.Id, ["result"] = null });

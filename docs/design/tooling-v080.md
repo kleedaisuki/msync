@@ -31,6 +31,64 @@ Completion/navigation index declarations and the embedded source modules;
 standard definitions use `msync-stdlib:///0.8.0/MODULE.msync` virtual documents.
 The client requests those exact bytes through `msync/stdlibSource`.
 
+## Read-only binary artifact documents
+
+`.mso` and `.mexe` are binary program artifacts, not source documents. Their
+inspection path uses the same Core `Artifact.Read` implementation as the CLI and
+runtime. The viewer never binds, optimizes, executes or authenticates an
+artifact. It presents the decoded stage, actual binary format version, language
+version, optimization level, semantic flags, captured context, typed constants,
+functions and basic blocks. Instruction operands name their semantic roles
+rather than presenting unexplained integer A/B columns. Optimized-away source
+is not reconstructed or replayed.
+
+`msync disassemble FILE` produces the readable IR view; `--json` produces a
+versioned presentation model for tooling. This dispatch precedes configuration
+and telemetry initialization. The presentation schema version is independent
+of the artifact format and language-semantic versions. Source spans, when
+present, are navigation metadata rather than a substitute for decoded code.
+Internal function, block, constant and local references remain navigable after
+the original source is deleted. Relative debug labels do not justify guessing
+an absolute source location.
+
+The extension uses a native `CustomReadonlyEditorProvider` for binary files and
+a `TextDocumentContentProvider` for the optional normal read-only IR editor.
+The custom view supplies a themed overview and navigation; **Open IR as Text**
+supplies ordinary editor selection, outline, hover and definition behavior. The
+virtual scheme is `msync-artifact` and its language is `msync-ir`, deliberately
+outside the source-language server's `msync` document selector. Opening IR must
+not invoke the source parser or format the original bytes as text.
+
+The `msync/artifact` request takes `{ uri, data }`, where `data` is Base64 file
+content read by `workspace.fs`, and returns schema version 1 with `text`,
+`formatVersion`, `languageVersion`, `stage`, `optimizationLevel`, `symbols`,
+`references` and `hovers`. The JavaScript client does not decode a parallel
+binary format. Reading bytes through the workspace filesystem preserves remote
+and virtual filesystem ownership; the native server treats the URI as an origin
+label and does not interpret it as a path to open on a different machine.
+
+Decoding and rendering run outside the protocol event loop. New inspection for
+the same URI supersedes older work; explicit LSP cancellation and shutdown
+cancel pending requests, and late results cannot publish after cancellation.
+Corrupt/unsupported artifacts return an actionable inspection error while the
+same server can continue serving source and artifact requests. Refresh and
+language-server restart invalidate presentation snapshots, never modify the
+binary or execute its program.
+
+All displayed strings, including paths, constants and debug labels, are data.
+The webview escapes them and uses a content-security policy; source navigation
+opens safe documents only after an explicit user action, never a `command:`
+URI from artifact metadata. Markdown hover content remains untrusted.
+
+The split follows the official [custom-editor API][custom-editors] and
+[virtual-document API][virtual-documents]: binary ownership belongs to the
+custom document, and derived IR belongs to a read-only content provider. It
+does not use a writable text document as a disguised binary editor or rely on
+redirecting and disposing a custom editor during resolution.
+
+[custom-editors]: https://code.visualstudio.com/api/extension-guides/custom-editors
+[virtual-documents]: https://code.visualstudio.com/api/extension-guides/virtual-documents
+
 Native TextMate coloring is the fallback. Semantic URI tokens retain the
 protocol, `://` operator, and complete address separately; quoted URI text stays
 a String. Tokens spanning actual newlines split into legal single-line UTF-16
