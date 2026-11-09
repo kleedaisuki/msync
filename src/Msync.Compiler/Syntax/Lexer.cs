@@ -41,8 +41,7 @@ internal sealed class Lexer(string source, string sourceName)
             if (c == '*' && !PathSegment(start) && Take('*'))
             { Add(TokenKind.Atom, "**", start); continue; }
             if (!PathSegment(start) && (c is '+' or '*' or '%' || c == '-' &&
-                (position == source.Length || source[position] != '>') &&
-                (position == source.Length || char.IsWhiteSpace(source[position]) || char.IsDigit(source[position]) || source[position] == '.')))
+                (position == source.Length || source[position] is not ('>' or '-'))))
             { Add(TokenKind.Atom, source[start..position], start); continue; }
             if (c == '"') { ReadString(start); continue; }
             if (c == '<' && IsRegexStart()) { ReadRegex(start); continue; }

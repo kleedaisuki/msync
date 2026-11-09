@@ -11,6 +11,7 @@ Check(E("2**-2") is BinaryExpr {Operator:"**",Right:UnaryExpr {Operator:"-"}}, "
 Check(E("2**3**4") is BinaryExpr {Operator:"**",Right:BinaryExpr {Operator:"**"}}, "right associative power");
 Check(E("2**operation()") is BinaryExpr {Operator:"**",Right:CallExpr}, "call in exponent");
 Check(E("-0") is UnaryExpr {Operator:"-",Operand:NumberExpr}, "signed zero");
+Check(E("-value") is UnaryExpr {Operator:"-",Operand:NameExpr {Name:"value"}}, "negative variable");
 Check(E("7%4") is BinaryExpr {Operator:"%"}, "remainder");
 Check(E("copy-config") is NameExpr {Name:"copy-config"}, "hyphen identifier");
 Check(E("123-config") is NameExpr {Name:"123-config"}, "numeric prefix identifier");
