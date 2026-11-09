@@ -126,6 +126,16 @@ and Microsoft's
 The focused fixture remains `repl_shell_journey.py`, including Unicode/spaced
 directory completion, a gated Process across submissions and streaming Ctrl+C.
 
+Final Native acceptance in
+[42654041790](https://github.com/kleedaisuki/msync/actions/runs/42654041790)
+passed that unchanged strict fixture on both Linux and Windows. The Windows
+image SHA-256 was
+`673a0f863b534c0bf1d7758069ee82c9c113bf5bbf54fc9e1c4d323fdf9861c4`;
+the phase exited successfully with empty stderr and verified the original
+Unicode paint, session-directory completion, live/completed Process states and
+prompt recovery after streaming cancellation. The diagnostic CP65001 wrapper
+was not used for this acceptance run.
+
 ## Directory ownership and deferred admissions
 
 `environment.set_working_directory` and `shell.cd` change an execution's local
