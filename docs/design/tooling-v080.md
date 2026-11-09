@@ -75,6 +75,24 @@ syntax implementation for numeric/cast/concept/operator layouts, nested
 80-column behavior and 1,000 arbitrary UTF-16 literal round trips. The real
 `formatter_journey.py` exercises the installed command and REPL-facing grammar.
 
+The upgrade's focused actual-process entrypoint is
+`tests/Msync.EndToEnd/language_upgrade_tooling_journey.py --binary PATH`. It
+exercises semantic roles, concept hover/definition/constraint completion, named
+standard modules, unary-name replacement, persistent REPL concepts and actual
+PTY rendering (ConPTY on Windows). Constraint-only concept names are offered in
+type positions, not as runtime variables; the REPL obtains them separately from
+`CompilerSession.DescribeConcepts`. Scope path completion is checked against
+actual local and retained native SSH directory reads, including Connection
+fields reached through named Scope aliases.
+
+`tests/PromptPresentation` links the product highlighter and checks 266 source
+character/style observations. Its optional `--measure` path warms up 1,000
+calls and measures 10,000 repetitions of an ordinary 78-character input.
+The accepted managed Debug observation was 0.0389 ms and 6,280 allocated bytes
+per call; this is a component observation, not Native AOT or end-to-end latency.
+It supports keeping the single shared lexical pass rather than introducing a
+separate prompt token grammar or an incremental cache without measured need.
+
 [semantic-highlighting]: https://code.visualstudio.com/api/language-extensions/semantic-highlight-guide
 [pep8]: https://peps.python.org/pep-0008/
 [black-style]: https://black.readthedocs.io/en/stable/the_black_code_style/current_style.html
