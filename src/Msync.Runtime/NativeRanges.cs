@@ -13,7 +13,7 @@ public static partial class NativeRegistry
         if (name == "of") return new RangeValue(args, args.Aggregate(new TypeRef(TypeKind.Never), (type, value) => TypeRef.Union(type, value.Type)));
         if (name == "single") return new RangeValue([args[0]], args[0].Type);
         RangeValue source = args[0] as RangeValue ?? throw new MsyncException($"ranges.{name} expects Range");
-        if (name is "identity" or "all" or "as_const" or "as_rvalue" or "common") return source;
+        if (name is "identity" or "all") return source;
         if (name is "filter" or "transform" or "take_while" or "drop_while")
             return Adapt(source, name == "transform" ? TypeRef.Any : source.ItemType,
                 (range, cancellation) => CallbackRange(range, name, args[1], invoke, cancellation), token);

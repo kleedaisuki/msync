@@ -67,7 +67,7 @@ public static partial class NativeSignatures
         Add("path", "join", TypeRef.Path, NativeEffect.Pure, path, path);
         Add("path", "qualify", TypeRef.Path, NativeEffect.Pure, TypeRef.Connection, path);
         Add("path", "identity", TypeRef.Path, NativeEffect.Pure, path);
-        Range("identity all as_const as_rvalue common reverse unique", range, NativeResultRule.FirstArgument, range);
+        Range("identity all reverse unique", range, NativeResultRule.FirstArgument, range);
         Range("take drop stride step", range, NativeResultRule.FirstArgument, range, TypeRef.Number);
         Range("filter take_while drop_while", range, NativeResultRule.FirstArgument, range, TypeRef.Function);
         Range("transform", range, NativeResultRule.Transform, range, TypeRef.Function);

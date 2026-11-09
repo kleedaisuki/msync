@@ -2,9 +2,6 @@
 fn single(value?) { [value] };
 fn identity(values: Range) { values };
 fn all(values: Range) { values };
-fn as_const(values: Range) { values };
-fn as_rvalue(values: Range) { values };
-fn common(values: Range) { values };
 native fn of(value) -> Range;
 native fn take(values: Range, count: Number) -> Range;
 native fn drop(values: Range, count: Number) -> Range;
