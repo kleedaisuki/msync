@@ -88,3 +88,19 @@ before/after pairs use the same execution policy and are not described as Native
 latency. Native AOT and actual terminal/editor observations establish the shipped
 path. There are no CI timing thresholds, full-suite quality gates or benchmark
 scores standing in for correctness.
+
+Allocated bytes and retained state answer different questions. The separate
+retention probe holds the returned module through a collection, releases it,
+and verifies reachability with a weak reference; an instrumented run observes
+managed heap peaks independently from timing. Native process lifetime RSS is
+recorded separately. Candidate normal compilation, retained analysis/editor
+results and explicit export need separate lifetime observations.
+
+This follows a concrete lesson from
+[Rust THIR](https://rustc-dev-guide.rust-lang.org/thir.html): body-indexed typed
+expressions need not keep every completed body alive until compilation ends.
+The semantic-query boundary also follows
+[Roslyn's immutable compilation/symbol model](https://learn.microsoft.com/en-us/dotnet/csharp/roslyn-sdk/work-with-semantics):
+meaning and source identity remain inspectable independently of emitted runtime
+layout. These are mechanism references, not requirements to reproduce either
+compiler's entire pipeline or memory management strategy.
