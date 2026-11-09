@@ -63,6 +63,15 @@ MEMORY_CONTRACTS = (
     Contract("scope-layout", "ScopeLayout"),
     Contract("aggregate-arguments", "AggregateArguments"),
 )
+SCHEDULER_CONTRACTS = (
+    Contract("scheduler-retirement", "SchedulingGraph", ("--retirement-only",)),
+)
+CONTRACTS = (
+    *OPTIMIZER_CONTRACTS,
+    *COMPATIBILITY_CONTRACTS,
+    *MEMORY_CONTRACTS,
+    *SCHEDULER_CONTRACTS,
+)
 
 
 def main() -> int:
@@ -73,14 +82,7 @@ def main() -> int:
     parser.add_argument(
         "--contract",
         action="append",
-        choices=[
-            contract.name
-            for contract in (
-                *OPTIMIZER_CONTRACTS,
-                *COMPATIBILITY_CONTRACTS,
-                *MEMORY_CONTRACTS,
-            )
-        ],
+        choices=[contract.name for contract in CONTRACTS],
     )
     arguments = parser.parse_args()
     output = arguments.output.resolve()
@@ -93,15 +95,7 @@ def main() -> int:
     contracts = [*available, *COMPATIBILITY_CONTRACTS]
     if arguments.contract:
         selected: set[str] = set(arguments.contract)
-        contracts = [
-            contract
-            for contract in (
-                *OPTIMIZER_CONTRACTS,
-                *COMPATIBILITY_CONTRACTS,
-                *MEMORY_CONTRACTS,
-            )
-            if contract.name in selected
-        ]
+        contracts = [contract for contract in CONTRACTS if contract.name in selected]
         missing: list[str] = [
             contract.project
             for contract in contracts

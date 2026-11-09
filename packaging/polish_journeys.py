@@ -48,6 +48,8 @@ def main() -> int:
             "global-import",
             "global-terminal",
             "call-order",
+            "scheduler-frontier-source",
+            "scheduler-frontier-executable",
             "artifact-view",
             "artifact-disassembly",
             "navigation",
@@ -107,6 +109,8 @@ def main() -> int:
         ("nullable-scope-user", "nullable_scope_journey.py"),
         ("global-import", "global_journey.py"),
         ("call-order", "call_order_journey.py"),
+        ("scheduler-frontier-source", "scheduling_journey.py"),
+        ("scheduler-frontier-executable", "scheduling_journey.py"),
         ("artifact-view", "artifact_view_journey.py"),
         ("artifact-disassembly", "artifact_disassembly_journey.py"),
         ("navigation", "navigation_journey.py"),
@@ -132,6 +136,19 @@ def main() -> int:
             extra.append("--converter")
         if name == "scheduling":
             extra.append("--executable")
+        if name.startswith("scheduler-frontier-"):
+            for case in (
+                "selected",
+                "owner",
+                "inherited-acquire",
+                "after-region",
+                "acquire-break",
+                "deferred-dataflow",
+                "native-independent",
+            ):
+                extra.extend(["--case", case])
+            if name == "scheduler-frontier-executable":
+                extra.append("--executable")
         if name == "reference-options":
             extra.append("--reference-only")
         if name == "global-terminal":

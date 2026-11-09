@@ -41,7 +41,7 @@ on:
         type: boolean
         default: true
       polish_phases:
-        description: Optional polish groups portable,editor,editing,identifiers,state,closing,linear,memory,artifacts,artifact_protocol,call_order,completion,authentication,presentation_console,hints_console,wsl
+        description: Optional polish groups portable,editor,editing,identifiers,state,closing,linear,memory,artifacts,artifact_protocol,call_order,scheduler,completion,authentication,presentation_console,hints_console,wsl
         type: string
         default: ''
       polish_only:
@@ -85,7 +85,7 @@ jobs:
           POLISH_PHASES: ${{ inputs.polish_phases }}
         run: |
           import os
-          groups: set[str] = {'portable', 'editor', 'editing', 'identifiers', 'state', 'closing', 'linear', 'memory', 'artifacts', 'artifact_protocol', 'call_order', 'completion', 'authentication', 'presentation_console', 'hints_console', 'wsl'}
+          groups: set[str] = {'portable', 'editor', 'editing', 'identifiers', 'state', 'closing', 'linear', 'memory', 'artifacts', 'artifact_protocol', 'call_order', 'scheduler', 'completion', 'authentication', 'presentation_console', 'hints_console', 'wsl'}
           requested: str = os.environ['POLISH_PHASES']
           selected: set[str] = {part.strip() for part in requested.split(',')} if requested else groups
           unknown: set[str] = selected - groups
@@ -136,7 +136,7 @@ jobs:
         run: |
           python -m pip install --require-hashes --only-binary=:all: -r tests/Msync.EndToEnd/windows-terminal-requirements.txt
       - name: Exercise changed terminal, compiler insight and formatter user journeys
-        if: inputs.polish_only && (steps.polish.outputs.portable == 'true' || steps.polish.outputs.editor == 'true' || steps.polish.outputs.editing == 'true' || steps.polish.outputs.identifiers == 'true' || steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true' || steps.polish.outputs.linear == 'true' || steps.polish.outputs.memory == 'true' || steps.polish.outputs.artifacts == 'true' || steps.polish.outputs.artifact_protocol == 'true' || steps.polish.outputs.call_order == 'true' || steps.polish.outputs.completion == 'true' || (steps.polish.outputs.authentication == 'true' && runner.os == 'Linux')) && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
+        if: inputs.polish_only && (steps.polish.outputs.portable == 'true' || steps.polish.outputs.editor == 'true' || steps.polish.outputs.editing == 'true' || steps.polish.outputs.identifiers == 'true' || steps.polish.outputs.state == 'true' || steps.polish.outputs.closing == 'true' || steps.polish.outputs.linear == 'true' || steps.polish.outputs.memory == 'true' || steps.polish.outputs.artifacts == 'true' || steps.polish.outputs.artifact_protocol == 'true' || steps.polish.outputs.call_order == 'true' || steps.polish.outputs.scheduler == 'true' || steps.polish.outputs.completion == 'true' || (steps.polish.outputs.authentication == 'true' && runner.os == 'Linux')) && (steps.package.outcome == 'success' || steps.reused.outcome == 'success')
         shell: python
         env:
           PACKAGE_RID: ${{ matrix.rid }}
@@ -153,6 +153,7 @@ jobs:
           POLISH_ARTIFACTS: ${{ steps.polish.outputs.artifacts }}
           POLISH_ARTIFACT_PROTOCOL: ${{ steps.polish.outputs.artifact_protocol }}
           POLISH_CALL_ORDER: ${{ steps.polish.outputs.call_order }}
+          POLISH_SCHEDULER: ${{ steps.polish.outputs.scheduler }}
           POLISH_AUTHENTICATION: ${{ steps.polish.outputs.authentication }}
         run: |
           import os
@@ -189,6 +190,9 @@ jobs:
                   arguments.extend(['--phase', 'artifact-view'])
               if os.environ['POLISH_CALL_ORDER'] == 'true':
                   arguments.extend(['--phase', 'call-order'])
+              if os.environ['POLISH_SCHEDULER'] == 'true':
+                  for phase in ('scheduler-frontier-source', 'scheduler-frontier-executable'):
+                      arguments.extend(['--phase', phase])
               if os.environ['POLISH_IDENTIFIERS'] == 'true':
                   arguments.extend(['--phase', 'identifier-return'])
               if os.environ['POLISH_COMPLETION'] == 'true':
@@ -217,6 +221,9 @@ jobs:
       - name: Exercise selected cross-block memory and compact layout contracts
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.memory == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
         run: python packaging/state_contracts.py --output .temp/platform-results/memory-contracts --contract cross-block-memory --contract memory-effects --contract scope-layout --contract aggregate-arguments
+      - name: Exercise only scheduler retirement and namespace lifetimes
+        if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.scheduler == 'true' && (steps.package.outcome == 'success' || steps.reused.outcome == 'success') }}
+        run: python packaging/state_contracts.py --output .temp/platform-results/scheduler-contracts --contract scheduler-retirement --contract path-namespace
       - name: Publish native memory optimizer component observation image
         id: memory-components
         if: ${{ !cancelled() && inputs.polish_only && steps.polish.outputs.memory == 'true' && runner.os == 'Windows' && steps.package.outcome == 'success' }}
