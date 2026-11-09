@@ -1,6 +1,33 @@
+using System.Diagnostics;
 using Msync.Core;
 using Msync.Runtime;
 using Frontend = Msync.Compiler.Compiler;
+
+if (args.Contains("--bench", StringComparer.Ordinal))
+{
+    string library = File.ReadAllText("stdlib/text.msync");
+    foreach (int count in new[] { 64, 512, 4096 })
+    {
+        string source = library + $"let b = Builder(); for x in $std::ranges::iota(0, {count}) {{ b::append(\"abcdefghijklmnopqrstuvwxyz012345\"); }}; b::build()";
+        Module module = Frontend.Compile(source, "text-builder-benchmark", 2);
+        _ = await Interpreter.ExecuteAsync(module);
+        List<double> times = [];
+        List<long> allocations = [];
+        for (int sample = 0; sample < 3; sample++)
+        {
+            long before = GC.GetTotalAllocatedBytes(true);
+            Stopwatch watch = Stopwatch.StartNew();
+            Value result = await Interpreter.ExecuteAsync(module);
+            watch.Stop();
+            if (result is not StringValue text || text.Data.Length != count * 32)
+                throw new InvalidOperationException("Builder benchmark lost text.");
+            times.Add(watch.Elapsed.TotalMilliseconds);
+            allocations.Add(GC.GetTotalAllocatedBytes(true) - before);
+        }
+        Console.WriteLine($"Builder append={count}, chars={count * 32}, median_ms={times.Order().ElementAt(1):F3}, median_bytes={allocations.Order().ElementAt(1)}");
+    }
+    return;
+}
 
 (string Source, string Expected)[] cases =
 [
@@ -19,16 +46,21 @@ foreach (int level in new[] { 0, 2, 3 })
     await Check("let b = $std::text::Builder(); b::append(\"A😀\"); b::append_line(\"x\"); b::build()", "A😀x\n", level);
     await Check("let b = $std::text::Builder(); b::append(\"A😀\"); let alias = b; alias::append(\"z\"); b::length()", "3", level);
     await Check("let b = $std::text::Builder(); let c = $std::text::Builder(); b::append(\"a\"); c::empty()", "true", level);
+    await Check("let b = $std::text::Builder(); b::append(\"a\"); let snapshot = b::build(); b::append(\"b\"); snapshot", "a", level);
     await Check("let b = $std::text::Builder(); b::append_all([\"a\", \"b\", \"c\"]); b::clear(); b::append(\"z\"); b::build()", "z", level);
     await Check("let b = $std::text::Builder(); for x in $std::ranges::iota(0, 129) { b::append(\"x\"); }; $std::string::length(b::build())", "129", level);
     await Check("let pattern = $std::regex::compile(\"[0-9]+\"); pattern::replace(\"a12b\", \"x\")", "axb", level);
-    await Check("let item = $std::ranges::first($std::regex::matches(\"A😀abc\", \"(?<part>abc)(z)?\")); let group = $std::ranges::last(item::groups); group::success", "false", level);
+    await Check("let item = $std::ranges::first($std::regex::matches(\"A😀abc\", \"(?<part>abc)(?<missing>z)?\")); let group = $std::ranges::last(item::groups); group::success", "false", level);
     await Check("let item = $std::ranges::first($std::regex::matches(\"A😀abc\", \"(?<part>abc)\")); let group = $std::ranges::last(item::groups); group::index", "2", level);
+    await Check("let matches = $std::regex::matches(\"abc\", \"abc\"); let first = $std::ranges::first(matches); first::value = \"changed\"; $std::ranges::first(matches)::value", "abc", level);
+    await Check("if false { $std::regex::is_match(\"x\", \"[\"); }; \"ok\"", "ok", level);
 }
 Console.WriteLine($"PASS: {checks} text builder and regex source/artifact contracts");
 
 async Task Check(string source, string expected, int level)
 {
+    if (args.Contains("--source-library", StringComparer.Ordinal) && source.Contains("$std::text::", StringComparison.Ordinal))
+        source = File.ReadAllText("stdlib/text.msync") + source.Replace("$std::text::", "", StringComparison.Ordinal);
     Module module = Frontend.Compile(source, "text-regex-journey", level);
     foreach (Module stage in new[] { module, RoundTrip(module), RoundTrip(Binding.Bind(module, new(Environment.CurrentDirectory, HostContext.HomeDirectory))) })
     {
