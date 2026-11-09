@@ -3,6 +3,7 @@
     <Project Path="src/Msync.Cli/Msync.Cli.csproj" />
     <Project Path="src/Msync.Compiler/Msync.Compiler.csproj" />
     <Project Path="src/Msync.Core/Msync.Core.csproj" />
+    <Project Path="src/Msync.Optimization/Msync.Optimization.csproj" />
     <Project Path="src/Msync.Runtime/Msync.Runtime.csproj" />
   </Folder>
   <Folder Name="/tests/">

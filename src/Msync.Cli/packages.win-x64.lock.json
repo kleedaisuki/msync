@@ -82,16 +82,24 @@
       "msync.compiler": {
         "type": "Project",
         "dependencies": {
-          "Msync.Core": "[0.8.0, )"
+          "Msync.Core": "[0.8.0, )",
+          "Msync.Optimization": "[0.8.0, )"
         }
       },
       "msync.core": {
         "type": "Project"
       },
-      "msync.runtime": {
+      "msync.optimization": {
         "type": "Project",
         "dependencies": {
           "Msync.Core": "[0.8.0, )"
+        }
+      },
+      "msync.runtime": {
+        "type": "Project",
+        "dependencies": {
+          "Msync.Core": "[0.8.0, )",
+          "Msync.Optimization": "[0.8.0, )"
         }
       },
       "prettyprompt": {

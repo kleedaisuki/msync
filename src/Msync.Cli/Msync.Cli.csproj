@@ -9,6 +9,7 @@
   <ItemGroup>
     <ProjectReference Include="../Msync.Compiler/Msync.Compiler.csproj" />
     <ProjectReference Include="../Msync.Runtime/Msync.Runtime.csproj" />
+    <ProjectReference Include="../Msync.Optimization/Msync.Optimization.csproj" />
     <ProjectReference Include="../../vendor/PrettyPrompt/PrettyPrompt.csproj" />
     <EmbeddedResource Include="../../stdlib/*.msync" />
     <EmbeddedResource Include="Skills/*.md" LogicalName="Msync.Skills.%(Filename)%(Extension)" />
