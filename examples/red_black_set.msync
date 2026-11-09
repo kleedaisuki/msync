@@ -1,0 +1,16 @@
+# A comparison policy defines ordering and uniqueness independently of storage.
+let set_type = $std::containers::Set;
+let names = set_type::with_policy(["Klee", "Albedo", "KLEE"], scope {
+    Self: String,
+    sample: "",
+    less: fn(left: String, right: String) -> Bool {
+        $std::string::to_lowercase(left) < $std::string::to_lowercase(right)
+    },
+});
+set_type::insert(names, "Sucrose");
+let before = set_type::snapshot(names);
+set_type::remove(names, "ALBEDO");
+$std::string::join(before, ", ") -> ./rb_set_before.txt;
+$std::string::join(set_type::snapshot(names), ", ") -> ./rb_set_after.txt;
+let next? = set_type::lower_bound(names, "m");
+if next is not null { next::value -> ./rb_set_lower_bound.txt; };
