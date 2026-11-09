@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Msync.Compiler;
 using Msync.Compiler.Syntax;
 using Msync.Core;
+using Msync.Hir;
 using Msync.Optimization;
 using Msync.Runtime;
 using static Msync.Cli.ArtifactCommands;
@@ -62,13 +63,33 @@ internal static class Program
             if (options.Command == "doctor") return Complete(Doctor(), telemetry);
             string file = options.File ?? throw new ArgumentException("A source or artifact filename is required; use --help for commands.");
             if (options.Command == "fmt") return Complete(Format(file, options), telemetry);
-            bool binary = IsArtifact(file);
+            bool hirInput = HirCommands.IsArtifact(file);
+            bool binary = hirInput || IsArtifact(file);
             string? source = binary ? null : await ReadSource(file);
             if (source is not null) snapshot = new(file, source);
             long compileStart = Stopwatch.GetTimestamp();
-            Module module = binary ? Artifact.Read(file) : SourceCompiler.Compile(source!, file, options.Optimization);
+            if (options.Emission == CompileEmission.Hir)
+            {
+                if (binary && !hirInput)
+                    throw new ArgumentException("Typed HIR cannot be reconstructed from lowered bytecode. Compile the original .msync source with '--emit hir'.");
+                HirModule semantic = hirInput ? HirArtifact.Read(file) : SourceCompiler.Analyze(source!, file);
+                if (options.Output is { } output) HirCommands.Write(semantic, output);
+                else HirCommands.Print(semantic, color);
+                telemetry?.Observe(new("compile", "ok", Source: file, DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(compileStart).TotalMilliseconds * 1_000_000)));
+                return Complete(0, telemetry);
+            }
+            if (options.Command == "check")
+            {
+                if (hirInput) _ = HirArtifact.Read(file);
+                else if (binary) _ = Artifact.Read(file);
+                else _ = SourceCompiler.Analyze(source!, file);
+                telemetry?.Observe(new("compile", "ok", Source: file, DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(compileStart).TotalMilliseconds * 1_000_000)));
+                Console.WriteLine($"{file}: valid");
+                return Complete(0, telemetry);
+            }
+            Module module = hirInput ? HirCommands.Lower(HirArtifact.Read(file), options.Optimization)
+                : binary ? Artifact.Read(file) : SourceCompiler.Compile(source!, file, options.Optimization);
             telemetry?.Observe(new("compile", "ok", Source: file, DurationNanoseconds: (long)(Stopwatch.GetElapsedTime(compileStart).TotalMilliseconds * 1_000_000)));
-            if (options.Command == "check") { Console.WriteLine($"{file}: valid"); return Complete(0, telemetry); }
             if (options.Command is "compile" or "emit-ir")
             {
                 if (options.Output is null) PrintPlan(module, color);

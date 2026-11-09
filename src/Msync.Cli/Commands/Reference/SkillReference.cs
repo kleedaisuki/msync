@@ -25,6 +25,7 @@ internal static class SkillReference
         .. StandardModules().Select(ModuleTopic),
         new("workflow", "Check, inspect, format and execute", "workflow"),
         new("workflow/artifacts", "Compile .mso and bind .mexe", "artifacts"),
+        new("workflow/hir", "Export and inspect typed semantic HIR", "hir"),
         new("troubleshooting", "Read and repair source diagnostics", "troubleshooting")
     ];
 

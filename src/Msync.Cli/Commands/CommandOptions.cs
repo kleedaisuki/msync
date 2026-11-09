@@ -2,6 +2,8 @@ using System.Globalization;
 
 namespace Msync.Cli;
 
+internal enum CompileEmission { Bytecode, Hir }
+
 internal sealed record CommandOptions(string Command, string? File, string? Output, bool DryRun, int Optimization,
     string? SourceFile, int Jobs, bool FormattingCheck, bool Stdout, string? Syntax,
     string? ConfigPath, bool NoConfig, IReadOnlyDictionary<string, object> Overrides,
@@ -11,6 +13,7 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
 
     public bool ExplicitCommand { get; init; }
     public bool Json { get; init; }
+    public CompileEmission Emission { get; init; }
     public IReadOnlyList<string> SkillTopics { get; init; } = [];
     public int BufferSize { get; init; } = 65536;
     public long MemoryLimit { get; init; } = 67108864;
@@ -24,6 +27,8 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
         List<string> skillTopics = [];
         int optimization = 2, jobs = 4;
         bool dryRun = false, formattingCheck = false, stdout = false, noConfig = false, noTelemetry = false, json = false;
+        CompileEmission emission = CompileEmission.Bytecode;
+        bool explicitEmission = false;
         int index = 0;
         bool commandSeen = false;
         if (args.Length != 0 && Commands.Contains(args[0], StringComparer.Ordinal)) { command = args[0]; index++; commandSeen = true; }
@@ -45,6 +50,7 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
                 case "--check": formattingCheck = true; break;
                 case "--stdout": stdout = true; break;
                 case "--json": json = true; break;
+                case "--emit": emission = ParseEmission(Next()); explicitEmission = true; break;
                 case "-O0": optimization = 0; break;
                 case "-O1": optimization = 1; break;
                 case "-O2": optimization = 2; break;
@@ -63,8 +69,21 @@ internal sealed record CommandOptions(string Command, string? File, string? Outp
             }
         }
         if (json && command != "disassemble") throw new ArgumentException("--json is supported by 'msync disassemble'.");
-        return new(command, file, output, dryRun, optimization, source, jobs, formattingCheck, stdout, syntax, configPath, noConfig, overrides, tracePath, telemetryDatabase, noTelemetry) { SkillTopics = skillTopics, ExplicitCommand = commandSeen, Json = json };
+        if (explicitEmission && command is not ("compile" or "emit-ir"))
+            throw new ArgumentException("--emit is supported by 'msync compile'. Use '--emit hir' for typed HIR or '--emit bytecode' for relocatable bytecode.");
+        if (!explicitEmission && command is ("compile" or "emit-ir")
+            && output?.EndsWith(".mhir", StringComparison.OrdinalIgnoreCase) == true)
+            emission = CompileEmission.Hir;
+        return new(command, file, output, dryRun, optimization, source, jobs, formattingCheck, stdout, syntax, configPath, noConfig, overrides, tracePath, telemetryDatabase, noTelemetry)
+        { SkillTopics = skillTopics, ExplicitCommand = commandSeen, Json = json, Emission = emission };
     }
+
+    private static CompileEmission ParseEmission(string value) => value switch
+    {
+        "hir" => CompileEmission.Hir,
+        "bytecode" => CompileEmission.Bytecode,
+        _ => throw new ArgumentException($"Unknown emission kind '{value}'. Use 'hir' or 'bytecode'.")
+    };
 
     private static string ColorPolicy(string value) => value is "auto" or "always" or "never" ? value
         : throw new ArgumentException($"Unknown color policy '{value}'. Use auto, always, or never.");
