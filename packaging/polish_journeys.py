@@ -45,6 +45,8 @@ def main() -> int:
             "memory-layout",
             "memory-nullable-payloads",
             "nullable-scope-user",
+            "global-import",
+            "global-terminal",
             "artifact-view",
             "artifact-disassembly",
             "navigation",
@@ -102,6 +104,7 @@ def main() -> int:
         ("memory-layout", "memory_layout_journey.py"),
         ("memory-nullable-payloads", "mutable_state_journey.py"),
         ("nullable-scope-user", "nullable_scope_journey.py"),
+        ("global-import", "global_journey.py"),
         ("artifact-view", "artifact_view_journey.py"),
         ("artifact-disassembly", "artifact_disassembly_journey.py"),
         ("navigation", "navigation_journey.py"),
@@ -111,6 +114,7 @@ def main() -> int:
         journeys.append(("terminal-presentation", "terminal_presentation_journey.py"))
         journeys.append(("hints", "hint_journey.py"))
         journeys.append(("terminal-detail", "terminal_detail_journey.py"))
+        journeys.append(("global-terminal", "terminal_detail_journey.py"))
         journeys.append(("authentication", "authentication_journey.py"))
     if arguments.phase:
         selected: set[str] = set(arguments.phase)
@@ -128,6 +132,8 @@ def main() -> int:
             extra.append("--executable")
         if name == "reference-options":
             extra.append("--reference-only")
+        if name == "global-terminal":
+            extra.extend(["--case", "global"])
         if name == "mutable-getters":
             for case in (
                 "constructor-captured-holes",
