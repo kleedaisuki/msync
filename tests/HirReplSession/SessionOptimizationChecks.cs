@@ -66,6 +66,10 @@ internal static class SessionOptimizationChecks
             await Submit("counter::inc();");
             await Submit("counter::inc();");
             if (await Submit("counter::get()") is not NumberValue { Data: 2 }) throw new InvalidOperationException("Shared specialization lost a captured Scope alias.");
+            await Submit("let second_counter = Counter(); second_counter::inc();");
+            if (await Submit("second_counter::get()") is not NumberValue { Data: 1 }
+                || await Submit("counter::get()") is not NumberValue { Data: 2 })
+                throw new InvalidOperationException("A cached factory reused another object's private state.");
             Console.WriteLine($"O{level} code-cache rollback/new-type/captured Scope PASS");
             if (await Submit("let object = scope { value: 1 }; let alias = object; alias::value = 2; object::value")
                 is not NumberValue { Data: 2 }) throw new InvalidOperationException("Scope alias broke.");
