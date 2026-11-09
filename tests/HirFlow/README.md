@@ -13,6 +13,12 @@ associativity. Structured HIR examples build an `If` inside a `Loop` and a `For`
 whose source cell is reassigned: the iterator keeps the originally evaluated
 sequence rather than rereading the changed cell for its element type.
 
+Structural checks also cover nullable wrappers around alternative Scope rows,
+finite represented-Type domains, and fixed-storage intersections. Null belongs
+to the wrapper even when each structural alternative is itself non-null. A
+storage intersection removes incompatible alternatives, rather than changing
+only the outer runtime-kind mask while retaining contradictory payloads.
+
 ```sh
 dotnet run --project tests/HirFlow/Msync.HirFlow.Tests.csproj -c Release \
   --artifacts-path .temp/hir-flow-build

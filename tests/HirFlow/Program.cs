@@ -73,6 +73,7 @@ for (int index = 0; index < 256; index++)
 }
 checks += StructuredFlowChecks.Run();
 checks += BoundWriteChecks.Run();
+checks += StructuralTypeChecks.Run();
 Console.WriteLine($"PASS {checks} semantic flow contracts");
 
 ImmutableDictionary<HirLocationId, FlowLocationDomain> initialDomains() =>

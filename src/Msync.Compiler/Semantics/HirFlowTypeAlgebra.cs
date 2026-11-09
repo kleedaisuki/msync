@@ -80,7 +80,8 @@ internal sealed class HirFlowTypeAlgebra(SemanticArena hir) : IFlowTypeAlgebra
         HirTypeId result;
         if (!description.Alternatives.IsDefaultOrEmpty)
         {
-            result = hir.Type(new TypeRef(TypeKind.Never));
+            bool keepNull = description.RuntimeType.Nullable && (positive ? tested.Nullable : !tested.Nullable);
+            result = hir.Type(keepNull ? TypeRef.Null : new TypeRef(TypeKind.Never));
             foreach (HirTypeId alternative in description.Alternatives)
                 result = Union(result, Narrow(alternative, tested, positive));
         }
@@ -118,15 +119,19 @@ internal sealed class HirFlowTypeAlgebra(SemanticArena hir) : IFlowTypeAlgebra
     public FlowFact Constrain(FlowFact value, FlowLocationDomain domain)
     {
         HirTypeId source = value.SemanticType ?? hir.Type(value.Type);
-        HirType projected = hir.Types[source.Value];
+        HirType projected = hir.Types[Narrow(source, domain.StorageType, true).Value];
         HirType storage = hir.Types[(domain.StorageSemanticType ?? hir.Type(domain.StorageType)).Value];
         TypeRef runtime = new(value.Type.Kind & domain.StorageType.Kind,
             domain.StorageType.Element ?? value.Type.Element);
+        int element = projected.Element;
+        if (storage.Element >= 0 && (element < 0
+            || !hir.Types[storage.Element].RuntimeType.Accepts(hir.Types[element].RuntimeType))) element = storage.Element;
         HirTypeId result = hir.Type(projected with { RuntimeType = runtime, Nullable = runtime.Nullable,
             Shape = projected.Shape >= 0 ? projected.Shape : storage.Shape,
             Signature = projected.Signature >= 0 ? projected.Signature : storage.Signature,
-            Element = projected.Element >= 0 ? projected.Element : storage.Element });
-        return value with { Type = runtime, SemanticType = result };
+            Element = element });
+        return value with { Type = runtime, SemanticType = result,
+            Denotations = (runtime.Kind & (TypeKind.Type | TypeKind.Range)) != 0 ? value.Denotations : null };
     }
 
     public HirTypeId Member(HirTypeId source, string name)
