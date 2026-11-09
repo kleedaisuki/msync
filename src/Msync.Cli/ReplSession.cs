@@ -7,6 +7,7 @@ namespace Msync.Cli;
 
 internal sealed class ReplSession(ExecutionOptions options, int optimization, string color)
 {
+    private static readonly string ShellPrelude = CreateShellPrelude();
     private readonly CompilerSession compiler = new(optimization: optimization);
     private readonly ExecutionSession execution = new(options);
     private readonly SubmissionSyntax syntax = new();
@@ -16,10 +17,29 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
     private bool interruptedInput;
     private bool editing;
 
+    private static string CreateShellPrelude()
+    {
+        var assembly = typeof(ReplSession).Assembly;
+        string resource = assembly.GetManifestResourceNames().Single(name => name.EndsWith(".shell.msync", StringComparison.Ordinal));
+        using Stream stream = assembly.GetManifestResourceStream(resource)!;
+        using StreamReader reader = new(stream);
+        Document document = Parser.Parse(reader.ReadToEnd(), "msync-stdlib:///0.8.0/shell.msync");
+        return string.Join('\n', document.Statements.Select(statement => statement switch
+        {
+            FunctionDeclaration function => function.Name,
+            NativeDeclaration native => native.Name,
+            ScopeDeclaration scope => scope.Name,
+            LetStatement { Pattern: NamePattern binding } => binding.Name,
+            _ => null
+        }).OfType<string>().Select(name => $"let {name} = $std::shell::{name};"));
+    }
+
     public async Task<int> RunAsync()
     {
+        await ExecuteAsync(ShellPrelude, CancellationToken.None);
         await using InteractivePrompt? prompt = InteractivePrompt.IsSupported
-            ? new(syntax.IsIncomplete, () => compiler.BindingNames, color: TerminalPresentation.Colors(color), describe: DescribePromptBindings, analyze: source => compiler.AnalyzeEditor(source, execution.GetLocalValue), colorPolicy: color) : null;
+            ? new(syntax.IsIncomplete, PromptNames, color: TerminalPresentation.Colors(color), describe: DescribePromptBindings, analyze: source => compiler.AnalyzeEditor(source, execution.GetLocalValue), colorPolicy: color,
+                workingDirectory: () => execution.WorkingDirectory) : null;
         editing = prompt is not null;
         if (!Console.IsInputRedirected)
             Console.WriteLine(TerminalPresentation.Paint("msync 0.8.0", TerminalPresentation.HeadingColor, TerminalPresentation.Colors(color))
@@ -36,11 +56,17 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
                 if (await SubmitAsync(input)) return 0;
             }
         }
-        finally { if (!editing) Console.CancelKeyPress -= Cancel; }
+        finally
+        {
+            if (!editing) Console.CancelKeyPress -= Cancel;
+            await execution.DisposeAsync();
+        }
     }
 
     private IReadOnlyList<SemanticMember> DescribePromptBindings() => compiler.DescribeBindings()
         .Concat(compiler.DescribeConcepts()).DistinctBy(member => member.Name, StringComparer.Ordinal).ToArray();
+
+    private IReadOnlyCollection<string> PromptNames() => compiler.BindingNames.Where(name => !name.StartsWith('$')).ToArray();
 
     private async ValueTask<TerminalInput> ReadAsync(InteractivePrompt? prompt)
     {
@@ -91,8 +117,8 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
             try
             {
                 Value result = await execution.ExecuteAsync(module, cancellationToken: cancellation.Token);
+                if (result is not NullValue) await DisplayAsync(result, cancellation.Token);
                 compiler.AcceptSubmission(execution.GetLocalValue);
-                if (result is not NullValue) Console.WriteLine(result);
             }
             catch
             {
@@ -101,6 +127,46 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
             }
         }
         finally { lock (cancellationGate) active = null; }
+    }
+
+    private static async ValueTask DisplayAsync(Value value, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (value is RangeValue range)
+        {
+            await foreach (Value item in range.Items.WithCancellation(cancellationToken))
+                await DisplayAsync(item, cancellationToken);
+            return;
+        }
+        string text = FormatValue(value);
+        if (text.EndsWith('\n')) Console.Write(text);
+        else Console.WriteLine(text);
+    }
+
+    private static string FormatValue(Value value, HashSet<ScopeValue>? path = null) => value switch
+    {
+        ScopeValue scope => FormatScope(scope, path ?? []),
+        ProcessValue process => FormatProcess(process),
+        StringValue text => text.Data,
+        _ => value.ToString() ?? "null"
+    };
+
+    private static string FormatProcess(ProcessValue process)
+    {
+        if (process.Completion is not { } completion) return process.ToString();
+        if (completion.IsCompletedSuccessfully) return completion.Result.ToString();
+        string state = completion.IsCanceled ? "cancelled" : completion.IsFaulted ? "failed" : "pending";
+        return process.ProcessId is { } id ? $"Process({state}, pid={id})" : $"Process({state})";
+    }
+
+    private static string FormatScope(ScopeValue scope, HashSet<ScopeValue> path)
+    {
+        if (!path.Add(scope)) return "scope { ...cycle... }";
+        string result = "scope { " + string.Join(", ", scope.Select(member => member.Key + ": "
+            + (member.Value is StringValue text ? "\"" + text.Data.Replace("\"", "\"\"", StringComparison.Ordinal) + "\""
+                : FormatValue(member.Value, path)))) + " }";
+        path.Remove(scope);
+        return result;
     }
 
     private void Cancel(object? sender, ConsoleCancelEventArgs error)
@@ -128,7 +194,7 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
             return true;
         }
         if (command == "/syntax") { TerminalHelp.Syntax(TerminalPresentation.Colors(color)); return true; }
-        if (command == "/pwd") { Console.WriteLine(Environment.CurrentDirectory); return true; }
+        if (command == "/pwd") { Console.WriteLine(execution.WorkingDirectory); return true; }
         if (command == "/clear") { if (!Console.IsOutputRedirected) Console.Clear(); return true; }
         if (command != "/cd" && !command.StartsWith("/cd ", StringComparison.Ordinal)) return false;
         string path = command.Length == 3 ? HostContext.HomeDirectory : command[4..].Trim();
@@ -141,8 +207,8 @@ internal sealed class ReplSession(ExecutionOptions options, int optimization, st
             path = value.Value;
         }
         if (path == "~") path = HostContext.HomeDirectory;
-        else if (path.StartsWith("~/", StringComparison.Ordinal) || path.StartsWith("~\\", StringComparison.Ordinal)) path = Path.Combine(HostContext.HomeDirectory, path[2..]);
-        Environment.CurrentDirectory = path;
+        else if (path.StartsWith("~/", StringComparison.Ordinal) || OperatingSystem.IsWindows() && path.StartsWith("~\\", StringComparison.Ordinal)) path = Path.Combine(HostContext.HomeDirectory, path[2..]);
+        execution.ChangeWorkingDirectory(Path.GetFullPath(path, execution.WorkingDirectory));
         return true;
     }
 

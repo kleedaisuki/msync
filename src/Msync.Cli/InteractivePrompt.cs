@@ -27,7 +27,8 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
 
     public InteractivePrompt(Func<string, bool> incomplete, Func<IReadOnlyCollection<string>> names,
         string? historyDirectory = null, TextWriter? error = null, bool color = true,
-        Func<IReadOnlyList<SemanticMember>>? describe = null, Func<string, EditorAnalysis>? analyze = null, string? colorPolicy = null)
+        Func<IReadOnlyList<SemanticMember>>? describe = null, Func<string, EditorAnalysis>? analyze = null, string? colorPolicy = null,
+        Func<string>? workingDirectory = null)
     {
         this.error = error ?? Console.Error;
         errorColor = colorPolicy ?? (color ? "auto" : "never");
@@ -35,7 +36,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
         string? history = HistoryPath(historyDirectory, this.error);
         KeyBindings keys = new();
         completion = new(AuthenticateAsync);
-        callbacks = new(incomplete, names, color, keys, completion, ReportAsync, analyze);
+        callbacks = new(incomplete, names, color, keys, completion, ReportAsync, analyze, workingDirectory ?? (() => Environment.CurrentDirectory));
         prompt = new(history, callbacks, configuration: new PromptConfiguration(
             prompt: "> ", keyBindings: keys, completionBoxBorderFormat: color ? null : ConsoleFormat.None,
             selectedCompletionItemMarkSymbol: color ? null : new FormattedString(">"))
@@ -94,7 +95,8 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
 
     private sealed class EndOfInputResult() : KeyPressCallbackResult("", null);
 
-    private sealed partial class Callbacks(Func<string, bool> incomplete, Func<IReadOnlyCollection<string>> names, bool color, KeyBindings keys, SourceCompletionService completion, Func<Exception, Task> report, Func<string, EditorAnalysis>? analyze) : PromptCallbacks
+    private sealed partial class Callbacks(Func<string, bool> incomplete, Func<IReadOnlyCollection<string>> names, bool color, KeyBindings keys, SourceCompletionService completion, Func<Exception, Task> report, Func<string, EditorAnalysis>? analyze,
+        Func<string> workingDirectory) : PromptCallbacks
     {
         internal string? Submission { get; set; }
         private string? notice;
@@ -216,7 +218,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
             }
             if (BuiltinCompletion.Find(text, caret, insight) is { } builtin)
             {
-                List<CompletionItem> builtinItems = BuiltinCompletion.Complete(builtin, Environment.CurrentDirectory)
+                List<CompletionItem> builtinItems = BuiltinCompletion.Complete(builtin, workingDirectory())
                     .Select(candidate => (CompletionItem)new CaretCompletionItem(candidate.Replacement, displayText: candidate.Label,
                         filterText: candidate.FilterText ?? candidate.Label,
                         getExtendedDescription: _ => Task.FromResult<FormattedString>(candidate.Detail)))
@@ -258,7 +260,7 @@ internal sealed partial class InteractivePrompt : IAsyncDisposable
             bool captured = Console.TreatControlCAsInput;
             Console.CancelKeyPress += cancel;
             Console.TreatControlCAsInput = false;
-            try { return await completion.CompleteAsync(context, Environment.CurrentDirectory, HostContext.HomeDirectory, cancellation.Token); }
+            try { return await completion.CompleteAsync(context, workingDirectory(), HostContext.HomeDirectory, cancellation.Token); }
             catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { notice = "completion cancelled"; return []; }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or MsyncException)
             { notice = error.Message; await report(error); return []; }
