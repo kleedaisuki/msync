@@ -45,6 +45,7 @@ SemanticValueId first = Add(new(scope, Members: [new("nested", nestedA), new("fi
 SemanticValueId second = Add(new(scope, Members: [new("nested", nestedB), new("second", str)]));
 SemanticValueId named = Add(new(scope, IsNamedScope: true, Members: []));
 SemanticValueId anonymous = Add(new(scope, Members: []));
+SemanticValueId optionalContract = Add(new(scope, Members: [new("value", num, AdmitsNull: true)]));
 SemanticValueId callable = Add(new(function, Function: new(0)));
 SemanticValueId template = Add(new(function, Template: new(0)));
 SemanticValueId missing = Add(new(unknown, IsUnknown: true));
@@ -100,6 +101,7 @@ SemanticMember cycles = presenter.Describe("cycles", [cycleA, cycleB]);
 Require(cycles.Members!.Single(item => item.Name == "self").Members is null, "Recursive variant intersection terminates by identity pair");
 Require(cycles.Members!.Single(item => item.Name == "leaf").Type == "String | Number", "Recursive intersection retains ordinary fields");
 Require(presenter.Describe("record", [optional]).Members!.Single().Type == "Number?", "Shape-only nullable field admission");
+Require(presenter.Describe("contract", [optionalContract]).Members!.Single().Type == "Number?", "Constraint-only nullable field admission");
 Require(presenter.Describe("process", [childProcess]).Members!.Select(item => item.Name).SequenceEqual(["stdout", "stderr", "exit_code", "success"]), "Process fields require no extra HIR type entries");
 Require(presenter.Describe("get", [alias]).Signature.StartsWith("native fn get(items:", StringComparison.Ordinal), "Native aliases retain actual parameter names");
 Require(nativeQueries == 0, "Provided native documentation does not reload source");

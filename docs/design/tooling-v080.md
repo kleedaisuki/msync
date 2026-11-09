@@ -10,9 +10,9 @@ formats produce a source-recompilation diagnostic, not a compatibility decoder.
 
 ## Typed HIR editor and session boundary (0.8.1)
 
-The Typed HIR migration replaces emission-driven editor inference; the following
-is the consumer contract for that work, not an assertion that the old editor
-implementation already satisfies it.
+The editor uses the Typed HIR semantic pipeline rather than emission-driven
+inference. The following contract describes the ownership boundary shared by
+standalone document analysis and persistent-session analysis.
 
 The editor consumes a read-only semantic generation. Its required facts are:
 
@@ -30,6 +30,14 @@ results remain the protocol-facing projection. The new semantic generation must
 not retain mutable `Frame`, `Info`, bytecode builders or a callback into the
 lowerer. Repeated queries must not add specializations, constrain a later real
 write, commit a REPL binding or start an operation.
+
+The protocol-facing `SemanticObservationView` retains only immutable source,
+type, location, structural-layout and signature tables plus projected values,
+visibility points and references. `SemanticTypeTables` projects a generic
+body's result type before discarding the body. Holding a hover/completion index
+does not keep `HirModule`, typed node/edge arenas or function payloads alive.
+The persistent compiler session separately owns the accepted semantic bodies
+needed for later specializations; that lifetime is not delegated to editor DTOs.
 
 REPL compilation and editor queries have different commit rules. A submission
 produces semantic HIR plus an explicit pending declaration/location delta. The
@@ -62,8 +70,9 @@ line/column or bytecode operand provenance and the actual runtime cause chain.
 
 ## Session and editor state
 
-`CompilerSession` retains binding slots, functions and constants while each
-submission emits only its new entry instructions. `ExecutionSession` retains
+`CompilerSession` retains bound semantic bodies, accepted location facts and a
+backend-owned logical-location/slot manifest. Each submission lowers its new
+entry while keeping older callable code available. `ExecutionSession` retains
 entry locals; previous effects are never re-executed to reconstruct variables.
 Incomplete brace/parenthesis/String submissions stay in the input buffer.
 Functions and captured values remain usable in later submissions.
