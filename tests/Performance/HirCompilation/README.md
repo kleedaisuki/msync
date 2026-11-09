@@ -416,3 +416,70 @@ Analyze without reaching Lower or Optimize. The resource-growth observation is
 recorded in `docs/design/typed-hir-validation-v081.md`; it is not a successful
 candidate cost observation. Wait for the responsible semantic correction before
 repeating that input or increasing its insertion count.
+
+## Original B-tree source after the callable-identity correction
+
+Before a final matched observation, compare actual source bytes. The successful
+functional gate at `.temp/hir-cost-functional/btree/input.msync`, SHA-256
+`4570a1401bd98796088c1134674fe69d37aba0a2e04312b0959bf7c545328e60`,
+uses a loop over `iota(0, 24)`, converts each key to String, and writes the
+selected value. It is **not** the accepted performance source: that source has
+24 explicitly unrolled inserts with `"item-N"` values and a trailing get. Its
+SHA-256 is `3fc8333a4e8003c83495625dd59af655746af2bfb03075c10e040bebcc3626cb`
+in both the original baseline record and the new discriminator input. A loop's
+smaller instance count cannot be substituted for an unrolled-source speedup.
+Scalar/List input bytes also match the original baseline controls, respectively
+`b10704aca051bd09eab5c1f608d601d8f44ced36c73a960d5327be1476a8b6f7` and
+`8a6688070adf66d76a1b4248e67f1ddee360a9e086b296d4cc07d22c1e6ff3ab`.
+
+The exact candidate image is `.temp/hir-editor-cli/frozen14`, producer receipt
+`snapshot-receipt.json`, source head
+`4947fb3b15de5df68bafc28ccb0a3d5a49391ab7`, worktree diff SHA-256
+`46bdc3afc854e4a2a88888d1af61fc00674ed0bba297bc6184a3c8bd669747a1`:
+
+| Producer assembly | SHA-256 |
+| --- | --- |
+| Msync.Compiler.dll | `1829c7cc29d0a63df96b71db8637f91ef514d068dc56308ec3559967a73565c4` |
+| Msync.Core.dll | `6832dd853c52b4b7f02055615840b8088952525c5b49f1a7908415e1f4cf7f33` |
+| Msync.Hir.dll | `ba93a9e24bc834dbd4ef97148f615cc0083c42658424683f50ac1c1b1e80862e` |
+| Msync.Optimization.dll | `0b3b468397201030577db0ec3a6b0a2a297c7d2003ca6568f767cc741a5762a6` |
+| Msync.Runtime.dll | `3f23c3893bfa26f76cb7c854a22ad563e9b24a66a75a4a3de4859c6e8d26cc8c` |
+| msync.dll | `499ba9a47733e3617b68fc546fdedbe263c7f94e814fec0831f6b7a229dfac9d` |
+
+Only the test-only direct-reference probes were built (SDK 10.0.403, Release,
+zero warnings). For a normal Compile entry point, the probe references HIR
+when present in the frozen image; the released image needs no HIR assembly.
+No product build or workload warm-cost matrix was started.
+
+One guarded, first-pass O0 `--trace-once` accepted and completed the original
+unrolled source, with tiered compilation disabled as in the existing controls.
+The process exited naturally with code 0; this proves Analyze/Lower/Optimize
+completion, not runtime output equivalence. Raw files are
+`.temp/hir-final-cost/original-tree-trace.jsonl` and
+`.temp/hir-final-cost/original-tree-trace-receipt.json`.
+
+| Completed candidate stage | Allocated bytes | Completed representation |
+| --- | ---: | --- |
+| Analyze | 1,478,691,760 | 50 functions, 49 templates, 5,208 nodes, 2,275 locations, 1,258 types, 39 Scope layouts |
+| Lower | 716,840 | 99 bytecode functions, 4,403 instructions |
+| Optimize O0 | 539,544 | 99 bytecode functions, 4,403 instructions |
+
+The observed process RSS peak was approximately 235 MiB, a sampled resident
+occupancy, not cumulative allocation. The 1.48 GB allocation traffic therefore
+does not mean a 1.48 GB retained HIR. The first Analyze took about 9.07 seconds
+on the shared host; that single invocation is not a matched warm latency score.
+
+Existing published-source observations for this exact source require no rerun:
+
+| Released v0.8.0 Compile | First allocation B | Warm median allocation B | Bytecode functions / instructions |
+| --- | ---: | ---: | ---: |
+| O0 | 150,975,304 | 146,409,824 | 577 / 33,127 |
+| O2 | 383,921,440 | 379,472,456 | 577 / 27,850 |
+
+The new first Analyze alone allocates about 9.79 times the old first complete
+O0 Compile. This is an actionable semantic-construction cost signal, not a
+final matched warm ratio: the phases differ, no candidate warm/retention batch
+was run, and smaller residual bytecode does not justify the construction cost.
+The matched timing window remained unused while this result was handed to the
+semantic owner for causal work. Do not repeat warm/full/retention observations
+on this image merely to reproduce the same signal.

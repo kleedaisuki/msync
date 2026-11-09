@@ -8,8 +8,10 @@
     <Reference Include="Msync.Compiler"><HintPath>$(FrozenAssemblies)/Msync.Compiler.dll</HintPath></Reference>
     <Reference Include="Msync.Optimization"><HintPath>$(FrozenAssemblies)/Msync.Optimization.dll</HintPath></Reference>
   </ItemGroup>
-  <ItemGroup Condition="'$(HirPhaseProbe)' == 'true'">
+  <ItemGroup Condition="Exists('$(FrozenAssemblies)/Msync.Hir.dll')">
     <Reference Include="Msync.Hir"><HintPath>$(FrozenAssemblies)/Msync.Hir.dll</HintPath></Reference>
+  </ItemGroup>
+  <ItemGroup Condition="'$(HirPhaseProbe)' == 'true'">
     <Compile Remove="Program.cs" />
   </ItemGroup>
   <ItemGroup Condition="'$(HirPhaseProbe)' != 'true'">
