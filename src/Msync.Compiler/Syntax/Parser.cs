@@ -51,6 +51,17 @@ public sealed class Parser
 
     public static IReadOnlyList<SourceSpan> NumberSpans(string source) => new Lexer(source, "<editor>")
         .LexForEditor(out _).Where(token => token.Kind == TokenKind.Number).Select(token => token.Span).ToArray();
+
+    public static (IReadOnlyList<SourceSpan> Numbers, IReadOnlyList<SourceSpan> ArithmeticOperators) HighlightSpans(string source)
+    {
+        List<SourceSpan> numbers = [], operators = [];
+        foreach (Token token in new Lexer(source, "<editor>").LexForEditor(out _))
+        {
+            if (token.Kind == TokenKind.Number) numbers.Add(token.Span);
+            if (token.Kind == TokenKind.Atom && token.Text is "+" or "-" or "*" or "%" or "**") operators.Add(token.Span);
+        }
+        return (numbers, operators);
+    }
     private Token Current => tokens[position];
     private Token Previous => tokens[Math.Max(0, position - 1)];
     private Token Peek(int distance = 1) => tokens[Math.Min(position + distance, tokens.Count - 1)];
@@ -329,8 +340,8 @@ public sealed class Parser
         if (Word("fn")) return Function();
         if (TakeWord("scope"))
         {
-            if (At(TokenKind.Atom) && Peek().Kind == TokenKind.LeftBrace) Next();
-            return Scope(token.Span);
+            Token? name = At(TokenKind.Atom) && Peek().Kind == TokenKind.LeftBrace ? Next() : null;
+            return Scope(token.Span) with { Name = name?.Text, NameSpan = name?.Span };
         }
         if (TakeWord("loop")) { var body = Block(); return new LoopExpr(body, SourceSpan.Cover(token.Span, body.Span)); }
         if (TakeWord("return")) { Expr? value = IsExpressionEnd() ? null : Expression(); return new ReturnExpr(value, SourceSpan.Cover(token.Span, value?.Span ?? token.Span)); }

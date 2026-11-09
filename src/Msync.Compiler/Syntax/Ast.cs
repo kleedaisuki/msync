@@ -70,6 +70,8 @@ public sealed record FunctionExpr(string? Name, IReadOnlyList<Parameter> Paramet
 }
 public sealed record ScopeExpr(IReadOnlyList<ScopeMember> Members, Expr? Value, SourceSpan Span) : Expr(Span)
 {
+    public string? Name { get; init; }
+    public SourceSpan? NameSpan { get; init; }
     public bool EditorIncomplete { get; init; }
 }
 public sealed record RangeExpr(IReadOnlyList<Expr> Items, SourceSpan Span) : Expr(Span);

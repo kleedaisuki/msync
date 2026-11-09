@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Numerics;
 using System.Text.RegularExpressions;
 
 namespace Msync.Core;
@@ -26,8 +27,22 @@ public static partial class NumberSyntax
         if (digits.Length < 2 || digits[0] != '0' || digits[1] is not ('x' or 'X' or 'b' or 'B' or 'o' or 'O'))
             return double.TryParse(digits, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
         int radix = char.ToLowerInvariant(digits[1]) switch { 'x' => 16, 'b' => 2, _ => 8 };
-        foreach (char digit in digits.AsSpan(2))
-            value = value * radix + (digit <= '9' ? digit - '0' : char.ToLowerInvariant(digit) - 'a' + 10);
+        ulong integral = 0;
+        for (int index = 2; index < digits.Length; index++)
+        {
+            int digit = Digit(digits[index]);
+            if (integral > (ulong.MaxValue - (uint)digit) / (uint)radix)
+            {
+                BigInteger large = integral;
+                for (; index < digits.Length; index++) large = large * radix + Digit(digits[index]);
+                value = (double)large;
+                return true;
+            }
+            integral = integral * (uint)radix + (uint)digit;
+        }
+        value = integral;
         return true;
     }
+
+    private static int Digit(char digit) => digit <= '9' ? digit - '0' : char.ToLowerInvariant(digit) - 'a' + 10;
 }
