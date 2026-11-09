@@ -21,7 +21,7 @@ let storage = scope {
         $std::ranges::materialize(values)
     },
 };
-let items = $std::containers::List::with-storage([1, 2], storage);
+let items = $std::containers::List::with_storage([1, 2], storage);
 let alias = items;
 let before = $std::containers::List::snapshot(items);
 $std::containers::List::push(items, 3);
@@ -29,7 +29,7 @@ $std::containers::List::insert(items, 1, 9);
 $std::containers::List::set(items, 0, 8);
 $std::containers::List::remove(items, 2);
 $std::containers::List::reverse(items);
-$std::containers::List::sort-with(items, fn(a: Number, b: Number) { a < b });
+$std::containers::List::sort_with(items, fn(a: Number, b: Number) { a < b });
 $std::string::join($std::ranges::map(alias::items,
     fn(value: Number) { value as String }), ",") -> ./list.txt;
 $std::string::join($std::ranges::map(before,
@@ -37,34 +37,34 @@ $std::string::join($std::ranges::map(before,
 (calls as String) -> ./storage-calls.txt;
 let separate = $std::containers::List::empty(0);
 $std::containers::List::push(separate, 44);
-($std::containers::List::get-or(separate, 0, 0) as String) -> ./fresh.txt;
+($std::containers::List::get_or(separate, 0, 0) as String) -> ./fresh.txt;
 scope FoldCase {
     Self: String,
     equal: fn(a: String, b: String) -> Bool {
         $std::string::to_lowercase(a) == $std::string::to_lowercase(b)
     },
 };
-let names = $std::containers::Set::with-equality(["Klee", "klee", "Alice"],
+let names = $std::containers::Set::with_equality(["Klee", "klee", "Alice"],
     FoldCase);
 $std::containers::Set::insert(names, "ALICE");
 $std::containers::Set::insert(names, "Bob");
 $std::containers::Set::remove(names, "aLiCe");
 $std::string::join($std::containers::Set::snapshot(names), ",") -> ./set.txt;
-let records = $std::containers::Map::with-equality([
+let records = $std::containers::Map::with_equality([
     scope { key: "Klee", value: 1 },
     scope { key: "Alice", value: 2 },
     scope { key: "KLEE", value: 3 },
 ], FoldCase);
 $std::containers::Map::insert(records, "bob", 4);
-($std::containers::Map::get-or(records, "klee", 0) as String) -> ./map.txt;
+($std::containers::Map::get_or(records, "klee", 0) as String) -> ./map.txt;
 $std::string::join($std::containers::Map::keys(records), ",") -> ./keys.txt;
 let map_before = $std::containers::Map::entries(records);
 $std::containers::Map::remove(records, "ALICE");
 ($std::ranges::size(map_before) as String) -> ./map-before.txt;
-let nullable = $std::containers::Map::empty-nullable("", 0);
+let nullable = $std::containers::Map::empty_nullable("", 0);
 $std::containers::Map::insert(nullable, "missing", null);
 $std::containers::Map::insert(nullable, "present", 8);
-if $std::containers::Map::contains-key(nullable, "missing")
+if $std::containers::Map::contains_key(nullable, "missing")
     and $std::containers::Map::get(nullable, "missing") is null {
     "nullable" -> ./nullable.txt;
 };
@@ -111,7 +111,7 @@ NEGATIVE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "storage-return",
         (
             "let policy = scope { snapshot: fn(values: Range) { true } }; "
-            "$std::containers::List::with-storage([1], policy);"
+            "$std::containers::List::with_storage([1], policy);"
         ),
         ("snapshot", "Range"),
     ),
@@ -120,7 +120,7 @@ NEGATIVE: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         (
             "let policy = scope { Self: String, "
             "equal: fn(a: String, b: String) { 1 } }; "
-            '$std::containers::Set::with-equality(["x"], policy);'
+            '$std::containers::Set::with_equality(["x"], policy);'
         ),
         ("equal", "Bool"),
     ),

@@ -8,9 +8,9 @@ scope SnapshotStorage {
 
 scope List {
     new: fn(initial: Range) {
-        List::with-storage(initial, SnapshotStorage)
+        List::with_storage(initial, SnapshotStorage)
     },
-    with-storage: fn(initial: Range, storage: $std::concepts::RangeStorage) {
+    with_storage: fn(initial: Range, storage: $std::concepts::RangeStorage) {
         scope {
             items: $std::ranges::materialize(storage::snapshot(initial)),
             storage: storage,
@@ -25,7 +25,7 @@ scope List {
     size: fn(self) {
         $std::ranges::size(self::items)
     },
-    is-empty: fn(self) {
+    is_empty: fn(self) {
         $std::ranges::empty(self::items)
     },
     clear: fn(self) {
@@ -36,7 +36,7 @@ scope List {
     get: fn(self, index: Number) {
         $std::ranges::at_or(self::items, index, null)
     },
-    get-or: fn(self, index: Number, fallback?) {
+    get_or: fn(self, index: Number, fallback?) {
         $std::ranges::at_or(self::items, index, fallback)
     },
     push: fn(self, value?) {
@@ -97,7 +97,7 @@ scope List {
         );
         true
     },
-    remove-where: fn(self, predicate: Function) {
+    remove_where: fn(self, predicate: Function) {
         let previous = List::size(self);
         self::items = $std::ranges::materialize(
             self::storage::snapshot(
@@ -109,7 +109,7 @@ scope List {
     contains: fn(self, value?) {
         $std::ranges::contains(self::items, value)
     },
-    index-of: fn(self, value?) {
+    index_of: fn(self, value?) {
         $std::ranges::index_of(self::items, value)
     },
     slice: fn(self, start: Number, count: Number) {
@@ -122,7 +122,7 @@ scope List {
             self::storage::snapshot($std::ranges::reverse(self::items))
         );
     },
-    sort-with: fn(self, less: Function) {
+    sort_with: fn(self, less: Function) {
         self::items = $std::ranges::materialize(
             self::storage::snapshot($std::ranges::sort_with(self::items, less))
         );
@@ -157,7 +157,7 @@ scope Equivalence {
 
 scope Set {
     new: fn(initial: Range) {
-        Set::with-policy(
+        Set::with_policy(
             initial,
             scope {
                 Self: decltype($std::ranges::front(initial)),
@@ -166,10 +166,10 @@ scope Set {
             SnapshotStorage
         )
     },
-    with-equality: fn(initial: Range, equality: $std::concepts::Equality) {
-        Set::with-policy(initial, equality, SnapshotStorage)
+    with_equality: fn(initial: Range, equality: $std::concepts::Equality) {
+        Set::with_policy(initial, equality, SnapshotStorage)
     },
-    with-policy: fn(
+    with_policy: fn(
         initial: Range,
         equality: $std::concepts::Equality,
         storage: $std::concepts::RangeStorage
@@ -194,7 +194,7 @@ scope Set {
     size: fn(self) {
         $std::ranges::size(self::items)
     },
-    is-empty: fn(self) {
+    is_empty: fn(self) {
         $std::ranges::empty(self::items)
     },
     clear: fn(self) {
@@ -229,12 +229,12 @@ scope Set {
         );
         previous != Set::size(self)
     },
-    union-with: fn(self, other: Range) {
+    union_with: fn(self, other: Range) {
         for value in other {
             Set::insert(self, value);
         };
     },
-    intersect-with: fn(self, other: Range) {
+    intersect_with: fn(self, other: Range) {
         let values = $std::ranges::materialize(other);
         self::items = $std::ranges::materialize(
             self::storage::snapshot(
@@ -252,7 +252,7 @@ scope Set {
             )
         );
     },
-    except-with: fn(self, other: Range) {
+    except_with: fn(self, other: Range) {
         let values = $std::ranges::materialize(other);
         self::items = $std::ranges::materialize(
             self::storage::snapshot(
@@ -270,7 +270,7 @@ scope Set {
             )
         );
     },
-    is-subset-of: fn(self, other: Range) {
+    is_subset_of: fn(self, other: Range) {
         let values = $std::ranges::materialize(other);
         $std::ranges::all_of(
             self::items,
@@ -296,7 +296,7 @@ scope Set {
 
 scope Map {
     new: fn(initial: Range) {
-        Map::with-policy(
+        Map::with_policy(
             initial,
             scope {
                 Self: decltype($std::ranges::front(initial)::key),
@@ -305,10 +305,10 @@ scope Map {
             SnapshotStorage
         )
     },
-    with-equality: fn(initial: Range, equality: $std::concepts::Equality) {
-        Map::with-policy(initial, equality, SnapshotStorage)
+    with_equality: fn(initial: Range, equality: $std::concepts::Equality) {
+        Map::with_policy(initial, equality, SnapshotStorage)
     },
-    with-policy: fn(
+    with_policy: fn(
         initial: Range,
         equality: $std::concepts::Equality,
         storage: $std::concepts::RangeStorage
@@ -352,7 +352,7 @@ scope Map {
             )
         )
     },
-    empty-nullable: fn(key_prototype?, value_prototype?) {
+    empty_nullable: fn(key_prototype?, value_prototype?) {
         Map::new(
             $std::ranges::take(
                 [
@@ -391,7 +391,7 @@ scope Map {
     size: fn(self) {
         $std::ranges::size(self::keys)
     },
-    is-empty: fn(self) {
+    is_empty: fn(self) {
         $std::ranges::empty(self::keys)
     },
     clear: fn(self) {
@@ -410,13 +410,13 @@ scope Map {
             }
         )
     },
-    contains-key: fn(self, key?) {
+    contains_key: fn(self, key?) {
         Map::locate(self, key) is not null
     },
     get: fn(self, key?) {
-        Map::get-or(self, key, null)
+        Map::get_or(self, key, null)
     },
-    get-or: fn(self, key?, fallback?) {
+    get_or: fn(self, key?, fallback?) {
         let index? = Map::locate(self, key);
         if index is null {
             fallback
@@ -453,8 +453,8 @@ scope Map {
             false
         }
     },
-    try-insert: fn(self, key?, value?) {
-        if Map::contains-key(self, key) {
+    try_insert: fn(self, key?, value?) {
+        if Map::contains_key(self, key) {
             false
         } else {
             Map::insert(self, key, value)
@@ -489,8 +489,8 @@ scope Stack {
     new: fn(initial: Range) {
         List::new(initial)
     },
-    with-storage: fn(initial: Range, storage: $std::concepts::RangeStorage) {
-        List::with-storage(initial, storage)
+    with_storage: fn(initial: Range, storage: $std::concepts::RangeStorage) {
+        List::with_storage(initial, storage)
     },
     empty: fn(prototype?) {
         List::empty(prototype)
@@ -501,8 +501,8 @@ scope Stack {
     size: fn(self) {
         List::size(self)
     },
-    is-empty: fn(self) {
-        List::is-empty(self)
+    is_empty: fn(self) {
+        List::is_empty(self)
     },
     clear: fn(self) {
         List::clear(self)
@@ -511,14 +511,14 @@ scope Stack {
         List::push(self, value)
     },
     peek: fn(self) {
-        if List::is-empty(self) {
+        if List::is_empty(self) {
             null
         } else {
             List::get(self, List::size(self) - 1)
         }
     },
     pop: fn(self) {
-        if List::is-empty(self) {
+        if List::is_empty(self) {
             return null;
         };
         let index = List::size(self) - 1;
@@ -532,8 +532,8 @@ scope Queue {
     new: fn(initial: Range) {
         List::new(initial)
     },
-    with-storage: fn(initial: Range, storage: $std::concepts::RangeStorage) {
-        List::with-storage(initial, storage)
+    with_storage: fn(initial: Range, storage: $std::concepts::RangeStorage) {
+        List::with_storage(initial, storage)
     },
     empty: fn(prototype?) {
         List::empty(prototype)
@@ -544,8 +544,8 @@ scope Queue {
     size: fn(self) {
         List::size(self)
     },
-    is-empty: fn(self) {
-        List::is-empty(self)
+    is_empty: fn(self) {
+        List::is_empty(self)
     },
     clear: fn(self) {
         List::clear(self)
@@ -557,7 +557,7 @@ scope Queue {
         List::get(self, 0)
     },
     pop: fn(self) {
-        if List::is-empty(self) {
+        if List::is_empty(self) {
             return null;
         };
         let value? = List::get(self, 0);
