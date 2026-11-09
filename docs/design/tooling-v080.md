@@ -4,9 +4,55 @@ The product entrypoint is `src/Msync.Cli/Program.cs`. Help/version/LSP dispatch
 before configuration or telemetry initialization. Global options can precede a
 subcommand, preserving established `--no-config run FILE` invocations. The
 `config` command prints effective TOML and per-value origins without state
-creation. Explicit legacy source dispatch remains separate; the C# runtime never
-replays Rust debug source. Current 0.8 bytecode is format 4 only: old binary
+creation. Historical Rust implementations remain in their version tags, not a
+current source-dispatch path. Current 0.8 bytecode is format 4 only: old binary
 formats produce a source-recompilation diagnostic, not a compatibility decoder.
+
+## Typed HIR editor and session boundary (0.8.1)
+
+The Typed HIR migration replaces emission-driven editor inference; the following
+is the consumer contract for that work, not an assertion that the old editor
+implementation already satisfies it.
+
+The editor consumes a read-only semantic generation. Its required facts are:
+
+| Fact | Ownership and use |
+| --- | --- |
+| Source identity, declaration identity and source span | Definitions and diagnostics retain the source that owns each span, including embedded standard sources and older REPL declarations. |
+| Expression type, structural shape and callable signature | Hover, function/type roles and completion inspect semantic descriptors, not stack slots or bytecode. |
+| Lexical visibility and current flow refinements | Completion at an incomplete member access uses the selected control-flow edge. A declared nullable storage domain is distinct from the value type at that point. |
+| Receiver and physical path provenance | Explicitly selected filesystem completion may inspect an endpoint; semantic analysis itself must not connect or execute paths. |
+| Generic constraints and semantic alternatives | Uncalled generic bodies expose their declared capabilities and type variables. Actual call instances may contribute concrete alternatives without re-emitting a speculative body. |
+| Error nodes and diagnostics | Partial input retains usable surrounding declarations; error recovery is not execution or a lowered invalid bytecode program. |
+
+The existing public `EditorAnalysis`, `EditorContext` and `SemanticMember`
+results remain the protocol-facing projection. The new semantic generation must
+not retain mutable `Frame`, `Info`, bytecode builders or a callback into the
+lowerer. Repeated queries must not add specializations, constrain a later real
+write, commit a REPL binding or start an operation.
+
+REPL compilation and editor queries have different commit rules. A submission
+produces semantic HIR plus an explicit pending declaration/location delta. The
+bytecode lowerer alone assigns runtime slots and returns the location-to-slot
+manifest. Accepted execution commits or reconciles the pending delta through
+that manifest; the semantic analyzer does not use slot numbers as declaration
+identities. An editor request reads the accepted generation and an uncommitted
+document generation and never commits either. Values fed back from execution
+are session observations, not live handles embedded in exportable HIR.
+
+The LSP document owner already rejects stale asynchronous analysis by document
+generation. That protocol rule remains independent of semantic query caching.
+Likewise, remote completion cancellation, streaming REPL output and process
+ownership remain the runtime/terminal owners' responsibilities.
+
+This separation adopts mechanisms rather than a second compiler framework.
+[Roslyn's semantic API](https://learn.microsoft.com/en-us/dotnet/csharp/roslyn-sdk/get-started/semantic-analysis)
+answers symbol and type questions in compilation context without making emit
+the semantic interface. [Rust's query design](https://rustc-dev-guide.rust-lang.org/query.html)
+uses identity-keyed, memoized results and records their dependencies; its guidance
+that results be cheaply reusable fits immutable semantic views. Neither requires
+copying an entire live compiler graph for each hover or importing an open runtime
+type system into msync.
 
 `compile`/`emit-ir` write the binary `Artifact` contract from Core. A named
 artifact uses staged publication; stdout output contains bytecode only.
