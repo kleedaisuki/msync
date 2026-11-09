@@ -5,6 +5,9 @@ namespace Msync.Runtime;
 
 public static partial class NativeRegistry
 {
+    private static readonly ScopeLayout RegexMatchLayout = new(["value", "index", "length", "groups"]);
+    private static readonly ScopeLayout RegexGroupLayout = new(["name", "value", "index", "length", "success"]);
+
     private static Value RegexOperation(string operation, IReadOnlyList<Value> args)
     {
         string text = Text(args[0]);
@@ -46,25 +49,23 @@ public static partial class NativeRegistry
         }
     }
 
-    private static ScopeValue RegexMatchRecord(string text, Match match, int index) => new(
-        new Dictionary<string, Value>(StringComparer.Ordinal)
-        {
-            ["value"] = new StringValue(match.Value),
-            ["index"] = new NumberValue(index),
-            ["length"] = new NumberValue(ScalarLength(match.Value)),
-            ["groups"] = new RangeValue(match.Groups.Cast<Group>()
+    private static ScopeValue RegexMatchRecord(string text, Match match, int index) => new(RegexMatchLayout,
+        [
+            new StringValue(match.Value),
+            new NumberValue(index),
+            new NumberValue(ScalarLength(match.Value)),
+            new RangeValue(match.Groups.Cast<Group>()
                 .Select(group => (Value)RegexGroupRecord(text, match.Index, index, group)).ToArray(), TypeRef.Scope)
-        });
+        ]);
 
-    private static ScopeValue RegexGroupRecord(string text, int matchOffset, int matchIndex, Group group) => new(
-        new Dictionary<string, Value>(StringComparer.Ordinal)
-        {
-            ["name"] = new StringValue(group.Name),
-            ["value"] = new StringValue(group.Value),
-            ["index"] = new NumberValue(group.Success ? group.Index >= matchOffset
+    private static ScopeValue RegexGroupRecord(string text, int matchOffset, int matchIndex, Group group) => new(RegexGroupLayout,
+        [
+            new StringValue(group.Name),
+            new StringValue(group.Value),
+            new NumberValue(group.Success ? group.Index >= matchOffset
                 ? matchIndex + ScalarLength(text.AsSpan(matchOffset, group.Index - matchOffset))
                 : ScalarLength(text.AsSpan(0, group.Index)) : -1),
-            ["length"] = new NumberValue(ScalarLength(group.Value)),
-            ["success"] = Bool(group.Success)
-        });
+            new NumberValue(ScalarLength(group.Value)),
+            Bool(group.Success)
+        ]);
 }
