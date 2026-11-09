@@ -89,8 +89,11 @@ internal static class ScopeScalarization
                         var raw = Local(instruction.A);
                         stack.Add(raw.Captured ? new(Cell: raw) : raw.Value); break;
                     case OpCode.LoadCell:
-                        var captured = Local(instruction.A); captured.Captured = true;
-                        Escape(ReadStorage(captured)); stack.Add(new(Cell: captured)); break;
+                        var captured = Local(instruction.A);
+                        // Earlier calls cannot rebind a location before its first capture.
+                        var capturedValue = ReadStorage(captured);
+                        captured.Captured = true;
+                        Escape(capturedValue); stack.Add(new(Cell: captured)); break;
                     case OpCode.StoreLocal:
                         var stored = Pop(); var targetStorage = Local(instruction.A);
                         if (targetStorage.UnknownAlias) Invalidate();

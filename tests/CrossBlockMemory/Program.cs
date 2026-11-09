@@ -129,6 +129,28 @@ try
         }
     }
 
+    const string lateCapture = "let module = scope { read: fn() { \"ok\" } }; fn unrelated() { true }; unrelated(); let action = fn() { module::read() }; action()";
+    Module lateOriginal = Compiler.Compile(lateCapture, "late-first-capture", 0);
+    MethodInfo blockScalarize = typeof(Optimizer).Assembly.GetType("Msync.Core.ScopeScalarization")!
+        .GetMethod("Optimize", BindingFlags.Static | BindingFlags.NonPublic)!;
+    Module lateBlock = lateOriginal with
+    {
+        Functions = lateOriginal.Functions.Select(function => (FunctionCode)blockScalarize.Invoke(null,
+            [lateOriginal, function, lateOriginal.Constants.ToList()])!).ToArray()
+    };
+    Check(await Execute(lateBlock) == await Execute(lateOriginal), "A first capture after an unrelated call lost the current Scope payload");
+    foreach (int level in new[] { 2, 3 })
+        Check(await Execute(Optimizer.Optimize(lateOriginal, level)) == await Execute(lateOriginal),
+            $"Actual O{level} lost late-captured namespace payload");
+    const string earlyCapture = "let module = scope { read: fn() { \"before\" } }; let action = fn() { module::read() }; fn unrelated() { true }; unrelated(); module = scope { read: fn() { \"after\" } }; action()";
+    Module earlyOriginal = Compiler.Compile(earlyCapture, "already-captured-replacement", 0);
+    Module earlyBlock = earlyOriginal with
+    {
+        Functions = earlyOriginal.Functions.Select(function => (FunctionCode)blockScalarize.Invoke(null,
+            [earlyOriginal, function, earlyOriginal.Constants.ToList()])!).ToArray()
+    };
+    Check(await Execute(earlyBlock) == await Execute(earlyOriginal), "An already captured location lost its replacement Scope after an epoch");
+
     Module scalarPhi = new([new NumberValue(3)], [new("scalar-phi", 1, 2,
         [new(OpCode.LoadLocal, 0), new(OpCode.JumpIfFalse, 6), new(OpCode.Constant, 0), new(OpCode.MakeScope, 1, Text: "item"),
          new(OpCode.StoreLocal, 1), new(OpCode.Jump, 8), new(OpCode.True), new(OpCode.StoreLocal, 1),
