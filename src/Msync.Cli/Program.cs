@@ -30,7 +30,7 @@ internal static class Program
                 TerminalHelp.Show(topic, color);
                 return 0;
             }
-            if (args.Contains("--version", StringComparer.Ordinal) || args.Contains("-V", StringComparer.Ordinal)) { Console.WriteLine("msync 0.8.0"); return 0; }
+            if (args.Contains("--version", StringComparer.Ordinal) || args.Contains("-V", StringComparer.Ordinal)) { Console.WriteLine($"msync {ProductVersion.Current}"); return 0; }
             CommandOptions options = CommandOptions.Parse(args);
             if (options.Command == "help") { TerminalHelp.Show(options.File, color); return 0; }
             if (options.Command == "skill") { TerminalPresentation.Reference(SkillReference.Render(options.SkillTopics), color); return 0; }

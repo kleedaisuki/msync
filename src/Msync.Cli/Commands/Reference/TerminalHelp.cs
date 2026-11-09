@@ -1,4 +1,5 @@
 using Msync.Compiler;
+using Msync.Core;
 
 namespace Msync.Cli;
 
@@ -25,7 +26,7 @@ internal static class TerminalHelp
 
     private static void Overview(bool color)
     {
-        Heading("msync 0.8.0 — a typed file synchronization language", color);
+        Heading($"msync {ProductVersion.Current} — a typed file synchronization language", color);
         Console.WriteLine();
         Heading("USAGE", color);
         Row("msync [OPTIONS] [run] FILE", "Execute source or compiled bytecode", color);
@@ -126,7 +127,7 @@ internal static class TerminalHelp
 
     public static void Syntax(bool color)
     {
-        Heading("msync 0.8.0 — language guide", color);
+        Heading($"msync {ProductVersion.Current} — language guide", color);
         Console.WriteLine();
         Heading("VALUES AND BLOCKS", color);
         Code("let source = ~/.codex;", color);

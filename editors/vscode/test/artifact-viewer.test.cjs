@@ -309,7 +309,7 @@ test('webview treats hostile bytecode/debug data as inert escaped text', () => {
 
 test('manifest offers binary opening without routing IR through source diagnostics', () => {
     const manifest = require('../package.json');
-    assert.equal(manifest.version, '0.8.0');
+    assert.equal(manifest.version, '0.8.1');
     assert.equal(manifest.contributes.customEditors.find(item => item.viewType === 'msync.bytecode').priority, 'default');
     assert.ok(manifest.contributes.languages.some(item => item.id === 'msync-ir'));
     assert.ok(manifest.activationEvents.includes('onCustomEditor:msync.bytecode'));

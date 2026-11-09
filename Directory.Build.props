@@ -8,7 +8,7 @@
     <Deterministic>true</Deterministic>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <NuGetLockFilePath Condition="'$(RuntimeIdentifier)' != ''">$(MSBuildProjectDirectory)/packages.$(RuntimeIdentifier).lock.json</NuGetLockFilePath>
-    <Version>0.8.0</Version>
+    <Version>0.8.1</Version>
     <Product>msync</Product>
     <Copyright>msync contributors</Copyright>
     <RepositoryUrl>https://github.com/kleedaisuki/msync</RepositoryUrl>
