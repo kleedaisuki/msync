@@ -139,6 +139,7 @@ jobs:
         with:
           name: acceptance-${{ matrix.name }}
           if-no-files-found: ignore
+          include-hidden-files: true
           path: .temp/platform-results/language-upgrade/
 
   editor:
