@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Runtime.CompilerServices;
 using Msync.Compiler.Semantics;
 using Msync.Core;
 using Msync.Hir;
@@ -48,6 +49,23 @@ internal static class StructuralTypeChecks
             new(builder.Types[mixed.Value].RuntimeType, SemanticType: mixed)).Read(cell);
         Check(numeric.SemanticType == number,
             "Storage intersection removes incompatible structural alternatives, not just runtime kind bits");
+        HirTypeId range = arena.Type(new TypeRef(TypeKind.Range, TypeRef.Number));
+        FlowFact view = new(builder.Types[range.Value].RuntimeType, SemanticType: range);
+        FlowFact snapshot = view with { Eager = true };
+        Check(FlowFact.Join(view, snapshot).Eager && algebra.Join(view, snapshot).Eager,
+            "Possible snapshots retain eager evaluation across scalar and structural flow joins");
+        FlowFact flags = new(TypeRef.Bool, Assigned: false, Boolean: true, Eager: true);
+        Check((flags with { Boolean = null }) is { Assigned: false, Boolean: null, Eager: true },
+            "Clearing a Boolean fact preserves assignment and evaluation policy");
+        Check((flags with { Assigned = true }) is { Assigned: true, Boolean: true, Eager: true },
+            "Assignment updates preserve Boolean and evaluation policy");
+        Check((flags with { Eager = false }) is { Assigned: false, Boolean: true, Eager: false },
+            "Evaluation policy updates preserve the other facts");
+        Check(Unsafe.SizeOf<FlowFact>() <= Unsafe.SizeOf<PrePolicyFact>(),
+            "Evaluation policy does not grow the scalar fact representation");
         return checks;
     }
+
+    private readonly record struct PrePolicyFact(TypeRef Type, bool Assigned, bool? Boolean,
+        HirTypeId? SemanticType, FlowCallableDomain? Callables, FlowDenotationDomain? Denotations);
 }

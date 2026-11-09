@@ -36,6 +36,9 @@ await Number(indexedBranch + "let items = buffer_new([]); if is_nan(0) { buffer_
 await Number(indexedBranch + "if decltype({ let items = buffer_new([]); if is_nan(0) { buffer_push(items, 1); } else { buffer_push(items, 2); }; buffer_get(items, 0) }) is Number { 7 } else { 1 }", 7);
 Reject(indexedBranch + "let items = buffer_new([]); if is_nan(0) { buffer_push(items, 1); } else { buffer_push(items, true); }; buffer_push(items, 2)", "E0203");
 await Number("native fn is_nan(value: Number) -> Bool; let value?: Scope = null; let changed = false; loop { if value is null { if changed { break 7; } else { value = if is_nan(0) { scope { first: 1 } } else { scope { second: 2 } }; changed = true; } } else { value = null; } }", 7);
+const string snapshotCalls = "native fn materialize(values: Range) -> Range; native fn first(values: Range) -> Number; native fn all(values: Range) -> Range;";
+await Number(snapshotCalls + "let values = [1]; fn freeze_field() { let state = scope { items: values }; state::items = materialize(values); state::items }; let saved = freeze_field(); values = [9]; first(saved)", 1);
+await Number(snapshotCalls + "let values = [1]; fn freeze_identity() { let saved = materialize(values); all(saved) }; let saved = freeze_identity(); values = [9]; first(saved)", 1);
 await Number("let changed = false; fn conditional_cell_write(take: Bool) { if take { changed = true; }; }; conditional_cell_write(true); if changed { 7 } else { 1 }", 7);
 await Number("let value?: Number = null; fn conditional_nullable_write(take: Bool) { if take { value = 8; }; }; conditional_nullable_write(true); if value is null { 1 } else { value }", 8);
 Console.WriteLine($"PASS {checks} structured-flow artifact journeys");

@@ -19,14 +19,25 @@ internal sealed record FlowLocationDomain(TypeRef StorageType, TypeRef DeferredT
 
 internal readonly record struct FlowFact(TypeRef Type, bool Assigned = true, bool? Boolean = null,
     HirTypeId? SemanticType = null, FlowCallableDomain? Callables = null,
-    FlowDenotationDomain? Denotations = null)
+    FlowDenotationDomain? Denotations = null, bool Eager = false)
 {
+    private readonly byte flags = (byte)((Assigned ? 1 : 0)
+        | (Boolean is { } known ? 2 | (known ? 4 : 0) : 0) | (Eager ? 8 : 0));
+
+    public bool Assigned { get => (flags & 1) != 0; init => flags = (byte)((flags & ~1) | (value ? 1 : 0)); }
+    public bool? Boolean
+    {
+        get => (flags & 2) == 0 ? null : (flags & 4) != 0;
+        init => flags = (byte)((flags & ~6) | (value is { } known ? 2 | (known ? 4 : 0) : 0));
+    }
+    public bool Eager { get => (flags & 8) != 0; init => flags = (byte)((flags & ~8) | (value ? 8 : 0)); }
+
     internal static FlowFact Join(FlowFact left, FlowFact right) => new(
         TypeRef.Union(left.Type, right.Type), left.Assigned && right.Assigned,
         left.Boolean == right.Boolean ? left.Boolean : null,
         left.SemanticType == right.SemanticType ? left.SemanticType : null,
         FlowCallableDomain.Join(left.Callables, right.Callables),
-        FlowDenotationDomain.Join(left.Denotations, right.Denotations));
+        FlowDenotationDomain.Join(left.Denotations, right.Denotations), left.Eager || right.Eager);
 }
 
 internal sealed class FlowDenotationDomain : IEquatable<FlowDenotationDomain>

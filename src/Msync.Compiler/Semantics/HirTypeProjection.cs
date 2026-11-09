@@ -29,7 +29,8 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
             {
                 HirLocationId location = context.Location(new(node.Data));
                 if (facts.Contains(location)) return facts.Read(location);
-                if (context.Values.TryGetValue(location, out var current)) return Fact(current.Type, current.KnownBool);
+                if (context.Values.TryGetValue(location, out var current)) return Fact(current.Type, current.KnownBool)
+                    with { Eager = current.EagerRange };
                 return Fact(Resolve(hir.Locations[location.Value].StorageType));
             }
             case HirKind.Block:
@@ -86,7 +87,10 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
                 return Fact(hir.Type(TypeRef.Type)) with { Denotations = new([Resolve(new(node.Data))]) };
             case HirKind.Convert:
             case HirKind.Coerce:
-                return Fact(Resolve(new(node.Data)));
+            {
+                FlowFact converted = Fact(Resolve(new(node.Data)));
+                return converted with { Eager = converted.Type.Kind == TypeKind.Range && Project(children[0], facts).Eager };
+            }
             case HirKind.PathJoin:
             case HirKind.Qualify:
                 return Fact(hir.Type(TypeRef.Path));
@@ -111,7 +115,8 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
                 if (places?.Invoke(id) is { } field && facts.Contains(field))
                     return facts.Read(field);
                 FlowFact receiver = Project(children[0], facts);
-                return Fact(types.Member(receiver.SemanticType ?? hir.Type(receiver.Type), node.Text!));
+                return Fact(types.Member(receiver.SemanticType ?? hir.Type(receiver.Type), node.Text!))
+                    with { Eager = Value(id)?.EagerRange == true };
             }
             case HirKind.Scope:
                 return Scope(node, children, facts);
@@ -246,15 +251,24 @@ internal sealed class HirTypeProjection(BoundProgram program, SemanticArena hir,
         for (int index = 0; index < arguments.Length; index++) arguments[index] = Project(children[index + 1], facts);
         if (native is not null && NativeSignatures.TryGet(native, out var signature))
         {
-            if (signature.ResultRule == NativeResultRule.FirstArgument && arguments.Length != 0) return arguments[0];
+            NativeBehavior behavior = signature.Behavior.GetValueOrDefault();
+            bool eager = (behavior & NativeBehavior.EagerRange) != 0;
+            if (signature.ResultRule == NativeResultRule.FirstArgument && arguments.Length != 0)
+                return arguments[0] with { Eager = eager
+                    || (behavior & NativeBehavior.PreservesIdentity) != 0 && arguments[0].Eager };
             if (signature.ResultRule == NativeResultRule.RangeItem && arguments.Length != 0)
-                return Fact(types.Element(arguments[0].SemanticType ?? hir.Type(arguments[0].Type)));
+                return Fact(types.Element(arguments[0].SemanticType ?? hir.Type(arguments[0].Type)))
+                    with { Eager = Value(children[1])?.Element?.EagerRange == true };
             if (signature.ResultRule == NativeResultRule.CastTarget && children.Length > 2)
             {
                 HirNode target = program.Node(children[2]);
-                if (target.Kind == HirKind.TypeValue) return Fact(Resolve(new(target.Data)));
+                if (target.Kind == HirKind.TypeValue)
+                {
+                    FlowFact cast = Fact(Resolve(new(target.Data)));
+                    return cast with { Eager = cast.Type.Kind == TypeKind.Range && arguments[0].Eager };
+                }
             }
-            return Fact(hir.Type(signature.Result));
+            return Fact(hir.Type(signature.Result)) with { Eager = eager };
         }
         if (sourceReturn is not null && choices.Length != 0)
         {

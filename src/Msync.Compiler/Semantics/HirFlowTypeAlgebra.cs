@@ -19,7 +19,7 @@ internal sealed class HirFlowTypeAlgebra(SemanticArena hir) : IFlowTypeAlgebra
         return new(hir.Types[type.Value].RuntimeType, left.Assigned && right.Assigned,
             left.Boolean == right.Boolean ? left.Boolean : null, type,
             FlowCallableDomain.Join(left.Callables, right.Callables),
-            FlowDenotationDomain.Join(left.Denotations, right.Denotations));
+            FlowDenotationDomain.Join(left.Denotations, right.Denotations), left.Eager || right.Eager);
     }
 
     public FlowFact Refine(FlowFact value, TypeRef tested, bool positive)
